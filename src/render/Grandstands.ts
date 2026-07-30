@@ -67,17 +67,35 @@ const ROOF_DECK = 0x9fa5ac;
 /** Skin tones, deliberately spread. */
 const SKIN = [0xf0c8a0, 0xd9a273, 0xa9744c, 0x7a4f30, 0xf7d9bb, 0x5c3a24];
 
+/** Hair and hats. Most of a head, seen from the front and above, is not face. */
+const HAIR = [0x1d1a18, 0x2e2622, 0x4a3a2c, 0x6b5238, 0x8a7355, 0xb9b3ad, 0x24262b, 0x141416];
+
 /**
  * Shirt colours.
  *
- * Mostly neutral, with a minority of saturated colour. A crowd generated from
- * evenly-spread bright hues reads as confetti; a real crowd is grey and navy
- * and white with team colours punched through it, and that ratio is what makes
- * the bright ones register as people wearing something rather than as noise.
+ * The ratio is the whole thing. A crowd generated from evenly-spread bright
+ * hues reads as confetti, and so does one generated from evenly-spread *pale*
+ * hues: what a real crowd looks like from across a circuit is a dark, broken
+ * mass with a scatter of light and colour through it, because most people are
+ * wearing something dark, most of every person is in shadow, and the bright
+ * ones only register as bright *because* the field around them is not.
+ *
+ * So this list is weighted rather than uniform — the darks and neutrals appear
+ * several times each and the saturated colours once — and every shirt then gets
+ * a per-person brightness drawn low. Bright shirts end up at roughly one in
+ * twelve, which is about what a stand looks like.
  */
 const SHIRTS = [
-  0xdfe3e8, 0xb9bec6, 0x8b929c, 0x4c525c, 0x2b3038, 0x1a1d22,
-  0xe8eaed, 0xa7aebb, 0x6d747f, 0x3a4049,
+  // Mid neutrals carry the crowd: dark enough to sit down in tone against the
+  // concrete, light enough that a stand full of them is a mass of people rather
+  // than a field of empty seats.
+  0x6d747f, 0x6d747f, 0x8b929c, 0x8b929c, 0x5a616b, 0x5a616b,
+  0x4c525c, 0x4c525c, 0x9aa1aa, 0x7f8790, 0x3a4049, 0x3a4049,
+  0x2b3038, 0x2f3a4a, 0x5a4a3e, 0x4a5a48, 0x56505e, 0x46596b,
+  0xb9bec6, 0xa7aebb,
+  // Whites and creams: common, but not as common as the internet thinks.
+  0xdfe3e8, 0xe8eaed, 0xd6cfc2,
+  // Team colours, one entry each, so they land as accents.
   0xc8102e, 0x1b3a8f, 0xe8a01c, 0x1f7a4d, 0xd94f1a, 0x6b2d8f, 0x00a3a3, 0xf0d840,
 ];
 
@@ -121,11 +139,31 @@ function rakeGeometry(o: GrandstandOptions, front: number, backDepth: number): T
 }
 
 /**
- * The crowd: two vertex-coloured quads per person, all merged into one buffer.
+ * The crowd: a small vertex-coloured billboard per person, all merged into one
+ * buffer.
  *
- * Every quad faces the track with a small random yaw, which is enough to stop
- * the rows reading as a printed pattern — people in a stand are all looking the
- * same way, but never at exactly the same angle.
+ * Six triangles each — four for the body, two for the head — and every vertex
+ * carries its own colour, which is where most of the work happens. Two things
+ * decide whether a stand full of these reads as people or as confetti, and
+ * neither of them is triangle count:
+ *
+ * 1. **Silhouette.** A rectangle with a dot over it is a lollipop. The body is
+ *    a six-sided outline instead: sloped shoulders, arms breaking the vertical
+ *    edges, and a narrower seat. Two more triangles than a quad, and it is the
+ *    difference between a picket fence and a row of shoulders.
+ *
+ * 2. **Value.** A real crowd is dark and broken up, not an even field of bright
+ *    flecks. Every person here is shaded three ways: a vertical gradient down
+ *    the torso, because the lower half of anybody in a stand is behind the
+ *    person in front of them; a per-person brightness drawn low, so bright
+ *    shirts are the exception; and a depth term, because the back of a stand is
+ *    further under the roof than the front and there is no shadow casting to do
+ *    that for us. Heads are mostly hair, not face — a peach dot per person is
+ *    the single loudest confetti cue there is.
+ *
+ * The rows are also broken up: people sit at slightly different depths and
+ * heights and about one in nine is standing, so the top of the crowd is a
+ * ragged line against the sky rather than a ruled one.
  */
 function crowdGeometry(o: GrandstandOptions, seatY: number[]): THREE.BufferGeometry | null {
   const { width, rows, tread, crowdSpacing } = o;
@@ -135,6 +173,7 @@ function crowdGeometry(o: GrandstandOptions, seatY: number[]): THREE.BufferGeome
   const colours: number[] = [];
 
   const c = new THREE.Color();
+  const c2 = new THREE.Color();
   // Aisle centres, as a fraction of the width.
   const aisleAt: number[] = [];
   for (let a = 0; a < o.aisles; a++) aisleAt.push((a + 1) / (o.aisles + 1));
@@ -142,35 +181,40 @@ function crowdGeometry(o: GrandstandOptions, seatY: number[]): THREE.BufferGeome
   let seed = o.seed * 7.13;
   const rnd = () => rand(seed++);
 
-  const pushQuad = (
-    cx: number, cy: number, cz: number,
-    halfW: number, halfH: number, yaw: number,
-    colour: THREE.Color,
+  /**
+   * A polygon in the billboard plane, as a fan from its first vertex.
+   *
+   * `pts` are (horizontal, vertical) offsets from the anchor, in metres, and
+   * `cols` are one packed rgb per point, so the shading is carried by the
+   * geometry and costs nothing at draw time.
+   */
+  const pushPoly = (
+    cx: number, cy: number, cz: number, yaw: number,
+    pts: number[][], cols: number[][],
   ) => {
-    // Facing -X (toward the track), rotated by `yaw` about Y.
     const s = Math.sin(yaw), co = Math.cos(yaw);
-    // In-plane horizontal axis before yaw is +Z.
-    const ax = -s * halfW, az = co * halfW;
     const nx = -co, nz = -s;
-    const v = [
-      [cx - ax, cy - halfH, cz - az],
-      [cx + ax, cy - halfH, cz + az],
-      [cx + ax, cy + halfH, cz + az],
-      [cx - ax, cy - halfH, cz - az],
-      [cx + ax, cy + halfH, cz + az],
-      [cx - ax, cy + halfH, cz - az],
-    ];
-    for (const p of v) {
-      positions.push(p[0], p[1], p[2]);
-      normals.push(nx, 0, nz);
-      colours.push(colour.r, colour.g, colour.b);
+    const world = pts.map(([u, v]) => [cx - s * u, cy + v, cz + co * u]);
+    for (let i = 1; i < pts.length - 1; i++) {
+      for (const k of [0, i, i + 1]) {
+        positions.push(world[k][0], world[k][1], world[k][2]);
+        normals.push(nx, 0, nz);
+        colours.push(cols[k][0], cols[k][1], cols[k][2]);
+      }
     }
   };
+
+  const rgb = (col: THREE.Color, mul: number) => [col.r * mul, col.g * mul, col.b * mul];
 
   for (let r = 0; r < rows; r++) {
     const y = seatY[r];
     // Sit people just behind the nosing of their row.
     const x = r * tread + tread * 0.55;
+    // Deeper into the stand is further under the roof and darker. Without
+    // shadow casting this is the only thing giving the rake any depth, and a
+    // crowd lit identically front to back is flat however good the silhouette.
+    const depthShade = 1 - (o.roof ? 0.24 : 0.1) * (r / Math.max(1, rows - 1));
+
     for (let i = 0; i < perRow; i++) {
       const f = (i + 0.5) / perRow;
       // Aisles: a gap in every row at the same place, as a real stand has.
@@ -183,12 +227,57 @@ function crowdGeometry(o: GrandstandOptions, seatY: number[]): THREE.BufferGeome
 
       const z = (f - 0.5) * width + (rnd() - 0.5) * crowdSpacing * 0.35;
       const yaw = (rnd() - 0.5) * 0.7;
-      const scale = 0.9 + rnd() * 0.25;
+      const scale = 0.88 + rnd() * 0.28;
+      // About one in nine on their feet, which is what breaks the top line.
+      const standing = rnd() < 0.11;
+      const lift = standing ? 0.30 * scale : 0;
+      // Leaning forward and back over the row in front.
+      const dx = x + (rnd() - 0.5) * tread * 0.4;
+      const dy = y + lift + (rnd() - 0.5) * 0.05;
+
+      // Brightness skewed low, but only skewed: squaring a uniform variate puts
+      // most people below the middle of the range without crushing the crowd to
+      // black. Crushed is its own failure — a stand of black marks on light
+      // concrete reads as empty seats, which is the opposite of the problem.
+      const t = rnd();
+      const bright = 0.74 + 0.5 * t * t;
+      const shade = bright * depthShade;
 
       c.setHex(SHIRTS[Math.floor(rnd() * SHIRTS.length) % SHIRTS.length]);
-      pushQuad(x, y + 0.34 * scale, z, 0.27 * scale, 0.34 * scale, yaw, c);
+      const hw = 0.285 * scale;
+      // Measured UP from the seat surface, not either side of it. The anchor is
+      // the row's floor: centre the torso on it and half of everybody in the
+      // circuit is inside the concrete, which shows up as a stand that looks
+      // half empty rather than as anything obviously broken.
+      const bodyH = (standing ? 0.98 : 0.74) * scale;
+      const shoulder = rgb(c, shade);
+      const arm = rgb(c, shade * 0.82);
+      // The seat end of the torso is behind the person in front and behind the
+      // seat back, so it goes dark. This gradient does more for legibility at
+      // 300 metres than any amount of extra geometry.
+      const seatEnd = rgb(c, shade * 0.58);
+      // Anticlockwise in the billboard plane, matching the head below and the
+      // front face three.js expects — wound the other way every torso in the
+      // circuit is back-face culled and the stands fill with floating heads.
+      pushPoly(dx, dy, z, yaw,
+        [
+          [-hw * 0.8, 0], [hw * 0.8, 0], [hw, bodyH * 0.6],
+          [hw * 0.56, bodyH], [-hw * 0.56, bodyH], [-hw, bodyH * 0.6],
+        ],
+        [seatEnd, seatEnd, arm, shoulder, shoulder, arm]);
+
+      // Head: hair over the crown, skin at the jaw. The average is a good deal
+      // darker than a skin-coloured rectangle, which is what a head actually
+      // looks like from across a circuit.
       c.setHex(SKIN[Math.floor(rnd() * SKIN.length) % SKIN.length]);
-      pushQuad(x, y + 0.78 * scale, z, 0.12 * scale, 0.13 * scale, yaw, c);
+      c2.setHex(HAIR[Math.floor(rnd() * HAIR.length) % HAIR.length]);
+      const face = rgb(c, shade * 0.92);
+      const crown = rgb(c2, shade);
+      const hy = bodyH + 0.115 * scale;
+      const hx = 0.105 * scale;
+      pushPoly(dx, dy, z, yaw,
+        [[-hx, hy - 0.115 * scale], [hx, hy - 0.115 * scale], [hx * 0.86, hy + 0.115 * scale], [-hx * 0.86, hy + 0.115 * scale]],
+        [face, face, crown, crown]);
     }
   }
 

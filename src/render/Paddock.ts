@@ -175,74 +175,243 @@ function boardQuad(index: number, w: number, h: number): THREE.BufferGeometry {
 }
 
 /**
+ * What a crew member is doing.
+ *
+ * A pit crew is not a row of people standing to attention, and the single
+ * biggest thing separating a crowd of mannequins from a crew is that everyone
+ * in a real one is mid-task and no two of them are in the same shape. These are
+ * the shapes that read from ten metres away: someone folded over a wheel gun,
+ * someone holding a tyre against their chest, someone bent over the jack, and
+ * the engineers sitting along the pit wall.
+ */
+type CrewPose = 'stand' | 'gun' | 'tyre' | 'jack' | 'sit';
+
+const _limbA = new THREE.Vector3();
+const _limbD = new THREE.Vector3();
+const _limbQ = new THREE.Quaternion();
+const _limbUp = new THREE.Vector3(0, 1, 0);
+const _limbM = new THREE.Matrix4();
+const _limbS = new THREE.Vector3(1, 1, 1);
+
+/**
+ * A box stretched between two points.
+ *
+ * The primitive the whole figure is built from, and the reason it can be posed
+ * at all. Axis-aligned boxes can only ever make a snowman: bend a knee and the
+ * thigh has to point somewhere that is not straight down. Given the two ends of
+ * a bone this orients a box along it, so a pose is written as a list of joint
+ * positions and the geometry follows.
+ */
+function limb(
+  bin: PartsBin, colour: number,
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  thick: number, deep = thick,
+): void {
+  _limbA.set(ax, ay, az);
+  _limbD.set(bx - ax, by - ay, bz - az);
+  const len = _limbD.length();
+  if (len < 1e-4) return;
+  _limbD.divideScalar(len);
+  _limbQ.setFromUnitVectors(_limbUp, _limbD);
+  _limbA.addScaledVector(_limbD, len * 0.5);
+  _limbM.compose(_limbA, _limbQ, _limbS);
+  // Slightly longer than the bone, so consecutive segments overlap at the joint
+  // and a bent knee has no gap in it.
+  const g = chamferBox(thick, len * 1.08, deep, 0);
+  bin.addAt(g, colour, _limbM);
+  g.dispose();
+}
+
+/**
  * One pit crew member, built once and merged wherever one is needed.
  *
  * Proportions are the whole job. A figure is read as a person by its
  * *silhouette*: a head roughly one seventh of the height, shoulders wider than
- * the hips, a gap between the legs, and arms that hang away from the body.
- * Any of those wrong and it reads as a bollard, no matter how many triangles
- * are spent on it. This costs about 150.
+ * the hips, a waist narrower than both, a gap between the legs, and limbs that
+ * bend at the joints rather than hanging as slabs. Any of those wrong and it
+ * reads as a bollard, no matter how many triangles are spent on it.
+ *
+ * Costs about 320 triangles — twice what a rigid figure cost, on a scene that
+ * was never triangle-bound. The draw-call count does not change at all, because
+ * every figure merges into the one paddock buffer.
+ *
+ * The figure faces -Z, which is the convention the placements rotate from.
  */
-function crewGeometry(overalls: number, kneeling: boolean): THREE.BufferGeometry {
+function crewGeometry(overalls: number, pose: CrewPose, seed = 0): THREE.BufferGeometry {
   const bin = new PartsBin();
   const dark = 0x23262b;
-  const skin = SKIN[Math.floor(rand(overalls * 0.017 + (kneeling ? 3 : 7)) * SKIN.length) % SKIN.length];
-  const scale = kneeling ? 0.62 : 1;
+  const boot = 0x191b1f;
+  const skin = SKIN[Math.floor(rand(overalls * 0.017 + seed * 3.1 + 7) * SKIN.length) % SKIN.length];
+  // A shade off the team colour, so the overalls are not one flat field and the
+  // torso reads as a garment with panels rather than a painted block.
+  const panel = new THREE.Color(overalls).multiplyScalar(0.72).getHex();
 
-  // Legs, slightly apart.
-  const leg = chamferBox(0.17, 0.86 * scale, 0.2, 0);
-  bin.add(leg, overalls, -0.11, 0.43 * scale, 0);
-  bin.add(leg, overalls, 0.11, 0.43 * scale, 0);
-  leg.dispose();
+  // --- Joint positions -----------------------------------------------------
+  //
+  // Everything below is driven from these. `zLean` shifts the whole upper body
+  // forward, which is what folding over a wheel is.
+  let hipY = 0.92, hipZ = 0, kneeY = 0.50, kneeZ = 0.02, ankleY = 0.09, ankleZ = 0;
+  let hipX = 0.10, kneeX = 0.115, ankleX = 0.12;
+  let chestY = 1.32, shoulderY = 1.46, lean = 0;
+  // Elbow and hand, relative to the shoulder.
+  let elbow: [number, number, number] = [0.04, -0.30, 0.02];
+  let hand: [number, number, number] = [0.06, -0.58, 0.06];
+  let footZ = -0.08;
 
-  // Boots.
-  const boot = chamferBox(0.19, 0.12, 0.3, 0);
-  bin.add(boot, dark, -0.11, 0.06, 0.04);
-  bin.add(boot, dark, 0.11, 0.06, 0.04);
-  boot.dispose();
-
-  // Torso: wider at the shoulders than at the waist, which is most of what
-  // makes the silhouette human.
-  const hips = chamferBox(0.36, 0.26, 0.24, 0.05);
-  bin.add(hips, overalls, 0, 0.86 * scale + 0.12, 0);
-  hips.dispose();
-  const chest = chamferBox(0.44, 0.44, 0.26, 0.05);
-  bin.add(chest, overalls, 0, 0.86 * scale + 0.44, 0);
-  chest.dispose();
-
-  const shoulderY = 0.86 * scale + 0.6;
-  // Arms, hanging slightly out from the body and angled forward.
-  const arm = chamferBox(0.13, 0.56, 0.15, 0);
-  const m = new THREE.Matrix4();
-  for (const s of [-1, 1]) {
-    m.makeRotationZ(s * 0.16);
-    m.setPosition(s * 0.3, shoulderY - 0.32, 0.03);
-    bin.addAt(arm, overalls, m);
+  switch (pose) {
+    case 'gun':
+      // Folded over a wheel gun: hips low, knees driven forward and out, back
+      // near horizontal, both arms straight down and forward to the nut.
+      hipY = 0.66; hipZ = 0.10; hipX = 0.13;
+      kneeY = 0.44; kneeZ = -0.30; kneeX = 0.19;
+      ankleY = 0.09; ankleZ = -0.14; ankleX = 0.18;
+      chestY = 1.00; shoulderY = 1.12; lean = -0.20;
+      elbow = [0.03, -0.26, -0.20];
+      hand = [-0.03, -0.50, -0.44];
+      footZ = -0.24;
+      break;
+    case 'tyre':
+      // Standing square with a tyre held against the chest: arms forward and
+      // bent, hands wide enough apart to be around a 720mm tyre.
+      chestY = 1.34; shoulderY = 1.48;
+      elbow = [0.05, -0.24, -0.16];
+      hand = [0.00, -0.40, -0.42];
+      break;
+    case 'jack':
+      // Bent at the waist over the jack handle, knees soft.
+      hipY = 0.86; kneeY = 0.47; kneeZ = -0.08;
+      chestY = 1.20; shoulderY = 1.32; lean = -0.26;
+      elbow = [0.02, -0.26, -0.16];
+      hand = [-0.01, -0.46, -0.40];
+      break;
+    case 'sit':
+      // On the pit wall stand: thighs forward and level, shins down, forearms
+      // out to a desk. The origin is the deck they are sitting on.
+      hipY = 0.46; hipZ = 0.06; hipX = 0.11;
+      kneeY = 0.44; kneeZ = -0.40; kneeX = 0.13;
+      ankleY = 0.05; ankleZ = -0.42; ankleX = 0.13;
+      chestY = 0.86; shoulderY = 1.00; lean = -0.04;
+      elbow = [0.05, -0.24, -0.10];
+      hand = [0.00, -0.31, -0.36];
+      footZ = -0.52;
+      break;
+    default:
+      break;
   }
-  arm.dispose();
-  const glove = chamferBox(0.12, 0.14, 0.14, 0);
-  bin.add(glove, dark, -0.34, shoulderY - 0.64, 0.05);
-  bin.add(glove, dark, 0.34, shoulderY - 0.64, 0.05);
-  glove.dispose();
 
-  // Neck and head. An icosahedron is 20 triangles and reads as a head far
-  // better than a box does, because it has no edge running down the face.
-  const neck = chamferBox(0.13, 0.08, 0.13, 0);
-  bin.add(neck, skin, 0, shoulderY + 0.06, 0);
-  neck.dispose();
-  const head = new THREE.IcosahedronGeometry(0.115, 0);
-  head.deleteAttribute('uv');
-  head.scale(0.95, 1.15, 1.0);
-  head.translate(0, shoulderY + 0.2, 0);
-  bin.addRaw(head, skin);
-  // Cap or helmet, in team colour.
-  const cap = chamferBox(0.23, 0.075, 0.24, 0);
-  bin.add(cap, overalls, 0, shoulderY + 0.3, 0.01);
+  const chestZ = hipZ + lean;
+  const shoulderZ = hipZ + lean * 1.25;
+
+  // --- Legs ----------------------------------------------------------------
+  for (const s of [-1, 1]) {
+    limb(bin, overalls, s * hipX, hipY, hipZ, s * kneeX, kneeY, kneeZ, 0.155, 0.185);
+    limb(bin, overalls, s * kneeX, kneeY, kneeZ, s * ankleX, ankleY, ankleZ, 0.135, 0.16);
+  }
+  const shoe = chamferBox(0.155, 0.09, 0.30, 0);
+  for (const s of [-1, 1]) bin.add(shoe, boot, s * ankleX, ankleY - 0.03, ankleZ + footZ);
+  shoe.dispose();
+
+  // --- Torso ---------------------------------------------------------------
+  // Pelvis, waist and chest as three boxes of different widths. A single box is
+  // a barrel; three is a person, because the taper is the silhouette.
+  const pelvis = chamferBox(0.34, 0.20, 0.24, 0.04);
+  bin.add(pelvis, overalls, 0, hipY + 0.06, hipZ);
+  pelvis.dispose();
+  limb(bin, overalls, 0, hipY + 0.04, hipZ, 0, chestY - 0.10, chestZ, 0.32, 0.23);
+  const chest = chamferBox(0.44, 0.30, 0.27, 0.05);
+  bin.add(chest, overalls, 0, chestY + 0.06, chestZ);
+  chest.dispose();
+  // The bib panel every set of racing overalls has across the chest.
+  const bib = chamferBox(0.30, 0.17, 0.02, 0);
+  bin.add(bib, panel, 0, chestY + 0.08, chestZ - 0.14);
+  bib.dispose();
+
+  // --- Arms ----------------------------------------------------------------
+  const shX = 0.22;
+  for (const s of [-1, 1]) {
+    const ex = s * (shX + elbow[0]), ey = shoulderY + elbow[1], ez = shoulderZ + elbow[2];
+    const hx = s * (shX + hand[0]), hy = shoulderY + hand[1], hz = shoulderZ + hand[2];
+    limb(bin, overalls, s * shX, shoulderY - 0.02, shoulderZ, ex, ey, ez, 0.125, 0.135);
+    limb(bin, overalls, ex, ey, ez, hx, hy, hz, 0.105, 0.115);
+    const glove = chamferBox(0.11, 0.13, 0.12, 0);
+    bin.add(glove, dark, hx, hy - 0.06, hz - 0.02);
+    glove.dispose();
+  }
+  // Shoulder caps, so the arm does not appear to start inside the chest.
+  const cap = chamferBox(0.14, 0.15, 0.2, 0.04);
+  for (const s of [-1, 1]) bin.add(cap, overalls, s * shX, shoulderY - 0.01, shoulderZ);
   cap.dispose();
-  // A peak, so the head has a front.
-  const peak = chamferBox(0.2, 0.04, 0.1, 0);
-  bin.add(peak, overalls, 0, shoulderY + 0.28, -0.15);
-  peak.dispose();
+
+  // --- Head ----------------------------------------------------------------
+  const headY = shoulderY + 0.19 + (lean < -0.1 ? 0.02 : 0);
+  const headZ = shoulderZ + lean * 0.5;
+  const neck = chamferBox(0.115, 0.09, 0.115, 0);
+  bin.add(neck, skin, 0, shoulderY + 0.06, shoulderZ);
+  neck.dispose();
+  const head = new THREE.IcosahedronGeometry(0.108, 0);
+  head.deleteAttribute('uv');
+  head.scale(0.94, 1.12, 1.0);
+  head.translate(0, headY, headZ);
+  bin.addRaw(head, skin);
+
+  if (pose === 'sit') {
+    // Engineers wear a cap and a headset, not a crash helmet. The headset is
+    // three small boxes and it is the single detail that says "engineer".
+    const cap2 = chamferBox(0.225, 0.07, 0.235, 0);
+    bin.add(cap2, overalls, 0, headY + 0.10, headZ);
+    cap2.dispose();
+    const peak = chamferBox(0.2, 0.035, 0.11, 0);
+    bin.add(peak, overalls, 0, headY + 0.085, headZ - 0.15);
+    peak.dispose();
+    const band = chamferBox(0.24, 0.03, 0.03, 0);
+    bin.add(band, dark, 0, headY + 0.14, headZ + 0.01);
+    band.dispose();
+    const cup = chamferBox(0.045, 0.10, 0.09, 0);
+    for (const s of [-1, 1]) bin.add(cup, dark, s * 0.115, headY + 0.02, headZ);
+    cup.dispose();
+  } else {
+    // A full-face helmet: a shell a size larger than the head, with a dark
+    // visor band across the front. Everyone over the wall wears one, and the
+    // smooth dome against the boxy shoulders is a strong readable shape.
+    const shell = new THREE.IcosahedronGeometry(0.142, 1);
+    shell.deleteAttribute('uv');
+    shell.scale(1.0, 1.04, 1.03);
+    shell.translate(0, headY + 0.025, headZ + 0.005);
+    bin.addRaw(shell, overalls);
+    const visor = chamferBox(0.2, 0.075, 0.12, 0.02);
+    bin.add(visor, 0x14171c, 0, headY + 0.02, headZ - 0.10);
+    visor.dispose();
+  }
+
+  // --- What they are holding ----------------------------------------------
+  const handY = shoulderY + hand[1];
+  const handZ = shoulderZ + hand[2];
+  if (pose === 'gun') {
+    // A wheel gun: body, barrel and the socket on the nut.
+    const body = chamferBox(0.16, 0.16, 0.3, 0.03);
+    bin.add(body, 0xd8dade, 0, handY - 0.06, handZ - 0.06);
+    body.dispose();
+    const barrel = chamferCylinder(0.05, 0.34, 8, 0.02);
+    const bm = new THREE.Matrix4().makeRotationX(Math.PI / 2).setPosition(0, handY - 0.10, handZ - 0.28);
+    bin.addAt(barrel, 0x8d939b, bm);
+    barrel.dispose();
+  } else if (pose === 'tyre') {
+    // A tyre held against the chest, axis pointing away from the figure.
+    const tyre = chamferCylinder(0.36, 0.30, 10, 0.05);
+    const tm = new THREE.Matrix4().makeRotationX(Math.PI / 2).setPosition(0, handY + 0.14, handZ - 0.08);
+    bin.addAt(tyre, RUBBER, tm);
+    tyre.dispose();
+    const rim = chamferCylinder(0.19, 0.32, 8, 0.02);
+    const rm = new THREE.Matrix4().makeRotationX(Math.PI / 2).setPosition(0, handY + 0.14, handZ - 0.08);
+    bin.addAt(rim, 0x9aa2ac, rm);
+    rim.dispose();
+  } else if (pose === 'jack') {
+    // The jack handle, running away under the car.
+    const handle = chamferBox(0.07, 0.07, 1.5, 0);
+    bin.add(handle, 0xd8dade, 0, handY - 0.06, handZ - 0.72);
+    handle.dispose();
+  }
 
   return bin.merge() ?? chamferBox(0.4, 1.7, 0.3, 0.05);
 }
@@ -478,23 +647,35 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     gun.dispose();
 
     // --- Crew ---------------------------------------------------------------
-    // Standing at the box, mostly facing out into the lane, the way a crew
-    // waits: two by the trolley, a couple at the wall, one kneeling over a
-    // wheel.
-    // The two pit boxes are at x = ±5.5 and a car is 5m long, so the crew
-    // stand at the ends of the bay and in the gap between the two cars.
-    const spots: [number, number, boolean][] = [
-      [-10.4, -2.3, false], [-8.6, -0.7, true], [0.2, -1.9, false],
-      [8.7, -0.9, true], [10.3, -2.4, false],
+    //
+    // A crew waiting at the box, mid-task. The mix of poses matters more than
+    // the count: five people all standing in the same attitude reads as a shop
+    // window, while two crouched over guns, one shouldering a tyre and two on
+    // their feet reads as a team about to work.
+    //
+    // The two pit boxes are at x = ±5.5 with a car in each, so everyone stands
+    // at the ends of the bay or in the gap between the two cars. `heading` is
+    // measured from facing out into the lane; a crouched gunner is turned side
+    // on, because that is how you stand to a wheel.
+    const spots: [number, number, CrewPose, number][] = [
+      [-10.4, -2.3, 'stand', 0.2],
+      [-8.4, -0.9, 'gun', -1.5],
+      [-2.6, -2.6, 'tyre', 0.1],
+      [0.4, -1.5, 'jack', 0.0],
+      [8.5, -1.0, 'gun', 1.5],
+      [10.3, -2.4, 'stand', -0.3],
+      [3.0, -2.7, 'tyre', -0.2],
     ];
-    const crewN = low ? 3 : spots.length;
+    const crewN = low ? 4 : spots.length;
     for (let c = 0; c < crewN; c++) {
-      const [sx, sz, kneel] = spots[c];
+      const [sx, sz, pose, heading] = spots[c];
       const r1 = rand(k * 31.7 + c * 5.3);
-      const fig = crewGeometry(team.colour, kneel);
+      const fig = crewGeometry(team.colour, pose, k * 7 + c);
       const fm = new THREE.Matrix4()
-        .makeRotationY(Math.PI + (r1 - 0.5) * 1.6)
-        .setPosition(sx + (r1 - 0.5) * 0.8, 0.1, sz);
+        // The figure is modelled facing -Z; the bay's lane side is +Z, so the
+        // half turn is what puts a crew member's face toward the pit lane.
+        .makeRotationY(Math.PI + heading + (r1 - 0.5) * 0.5)
+        .setPosition(sx + (r1 - 0.5) * 0.6, 0.1, sz);
       const placed = fig.clone().applyMatrix4(fm);
       fig.dispose();
       bay.addPrepared(placed);
@@ -525,18 +706,22 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     bayGlass.add(standScreen, 0x0d2430, -1.5, PIT_WALL_HEIGHT_M + 2.25, wallZ + 0.45);
     standScreen.dispose();
 
-    // Engineers on the stand, and one crew member out at the wall.
+    // Engineers sitting along the stand facing the track, and one crew member
+    // out at the wall. Seated is not a detail: a row of standing figures on a
+    // gantry reads as spectators, and the whole point of a pit wall stand is
+    // that the people on it are sitting at a bank of screens.
     if (!low) {
       for (let e = 0; e < 3; e++) {
-        const fig = crewGeometry(team.colour, false);
+        const fig = crewGeometry(team.colour, 'sit', k * 3 + e);
         const fm = new THREE.Matrix4()
           .makeRotationY(Math.PI)
-          .setPosition(-3.6 + e * 1.8, PIT_WALL_HEIGHT_M + 1.62, wallZ + 1.9);
+          // The deck's top face, so the seated figure's hips land on it.
+          .setPosition(-3.6 + e * 1.8, PIT_WALL_HEIGHT_M + 1.62, wallZ + 2.0);
         const placed = fig.clone().applyMatrix4(fm);
         fig.dispose();
         bay.addPrepared(placed);
       }
-      const fig = crewGeometry(team.colour, false);
+      const fig = crewGeometry(team.colour, 'stand', k * 5 + 2);
       const fm = new THREE.Matrix4().makeRotationY(0.4).setPosition(4.0, 0.1, wallZ + 1.4);
       const placed = fig.clone().applyMatrix4(fm);
       fig.dispose();

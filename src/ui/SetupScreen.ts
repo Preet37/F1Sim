@@ -11,10 +11,15 @@ import type { TrackDefinition } from '../data/tracks/TrackDefinition';
  * Every control here writes into a `CarSetup`, which `applySetup` turns into the
  * actual `VehicleSpec` the physics integrates. There is no cosmetic slider on
  * this screen and no hidden "setup rating" — move the wing and the drag
- * coefficient changes, and the estimated top speed at the bottom of the page
- * changes with it, because both are computed from the same spec the car will be
- * built from. That is why the derived readout is here: it is the proof the
- * setup reached the car.
+ * coefficient changes, and the estimated top speed in the bar pinned to the top
+ * of the page changes with it, because both are computed from the same spec the
+ * car will be built from. That is why the derived readout is here, and why it
+ * is pinned: it is the proof the setup reached the car, and proof you have to
+ * scroll to find is proof nobody sees.
+ *
+ * Every control on the sheet moves at least one number in that bar. That is a
+ * design constraint, not a coincidence — a slider whose effect the receipt
+ * cannot show is a slider the player has no way to reason about.
  *
  * Each parameter carries its trade-off in one line, because a setup screen
  * without them is a screen of numbers nobody can act on. The trade-offs are not
@@ -120,8 +125,32 @@ function peakPowerW(spec: VehicleSpec): number {
  * force is power over speed: cd*v^2 = P*eff/v, so v = cbrt(P*eff/cd). Rolling
  * resistance shaves a little off, which the 0.96 accounts for.
  */
-function topSpeedMs(spec: VehicleSpec): number {
+function dragLimitedMs(spec: VehicleSpec): number {
   return Math.cbrt((peakPowerW(spec) * spec.driveEfficiency) / spec.cdBase) * 0.96;
+}
+
+/** Road speed at the limiter in top gear, km/h. */
+function topGearSpeedKph(spec: VehicleSpec): number {
+  const ratio = spec.gearRatios[spec.gearRatios.length - 1];
+  return ((spec.redlineRpm / 9.5493 / ratio) * spec.tireRadiusM * 3.6);
+}
+
+/**
+ * The top speed the car will actually see, m/s.
+ *
+ * Whichever runs out first: the drag the wing is making, or the limiter in top
+ * gear. Quoting only the drag limit was why the gearing slider appeared to do
+ * nothing to the headline number — gear a car short enough and it hits the rev
+ * limiter long before it runs out of power, which is exactly the mistake the
+ * slider exists to let you make.
+ */
+function topSpeedMs(spec: VehicleSpec): number {
+  return Math.min(dragLimitedMs(spec), topGearSpeedKph(spec) / 3.6);
+}
+
+/** Which limit is binding, for the caption under the top-speed number. */
+function topSpeedLimiter(spec: VehicleSpec): string {
+  return dragLimitedMs(spec) <= topGearSpeedKph(spec) / 3.6 ? 'drag limited' : 'on the limiter';
 }
 
 /** Steady-state lateral g at a given speed, from downforce and weight. */
@@ -130,10 +159,80 @@ function lateralG(spec: VehicleSpec, speedMs: number, massKg: number): number {
   return (spec.baseMu * load) / (massKg * 9.81);
 }
 
-/** Road speed at the limiter in top gear, km/h. */
-function topGearSpeedKph(spec: VehicleSpec): number {
-  const ratio = spec.gearRatios[spec.gearRatios.length - 1];
-  return ((spec.redlineRpm / 9.5493 / ratio) * spec.tireRadiusM * 3.6);
+/**
+ * Braking limit and the axle that gives up first, at a reference speed.
+ *
+ * This is the cell that makes the brake bias slider mean something. An axle
+ * locks when the braking force asked of it exceeds the grip its load can
+ * supply, and both sides of that move: the bias decides the share of force each
+ * axle is asked for, while weight transfer under braking loads the front and
+ * unloads the rear, and downforce adds load to both in the aero split.
+ *
+ * Front locks when     bias*m*a = mu*(Wf + aeroF*DF + m*a*h/L)
+ * Rear locks when  (1-bias)*m*a = mu*(Wr + (1-aeroF)*DF - m*a*h/L)
+ *
+ * Solve each for the deceleration `a` at which it happens; the smaller one is
+ * the limit, and its axle is the one that locks. Bias the brakes far enough
+ * forward and the front term goes negative — the front can never out-grip the
+ * force it is given, which is the front-lock understeer every driver knows.
+ */
+function brakingLimit(spec: VehicleSpec, speedMs: number, massKg: number): { g: number; axle: string } {
+  const g = 9.81;
+  const L = spec.wheelbaseM;
+  const h = spec.cogHeightM;
+  const df = spec.clBase * speedMs * speedMs;
+  // cogToFrontM is the distance from the CoG to the front axle, so the front
+  // carries the fraction of static weight that sits behind it.
+  const frontStatic = (L - spec.cogToFrontM) / L;
+  const wf = frontStatic * massKg * g + spec.aeroBalanceFront * df;
+  const wr = (1 - frontStatic) * massKg * g + (1 - spec.aeroBalanceFront) * df;
+  const b = spec.brakeBalanceFront;
+  const mu = spec.baseMu;
+
+  const frontDen = b * massKg - mu * massKg * h / L;
+  const aFront = frontDen > 1e-6 ? (mu * wf) / frontDen : Infinity;
+  const aRear = (mu * wr) / ((1 - b) * massKg + mu * massKg * h / L);
+
+  // Report the grip limit, not the smaller of that and what the calipers can
+  // physically apply. Clamping to the pedal would flatten the readout across
+  // most of the bias range and put the slider straight back where it started —
+  // apparently doing nothing. The pedal ceiling is worth saying, so it goes in
+  // the caption instead.
+  const limit = Math.min(aFront, aRear);
+  const aPad = spec.maxBrakeForceN / massKg;
+  const axle =
+    aPad < limit ? 'pedal runs out at ' + (aPad / g).toFixed(2) + 'g'
+    : aFront < aRear ? 'fronts lock first' : 'rears lock first';
+  return { g: limit / g, axle };
+}
+
+/**
+ * Handling balance: how much of the cornering work each axle can do, against
+ * how much it is asked to do.
+ *
+ * Two things decide it and this combines both, because on a real car they trade
+ * against each other. The aero term is the front axle's share of total vertical
+ * load measured against the 45% share of lateral force a bicycle model demands
+ * of it. The mechanical term is the ratio of the axles' cornering stiffnesses,
+ * which is what the anti-roll bars and the differential move.
+ *
+ * Positive is a car that rotates, negative is a car that pushes.
+ */
+function balanceIndex(spec: VehicleSpec, speedMs: number, massKg: number): number {
+  const df = spec.clBase * speedMs * speedMs;
+  const weight = massKg * 9.81;
+  const frontCapacity = (spec.aeroBalanceFront * df + 0.45 * weight) / (df + weight);
+  const aeroTerm = frontCapacity / 0.45 - 1;
+  const mechTerm = spec.corneringStiffnessFront / spec.corneringStiffnessRear - 1;
+  return (aeroTerm * 0.6 + mechTerm * 0.4) * 100;
+}
+
+function balanceWord(idx: number): string {
+  if (idx > 2.5) return 'loose · rotates';
+  if (idx > 0.7) return 'pointy';
+  if (idx < -2.5) return 'strong understeer';
+  if (idx < -0.7) return 'stable · pushes';
+  return 'neutral';
 }
 
 /**
@@ -181,6 +280,93 @@ export function buildSetupScreen(parent: HTMLElement, opts: SetupScreenOptions):
     for (const fn of refresh) fn();
     opts.onChange(setup, compound);
   };
+
+  // --- Derived readout -----------------------------------------------------
+  //
+  // This is the receipt, and it is built FIRST and pinned to the top of the
+  // scroller on purpose. It used to live at the bottom of the page, below six
+  // sliders and three tyre cards — about 690px down a 945px document. Every
+  // number in it did update, but on any real screen you could not see it while
+  // your hand was on a slider, so the honest player experience was moving a
+  // control and watching nothing happen. A readout you have to scroll away from
+  // the control to read is a readout that does not exist.
+  //
+  // Every number is computed from the spec `applySetup` produced, so if the
+  // setup did not reach the car these would not move.
+  const receipt = el('div', 'setup-receipt', parent);
+  const rhead = el('div', 'setup-receipt-head', receipt);
+  el('span', '', rhead, 'What this setup gives you');
+  el('span', 'setup-receipt-live', rhead, 'updates as you move a control');
+  const derived = el('div', 'setup-derived', receipt);
+
+  /**
+   * One readout cell. It remembers what it last showed so a value that actually
+   * moved can flash — with eight numbers on screen, a silent re-render of two
+   * of them is easy to miss.
+   */
+  const cell = (label: string, read: () => [string, string, string]) => {
+    const d = el('div', 'setup-derived-cell', derived);
+    el('div', 'setup-derived-label', d, label);
+    const value = el('div', 'setup-derived-value', d);
+    const delta = el('div', 'setup-derived-delta', d);
+    let last = '';
+    refresh.push(() => {
+      const [v, dText, dClass] = read();
+      if (v !== last) {
+        if (last !== '') {
+          d.classList.remove('bump');
+          // Forcing layout restarts the animation; without it a second change
+          // inside the animation's own duration would not replay it.
+          void d.offsetWidth;
+          d.classList.add('bump');
+        }
+        last = v;
+      }
+      value.textContent = v;
+      delta.textContent = dText;
+      delta.className = 'setup-derived-delta ' + dClass;
+    });
+  };
+
+  const live = () => applySetup(teamSpec, setup);
+
+  cell('Top speed', () => {
+    const spec = live();
+    const v = topSpeedMs(spec) * 3.6;
+    const [t, c] = fmtDelta(v, topSpeedMs(refSpec) * 3.6, ' km/h', 'up');
+    return [v.toFixed(0) + ' km/h', topSpeedLimiter(spec) + ' · ' + t, c];
+  });
+  cell('Cornering at 250', () => {
+    const g = lateralG(live(), 250 / 3.6, mass);
+    const [t, c] = fmtDelta(g, lateralG(refSpec, 250 / 3.6, mass), 'g', 'up');
+    return [g.toFixed(2) + ' g', t, c];
+  });
+  cell('Braking limit', () => {
+    const b = brakingLimit(live(), 250 / 3.6, mass);
+    const [, c] = fmtDelta(b.g, brakingLimit(refSpec, 250 / 3.6, mass).g, 'g', 'up');
+    return [b.g.toFixed(2) + ' g', b.axle, c];
+  });
+  cell('Balance', () => {
+    const i = balanceIndex(live(), 200 / 3.6, mass);
+    return [(i > 0 ? '+' : '') + i.toFixed(1), balanceWord(i), 'flat'];
+  });
+  cell('Downforce coeff.', () => {
+    const [t, c] = fmtDelta(live().clBase, refSpec.clBase, '', 'up');
+    return [live().clBase.toFixed(2), t, c];
+  });
+  cell('Drag coeff.', () => {
+    const [t, c] = fmtDelta(live().cdBase, refSpec.cdBase, '', 'down');
+    return [live().cdBase.toFixed(3), t, c];
+  });
+  cell('Limiter in 8th', () => {
+    const v = topGearSpeedKph(live());
+    const [t, c] = fmtDelta(v, topGearSpeedKph(refSpec), ' km/h', 'up');
+    return [v.toFixed(0) + ' km/h', t, c];
+  });
+  cell('Tyre', () => {
+    const c = getCompound(compound);
+    return [c.name, 'grip x' + c.peakGrip.toFixed(2) + ' · wear x' + c.wearRate.toFixed(2), 'flat'];
+  });
 
   // --- Sliders -------------------------------------------------------------
   el('div', 'section-title', parent, 'Chassis and aero');
@@ -265,51 +451,13 @@ export function buildSetupScreen(parent: HTMLElement, opts: SetupScreenOptions):
     refresh.push(() => card.classList.toggle('selected', compound === id));
   }
 
-  // --- Derived readout -----------------------------------------------------
-  //
-  // This is the receipt. Every number is computed from the spec `applySetup`
-  // produced, so if the setup did not reach the car these would not move.
-  el('div', 'section-title', parent, 'What this setup gives you');
-  const derived = el('div', 'setup-derived', parent);
-
-  const cell = (label: string, read: () => [string, [string, string] | null]) => {
-    const d = el('div', 'setup-derived-cell', derived);
-    el('div', 'setup-derived-label', d, label);
-    const value = el('div', 'setup-derived-value', d);
-    const delta = el('div', 'setup-derived-delta', d);
-    refresh.push(() => {
-      const [v, dd] = read();
-      value.textContent = v;
-      delta.textContent = dd ? dd[0] : '';
-      delta.className = 'setup-derived-delta ' + (dd ? dd[1] : 'flat');
-    });
-  };
-
-  const live = () => applySetup(teamSpec, setup);
-
-  cell('Top speed', () => {
-    const v = topSpeedMs(live()) * 3.6;
-    return [v.toFixed(0) + ' km/h', fmtDelta(v, topSpeedMs(refSpec) * 3.6, ' km/h', 'up')];
-  });
-  cell('Cornering at 250', () => {
-    const g = lateralG(live(), 250 / 3.6, mass);
-    return [g.toFixed(2) + ' g', fmtDelta(g, lateralG(refSpec, 250 / 3.6, mass), 'g', 'up')];
-  });
-  cell('Downforce coeff.', () =>
-    [live().clBase.toFixed(2), fmtDelta(live().clBase, refSpec.clBase, '', 'up')]);
-  cell('Drag coeff.', () =>
-    [live().cdBase.toFixed(3), fmtDelta(live().cdBase, refSpec.cdBase, '', 'down')]);
-  cell('Aero balance', () => [(live().aeroBalanceFront * 100).toFixed(1) + '% front', null]);
-  cell('8th gear', () => [topGearSpeedKph(live()).toFixed(0) + ' km/h', null]);
-  cell('Front cornering', () => [live().corneringStiffnessFront.toFixed(2) + ' /rad', null]);
-  cell('Rear cornering', () => [live().corneringStiffnessRear.toFixed(2) + ' /rad', null]);
-
   const advice = el('div', 'setup-trade', parent);
   advice.style.marginTop = '10px';
   advice.textContent =
     opts.track.name + ' wants about ' + (opts.track.downforceDemand * 100).toFixed(0) +
-    '% wing — that is what the engineers set as the baseline every delta above is measured from. ' +
-    'Going lower buys straight-line speed and costs you in the corners; going higher does the reverse.';
+    '% wing — that is what the engineers set as the baseline every delta in the bar at the top of ' +
+    'this page is measured against. Going lower buys straight-line speed and costs you in the ' +
+    'corners; going higher does the reverse.';
 
   // Paint every readout once, so the page is correct before anything is touched.
   for (const fn of refresh) fn();
@@ -318,4 +466,38 @@ export function buildSetupScreen(parent: HTMLElement, opts: SetupScreenOptions):
 /** The setup the engineers would hand you for a circuit. */
 export function defaultSetupFor(track: TrackDefinition, fuelL = 100): CarSetup {
   return baselineSetupFor(track.downforceDemand, fuelL);
+}
+
+/**
+ * A one-line description of what a setup does to the car, for the garage card
+ * on the session-select and career screens.
+ *
+ * It runs the same `applySetup` the sheet and the car do, so the numbers a
+ * player sees before they ever open the setup page are the numbers they will
+ * drive. That is the whole point of putting it on the way in: the setup stops
+ * being a menu you might find and becomes a visible property of your car.
+ */
+export function setupSummary(
+  team: Team,
+  track: TrackDefinition,
+  setup: CarSetup,
+  compound: CompoundId,
+): { headline: string; detail: string; modified: boolean } {
+  const spec = applySetup(specForTeam(team.performance), setup);
+  const base = baselineSetupFor(track.downforceDemand, setup.fuelLoadL);
+  const mass = spec.dryMassKg + setup.fuelLoadL * spec.fuelDensity;
+  const modified = (Object.keys(base) as (keyof CarSetup)[])
+    .some((k) => Math.abs(setup[k] - base[k]) > 1e-6);
+
+  return {
+    headline:
+      (setup.downforceLevel * 100).toFixed(0) + '% wing · ' +
+      (topSpeedMs(spec) * 3.6).toFixed(0) + ' km/h · ' +
+      lateralG(spec, 250 / 3.6, mass).toFixed(2) + 'g at 250',
+    detail:
+      getCompound(compound).name + ' tyres · brakes ' + (setup.brakeBias * 100).toFixed(0) +
+      '% front (' + brakingLimit(spec, 250 / 3.6, mass).axle + ') · ' +
+      balanceWord(balanceIndex(spec, 200 / 3.6, mass)),
+    modified,
+  };
 }

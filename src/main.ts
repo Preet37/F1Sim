@@ -8,13 +8,14 @@ import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDirector';
+import { setRubberLine } from './render/SurfaceDetail';
 import { InputController } from './input/InputController';
 import { Hud } from './ui/Hud';
 import { CareerEngine, TIER_INFO, type CareerEvent, type SeasonResult } from './career/CareerEngine';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock } from './ui/Paddock';
-import { buildSetupScreen, defaultSetupFor } from './ui/SetupScreen';
+import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
 import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
 import type { CompoundId } from './data/tires';
 import { PRACTICE_SEGMENTS, QUALIFYING_SEGMENTS } from './race/WeekendFormat';
@@ -404,9 +405,10 @@ class Game {
       (circuit.lengthM / 1000).toFixed(3) + ' km · ' + circuit.raceLaps + ' laps · ' +
       circuit.corners?.length + ' named corners');
 
+    this.garageCard(inner, circuit.id, () => this.showCareerHub());
+
     const row = this.el('div', 'btn-row', inner);
     this.button('Race Weekend', row, () => this.startWeekend(circuit.id));
-    this.button('Car Setup', row, () => this.showSetup(circuit.id, () => this.showCareerHub()), 'btn secondary');
     this.button('Practice Only', row, () => {
       this.weekend = [this.sessionConfig('practice', 'Practice', circuit.id, 600, 0)];
       this.weekendIndex = 0;
@@ -467,6 +469,11 @@ class Game {
     this.el('div', 'title', inner, circuit.name);
     this.el('div', 'subtitle', inner, circuit.officialName + ' · ' + circuit.city);
 
+    // The garage before the session, because the setup is a decision you make
+    // about the car and then go and drive — not an afterthought at the bottom
+    // of the page.
+    this.garageCard(inner, circuit.id, () => this.showSessionSelect(quick));
+
     this.el('div', 'section-title', inner, 'Session');
     const grid = this.el('div', 'card-grid', inner);
 
@@ -508,14 +515,64 @@ class Game {
     }
 
     const row = this.el('div', 'btn-row', inner);
-    this.button('Car Setup', row, () => this.showSetup(circuit.id, () => this.showSessionSelect(quick)),
-      'btn secondary');
     this.button('Back', row, () => (this.career ? this.showCareerHub() : this.showMenu()), 'btn secondary');
   }
 
   /** The team whose car the player is driving. */
   private playerTeam(): Team {
     return getTeam(this.career ? this.career.state.teamId : DRIVERS[0].teamId);
+  }
+
+  /**
+   * The player's setup for a circuit, creating the engineers' baseline if there
+   * is not one yet.
+   *
+   * A setup carried over from a different circuit is not a choice, it is a
+   * leftover, so moving circuits starts again from that circuit's baseline. A
+   * Monaco wing level at Monza is not something anyone meant to select.
+   */
+  private ensureSetup(circuitId: string): CarSetup {
+    if (!this.playerSetup || this.playerSetupCircuitId !== circuitId) {
+      this.playerSetup = defaultSetupFor(getCircuit(circuitId));
+      this.playerSetupCircuitId = circuitId;
+    }
+    return this.playerSetup;
+  }
+
+  /**
+   * The garage banner: what the car is currently set up to do, and the way in
+   * to change it.
+   *
+   * This exists because the setup sheet was previously a secondary button in a
+   * row at the very bottom of the session screen, below the whole circuit list
+   * — off the bottom of a laptop screen, and something you had to go looking
+   * for. A player who never found it never knew the car had a setup at all.
+   *
+   * Putting the resulting numbers on the way in fixes both halves of that: the
+   * page is now unmissable, and the setup stops being a menu and becomes a
+   * stated property of the car you are about to drive. The numbers come from
+   * the same `applySetup` the physics runs, so this card is the first place the
+   * chain from slider to car is visible.
+   */
+  private garageCard(parent: HTMLElement, circuitId: string, back: () => void): void {
+    const circuit = getCircuit(circuitId);
+    const setup = this.ensureSetup(circuitId);
+    const compound = this.playerCompound ?? 'medium';
+    const s = setupSummary(this.playerTeam(), circuit, setup, compound);
+
+    this.el('div', 'section-title', parent, 'Your car');
+    const card = this.el('div', 'garage-card', parent);
+
+    const text = this.el('div', 'garage-text', card);
+    const head = this.el('div', 'garage-head', text);
+    this.el('span', '', head, this.playerTeam().name + ' · ' + circuit.name);
+    this.el('span', 'garage-tag' + (s.modified ? ' modified' : ''), head,
+      s.modified ? 'your setup' : 'engineers’ baseline');
+    this.el('div', 'garage-headline', text, s.headline);
+    this.el('div', 'garage-detail', text, s.detail);
+
+    this.button('Car Setup', this.el('div', 'garage-action', card),
+      () => this.showSetup(circuitId, back));
   }
 
   /**
@@ -528,13 +585,7 @@ class Game {
    */
   private showSetup(circuitId: string, back: () => void): void {
     const circuit = getCircuit(circuitId);
-
-    // A setup carried over from a different circuit is not a choice, it is a
-    // leftover. Start again from the engineers' baseline for this track.
-    if (!this.playerSetup || this.playerSetupCircuitId !== circuitId) {
-      this.playerSetup = defaultSetupFor(circuit);
-      this.playerSetupCircuitId = circuitId;
-    }
+    const setup = this.ensureSetup(circuitId);
 
     this.setScreen('setup');
     this.screenRoot.innerHTML = '';
@@ -545,7 +596,7 @@ class Game {
       ' — every slider changes a number the physics integrates, not a rating');
 
     buildSetupScreen(inner, {
-      setup: this.playerSetup,
+      setup,
       compound: this.playerCompound ?? 'medium',
       team: this.playerTeam(),
       track: circuit,
@@ -855,6 +906,10 @@ class Game {
 
       this.engine = new RaceEngine(def, config, field);
       this.applyPlayerSetup(this.engine);
+      // The rubbered-in racing line, rasterised from this circuit's spline into
+      // the shared surface map. Done before the track mesh is built so the
+      // asphalt has it the first frame it is drawn.
+      setRubberLine(this.engine.track);
       this.renderer.loadSession(this.engine);
     this.renderer.setRacingLineVisible(this.settings.racingLine);
       this.audio.configureForTrack(def.scenery, this.engine.weather.wetness);

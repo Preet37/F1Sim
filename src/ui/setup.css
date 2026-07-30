@@ -121,37 +121,174 @@
   margin-top: 5px;
 }
 
-/* Derived readout --------------------------------------------------------- */
+/* Derived readout ---------------------------------------------------------
+ *
+ * Pinned to the top of the scroller. This bar used to sit at the bottom of the
+ * page, under six sliders and the tyre cards, roughly 690px into a 945px
+ * document: on a laptop it was two pixels below the fold and on a phone it was
+ * a thousand. Its numbers updated the whole time, but the only way to see one
+ * change was to drag a slider, scroll down, and remember what it said before.
+ * Sticky is the entire fix — the receipt has to be in the same glance as the
+ * control, or the control feels dead.
+ */
+
+.setup-receipt {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -6px 4px;
+  padding: 9px 6px 10px;
+  background: linear-gradient(180deg, rgba(10, 14, 22, 0.97) 0%, rgba(10, 14, 22, 0.97) 82%, rgba(10, 14, 22, 0) 100%);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+}
+
+.setup-receipt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--hud-dim);
+  margin-bottom: 8px;
+}
+.setup-receipt-live {
+  letter-spacing: 0.08em;
+  text-transform: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  opacity: 0.85;
+}
 
 .setup-derived {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 7px;
 }
 
 .setup-derived-cell {
   background: rgba(53, 208, 224, 0.08);
   border: 1px solid rgba(53, 208, 224, 0.22);
   border-radius: 8px;
-  padding: 9px 11px;
+  padding: 7px 9px 8px;
+  min-width: 0;
 }
 .setup-derived-label {
-  font-size: 9px;
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--hud-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.setup-derived-value {
+  font-size: 17px;
+  font-weight: 800;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.setup-derived-delta {
+  font-size: 9.5px;
+  font-weight: 700;
+  margin-top: 2px;
+  line-height: 1.25;
+}
+.setup-derived-delta.gain { color: var(--good); }
+.setup-derived-delta.cost { color: var(--warn); }
+.setup-derived-delta.flat { color: var(--hud-dim); }
+
+/* A cell whose number actually moved flashes. With eight readouts on screen,
+   two of them quietly changing by a decimal place is easy to miss — and
+   "nothing seemed to happen" is precisely the complaint this screen had. */
+@keyframes setup-bump {
+  0%   { background: rgba(53, 208, 224, 0.42); border-color: var(--accent); transform: translateY(-1px); }
+  100% { background: rgba(53, 208, 224, 0.08); border-color: rgba(53, 208, 224, 0.22); transform: none; }
+}
+.setup-derived-cell.bump { animation: setup-bump 0.45s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-derived-cell.bump { animation-duration: 0.01s; }
+}
+
+/* On a narrow screen eight cells in a grid become four rows and the sticky bar
+   eats the page. One scrollable row keeps it to a fixed 62px. */
+@media (max-width: 720px), (max-height: 560px) {
+  .setup-derived {
+    display: flex;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .setup-derived::-webkit-scrollbar { display: none; }
+  .setup-derived-cell { flex: 0 0 auto; min-width: 112px; }
+  .setup-derived-value { font-size: 15px; }
+}
+
+/* Garage banner ------------------------------------------------------------
+ *
+ * The entry point to the setup sheet, on the session and career screens. It is
+ * a banner rather than another button in the row at the bottom because a button
+ * in that row is what nobody found.
+ */
+
+.garage-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: linear-gradient(120deg, rgba(53, 208, 224, 0.13) 0%, rgba(255, 255, 255, 0.05) 62%);
+  border: 1px solid rgba(53, 208, 224, 0.42);
+  border-radius: 11px;
+  padding: 14px 16px;
+}
+
+.garage-text { flex: 1 1 320px; min-width: 0; }
+
+.garage-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 10px;
   letter-spacing: 0.13em;
   text-transform: uppercase;
   font-weight: 800;
   color: var(--hud-dim);
 }
-.setup-derived-value {
-  font-size: 17px;
+
+.garage-tag {
+  border-radius: 999px;
+  padding: 2px 8px 3px;
+  background: rgba(255, 255, 255, 0.09);
+  letter-spacing: 0.08em;
+  font-size: 9px;
+}
+.garage-tag.modified { background: rgba(53, 208, 224, 0.24); color: var(--accent); }
+
+.garage-headline {
+  font-size: clamp(16px, 2.4vw, 21px);
   font-weight: 800;
-  margin-top: 3px;
+  margin-top: 6px;
   font-variant-numeric: tabular-nums;
 }
-.setup-derived-delta { font-size: 10px; font-weight: 700; margin-top: 2px; }
-.setup-derived-delta.gain { color: var(--good); }
-.setup-derived-delta.cost { color: var(--warn); }
-.setup-derived-delta.flat { color: var(--hud-dim); }
+
+.garage-detail {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--hud-dim);
+  margin-top: 4px;
+}
+
+.garage-action { flex: 0 0 auto; }
+.garage-action .btn { padding: 13px 26px; }
 
 /* Compound swatch --------------------------------------------------------- */
 
