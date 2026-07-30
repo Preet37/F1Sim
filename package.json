@@ -14,7 +14,8 @@
     "validate:physics": "tsx scripts/validatePhysics.ts",
     "validate:race": "tsx scripts/validateRace.ts",
     "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying",
-    "validate:qualifying": "tsx scripts/probeQualifying.ts"
+    "validate:qualifying": "tsx scripts/probeQualifying.ts",
+    "build:circuits": "tsx scripts/buildCircuitGeometry.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

@@ -1,16 +1,42 @@
 import type { TrackDefinition } from './TrackDefinition';
 import { buildLayout, str, left, right, type Segment } from './SegmentBuilder';
+import { REAL_GEOMETRY } from './realGeometry';
+
+/**
+ * Whether to drive on the surveyed circuit shapes rather than the authored ones.
+ *
+ * OFF by default, and that is a deliberate, temporary state — the real geometry
+ * is correct and the conversion is verified (every circuit's traced length lands
+ * within 0.3% of its published figure), but the SPEED SOLVER is not yet
+ * calibrated for it.
+ *
+ * The authored layouts were built by choosing corner radii that made the solved
+ * lap times match real pole times, so the solver's parameters silently absorbed
+ * whatever those layouts got wrong. Swapping in the true centrelines removes
+ * that compensation and the solved laps come out 14% slow — not because the
+ * shapes are wrong, but because the car model and the track width profile were
+ * tuned against the old ones.
+ *
+ * Turning this on before recalibrating would make every circuit's lap times
+ * wrong, so it stays off until `scripts/calibrateSolver.ts` has been re-run
+ * against the real shapes and the width profiles have been widened to the real
+ * 12-15m. Flip it here to compare:  npm run validate:tracks
+ */
+const USE_REAL_GEOMETRY = false;
 
 /**
  * Circuit library.
  *
- * Each layout is authored as a segment list with real corner radii and real
- * straight lengths, so the solved corner speeds and lap times land close to
- * reality. The layouts are faithful reconstructions of the corner *sequence and
- * character* — the number of corners, their order, their radius class (hairpin /
- * medium / fast sweep), the straight lengths between them, and the elevation
- * profile. They are not survey-accurate GPS traces, and nothing here is licensed
- * circuit data.
+ * The centreline geometry comes from real surveyed traces — see
+ * `src/data/tracks/realGeometry.ts`, generated from the GeoJSON in
+ * `data/circuits/`. Corner radii, straight lengths and the shape of the lap are
+ * therefore the real ones, not a reconstruction.
+ *
+ * The segment list below is still authored, and still matters: it supplies
+ * everything keyed by distance around the lap rather than by position in space
+ * — corner names, DRS zones, track width, elevation and banking. Those are
+ * expressed as fractions of the lap, so they map onto the real centreline
+ * directly.
  *
  * `referencePoleTimeS` is the real-world pole time. It is never used by the sim;
  * it exists so `npm run validate:tracks` can print solved-vs-real lap time and
@@ -786,9 +812,20 @@ function materialise(spec: CircuitSpec): TrackDefinition {
     };
   });
 
+  // Real geometry replaces the authored layout wherever a trace exists.
+  //
+  // The segment DSL is still what supplies every *distance-keyed* attribute —
+  // corner names, DRS zones, width overrides, elevation, banking — and those
+  // are all expressed as fractions of the lap, so they carry over onto the real
+  // centreline unchanged. What changes is the shape the car actually drives:
+  // corner radii, straight lengths and the sequence of direction changes now
+  // come from a survey of the real circuit rather than from a reconstruction.
+  const real = USE_REAL_GEOMETRY ? REAL_GEOMETRY[spec.meta.id] : undefined;
+  const controlPoints: readonly number[] = real ? real.points : Array.from(built.controlPoints);
+
   return {
     ...spec.meta,
-    controlPoints: built.controlPoints,
+    controlPoints,
     corners: built.corners.map((c) => ({ s: c.s * k, name: c.name })),
     drsZones,
     widthOverrides: built.widthRanges.map((w) => ({

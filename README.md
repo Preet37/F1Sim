@@ -251,10 +251,16 @@ bodywork the crew can reach; floor, suspension and power-unit damage stays with 
 car for the rest of the race, because those are not parts anyone changes in three
 seconds. A damaged nose adds 9-14s to the stop.
 
-**Circuit geometry is still a reconstruction.** Corner sequence, character and
-elevation are faithful; the geometry is not a survey trace, so a lap does not
-overlay a real satellite image. Making the layouts genuinely accurate is a data
-task, not a rendering one.
+**Real circuit geometry is built but not switched on.** `data/circuits/` holds
+surveyed GeoJSON traces for all eleven circuits (vendored from bacinger/f1-circuits,
+MIT), and `npm run build:circuits` converts them into control points — every
+circuit's traced length lands within 0.3% of its published figure, so the
+conversion is right. It is off behind `USE_REAL_GEOMETRY` in `circuits.ts`
+because the speed solver is not calibrated for it: the authored layouts were
+built by picking corner radii that made solved laps match real pole times, so
+the solver absorbed their errors. On the real shapes, solved laps come out 14%
+slow. Recalibrating the solver and widening the track-width profiles to the real
+12-15m is the remaining step.
 
 **Sponsor text on the trackside hoardings renders mirrored.** The cause is not the
 ribbon's UVs: negating them provably reaches the browser and changes nothing on
