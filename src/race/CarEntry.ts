@@ -5,6 +5,7 @@ import { createProjection, type TrackProjection } from '../track/TrackSpline';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { Driver, Team } from '../data/teams';
 import type { CompoundId } from '../data/tires';
+import { CarDamage } from './DamageModel';
 import type { Penalty } from './RaceControlManager';
 
 /**
@@ -57,7 +58,14 @@ export class CarEntry {
   readonly bestSectors: number[] = [0, 0, 0];
   readonly lastSectors: number[] = [0, 0, 0];
   private sectorStartTime = 0;
-  private currentSectorIndex = 0;
+  /**
+   * Sector being driven, 0..2.
+   *
+   * Readable so the HUD can show the sector in progress live rather than
+   * leaving the board blank until the sector is completed — which would make it
+   * useful only three times a lap.
+   */
+  currentSectorIndex = 0;
   /** True when the lap in progress has been invalidated (track limits). */
   currentLapInvalidated = false;
 
@@ -115,8 +123,11 @@ export class CarEntry {
   recoveryTimer = 0;
   /** True once serviced during the current pit-lane visit. */
   servicedThisVisit = false;
-  /** Surviving fraction of the car's downforce after contact damage. */
-  aeroDamage = 1;
+  /**
+   * Per-component condition. Every part feeds a real term in the vehicle spec,
+   * so what the damage panel shows is what the physics is running.
+   */
+  readonly damage = new CarDamage();
 
   // --- DRS -----------------------------------------------------------------
   /** True when the gap at the last detection point was under one second. */
@@ -245,6 +256,36 @@ export class CarEntry {
   }
 
   /** Elapsed time on the lap in progress. */
+  /** Time spent in the sector currently being driven, seconds. */
+  currentSectorElapsed(sessionTime: number): number {
+    return Math.max(0, sessionTime - this.sectorStartTime);
+  }
+
+  /**
+   * Live delta to this car's best lap, in seconds.
+   *
+   * Compares elapsed time on this lap against how long the best lap had taken
+   * by the same point. That reference point is approximated from completed
+   * sectors: exact at every sector boundary and interpolated in between, which
+   * is the same compromise a real delta display makes.
+   */
+  deltaToBest(sessionTime: number): number {
+    if (this.bestLapTime <= 0) return 0;
+    const elapsed = this.currentLapTime(sessionTime);
+
+    // Time the best lap had used by the start of the current sector.
+    let reference = 0;
+    for (let i = 0; i < this.currentSectorIndex; i++) reference += this.bestSectors[i];
+
+    // Add a proportional share of the sector in progress.
+    const bestThis = this.bestSectors[this.currentSectorIndex];
+    if (bestThis > 0) {
+      const into = this.currentSectorElapsed(sessionTime);
+      reference += Math.min(into, bestThis);
+    }
+    return elapsed - reference;
+  }
+
   currentLapTime(sessionTime: number): number {
     return sessionTime - this.lapStartTime;
   }

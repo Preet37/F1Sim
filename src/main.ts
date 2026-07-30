@@ -11,6 +11,8 @@ import { InputController } from './input/InputController';
 import { Hud } from './ui/Hud';
 import { CareerEngine, TIER_INFO, type CareerEvent, type SeasonResult } from './career/CareerEngine';
 import { SaveManager, type GameSettings } from './career/SaveManager';
+import { AudioEngine } from './audio/AudioEngine';
+import { buildPaddock } from './ui/Paddock';
 
 /**
  * Application shell: screens, the game loop, and the wiring between the
@@ -28,6 +30,7 @@ type Screen =
   | 'career-create'
   | 'career-hub'
   | 'session-select'
+  | 'paddock'
   | 'racing'
   | 'results'
   | 'event'
@@ -43,6 +46,7 @@ class Game {
   private readonly input = new InputController();
   private readonly clock = new SimClock();
   private readonly saves = new SaveManager();
+  private readonly audio = new AudioEngine();
   private hud!: Hud;
 
   private engine: RaceEngine | null = null;
@@ -95,6 +99,29 @@ class Game {
     this.screenRoot = document.createElement('div');
     this.screenRoot.className = 'screen';
     (document.getElementById('app') as HTMLElement).appendChild(this.screenRoot);
+
+    // Audio cannot be created before a user gesture — every browser blocks it,
+    // and on iOS a context built outside one stays silently suspended forever
+    // rather than throwing. So the first touch, click or keypress anywhere
+    // brings it up, and it only ever needs to happen once.
+    const unlockAudio = () => {
+      void this.audio.start().then(() => {
+        this.audio.setVolume(this.settings.masterVolume);
+        this.audio.setEnabled(this.settings.masterVolume > 0);
+      });
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+    };
+    window.addEventListener('pointerdown', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+
+    // Backgrounding the tab should not leave an engine screaming in a tab the
+    // player has navigated away from.
+    document.addEventListener('visibilitychange', () => {
+      this.audio.setSuspended(document.hidden || this.screen !== 'racing');
+    });
 
     this.input.attach(this.canvas);
     this.input.config.speedSensitiveSteering = this.settings.speedSensitiveSteering;
@@ -178,6 +205,9 @@ class Game {
     const inSession = s === 'racing';
     this.screenRoot.classList.toggle('hidden', inSession);
     this.hud.setVisible(inSession);
+    // Leaving the track cuts the car but keeps the context alive, so returning
+    // to a session does not have to rebuild the whole graph.
+    if (!inSession) this.audio.silenceCar();
   }
 
   private el(tag: string, cls: string, parent: HTMLElement, text = ''): HTMLElement {
@@ -225,6 +255,7 @@ class Game {
     this.button(recent ? 'New Career' : 'Start Career', row, () => this.showCareerCreate(),
       recent ? 'btn secondary' : 'btn');
     this.button('Quick Race', row, () => this.showSessionSelect(true), 'btn secondary');
+    this.button('Paddock', row, () => this.showPaddock(), 'btn secondary');
     this.button('Settings', row, () => this.showSettings(), 'btn secondary');
 
     if (this.saves.isEphemeral) {
@@ -454,6 +485,28 @@ class Game {
     this.button('Back', row, () => (this.career ? this.showCareerHub() : this.showMenu()), 'btn secondary');
   }
 
+  /**
+   * The paddock: every team, its car and its drivers.
+   *
+   * Read-only outside a career. Inside one it also marks the player's current
+   * team, which turns it into a way of sizing up the machinery you are actually
+   * racing against rather than just a roster.
+   */
+  private showPaddock(): void {
+    this.setScreen('paddock');
+    this.screenRoot.innerHTML = '';
+    const inner = this.el('div', 'screen-inner', this.screenRoot);
+    this.el('div', 'title', inner, 'Paddock');
+    this.el('div', 'subtitle', inner,
+      'Every bar reads a multiplier the physics applies directly — these cars really are different.');
+
+    buildPaddock(inner, {
+      currentTeamId: this.career?.state.teamId,
+    });
+
+    this.button('Back', inner, () => this.showMenu(), 'btn secondary');
+  }
+
   private showSettings(): void {
     this.setScreen('settings');
     this.screenRoot.innerHTML = '';
@@ -484,6 +537,25 @@ class Game {
     toggle('Braking assist', 'Prevents locking the fronts',
       () => this.settings.brakingAssist,
       (v) => { this.settings.brakingAssist = v; this.input.config.brakingAssist = v; });
+
+    this.el('div', 'section-title', inner, 'Audio');
+    const ag = this.el('div', 'card-grid', inner);
+    // Five steps rather than a slider: a slider is fiddly on a phone and nobody
+    // needs finer resolution than this on a master volume.
+    for (const [label, value] of [['Off', 0], ['Quiet', 0.35], ['Normal', 0.7], ['Loud', 1]] as const) {
+      const selected = Math.abs(this.settings.masterVolume - value) < 0.03;
+      const c = this.el('div', 'card' + (selected ? ' selected' : ''), ag);
+      this.el('div', 'card-name', c, label);
+      this.el('div', 'card-stat', c, Math.round(value * 100) + '%');
+      c.addEventListener('click', () => {
+        this.settings.masterVolume = value;
+        this.audio.setVolume(value);
+        this.audio.setEnabled(value > 0);
+        if (value > 0) this.audio.playUiClick();
+        this.saves.saveSettings(this.settings);
+        this.showSettings();
+      });
+    }
 
     if (this.input.touchAvailable) {
       this.el('div', 'section-title', inner, 'Mobile');
@@ -578,6 +650,8 @@ class Game {
 
       this.engine = new RaceEngine(def, config, field);
       this.renderer.loadSession(this.engine);
+      this.audio.configureForTrack(def.scenery, this.engine.weather.wetness);
+      this.audio.setSuspended(false);
       this.renderer.director.setMode(this.settings.cameraMode as CameraMode);
       this.hud.setCameraLabel(this.renderer.director.modeLabel);
       // Show the controls at the start of every session.
@@ -767,6 +841,7 @@ class Game {
         }
         if (this.input.pausePressed) {
           this.clock.paused = !this.clock.paused;
+          this.audio.setSuspended(this.clock.paused);
         }
         if (this.input.pitRequestToggled) {
           player.perception.pitThisLap = !player.perception.pitThisLap;
@@ -780,8 +855,32 @@ class Game {
 
       const focus = player ?? engine.standings[0];
       this.renderer.render(this.clock.frameDt, engine, focus);
+
+      // Audio is driven from the focused car and panned around the camera, so a
+      // trackside or drone camera hears the scene from where it is standing
+      // rather than from inside the cockpit.
+      this.audio.update(
+        this.clock.frameDt,
+        engine,
+        focus,
+        this.renderer.director.camera.rotation.y,
+      );
+
       if (player) {
         this.hud.update(engine, player, this.input, this.renderer.fps, this.renderer.drawCalls);
+
+        // The start sequence. The HUD owns the gantry's state and reports the
+        // transitions, so the beep, the flash and the bulb all happen on the
+        // same frame instead of three near-misses.
+        const light = this.hud.updateStartLights(engine.startLights, engine.started);
+        if (light.kind === 'light') {
+          this.audio.playStartLight(light.index);
+        } else if (light.kind === 'go') {
+          this.audio.playStartGo();
+          // A brief warm bloom on the release. Small — this should register as
+          // adrenaline, not as a cutscene.
+          this.renderer.flash(0.22, 3.2, 0xffe9c0);
+        }
       }
 
       if (engine.over) this.finishSession();

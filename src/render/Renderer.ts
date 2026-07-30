@@ -3,6 +3,8 @@ import { clamp, clamp01, damp } from '../core/MathUtils';
 import { buildCar, disposeCarGeometryCache, type CarVisual } from './CarMesh';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { CameraDirector } from './CameraDirector';
+import { EffectsDirector } from './EffectsDirector';
+import { PostFX } from './PostFX';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 
@@ -39,6 +41,8 @@ export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
   readonly director: CameraDirector;
+  readonly effects: EffectsDirector;
+  readonly post: PostFX;
 
   /** Current resolution scale, 0.5 .. 1.0. */
   resolutionScale = 1;
@@ -129,7 +133,31 @@ export class Renderer {
 
     this.buildSky();
     this.buildEnvironment();
+
+    this.effects = new EffectsDirector(this.quality);
+    this.scene.add(this.effects.root);
+
+    // Capture the scene's real cost the instant it finishes drawing.
+    //
+    // `renderer.info.render` resets at the start of every render call, and the
+    // composer issues one per pass. Reading the counters after the frame is
+    // done would therefore describe the last fullscreen quad — a constant "1
+    // draw call, 2 triangles" regardless of what is on screen. This hook fires
+    // only for the scene itself, because the post passes render a different
+    // scene of their own.
+    this.scene.onAfterRender = () => {
+      this.sceneDrawCalls = this.renderer.info.render.calls;
+      this.sceneTriangles = this.renderer.info.render.triangles;
+    };
+
+    this.post = new PostFX(this.renderer, this.scene, this.director.camera, this.quality);
+
     this.applySize();
+  }
+
+  /** True when the frame goes through the post chain rather than straight out. */
+  get postEnabled(): boolean {
+    return this.post.enabled;
   }
 
   /**
@@ -246,9 +274,14 @@ export class Renderer {
       this.carVisuals.push(visual);
     }
 
+    this.effects.loadSession(engine);
     this.applyAmbience(engine);
     this.director.setMode(this.director.mode);
+    this.post.setCamera(this.director.camera, this.scene);
   }
+
+  /** How much extra bloom this circuit's lighting wants, 0..1. */
+  private nightBias = 0;
 
   /** Sky, fog and light for the circuit's time of day and weather. */
   private applyAmbience(engine: RaceEngine): void {
@@ -263,6 +296,11 @@ export class Renderer {
       (skyMat.uniforms.midColor.value as THREE.Color).setHex(mid);
       (skyMat.uniforms.bottomColor.value as THREE.Color).setHex(bottom);
     };
+
+    // At night and at dusk the bright things in frame are lights rather than
+    // sunlit surfaces, so the bloom is doing most of the atmospheric work and
+    // is worth pushing well past its daytime setting.
+    this.nightBias = night ? 1 : dusk ? 0.45 : 0;
 
     let fogColour: number;
     if (night) {
@@ -306,6 +344,7 @@ export class Renderer {
   }
 
   unloadSession(): void {
+    this.effects?.unload();
     if (this.trackMeshes) {
       this.scene.remove(this.trackMeshes.root);
       this.trackMeshes.dispose();
@@ -334,7 +373,17 @@ export class Renderer {
     const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
     this.renderer.setPixelRatio(dpr * this.resolutionScale);
     this.renderer.setSize(w, h, false);
+
+    // The composer's targets are sized in device pixels, and it does not read
+    // the renderer's pixel ratio for us. Missing this leaves post-processing
+    // rendering at the wrong resolution every time the dynamic scaler moves,
+    // which shows up as the image softening and never sharpening back.
+    const buffer = this.renderer.getDrawingBufferSize(this.tmpSize);
+    this.post?.setSize(buffer.x, buffer.y);
+    this.effects?.setProjection(this.director.camera.fov, buffer.y);
   }
+
+  private readonly tmpSize = new THREE.Vector2();
 
   /**
    * Adjusts resolution to hold the target frame rate.
@@ -383,6 +432,20 @@ export class Renderer {
     this.director.update(dt, focusCar, engine.track);
 
     const cam = this.director.camera;
+
+    // Particles are sized in metres, so the metres-to-pixels conversion has to
+    // track the camera's FOV — which the director widens continuously with
+    // speed. Without this, smoke visibly changes size as the car accelerates.
+    const buffer = this.renderer.getDrawingBufferSize(this.tmpSize);
+    this.effects.setProjection(cam.fov, buffer.y);
+    this.effects.update(dt, engine, cam.position);
+
+    // The radial blur converges on the point the car is heading for, not the
+    // centre of the screen. In a corner the vanishing point swings wide, and
+    // anchoring the streaks to it is the difference between the blur feeling
+    // like motion and feeling like a filter.
+    this.projectFocus(focusCar, cam);
+    this.post.update(dt, focusCar.physics.speedMs, this.focusUv.x, this.focusUv.y, this.nightBias);
     // Keep the sky centred on the camera so it never clips or parallaxes.
     if (this.sky) this.sky.position.copy(cam.position);
 
@@ -398,7 +461,40 @@ export class Renderer {
       );
     }
 
-    this.renderer.render(this.scene, cam);
+    this.post.render(this.scene, cam);
+
+  }
+
+  private sceneDrawCalls = 0;
+  private sceneTriangles = 0;
+
+  /**
+   * Projects a point well ahead of the car into screen space, clamped near the
+   * centre so a hairpin cannot fling the blur origin off-screen and smear the
+   * entire frame in one direction.
+   */
+  private projectFocus(car: CarEntry, cam: THREE.PerspectiveCamera): void {
+    const p = car.physics;
+    this.tmpVec.set(
+      p.position.x + Math.sin(p.heading) * 60,
+      1.2,
+      p.position.y + Math.cos(p.heading) * 60,
+    );
+    this.tmpVec.project(cam);
+    // NDC to the pass's UV space. No y flip: a render target's v axis points the
+    // same way as NDC y, unlike DOM coordinates.
+    this.focusUv.set(
+      clamp(this.tmpVec.x * 0.5 + 0.5, 0.22, 0.78),
+      clamp(this.tmpVec.y * 0.5 + 0.5, 0.25, 0.75),
+    );
+  }
+
+  private readonly tmpVec = new THREE.Vector3();
+  private readonly focusUv = new THREE.Vector2(0.5, 0.5);
+
+  /** A full-screen flash — start lights going out, a heavy impact. */
+  flash(strength: number, decayPerSecond: number, colour: THREE.ColorRepresentation): void {
+    this.post.triggerFlash(strength, decayPerSecond, colour);
   }
 
   /** Copies simulation state onto the visuals. */
@@ -463,6 +559,8 @@ export class Renderer {
   /** Frees everything. */
   dispose(): void {
     this.unloadSession();
+    this.effects.dispose();
+    this.post.dispose();
     disposeCarGeometryCache();
     if (this.sky) {
       this.scene.remove(this.sky);
@@ -474,12 +572,12 @@ export class Renderer {
     this.renderer.dispose();
   }
 
-  /** Triangles drawn last frame, for the diagnostics overlay. */
+  /** Triangles in the scene last frame, for the diagnostics overlay. */
   get triangleCount(): number {
-    return this.renderer.info.render.triangles;
+    return this.sceneTriangles;
   }
 
   get drawCalls(): number {
-    return this.renderer.info.render.calls;
+    return this.sceneDrawCalls;
   }
 }

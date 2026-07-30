@@ -186,7 +186,7 @@ canvas#view {
 .tower-gap { flex: 1; text-align: right; color: var(--hud-dim); font-size: 10px; }
 
 /* --- Bottom centre: speed, gear, rpm --------------------------------- */
-.hud-bottom {
+.hud-bottom-legacy {
   bottom: calc(10px + var(--safe-b));
   left: 50%;
   transform: translateX(-50%);
@@ -279,7 +279,9 @@ canvas#view {
 
 /* --- Gaps ------------------------------------------------------------ */
 .hud-gaps {
-  bottom: calc(96px + var(--safe-b));
+  /* Clear of the wheel display, which is ~120px tall. At the old 96px this sat
+     directly on top of it and clipped the KMH label. */
+  bottom: calc(150px + var(--safe-b));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -672,10 +674,370 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   .hud-gear { font-size: 30px; }
   .hud-position { font-size: 22px; }
   .hud-laptime { font-size: 18px; }
-  .hud-bottom { min-width: 0; padding: 5px 10px 7px; }
+  .hud-bottom-legacy { min-width: 0; padding: 5px 10px 7px; }
   .hud-radio { top: calc(120px + var(--safe-t)); width: 52vw; }
   .hud-flag { font-size: 16px; padding: 7px 16px; }
-  .hud-gaps { bottom: calc(84px + var(--safe-b)); }
+  .hud-gaps { bottom: calc(122px + var(--safe-b)); }
   .hud-buttons { right: calc(150px + var(--safe-r)); }
   .hud-btn { width: 46px; height: 36px; font-size: 9px; }
+}
+
+/* --- Start gantry ---------------------------------------------------------
+   Five columns of two bulbs, centred above the horizon. Positioned high in the
+   frame rather than centre-screen so it never covers the car or the braking
+   point for turn one, which is exactly where the driver is looking. */
+.hud-startlights {
+  position: absolute;
+  top: calc(9vh + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(4, 6, 10, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  z-index: 6;
+}
+.hud-startlights.hidden { display: none; }
+.hud-lightcol { display: flex; flex-direction: column; gap: 8px; }
+.hud-bulb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #1a1c22;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  /* An unlit bulb still catches a little light, so it is not pure black. */
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.8);
+  transition: background 90ms linear, box-shadow 90ms linear;
+}
+/* A lit bulb glows outward. The spread is what sells it as a lamp rather than
+   a red circle, and it reads at a glance in peripheral vision. */
+.hud-bulb.on {
+  background: radial-gradient(circle at 38% 32%, #ff8a7a, #e01020 62%, #8b0512);
+  box-shadow:
+    0 0 14px rgba(255, 40, 40, 0.85),
+    0 0 34px rgba(255, 30, 30, 0.45),
+    inset 0 1px 3px rgba(255, 255, 255, 0.35);
+}
+
+@media (max-width: 820px) {
+  .hud-startlights { gap: 6px; padding: 8px 9px; top: calc(7vh + var(--safe-t)); }
+  .hud-bulb { width: 17px; height: 17px; }
+  .hud-lightcol { gap: 5px; }
+}
+
+/* ==========================================================================
+   Steering-wheel display
+   Modelled on a real wheel dash: a gear numeral in its own disc, numeric
+   readouts beside it, shift lights along the top. The pill shape and the
+   heavy outer ring are what make it read as hardware rather than as a HUD.
+   ========================================================================== */
+.hud-wheel {
+  position: absolute;
+  bottom: calc(12px + var(--safe-b));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 24px 10px;
+  min-width: 470px;
+  border-radius: 46px;
+  background: linear-gradient(180deg, rgba(20, 23, 30, 0.94), rgba(9, 11, 15, 0.96));
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.hud-wheel .hud-leds { justify-content: center; margin-bottom: 2px; }
+
+.hud-wheelrow { display: flex; align-items: center; gap: 14px; }
+
+/* The gear disc. Largest, highest-contrast element on the whole HUD, because
+   it is the one thing read in peripheral vision mid-corner. */
+.hud-geardisc {
+  width: 74px;
+  height: 74px;
+  flex: 0 0 74px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 40% 32%, #21252e, #0a0c11 72%);
+  border: 3px solid rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+.hud-wheel .hud-gear {
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px rgba(255, 255, 255, 0.25);
+}
+.hud-wheel .hud-gear.reverse { color: var(--warn); }
+
+.hud-wheelstats { display: flex; align-items: center; gap: 20px; flex: 1; }
+.hud-cell { display: flex; flex-direction: column; align-items: center; min-width: 62px; }
+.hud-celllabel {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #f2f4f8;
+}
+.hud-cellvalue {
+  font-size: 26px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ERS reads as a physical button, because that is what the driver presses. */
+.hud-ersbadge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 14px;
+  border-radius: 8px;
+  background: rgba(150, 156, 168, 0.55);
+  min-width: 92px;
+}
+.hud-ersbadge.ers-harvest  { background: rgba(70, 130, 200, 0.55); }
+.hud-ersbadge.ers-balanced { background: rgba(150, 156, 168, 0.55); }
+.hud-ersbadge.ers-push     { background: rgba(200, 140, 50, 0.6); }
+.hud-ersbadge.ers-overtake { background: rgba(190, 60, 70, 0.65); }
+.hud-ersmodetext { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: 0.02em; }
+.hud-erspercent { font-size: 13px; color: rgba(255, 255, 255, 0.85); font-variant-numeric: tabular-nums; }
+
+.hud-wheelbars { display: flex; flex-direction: column; gap: 5px; }
+.hud-wheel .hud-rpmbar { height: 4px; border-radius: 2px; }
+.hud-ersrow { display: flex; align-items: center; gap: 8px; }
+.hud-erslabel { font-size: 10px; font-weight: 800; color: var(--hud-dim); letter-spacing: 0.1em; }
+.hud-ersrow .hud-ersbar { flex: 1; height: 9px; border-radius: 5px; }
+.hud-ersrow .hud-ersfill { background: linear-gradient(90deg, #ffd83d, #ffe98a); }
+
+/* ==========================================================================
+   Damage panel
+   ========================================================================== */
+.hud-damage {
+  position: absolute;
+  right: calc(14px + var(--safe-r));
+  bottom: calc(120px + var(--safe-b));
+  width: 104px;
+  padding: 7px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.hud-damagetitle {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--hud-dim);
+}
+.hud-damagesvg { width: 100%; height: auto; display: block; }
+.dmg-chassis { fill: #1b2029; }
+/* Health bands. Green through amber to red — the same vocabulary as every
+   other severity cue in the HUD, so it needs no legend. */
+.dmg-part { fill: #2f8f4a; transition: fill 220ms linear; }
+.dmg-part.dmg-ok       { fill: #35a355; }
+.dmg-part.dmg-worn     { fill: #b9a52c; }
+.dmg-part.dmg-damaged  { fill: #d17a24; }
+.dmg-part.dmg-critical { fill: #d23b3b; }
+.hud-damagesummary {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-align: center;
+  color: var(--good);
+}
+.hud-damagesummary.dmg-text-worn { color: #e2cb3a; }
+.hud-damagesummary.dmg-text-damaged { color: var(--warn); }
+.hud-damagesummary.dmg-text-critical { color: var(--bad); }
+
+/* ==========================================================================
+   Sector board
+   Latest directly above best, so the comparison is vertical and needs no
+   arithmetic from the driver.
+   ========================================================================== */
+.hud-sectorboard {
+  position: absolute;
+  left: calc(14px + var(--safe-l));
+  bottom: calc(150px + var(--safe-b));
+  padding: 8px 10px;
+  min-width: 234px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hud-sectorrow { display: flex; align-items: center; gap: 6px; }
+.hud-sectorrowlabel {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  color: var(--hud-dim);
+  width: 42px;
+  flex: 0 0 42px;
+}
+.hud-sectorcell {
+  flex: 1;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: #dfe4ec;
+  font-variant-numeric: tabular-nums;
+}
+.hud-sectorcell.purple { color: #c07bff; }
+.hud-sectorcell.green  { color: var(--good); }
+.hud-sectorcell.yellow { color: #e2cb3a; }
+.hud-sectorcell.live   { color: #9aa4b4; }
+.hud-sectorhead { margin-top: 1px; }
+.hud-sectorname {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--hud-dim);
+  letter-spacing: 0.08em;
+}
+.hud-deltarow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+.hud-deltalabel { font-size: 10px; font-weight: 800; letter-spacing: 0.14em; color: var(--hud-dim); }
+.hud-deltavalue { font-size: 17px; font-weight: 800; color: #dfe4ec; font-variant-numeric: tabular-nums; }
+.hud-deltavalue.green  { color: var(--good); }
+.hud-deltavalue.yellow { color: #e2cb3a; }
+
+@media (max-width: 820px) {
+  .hud-wheel { min-width: 0; padding: 6px 12px 8px; border-radius: 36px; }
+  .hud-geardisc { width: 52px; height: 52px; flex-basis: 52px; }
+  .hud-wheel .hud-gear { font-size: 30px; }
+  .hud-cellvalue { font-size: 19px; }
+  .hud-celllabel { font-size: 10px; }
+  .hud-wheelstats { gap: 10px; }
+  .hud-cell { min-width: 44px; }
+  .hud-ersbadge { min-width: 66px; padding: 3px 8px; }
+  .hud-ersmodetext { font-size: 12px; }
+  .hud-damage { width: 74px; bottom: calc(104px + var(--safe-b)); }
+  .hud-sectorboard { min-width: 0; width: 46vw; bottom: calc(128px + var(--safe-b)); }
+  .hud-deltavalue { font-size: 14px; }
+}
+
+/* ==========================================================================
+   Paddock
+   One card per team, ordered front-of-grid first. The livery colour drives
+   each card's own accents, so a team is recognisable before any text is read.
+   ========================================================================== */
+.paddock-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  margin: 14px 0 20px;
+}
+.paddock-card {
+  position: relative;
+  background: linear-gradient(150deg, rgba(28, 32, 41, 0.94), rgba(14, 16, 21, 0.96));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  /* The livery colour as a spine down the edge, the way a pit board reads. */
+  border-left: 4px solid var(--team);
+  border-radius: 10px;
+  padding: 12px 14px 14px;
+  overflow: hidden;
+}
+/* A wash of the team colour behind the card, so it feels liveried rather than
+   labelled. Kept very low so text contrast never suffers. */
+.paddock-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 90% at 100% 0%, var(--team), transparent 62%);
+  opacity: 0.13;
+  pointer-events: none;
+}
+.paddock-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+
+.pad-head { display: flex; align-items: center; gap: 10px; }
+.pad-rank {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--hud-dim);
+  min-width: 24px;
+  font-variant-numeric: tabular-nums;
+}
+.pad-titles { flex: 1; min-width: 0; }
+.pad-team { font-size: 16px; font-weight: 800; color: #f0f3f8; }
+.pad-engine { font-size: 10px; letter-spacing: 0.08em; color: var(--hud-dim); text-transform: uppercase; }
+.pad-code {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--team);
+  color: #0a0c10;
+}
+
+.pad-body { display: flex; gap: 14px; align-items: center; margin-top: 10px; }
+.pad-car { width: 76px; height: auto; flex: 0 0 76px; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5)); }
+
+.pad-metrics { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pad-metric { display: flex; align-items: center; gap: 7px; }
+.pad-metric-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--hud-dim);
+  width: 62px;
+  flex: 0 0 62px;
+  letter-spacing: 0.03em;
+}
+.pad-bar { flex: 1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.pad-bar-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--team), var(--team-accent)); }
+.pad-metric-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: #cbd3e0;
+  width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pad-drivers {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.pad-driver { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+/* A neutral, always-legible numeral. Several teams run a near-black accent
+   colour, and tinting the number with it made it invisible on a dark card. */
+.pad-num {
+  font-weight: 800;
+  color: #aeb8c8;
+  width: 24px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.pad-dname { flex: 1; color: #e6eaf2; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pad-nat { font-size: 10px; color: var(--hud-dim); letter-spacing: 0.05em; }
+.pad-skill {
+  font-weight: 800;
+  color: #f0f3f8;
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+  text-align: right;
+}
+.pad-select { margin-top: 10px; width: 100%; }
+
+@media (max-width: 820px) {
+  .paddock-grid { grid-template-columns: 1fr; gap: 10px; }
+  .pad-car { width: 58px; flex-basis: 58px; }
+  .pad-metric-label { width: 54px; flex-basis: 54px; }
 }

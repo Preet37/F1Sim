@@ -3,6 +3,7 @@ import { PHYSICS_DT } from '../core/SimClock';
 import { TrackSpline } from '../track/TrackSpline';
 import { CarEntry } from './CarEntry';
 import { RaceControlManager } from './RaceControlManager';
+import { bandOf, COMPONENT_NAMES, type ImpactZone } from './DamageModel';
 import { DRIVERS, getTeam, type Driver } from '../data/teams';
 import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
@@ -265,6 +266,19 @@ export class RaceEngine {
   // Main step
   // =========================================================================
 
+  /**
+   * True if `time` would be the fastest sector `index` anyone has set this
+   * session — the purple-sector test.
+   */
+  isSessionBestSector(index: number, time: number): boolean {
+    if (time <= 0) return false;
+    for (const car of this.cars) {
+      const best = car.bestSectors[index];
+      if (best > 0 && best < time - 1e-4) return false;
+    }
+    return true;
+  }
+
   /** Advances the simulation by exactly one fixed physics step. */
   step(): void {
     if (this.over) return;
@@ -333,6 +347,13 @@ export class RaceEngine {
       copyControls(controls, car.appliedControls);
       car.physics.drsAvailable = this.isDrsAllowed(car);
       car.physics.step(dt, car.appliedControls, this.environment);
+
+      // Attrition from riding kerbs, running through gravel and holding the
+      // engine against the limiter. Small per-second rates, so this is a
+      // race-distance cost rather than a corner-by-corner one — which is what
+      // gives a track-limits rule real teeth over a stint.
+      car.damage.applyWear(dt, car.physics.surface, car.physics.speedMs, car.physics.rpmFraction);
+      if (car.damage.specDirty) car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
 
       const crossedLine = car.updateProjection(this.track);
       this.enforceBarriers(car);
@@ -473,7 +494,7 @@ export class RaceEngine {
 
       const severity = clamp01(into / 22);
       if (severity > 0.25) {
-        this.applyContactDamage(car, severity);
+        this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz));
         this.raceControl.log(
           car.driver.code + ' into the barrier at ' +
           (this.track.cornerNameAt(car.s) || 'the exit'),
@@ -824,6 +845,12 @@ export class RaceEngine {
       const fumble = this.rng.chance(0.06) ? this.rng.range(1.2, 5.5) : 0;
       car.pitBoxTimer = crewTime + this.rng.range(-0.15, 0.35) + fumble;
 
+      // A damaged nose costs real time to change: the crew has to remove the
+      // old assembly and fit a new one, and that is why a driver with a broken
+      // wing weighs limping to the end against losing a dozen seconds now.
+      const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
+      if (frontWing < 0.7) car.pitBoxTimer += 9 + (1 - frontWing) * 5;
+
       // Serve a drive-through by simply passing through without stopping; a
       // stop-go adds its time to the stationary period.
       const pen = car.pendingServePenalty();
@@ -843,6 +870,12 @@ export class RaceEngine {
         car.servicedThisVisit = true;
         const compound = this.chooseCompoundForStint(car);
         car.serviceInBox(compound, 0, this.weather.trackTempC + 40);
+
+        // The crew replaces the nose and the bodywork they can reach. Floor,
+        // suspension and power unit damage stays with the car for the rest of
+        // the race — those are not parts anyone changes in three seconds.
+        car.damage.repair('frontWingL', 'frontWingR', 'sidepodL', 'sidepodR');
+        car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
         // Advance the plan.
         const next = car.plan[Math.min(car.pitStops, car.plan.length - 1)];
         car.targetPitLap = next ? next.pitOnLap : -1;
@@ -938,9 +971,13 @@ export class RaceEngine {
           b.physics.yawRate -= severity * 0.55 * (nx * 0.4 + 0.2);
 
           if (severity > 0.35) {
-            // Damage: a real hit costs downforce.
-            this.applyContactDamage(a, severity);
-            this.applyContactDamage(b, severity);
+            // Work out which face of each car was struck. The contact normal
+            // points from a to b, so a is hit on the side facing b and b on the
+            // side facing a — projecting that normal into each car's own frame
+            // is what makes a side-swipe damage sidepods and a rear-end hit
+            // damage wings and gearboxes.
+            this.applyContactDamage(a, severity, zoneFor(a.physics.heading, nx, nz));
+            this.applyContactDamage(b, severity, zoneFor(b.physics.heading, -nx, -nz));
             this.raceControl.log(
               'Contact between ' + a.driver.code + ' and ' + b.driver.code,
               'warning', this.time,
@@ -951,16 +988,29 @@ export class RaceEngine {
     }
   }
 
-  private applyContactDamage(car: CarEntry, severity: number): void {
-    // Front wing damage costs downforce, which makes the car understeer — the
-    // right consequence, and it pressures the driver into an unplanned stop.
-    //
-    // Tracked as a single multiplier with a floor rather than by rewriting the
-    // spec. Compounding an unbounded multiplicative loss left cars with
-    // effectively no downforce after a handful of nudges, at which point they
-    // could not corner at all and the whole field ended up in the barriers.
-    car.aeroDamage = clamp(car.aeroDamage - severity * 0.09, 0.55, 1);
-    car.physics.spec = { ...car.physics.baseSpec, clBase: car.physics.baseSpec.clBase * car.aeroDamage };
+  /**
+   * @param zone which face of the car took the hit, so the damage lands on the
+   *             components that would actually have been in the way
+   */
+  private applyContactDamage(car: CarEntry, severity: number, zone: ImpactZone = 'front'): void {
+    const broken = car.damage.applyImpact(zone, severity);
+
+    // Rebuild the spec from the PRISTINE baseline every time. Deriving it from
+    // the current spec instead compounds the multiplier on every hit, and the
+    // car quietly decays to no performance while its health numbers still look
+    // reasonable.
+    car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
+
+    // Report the specific failure rather than a generic "damage", but only when
+    // a component actually crosses into a worse band, so a graze stays quiet.
+    for (const id of broken) {
+      const h = car.damage.health[id];
+      if (bandOf(h) === 'ok') continue;
+      this.raceControl.log(
+        car.driver.code + ': ' + COMPONENT_NAMES[id].toLowerCase() + ' damage',
+        bandOf(h) === 'critical' ? 'critical' : 'warning', this.time, car.index,
+      );
+    }
 
     if (severity > 0.85 && this.rng.chance(0.12)) {
       car.retire('Accident damage', this.time);
@@ -1110,4 +1160,23 @@ function copyControls(from: VehicleControls, to: VehicleControls): void {
   to.gearRequest = from.gearRequest;
   to.pitLimiter = from.pitLimiter;
   to.reverse = from.reverse;
+}
+
+/**
+ * Which face of a car a world-space contact normal strikes.
+ *
+ * The normal points away from the car, into whatever hit it. Rotating it into
+ * the car's own frame gives longitudinal and lateral components; whichever
+ * dominates names the face. Without this every impact would land on the front
+ * wing, and a car tapped from behind would lose its front wing rather than its
+ * rear one.
+ */
+function zoneFor(heading: number, nx: number, nz: number): ImpactZone {
+  const sinH = Math.sin(heading);
+  const cosH = Math.cos(heading);
+  // Forward is (sin, cos); right is (cos, -sin), matching the vehicle model.
+  const along = nx * sinH + nz * cosH;
+  const lateral = nx * cosH - nz * sinH;
+  if (Math.abs(along) >= Math.abs(lateral)) return along > 0 ? 'front' : 'rear';
+  return lateral > 0 ? 'right' : 'left';
 }

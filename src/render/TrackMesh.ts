@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGantryTexture, makeHoardingTexture, makeMarkerTexture } from './Signage';
+import { SurfaceDetail, SURFACES, type SurfaceProfile } from './SurfaceDetail';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -128,6 +129,10 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   // Step in nodes. At 3m per node, a step of 2 gives 6m quads — plenty for a
   // stylised look and it halves the triangle count on mobile.
   const step = quality === 'low' ? 3 : 2;
+
+  // One instance shared by every surface, so the whole circuit samples the same
+  // two textures and adjacent surfaces line up with no seam between them.
+  const detail = new SurfaceDetail();
 
   const road = new StripBuilder();
   const kerbs = new StripBuilder();
@@ -331,7 +336,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       px(i0, hw), py(i0, hw) + Y_LINE, pz(i0, hw),
       COLOUR.startLine,
     );
-    addMesh(root, grid, false, geometries, materials);
+    addMesh(root, grid, false, geometries, materials, detail, SURFACES.paint);
   }
 
   // --- DRS zone markers ----------------------------------------------------
@@ -352,15 +357,15 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
         );
       }
     }
-    addMesh(root, marks, false, geometries, materials);
+    addMesh(root, marks, false, geometries, materials, detail, SURFACES.paint);
   }
 
-  addMesh(root, road, false, geometries, materials);
-  addMesh(root, lines, false, geometries, materials);
-  addMesh(root, kerbs, false, geometries, materials);
-  addMesh(root, runoff, false, geometries, materials);
-  addMesh(root, pit, false, geometries, materials);
-  addMesh(root, walls, true, geometries, materials);
+  addMesh(root, road, false, geometries, materials, detail, SURFACES.asphalt);
+  addMesh(root, lines, false, geometries, materials, detail, SURFACES.paint);
+  addMesh(root, kerbs, false, geometries, materials, detail, SURFACES.kerb);
+  addMesh(root, runoff, false, geometries, materials, detail, SURFACES.runoff);
+  addMesh(root, pit, false, geometries, materials, detail, SURFACES.asphalt);
+  addMesh(root, walls, true, geometries, materials, detail, SURFACES.wall);
 
   // --- Trackside hoardings -------------------------------------------------
   // A continuous ribbon along the barrier line, UV-mapped by distance so the
@@ -396,6 +401,12 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
         const nx = -track.nx[a2] * side;
         const nz = -track.nz[a2] * side;
 
+        // NOTE: the sponsor text currently renders mirrored on the hoardings.
+        // It is not these UVs — negating U here provably reaches the browser
+        // and changes nothing on screen, so the flip is happening somewhere
+        // else in this ribbon's construction. Left as-is rather than patched
+        // blind; see the README's known issues.
+        //
         // Two triangles, wound so the inward face is front-facing on each side.
         const v = side > 0
           ? [[x0, yA, z0, uA, 1], [x1, yB, z1, uB, 1], [x1, yB + BOARD_H, z1, uB, 0],
@@ -542,6 +553,9 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     const mat = new THREE.MeshStandardMaterial({
       color: groundColour(track.def.scenery), roughness: 0.95, metalness: 0,
     });
+    // The ground is the single largest surface in the scene, so it is also the
+    // one where a flat colour is most obvious.
+    detail.apply(mat, track.def.scenery === 'desert' ? SURFACES.runoff : SURFACES.grass);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set((b.minX + b.maxX) * 0.5, Y_GROUND - 0.6, (b.minZ + b.maxZ) * 0.5);
     mesh.receiveShadow = false;
@@ -569,6 +583,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       for (const g of geometries) g.dispose();
       for (const m of materials) m.dispose();
       for (const t of textures) t.dispose();
+      detail.dispose();
       root.clear();
     },
   };
@@ -580,6 +595,8 @@ function addMesh(
   doubleSided: boolean,
   geometries: THREE.BufferGeometry[],
   materials: THREE.Material[],
+  detail: SurfaceDetail,
+  profile: SurfaceProfile,
 ): void {
   const geo = builder.build();
   if (!geo) return;
@@ -587,12 +604,12 @@ function addMesh(
   // is what stops asphalt reading as flat paint next to a reflective car.
   const mat = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    // Slightly glossy asphalt: real track surface has a sheen, and it picks up the
-    // sky, which is what stops a dark road reading as a flat black void.
-    roughness: 0.58,
-    metalness: 0.06,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
   });
+  // Projected grain, roughness break-up and a bump. Without this every surface
+  // is a single flat colour over hundreds of square metres, which no amount of
+  // lighting or post-processing disguises.
+  detail.apply(mat, profile);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.frustumCulled = false; // one object spanning the whole circuit

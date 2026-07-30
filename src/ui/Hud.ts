@@ -3,6 +3,7 @@ import { getCompound } from '../data/tires';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
+import { bandOf, COMPONENT_NAMES, type ComponentId } from '../race/DamageModel';
 
 /**
  * Telemetry HUD, timing tower, team radio and touch overlay.
@@ -29,15 +30,34 @@ interface Row {
   lastText: { pos: string; code: string; gap: string; tyre: string };
 }
 
+/** What the start gantry did this frame. */
+export type StartLightEvent =
+  | { kind: 'none' }
+  | { kind: 'light'; index: number }
+  | { kind: 'go' };
+
 export class Hud {
   readonly root: HTMLElement;
 
   private speed!: HTMLElement;
   private gear!: HTMLElement;
   private rpmFill!: HTMLElement;
+  private rpmValue!: HTMLElement;
   private drsBadge!: HTMLElement;
   private ersFill!: HTMLElement;
+  private ersBadge!: HTMLElement;
   private ersMode!: HTMLElement;
+  private ersPercent!: HTMLElement;
+
+  /** Damage panel: one SVG part per component. */
+  private damagePanel!: HTMLElement;
+  private readonly damageParts = new Map<ComponentId, SVGElement>();
+  private damageSummary!: HTMLElement;
+
+  /** Sector board: latest and best rows, plus the running delta. */
+  private sectorLatest: HTMLElement[] = [];
+  private sectorBest: HTMLElement[] = [];
+  private sectorDelta!: HTMLElement;
   private fuel!: HTMLElement;
   private fuelDelta!: HTMLElement;
   private lapCounter!: HTMLElement;
@@ -68,6 +88,10 @@ export class Hud {
   private diagnostics!: HTMLElement;
 
   private tower!: HTMLElement;
+  private startLights!: HTMLElement;
+  private readonly startBulbs: HTMLElement[][] = [];
+  /** Lights lit last frame, so each transition fires exactly once. */
+  private litCount = -1;
   private rows: Row[] = [];
 
   private buttonBar!: HTMLElement;
@@ -143,34 +167,71 @@ export class Hud {
       this.sectorEls.push(this.el('hud-sector', sectors, 'S' + (i + 1)));
     }
 
+    // --- Start lights -------------------------------------------------------
+    // Five red lights illuminate one per second, then all go out together.
+    // The release is the lights going OUT, not a green — getting this wrong is
+    // the fastest way to tell someone you have never watched a Grand Prix.
+    this.startLights = this.el('hud-startlights hidden', this.root);
+    for (let i = 0; i < 5; i++) {
+      const col = this.el('hud-lightcol', this.startLights);
+      // Two bulbs per column, as on the real gantry.
+      this.startBulbs.push([
+        this.el('hud-bulb', col),
+        this.el('hud-bulb', col),
+      ]);
+    }
+
     // --- Top right: timing tower ------------------------------------------
     this.tower = this.el('hud-panel hud-tower', this.root);
 
-    // --- Bottom centre: speed, gear, rpm ----------------------------------
-    const bottom = this.el('hud-panel hud-bottom', this.root);
+    // --- Bottom centre: the wheel display ---------------------------------
+    //
+    // Laid out like a real steering-wheel dash rather than a games HUD: a big
+    // gear numeral in its own disc on the left, the numeric readouts in a row
+    // beside it, and the shift lights curving across the top. The gear is the
+    // thing a driver checks most often and the only item legible at a glance
+    // in peripheral vision, which is why it gets the largest, highest-contrast
+    // element rather than the speed.
+    const bottom = this.el('hud-panel hud-wheel', this.root);
 
-    // Discrete shift lights rather than a continuous bar. A real F1 wheel has a
-    // row of LEDs that fill green-amber-red and then flash at the limiter, and it
-    // is far easier to read at a glance than a sliding bar — you learn the
-    // position of the light you shift on.
+    // Shift lights across the top edge. Green to amber to red, then flashing
+    // at the limiter — you learn the position of the light you shift on, which
+    // is faster to read than any bar.
     const ledRow = this.el('hud-leds', bottom);
     for (let i = 0; i < 15; i++) {
       this.leds.push(this.el('hud-led', ledRow));
     }
-    const rpmBar = this.el('hud-rpmbar', bottom);
+
+    const wheelRow = this.el('hud-wheelrow', bottom);
+
+    const gearDisc = this.el('hud-geardisc', wheelRow);
+    this.gear = this.el('hud-gear', gearDisc, 'N');
+
+    const stats = this.el('hud-wheelstats', wheelRow);
+    const speedCell = this.el('hud-cell', stats);
+    this.el('hud-celllabel', speedCell, 'KMH');
+    this.speed = this.el('hud-cellvalue', speedCell, '0');
+    const rpmCell = this.el('hud-cell', stats);
+    this.el('hud-celllabel', rpmCell, 'RPM');
+    this.rpmValue = this.el('hud-cellvalue', rpmCell, '0');
+
+    // ERS mode doubles as its own badge: the mode letter is what the driver
+    // actually switches, so it reads as a button rather than a caption.
+    this.ersBadge = this.el('hud-ersbadge', stats);
+    this.ersMode = this.el('hud-ersmodetext', this.ersBadge, 'ERS (B)');
+    this.ersPercent = this.el('hud-erspercent', this.ersBadge, '0%');
+
+    this.drsBadge = this.el('hud-drs', wheelRow, 'DRS');
+
+    // The rpm bar sits under everything as a thin trace, and the ERS store
+    // beside it — both are continuous quantities, so a bar is the right form.
+    const bars = this.el('hud-wheelbars', bottom);
+    const rpmBar = this.el('hud-rpmbar', bars);
     this.rpmFill = this.el('hud-rpmfill', rpmBar);
-
-    const readout = this.el('hud-readout', bottom);
-    const speedBlock = this.el('hud-speedblock', readout);
-    this.speed = this.el('hud-speed', speedBlock, '0');
-    this.el('hud-speedunit', speedBlock, 'KM/H');
-    this.gear = this.el('hud-gear', readout, 'N');
-
-    const rightBlock = this.el('hud-rightblock', readout);
-    this.drsBadge = this.el('hud-drs', rightBlock, 'DRS');
-    const ersBar = this.el('hud-ersbar', rightBlock);
+    const ersRow = this.el('hud-ersrow', bars);
+    this.el('hud-erslabel', ersRow, 'ERS');
+    const ersBar = this.el('hud-ersbar', ersRow);
     this.ersFill = this.el('hud-ersfill', ersBar);
-    this.ersMode = this.el('hud-ersmode', rightBlock, 'BALANCED');
 
     // --- Bottom left: tyres and fuel --------------------------------------
     const carPanel = this.el('hud-panel hud-carstate', this.root);
@@ -193,6 +254,12 @@ export class Hud {
     const fuelRow = this.el('hud-fuelrow', carPanel);
     this.fuel = this.el('hud-fuel', fuelRow, 'FUEL --.-L');
     this.fuelDelta = this.el('hud-fueldelta', fuelRow, '');
+
+    // --- Damage panel -------------------------------------------------------
+    this.buildDamagePanel();
+
+    // --- Sector board -------------------------------------------------------
+    this.buildSectorBoard();
 
     // --- Gaps -------------------------------------------------------------
     const gaps = this.el('hud-panel hud-gaps', this.root);
@@ -265,6 +332,209 @@ export class Hud {
    * Updates every readout. Called once per rendered frame.
    * Writes only values that changed.
    */
+  /**
+   * A top-down car diagram, one shape per damaged component.
+   *
+   * Drawn as inline SVG rather than as a grid of labelled bars because damage
+   * is fundamentally spatial: "front left" means something instantly on a
+   * picture of a car and needs reading on a list. Each shape carries the id of
+   * the component it represents, so the update loop only rewrites a fill colour
+   * and never touches layout.
+   */
+  private buildDamagePanel(): void {
+    this.damagePanel = this.el('hud-panel hud-damage', this.root);
+    this.el('hud-damagetitle', this.damagePanel, 'CAR');
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 170');
+    svg.setAttribute('class', 'hud-damagesvg');
+    this.damagePanel.appendChild(svg);
+
+    // A part is a rounded rect or polygon in car-space: nose at the top,
+    // gearbox at the bottom, mirroring the view a pit wall screen would show.
+    const part = (id: ComponentId, tag: 'rect' | 'polygon', attrs: Record<string, string>) => {
+      const e = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+      e.setAttribute('class', 'dmg-part');
+      svg.appendChild(e);
+      this.damageParts.set(id, e);
+    };
+
+    // Chassis spine — not a component, just context so the parts read as a car.
+    const spine = document.createElementNS(NS, 'rect');
+    for (const [k, v] of Object.entries({ x: '43', y: '26', width: '14', height: '96', rx: '5' })) {
+      spine.setAttribute(k, v);
+    }
+    spine.setAttribute('class', 'dmg-chassis');
+    svg.appendChild(spine);
+
+    part('frontWingL', 'rect', { x: '8', y: '8', width: '32', height: '13', rx: '3' });
+    part('frontWingR', 'rect', { x: '60', y: '8', width: '32', height: '13', rx: '3' });
+    part('suspFL', 'rect', { x: '10', y: '28', width: '20', height: '22', rx: '4' });
+    part('suspFR', 'rect', { x: '70', y: '28', width: '20', height: '22', rx: '4' });
+    part('sidepodL', 'rect', { x: '16', y: '66', width: '24', height: '44', rx: '6' });
+    part('sidepodR', 'rect', { x: '60', y: '66', width: '24', height: '44', rx: '6' });
+    part('floor', 'rect', { x: '38', y: '74', width: '24', height: '46', rx: '5' });
+    part('engine', 'rect', { x: '40', y: '112', width: '20', height: '20', rx: '4' });
+    part('suspRL', 'rect', { x: '8', y: '122', width: '22', height: '26', rx: '4' });
+    part('suspRR', 'rect', { x: '70', y: '122', width: '22', height: '26', rx: '4' });
+    part('gearbox', 'rect', { x: '42', y: '134', width: '16', height: '14', rx: '3' });
+    part('rearWing', 'rect', { x: '20', y: '150', width: '60', height: '12', rx: '3' });
+
+    this.damageSummary = this.el('hud-damagesummary', this.damagePanel, 'OK');
+  }
+
+  /**
+   * Latest and best sector times, with the live delta.
+   *
+   * Two rows one above the other so the comparison is vertical and needs no
+   * arithmetic: the sector you just set sits directly above your best for the
+   * same sector. Colour carries the verdict — purple for an overall best,
+   * green for a personal best, yellow for anything slower.
+   */
+  private buildSectorBoard(): void {
+    const board = this.el('hud-panel hud-sectorboard', this.root);
+
+    const latestRow = this.el('hud-sectorrow', board);
+    this.el('hud-sectorrowlabel', latestRow, 'LATEST');
+    const bestRow = this.el('hud-sectorrow', board);
+    this.el('hud-sectorrowlabel', bestRow, 'BEST');
+    const headRow = this.el('hud-sectorrow hud-sectorhead', board);
+    this.el('hud-sectorrowlabel', headRow, '');
+
+    for (let i = 0; i < 3; i++) {
+      this.sectorLatest.push(this.el('hud-sectorcell', latestRow, '--.---'));
+      this.sectorBest.push(this.el('hud-sectorcell', bestRow, '--.---'));
+      this.el('hud-sectorcell hud-sectorname', headRow, 'S' + (i + 1));
+    }
+
+    const deltaRow = this.el('hud-deltarow', board);
+    this.el('hud-deltalabel', deltaRow, 'DELTA');
+    this.sectorDelta = this.el('hud-deltavalue', deltaRow, '--.---');
+  }
+
+  /**
+   * Colours each part of the car diagram by its component's health.
+   *
+   * Writes only a class per part, and only when the band changes. Health moves
+   * continuously under kerb wear, so writing a fresh fill colour every frame
+   * would touch twelve SVG elements sixty times a second for a difference
+   * nobody can see; four discrete bands are all the eye resolves anyway.
+   */
+  private updateDamage(player: CarEntry): void {
+    const d = player.damage;
+    for (const [id, el] of this.damageParts) {
+      const cls = 'dmg-part dmg-' + bandOf(d.health[id]);
+      if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
+    }
+
+    // The summary names the single worst part, because that is the decision the
+    // driver actually has to make — whether this is worth pitting for.
+    const worst = d.worst();
+    const band = bandOf(worst.health);
+    const text = band === 'ok'
+      ? 'OK'
+      : COMPONENT_NAMES[worst.id].toUpperCase() + '  ' + Math.round(worst.health * 100) + '%';
+    setText(this.damageSummary, text);
+    setClass(this.damageSummary, 'hud-damagesummary dmg-text-' + band);
+  }
+
+  /**
+   * Latest and best sector times, and the delta to the personal best lap.
+   *
+   * The sector in progress is shown live rather than left blank until it is
+   * completed, so the board is useful mid-sector instead of only three times a
+   * lap.
+   */
+  private updateSectorBoard(engine: RaceEngine, player: CarEntry): void {
+    const active = player.currentSectorIndex;
+
+    for (let i = 0; i < 3; i++) {
+      const last = player.lastSectors[i];
+      const best = player.bestSectors[i];
+
+      // The sector being driven shows its running time; completed sectors of
+      // the current lap show what was actually set on this lap.
+      let latest = last;
+      let live = false;
+      if (i === active) {
+        latest = player.currentSectorElapsed(engine.time);
+        live = true;
+      } else if (i < active && player.currentSectors[i] > 0) {
+        latest = player.currentSectors[i];
+      }
+
+      setText(this.sectorLatest[i], latest > 0 ? latest.toFixed(3) : '--.---');
+      setText(this.sectorBest[i], best > 0 ? best.toFixed(3) : '--.---');
+
+      // Purple for a session best, green for a personal best, plain otherwise.
+      let cls = 'hud-sectorcell';
+      if (live) cls += ' live';
+      else if (latest > 0 && best > 0) {
+        if (latest <= best + 1e-4) {
+          cls += engine.isSessionBestSector(i, latest) ? ' purple' : ' green';
+        } else cls += ' yellow';
+      }
+      setClass(this.sectorLatest[i], cls);
+    }
+
+    // Delta to the personal best lap, live.
+    const delta = player.bestLapTime > 0 ? player.deltaToBest(engine.time) : 0;
+    if (player.bestLapTime > 0) {
+      setText(this.sectorDelta, (delta >= 0 ? '+' : '') + delta.toFixed(3));
+      setClass(this.sectorDelta, 'hud-deltavalue ' + (delta < 0 ? 'green' : 'yellow'));
+    } else {
+      setText(this.sectorDelta, '--.---');
+      setClass(this.sectorDelta, 'hud-deltavalue');
+    }
+  }
+
+  /**
+   * Drives the start gantry.
+   *
+   * Returns an event rather than a state so the caller can fire the beep and
+   * the flash on exactly the frame they happen, without keeping its own copy of
+   * the sequence's progress and risking the two drifting apart.
+   *
+   * @param remaining seconds until the lights go out
+   */
+  updateStartLights(remaining: number, started: boolean): StartLightEvent {
+    if (started || remaining <= 0) {
+      const wasCounting = this.litCount >= 0;
+      if (wasCounting) {
+        this.startLights.classList.add('hidden');
+        this.litCount = -1;
+        // The release is the lights going OUT, not a green light. Getting that
+        // wrong is the fastest way to tell someone you have never watched a
+        // Grand Prix.
+        return { kind: 'go' };
+      }
+      return { kind: 'none' };
+    }
+
+    this.startLights.classList.remove('hidden');
+    // Counting down from five: one more light every second.
+    //
+    // Indexed off elapsed time, not off `ceil(remaining)`. The latter is a
+    // one-second-late off-by-one — it leaves the gantry dark for the first
+    // second and the fifth light never comes on at all, because `remaining`
+    // reaches zero while its ceiling is still 1.
+    const elapsed = 5 - remaining;
+    const lit = Math.min(5, Math.max(0, Math.floor(elapsed) + 1));
+    if (lit === this.litCount) return { kind: 'none' };
+
+    for (let i = 0; i < 5; i++) {
+      const on = i < lit;
+      for (const bulb of this.startBulbs[i]) {
+        setClass(bulb, 'hud-bulb' + (on ? ' on' : ''));
+      }
+    }
+    const lighting = lit > this.litCount && lit > 0;
+    this.litCount = lit;
+    return lighting ? { kind: 'light', index: lit } : { kind: 'none' };
+  }
+
   update(engine: RaceEngine, player: CarEntry, input: InputController, fps: number, drawCalls: number): void {
     const p = player.physics;
 
@@ -298,9 +568,16 @@ export class Hud {
       : p.drsAvailable ? 'hud-drs drs-armed' : 'hud-drs';
     setClass(this.drsBadge, drsClass);
 
+    setText(this.rpmValue, Math.round(p.rpm).toString());
+
     // --- ERS --------------------------------------------------------------
     setStyle(this.ersFill, 'width', (p.ersChargePercent * 100).toFixed(1) + '%');
-    setText(this.ersMode, input.ersMode.toUpperCase());
+    // Single-letter mode, as on the wheel: H(arvest), B(alanced), P(ush),
+    // O(vertake). The full word does not fit and is not what the driver reads.
+    const mode = input.ersMode.toUpperCase();
+    setText(this.ersMode, 'ERS (' + mode.charAt(0) + ')');
+    setText(this.ersPercent, Math.round(p.ersChargePercent * 100) + '%');
+    setClass(this.ersBadge, 'hud-ersbadge ers-' + input.ersMode);
 
     // --- Fuel -------------------------------------------------------------
     setText(this.fuel, 'FUEL ' + p.fuelRemaining.toFixed(1) + 'L');
@@ -370,6 +647,9 @@ export class Hud {
       const isBest = st > 0 && Math.abs(st - player.bestSectors[i]) < 1e-4;
       setClass(this.sectorEls[i], 'hud-sector ' + (isBest ? 'purple' : st > 0 ? 'set' : ''));
     }
+
+    this.updateSectorBoard(engine, player);
+    this.updateDamage(player);
 
     // --- Gaps -------------------------------------------------------------
     const ahead = player.perception.ahead;

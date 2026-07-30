@@ -27,6 +27,43 @@ behind a button rather than triggered on load).
 
 ---
 
+## Presentation
+
+Everything below is generated at runtime. There are no audio files, no texture
+files, and no models — the entire download is code.
+
+**Audio** (`src/audio/AudioEngine.ts`). The engine's firing frequency is computed
+from the crankshaft speed the physics reports, so it tracks load and rpm exactly
+rather than crossfading between recorded samples. Layers: harmonic engine voice with
+throttle-dependent timbre, turbo spool, wastegate flutter, overrun crackle on a
+closed throttle, rev-limiter chop, tyre squeal driven by contact-patch slip speed,
+surface scrub, aero noise rising with v², and the nearest five rivals as
+distance-attenuated, Doppler-shifted voices.
+
+**Particles** (`src/render/ParticleSystem.ts`). Simulated entirely on the GPU: each
+particle stores its birth state and the vertex shader evaluates a closed-form
+trajectory with exponential drag, so the CPU touches a particle once, when it spawns.
+Tyre smoke, dust, gravel, rain spray, sparks and exhaust flame.
+
+**Skid marks** (`src/render/SkidMarks.ts`). A preallocated ring of quads stamped when
+a tyre slips, drawn in one call, never rebuilt.
+
+**Surface detail** (`src/render/SurfaceDetail.ts`). World-XZ projected grain, bump
+and roughness break-up injected into the standard material, so it keeps real shadows,
+the environment probe and fog. Two incommensurate tiling scales, so the texture's
+repeat period is never visible down a straight.
+
+**Post-processing** (`src/render/PostFX.ts`). Bloom before tone mapping — the order
+matters, since scattering is proportional to real radiance and a tone-mapped spark is
+indistinguishable from white bodywork. Then radial speed blur, chromatic aberration
+and vignette in one pass. Disabled entirely on the low-quality tier.
+
+Effects read quantities the physics already computes for its own purposes, so they
+cannot disagree with the handling: the smoke that appears when you lock a front is
+drawn from the same slip speed that is costing you braking distance.
+
+---
+
 ## What makes it a simulation
 
 The claim worth defending is that nothing important is faked. Specifically:
@@ -173,6 +210,21 @@ simulation. Lap times stay correct because they are measured in simulation time.
 
 **Qualifying is a single session**, not the Q1/Q2/Q3 elimination format.
 
+**`npm run validate` currently fails.** Bahrain and Jeddah finish with zero
+classified cars, Monaco's AI laps at 191% of the solved reference, and a 30-lap race
+records no pit stops at all. These are simulation-layer faults, not rendering ones,
+and they are the largest outstanding problem in the project — the presentation is
+now well ahead of the racing it presents.
+
+**Damage is repairable only in part.** A pit stop replaces the nose and the
+bodywork the crew can reach; floor, suspension and power-unit damage stays with the
+car for the rest of the race, because those are not parts anyone changes in three
+seconds. A damaged nose adds 9-14s to the stop.
+
+**Sponsor text on the trackside hoardings renders mirrored.** The cause is not the
+ribbon's UVs: negating them provably reaches the browser and changes nothing on
+screen, so the flip happens elsewhere in that mesh's construction. Not yet found.
+
 ---
 
 ## Layout
@@ -184,10 +236,12 @@ src/
   track/        spline, solved racing line, solved speed profile
   physics/      slip-angle vehicle model, tyre thermal and wear model
   ai/           driver FSM: LINE_FOLLOWER / OVERTAKE / DEFEND / FOLLOW / RECOVER / PIT
-  race/         race engine, race control, car entries, timing
+  race/         race engine, race control, car entries, timing, component damage
+  audio/        procedural engine, tyre, aero and rival-car synthesis (no audio files)
   render/       procedural track and car meshes, camera director, dynamic resolution
+                GPU particles, skid marks, surface detail, post-processing chain
   input/        unified keyboard / gamepad / touch / tilt
-  ui/           telemetry HUD, timing tower, team radio
+  ui/           telemetry HUD, wheel display, damage panel, sector board, paddock
   career/       F3→F1 ladder, JSON narrative events, versioned saves
 scripts/        validation and calibration harnesses
 ```

@@ -190,6 +190,20 @@ export class VehiclePhysics {
   /** Lateral force each axle is currently using, N. */
   frontLateralN = 0;
   rearLateralN = 0;
+  /**
+   * Contact-patch slip speed per axle, m/s.
+   *
+   * Already computed for the tire thermal model; published here because it is
+   * the correct trigger for everything the player hears and sees when a tire
+   * gives up. Smoke density, squeal volume and skid-mark opacity are all
+   * functions of how fast rubber is moving across asphalt, so driving them from
+   * this number means the effects agree with the physics instead of guessing
+   * from steering angle.
+   */
+  frontSlipSpeed = 0;
+  rearSlipSpeed = 0;
+  /** Rear-axle wheelspin, 0..1: throttle demand beyond the traction limit. */
+  wheelSpin = 0;
 
   /**
    * Throttle fraction at which the rear axle starts to spin up.
@@ -649,6 +663,17 @@ export class VehiclePhysics {
     // Slip speed at the contact patch drives both heating and wear.
     const frontSlipSpeed = Math.abs(alphaFront) * vRef + Math.abs(fxFront) / Math.max(capFront, 1) * 2.2;
     const rearSlipSpeed = Math.abs(alphaRear) * vRef + Math.abs(fxRear) / Math.max(capRear, 1) * 3.0;
+    this.frontSlipSpeed = frontSlipSpeed;
+    this.rearSlipSpeed = rearSlipSpeed;
+
+    // Wheelspin: throttle asked for more than the rear axle can put down. The
+    // traction limit is already derived from live grip and downforce, so this
+    // lights up on corner exit and off the line, and not on a flat-out straight
+    // where the same throttle is comfortably within budget.
+    const tractionLimit = this.tractionLimitFraction;
+    this.wheelSpin = c.throttle > tractionLimit
+      ? clamp01((c.throttle - tractionLimit) / Math.max(1 - tractionLimit, 0.05))
+      : 0;
 
     this.frontTires.update(dt, frontSlipSpeed, loadFront, staticFront, env.trackTempC, env.wetness, env.abrasion);
     this.rearTires.update(dt, rearSlipSpeed, loadRear, staticRear, env.trackTempC, env.wetness, env.abrasion);
