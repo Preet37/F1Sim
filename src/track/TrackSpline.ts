@@ -47,8 +47,8 @@ export interface SpeedSolverParams {
  * `npm run calibrate` against real pole times across the whole calendar.
  */
 export const REFERENCE_CAR = {
-  mu: 1.70,
-  maxBrakeForceN: 38_000,
+  mu: 1.86,
+  maxBrakeForceN: 36_000,
   massKg: 850,
   powerW: 600_000,
   /** Downforce coefficient at the low-downforce (Monza) and high (Monaco) ends. */

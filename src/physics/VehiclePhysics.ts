@@ -186,9 +186,10 @@ export class VehiclePhysics {
    * light up the rears and lose two tenths.
    */
   get tractionLimitFraction(): number {
-    const speed = Math.max(this.speedMs, 2);
+    const spec = this.spec;
+
     // Longitudinal force the rear axle has left AFTER what cornering is already
-    // using — the friction circle, applied to the pedal rather than only to the
+    // using — the friction circle applied to the pedal rather than only to the
     // resulting force. An AI that ignores this floors the throttle mid-corner,
     // spends the rear's whole budget on acceleration, and spins.
     const cap = this.capRearN;
@@ -196,9 +197,23 @@ export class VehiclePhysics {
     const remainingSq = cap * cap - lat * lat;
     const maxForce = remainingSq > 0 ? Math.sqrt(remainingSq) : 0;
 
-    const forceAtFullThrottle = (this.spec.icePowerW + this.spec.ersPowerW) * this.spec.driveEfficiency / speed;
-    if (forceAtFullThrottle <= 1) return 1;
-    return clamp(maxForce / forceAtFullThrottle, 0.08, 1);
+    // Force the drivetrain would actually deliver at full throttle right now,
+    // computed with the SAME min(torque, power) expression step() uses.
+    //
+    // Using only the power term is wrong at low speed, where the gearbox is
+    // torque-limited: at 3 m/s in first gear the power term says 210kN and the
+    // torque term says 78kN. Overestimating available force by 2.7x makes the
+    // permitted throttle 2.7x too small, and a "modulated" launch ends up slower
+    // than simply flooring it — the opposite of the intended behaviour.
+    const gearRatio = spec.gearRatios[this.gear - 1] ?? spec.gearRatios[0];
+    const totalPower = spec.icePowerW * torqueCurve(this.rpm / spec.redlineRpm) + spec.ersPowerW;
+    const fromTorque =
+      (totalPower / Math.max(this.rpm * 0.10472, 1)) * gearRatio * spec.driveEfficiency / spec.tireRadiusM;
+    const fromPower = (totalPower * spec.driveEfficiency) / Math.max(Math.abs(this.localVelX), 3);
+    const atFullThrottle = Math.min(fromTorque, fromPower);
+
+    if (atFullThrottle <= 1) return 1;
+    return clamp(maxForce / atFullThrottle, 0.02, 1);
   }
 
   /**

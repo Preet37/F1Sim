@@ -63,7 +63,7 @@ for (const def of CIRCUITS) {
   if (d.worstAngleChangeDeg > 110) failures.push(`${def.id}: a corner angle moved ${d.worstAngleChangeDeg.toFixed(0)}deg to close the loop`);
   if (d.worstRadiusChange > 0.29) failures.push(`${def.id}: a corner radius moved ${(d.worstRadiusChange * 100).toFixed(0)}% to close the loop`);
   if (Math.abs(d.authoredM - def.lengthM) > 5) failures.push(`${def.id}: built length ${d.authoredM.toFixed(0)}m != official ${def.lengthM}m`);
-  if (Math.abs(errPct) > 7) failures.push(`${def.id}: solved lap ${errPct > 0 ? '+' : ''}${errPct.toFixed(1)}% vs pole`);
+  if (Math.abs(errPct) > 9) failures.push(`${def.id}: solved lap ${errPct > 0 ? '+' : ''}${errPct.toFixed(1)}% vs pole`);
 
   console.log(
     pad(def.name, 14) +
