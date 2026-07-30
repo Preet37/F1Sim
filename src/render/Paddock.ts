@@ -445,6 +445,23 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     }
     monitor.dispose();
 
+    // A spare chassis on stands under a cover. The strongest single cue that
+    // a garage is a garage and not an alcove: something car-shaped, up off
+    // the floor, with the crew's kit around it.
+    if (!low) {
+      const cover = chamferBox(1.85, 0.62, 4.6, 0.12);
+      bay.add(cover, 0xdfe3e8, 5.6, 1.05, z0 + 6.4);
+      cover.dispose();
+      const nose = chamferBox(1.1, 0.34, 1.5, 0.1);
+      bay.add(nose, accent.getHex(), 5.6, 0.98, z0 + 3.6);
+      nose.dispose();
+      const stand = chamferBox(0.5, 0.75, 0.5, 0);
+      for (const dz of [-1.7, 1.7]) {
+        bay.add(stand, STEEL_DARK, 5.6, 0.37, z0 + 6.4 + dz);
+      }
+      stand.dispose();
+    }
+
     // Tool chest and the wheel-gun trolley.
     const chest = chamferBox(1.9, 1.0, 0.75, 0.05);
     bay.add(chest, accent.getHex(), -half + 3.4, 0.6, z1 - 1.0);
@@ -580,11 +597,22 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
       const m = frameAt(s, frontLat);
       const seg = new PartsBin();
       const segGlass = new PartsBin();
+      const segLights = new PartsBin();
 
       // Floor slab, cantilevered forward over the apron as a canopy.
       const slab = chamferBox(segLen, 0.55, BAY_DEPTH + 5.4, 0.07);
       seg.add(slab, CONCRETE, 0, y0 + 0.27, BAY_DEPTH * 0.5 - 0.6);
       slab.dispose();
+      // A soffit under it. The canopy hangs over the lane at eye level for
+      // most of the opening seconds of a session, and a bare slab underside
+      // lit only by bounce comes back as a blank white ceiling filling the
+      // top of the frame.
+      const soffitPanel = chamferBox(segLen - 0.3, 0.14, BAY_DEPTH + 5.0, 0);
+      seg.add(soffitPanel, 0x7d848c, 0, y0 - 0.06, BAY_DEPTH * 0.5 - 0.6);
+      soffitPanel.dispose();
+      const downlight = chamferBox(segLen - 5, 0.06, 0.3, 0);
+      segLights.add(downlight, 0xfff0d4, 0, y0 - 0.14, -1.4);
+      downlight.dispose();
 
       // Glazed front wall, set back behind a balcony.
       const balconyZ = 1.0;
@@ -667,6 +695,8 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
       if (g) { g.applyMatrix4(m); upper.addPrepared(g); }
       const gg = segGlass.merge();
       if (gg) { gg.applyMatrix4(m); upperGlass.addPrepared(gg); }
+      const gl = segLights.merge();
+      if (gl) { gl.applyMatrix4(m); lights.addPrepared(gl); }
     }
 
     const g = upper.merge();

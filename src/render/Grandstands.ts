@@ -178,7 +178,7 @@ function crowdGeometry(o: GrandstandOptions, seatY: number[]): THREE.BufferGeome
       for (const a of aisleAt) if (Math.abs(f - a) < 0.022) inAisle = true;
       if (inAisle) continue;
       // Empty seats, more of them at the extreme ends and the very back.
-      const occupancy = 0.93 - Math.abs(f - 0.5) * 0.35 - (r / rows) * 0.12;
+      const occupancy = 0.96 - Math.abs(f - 0.5) * 0.28 - (r / rows) * 0.1;
       if (rnd() > occupancy) continue;
 
       const z = (f - 0.5) * width + (rnd() - 0.5) * crowdSpacing * 0.35;
@@ -225,11 +225,11 @@ export function buildGrandstandGeometry(o: GrandstandOptions): THREE.BufferGeome
   // point: the flashes of seat colour showing through the gaps are what makes
   // the crowd read as sitting in something.
   const seatY: number[] = [];
-  const seatBand = chamferBox(0.42, 0.36, width - 0.4, 0);
+  const seatBand = chamferBox(0.52, 0.4, width - 0.4, 0);
   for (let r = 0; r < rows; r++) {
     const y = front + r * rise;
     seatY.push(y);
-    bin.add(seatBand, o.seatColour, r * tread + tread * 0.72, y + 0.18, 0);
+    bin.add(seatBand, o.seatColour, r * tread + tread * 0.7, y + 0.2, 0);
   }
   seatBand.dispose();
 
@@ -349,7 +349,7 @@ export function grandstandPreset(
       tread: 0.95,
       rise: 0.48,
       roof: true,
-      crowdSpacing: low ? 1.6 : 0.85,
+      crowdSpacing: low ? 1.6 : 0.74,
       aisles: 3,
       seatColour: 0x1d4f8c,
       seed,
@@ -361,7 +361,7 @@ export function grandstandPreset(
     tread: 0.95,
     rise: 0.46,
     roof: true,
-    crowdSpacing: low ? 1.8 : 1.0,
+    crowdSpacing: low ? 1.8 : 0.8,
     aisles: 1,
     seatColour: 0x2f6f5a,
     seed,
