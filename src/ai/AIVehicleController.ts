@@ -218,9 +218,22 @@ export class AIVehicleController {
   /** Previous steering output, for the rate limiter. */
   private lastSteer = 0;
 
+  /**
+   * How much margin this circuit demands, 0..1, applied to cornering speed.
+   *
+   * What forgives a tracking error is RUN-OFF, not track width. The margin used
+   * to be derived from the width alone, which gets Monaco right by accident and
+   * Jeddah completely wrong: Jeddah is a wide circuit lined with walls, so the
+   * AI committed to it as though it were Silverstone and fifteen of twenty cars
+   * retired against the barriers in a five-lap race. Half a metre of error
+   * costs nothing on a permanent circuit and ends the race on a street one.
+   */
+  private readonly runoffCaution: number;
+
   constructor(driver: Driver, track: TrackSpline, seed: number) {
     this.driver = driver;
     this.track = track;
+    this.runoffCaution = track.def.scenery === 'street' ? 0.96 : 1.0;
     this.rng = new Rng(seed);
     this.profile = profileFor(driver, 0);
     this.errorPhase = this.rng.range(0, 100);
@@ -967,6 +980,7 @@ export class AIVehicleController {
     // same driver commits less on the narrow one.
     const widthHere = track.width[track.indexAt(sAt)];
     commitment *= lerp(0.94, 1.0, clamp01((widthHere - 9.5) / 5));
+    commitment *= this.runoffCaution;
     // A recent excursion makes a driver cautious for a while.
     if (this.shakenTimer > 0) commitment *= 0.94;
     commitment *= AI_TUNING.commitmentScale;
