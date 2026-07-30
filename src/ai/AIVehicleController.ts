@@ -136,7 +136,29 @@ function profileFor(d: Driver, wetness: number): DriverProfile {
  * reliable than reasoning about it — the value that works is a property of the
  * controller's tracking accuracy, not something derivable from the physics.
  */
-export const AI_TUNING = { commitmentScale: 0.92 };
+export const AI_TUNING = {
+  /** How close to its computed cornering limit the whole field runs. */
+  commitmentScale: 0.90,
+  /**
+   * Share of the rear axle's remaining longitudinal capacity the AI will use.
+   *
+   * `tractionLimitFraction` is the pedal at which the rears begin to spin, so
+   * sitting exactly on it leaves the tire at the edge of its friction circle
+   * with nothing in reserve for the lateral force the corner still needs.
+   */
+  throttleShare: 1.03,
+  /** Share of the lock-up-limited brake pedal the AI will use. */
+  brakeShare: 0.98,
+};
+
+/**
+ * Fraction of the tires' grip circle a driver commits to STRAIGHT-LINE braking.
+ *
+ * Not 1.0, because a braking zone is never perfectly straight and the car is
+ * already turning in by the end of it. Not the old 0.72 either — that reserved
+ * so much grip that the AI began braking half again as early as it needed to.
+ */
+const BRAKING_GRIP_SHARE = 0.9;
 
 /** How often the FSM re-evaluates its state, in seconds. */
 const DECISION_INTERVAL = 0.1;
@@ -170,6 +192,10 @@ export class AIVehicleController {
   private formNoise = 0;
   /** Counts down after an off-track moment; the driver backs off while it runs. */
   private shakenTimer = 0;
+  /** How long the car has been at a standstill while trying to recover. */
+  private stallTimer = 0;
+  /** Seconds left of a deliberate reversing manoeuvre. */
+  private reverseTimer = 0;
 
   /**
    * FIA regulations allow one change of direction to defend a position. This
@@ -446,6 +472,7 @@ export class AIVehicleController {
     const track = this.track;
     const c = this.controls;
     const speed = car.speedMs;
+    c.reverse = false;
 
     // Aim at the racing line ahead. The look-ahead scales with speed for the same
     // reason it does in normal driving: a fixed short target at 120km/h demands a
@@ -459,13 +486,41 @@ export class AIVehicleController {
 
     const facingBackwards = Math.abs(err) > 1.9;
 
-    if (facingBackwards && speed < 6) {
-      // Stopped and pointing the wrong way: the only way out is to reverse while
-      // turning. Handled as a hard-locked, low-speed manoeuvre.
-      c.throttle = 0;
-      c.brake = 0.3;
-      c.steer = this.slewSteer(clamp(err * 1.2, -1, 1), dt);
-    } else if (speed > 14) {
+    // --- Getting unstuck ---------------------------------------------------
+    // A car that has stopped is the most destructive thing that can happen to a
+    // race: it holds a local yellow, which keeps the safety car out, which stops
+    // anybody ever completing the distance.
+    //
+    // This branch used to set `throttle = 0` and `brake = 0.3`, with a comment
+    // saying "the only way out is to reverse" — but it never set the reverse
+    // control, so the car simply sat there for the rest of the session. At
+    // Monaco the lead car did exactly that on its first lap every single time,
+    // which is why that circuit never recorded a lap at all.
+    if (speed < 2.5) this.stallTimer += dt; else this.stallTimer = 0;
+    if (this.reverseTimer <= 0 && this.stallTimer > 1.0) {
+      this.reverseTimer = facingBackwards ? 2.6 : 1.4;
+      this.stallTimer = 0;
+    }
+
+    if (this.reverseTimer > 0 && speed < 9) {
+      this.reverseTimer -= dt;
+      // Back up under power, steering to swing the nose toward the track. A
+      // reversing car rotates the opposite way for a given lock, hence the sign
+      // flip against the forward case below.
+      c.reverse = true;
+      c.throttle = 0.85;
+      c.brake = 0;
+      c.steer = this.slewSteer(clamp(err * 1.3, -1, 1), dt);
+      c.gearRequest = 0;
+      c.drsRequested = false;
+      c.ersMode = 'harvest';
+      c.pitLimiter = false;
+      this.smoothedLateral = lateral;
+      return;
+    }
+    this.reverseTimer = 0;
+
+    if (speed > 14) {
       // Still carrying real speed. If the car is sideways, the first job is to
       // catch it, and you catch a slide by steering toward where the car is
       // actually travelling — not toward where you want to go. Only once the nose
@@ -502,6 +557,28 @@ export class AIVehicleController {
     this.smoothedLateral = lateral;
   }
 
+  /**
+   * Linearly interpolated sample of a per-node track array.
+   *
+   * The track is stored every three metres and `indexAt` floors, so reading
+   * `lineOffset[indexAt(s)]` gives a staircase. For rendering that is
+   * invisible; for a control loop it is not. In a 13m-radius hairpin the
+   * centreline heading changes 0.23 radians between adjacent nodes, so the
+   * cross-track error the controller measures is a sawtooth riding on top of
+   * the real signal — and the controller faithfully steers against it.
+   * Interpolating costs two array reads and removes the whole effect.
+   */
+  private sample(arr: Float32Array, s: number): number {
+    const { length, count } = this.track;
+    let u = s / length;
+    u -= Math.floor(u);
+    u *= count;
+    const i0 = Math.floor(u);
+    const f = u - i0;
+    const i1 = i0 + 1 >= count ? 0 : i0 + 1;
+    return arr[i0] * (1 - f) + arr[i1] * f;
+  }
+
   /** Largest curvature within `distance` metres ahead. Signs the corner. */
   private upcomingCurvature(s: number, distance: number): number {
     const track = this.track;
@@ -532,7 +609,9 @@ export class AIVehicleController {
     const track = this.track;
     const prof = this.profile;
     const c = this.controls;
+    const spec = car.spec;
     const speed = Math.max(car.speedMs, 0.5);
+    c.reverse = false;
 
     // Move toward the target offset at a rate the car can actually achieve.
     // Snapping the target would produce a steering step change the tires cannot
@@ -556,7 +635,12 @@ export class AIVehicleController {
     // Sampled slightly ahead to compensate for steering and tire lag — enough
     // lead to be timely, not so much that it turns in early.
     const lead = clamp(speed * 0.28, 5, 22);
-    const ffCurvature = track.lineCurvature[track.indexAt(s + lead)];
+    // Averaged over a short window so a single noisy node cannot spike it.
+    const ffCurvature = (
+      this.sample(track.lineCurvature, s + lead - 3) +
+      this.sample(track.lineCurvature, s + lead) +
+      this.sample(track.lineCurvature, s + lead + 3)
+    ) / 3;
     // Curvature is positive for a left turn, steering positive for a right turn.
     const ffRad = -Math.atan(car.spec.wheelbaseM * ffCurvature);
 
@@ -568,7 +652,7 @@ export class AIVehicleController {
     // toward the apex, so it turns in early and sits permanently inside the line.
     // Through Lesmo it ran 2.5m inside and off the inner edge on every lap.
     const lineHere = this.state === 'LINE_FOLLOWER'
-      ? track.lineOffset[track.indexAt(s)]
+      ? this.sample(track.lineOffset, s)
       : this.smoothedLateral;
     const latError = lineHere - lateral;
 
@@ -577,7 +661,7 @@ export class AIVehicleController {
     // "error", which means it is always behind the line rather than on it.
     const H = 12;
     const dOffsetDs =
-      (track.lineOffset[track.indexAt(s + H)] - track.lineOffset[track.indexAt(s - H)]) / (2 * H);
+      (this.sample(track.lineOffset, s + H) - this.sample(track.lineOffset, s - H)) / (2 * H);
     const lineHeadingOffset = Math.atan(dOffsetDs);
 
     // Distance over which to close the remaining lateral error. Shorter in tight
@@ -640,7 +724,10 @@ export class AIVehicleController {
     // AI cars run identical lines forever and the racing looks robotic.
     this.errorPhase += dt * 1.7;
     const wander = Math.sin(this.errorPhase) * 0.35 + Math.sin(this.errorPhase * 2.3) * 0.2;
-    steer += wander * prof.errorScale;
+    // Scaled down with speed: as a raw steering offset the same number is a few
+    // centimetres of wander at 80km/h and a 20 m/s^2 lateral jolt at 330km/h,
+    // which is why the quick circuits always looked worse than the slow ones.
+    steer += wander * prof.errorScale * clamp(24 / speed, 0.12, 1);
 
     // Rate-limit the steering. Real hands take about a quarter second to go from
     // centre to full lock, and without that limit the pure-pursuit controller
@@ -666,9 +753,15 @@ export class AIVehicleController {
 
     // Off-line and near the edge: the road remaining is not the road the profile
     // assumed, so back off rather than arriving at the barrier at the limit.
+    // The threshold has to sit OUTSIDE the racing line itself. The solved line
+    // runs at (halfWidth - 1.95) metres from the centre at an apex, which on
+    // every circuit in the calendar is between 0.70 and 0.74 of the half-width
+    // — so this fired at every single apex and cut the corner speed by up to a
+    // quarter for a car that was exactly where it was supposed to be. That one
+    // off-by-a-little threshold was most of the AI's missing pace.
     const halfW = track.halfWidthAt(s);
-    if (Math.abs(lateral) > halfW * 0.7) {
-      targetSpeed *= lerp(1, 0.74, clamp01((Math.abs(lateral) / halfW - 0.7) / 0.3));
+    if (Math.abs(lateral) > halfW * 0.88) {
+      targetSpeed *= lerp(1, 0.85, clamp01((Math.abs(lateral) / halfW - 0.88) / 0.16));
     }
 
     // Neutralised: obey the delta.
@@ -700,72 +793,98 @@ export class AIVehicleController {
       targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * 0.96);
     }
 
-    // --- Braking point -----------------------------------------------------
-    // Scan ahead for the most demanding corner and work out whether there is
-    // still room to slow down for it. This is what "knowing the track" means.
+    // --- Braking -----------------------------------------------------------
+    // The AI brakes from a REQUIRED-DECELERATION model rather than from a
+    // threshold on a scalar "urgency". For every point in the scan window, the
+    // deceleration needed to arrive there at that point's target speed is
     //
-    // The scan window must cover the car's FULL stopping distance, not the
-    // distance needed for the corner it is currently in. Deriving the window from
-    // the current corner gives zero on a straight — so the car looked 40m ahead
-    // while needing 99m to slow for the next chicane, and drove straight into the
-    // gravel every lap.
+    //     a_req = (v^2 - v_target^2) / (2 * d)
     //
-    // The window depends on the car's live grip and downforce, so worn or cold
-    // tires produce genuinely earlier braking without being told to.
-    const fullStoppingDistance = this.requiredBrakingDistance(car, speed, 12);
-    const scanDistance = clamp(fullStoppingDistance * 1.25 + 35, 55, 650);
+    // and the pedal is the brake force that satisfies the largest such demand
+    // once drag has been credited against it. That is a continuous control law
+    // with no threshold and no ramp band to tune: far from a corner the demand
+    // is smaller than drag alone and the pedal stays shut, and approaching the
+    // braking point it rises smoothly through partial pedal to full. It is also
+    // self-correcting, because if the car is late a_req keeps rising.
+    //
+    // The old formulation stacked three separate safety margins — a 0.72 share
+    // of the grip circle, a 1/confidence threshold, and a further 0.86 factor —
+    // which compounded to braking roughly 55% earlier than necessary. That was
+    // the single largest component of the AI's missing lap time.
+    const mass = car.totalMassKg;
+    const tireGrip = Math.min(car.frontTires.grip, car.rearTires.grip);
+    const dragForceN = spec.cdBase * speed * speed;
 
-    let mostUrgent = 0;
-    const stepM = 8;
-    for (let d = stepM; d <= scanDistance; d += stepM) {
+    const gripLimitN =
+      spec.baseMu * tireGrip *
+      (mass * 9.81 + spec.clBase * car.dirtyAirDownforceMult * speed * speed);
+    // Not the whole circle: a braking zone is never perfectly straight and the
+    // pedal is modulated rather than stamped.
+    const brakeForceAvailN = Math.min(spec.maxBrakeForceN, gripLimitN * BRAKING_GRIP_SHARE);
+    const decelAvail = (brakeForceAvailN + dragForceN) / mass;
+
+    // Scan far enough to cover the car's whole stopping distance. Deriving the
+    // window from the current corner gives zero on a straight, which is how the
+    // AI came to look 40m ahead while needing 99m to slow for a chicane.
+    const horizon = clamp((speed * speed) / (2 * Math.max(decelAvail, 4)) * 1.3 + 45, 60, 700);
+
+    // A confident driver treats the corner as being where it actually is; a
+    // cautious one behaves as though it were slightly closer.
+    const reach = clamp(prof.brakingConfidence, 0.85, 1.0);
+
+    // Already above the speed for the corner we are IN: shed it over the next
+    // few metres rather than waiting for the scan to notice.
+    // A small deadband matters here: without it the car chatters between
+    // throttle and brake either side of the target speed, because the throttle
+    // is trying to reach it and any overshoot at all reads as a braking demand.
+    const holdSpeed = targetSpeed * 1.012;
+    let aReq = speed > holdSpeed
+      ? (speed * speed - holdSpeed * holdSpeed) / (2 * 30)
+      : 0;
+
+    // Coarser sampling further away — the resolution that matters is near the
+    // braking point, and this keeps twenty cars at 120Hz affordable.
+    for (let d = 10; d <= horizon; d += Math.max(7, d * 0.1)) {
       const vAhead = this.speedTargetAt(car, s + d, p);
       if (vAhead >= speed) continue;
-      // Distance needed to reach vAhead from here.
-      const need = this.requiredBrakingDistance(car, speed, vAhead);
-      // Urgency: the fraction of the available room the stop would consume.
-      // At 1.0 the car must be hard on the brakes right now.
-      const urgency = need / Math.max(d, 1);
-      if (urgency > mostUrgent) mostUrgent = urgency;
+      const a = (speed * speed - vAhead * vAhead) / (2 * d * reach);
+      if (a > aReq) aReq = a;
     }
 
     // --- Pedals ------------------------------------------------------------
-    // `brakingConfidence` shifts the threshold: a confident driver waits until
-    // the braking distance is nearly used up, a cautious one leaves margin.
-    const brakeThreshold = 1 / prof.brakingConfidence;
+    // Brake force needed once drag has done its share. Negative means coasting
+    // alone is enough, so the pedal stays shut.
+    const pedal = (mass * aReq - dragForceN) / spec.maxBrakeForceN;
 
-    if (mostUrgent > brakeThreshold * 0.86) {
-      // Brake, ramping to everything available across a narrow band. A gentle
-      // ramp here means the car is still only at 20% pedal when it needed 100%,
-      // so the band is deliberately tight.
-      const over = clamp01((mostUrgent - brakeThreshold * 0.86) / (brakeThreshold * 0.16));
-      const limit = car.brakeLimitFraction;
-      c.brake = clamp(over * limit * 1.02, 0, Math.min(1, limit * 1.02));
+    if (pedal > 0.02) {
+      // Cap at the point the first axle locks — there is no ABS, and a locked
+      // front both stops later and flat-spots the tire.
+      c.brake = clamp(pedal, 0, car.brakeLimitFraction * AI_TUNING.brakeShare);
       c.throttle = 0;
-    } else if (speed > targetSpeed * 1.02) {
-      // Slightly too fast for the corner we are in: coast or trail-brake gently.
-      c.throttle = 0;
-      c.brake = clamp01((speed / Math.max(targetSpeed, 1) - 1) * 2.4) * car.brakeLimitFraction * 0.55;
     } else {
       c.brake = 0;
-      // Feed the throttle in under the traction limit. Flooring it out of a slow
-      // corner spins the rears, which now costs grip, so the AI is quicker for
-      // being smooth — the same as a real driver.
-      const want = clamp01((targetSpeed - speed) * 0.5 + 0.28);
-      const traction = car.tractionLimitFraction;
-      c.throttle = Math.min(want, traction * 1.03);
-
-      // Cars behind their target on a straight should use everything.
-      if (Math.abs(track.lineCurvature[track.indexAt(s)]) < 1 / 900) {
-        c.throttle = Math.min(1, Math.max(c.throttle, traction * 1.03));
-      }
+      // Throttle: as much as the rear axle will take, unless we are at or past
+      // the target speed, or a braking zone is close enough that accelerating
+      // into it would be foolish. `tractionLimitFraction` is the friction circle
+      // applied to the pedal, so this feeds in gently on a corner exit by
+      // itself, and the share below leaves the rear something in reserve for
+      // the lateral force the corner still needs.
+      const over = speed / Math.max(targetSpeed, 1) - 1;
+      const want = clamp01(1 - over * 12);
+      c.throttle = Math.min(want, car.tractionLimitFraction * AI_TUNING.throttleShare);
     }
 
     // Mistakes: occasionally a driver genuinely gets it wrong. Rare, brief, and
     // scaled by consistency, so the low-consistency drivers are the ones who
     // throw it away — which is what makes them feel different to race against.
-    if (this.rng.next() < prof.errorScale * dt * 2.4) {
-      c.brake = Math.min(1, c.brake + 0.35);
-      c.steer = clamp(c.steer + this.rng.range(-0.28, 0.28), -1, 1);
+    // At the old rate the least consistent driver threw in a mistake every
+    // fifteen seconds, which is not a mistake, it is a disability. Once per
+    // couple of laps is what "occasionally" means. The magnitude is speed-scaled
+    // for the same reason the wander is.
+    if (this.rng.next() < prof.errorScale * dt * 0.35) {
+      c.brake = Math.min(1, c.brake + 0.2);
+      const bite = 0.3 * clamp(22 / speed, 0.1, 1);
+      c.steer = clamp(c.steer + this.rng.range(-bite, bite), -1, 1);
     }
 
     // --- DRS ---------------------------------------------------------------
@@ -853,8 +972,13 @@ export class AIVehicleController {
 
     // The worst curvature over the next stretch, so the limit is set by the
     // tightest part of the corner rather than by wherever the sample landed.
+    // A short window only. Twenty-four metres is eight nodes, which flattens a
+    // whole corner down to its single tightest point and holds the car at that
+    // speed through the entry and the exit as well as the apex. The braking
+    // scan already looks ahead properly, so this only needs to cover the
+    // sampling grid.
     let k = 0;
-    for (let d = 0; d <= 24; d += 6) {
+    for (let d = 0; d <= 9; d += 3) {
       const a = Math.abs(track.lineCurvature[track.indexAt(sAt + d)]);
       if (a > k) k = a;
     }
@@ -871,38 +995,7 @@ export class AIVehicleController {
     return Math.sqrt((mu * m * 9.81) / denom);
   }
 
-  /**
-   * Distance needed to slow from `from` to `to`, using the same brake model the
-   * car has. Deliberately not a lookup table: it reads the car's live downforce
-   * and tire grip, so a car on old tires brakes earlier without being told to.
-   */
-  private requiredBrakingDistance(car: VehiclePhysics, from: number, to: number): number {
-    if (to >= from) return 0;
-    const spec = car.spec;
-    const mass = car.totalMassKg;
-    // Evaluate deceleration at the mean of the two speeds — one sample is enough
-    // over the range of a single braking zone and keeps this cheap.
-    const vMid = (from + to) * 0.5;
-    const q = vMid * vMid;
-    const grip = Math.min(car.frontTires.grip, car.rearTires.grip);
-    const gripLimit = spec.baseMu * grip * (mass * 9.81 + spec.clBase * q);
 
-    // Only part of the grip budget is available for braking, because a braking
-    // zone is not straight — the car is already turning in by the end of it, and
-    // the friction circle means every newton spent cornering is a newton not
-    // available to stop.
-    //
-    // Assuming full longitudinal grip made the AI brake late, arrive at the
-    // corner still too fast, and then be unable to slow because it was already
-    // loaded up laterally. It understeered off the outside of the corner. Real
-    // drivers brake in a straight line and finish braking before turn-in, which
-    // is what this reservation reproduces.
-    const SHARED_GRIP_FRACTION = 0.72;
-    const brakeForce = Math.min(spec.maxBrakeForceN, gripLimit) * SHARED_GRIP_FRACTION;
-
-    const decel = (brakeForce + spec.cdBase * q) / mass;
-    return (from * from - to * to) / (2 * Math.max(decel, 1));
-  }
 
   /**
    * ERS strategy. Deploy where it pays (out of slow corners, on straights, when

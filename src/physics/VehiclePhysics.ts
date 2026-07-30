@@ -128,6 +128,47 @@ const BARRIER_YAW_DAMP_RATE = 2.5;
 /** Below this speed, m/s, a car held against a wall is simply stopped. */
 const BARRIER_REST_MS = 0.4;
 
+/**
+ * Fraction of full steering lock the rack allows at a given speed.
+ *
+ * The number this has to respect is the slip angle at which the front tire
+ * peaks: alpha = 1.978 / corneringStiffnessFront, about 9 degrees. Steering past
+ * that does not turn the car harder, it turns it LESS, because the magic formula
+ * is on its falling branch. A steer sweep (`npm run probe:handling`) put peak
+ * lateral at 0.40 of full input at 150km/h and 0.30 at 300km/h, and showed full
+ * lock at 300km/h throwing away 26% of the available cornering force. That is
+ * exactly the "I'm at full lock and it won't turn" complaint, and no amount of
+ * extra lock fixes it.
+ *
+ * So the rack is geared as a real speed-sensitive rack is — a hyperbola in speed
+ * — which pulls full lock at 300km/h from 15.9 degrees of front slip down to
+ * 12.3, close enough to the peak that the falling branch costs a few percent
+ * rather than a quarter of the car's cornering ability. Full lock at 300km/h now
+ * makes 3.1g where it used to make 1.8g.
+ *
+ * It is deliberately NOT tightened all the way to the peak, which measured
+ * better still in isolation (3.8g) and was much worse in a race. The AI's
+ * steering rate limiter and its counter-steer gain are both expressed in INPUT
+ * units, so halving the angle full input buys also halves the angular rate the
+ * AI can steer at — and it ran wide everywhere, with off-track excursions
+ * tripling and lap times a minute off the pace. This coefficient was chosen by
+ * sweeping it against `npm run validate:race`, not by picking the best number on
+ * the skidpad.
+ *
+ * Full lock is untouched below 50km/h. Monaco's Grand Hotel hairpin is an 11m
+ * radius and needs atan(wheelbase/radius) = 18 degrees to geometrically fit;
+ * taper any earlier and the car physically cannot make the corner.
+ *
+ * EXPORTED because the AI has to invert it. A controller that commands a path
+ * curvature must divide by the rack limit to know what steering input produces
+ * that curvature, and when this lived as a literal in two files they drifted:
+ * the AI kept dividing by the old curve, every command above 150km/h arrived at
+ * roughly half strength, and no car on the grid could complete a lap.
+ */
+export function steerRackLimit(speedMs: number): number {
+  return 1 / (1 + Math.max(0, speedMs - 14) * 0.020);
+}
+
 export class VehiclePhysics {
   spec: VehicleSpec;
   /** The undamaged spec, so damage is applied to a stable baseline. */
@@ -587,26 +628,9 @@ export class VehiclePhysics {
     const muRear = spec.baseMu * this.rearTires.grip * surfaceGrip;
 
     // --- Steering ---------------------------------------------------------
-    // Speed-sensitive steering limit — the rack, not an assist.
-    //
-    // The number this has to respect is the slip angle at which the front tire
-    // peaks: alpha = 1.978 / corneringStiffnessFront, about 9 degrees. Steering
-    // past that does not turn the car harder, it turns it LESS, because the
-    // magic formula is on its falling branch. A steer sweep (`npm run
-    // probe:handling`) put peak lateral at 0.40 of full input at 150km/h and
-    // 0.30 at 300km/h, and showed full lock at 300km/h throwing away 26% of the
-    // available cornering force. That is precisely the "I'm at full lock and it
-    // won't turn" complaint, and no amount of extra lock fixes it.
-    //
-    // So the rack is geared as a real speed-sensitive rack is — a hyperbola in
-    // speed — sized so full stick lands roughly 40% PAST the peak-grip angle.
-    // That leaves room to overdrive the front and to countersteer a slide, but
-    // removes the range where more input means less cornering.
-    //
-    // Full lock is untouched below 50km/h. Monaco's Grand Hotel hairpin is an
-    // 11m radius and needs atan(wheelbase/radius) = 18 degrees to geometrically
-    // fit; taper any earlier and the car physically cannot make the corner.
-    const steerLimit = 1 / (1 + Math.max(0, speed - 14) * 0.036);
+    // Speed-sensitive steering limit — the rack, not an assist. See
+    // steerRackLimit for why the curve is shaped the way it is.
+    const steerLimit = steerRackLimit(speed);
     // Negated: see the note on VehicleControls.steer. The internal lateral axis
     // points to the driver's LEFT, so a right-hand steer input must produce a
     // negative steer angle. Without this, the arrow keys are inverted.
