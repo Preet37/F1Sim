@@ -973,7 +973,8 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   .hud-cell { min-width: 44px; }
   .hud-ersbadge { min-width: 66px; padding: 3px 8px; }
   .hud-ersmodetext { font-size: 12px; }
-  .hud-damage { width: 62px; left: calc(140px + var(--safe-l)); }
+  .hud-damage { width: 62px; left: calc(174px + var(--safe-l)); }
+  .hud-gaps.cockpit { bottom: calc(178px + var(--safe-b)); }
   .hud-tower { width: 172px; padding: 5px 5px 6px 8px; }
   .tower-row { font-size: 10.5px; height: 17px; }
   .hud-timing { width: 192px; padding: 6px 7px 7px; }
@@ -981,7 +982,7 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   .timing-sectortime { font-size: 11px; }
   .hud-map { width: 128px; }
   .hud-buttons { top: calc(150px + var(--safe-t)); }
-  .hud-camera, .hud-diag { right: calc(146px + var(--safe-r)); }
+  .hud-camera, .hud-diag { right: calc(152px + var(--safe-r)); }
 }
 
 /* ==========================================================================
