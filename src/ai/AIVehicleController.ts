@@ -241,9 +241,36 @@ const PIT_BOX_ARRIVED_M = 0.4;
  * sped again on the way in, and shuttled in and out of the pit lane for the
  * rest of the race. Seven visits and no stops was a normal race.
  */
-const PIT_ENTRY_DECEL_MS2 = 9;
-/** How far before the pit entry line the AI starts thinking about it, metres. */
-const PIT_ENTRY_SCAN_M = 620;
+const PIT_ENTRY_DECEL_MS2 = 7;
+/**
+ * How far before the pit entry line the AI starts thinking about it, metres.
+ *
+ * Has to be comfortably MORE than the distance a car needs to slow from its
+ * top speed, or the window in which the car both knows about the pit entry and
+ * still has room to make it can be empty. At 620m it was: a car arriving at 340
+ * km/h needs about 620m to settle at the pit limit under the conservative
+ * planning rate above, so by the time it noticed the pit entry it had already
+ * decided it could not make it — and it made that decision on every lap, for
+ * ever. Twelve cars in a five-lap race never pitted at all and were
+ * disqualified at the flag under the two-compound rule.
+ */
+const PIT_ENTRY_SCAN_M = 950;
+/**
+ * How far BEFORE the pit entry line the car is asked to already be at the
+ * limit, metres.
+ *
+ * Aiming to reach the limit exactly AT the line is what a driver would call
+ * cutting it fine and what race control calls a drive-through. The braking
+ * profile is a square root, so a target of "be at 72 km/h at the line" still
+ * permits 82 km/h ten metres before it — and ten metres is not enough road to
+ * shed the difference once the brakes have any lag at all. Cars arrived at 83
+ * km/h against a limit of 80, every time, and it was maddening to watch because
+ * the approach otherwise looked perfect.
+ *
+ * Settling early costs a fraction of a second and removes the whole class of
+ * problem.
+ */
+const PIT_ENTRY_SETTLE_M = 35;
 /**
  * Share of the pit lane limit the AI aims to cross the entry line at.
  *
@@ -252,7 +279,7 @@ const PIT_ENTRY_SCAN_M = 620;
  */
 const PIT_ENTRY_TARGET_SHARE = 0.92;
 /** How far before the entry line the limiter goes on, metres. */
-const PIT_LIMITER_ARM_M = 25;
+const PIT_LIMITER_ARM_M = 45;
 
 /**
  * Brake pedal needed to be doing `vTarget` in `distance` metres, 0..1.
@@ -294,6 +321,14 @@ const YELLOW_LIFT_DOUBLE = 0.62;
  * it at the delta. Real unlapping runs are visibly quicker than the queue.
  */
 const UNLAP_PACE_MULT = 1.75;
+
+/**
+ * How much speed a car gives up when it is inside the minimum gap to the car
+ * ahead under a safety car, m/s.
+ *
+ * An absolute figure, so that easing off cannot compound along a queue.
+ */
+const QUEUE_EASE_MS = 5;
 
 /** How often the FSM re-evaluates its state, in seconds. */
 const DECISION_INTERVAL = 0.1;
@@ -502,20 +537,35 @@ export class AIVehicleController {
       if (this.isInPitLane(s)) {
         this.targetLateral = track.def.pitLane.lateralOffsetM;
       }
+      // NOT moved across to the pit-entry side on the approach, though a real
+      // driver does. Tried, and it costs more than it saves: the pit side of
+      // the road is the outside of some of the corners leading to it, and a car
+      // holding three quarters of the half-width through those simply runs out
+      // of road. Off-track excursions went UP by a third across the calendar,
+      // and Spa acquired a hundred of its own. The approach stays on the line
+      // the solver produced until the car is actually in the lane.
       return;
     }
     if (p.pitThisLap) {
       const pit = track.def.pitLane;
       // Commit once inside the braking distance for the pit entry.
       //
-      // This has to be at least as far out as the braking scan looks, because
-      // the pit-entry braking only runs in PIT_APPROACH. Committing at 260m
-      // while needing 184m to get from racing speed down to the limit left no
-      // margin at all, and any car that was a little quick on the approach
-      // crossed the pit entry line over the limit and collected a drive-through
-      // before it had even reached its box.
+      // The commitment is decided by whether there is ROOM TO STOP, not by a
+      // fixed distance. A strategist's call can arrive at any moment — a tyre
+      // going off, a safety car, a puncture — and if it lands eighty metres
+      // before the pit entry line at 280 km/h, the car physically cannot be
+      // under 80 km/h by the line. Diving in anyway is what produced the loop
+      // that ate the race: cross the line over the limit, take a drive-through,
+      // come in to serve it, arrive over the limit again, take another.
+      //
+      // A driver in that position stays out and comes in next lap, and so does
+      // this. The 1.15 is margin for the brakes not biting instantly.
       const toEntry = loopDelta(s, pit.entryS, track.length);
-      if (toEntry > 0 && toEntry < PIT_ENTRY_SCAN_M) {
+      const vAtLine = (pit.speedLimitKph - 2) / 3.6 * PIT_ENTRY_TARGET_SHARE;
+      const v = car.speedMs;
+      const roomNeeded =
+        Math.max(v * v - vAtLine * vAtLine, 0) / (2 * PIT_ENTRY_DECEL_MS2) + PIT_ENTRY_SETTLE_M;
+      if (toEntry > 0 && toEntry < PIT_ENTRY_SCAN_M && toEntry > roomNeeded * 1.08) {
         this.setState('PIT_APPROACH');
         return;
       }
@@ -1089,8 +1139,20 @@ export class AIVehicleController {
 
       // Too close to the car ahead: ease off rather than run into the back of
       // the queue.
-      if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM < p.queueGapM * 0.45) {
-        targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * 0.92);
+      //
+      // Subtractive and floored, NOT a multiplier. "Target 92% of the car
+      // ahead" reads as a mild correction and is not one — it compounds down
+      // the queue, because the car behind then targets 92% of THAT. Over
+      // nineteen cars it is a factor of five, so the front of the safety car
+      // train ran at the delta while the back crawled at 65 km/h, lost a lap
+      // an hour, and could not even get itself into the pit lane.
+      const tooClose = p.queueGapM * 0.45;
+      if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM < tooClose) {
+        const ease = clamp01(1 - p.ahead.gapM / Math.max(tooClose, 1));
+        targetSpeed = Math.min(
+          targetSpeed,
+          Math.max(p.ahead.speedMs - ease * QUEUE_EASE_MS, cap * 0.6),
+        );
       }
     }
 
@@ -1118,12 +1180,12 @@ export class AIVehicleController {
         // once the car is already inside. Every stop therefore began with a
         // drive-through penalty for pit lane speeding, and the car was still
         // doing three times the limit when it reached its box.
-        const toEntry = toEntryNow;
-        if (toEntry >= 0 && toEntry < PIT_ENTRY_SCAN_M) {
+        if (toEntryNow >= 0 && toEntryNow < PIT_ENTRY_SCAN_M) {
           const vAtLine = limitMs * PIT_ENTRY_TARGET_SHARE;
+          const d = Math.max(toEntryNow - PIT_ENTRY_SETTLE_M, 0);
           targetSpeed = Math.min(
             targetSpeed,
-            Math.sqrt(vAtLine * vAtLine + 2 * PIT_ENTRY_DECEL_MS2 * toEntry),
+            Math.sqrt(vAtLine * vAtLine + 2 * PIT_ENTRY_DECEL_MS2 * d),
           );
         }
       }
@@ -1257,14 +1319,16 @@ export class AIVehicleController {
       const pit = track.def.pitLane;
       const toEntry = loopDelta(s, pit.entryS, track.length);
       const vAtLine = (pit.speedLimitKph - 2) / 3.6 * PIT_ENTRY_TARGET_SHARE;
+      const settled = Math.max(toEntry - PIT_ENTRY_SETTLE_M, 0.01);
       if (toEntry >= 0 && toEntry < PIT_ENTRY_SCAN_M && speed > vAtLine) {
-        // Capped at the lock-up limit like every other brake application: a
-        // locked wheel stops the car later, not sooner, which is the opposite
-        // of what an over-committed pit entry needs.
-        const pedal = Math.min(
-          brakeFor(speed, vAtLine, toEntry, PIT_ENTRY_DECEL_MS2),
-          car.brakeLimitFraction * AI_TUNING.brakeShare,
-        );
+        // NOT capped at the lock-up limit, unlike every other brake application
+        // in this controller. That cap exists because a locked wheel stops the
+        // car later than a rolling one, and it is right everywhere else — but
+        // here the alternative to a flat spot is a drive-through penalty, and
+        // no driver has ever chosen the tyre. Capping it held the pedal at 0.21
+        // on a car that needed everything it had, and the car crossed the line
+        // at 159 km/h against a limit of 80.
+        const pedal = brakeFor(speed, vAtLine, settled, PIT_ENTRY_DECEL_MS2);
         if (pedal > c.brake) { c.brake = pedal; c.throttle = 0; }
       }
     }

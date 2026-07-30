@@ -154,6 +154,16 @@ const PIT_BOX_WINDOW_M = 3.2;
 const PIT_BOX_STOP_SPEED_MS = 1.6;
 
 /**
+ * How late the strategist will leave the mandatory second compound, in laps.
+ *
+ * Late enough that the free choice is exhausted first — a stop taken to satisfy
+ * the rule and nothing else is a stop taken as late as possible — but with
+ * enough road left that a car which is held up, or which arrives at a closed
+ * pit entry, still gets another chance before the flag.
+ */
+const MANDATORY_COMPOUND_MARGIN_LAPS = 4;
+
+/**
  * Car collision shape: three discs strung along the car's centreline.
  *
  * Radius is the car's half-width, and the offsets span its length, so together
@@ -1227,6 +1237,25 @@ export class RaceEngine {
     const tyresGone = car.physics.rearTires.wear < 0.24;
     const plannedStopDue = car.targetPitLap > 0 && car.lap >= car.targetPitLap;
     if (plannedStopDue || tyresGone) return true;
+
+    // The mandatory second compound.
+    //
+    // Reaching the flag on a single dry compound is a disqualification, not a
+    // time penalty, and `checkMandatoryCompounds` duly applies it. Until now no
+    // car ever pitted, so the rule never bit and nobody noticed the strategist
+    // had no concept of it. With stops working it bites immediately: over a
+    // short race the cars whose tyres happened to last were disqualified en
+    // masse for a rule they had made no plan to satisfy.
+    //
+    // A real strategist takes the stop before the end whatever the tyres are
+    // doing, because a slow stop costs twenty seconds and a disqualification
+    // costs the race. This is that decision.
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const lapsLeft = totalLaps - car.lap;
+    if (!this.weather.hasRained && lapsLeft <= MANDATORY_COMPOUND_MARGIN_LAPS) {
+      const dryUsed = new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather));
+      if (dryUsed.size < 2) return true;
+    }
 
     // The cheap stop.
     //

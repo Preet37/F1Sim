@@ -509,7 +509,15 @@ export class RaceControlManager {
       if (nearTrack && fastHere) dangerous = true;
     }
 
-    if (this.activeIncidents >= 2 || (this.activeIncidents >= 1 && dangerous)) {
+    // The test is DANGER, not a head count. A safety car is for "immediate
+    // physical danger on or near the track" (Art. 55.3 / B5.13.1); the VSC is
+    // for when double yellows are needed and "the circumstances are not such as
+    // to warrant use of the Safety Car" (Art. 56.1a / B5.12). Two cars parked
+    // in gravel traps on opposite sides of the circuit are two VSC situations,
+    // not a safety car — and treating them as one meant a field that crashes
+    // often spent a third of the race behind a safety car that the regulations
+    // would never have deployed.
+    if (dangerous || this.activeIncidents >= 3) {
       this.deploySafetyCar(standings, sessionTime);
     } else {
       this.deployVirtualSafetyCar(sessionTime);

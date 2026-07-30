@@ -1,5 +1,5 @@
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
-import { CIRCUITS } from '../src/data/tracks/circuits';
+import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
 import { DRIVERS } from '../src/data/teams';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import { pitLaneGeometry } from '../src/track/PitGeometry';
@@ -496,6 +496,111 @@ for (const def of CIRCUITS) {
     `playerOffside=${attackWorst.toFixed(1)}m  ` +
     `throughWalls=${tunnelled}${flag}`,
   );
+}
+
+// ===========================================================================
+// Can a car pit twice in one session?
+// ===========================================================================
+
+/**
+ * The pit lane has to work more than once.
+ *
+ * Two separate defects made this fail, and neither was visible from a lap time:
+ *
+ *  1. A car was serviced only when it was under 22 m/s in its box, in a pit
+ *     lane limited to 80 km/h — which is 22.22 m/s. The test could never be
+ *     true. Every car drove through its box at the limit, no car was ever
+ *     serviced, `pitStops` was zero for the whole field over a full race, and
+ *     because the two-compound rule is checked at the flag the entire field was
+ *     liable to disqualification.
+ *
+ *  2. Per-visit state was cleared on the way OUT of the lane. That is the same
+ *     thing as clearing it on the way in only when the exit path actually runs,
+ *     and it does not always — so `servicedThisVisit` could stay latched true
+ *     and the next visit would drive straight past the box.
+ *
+ * So the check is not "does a pit stop happen" but "does a SECOND one happen",
+ * because the first one passing tells you very little. Run long enough for a
+ * two-stop strategy to play out, on a circuit whose tyre wear makes the
+ * strategist ask for one.
+ */
+{
+  const def = getCircuit('bahrain');
+  const config: SessionConfig = {
+    kind: 'race',
+    name: 'pit probe',
+    durationS: 0,
+    laps: 44,
+    playerIndex: -1,
+    standingStart: true,
+    pitLaneStart: false,
+    seed: 41051,
+  };
+  const engine = new RaceEngine(def, config);
+
+  // Count lane ENTRIES as well as completed stops. The two failing separately
+  // is diagnostic: entries without stops means the car cannot be serviced,
+  // and stops without repeat entries means it cannot come back.
+  const entries = new Map<number, number>();
+  const wasInLane = new Map<number, boolean>();
+  const MAX_STEPS = Math.round((44 * def.referencePoleTimeS * 3.4) / PHYSICS_DT);
+
+  for (let i = 0; i < MAX_STEPS && !engine.over; i++) {
+    engine.step();
+    if (i % 6 !== 0) continue;
+    for (const car of engine.cars) {
+      const now = car.inPitLane;
+      if (now && !wasInLane.get(car.index)) {
+        entries.set(car.index, (entries.get(car.index) ?? 0) + 1);
+      }
+      wasInLane.set(car.index, now);
+    }
+  }
+
+  const stops = engine.cars.map((c) => c.pitStops);
+  const totalStops = stops.reduce((a, b) => a + b, 0);
+  const serviced = stops.filter((n) => n > 0).length;
+  const twiceServiced = stops.filter((n) => n >= 2).length;
+  const reEntered = engine.cars.filter((c) => (entries.get(c.index) ?? 0) >= 2).length;
+  const speeding = engine.cars.filter((c) =>
+    c.penalties.some((p) => p.reason.startsWith('Speeding in the pit lane'))).length;
+
+  console.log('');
+  console.log(
+    `pit lane (${def.id}, ${config.laps} laps)  stops=${totalStops}  ` +
+    `serviced=${serviced}/20  servicedTwice=${twiceServiced}/20  ` +
+    `reEnteredLane=${reEntered}/20  speedingPenalties=${speeding}`,
+  );
+
+  if (totalStops === 0) {
+    issues.push({
+      circuit: def.id, kind: 'pit',
+      detail: 'no car was serviced at all — the pit box is unreachable',
+    });
+  }
+  if (twiceServiced === 0) {
+    issues.push({
+      circuit: def.id, kind: 'pit',
+      detail: 'no car completed a second pit stop — a car cannot re-enter the pit lane',
+    });
+  }
+  // A car that can be serviced but never comes back is the re-entry bug even
+  // when the first stop worked, so this is checked on its own.
+  if (reEntered < 2) {
+    issues.push({
+      circuit: def.id, kind: 'pit',
+      detail: `only ${reEntered} cars entered the pit lane more than once`,
+    });
+  }
+  // Arriving over the limit is what used to send a car round the loop of
+  // penalty, serve, speed again, penalty. A handful is racing; the whole field
+  // is a broken pit entry.
+  if (speeding > 6) {
+    issues.push({
+      circuit: def.id, kind: 'pit',
+      detail: `${speeding} cars penalised for pit lane speeding — the AI cannot make the entry`,
+    });
+  }
 }
 
 console.log('');

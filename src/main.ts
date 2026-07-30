@@ -109,10 +109,12 @@ class Game {
     this.hud = new Hud(document.getElementById('app') as HTMLElement);
     this.hud.setVisible(false);
     this.hud.onCameraPressed = () => this.cycleCamera();
-    this.hud.onPitPressed = () => {
-      const p = this.engine?.playerCar;
-      if (p) p.perception.pitThisLap = !p.perception.pitThisLap;
-    };
+    // The pit call is a latch on the CAR, not a value written into the
+    // perception buffer. The engine rebuilds that buffer from the strategy on
+    // every physics step, and the strategy has no opinion about the player, so
+    // a request written there was erased within eight milliseconds — the player
+    // could never pit at all, on any lap, in any session.
+    this.hud.onPitPressed = () => this.togglePitRequest();
 
     this.screenRoot = document.createElement('div');
     this.screenRoot.className = 'screen';
@@ -973,6 +975,26 @@ class Game {
     }
   }
 
+  /**
+   * Calls the player in, or waves off the call.
+   *
+   * Also reports it on the radio, because a pit call the driver cannot see the
+   * state of is a pit call they will press twice.
+   */
+  private togglePitRequest(): void {
+    const engine = this.engine;
+    const car = engine?.playerCar;
+    if (!engine || !car) return;
+    const on = !car.pitRequested;
+    engine.requestPit(car, on);
+    engine.raceControl.log(
+      on ? 'Box this lap — your box is ' + car.driver.code + "'s, in the " +
+        car.team.name + ' garage'
+        : 'Stay out, stay out',
+      'info', engine.time, car.index,
+    );
+  }
+
   private finishSession(): void {
     const engine = this.engine;
     if (!engine) return;
@@ -1174,9 +1196,7 @@ class Game {
           this.clock.paused = !this.clock.paused;
           this.audio.setSuspended(this.clock.paused);
         }
-        if (this.input.pitRequestToggled) {
-          player.perception.pitThisLap = !player.perception.pitThisLap;
-        }
+        if (this.input.pitRequestToggled) this.togglePitRequest();
       }
 
       for (let i = 0; i < steps; i++) {

@@ -724,7 +724,10 @@ export class Hud {
 
     // --- Camera and diagnostics ------------------------------------------
     setText(this.cameraLabel, engine.config.name);
-    setClass(this.pitButton, 'hud-btn' + (player.perception.pitThisLap ? ' armed' : ''));
+    // Read the latch on the car, not the perception buffer: the engine rewrites
+    // that buffer every physics step and the player's request never survived
+    // in it, so the button never lit even when the call had been made.
+    setClass(this.pitButton, 'hud-btn' + (player.pitRequested || player.inPitLane ? ' armed' : ''));
     setText(this.diagnostics, Math.round(fps) + ' fps · ' + drawCalls + ' calls');
 
     // --- Touch overlay ----------------------------------------------------
@@ -758,6 +761,21 @@ export class Hud {
       const local = rc.flagAt(player.s);
       if (local === 'double-yellow') { text = 'DOUBLE YELLOW'; cls = 'hud-flag flag-yellow'; }
       else if (local === 'yellow') { text = 'YELLOW FLAG'; cls = 'hud-flag flag-yellow'; }
+    }
+
+    // In the pit lane, the one thing the driver needs is how far it is to their
+    // own box. The box is marked on the road, but a distance is what turns
+    // "somewhere along here" into "brake now", and it is what the crew would be
+    // saying on the radio.
+    if (player.inPitLane && !player.servicedThisVisit && !player.pitTransitOnly) {
+      const d = player.perception.pitBoxAheadM;
+      if (player.inPitBox) {
+        text = 'IN THE BOX — ' + player.pitBoxTimer.toFixed(1) + 's';
+        cls = 'hud-flag flag-start';
+      } else if (d >= 0) {
+        text = 'YOUR BOX  ' + Math.round(d) + 'm';
+        cls = 'hud-flag flag-start';
+      }
     }
 
     // Penalties take precedence — the player needs to know immediately.

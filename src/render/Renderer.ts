@@ -7,6 +7,7 @@ import { CameraDirector } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { PostFX } from './PostFX';
 import { RacingLine } from './RacingLine';
+import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 
@@ -58,6 +59,8 @@ export class Renderer {
 
   private trackMeshes: TrackMeshes | null = null;
   private paddock: PaddockScene | null = null;
+  /** The player's own pit box, highlighted so they can find it. */
+  private pitBox: PitBoxMarker | null = null;
   private carVisuals: CarVisual[] = [];
   private readonly canvas: HTMLCanvasElement;
 
@@ -410,6 +413,16 @@ export class Renderer {
     this.racingLine.setVisible(this.racingLineVisible);
     this.scene.add(this.racingLine.mesh);
 
+    // The player's pit box. Built for the player's car only — there is nothing
+    // to highlight in a fully simulated session, and the twenty boxes the
+    // circuit paints are identical, so without this the player has no way of
+    // telling which one is theirs.
+    const player = engine.playerCar;
+    if (player) {
+      this.pitBox = buildPitBoxMarker(engine.track, player);
+      this.scene.add(this.pitBox.root);
+    }
+
     this.effects.loadSession(engine);
     this.applyAmbience(engine);
     this.director.setMode(this.director.mode);
@@ -531,6 +544,11 @@ export class Renderer {
       this.paddock.dispose();
       this.paddock = null;
     }
+    if (this.pitBox) {
+      this.scene.remove(this.pitBox.root);
+      this.pitBox.dispose();
+      this.pitBox = null;
+    }
     for (const v of this.carVisuals) {
       this.scene.remove(v.root);
       v.dispose();
@@ -630,6 +648,15 @@ export class Renderer {
     // Driven from the focused car, so a spectator camera still shows the line
     // relevant to whoever is being watched.
     this.racingLine?.update(focusCar.s, focusCar.physics.speedMs);
+
+    // Light the player's box up when it is relevant: while they are in the pit
+    // lane, and from the moment the call is made so they can see where they are
+    // heading before they commit to the entry. Left on permanently it would be
+    // twenty laps of an unexplained glowing rectangle in the pit lane.
+    if (this.pitBox) {
+      const p = engine.playerCar;
+      this.pitBox.setVisible(!!p && (p.inPitLane || p.pitRequested));
+    }
 
     // The radial blur converges on the point the car is heading for, not the
     // centre of the screen. In a corner the vanishing point swings wide, and
