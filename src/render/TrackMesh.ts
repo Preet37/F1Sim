@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { makeGantryTexture, makeHoardingTexture, makeMarkerTexture } from './Signage';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -121,6 +122,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
 
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
+  const textures: THREE.Texture[] = [];
 
   const count = track.count;
   // Step in nodes. At 3m per node, a step of 2 gives 6m quads — plenty for a
@@ -182,31 +184,54 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     }
 
     // --- Kerbs -------------------------------------------------------------
-    // Red/white in blocks, which is both correct and gives a strong motion cue.
+    // Three surfaces per kerb rather than one flat strip: an inner ramp up from
+    // the asphalt, a flat crown, and an outer fall to the run-off. A single flat
+    // quad reads as a painted stripe; the raised crown reads as a real kerb and
+    // catches the light differently as the car passes, which is a large part of
+    // what makes an apex legible.
     const kerbColour = ((a / step) & 1) === 0 ? COLOUR.kerbA : COLOUR.kerbB;
-    if (track.isCurbLeft[a] && track.isCurbLeft[b]) {
-      // Left-hand side of the track is negative lateral.
-      const iA = -hwA, oA = -(hwA + KERB_W);
-      const iB = -hwB, oB = -(hwB + KERB_W);
-      kerbs.quad(
-        px(a, iA), py(a, iA) + Y_KERB, pz(a, iA),
-        px(b, iB), py(b, iB) + Y_KERB, pz(b, iB),
-        px(b, oB), py(b, oB) + Y_RUNOFF, pz(b, oB),
-        px(a, oA), py(a, oA) + Y_RUNOFF, pz(a, oA),
-        kerbColour,
-      );
-    }
-    if (track.isCurbRight[a] && track.isCurbRight[b]) {
-      const iA = hwA, oA = hwA + KERB_W;
-      const iB = hwB, oB = hwB + KERB_W;
-      kerbs.quad(
-        px(a, oA), py(a, oA) + Y_RUNOFF, pz(a, oA),
-        px(b, oB), py(b, oB) + Y_RUNOFF, pz(b, oB),
-        px(b, iB), py(b, iB) + Y_KERB, pz(b, iB),
-        px(a, iA), py(a, iA) + Y_KERB, pz(a, iA),
-        kerbColour,
-      );
-    }
+    const buildKerb = (sign: number) => {
+      const inner = sign * hwA;
+      const innerB = sign * hwB;
+      const crownIn = sign * (hwA + KERB_W * 0.3);
+      const crownInB = sign * (hwB + KERB_W * 0.3);
+      const crownOut = sign * (hwA + KERB_W * 0.85);
+      const crownOutB = sign * (hwB + KERB_W * 0.85);
+      const outer = sign * (hwA + KERB_W * 1.25);
+      const outerB = sign * (hwB + KERB_W * 1.25);
+
+      const wind = sign > 0;
+      const q = (
+        l0: number, y0: number, l1: number, y1: number,
+      ) => {
+        // Consistent winding per side so faces point upward.
+        if (wind) {
+          kerbs.quad(
+            px(a, l0), py(a, l0) + y0, pz(a, l0),
+            px(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB), py(b, l0) + y0, pz(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB),
+            px(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB), py(b, l1) + y1, pz(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB),
+            px(a, l1), py(a, l1) + y1, pz(a, l1),
+            kerbColour,
+          );
+        } else {
+          kerbs.quad(
+            px(a, l1), py(a, l1) + y1, pz(a, l1),
+            px(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB), py(b, l1) + y1, pz(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB),
+            px(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB), py(b, l0) + y0, pz(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB),
+            px(a, l0), py(a, l0) + y0, pz(a, l0),
+            kerbColour,
+          );
+        }
+      };
+
+      q(inner, Y_ROAD, crownIn, Y_KERB);          // ramp up
+      q(crownIn, Y_KERB, crownOut, Y_KERB);       // flat crown
+      q(crownOut, Y_KERB, outer, Y_RUNOFF);       // fall away
+    };
+
+    // Lateral is positive to the driver's LEFT.
+    if (track.isCurbLeft[a] && track.isCurbLeft[b]) buildKerb(1);
+    if (track.isCurbRight[a] && track.isCurbRight[b]) buildKerb(-1);
 
     // --- Run-off ----------------------------------------------------------
     const isStreet = track.def.scenery === 'street';
@@ -337,6 +362,172 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   addMesh(root, pit, false, geometries, materials);
   addMesh(root, walls, true, geometries, materials);
 
+  // --- Trackside hoardings -------------------------------------------------
+  // A continuous ribbon along the barrier line, UV-mapped by distance so the
+  // repeating texture shows a different board every ~11m. One draw call for the
+  // whole circuit's signage.
+  {
+    const isStreetHoard = track.def.scenery === 'street';
+    const barrierOffset = isStreetHoard ? 2.5 : 14;
+    const BOARD_H = 1.05;
+    const BOARD_EVERY_M = 11;
+
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+
+    const hoardStep = Math.max(step, 2);
+    for (let a2 = 0; a2 < count; a2 += hoardStep) {
+      const b2 = (a2 + hoardStep) % count;
+      const hwA2 = track.width[a2] * 0.5;
+      const hwB2 = track.width[b2] * 0.5;
+      const uA = track.dist[a2] / BOARD_EVERY_M;
+      const uB = (track.dist[a2] + hoardStep * (track.length / count)) / BOARD_EVERY_M;
+
+      for (const side of [-1, 1] as const) {
+        const oA = side * (hwA2 + barrierOffset - 0.05);
+        const oB = side * (hwB2 + barrierOffset - 0.05);
+        const yA = py(a2, oA) + Y_RUNOFF;
+        const yB = py(b2, oB) + Y_RUNOFF;
+
+        const x0 = px(a2, oA), z0 = pz(a2, oA);
+        const x1 = px(b2, oB), z1 = pz(b2, oB);
+        // Face inward, toward the racing surface.
+        const nx = -track.nx[a2] * side;
+        const nz = -track.nz[a2] * side;
+
+        // Two triangles, wound so the inward face is front-facing on each side.
+        const v = side > 0
+          ? [[x0, yA, z0, uA, 1], [x1, yB, z1, uB, 1], [x1, yB + BOARD_H, z1, uB, 0],
+             [x0, yA, z0, uA, 1], [x1, yB + BOARD_H, z1, uB, 0], [x0, yA + BOARD_H, z0, uA, 0]]
+          : [[x0, yA + BOARD_H, z0, uA, 0], [x1, yB + BOARD_H, z1, uB, 0], [x1, yB, z1, uB, 1],
+             [x0, yA + BOARD_H, z0, uA, 0], [x1, yB, z1, uB, 1], [x0, yA, z0, uA, 1]];
+
+        for (const p of v) {
+          positions.push(p[0], p[1], p[2]);
+          normals.push(nx, 0, nz);
+          uvs.push(p[3], p[4]);
+        }
+      }
+    }
+
+    if (positions.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      const tex = makeHoardingTexture();
+      const mat = new THREE.MeshStandardMaterial({
+        map: tex, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      root.add(mesh);
+      geometries.push(geo);
+      materials.push(mat);
+      textures.push(tex);
+    }
+  }
+
+  // --- Start/finish gantry -------------------------------------------------
+  // A physical structure over the line. It is the single clearest signal of where
+  // a lap begins and ends, and a circuit without one looks like a closed road.
+  {
+    const i0 = track.indexAt(0);
+    const hw = track.width[i0] * 0.5;
+    const y = track.elevation[i0];
+    const heading = Math.atan2(track.tx[i0], track.tz[i0]);
+
+    const group = new THREE.Group();
+    const postGeo = new THREE.BoxGeometry(0.55, 7.2, 0.55);
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x1b1e24, roughness: 0.6, metalness: 0.35 });
+    for (const side of [-1, 1] as const) {
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(side * (hw + 1.6), 3.6, 0);
+      group.add(post);
+    }
+
+    const beamGeo = new THREE.BoxGeometry((hw + 1.6) * 2, 1.5, 0.5);
+    const gantryTex = makeGantryTexture(track.def.name);
+    const beamMat = new THREE.MeshStandardMaterial({
+      map: gantryTex, roughness: 0.5, metalness: 0.2,
+    });
+    const beam = new THREE.Mesh(beamGeo, beamMat);
+    beam.position.set(0, 6.9, 0);
+    group.add(beam);
+
+    group.position.set(track.px[i0], y, track.pz[i0]);
+    group.rotation.y = heading;
+    root.add(group);
+    geometries.push(postGeo, beamGeo);
+    materials.push(postMat, beamMat);
+    textures.push(gantryTex);
+  }
+
+  // --- Braking distance markers -------------------------------------------
+  // The 150/100/50 boards on the approach to every named corner. They are what a
+  // driver actually uses to find a braking point, so they are functional, not
+  // decoration.
+  if (track.def.corners && track.def.corners.length > 0) {
+    const markerTex = makeMarkerTexture();
+    const markerMat = new THREE.MeshStandardMaterial({
+      map: markerTex, roughness: 0.6, metalness: 0.05, side: THREE.DoubleSide,
+    });
+    const distances = [150, 100, 50];
+    const boards: THREE.BufferGeometry[] = [];
+
+    for (const corner of track.def.corners) {
+      // Only for corners slow enough to need a marker board.
+      const ci = track.indexAt(corner.s);
+      if (track.targetSpeed[ci] > 52) continue;
+
+      for (let d = 0; d < distances.length; d++) {
+        const s = corner.s - distances[d];
+        const i = track.indexAt(s);
+        const hw = track.width[i] * 0.5;
+        const isStreetM = track.def.scenery === 'street';
+        const lat = -(hw + (isStreetM ? 1.4 : 4.2));
+
+        const g = new THREE.PlaneGeometry(1.0, 1.0);
+        // Each board uses the matching third of the stacked texture.
+        const uv = g.attributes.uv as THREE.BufferAttribute;
+        for (let k = 0; k < uv.count; k++) {
+          uv.setY(k, (uv.getY(k) + (2 - d)) / 3);
+        }
+        uv.needsUpdate = true;
+
+        const m = new THREE.Matrix4();
+        const q = new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 1, 0), Math.atan2(track.tx[i], track.tz[i]),
+        );
+        m.compose(
+          new THREE.Vector3(
+            track.px[i] + track.nx[i] * lat,
+            track.elevation[i] + 0.85,
+            track.pz[i] + track.nz[i] * lat,
+          ),
+          q,
+          new THREE.Vector3(1, 1, 1),
+        );
+        g.applyMatrix4(m);
+        boards.push(g);
+      }
+    }
+
+    if (boards.length > 0) {
+      const merged = mergeGeometries(boards, false);
+      for (const g of boards) g.dispose();
+      if (merged) {
+        const mesh = new THREE.Mesh(merged, markerMat);
+        mesh.frustumCulled = false;
+        root.add(mesh);
+        geometries.push(merged);
+      }
+    }
+    materials.push(markerMat);
+    textures.push(markerTex);
+  }
+
   // --- Ground plane --------------------------------------------------------
   {
     const b = track.bounds();
@@ -377,6 +568,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     dispose(): void {
       for (const g of geometries) g.dispose();
       for (const m of materials) m.dispose();
+      for (const t of textures) t.dispose();
       root.clear();
     },
   };

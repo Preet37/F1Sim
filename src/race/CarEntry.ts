@@ -134,6 +134,7 @@ export class CarEntry {
   readonly appliedControls: VehicleControls = {
     throttle: 0, brake: 0, steer: 0,
     drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false,
+    reverse: false,
   };
 
   constructor(

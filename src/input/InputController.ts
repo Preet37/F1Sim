@@ -97,9 +97,15 @@ export class InputController {
 
   /** True while the player is asking for DRS. */
   drsHeld = false;
+  /** True while reverse is being requested from the keyboard/gamepad. */
+  reverseHeld = false;
+  /** True while the on-screen reverse control is held. */
+  reverseTouchHeld = false;
   ersMode: ErsMode = 'balanced';
   /** Set for one frame when the camera key is pressed. */
   cameraCyclePressed = false;
+  /** Set for one frame when the help key is pressed. */
+  helpToggled = false;
   pausePressed = false;
   /** Manual gear request, 0 for automatic. */
   gearRequest = 0;
@@ -129,6 +135,7 @@ export class InputController {
   private element: HTMLElement | null = null;
   private tiltGamma = 0;
   private tiltCalibrated = false;
+  private cameraLatch = false;
 
   /** Joystick travel, in pixels, that corresponds to full lock. */
   private joystickRadiusPx = 90;
@@ -230,6 +237,7 @@ export class InputController {
 
     switch (k) {
       case 'c': this.cameraCyclePressed = true; break;
+      case 'h': this.helpToggled = true; break;
       case 'p': case 'escape': this.pausePressed = true; break;
       case 'e': this.cycleErsMode(); break;
       case 'l': this.pitRequestToggled = true; break;
@@ -373,19 +381,43 @@ export class InputController {
         gamepadBrake = lt;
         this.lastSource = 'gamepad';
       }
-      // Face buttons: A/cross for DRS, B/circle for ERS, Y for camera.
+      // Face buttons: A/cross for DRS, B/circle for reverse, Y for camera.
       if (pad.buttons[0]?.pressed) this.drsHeld = true;
       else if (this.lastSource === 'gamepad') this.drsHeld = false;
+      if (pad.buttons[1]?.pressed && speedMs < 1.6) this.reverseHeld = true;
+      if (pad.buttons[3]?.pressed && !this.cameraLatch) {
+        this.cameraCyclePressed = true;
+        this.cameraLatch = true;
+      } else if (!pad.buttons[3]?.pressed) {
+        this.cameraLatch = false;
+      }
       break;
     }
 
     // --- Keyboard -----------------------------------------------------------
+    //
+    // Layout:
+    //   Up / W        accelerate
+    //   B / Space / S brake
+    //   Down          brake while moving forward, then REVERSE once stopped
+    //   Left / Right  steer
+    //
+    // Down doing double duty is deliberate: it is the intuitive key to press when
+    // you want to stop or back out of a gravel trap, and which of the two you meant
+    // is unambiguous from whether the car is still moving.
     const kb = this.keys;
     const kbLeft = kb.has('a') || kb.has('arrowleft');
     const kbRight = kb.has('d') || kb.has('arrowright');
     const kbUp = kb.has('w') || kb.has('arrowup');
-    const kbDown = kb.has('s') || kb.has('arrowdown') || kb.has(' ');
+    const kbBrake = kb.has('b') || kb.has(' ') || kb.has('s');
+    const kbDownArrow = kb.has('arrowdown');
     const kbDrs = kb.has('shift');
+
+    // Reverse only once genuinely stopped, and only while Down is held.
+    const nearlyStopped = speedMs < 1.6;
+    this.reverseHeld = kbDownArrow && nearlyStopped;
+    // Down brakes whenever the car is still rolling.
+    const kbDown = kbBrake || (kbDownArrow && !nearlyStopped);
     if (kbDrs) this.drsHeld = true;
     else if (this.lastSource === 'keyboard') this.drsHeld = false;
 
@@ -467,12 +499,16 @@ export class InputController {
     out.drsRequested = this.drsHeld;
     out.ersMode = this.ersMode;
     out.gearRequest = this.gearRequest;
+    out.reverse = this.reverseHeld || this.reverseTouchHeld;
+    // Reversing needs pedal input; Down alone should be enough to actually move.
+    if (out.reverse && out.throttle < 0.35 && out.brake < 0.35) out.brake = 0.6;
     // pitLimiter is owned by the race engine, which knows where the pit lane is.
   }
 
   /** Clears one-frame edge flags. Call at the end of each frame. */
   endFrame(): void {
     this.cameraCyclePressed = false;
+    this.helpToggled = false;
     this.pausePressed = false;
     this.pitRequestToggled = false;
   }
@@ -501,7 +537,7 @@ function applyDeadzone(v: number, dz: number): number {
 
 /** Keys the game consumes, so everything else reaches the browser. */
 const GAME_KEYS = new Set([
-  'w', 'a', 's', 'd', ' ', 'c', 'p', 'e', 'l', 'shift', 'escape',
+  'w', 'a', 's', 'd', 'b', 'h', ' ', 'c', 'p', 'e', 'l', 'shift', 'escape',
   'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
   '0', '1', '2', '3', '4', '5', '6', '7', '8',
 ]);

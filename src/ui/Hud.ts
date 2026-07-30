@@ -49,6 +49,11 @@ export class Hud {
   private gapAhead!: HTMLElement;
   private gapBehind!: HTMLElement;
   private sectorEls: HTMLElement[] = [];
+  private leds: HTMLElement[] = [];
+  private deltaBar!: HTMLElement;
+  private deltaFill!: HTMLElement;
+  private helpOverlay!: HTMLElement;
+  private teamStripe!: HTMLElement;
 
   private tyreCompound!: HTMLElement;
   private tyreWearFront!: HTMLElement;
@@ -74,6 +79,7 @@ export class Hud {
   private joystickKnob!: HTMLElement;
   private throttlePad!: HTMLElement;
   private brakePad!: HTMLElement;
+  private reversePad!: HTMLElement;
 
   /** Radio messages already shown, so each appears once. */
   private shownMessages = 0;
@@ -113,6 +119,9 @@ export class Hud {
   private build(): void {
     // --- Top left: position and lap ---------------------------------------
     const topLeft = this.el('hud-panel hud-topleft', this.root);
+    // A team-colour stripe down the edge of the panel: instantly identifies whose
+    // car you are in, and it is how every broadcast graphic does it.
+    this.teamStripe = this.el('hud-stripe', topLeft);
     const posRow = this.el('hud-posrow', topLeft);
     this.position = this.el('hud-position', posRow, 'P1');
     this.lapCounter = this.el('hud-lapcount', posRow, 'LAP 1/50');
@@ -123,6 +132,11 @@ export class Hud {
     this.lastLap = this.el('hud-last', small, 'LAST --:--.---');
     this.bestLap = this.el('hud-best', small, 'BEST --:--.---');
     this.delta = this.el('hud-delta', times, '');
+    // A signed bar for the delta. A number alone tells you the size of the gap;
+    // a bar growing left or right of centre tells you instantly which side of
+    // your best lap you are on, without reading anything.
+    this.deltaBar = this.el('hud-deltabar', times);
+    this.deltaFill = this.el('hud-deltafill', this.deltaBar);
 
     const sectors = this.el('hud-sectors', topLeft);
     for (let i = 0; i < 3; i++) {
@@ -134,6 +148,15 @@ export class Hud {
 
     // --- Bottom centre: speed, gear, rpm ----------------------------------
     const bottom = this.el('hud-panel hud-bottom', this.root);
+
+    // Discrete shift lights rather than a continuous bar. A real F1 wheel has a
+    // row of LEDs that fill green-amber-red and then flash at the limiter, and it
+    // is far easier to read at a glance than a sliding bar — you learn the
+    // position of the light you shift on.
+    const ledRow = this.el('hud-leds', bottom);
+    for (let i = 0; i < 15; i++) {
+      this.leds.push(this.el('hud-led', ledRow));
+    }
     const rpmBar = this.el('hud-rpmbar', bottom);
     this.rpmFill = this.el('hud-rpmfill', rpmBar);
 
@@ -193,6 +216,25 @@ export class Hud {
     this.cameraLabel = this.el('hud-camera', this.root, 'Chase');
     this.diagnostics = this.el('hud-diag', this.root, '');
 
+    // --- Controls help ----------------------------------------------------
+    // Shown for the first few seconds of a session and on H. Needing to ask how
+    // to brake is a UI failure, not a player failure.
+    this.helpOverlay = this.el('hud-help', this.root);
+    this.helpOverlay.innerHTML =
+      '<div class="help-title">CONTROLS</div>' +
+      '<div class="help-grid">' +
+      '<span class="k">&uarr; / W</span><span>Accelerate</span>' +
+      '<span class="k">B / Space</span><span>Brake</span>' +
+      '<span class="k">&darr;</span><span>Brake, then reverse when stopped</span>' +
+      '<span class="k">&larr; &rarr;</span><span>Steer</span>' +
+      '<span class="k">Shift</span><span>DRS (when available)</span>' +
+      '<span class="k">E</span><span>ERS mode</span>' +
+      '<span class="k">C</span><span>Camera</span>' +
+      '<span class="k">L</span><span>Request pit stop</span>' +
+      '<span class="k">P</span><span>Pause</span>' +
+      '<span class="k">H</span><span>Toggle this help</span>' +
+      '</div>';
+
     // --- Touch overlay ----------------------------------------------------
     this.touchOverlay = this.el('hud-touch', this.root);
     this.touchOverlay.style.display = 'none';
@@ -200,6 +242,7 @@ export class Hud {
     this.joystickKnob = this.el('touch-knob', this.joystick);
     this.brakePad = this.el('touch-pad touch-brake', this.touchOverlay, 'BRAKE');
     this.throttlePad = this.el('touch-pad touch-throttle', this.touchOverlay, 'THROTTLE');
+    this.reversePad = this.el('touch-pad touch-reverse', this.touchOverlay, 'REV');
   }
 
   /** Builds the timing tower rows once, sized to the field. */
@@ -227,13 +270,28 @@ export class Hud {
 
     // --- Speed, gear, rpm -------------------------------------------------
     setText(this.speed, Math.round(p.speedKph).toString());
-    const gearLabel = p.speedMs < 0.6 && player.appliedControls.throttle < 0.02 ? 'N' : String(p.gear);
+    const gearLabel = p.inReverse ? 'R'
+      : p.speedMs < 0.6 && player.appliedControls.throttle < 0.02 ? 'N'
+      : String(p.gear);
     setText(this.gear, gearLabel);
+    setClass(this.gear, 'hud-gear' + (p.inReverse ? ' reverse' : ''));
+
     setStyle(this.rpmFill, 'width', (p.rpmFraction * 100).toFixed(1) + '%');
-    // The bar turns amber then red as the limiter approaches, like shift lights.
     const rpmClass = p.rpmFraction > 0.965 ? 'hud-rpmfill rpm-red'
       : p.rpmFraction > 0.87 ? 'hud-rpmfill rpm-amber' : 'hud-rpmfill';
     setClass(this.rpmFill, rpmClass);
+
+    // Shift lights: green up to 80%, amber to 94%, red beyond, all flashing at
+    // the limiter — the pattern a real wheel uses.
+    const frac = p.rpmFraction;
+    const lit = Math.round(clamp01((frac - 0.45) / 0.55) * this.leds.length);
+    const limiter = frac > 0.985;
+    const flashOn = limiter && (Math.floor(performance.now() / 70) & 1) === 0;
+    for (let i = 0; i < this.leds.length; i++) {
+      const on = limiter ? flashOn : i < lit;
+      const band = i < 7 ? 'g' : i < 12 ? 'a' : 'r';
+      setClass(this.leds[i], 'hud-led led-' + band + (on ? ' on' : ''));
+    }
 
     // --- DRS --------------------------------------------------------------
     const drsClass = p.drsOpen ? 'hud-drs drs-open'
@@ -275,6 +333,8 @@ export class Hud {
 
     // --- Position and timing ---------------------------------------------
     setText(this.position, 'P' + player.position);
+    setStyle(this.teamStripe, 'background',
+      '#' + player.team.colour.toString(16).padStart(6, '0'));
     const totalLaps = engine.config.laps || engine.track.def.raceLaps;
     if (engine.config.kind === 'race') {
       setText(this.lapCounter, 'LAP ' + Math.min(player.lap + 1, totalLaps) + '/' + totalLaps);
@@ -293,8 +353,15 @@ export class Hud {
       const projected = player.currentLapTime(engine.time) - progressFraction(player, engine) * player.bestLapTime;
       setText(this.delta, formatDelta(projected));
       setClass(this.delta, 'hud-delta ' + (projected <= 0 ? 'good' : 'bad'));
+      // Bar grows from the centre; +/- 1.5s spans the full half-width.
+      const mag = Math.min(Math.abs(projected) / 1.5, 1) * 50;
+      setStyle(this.deltaFill, 'width', mag.toFixed(1) + '%');
+      setStyle(this.deltaFill, 'left', projected <= 0 ? (50 - mag).toFixed(1) + '%' : '50%');
+      setClass(this.deltaFill, 'hud-deltafill ' + (projected <= 0 ? 'good' : 'bad'));
+      setStyle(this.deltaBar, 'opacity', '1');
     } else {
       setText(this.delta, '');
+      setStyle(this.deltaBar, 'opacity', '0');
     }
 
     for (let i = 0; i < 3; i++) {
@@ -482,6 +549,7 @@ export class Hud {
 
     setClass(this.throttlePad, 'touch-pad touch-throttle' + (input.throttleHeld ? ' active' : ''));
     setClass(this.brakePad, 'touch-pad touch-brake' + (input.brakeHeld ? ' active' : ''));
+    setClass(this.reversePad, 'touch-pad touch-reverse' + (input.reverseTouchHeld ? ' active' : ''));
   }
 
   /** Shows the current camera mode on the button. */
@@ -491,6 +559,11 @@ export class Hud {
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? 'block' : 'none';
+  }
+
+  /** Shows or hides the controls overlay. */
+  setHelpVisible(v: boolean): void {
+    this.helpOverlay.classList.toggle('visible', v);
   }
 }
 

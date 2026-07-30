@@ -130,6 +130,7 @@ export class RaceEngine {
   readonly playerControls: VehicleControls = {
     throttle: 0, brake: 0, steer: 0,
     drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false,
+    reverse: false,
   };
 
   private timingAccumulator = 0;
@@ -499,8 +500,8 @@ export class RaceEngine {
       surface = 'track';
     } else if (absLat <= halfWidth + 1.1) {
       // Kerbing only exists where the track has it.
-      // Lateral is positive-right, so a negative offset is the left-hand side.
-      const onKerb = lat < 0 ? this.track.isCurbLeft[idx] : this.track.isCurbRight[idx];
+      // Lateral is positive-LEFT, so a positive offset is the left-hand side.
+      const onKerb = lat > 0 ? this.track.isCurbLeft[idx] : this.track.isCurbRight[idx];
       surface = onKerb ? 'curb' : 'runoff';
     } else if (absLat <= halfWidth + 5) {
       surface = 'runoff';
@@ -1108,4 +1109,5 @@ function copyControls(from: VehicleControls, to: VehicleControls): void {
   to.ersMode = from.ersMode;
   to.gearRequest = from.gearRequest;
   to.pitLimiter = from.pitLimiter;
+  to.reverse = from.reverse;
 }

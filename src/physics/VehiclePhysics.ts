@@ -37,7 +37,16 @@ export interface VehicleControls {
   throttle: number;
   /** 0..1 */
   brake: number;
-  /** -1 (full left) .. +1 (full right) */
+  /**
+   * Steering, -1 full LEFT .. +1 full RIGHT.
+   *
+   * Worth stating explicitly because the underlying frame is a trap. Three.js is
+   * right-handed with +Y up, and a car whose nose points along +Z has its
+   * driver's right toward -X, NOT +X. The internal lateral axis in this file is
+   * (cos h, -sin h), which is +X at zero heading — that is the driver's LEFT. So
+   * the steer input is negated where it becomes an angle, and positive steer
+   * really does turn right.
+   */
   steer: number;
   /** Requests DRS. Only honoured if `drsAvailable` and in a zone. */
   drsRequested: boolean;
@@ -47,6 +56,11 @@ export interface VehicleControls {
   gearRequest: number;
   /** Pit limiter, engaged in the pit lane. */
   pitLimiter: boolean;
+  /**
+   * Requests reverse. Only engages once the car is nearly stopped, exactly like
+   * a real gearbox — you cannot select reverse at 200 km/h.
+   */
+  reverse: boolean;
 }
 
 export type ErsMode = 'harvest' | 'balanced' | 'push' | 'overtake';
@@ -114,6 +128,8 @@ export class VehiclePhysics {
   // --- Powertrain ----------------------------------------------------------
   gear = 1;
   rpm = 4000;
+  /** True while reverse is engaged. */
+  inReverse = false;
   /** Litres in the tank. */
   fuelL = 100;
   /** Battery charge, Joules. */
@@ -410,7 +426,10 @@ export class VehiclePhysics {
     // lateral acceleration no tire can produce and the car simply spins — which
     // is realistic but unplayable, and real steering racks are geared for it.
     const steerLimit = lerp(1, 0.28, clamp01((speed - 12) / 75));
-    const steerAngle = c.steer * spec.maxSteerRad * steerLimit;
+    // Negated: see the note on VehicleControls.steer. The internal lateral axis
+    // points to the driver's LEFT, so a right-hand steer input must produce a
+    // negative steer angle. Without this, the arrow keys are inverted.
+    const steerAngle = -c.steer * spec.maxSteerRad * steerLimit;
 
     // --- Slip angles -------------------------------------------------------
     // Below walking pace the atan2 formulation is ill-conditioned, so blend the
@@ -441,7 +460,18 @@ export class VehiclePhysics {
     this.powerOutputW = 0;
 
     const throttle = clamp01(c.throttle);
-    if (this.shiftTimer <= 0 && throttle > 0.001 && this.fuelL > 0.01) {
+
+    // --- Reverse ----------------------------------------------------------
+    // Engages only below walking pace, as a real gearbox does, and is
+    // deliberately feeble: reverse exists to recover from a spin or a gravel
+    // trap, not to be driven.
+    this.inReverse = c.reverse && vx < 1.2 && vx > -8;
+    if (this.inReverse) {
+      const reverseForce = 5200 * clamp01(Math.max(throttle, c.brake));
+      driveForce = -reverseForce;
+      this.fuelL = Math.max(0, this.fuelL - 0.004 * dt);
+      this.gear = -1;
+    } else if (this.shiftTimer <= 0 && throttle > 0.001 && this.fuelL > 0.01) {
       const gearRatio = spec.gearRatios[this.gear - 1] ?? spec.gearRatios[0];
       const icePower = spec.icePowerW * torqueCurve(this.rpm / spec.redlineRpm) * throttle * env.airDensityRatio;
 
@@ -474,7 +504,9 @@ export class VehiclePhysics {
     const brake = clamp01(c.brake);
     let brakeForceFront = 0;
     let brakeForceRear = 0;
-    if (brake > 0.001 && absVx > 0.15) {
+    // While reversing, the brake pedal is what drives it (see above), so it must
+    // not also be applied as a brake or the car would never move.
+    if (!this.inReverse && brake > 0.001 && absVx > 0.15) {
       const total = spec.maxBrakeForceN * brake;
       brakeForceFront = total * spec.brakeBalanceFront;
       brakeForceRear = total * (1 - spec.brakeBalanceFront);
@@ -640,6 +672,12 @@ export class VehiclePhysics {
 
   private updateGearbox(dt: number, c: VehicleControls, vx: number): void {
     const spec = this.spec;
+
+    if (this.inReverse) {
+      this.rpm = clamp(Math.abs(vx) / spec.tireRadiusM * spec.reverseRatio * 9.5493,
+        spec.idleRpm, spec.redlineRpm * 0.5);
+      return;
+    }
 
     if (this.shiftTimer > 0) {
       this.shiftTimer -= dt;

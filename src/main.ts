@@ -60,6 +60,9 @@ class Game {
   private quickCircuitId = CIRCUITS[0].id;
 
   private rafHandle = 0;
+  /** Controls card starts visible each session, then fades out. */
+  private helpVisible = false;
+  private helpShownAt = 0;
 
   constructor() {
     this.canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -577,6 +580,10 @@ class Game {
       this.renderer.loadSession(this.engine);
       this.renderer.director.setMode(this.settings.cameraMode as CameraMode);
       this.hud.setCameraLabel(this.renderer.director.modeLabel);
+      // Show the controls at the start of every session.
+      this.helpVisible = true;
+      this.helpShownAt = performance.now();
+      this.hud.setHelpVisible(true);
       this.clock.reset();
       this.clock.paused = false;
       this.setLoading(false);
@@ -746,6 +753,18 @@ class Game {
         );
 
         if (this.input.cameraCyclePressed) this.cycleCamera();
+        if (this.input.helpToggled) {
+          this.helpVisible = !this.helpVisible;
+          this.helpShownAt = performance.now();
+          this.hud.setHelpVisible(this.helpVisible);
+        }
+        // Auto-hide on WALL-CLOCK time, not simulation time. On a device slow
+        // enough that the sim runs behind realtime, sim time would leave the card
+        // up for far longer than the player expects.
+        if (this.helpVisible && performance.now() - this.helpShownAt > 6500) {
+          this.helpVisible = false;
+          this.hud.setHelpVisible(false);
+        }
         if (this.input.pausePressed) {
           this.clock.paused = !this.clock.paused;
         }

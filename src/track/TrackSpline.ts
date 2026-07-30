@@ -101,14 +101,23 @@ export class TrackSpline {
   readonly tx: Float32Array;
   readonly tz: Float32Array;
   /**
-   * Unit normal pointing to the driver's RIGHT.
-   * For a tangent of (0,1) this is (1,0) = +X, which is the right-hand side when
-   * travelling toward +Z. All lateral offsets in the codebase are therefore
-   * positive-right.
+   * Unit normal pointing to the driver's LEFT.
+   *
+   * For a tangent of (0,1) this is (1,0) = +X. In a right-handed system with +Y
+   * up, a traveller facing +Z has their right toward -X, so +X is their LEFT.
+   * Every lateral offset in this codebase is therefore positive-LEFT.
+   *
+   * An earlier revision of this comment claimed the opposite. That mistake is
+   * what produced inverted player steering, so it is worth being precise.
    */
   readonly nx: Float32Array;
   readonly nz: Float32Array;
-  /** Signed centreline curvature, 1/m. Positive = LEFT turn. */
+  /**
+   * Signed centreline curvature, 1/m.
+   *
+   * Positive means the path curves toward -X, i.e. a RIGHT turn, because this is
+   * computed from a cross product whose sign is opposite to the heading rate.
+   */
   readonly curvature: Float32Array;
   /** Distance along the lap at this node. */
   readonly dist: Float32Array;
@@ -120,7 +129,7 @@ export class TrackSpline {
   readonly banking: Float32Array;
 
   // --- Derived racing line -------------------------------------------------
-  /** Lateral offset of the racing line from centreline, +right, metres. */
+  /** Lateral offset of the racing line from centreline, +left, metres. */
   readonly lineOffset: Float32Array;
   /** Curvature of the racing line itself. Drives the speed profile. */
   readonly lineCurvature: Float32Array;
@@ -211,7 +220,7 @@ export class TrackSpline {
 
       tx[i] = dx;
       tz[i] = dz;
-      // Right-hand normal: rotating the tangent -90 degrees about +Y.
+      // Left-hand normal: (tz, -tx), which is +X for a +Z tangent.
       nx[i] = dz;
       nz[i] = -dx;
     }
@@ -262,10 +271,11 @@ export class TrackSpline {
     for (let i = 0; i < count; i++) {
       const k = this.curvature[i];
       if (Math.abs(k) > 1 / 400) {
-        // Kerbing goes on the inside of the corner. Positive curvature is a left
-        // turn, whose inside is the track's left-hand side.
-        if (k > 0) this.isCurbLeft[i] = 1;
-        else this.isCurbRight[i] = 1;
+        // Kerbing goes on the inside of the corner. Positive curvature is a RIGHT
+        // turn, whose inside is the track's right-hand side — and the right-hand
+        // side is NEGATIVE lateral under the positive-left convention.
+        if (k > 0) this.isCurbRight[i] = 1;
+        else this.isCurbLeft[i] = 1;
       }
     }
     if (def.curbOverrides) {
@@ -409,8 +419,8 @@ export class TrackSpline {
     const APPROACH_M = 95;
     const approachNodes = Math.max(4, Math.round(APPROACH_M / ds));
 
-    // Curvature is positive for a left turn. The inside of a left turn is the
-    // track's LEFT side, which is NEGATIVE lateral under the +right convention.
+    // Positive curvature is a RIGHT turn, whose inside is the track's right-hand
+    // side, which is negative under the positive-left convention.
     const insideSign = (k: number) => (k > 0 ? -1 : 1);
 
     const raw = new Float32Array(count);
@@ -690,7 +700,7 @@ export class TrackSpline {
 
   /**
    * Projects a world position into track space.
-   * Writes `s` (distance along lap) and `lateral` (+right, metres) into `out`.
+   * Writes `s` (distance along lap) and `lateral` (+left, metres) into `out`.
    */
   project(x: number, z: number, hint: number, out: TrackProjection): number {
     const i = this.nearestIndex(x, z, hint);

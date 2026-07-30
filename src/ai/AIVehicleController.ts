@@ -154,6 +154,7 @@ export class AIVehicleController {
   readonly controls: VehicleControls = {
     throttle: 0, brake: 0, steer: 0,
     drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false,
+    reverse: false,
   };
 
   private profile: DriverProfile;
@@ -433,7 +434,7 @@ export class AIVehicleController {
       // turning. Handled as a hard-locked, low-speed manoeuvre.
       c.throttle = 0;
       c.brake = 0.3;
-      c.steer = this.slewSteer(clamp(-err * 1.2, -1, 1), dt);
+      c.steer = this.slewSteer(clamp(err * 1.2, -1, 1), dt);
     } else if (speed > 14) {
       // Still carrying real speed. If the car is sideways, the first job is to
       // catch it, and you catch a slide by steering toward where the car is
@@ -443,20 +444,20 @@ export class AIVehicleController {
       const slideAngle = wrapAngle(travelHeading - car.heading);
 
       if (Math.abs(slideAngle) > 0.25) {
-        c.steer = this.slewSteer(clamp(slideAngle * 1.6, -1, 1), dt);
+        c.steer = this.slewSteer(clamp(-slideAngle * 1.6, -1, 1), dt);
         c.throttle = 0;
         c.brake = clamp01((speed - 18) / 40) * car.brakeLimitFraction * 0.5;
       } else {
         // Under control: gentle correction back toward the road. An aggressive
         // gain here is what turns a small excursion into a spin.
-        c.steer = this.slewSteer(clamp(err * 0.55, -0.75, 0.75), dt);
+        c.steer = this.slewSteer(clamp(-err * 0.55, -0.75, 0.75), dt);
         c.brake = clamp01((speed - 22) / 30) * car.brakeLimitFraction * 0.7;
         c.throttle = 0;
       }
     } else {
       // Slow and roughly pointing the right way: drive back onto the road.
       const offTrack = Math.abs(lateral) > track.halfWidthAt(s);
-      c.steer = this.slewSteer(clamp(err * 1.1, -1, 1), dt);
+      c.steer = this.slewSteer(clamp(-err * 1.1, -1, 1), dt);
       c.brake = 0;
       const wantSpeed = offTrack ? 16 : 28;
       c.throttle = speed < wantSpeed
@@ -573,13 +574,17 @@ export class AIVehicleController {
       track.headingAt(s) + lineHeadingOffset + Math.atan2(effectiveError, Math.max(closeOver, 10));
     const headingError = wrapAngle(aimHeading - car.heading);
 
-    let steer = (ffRad + headingError * 1.3) / car.spec.maxSteerRad;
+    // Negated to match the corrected steer convention: positive steer is RIGHT,
+    // while increasing heading (which is what ffRad and headingError express) is
+    // a turn to the LEFT in this frame.
+    let steer = -(ffRad + headingError * 1.3) / car.spec.maxSteerRad;
 
     // Counter-steer damping: oppose yaw the driver did not ask for. This is what
     // lets the AI catch a slide instead of spinning, and it is exactly what a
     // real driver does with their hands.
     const desiredYawRate = -ffCurvature * speed;
-    steer -= (car.yawRate - desiredYawRate) * 0.05;
+    // Excess left-hand yaw needs right-hand correction, which is now positive.
+    steer += (car.yawRate - desiredYawRate) * 0.05;
 
     // --- Edge guardrail ----------------------------------------------------
     // An inward bias that grows sharply as the car approaches the track edge,
@@ -595,8 +600,9 @@ export class AIVehicleController {
     const edgeUse = Math.abs(lateral) / Math.max(halfWidthNow, 1);
     if (edgeUse > 0.68) {
       const urgency = clamp01((edgeUse - 0.68) / 0.28);
-      // Positive lateral is to the right, so coming back means negative steer.
-      steer -= Math.sign(lateral) * urgency * urgency * 0.85;
+      // Lateral is positive to the driver's LEFT, so drifting positive means
+      // coming back requires right-hand steer, which is positive.
+      steer += Math.sign(lateral) * urgency * urgency * 0.85;
     }
 
     // Human imperfection. A slow sine plus per-driver noise, so cars wander a
