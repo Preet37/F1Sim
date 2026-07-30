@@ -55,6 +55,11 @@ export interface Neighbour {
 
 /** Spatial picture the race sim hands the AI each decision tick. */
 export interface AIPerception {
+  /**
+   * Metres of pit-exit blend zone remaining. Above zero, the car must keep off
+   * the racing line and let faster traffic through.
+   */
+  blendRemainingM: number;
   ahead: Neighbour | null;
   behind: Neighbour | null;
   /** Cars alongside, within a car length longitudinally. */
@@ -76,6 +81,7 @@ export interface AIPerception {
 
 export function createPerception(): AIPerception {
   return {
+    blendRemainingM: 0,
     ahead: null, behind: null, alongsideLeft: null, alongsideRight: null,
     localYellow: false, blueFlag: false, neutralised: false,
     neutralisedTargetMs: 0, pitThisLap: false, wetness: 0,
@@ -258,6 +264,18 @@ export class AIVehicleController {
     // A car can be a long way sideways and still be recovering under control, so
     // "spun" means genuinely pointing the wrong way, not merely oversteering.
     const spun = Math.abs(wrapAngle(car.heading - track.headingAt(s))) > 1.55;
+    // --- Pit exit blend ---------------------------------------------------
+    // Rejoining traffic holds the pit side of the road until it is up to speed.
+    // Without this, cars leaving the garage merge onto the racing line at a
+    // third of racing speed and are collected by the field — which in testing
+    // retired five of the ten runners in Q3 before anyone set a lap.
+    if (p.blendRemainingM > 0 && !offTrack && !spun) {
+      this.setState('LINE_FOLLOWER');
+      const pitSide = Math.sign(track.def.pitLane.lateralOffsetM || 1);
+      this.targetLateral = clamp(pitSide * halfWidth * 0.7, -halfWidth, halfWidth);
+      return;
+    }
+
     if (offTrack || spun) {
       this.shakenTimer = 6;
       this.setState('RECOVER');
@@ -275,7 +293,19 @@ export class AIVehicleController {
     }
 
     // --- Pit lane states are sticky; the strategy layer owns them.
-    if (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') return;
+    if (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') {
+      // Hold the pit lane's own lateral offset while inside it.
+      //
+      // This used to return without touching targetLateral, so the car kept
+      // whatever line it had been aiming at — which is the RACING line. Cars
+      // leaving a garage therefore drove diagonally out of the pit lane onto
+      // the circuit while still in the pit lane's distance range, arrived at
+      // racing-line lateral doing 80 km/h, and were collected by the field.
+      if (this.isInPitLane(s)) {
+        this.targetLateral = track.def.pitLane.lateralOffsetM;
+      }
+      return;
+    }
     if (p.pitThisLap) {
       const pit = track.def.pitLane;
       // Commit once inside the braking distance for the pit entry.

@@ -3,8 +3,9 @@ import './ui/styles.css';
 import { SimClock } from './core/SimClock';
 import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
+import type { CarEntry } from './race/CarEntry';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
-import { TEAMS, getTeam } from './data/teams';
+import { TEAMS, getTeam, DRIVERS, type Driver } from './data/teams';
 import { Renderer } from './render/Renderer';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDirector';
 import { InputController } from './input/InputController';
@@ -13,6 +14,7 @@ import { CareerEngine, TIER_INFO, type CareerEvent, type SeasonResult } from './
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock } from './ui/Paddock';
+import { PRACTICE_SEGMENTS, QUALIFYING_SEGMENTS } from './race/WeekendFormat';
 
 /**
  * Application shell: screens, the game loop, and the wiring between the
@@ -178,6 +180,10 @@ class Game {
       kind, name, durationS, laps,
       playerIndex: 0,
       standingStart: kind === 'race' && q.get('rolling') !== '1',
+      // A deep link is used for headless verification and for jumping straight
+      // into a session; honour the same garage-start rule as the menus, but let
+      // ?pit=0 skip the out-lap when a test wants the car on track immediately.
+      pitLaneStart: kind !== 'race' && q.get('pit') !== '0',
       seed: Number.isFinite(seedParam) && seedParam !== 0 ? seedParam : (Math.random() * 0x7fffffff) | 0,
     };
     return { circuitId, config };
@@ -452,6 +458,7 @@ class Game {
       this.el('div', 'card-name', c, name);
       this.el('div', 'card-meta', c, meta);
       c.addEventListener('click', () => {
+        this.resetQualifying();
         this.weekend = make();
         this.weekendIndex = 0;
         this.beginSession(circuit.id);
@@ -460,13 +467,15 @@ class Game {
 
     option('Free Practice', '10 minutes, learn the circuit',
       () => [this.sessionConfig('practice', 'Free Practice', circuit.id, 600, 0)]);
-    option('Qualifying', 'One 12-minute session for grid position',
-      () => [this.sessionConfig('qualifying', 'Qualifying', circuit.id, 720, 0)]);
+    option('Qualifying', 'Q1, Q2 and Q3 knockout for grid position',
+      () => QUALIFYING_SEGMENTS.map((q) =>
+        this.sessionConfig('qualifying', q.name, circuit.id, q.durationS, 0,
+          { qualifyingPhase: q.phase, advancing: q.advancing })));
     option('Sprint Race', '25% distance, standing start',
       () => [this.sessionConfig('race', 'Sprint', circuit.id, 0, Math.max(5, Math.round(circuit.raceLaps * 0.25)))]);
     option('Grand Prix', circuit.raceLaps + ' laps, full distance',
       () => [this.sessionConfig('race', 'Grand Prix', circuit.id, 0, circuit.raceLaps)]);
-    option('Full Weekend', 'Practice, qualifying and the race',
+    option('Full Weekend', 'Three practice sessions, Q1-Q2-Q3, then the race',
       () => this.weekendSessions(circuit.id));
 
     this.el('div', 'section-title', inner, 'Circuit');
@@ -605,29 +614,133 @@ class Game {
   private sessionConfig(
     kind: SessionKind, name: string, circuitId: string,
     durationS: number, laps: number,
+    extra: Partial<SessionConfig> = {},
   ): SessionConfig {
     void circuitId;
     return {
       kind, name, durationS, laps,
       playerIndex: 0,
       standingStart: kind === 'race',
+      // Everything that is not a race start begins in the garage and leaves
+      // down the pit lane, which is how a real practice or qualifying session
+      // works. Only a race or a sprint forms up on the grid.
+      pitLaneStart: kind !== 'race',
       seed: (Math.random() * 0x7fffffff) | 0,
+      ...extra,
     };
   }
 
+  /**
+   * A full Grand Prix weekend in the real format.
+   *
+   * Three practice sessions, then knockout qualifying, then the race. The
+   * qualifying segments are the part that matters: Q1 runs the whole field and
+   * knocks out the slowest five, Q2 runs the surviving fifteen and knocks out
+   * five more, and Q3 is a ten-car shootout for pole. Eliminated cars keep the
+   * grid slots they earned, filled in from the back — so the final grid is Q3
+   * order on rows one to five, then the Q2 casualties, then the Q1 casualties.
+   *
+   * Segment lengths follow the real ones: 18, 15 and 12 minutes, compressed
+   * here because nobody wants to sit through 45 minutes of qualifying, but the
+   * proportions and the knockout counts are the genuine article.
+   */
   private weekendSessions(circuitId: string): SessionConfig[] {
     const c = getCircuit(circuitId);
-    return [
-      this.sessionConfig('practice', 'FP1', circuitId, 480, 0),
-      this.sessionConfig('qualifying', 'Qualifying', circuitId, 600, 0),
-      this.sessionConfig('race', 'Grand Prix', circuitId, 0, c.raceLaps),
-    ];
+    const sessions: SessionConfig[] = [];
+
+    for (const fp of PRACTICE_SEGMENTS) {
+      sessions.push(this.sessionConfig('practice', fp.name, circuitId, fp.durationS, 0));
+    }
+    for (const q of QUALIFYING_SEGMENTS) {
+      sessions.push(this.sessionConfig('qualifying', q.name, circuitId, q.durationS, 0,
+        { qualifyingPhase: q.phase, advancing: q.advancing }));
+    }
+    sessions.push(this.sessionConfig('race', 'Grand Prix', circuitId, 0, c.raceLaps));
+    return sessions;
+  }
+
+  /**
+   * Grid order built up across the qualifying segments.
+   *
+   * Index 0 is pole. Filled from the back as cars are knocked out, so by the
+   * time Q3 finishes the whole grid is determined.
+   */
+  private qualifyingGrid: string[] = [];
+  /**
+   * Driver ids still in the qualifying fight.
+   *
+   * Kept so the results screen can say who advanced, and so a segment that
+   * ends with nobody having set a lap still has a defined survivor set.
+   */
+  private qualifyingSurvivors: string[] = [];
+
+  /** Clears qualifying state at the start of a weekend. */
+  private resetQualifying(): void {
+    this.qualifyingGrid = [];
+    this.qualifyingSurvivors = [];
   }
 
   private startWeekend(circuitId: string): void {
+    this.resetQualifying();
     this.weekend = this.weekendSessions(circuitId);
     this.weekendIndex = 0;
     this.beginSession(circuitId);
+  }
+
+  /**
+   * Applies the result of one qualifying segment.
+   *
+   * Cars are ranked on their best lap of the segment; anyone without a lap goes
+   * to the back. The slowest are knocked out and take the LAST available grid
+   * slots, which is why the grid fills from the rear as qualifying progresses:
+   * the Q1 casualties are locked into 16th-20th before Q2 has even started.
+   *
+   * The survivors are carried into the next segment through `participants`, so
+   * Q2 runs fifteen cars and Q3 runs ten — the track is progressively emptier,
+   * exactly as it is in reality.
+   */
+  private resolveQualifyingSegment(
+    engine: RaceEngine,
+    phase: 1 | 2 | 3,
+    advancing: number | undefined,
+  ): void {
+    const idOf = (c: CarEntry) => (c.isPlayer ? 'PLAYER' : c.driver.id);
+
+    // Rank this segment's runners by best lap. No lap set = back of the queue.
+    const ranked = engine.participants
+      .slice()
+      .sort((a, b) => {
+        const at = a.bestLapTime > 0 ? a.bestLapTime : Infinity;
+        const bt = b.bestLapTime > 0 ? b.bestLapTime : Infinity;
+        return at - bt;
+      });
+
+    if (advancing === undefined || ranked.length <= advancing) {
+      // Q3, or a segment nobody was knocked out of: this order fills the front
+      // of the grid.
+      for (let i = 0; i < ranked.length; i++) this.qualifyingGrid[i] = idOf(ranked[i]);
+      this.qualifyingSurvivors = ranked.map(idOf);
+      return;
+    }
+
+    const survivors = ranked.slice(0, advancing);
+    const knockedOut = ranked.slice(advancing);
+
+    // Eliminated cars fill the grid from the back, fastest of them highest.
+    // With 20 cars and 15 advancing, that is slots 16-20.
+    for (let i = 0; i < knockedOut.length; i++) {
+      const slot = advancing + i;
+      this.qualifyingGrid[slot] = idOf(knockedOut[i]);
+    }
+
+    this.qualifyingSurvivors = survivors.map(idOf);
+
+    // Restrict the next segment to the survivors.
+    const next = this.weekend[this.weekendIndex + 1];
+    if (next && next.kind === 'qualifying') {
+      next.participants = survivors.map((c) => c.index);
+    }
+    void phase;
   }
 
   /** Builds the engine and loads the renderer for the queued session. */
@@ -649,6 +762,21 @@ class Game {
         const player = this.career.playerAsDriver();
         const rivals = this.career.fieldForTier().filter((d) => d.teamId !== player.teamId).slice(0, 19);
         field = [player, ...rivals];
+      }
+
+      // A race that follows qualifying lines up in the order qualifying
+      // produced. The engine builds the grid from the field's array order, so
+      // sorting the field here IS setting the grid.
+      if (config.kind === 'race' && this.qualifyingGrid.length > 0) {
+        const base = field ?? DRIVERS.slice();
+        const playerId = this.career?.playerAsDriver().id;
+        const rank = (d: Driver) => {
+          const key = d.id === playerId ? 'PLAYER' : d.id;
+          const i = this.qualifyingGrid.indexOf(key);
+          // Anyone with no qualifying slot starts behind those who have one.
+          return i < 0 ? this.qualifyingGrid.length + base.indexOf(d) : i;
+        };
+        field = base.slice().sort((a, b) => rank(a) - rank(b));
       }
 
       this.engine = new RaceEngine(def, config, field);
@@ -696,6 +824,12 @@ class Game {
       return;
     }
 
+    // Knockout qualifying: work out who survives, who is out, and where the
+    // eliminated cars sit on the final grid.
+    if (config.kind === 'qualifying' && config.qualifyingPhase) {
+      this.resolveQualifyingSegment(engine, config.qualifyingPhase, config.advancing);
+    }
+
     this.weekendIndex++;
     if (this.weekendIndex < this.weekend.length) {
       this.showResults(() => this.beginSession(engine.track.def.id));
@@ -714,6 +848,18 @@ class Game {
     this.el('div', 'title', inner, engine.config.name + ' — Result');
     this.el('div', 'subtitle', inner,
       engine.track.def.officialName + ' · ' + engine.weather.label);
+
+    // After a knockout segment, say plainly who went through and who is out.
+    // A bare classification does not communicate that five cars just had their
+    // weekend decided.
+    const phase = engine.config.qualifyingPhase;
+    if (phase && engine.config.advancing !== undefined) {
+      const out = engine.participants.length - this.qualifyingSurvivors.length;
+      this.el('div', 'section-title', inner,
+        `Q${phase} — ${this.qualifyingSurvivors.length} advance to Q${phase + 1}, ${out} eliminated`);
+    } else if (phase === 3) {
+      this.el('div', 'section-title', inner, 'Q3 — pole position decided');
+    }
 
     const table = document.createElement('table');
     table.className = 'standings';

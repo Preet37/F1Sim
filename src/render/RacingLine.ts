@@ -30,12 +30,27 @@ import type { TrackSpline } from '../track/TrackSpline';
  * of a 7km track cannot be seen anyway.
  */
 
-/** Metres of line drawn ahead of the car. */
-const LOOKAHEAD_M = 320;
+/**
+ * Metres of line drawn ahead of the car.
+ *
+ * Generous on purpose. At 320 km/h the car covers 89 metres a second, so a
+ * 320m line is under four seconds of warning — and since the colour only turns
+ * at the far end of it, the braking cue arrived far too late to act on. 900m
+ * is about ten seconds at racing speed, which is enough to see a braking zone
+ * developing rather than being told about it as you arrive.
+ */
+const LOOKAHEAD_M = 900;
 /** Metres behind, so the ribbon does not start abruptly under the nose. */
 const LOOKBEHIND_M = 25;
-/** Ribbon width, metres. */
-const WIDTH_M = 0.55;
+/**
+ * Ribbon width, metres.
+ *
+ * A racing car is 2m wide and the track is 12-15m. At 0.55m the line was a
+ * thread that disappeared into the asphalt at any distance — exactly where it
+ * needs to be readable. 1.4m reads as a painted racing line from a long way
+ * out without hiding the road under it.
+ */
+const WIDTH_M = 1.4;
 /** Height above the road, metres. Above the kerbs and the painted lines. */
 const Y_OFFSET = 0.05;
 
@@ -64,7 +79,11 @@ export class RacingLine {
 
   constructor(track: TrackSpline) {
     this.track = track;
-    this.stepM = 4;
+    // Coarser segments than the 4m original: at 900m of lookahead that would
+    // be 230 quads rebuilt every frame for detail far finer than the eye can
+    // resolve at distance. 8m keeps the colour gradient smooth and halves the
+    // per-frame vertex writes.
+    this.stepM = 8;
     this.segments = Math.ceil((LOOKAHEAD_M + LOOKBEHIND_M) / this.stepM);
 
     // Two triangles per segment, six vertices, never reallocated.
@@ -87,7 +106,7 @@ export class RacingLine {
     this.material = new THREE.MeshBasicMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.85,
       depthWrite: false,
       // Coplanar with the asphalt; without an offset this z-fights into a
       // shimmering line at any distance.
@@ -213,17 +232,23 @@ export class RacingLine {
  * of how much margin is left.
  */
 function colourFor(ratio: number): [number, number, number] {
-  // Everything below 0.82 is comfortably fine and stays fully green, so the
+  // Everything below 0.78 is comfortably fine and stays fully green, so the
   // line is not permanently amber on a straight.
-  const t = clamp01((ratio - 0.82) / 0.28);
+  //
+  // The band is deliberately WIDE (0.78 to 1.02). A narrow band snaps from
+  // green to red almost instantly, which tells the driver they are already too
+  // late; a wide one shades gradually through amber as a braking zone
+  // approaches, so the colour communicates how much margin is left rather than
+  // just whether it has run out.
+  const t = clamp01((ratio - 0.78) / 0.24);
   if (t < 0.5) {
     // Green to amber.
     const k = t * 2;
-    return [0.11 + 0.85 * k, 0.82 - 0.12 * k, 0.20 - 0.16 * k];
+    return [0.15 + 0.85 * k, 0.95 - 0.20 * k, 0.25 - 0.22 * k];
   }
   // Amber to red.
   const k = (t - 0.5) * 2;
-  return [0.96, 0.70 - 0.62 * k, 0.04];
+  return [1.0, 0.75 - 0.70 * k, 0.03];
 }
 
 /** Wraps a distance into [0, len). */

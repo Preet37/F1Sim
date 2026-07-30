@@ -35,6 +35,30 @@ export interface SessionConfig {
   playerIndex: number;
   /** Cars start from a standing grid rather than rolling out of the pits. */
   standingStart: boolean;
+  /**
+   * Cars begin stationary in their garages and must leave down the pit lane
+   * under the speed limiter.
+   *
+   * This is the correct default for every session that is not a race start. A
+   * real practice or qualifying session never begins with cars already at
+   * speed on the circuit — they roll out of the garage, serve the pit lane at
+   * 80 km/h, and pick up the track at the pit exit.
+   */
+  pitLaneStart: boolean;
+  /**
+   * Qualifying knockout segment: 1, 2 or 3. Undefined outside qualifying.
+   */
+  qualifyingPhase?: 1 | 2 | 3;
+  /**
+   * How many cars survive this segment. The slowest are eliminated and take
+   * grid slots from the back in the order they were knocked out.
+   */
+  advancing?: number;
+  /**
+   * Car indices allowed to participate. Undefined means the whole field.
+   * Q2 and Q3 run with a progressively smaller field.
+   */
+  participants?: readonly number[];
   seed: number;
 }
 
@@ -90,6 +114,26 @@ export class Weather {
     this.trackTempC = damp(this.trackTempC, tempTarget, 0.02, dt);
   }
 }
+
+/** Spacing between cars queueing in the pit lane at a garage start, metres. */
+const GARAGE_SPACING_M = 11;
+/**
+ * Gap between successive cars being released from the garage, seconds.
+ *
+ * Wide on purpose. At 1.2s a ten-car field emerged from the pit exit
+ * nose-to-tail as a single train, and the cars at the back of it rear-ended the
+ * ones in front hard enough to be written off before anyone had set a lap. Real
+ * teams space their runners for exactly this reason — nobody wants their driver
+ * in traffic on an out-lap.
+ */
+const GARAGE_RELEASE_GAP_S = 3.4;
+/**
+ * Length of the pit-exit blend zone, metres.
+ *
+ * Long enough for a car leaving at the 80 km/h limit to be back at racing pace
+ * before it takes the line. Roughly 250m is what a real circuit paints.
+ */
+const PIT_EXIT_BLEND_M = 260;
 
 /** Fixed grid-slot geometry: 8m between rows, ~4m side offset. */
 const GRID_ROW_SPACING_M = 8;
@@ -165,6 +209,18 @@ export class RaceEngine {
       this.neighbourPool.push(createNeighbour(), createNeighbour(), createNeighbour(), createNeighbour());
     }
 
+    // Cars outside this session's participant list are already knocked out.
+    // Marking them here means the step loop, the timing tower and the standings
+    // all agree without each needing to consult the config.
+    if (config.participants) {
+      for (const car of this.cars) {
+        if (!config.participants.includes(car.index)) {
+          car.eliminated = true;
+          car.eliminatedInPhase = (config.qualifyingPhase ?? 1) - 1;
+        }
+      }
+    }
+
     this.planStrategies();
     this.placeGrid();
     this.updateEnvironment();
@@ -226,9 +282,14 @@ export class RaceEngine {
    */
   private placeGrid(): void {
     const startS = 0;
+
+    // Only cars taking part. Q2 and Q3 run a reduced field; everyone else is
+    // already eliminated and sits out.
+    const field = this.participants;
+
     if (this.config.standingStart) {
-      for (let i = 0; i < this.cars.length; i++) {
-        const car = this.cars[i];
+      for (let i = 0; i < field.length; i++) {
+        const car = field[i];
         const row = Math.floor(i / 2);
         const side = i % 2 === 0 ? 1 : -1;
         // Grid slots run backwards from the line.
@@ -238,20 +299,65 @@ export class RaceEngine {
       }
       this.startLights = 5;
       this.started = false;
-    } else {
-      // Practice and qualifying: spread the field around the lap so cars are not
-      // all queueing at the pit exit.
-      for (let i = 0; i < this.cars.length; i++) {
-        const car = this.cars[i];
-        const s = (i / this.cars.length) * this.track.length;
-        const lineOffset = this.track.lineOffset[this.track.indexAt(s)];
-        car.placeOnTrack(this.track, s, lineOffset, this.track.targetSpeed[this.track.indexAt(s)] * 0.8);
+      return;
+    }
+
+    if (this.config.pitLaneStart) {
+      // Cars queue in the pit lane in their garages and leave under the
+      // limiter. This is how every session that is not a race start actually
+      // begins — nobody is teleported onto the circuit at speed.
+      const pit = this.track.def.pitLane;
+      const len = this.track.length;
+
+      for (let i = 0; i < field.length; i++) {
+        const car = field[i];
+        // Stack the queue backwards from the box toward the pit entry, so the
+        // cars form an orderly line rather than occupying the same metre.
+        const s = wrapDistance(pit.boxS - i * GARAGE_SPACING_M, len);
+        car.placeOnTrack(this.track, s, pit.lateralOffsetM, 0);
         car.lap = 0;
         car.lapStartTime = 0;
+        car.inPitLane = true;
+        car.inPitBox = false;
+        // Already "serviced": these cars are leaving the garage, not stopping
+        // for a stop. Without this they would immediately try to take service
+        // in the box they are parked next to.
+        car.servicedThisVisit = true;
+        // The lap out of the garage is an out-lap and must not be timed.
+        car.onOutLap = true;
+        // Staggered release, so twenty cars do not all pull out at once and
+        // pile into each other at the pit exit.
+        car.releaseTimer = i * GARAGE_RELEASE_GAP_S;
+        // Put the AI in its pit-exit state so it drives the lane properly:
+        // limiter on, holding the pit lane's lateral offset, until the exit.
+        if (car.ai) car.ai.onPitStopComplete();
       }
+
       this.started = true;
       this.startLights = 0;
+      return;
     }
+
+    // Fallback: spread the field around the lap. Used only by the validation
+    // harness, which measures pace and does not want to spend a third of a
+    // short session watching an out-lap.
+    for (let i = 0; i < field.length; i++) {
+      const car = field[i];
+      const s = (i / field.length) * this.track.length;
+      const lineOffset = this.track.lineOffset[this.track.indexAt(s)];
+      car.placeOnTrack(this.track, s, lineOffset, this.track.targetSpeed[this.track.indexAt(s)] * 0.8);
+      car.lap = 0;
+      car.lapStartTime = 0;
+    }
+    this.started = true;
+    this.startLights = 0;
+  }
+
+  /** Cars taking part in this session. */
+  get participants(): CarEntry[] {
+    const allowed = this.config.participants;
+    if (!allowed) return this.cars;
+    return this.cars.filter((c) => allowed.includes(c.index));
   }
 
   private updateEnvironment(): void {
@@ -322,6 +428,15 @@ export class RaceEngine {
     for (let i = 0; i < this.cars.length; i++) {
       const car = this.cars[i];
       if (car.retired) continue;
+      // Cars knocked out of qualifying take no further part in the session.
+      if (car.eliminated) continue;
+
+      // Held in the garage until this car's release slot comes round.
+      if (car.releaseTimer > 0) {
+        car.releaseTimer -= dt;
+        this.holdOnGrid(car);
+        continue;
+      }
 
       this.updateAero(car);
       this.updateSurface(car);
@@ -352,11 +467,15 @@ export class RaceEngine {
       // engine against the limiter. Small per-second rates, so this is a
       // race-distance cost rather than a corner-by-corner one — which is what
       // gives a track-limits rule real teeth over a stint.
+      if (car.blendRemainingM > 0) {
+        car.blendRemainingM = Math.max(0, car.blendRemainingM - car.physics.speedMs * dt);
+      }
+
       car.damage.applyWear(dt, car.physics.surface, car.physics.speedMs, car.physics.rpmFraction);
       if (car.damage.specDirty) car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
 
       const crossedLine = car.updateProjection(this.track);
-      this.enforceBarriers(car);
+      this.enforceBarriers(car, dt);
       this.updateSectorTiming(car);
       this.updatePitLane(car, dt);
 
@@ -456,7 +575,7 @@ export class RaceEngine {
    * Street circuits have walls right at the track edge, which is why Monaco
    * punishes a mistake that Silverstone forgives.
    */
-  private enforceBarriers(car: CarEntry): void {
+  private enforceBarriers(car: CarEntry, dt: number): void {
     if (car.inPitLane) return;
 
     const idx = this.track.indexAt(car.s);
@@ -484,14 +603,35 @@ export class RaceEngine {
     car.lateral = side * limit;
 
     // Absorb the velocity component into the wall.
+    //
+    // Everything below is carefully split between per-IMPACT and per-SECOND.
+    // The original version applied `velocity.scale(0.82)` and `yawRate *= 0.4`
+    // unconditionally on every call — and this runs once per physics step, at
+    // 120Hz. That compounds to 0.82^120 per second, which is about 1e-10: a car
+    // that so much as brushed a barrier was stopped stone dead within a frame
+    // or two and could never drive away again, because its yaw rate was being
+    // annihilated just as fast. That is the "stuck in the wall" bug.
     const into = car.physics.velocity.x * nx + car.physics.velocity.y * nz;
     if (into > 0) {
+      // Remove the component going into the wall. This is the collision itself
+      // and is correctly instantaneous — the wall does not move.
       car.physics.velocity.x -= nx * into;
       car.physics.velocity.y -= nz * into;
-      // Scrub speed along the wall and unsettle the car.
-      car.physics.velocity.scale(0.82);
-      car.physics.yawRate *= 0.4;
+    }
 
+    // Scraping along the barrier costs speed continuously, so it must be a
+    // RATE. About 40% of speed per second while in contact: enough to punish a
+    // long scrape, slow enough that the car keeps rolling and can be steered
+    // off the wall.
+    const scrub = Math.exp(-0.5 * dt);
+    car.physics.velocity.scale(scrub);
+
+    // Contact also resists rotation, but again as a rate rather than a per-step
+    // wipe, so the driver retains the yaw authority needed to point the car
+    // away from the wall and leave.
+    car.physics.yawRate *= Math.exp(-2.5 * dt);
+
+    if (into > 0) {
       const severity = clamp01(into / 22);
       if (severity > 0.25) {
         this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz));
@@ -588,6 +728,7 @@ export class RaceEngine {
     p.neutralised = this.raceControl.neutralisation !== 'none';
     p.neutralisedTargetMs = this.raceControl.vscTargetMs;
     p.wetness = this.weather.wetness;
+    p.blendRemainingM = car.blendRemainingM;
     p.pitThisLap = this.shouldPit(car);
   }
 
@@ -818,8 +959,11 @@ export class RaceEngine {
     }
 
     if (!geometricallyInLane && !car.inPitBox) {
-      // Left the lane.
+      // Left the lane. The lap in progress ran through the pit lane, so it is
+      // an out-lap and its time must not be classified.
       car.inPitLane = false;
+      car.onOutLap = true;
+      car.blendRemainingM = PIT_EXIT_BLEND_M;
       car.pitSpeedingFlagged = false;
       car.servicedThisVisit = false;
       if (car.ai) car.ai.onRejoinTrack();
@@ -868,6 +1012,8 @@ export class RaceEngine {
       if (car.pitBoxTimer <= 0) {
         car.inPitBox = false;
         car.servicedThisVisit = true;
+        // The lap out of the garage is an out-lap and must not be timed.
+        car.onOutLap = true;
         const compound = this.chooseCompoundForStint(car);
         car.serviceInBox(compound, 0, this.weather.trackTempC + 40);
 
@@ -935,6 +1081,12 @@ export class RaceEngine {
       for (let j = i + 1; j < cars.length; j++) {
         const b = cars[j];
         if (b.retired || b.inPitBox) continue;
+        // A car in the pit lane and a car on the circuit are separated by the
+        // pit wall, however close their spline coordinates are. Without this
+        // the two collide through the wall wherever the lane runs near the
+        // track — which at the pit exit wrote off half the field before anyone
+        // had set a lap.
+        if (a.inPitLane !== b.inPitLane) continue;
 
         const dx = b.physics.position.x - a.physics.position.x;
         const dz = b.physics.position.y - a.physics.position.y;

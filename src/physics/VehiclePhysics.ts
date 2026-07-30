@@ -439,7 +439,13 @@ export class VehiclePhysics {
     // Speed-sensitive steering limit. Without it, full lock at 300km/h demands a
     // lateral acceleration no tire can produce and the car simply spins — which
     // is realistic but unplayable, and real steering racks are geared for it.
-    const steerLimit = lerp(1, 0.28, clamp01((speed - 12) / 75));
+    // The floor used to be 0.28, which combined with a second reduction in the
+    // input layer left about five degrees of lock at racing speed. A real car
+    // has a fixed rack and the driver simply does not use full lock at 300 —
+    // but modelling that as a hard limit this aggressive makes the car feel
+    // broken rather than fast. 0.45 keeps the car stable without making it feel
+    // like the front wheels have been welded straight.
+    const steerLimit = lerp(1, 0.45, clamp01((speed - 20) / 80));
     // Negated: see the note on VehicleControls.steer. The internal lateral axis
     // points to the driver's LEFT, so a right-hand steer input must produce a
     // negative steer angle. Without this, the arrow keys are inverted.

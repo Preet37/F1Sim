@@ -486,7 +486,15 @@ export class InputController {
     // and makes the assist something the player can turn off.
     let steer = clamp(this.targetSteer, -1, 1);
     if (this.config.speedSensitiveSteering) {
-      const scale = 1 - clamp01((speedMs - 15) / 90) * 0.45;
+      // Gentle, and deliberately much weaker than it looks like it should be.
+      //
+      // VehiclePhysics ALREADY applies a speed-sensitive limit to the steering
+      // rack. Applying a second reduction here multiplies with that one: at
+      // 300 km/h the two compounded to 0.66 x 0.32 = 21% of full lock, about
+      // five degrees at the road wheel, and the car felt like it simply would
+      // not turn. This now only takes the last of the twitchiness off the
+      // keyboard's instant full-deflection input.
+      const scale = 1 - clamp01((speedMs - 30) / 100) * 0.12;
       steer *= scale;
     }
 

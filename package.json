@@ -13,7 +13,8 @@
     "calibrate": "tsx scripts/calibrateSolver.ts",
     "validate:physics": "tsx scripts/validatePhysics.ts",
     "validate:race": "tsx scripts/validateRace.ts",
-    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race"
+    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying",
+    "validate:qualifying": "tsx scripts/probeQualifying.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

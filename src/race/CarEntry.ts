@@ -124,6 +124,40 @@ export class CarEntry {
   /** True once serviced during the current pit-lane visit. */
   servicedThisVisit = false;
   /**
+   * Seconds still to wait in the garage before this car is released.
+   *
+   * Above zero the car is held stationary. Releasing twenty cars at once turns
+   * the pit exit into a pile-up, and a real session trickles them out anyway.
+   */
+  releaseTimer = 0;
+  /**
+   * True once this car has been knocked out of qualifying. An eliminated car
+   * keeps its lap time and its grid slot but takes no part in later segments.
+   */
+  eliminated = false;
+  /** The qualifying segment this car was eliminated in, or 0 if it survived. */
+  eliminatedInPhase = 0;
+  /**
+   * True while the car is on an out-lap and its time must not count.
+   *
+   * A lap that begins in the garage or in the pit lane includes the stationary
+   * wait and the whole speed-limited transit, so it is not a representative
+   * lap of the circuit — in qualifying it would be twenty to forty seconds
+   * slower than a real flying lap and would poison the classification. Set on
+   * leaving the pits, cleared the first time the car crosses the line.
+   */
+  onOutLap = false;
+  /**
+   * Metres of pit-exit blend zone still to run.
+   *
+   * A car leaving the pits rejoins at 80 km/h into traffic doing 300, and if it
+   * merges straight onto the racing line the closing speed is enough to end
+   * both races. Every real circuit paints a blend line for exactly this reason:
+   * the rejoining car is required to stay off the racing line until it is up to
+   * speed. While this is positive the car holds the pit side of the track.
+   */
+  blendRemainingM = 0;
+  /**
    * Per-component condition. Every part feeds a real term in the vehicle spec,
    * so what the damage panel shows is what the physics is running.
    */
@@ -219,6 +253,19 @@ export class CarEntry {
 
     // Close out the final sector.
     this.currentSectors[sectorCount - 1] = sessionTime - this.sectorStartTime;
+
+    // An out-lap is completed by this crossing, not timed by it. Discard the
+    // time and let the flying lap that starts here be the one that counts.
+    if (this.onOutLap) {
+      this.onOutLap = false;
+      this.lap++;
+      this.lapStartTime = sessionTime;
+      this.sectorStartTime = sessionTime;
+      this.currentSectorIndex = 0;
+      this.currentLapInvalidated = false;
+      this.physics.onLapComplete();
+      return;
+    }
 
     if (this.lap > 0 && lapTime > 5) {
       this.lastLapTime = lapTime;

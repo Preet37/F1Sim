@@ -109,6 +109,23 @@ lap time is therefore identical on a 60Hz phone and a 144Hz monitor.
 
 ---
 
+## Weekend format
+
+A full weekend runs FP1, FP2, FP3, Q1, Q2, Q3 and the race, defined in
+`src/race/WeekendFormat.ts` so the headless probes test the format that ships.
+
+Qualifying is a real knockout. Q1 runs the whole field and eliminates the slowest
+five, Q2 runs the surviving fifteen and eliminates five more, Q3 is a ten-car
+shootout. Eliminated cars keep the slots they earned, filled in from the back — so
+the grid assembles from the rear as the session progresses.
+
+Every session that is not a race start begins in the garage. Cars are released one
+at a time, serve the pit lane under the limiter, hold the pit-exit blend line until
+they are up to speed, and the lap out of the garage is discarded rather than timed.
+`npm run validate:qualifying` exercises all of it without a browser.
+
+---
+
 ## Verification
 
 Three harnesses, run by `npm run validate`. They exist because almost every
@@ -218,7 +235,10 @@ instantly with no pedal ramp.
 frame and drops the backlog, so the game runs in slow motion rather than skipping
 simulation. Lap times stay correct because they are measured in simulation time.
 
-**Qualifying is a single session**, not the Q1/Q2/Q3 elimination format.
+**The AI still crashes too often.** `npm run validate` reports zero finishers at two
+circuits and lap times well off the reference. The same instability shows up in
+qualifying, where two or three cars per segment typically fail to set a lap. This is
+the single largest outstanding problem in the project.
 
 **`npm run validate` currently fails.** Bahrain and Jeddah finish with zero
 classified cars, Monaco's AI laps at 191% of the solved reference, and a 30-lap race
@@ -235,10 +255,6 @@ seconds. A damaged nose adds 9-14s to the stop.
 elevation are faithful; the geometry is not a survey trace, so a lap does not
 overlay a real satellite image. Making the layouts genuinely accurate is a data
 task, not a rendering one.
-
-**Sessions still start on the grid or on track**, not from the garage down the pit
-lane. Pit-lane procedure exists in the sim (speed limiter, box service, penalties)
-but is not used for the session start.
 
 **Sponsor text on the trackside hoardings renders mirrored.** The cause is not the
 ribbon's UVs: negating them provably reaches the browser and changes nothing on
