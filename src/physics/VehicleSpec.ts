@@ -181,6 +181,19 @@ export interface CarSetup {
   downforceLevel: number;
   /** Aero balance shift, -1 rearward (stable) .. +1 forward (pointy). */
   aeroBalance: number;
+  /**
+   * Anti-roll bar balance, -1 stiff rear .. +1 stiff front.
+   *
+   * The mechanical counterpart to aero balance, and the reason a car can be
+   * pointy in slow corners and stable in fast ones or the other way round. In a
+   * real car this is roll stiffness deciding how lateral load transfer is split
+   * between the axles; a stiffer axle transfers more load, and because tire
+   * grip is sub-linear in load, the axle that transfers more loses more grip.
+   * So a stiff FRONT bar means understeer. This model has no per-wheel loads,
+   * so the effect is applied where it actually shows up: the axle's cornering
+   * stiffness.
+   */
+  suspensionBalance: number;
   /** Brake bias, front fraction. */
   brakeBias: number;
   /** Differential lock, 0 open .. 1 locked. Affects corner-exit traction. */
@@ -194,6 +207,7 @@ export interface CarSetup {
 export const DEFAULT_SETUP: CarSetup = {
   downforceLevel: 0.5,
   aeroBalance: 0,
+  suspensionBalance: 0,
   brakeBias: 0.58,
   diffLock: 0.5,
   fuelLoadL: 100,
@@ -205,6 +219,7 @@ export function baselineSetupFor(downforceDemand: number, fuelL: number): CarSet
   return {
     downforceLevel: downforceDemand,
     aeroBalance: 0,
+    suspensionBalance: 0,
     brakeBias: 0.58,
     diffLock: 0.5,
     fuelLoadL: fuelL,
@@ -221,11 +236,26 @@ export function applySetup(spec: VehicleSpec, setup: CarSetup): VehicleSpec {
   const dragScale = 0.72 + setup.downforceLevel * 0.66;
   const gearScale = 0.92 + setup.gearing * 0.16;
 
+  // Roll stiffness: the stiffer axle transfers more lateral load and, because
+  // grip is sub-linear in load, ends up with less of it. Applied to cornering
+  // stiffness, which is the axle's grip per degree of slip.
+  const rollFront = 1 - setup.suspensionBalance * 0.09;
+  const rollRear = 1 + setup.suspensionBalance * 0.09;
+
+  // A locked differential ties the rear wheels together, so the outside wheel
+  // is dragged and the inside driven: the axle generates a yaw moment that
+  // OPPOSES the turn. That is stability on corner exit and understeer on entry,
+  // and it is why a driver unlocks the diff for a tight, slow circuit. Centred
+  // on the half-locked default so the baseline car is the tuned one.
+  const diffStabilise = 1 + (setup.diffLock - 0.5) * 0.12;
+
   return {
     ...spec,
     clBase: spec.clBase * dfScale,
     cdBase: spec.cdBase * dragScale,
     aeroBalanceFront: spec.aeroBalanceFront + setup.aeroBalance * 0.04,
+    corneringStiffnessFront: spec.corneringStiffnessFront * rollFront,
+    corneringStiffnessRear: spec.corneringStiffnessRear * rollRear * diffStabilise,
     brakeBalanceFront: setup.brakeBias,
     gearRatios: spec.gearRatios.map((r) => r / gearScale),
   };

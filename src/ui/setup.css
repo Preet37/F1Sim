@@ -1,0 +1,166 @@
+/*
+ * Car setup editor.
+ *
+ * Its own stylesheet rather than an addition to styles.css: nothing here is
+ * used by any other screen, and a setup sheet is the one place in the game
+ * where a dense two-column layout of sliders beats the card grid everything
+ * else uses. It borrows the same custom properties, so it inherits the theme.
+ */
+
+.setup-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 10px;
+}
+
+.setup-item {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--hud-border);
+  border-radius: 9px;
+  padding: 12px 14px 13px;
+}
+
+.setup-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setup-name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* The real number, in real units. A setup screen that only shows a slider
+   position is asking the player to guess. */
+.setup-value {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.setup-trade {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--hud-dim);
+  font-weight: 600;
+  margin-top: 7px;
+}
+
+/* Slider ------------------------------------------------------------------ */
+
+.setup-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 9px;
+}
+
+/* Steppers, so the control is usable with a thumb on a phone and with a
+   keyboard, not only by dragging a 6px thumb. */
+.setup-step {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--hud-border);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--hud-text);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.setup-step:hover { background: rgba(53, 208, 224, 0.18); border-color: rgba(53, 208, 224, 0.5); }
+.setup-step:active { transform: scale(0.94); }
+
+.setup-slider {
+  flex: 1 1 auto;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  min-width: 60px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+  touch-action: manipulation;
+}
+.setup-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #071417;
+  cursor: pointer;
+}
+.setup-slider::-moz-range-thumb {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #071417;
+  cursor: pointer;
+}
+
+.setup-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: rgba(141, 150, 166, 0.72);
+  margin-top: 5px;
+}
+
+/* Derived readout --------------------------------------------------------- */
+
+.setup-derived {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.setup-derived-cell {
+  background: rgba(53, 208, 224, 0.08);
+  border: 1px solid rgba(53, 208, 224, 0.22);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+.setup-derived-label {
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--hud-dim);
+}
+.setup-derived-value {
+  font-size: 17px;
+  font-weight: 800;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.setup-derived-delta { font-size: 10px; font-weight: 700; margin-top: 2px; }
+.setup-derived-delta.gain { color: var(--good); }
+.setup-derived-delta.cost { color: var(--warn); }
+.setup-derived-delta.flat { color: var(--hud-dim); }
+
+/* Compound swatch --------------------------------------------------------- */
+
+.setup-tyre-dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+}

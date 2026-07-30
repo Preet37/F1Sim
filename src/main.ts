@@ -5,7 +5,7 @@ import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
 import type { CarEntry } from './race/CarEntry';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
-import { TEAMS, getTeam, DRIVERS, type Driver } from './data/teams';
+import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDirector';
 import { InputController } from './input/InputController';
@@ -14,6 +14,9 @@ import { CareerEngine, TIER_INFO, type CareerEvent, type SeasonResult } from './
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock } from './ui/Paddock';
+import { buildSetupScreen, defaultSetupFor } from './ui/SetupScreen';
+import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
+import type { CompoundId } from './data/tires';
 import { PRACTICE_SEGMENTS, QUALIFYING_SEGMENTS } from './race/WeekendFormat';
 
 /**
@@ -32,6 +35,7 @@ type Screen =
   | 'career-create'
   | 'career-hub'
   | 'session-select'
+  | 'setup'
   | 'paddock'
   | 'racing'
   | 'results'
@@ -64,6 +68,17 @@ class Game {
   private weekendIndex = 0;
   /** Circuit chosen for a one-off session outside career mode. */
   private quickCircuitId = CIRCUITS[0].id;
+
+  /**
+   * The player's car setup, and the circuit it was chosen for.
+   *
+   * Null means "use whatever the engineers would set", which is what the AI
+   * gets. It is cleared when the player moves to a different circuit, because a
+   * Monaco wing level at Monza is not a choice anyone meant to make.
+   */
+  private playerSetup: CarSetup | null = null;
+  private playerSetupCircuitId = '';
+  private playerCompound: CompoundId | null = null;
 
   private rafHandle = 0;
   /** Controls card starts visible each session, then fades out. */
@@ -390,6 +405,7 @@ class Game {
 
     const row = this.el('div', 'btn-row', inner);
     this.button('Race Weekend', row, () => this.startWeekend(circuit.id));
+    this.button('Car Setup', row, () => this.showSetup(circuit.id, () => this.showCareerHub()), 'btn secondary');
     this.button('Practice Only', row, () => {
       this.weekend = [this.sessionConfig('practice', 'Practice', circuit.id, 600, 0)];
       this.weekendIndex = 0;
@@ -491,7 +507,64 @@ class Game {
     }
 
     const row = this.el('div', 'btn-row', inner);
+    this.button('Car Setup', row, () => this.showSetup(circuit.id, () => this.showSessionSelect(quick)),
+      'btn secondary');
     this.button('Back', row, () => (this.career ? this.showCareerHub() : this.showMenu()), 'btn secondary');
+  }
+
+  /** The team whose car the player is driving. */
+  private playerTeam(): Team {
+    return getTeam(this.career ? this.career.state.teamId : DRIVERS[0].teamId);
+  }
+
+  /**
+   * The car setup sheet, reachable before a session starts.
+   *
+   * Everything on it writes into `this.playerSetup`, which `beginSession` feeds
+   * through `applySetup` into the player's car. Nothing is applied to a session
+   * already in progress — a real setup change means going back to the garage,
+   * and mutating the spec of a car mid-lap would invalidate the lap it is on.
+   */
+  private showSetup(circuitId: string, back: () => void): void {
+    const circuit = getCircuit(circuitId);
+
+    // A setup carried over from a different circuit is not a choice, it is a
+    // leftover. Start again from the engineers' baseline for this track.
+    if (!this.playerSetup || this.playerSetupCircuitId !== circuitId) {
+      this.playerSetup = defaultSetupFor(circuit);
+      this.playerSetupCircuitId = circuitId;
+    }
+
+    this.setScreen('setup');
+    this.screenRoot.innerHTML = '';
+    const inner = this.el('div', 'screen-inner', this.screenRoot);
+    this.el('div', 'title', inner, 'Car Setup');
+    this.el('div', 'subtitle', inner,
+      circuit.name + ' · ' + this.playerTeam().name +
+      ' — every slider changes a number the physics integrates, not a rating');
+
+    buildSetupScreen(inner, {
+      setup: this.playerSetup,
+      compound: this.playerCompound ?? 'medium',
+      team: this.playerTeam(),
+      track: circuit,
+      offerWets: circuit.rainChance > 0.08,
+      // The sheet updates its own readouts as the sliders move; this only has
+      // to remember the choice. Re-rendering the screen from here would destroy
+      // the slider mid-drag.
+      onChange: (setup, compound) => {
+        this.playerSetup = setup;
+        this.playerCompound = compound;
+      },
+    });
+
+    const row = this.el('div', 'btn-row', inner);
+    this.button('Done', row, back);
+    this.button('Reset to baseline', row, () => {
+      this.playerSetup = defaultSetupFor(circuit);
+      this.playerCompound = null;
+      this.showSetup(circuitId, back);
+    }, 'btn secondary');
   }
 
   /**
@@ -780,6 +853,7 @@ class Game {
       }
 
       this.engine = new RaceEngine(def, config, field);
+      this.applyPlayerSetup(this.engine);
       this.renderer.loadSession(this.engine);
     this.renderer.setRacingLineVisible(this.settings.racingLine);
       this.audio.configureForTrack(def.scenery, this.engine.weather.wetness);
@@ -795,6 +869,51 @@ class Game {
       this.setLoading(false);
       this.setScreen('racing');
     });
+  }
+
+  /**
+   * Hands the player's chosen setup to the car the engine just built.
+   *
+   * The engine gives every car the engineers' baseline for the circuit, which is
+   * what the AI runs. If the player has been to the setup screen, their sheet
+   * replaces it here — rebuilding the spec through the same `applySetup` the
+   * baseline went through, so the two are directly comparable and the player is
+   * genuinely racing the car they configured.
+   *
+   * Fuel is deliberately NOT taken from the sheet: the session decides it (a
+   * race is fuelled for the distance, qualifying runs light), and letting the
+   * setup screen override that would let a player start a Grand Prix on fumes.
+   */
+  private applyPlayerSetup(engine: RaceEngine): void {
+    const car = engine.playerCar;
+    const setup = this.playerSetup;
+    if (!car || !setup) return;
+
+    car.setup = { ...setup, fuelLoadL: car.setup.fuelLoadL };
+    const spec = applySetup(specForTeam(car.team.performance), car.setup);
+    car.physics.setSpec(spec);
+
+    if (this.playerCompound) {
+      car.compound = this.playerCompound;
+      car.usedCompounds.length = 0;
+      car.usedCompounds.push(this.playerCompound);
+      // Fitted, not just recorded — the tire model owns the grip curve, the
+      // wear rate and the temperature window that the compound selects.
+      car.physics.frontTires.fit(this.playerCompound, 80);
+      car.physics.rearTires.fit(this.playerCompound, 80);
+    }
+
+    if (import.meta.env?.DEV) {
+      const baseline = applySetup(specForTeam(car.team.performance), car.setup);
+      console.info(
+        '[setup] player car rebuilt: cl=' + spec.clBase.toFixed(3) +
+        ' cd=' + spec.cdBase.toFixed(3) +
+        ' aeroFront=' + spec.aeroBalanceFront.toFixed(3) +
+        ' brakeFront=' + spec.brakeBalanceFront.toFixed(2) +
+        ' top gear=' + baseline.gearRatios[7].toFixed(2) +
+        ' tyre=' + car.compound,
+      );
+    }
   }
 
   private finishSession(): void {

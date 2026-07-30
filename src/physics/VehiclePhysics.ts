@@ -131,7 +131,7 @@ const BARRIER_REST_MS = 0.4;
 export class VehiclePhysics {
   spec: VehicleSpec;
   /** The undamaged spec, so damage is applied to a stable baseline. */
-  readonly baseSpec: VehicleSpec;
+  baseSpec: VehicleSpec;
 
   // --- Kinematic state -----------------------------------------------------
   /** World position on the ground plane. */
@@ -374,6 +374,20 @@ export class VehiclePhysics {
     this.yawRate = 0;
     this.gear = speedMs > 5 ? 3 : 1;
     this.shiftTimer = 0;
+  }
+
+  /**
+   * Rebuilds the car from a new specification — a setup change in the garage.
+   *
+   * Both the live spec and the undamaged baseline are replaced, because the
+   * baseline is what the damage model rebuilds from: setting only `spec` would
+   * mean the first scrape of the session silently reverted the player's setup.
+   * Not to be called mid-lap; a car's specification changing under it would
+   * invalidate the lap it is on.
+   */
+  setSpec(spec: VehicleSpec): void {
+    this.spec = spec;
+    this.baseSpec = spec;
   }
 
   /**
