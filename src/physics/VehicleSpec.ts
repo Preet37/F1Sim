@@ -108,7 +108,11 @@ export const BASE_F1_SPEC: VehicleSpec = {
   corneringStiffnessFront: 11.5,
   corneringStiffnessRear: 12.8,
 
-  maxSteerRad: 0.32,
+  // 24 degrees at the road wheels. Monaco's Grand Hotel hairpin is an 11m radius
+  // and needs atan(wheelbase/radius) = 18 degrees just to geometrically fit, so a
+  // narrower rack cannot physically make the corner — the AI ran wide there on
+  // every single lap regardless of how slowly it approached.
+  maxSteerRad: 0.42,
   brakeBalanceFront: 0.58,
   maxBrakeForceN: 38_000,
 

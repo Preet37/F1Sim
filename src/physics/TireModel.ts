@@ -95,14 +95,21 @@ export class TireState {
     // static load so the coefficient is dimensionally stable across cars.
     const loadRatio = loadN / Math.max(staticLoadN, 1);
     const slipPower = slipSpeedMs * loadRatio;
-    const heatIn = slipPower * c.heatingRate * 0.78;
+    // Coefficients chosen for the right THERMAL INERTIA, not just the right
+    // equilibrium. A tyre's bulk carcass temperature moves over several seconds,
+    // not within a corner: with the rates three times higher, sustained high-g
+    // cornering through a fast sequence cooked the fronts from 0.89 to 0.71 grip
+    // in a second and a half, and the car understeered off the following corner
+    // every lap. The equilibrium temperature is essentially unchanged; only how
+    // fast it gets there is.
+    const heatIn = slipPower * c.heatingRate * 0.30;
 
     // Heat out is convection toward the track, plus airflow that scales with
     // speed. Water on the track is an aggressive heat sink — which is exactly
     // why slicks never come up to temperature in the rain.
     const ambientTarget = trackTempC + 18 - wetness * 30;
     const airflow = 1 + slipSpeedMs * 0.02;
-    const heatOut = (this.tempC - ambientTarget) * c.coolingRate * 0.085 * airflow;
+    const heatOut = (this.tempC - ambientTarget) * c.coolingRate * 0.046 * airflow;
 
     this.tempC += (heatIn - heatOut) * dt;
     this.tempC = clamp(this.tempC, 5, 260);

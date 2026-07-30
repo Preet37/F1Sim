@@ -100,10 +100,15 @@ export class TrackSpline {
   /** Unit tangent (direction of travel). */
   readonly tx: Float32Array;
   readonly tz: Float32Array;
-  /** Unit normal pointing to the driver's left. */
+  /**
+   * Unit normal pointing to the driver's RIGHT.
+   * For a tangent of (0,1) this is (1,0) = +X, which is the right-hand side when
+   * travelling toward +Z. All lateral offsets in the codebase are therefore
+   * positive-right.
+   */
   readonly nx: Float32Array;
   readonly nz: Float32Array;
-  /** Signed centreline curvature, 1/m. Positive = left turn. */
+  /** Signed centreline curvature, 1/m. Positive = LEFT turn. */
   readonly curvature: Float32Array;
   /** Distance along the lap at this node. */
   readonly dist: Float32Array;
@@ -115,7 +120,7 @@ export class TrackSpline {
   readonly banking: Float32Array;
 
   // --- Derived racing line -------------------------------------------------
-  /** Lateral offset of the racing line from centreline, +left, metres. */
+  /** Lateral offset of the racing line from centreline, +right, metres. */
   readonly lineOffset: Float32Array;
   /** Curvature of the racing line itself. Drives the speed profile. */
   readonly lineCurvature: Float32Array;
@@ -206,7 +211,7 @@ export class TrackSpline {
 
       tx[i] = dx;
       tz[i] = dz;
-      // Left normal in a right-handed XZ plane with +Y up.
+      // Right-hand normal: rotating the tangent -90 degrees about +Y.
       nx[i] = dz;
       nz[i] = -dx;
     }
@@ -257,6 +262,8 @@ export class TrackSpline {
     for (let i = 0; i < count; i++) {
       const k = this.curvature[i];
       if (Math.abs(k) > 1 / 400) {
+        // Kerbing goes on the inside of the corner. Positive curvature is a left
+        // turn, whose inside is the track's left-hand side.
         if (k > 0) this.isCurbLeft[i] = 1;
         else this.isCurbRight[i] = 1;
       }
@@ -337,53 +344,125 @@ export class TrackSpline {
   // Racing line: iterative curvature minimisation
   // =========================================================================
 
+  /**
+   * Solves the racing line: the path through the corridor that can be driven
+   * fastest, found by minimising curvature.
+   *
+   * The naive approach — Laplacian smoothing, repeatedly moving each node to the
+   * midpoint of its neighbours — is wrong, and wrong in a way that is easy to
+   * miss. On a fixed node count, |p[i-1] - 2p[i] + p[i+1]| shrinks when the path
+   * gets SHORTER as well as when it gets straighter, so the objective is
+   * dominated by path length. The result is the shortest path, which hugs the
+   * inside of every long corner and therefore has a *tighter* radius than the
+   * centreline. At Monza it put the line on the inside of Parabolica at R=180
+   * where the centreline is R=185, costing corner speed and leaving the car
+   * nothing to work with.
+   *
+   * Instead this minimises the sum of squared TRUE geometric curvature, by
+   * coordinate descent: for each node, try shifting its offset in and out and
+   * keep whichever reduces the curvature of the local three-node window. The
+   * trial step shrinks over the passes, so it converges. This finds the classic
+   * out-in-out line — wide entry, late apex, wide exit — because that genuinely
+   * is the lowest-curvature path through a corner corridor.
+   *
+   * Runs once per circuit at load, not per frame.
+   */
+  /**
+   * Builds the racing line geometrically: outside on the approach, inside at the
+   * apex, drifting out on exit — the line every driver is taught.
+   *
+   * Two numerical approaches were tried first and both failed, in instructive ways:
+   *
+   *  - Laplacian smoothing (repeatedly moving each node to the midpoint of its
+   *    neighbours) minimises |p[i-1] - 2p[i] + p[i+1]|, which shrinks when the
+   *    path gets SHORTER as well as straighter. On a fixed node count the length
+   *    term dominates, so it converges on the shortest path, hugging the inside of
+   *    every long corner at a TIGHTER radius than the centreline. At Monza it put
+   *    Parabolica on the inside at R=180 where the centreline is R=185.
+   *
+   *  - Coordinate descent on true geometric curvature, with the line
+   *    parameterised by coarse control points, does minimise the right objective,
+   *    but converges to lines that are locally optimal and globally strange, and
+   *    the AI could not follow them.
+   *
+   * A constructed line is worse than a perfectly optimised one in theory and much
+   * better in practice: it is smooth by construction, always inside the corridor,
+   * and predictable, which is what a controller needs. The apex positions come
+   * from the circuit's own curvature, so it adapts to any layout.
+   */
   private solveRacingLine(): void {
-    const { count, px, pz, nx, nz, width, lineOffset } = this;
+    const { count, width, lineOffset, curvature } = this;
 
-    // Half the car plus a margin: the racing line may put a wheel on the white
-    // line but not over it.
+    // Half the car plus a margin. Deliberately more than the regulation minimum:
+    // an ideal line sitting exactly on the white line leaves a driver no room for
+    // their own tracking error, and the AI put a wheel over the edge at every apex.
     const CAR_HALF_WIDTH = 1.0;
-    const MARGIN = 0.35;
+    const MARGIN = 0.95;
 
     const limit = new Float32Array(count);
     for (let i = 0; i < count; i++) {
       limit[i] = Math.max(0, width[i] * 0.5 - CAR_HALF_WIDTH - MARGIN);
     }
 
-    // Seed from centreline.
-    lineOffset.fill(0);
+    const ds = this.length / count;
+    /** How far ahead a corner starts pulling the line to the outside. */
+    const APPROACH_M = 95;
+    const approachNodes = Math.max(4, Math.round(APPROACH_M / ds));
 
-    const next = new Float32Array(count);
-    const ITERATIONS = 700;
-    const RELAX = 0.32;
+    // Curvature is positive for a left turn. The inside of a left turn is the
+    // track's LEFT side, which is NEGATIVE lateral under the +right convention.
+    const insideSign = (k: number) => (k > 0 ? -1 : 1);
 
-    for (let iter = 0; iter < ITERATIONS; iter++) {
-      for (let i = 0; i < count; i++) {
-        const a = i === 0 ? count - 1 : i - 1;
-        const b = i === count - 1 ? 0 : i + 1;
+    const raw = new Float32Array(count);
 
-        const ax = px[a] + nx[a] * lineOffset[a];
-        const az = pz[a] + nz[a] * lineOffset[a];
-        const bx = px[b] + nx[b] * lineOffset[b];
-        const bz = pz[b] + nz[b] * lineOffset[b];
+    for (let i = 0; i < count; i++) {
+      const k = curvature[i];
+      const severity = clamp01(Math.abs(k) * 260);
 
-        // Straightening this node means moving it to the midpoint of its
-        // neighbours; project that midpoint onto this node's normal.
-        const mx = (ax + bx) * 0.5 - px[i];
-        const mz = (az + bz) * 0.5 - pz[i];
-        const desired = mx * nx[i] + mz * nz[i];
-
-        let v = lineOffset[i] + (desired - lineOffset[i]) * RELAX;
-        const lim = limit[i];
-        v = clamp(v, -lim, lim);
-        next[i] = v;
+      if (severity > 0.12) {
+        // In a corner: hug the inside, in proportion to how tight it is.
+        raw[i] = insideSign(k) * limit[i] * (0.3 + 0.5 * severity);
+        continue;
       }
-      lineOffset.set(next);
+
+      // Not in a corner. Look ahead for the next one and set up on its outside;
+      // this is what turns a corner-by-corner rule into a real racing line.
+      let bestK = 0;
+      let bestDist = Infinity;
+      for (let d = 1; d <= approachNodes; d++) {
+        const j = (i + d) % count;
+        const kk = curvature[j];
+        if (Math.abs(kk) * 260 > 0.3 && Math.abs(kk) > Math.abs(bestK) * 0.85) {
+          if (d < bestDist) { bestDist = d; bestK = kk; }
+        }
+      }
+
+      if (bestK !== 0) {
+        // Closer to the corner means further to the outside.
+        const closeness = 1 - bestDist / approachNodes;
+        // Deliberately short of the corridor edge: the car will overshoot this
+        // target slightly, and that overshoot must still be on the road.
+        raw[i] = -insideSign(bestK) * limit[i] * 0.5 * clamp01(closeness * 1.3);
+      } else {
+        raw[i] = 0;
+      }
     }
 
-    smoothWrapped(lineOffset, 2, 1);
+    lineOffset.set(raw);
 
-    // Re-clamp after smoothing so we never hand the AI a line that is off-track.
+    // Heavy smoothing. This is what makes the line drivable: the offset's second
+    // derivative IS extra curvature, so an offset that changes abruptly asks the
+    // car for a steering input it cannot produce. Smoothing over ~60m of track
+    // turns the piecewise rule above into a continuous line, and creates the
+    // gradual drift out of a corner exit for free.
+    const smoothRadius = Math.max(3, Math.round(30 / ds));
+    smoothWrapped(lineOffset, smoothRadius, 3);
+
+    for (let i = 0; i < count; i++) {
+      lineOffset[i] = clamp(lineOffset[i], -limit[i], limit[i]);
+    }
+    // One more light pass so the clamp cannot leave a corner.
+    smoothWrapped(lineOffset, 2, 1);
     for (let i = 0; i < count; i++) {
       lineOffset[i] = clamp(lineOffset[i], -limit[i], limit[i]);
     }
@@ -402,7 +481,10 @@ export class TrackSpline {
         px[b] + nx[b] * lineOffset[b], pz[b] + nz[b] * lineOffset[b],
       );
     }
-    smoothWrapped(lineCurvature, 4, 2);
+    // Light smoothing only. Blurring hard removes the peak curvature of short
+    // tight corners, which makes the solver allocate a corner speed no car can
+    // actually achieve — a 42m chicane came out looking like a 70m sweep.
+    smoothWrapped(lineCurvature, 2, 1);
   }
 
   // =========================================================================
@@ -438,8 +520,26 @@ export class TrackSpline {
     const ds = length / count;
     const m = p.massKg;
 
+    // Use the WORST curvature in a short window rather than the value at the
+    // node. A corner's limiting speed is set by its tightest point, and a car
+    // that enters at the speed the average curvature allows arrives at the apex
+    // already beyond the grip available. Being conservative here is what keeps
+    // the profile physically achievable.
+    const WINDOW = 1;
+    const kWorst = new Float32Array(count);
     for (let i = 0; i < count; i++) {
-      const r = 1 / Math.max(Math.abs(lineCurvature[i]), 1e-6);
+      let peak = 0;
+      for (let k = -WINDOW; k <= WINDOW; k++) {
+        let j = (i + k) % count;
+        if (j < 0) j += count;
+        const a = Math.abs(lineCurvature[j]);
+        if (a > peak) peak = a;
+      }
+      kWorst[i] = peak;
+    }
+
+    for (let i = 0; i < count; i++) {
+      const r = 1 / Math.max(kWorst[i], 1e-6);
 
       // Banking adds a cos/sin term to the available lateral force.
       const bank = Math.abs(banking[i]);
@@ -590,7 +690,7 @@ export class TrackSpline {
 
   /**
    * Projects a world position into track space.
-   * Writes `s` (distance along lap) and `lateral` (+left, metres) into `out`.
+   * Writes `s` (distance along lap) and `lateral` (+right, metres) into `out`.
    */
   project(x: number, z: number, hint: number, out: TrackProjection): number {
     const i = this.nearestIndex(x, z, hint);

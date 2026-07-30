@@ -94,6 +94,8 @@ const G = 9.81;
 
 export class VehiclePhysics {
   spec: VehicleSpec;
+  /** The undamaged spec, so damage is applied to a stable baseline. */
+  readonly baseSpec: VehicleSpec;
 
   // --- Kinematic state -----------------------------------------------------
   /** World position on the ground plane. */
@@ -166,9 +168,12 @@ export class VehiclePhysics {
   vibration = 0;
   /** Understeer (negative) to oversteer (positive) balance, roughly -1..1. */
   balance = 0;
-  /** Grip budget per axle from the last step, N. Feeds `brakeLimitFraction`. */
+  /** Grip budget per axle from the last step, N. Feeds the pedal limits. */
   capFrontN = 0;
   capRearN = 0;
+  /** Lateral force each axle is currently using, N. */
+  frontLateralN = 0;
+  rearLateralN = 0;
 
   /**
    * Throttle fraction at which the rear axle starts to spin up.
@@ -182,12 +187,18 @@ export class VehiclePhysics {
    */
   get tractionLimitFraction(): number {
     const speed = Math.max(this.speedMs, 2);
-    // Force the rear axle can transmit, converted back to a throttle fraction
-    // through the power available at this speed.
-    const maxForce = this.capRearN;
+    // Longitudinal force the rear axle has left AFTER what cornering is already
+    // using — the friction circle, applied to the pedal rather than only to the
+    // resulting force. An AI that ignores this floors the throttle mid-corner,
+    // spends the rear's whole budget on acceleration, and spins.
+    const cap = this.capRearN;
+    const lat = this.rearLateralN;
+    const remainingSq = cap * cap - lat * lat;
+    const maxForce = remainingSq > 0 ? Math.sqrt(remainingSq) : 0;
+
     const forceAtFullThrottle = (this.spec.icePowerW + this.spec.ersPowerW) * this.spec.driveEfficiency / speed;
     if (forceAtFullThrottle <= 1) return 1;
-    return clamp(maxForce / forceAtFullThrottle, 0.15, 1);
+    return clamp(maxForce / forceAtFullThrottle, 0.08, 1);
   }
 
   /**
@@ -204,9 +215,17 @@ export class VehiclePhysics {
     const front = spec.maxBrakeForceN * spec.brakeBalanceFront;
     const rear = spec.maxBrakeForceN * (1 - spec.brakeBalanceFront);
     if (front <= 1 || rear <= 1) return 1;
-    const limitFront = this.capFrontN / front;
-    const limitRear = this.capRearN / rear;
-    return clamp(Math.min(limitFront, limitRear), 0.12, 1);
+    // Same friction-circle reasoning as the traction limit: braking capacity is
+    // what is left over from cornering, which is why you cannot brake at the
+    // limit and turn at the limit at the same time.
+    const fSq = this.capFrontN * this.capFrontN - this.frontLateralN * this.frontLateralN;
+    const rSq = this.capRearN * this.capRearN - this.rearLateralN * this.rearLateralN;
+    const fAvail = fSq > 0 ? Math.sqrt(fSq) : 0;
+    const rAvail = rSq > 0 ? Math.sqrt(rSq) : 0;
+
+    const limitFront = fAvail / front;
+    const limitRear = rAvail / rear;
+    return clamp(Math.min(limitFront, limitRear), 0.1, 1);
   }
 
   // --- Scratch (pre-allocated; step() must not allocate) -------------------
@@ -221,6 +240,7 @@ export class VehiclePhysics {
 
   constructor(spec: VehicleSpec, startCompound: CompoundId = 'medium') {
     this.spec = spec;
+    this.baseSpec = spec;
     this.fuelL = Math.min(spec.fuelCapacityL, 100);
     this.batteryJ = spec.batteryCapacityJ;
     this.frontTires.fit(startCompound, 80);
@@ -503,9 +523,11 @@ export class VehiclePhysics {
       }
     }
 
-    // Cached for `brakeLimitFraction`, which the AI and the pedal-assist read.
+    // Cached for the pedal limits, which the AI and the driving assists read.
     this.capFrontN = capFront;
     this.capRearN = capRear;
+    this.frontLateralN = Math.abs(fyFrontFinal);
+    this.rearLateralN = Math.abs(fyRearFinal);
 
     // --- Resistive forces --------------------------------------------------
     const rollDrag = 220 * SURFACE_ROLL_DRAG[this.surface] * Math.sign(vx || 1);
