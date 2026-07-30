@@ -65,7 +65,9 @@ export class Hud {
   private readonly worstSector = [0, 0, 0];
   private readonly seenSector = [0, 0, 0];
 
-  /** Circuit map, rebuilt when the session's track changes. */
+  /** The session the accumulated state belongs to. */
+  private lastEngine: RaceEngine | null = null;
+  /** Circuit map, rebuilt when the session changes. */
   private mapPanel!: HTMLElement;
   private mapHolder!: HTMLElement;
   private mapTitle!: HTMLElement;
@@ -79,6 +81,7 @@ export class Hud {
   private lastLap!: HTMLElement;
   private bestLap!: HTMLElement;
   private delta!: HTMLElement;
+  private gapsPanel!: HTMLElement;
   private gapAhead!: HTMLElement;
   private gapBehind!: HTMLElement;
   private leds: HTMLElement[] = [];
@@ -267,6 +270,7 @@ export class Hud {
 
     // --- Gaps -------------------------------------------------------------
     const gaps = this.el('hud-panel hud-gaps', this.root);
+    this.gapsPanel = gaps;
     this.gapAhead = this.el('hud-gapahead', gaps, '');
     this.gapBehind = this.el('hud-gapbehind', gaps, '');
 
@@ -516,11 +520,11 @@ export class Hud {
    * Builds or rebuilds the circuit map when the session's track changes.
    *
    * It cannot be built with the rest of the HUD: the HUD outlives sessions and
-   * exists before any circuit has been chosen. Rebuilding here costs one pass
-   * over the spline, once per session.
+   * exists before any circuit has been chosen, and it is bound to a specific
+   * set of cars. Rebuilding costs one pass over the spline, once per session.
    */
   private updateMap(engine: RaceEngine): void {
-    if (!this.map || this.map.track !== engine.track) {
+    if (!this.map) {
       this.mapHolder.textContent = '';
       this.map = new TrackMap(engine.track, engine.cars);
       this.mapHolder.appendChild(this.map.root);
@@ -576,6 +580,18 @@ export class Hud {
 
   update(engine: RaceEngine, player: CarEntry, input: InputController, fps: number, drawCalls: number): void {
     const p = player.physics;
+
+    // A new session resets everything the HUD accumulates itself. The HUD
+    // outlives sessions — it is built once, with the page — so without this a
+    // qualifying run's slowest sector would still be colouring tiles in the
+    // race that follows.
+    if (engine !== this.lastEngine) {
+      this.lastEngine = engine;
+      this.worstSector[0] = this.worstSector[1] = this.worstSector[2] = 0;
+      this.seenSector[0] = this.seenSector[1] = this.seenSector[2] = 0;
+      this.shownMessages = 0;
+      this.map = null;
+    }
 
     // --- Speed, gear, rpm -------------------------------------------------
     setText(this.speed, Math.round(p.speedKph).toString());
@@ -783,7 +799,10 @@ export class Hud {
 
     for (let i = 0; i < this.rows.length; i++) {
       const row = this.rows[i];
-      const car = standings[start + i];
+      // Rows are only ever created, never destroyed, so a window that has been
+      // made shorter has more of them than it can now fit. Hiding the surplus
+      // is what keeps the tower inside the viewport after a resize.
+      const car = i < shown ? standings[start + i] : undefined;
       if (!car) {
         setStyle(row.root, 'display', 'none');
         continue;
@@ -893,6 +912,7 @@ export class Hud {
     if (inCockpit === this.cockpitView) return;
     this.cockpitView = inCockpit;
     setStyle(this.wheelPanel, 'display', inCockpit ? 'none' : 'flex');
+    setClass(this.gapsPanel, 'hud-panel hud-gaps' + (inCockpit ? ' cockpit' : ''));
   }
   private cockpitView = false;
 

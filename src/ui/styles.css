@@ -389,6 +389,9 @@ canvas#view {
   font-weight: 700;
   padding: 4px 12px;
 }
+/* In the cockpit the car has its own dash in roughly this spot, so the pill
+   moves up out of the way rather than sitting on top of the screen. */
+.hud-gaps.cockpit { bottom: calc(258px + var(--safe-b)); }
 .hud-gapahead { color: #ff9f68; }
 .hud-gapbehind { color: #6fb4ff; }
 
@@ -925,9 +928,9 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
    ========================================================================== */
 .hud-damage {
   position: absolute;
-  left: calc(10px + var(--safe-l));
-  bottom: calc(120px + var(--safe-b));
-  width: 96px;
+  left: calc(176px + var(--safe-l));
+  bottom: calc(10px + var(--safe-b));
+  width: 92px;
   padding: 7px 8px 8px;
   display: flex;
   flex-direction: column;
@@ -970,7 +973,7 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   .hud-cell { min-width: 44px; }
   .hud-ersbadge { min-width: 66px; padding: 3px 8px; }
   .hud-ersmodetext { font-size: 12px; }
-  .hud-damage { width: 68px; bottom: calc(104px + var(--safe-b)); }
+  .hud-damage { width: 62px; left: calc(140px + var(--safe-l)); }
   .hud-tower { width: 172px; padding: 5px 5px 6px 8px; }
   .tower-row { font-size: 10.5px; height: 17px; }
   .hud-timing { width: 192px; padding: 6px 7px 7px; }
