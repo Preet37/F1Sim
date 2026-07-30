@@ -3,12 +3,13 @@ import { PartsBin, chamferBox, chamferCylinder, quadXY, rand, structureMaterial 
 import { buildGrandstandGeometry, grandstandPreset } from './Grandstands';
 import { TEAMS } from '../data/teams';
 import {
+  isPaddockGround,
   pitLaneGeometry,
-  PIT_GARAGE_COUNT,
-  PIT_GARAGE_SPACING_M,
+  PIT_BAY_PITCH_M,
   PIT_ROW_ANCHOR_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
+import { buildKeepOutField, MAIN_STAND_DEPTH_M, MAIN_STAND_WIDTH_M } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -54,9 +55,7 @@ export interface PaddockScene {
  * number is what puts the garage opening around the two cars that actually park
  * in it.
  */
-const BAY_PITCH = PIT_GARAGE_SPACING_M * 2;
-/** Slack at each end of the garage row where trackside furniture is suppressed. */
-const ROW_MARGIN = 26;
+const BAY_PITCH = PIT_BAY_PITCH_M;
 /** Depth of a garage box from the opening to the back wall, metres. */
 const BAY_DEPTH = 12.4;
 /** Height of the garage opening's soffit, metres. */
@@ -74,30 +73,11 @@ const RUBBER = 0x141518;
 const SKIN = [0xf0c8a0, 0xd9a273, 0xa9744c, 0x7a4f30];
 
 /**
- * True where the paddock occupies the ground beside the circuit, so the
- * trackside furniture must give way to it.
- *
- * The barrier line, the catch fencing, the sponsor hoardings and the set
- * dressing are all laid down blindly at a fixed offset from the track edge all
- * the way round the lap — which, along the pits, puts a steel armco and a
- * five-metre debris fence straight *through* the pit lane and drops trees in
- * the middle of the garages. Nothing about that is visible until something is
- * actually built there.
- *
- * Called from the circuit builder for each node and each side. Only the pit
- * lane's own side, and only over the length of the garage row, is affected; the
- * rest of the lap keeps every piece of furniture it had.
+ * Re-exported for the circuit builder, which suppresses trackside furniture
+ * along the paddock. It lives with the rest of the pit lane's plan now, so the
+ * headless simulation can use it without pulling in Three.js.
  */
-export function isPaddockGround(track: TrackSpline, node: number, side: -1 | 1): boolean {
-  const lane = track.def.pitLane;
-  if (side !== (Math.sign(lane.lateralOffsetM) || -1)) return false;
-  const L = track.length;
-  const rowLen = (PIT_GARAGE_COUNT / 2 - 1) * BAY_PITCH;
-  const from = lane.boxS + PIT_ROW_ANCHOR_M - rowLen - BAY_PITCH / 2 - ROW_MARGIN;
-  let d = (track.dist[node] - from) % L;
-  if (d < 0) d += L;
-  return d <= rowLen + BAY_PITCH + ROW_MARGIN * 2;
-}
+export { isPaddockGround };
 
 /**
  * The team boards over each garage, as one texture atlas.
@@ -873,15 +853,37 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     const mesh = new THREE.InstancedMesh(geo, mat, stands);
     const rowCentre = lane.boxS + PIT_ROW_ANCHOR_M - ((bayCount - 1) * BAY_PITCH) / 2;
     const m = new THREE.Matrix4();
+    // The pit straight is not the only piece of circuit near the pit straight.
+    // On a street circuit the lap folds back on itself within a few dozen
+    // metres, so a 74m stand placed blindly opposite the pits can land across
+    // another part of the road. Same test as the set dressing uses.
+    const keepOut = buildKeepOutField(track);
+    const margin = (track.def.scenery === 'street' ? 2.5 : 14) + 2;
+    let placed = 0;
     for (let i = 0; i < stands; i++) {
       const s = rowCentre + (i - (stands - 1) / 2) * (opts.width + 6);
       const idx = track.indexAt(s);
       const hw = track.width[idx] * 0.5;
       // Opposite side of the circuit from the pit lane.
       const side = -dir;
-      const lateral = side * (hw + 17);
       const tx = track.tx[idx], tz = track.tz[idx];
       const nx = track.nx[idx], nz = track.nz[idx];
+      // The stand is anchored at its front barrier and built backwards, so the
+      // box that describes it sits half a depth further out.
+      const cos = side * nx;
+      const sin = -side * nz;
+      let lateral = 0;
+      let clear = false;
+      for (let attempt = 0; attempt < 8 && !clear; attempt++) {
+        lateral = side * (hw + 17 + attempt * 8);
+        const cxw = track.px[idx] + nx * lateral + cos * MAIN_STAND_DEPTH_M * 0.5;
+        const czw = track.pz[idx] + nz * lateral - sin * MAIN_STAND_DEPTH_M * 0.5;
+        clear = keepOut.clearOfBox(
+          cxw, czw, cos, sin,
+          MAIN_STAND_DEPTH_M * 0.5, MAIN_STAND_WIDTH_M * 0.5, margin,
+        );
+      }
+      if (!clear) continue;
       // Local +X away from the track, +Z along it; `side` on both keeps the
       // basis right-handed on either side of the circuit.
       m.set(
@@ -890,8 +892,9 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
         side * nz, 0, side * tz, track.pz[idx] + nz * lateral,
         0, 0, 0, 1,
       );
-      mesh.setMatrixAt(i, m);
+      mesh.setMatrixAt(placed++, m);
     }
+    mesh.count = placed;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.frustumCulled = false;
     root.add(mesh);

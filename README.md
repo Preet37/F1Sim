@@ -128,7 +128,7 @@ they are up to speed, and the lap out of the garage is discarded rather than tim
 
 ## Verification
 
-Three harnesses, run by `npm run validate`. They exist because almost every
+Five harnesses, run by `npm run validate`. They exist because almost every
 significant bug in this project was found by one of them rather than by playing.
 
 ### `validate:tracks`
@@ -179,6 +179,31 @@ finish, are lap times and the spread across the field credible, do overtakes and
 stops happen, does the finishing order correlate with car and driver quality rather
 than with grid position.
 
+### `validate:world`
+
+Asks whether the world is a place rather than a backdrop. Every piece of set dressing
+on all eleven circuits is tested against the *whole* lap — not the node it was
+generated at — for standing on the racing surface or the pit lane, and reports the
+tightest clearance. It also drives a car into a wall at 200 km/h and asserts that the
+session ends and the damage panel says why.
+
+### `validate:integrity`
+
+Containment, in world space, with no knowledge of how containment is implemented.
+
+From anywhere a car can be, can it see drivable ground without a solid surface in the
+way — and does its path ever cross one? It drives the *player's* car adversarially:
+full throttle into the barrier at three angles and two speeds, at fourteen points
+round each circuit, from the track and from the pit lane. It then sweeps the entire
+containment envelope geometrically and asserts that no part of it is walled off from
+the road.
+
+This replaced a probe that measured `|lateral| - (halfWidth + runoff)` — the same
+spline-relative quantity the containment code itself used — and therefore reported a
+clean zero-metre overshoot on every circuit while a car was demonstrably parked behind
+an armco and a catch fence. A test written against the implementation's own model
+cannot see a bug in that model.
+
 ---
 
 ## Bugs these harnesses caught
@@ -208,6 +233,10 @@ its fix site.
 | 20 cars × ~13 meshes | 271 draw calls; no phone renders that at 60fps |
 | Chase camera smoothed position in world space toward a moving target | Steady-state lag of velocity/rate — 8m at 57 m/s, so the car shrank as it accelerated |
 | `tractionLimitFraction` used the power-limited force while the gearbox is torque-limited at low speed | Overestimated available force 2.7×, making a modulated launch *slower* than flooring it |
+| Set dressing placed at a lateral offset from the node it was generated at, with nothing checking the rest of the lap | A circuit folds back on itself, so an offset clear of the road at one node lands on it at another — a thirty-metre building across the racing surface at Monaco with the player's car inside it |
+| The barrier laid at a flat 14m (2.5m on a street circuit) from the track edge for the whole lap | Where the circuit runs back within that distance of itself, one section's armco and five-metre debris fence were built across another section's run-off. A car legally in that run-off has a wall and a fence between it and the road |
+| Containment measured against the *nearest* spline node | Once a car is in the corridor between two barriers, its projection snaps to the far section, its lateral offset is small, and containment never fires. The old integrity probe measured the same quantity, so it reported zero overshoot for a car that was visibly walled in |
+| Nothing outside the barrier line was solid | Cars drove through buildings, grandstands and the pit wall without a scrape |
 
 ---
 

@@ -212,3 +212,40 @@ export function pitLaneGeometry(def: TrackDefinition, lengthM: number): PitLaneG
     boxS,
   };
 }
+
+/**
+ * Garage bay pitch: one bay per team, and a team runs two cars, so a bay is two
+ * pit boxes wide.
+ */
+export const PIT_BAY_PITCH_M = PIT_GARAGE_SPACING_M * 2;
+/** Slack at each end of the garage row where trackside furniture is suppressed. */
+export const PIT_ROW_MARGIN_M = 26;
+
+/**
+ * True where the paddock occupies the ground beside the circuit, so the
+ * trackside furniture must give way to it.
+ *
+ * The barrier line, the catch fencing, the sponsor hoardings and the set
+ * dressing are all laid down blindly at a fixed offset from the track edge all
+ * the way round the lap — which, along the pits, puts a steel armco and a
+ * five-metre debris fence straight *through* the pit lane and drops trees in
+ * the middle of the garages.
+ *
+ * This lives here, with the rest of the pit lane's plan, rather than with the
+ * geometry that draws the paddock: the headless simulation needs it too, and
+ * the paddock module cannot be loaded without Three.js.
+ */
+export function isPaddockGround(
+  track: { def: TrackDefinition; dist: Float32Array; length: number },
+  node: number,
+  side: -1 | 1,
+): boolean {
+  const lane = track.def.pitLane;
+  if (side !== (Math.sign(lane.lateralOffsetM) || -1)) return false;
+  const L = track.length;
+  const rowLen = (PIT_GARAGE_COUNT / 2 - 1) * PIT_BAY_PITCH_M;
+  const from = lane.boxS + PIT_ROW_ANCHOR_M - rowLen - PIT_BAY_PITCH_M / 2 - PIT_ROW_MARGIN_M;
+  let d = (track.dist[node] - from) % L;
+  if (d < 0) d += L;
+  return d <= rowLen + PIT_BAY_PITCH_M + PIT_ROW_MARGIN_M * 2;
+}
