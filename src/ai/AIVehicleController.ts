@@ -1,6 +1,23 @@
 import { clamp, clamp01, damp, lerp, loopDelta, Rng, wrapAngle, Vec2 } from '../core/MathUtils';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { VehiclePhysics, VehicleControls, ErsMode } from '../physics/VehiclePhysics';
+import { steerRackLimit } from '../physics/VehiclePhysics';
+
+/**
+ * Speed taper on this controller's FEEDBACK gains (not its feedforward).
+ *
+ * This is not a new idea, only a newly honest one. Every feedback gain below was
+ * tuned by measurement while the steering rack was quietly attenuating it by
+ * exactly this curve, so the curve was already part of the tuning — it just was
+ * not written down anywhere, and it lived in a constant whose real job is to
+ * decide how much lock the front tire gets.
+ *
+ * Writing it here separates the two. Loop gain still falls from 1.0 at low speed
+ * to about 0.6 at 260km/h, which is what keeps a 300km/h car from weaving, and
+ * the rack ratio is now free to be chosen for the tire.
+ */
+const AI_FEEDBACK_GAIN_SCHEDULE = (speedMs: number): number =>
+  1 / (1 + Math.max(0, speedMs - 14) * 0.020);
 import type { Driver } from '../data/teams';
 
 /**
@@ -497,10 +514,28 @@ export class AIVehicleController {
   }
 
 
-  /** Limits how fast the steering input may change. Full lock takes ~0.22s. */
-  private slewSteer(target: number, dt: number): number {
-    const MAX_RATE = 4.5;
-    const maxDelta = MAX_RATE * dt;
+  /**
+   * Limits how fast the steering may change. Full lock takes ~0.22s at rest.
+   *
+   * The rate is a ROAD-WHEEL angular rate converted to input units, not a rate
+   * on the input itself. Those are the same thing only at a standstill, and
+   * capping the input rate meant the AI's real steering rate was whatever
+   * fraction of lock the rack happened to allow — so every past attempt to gear
+   * the rack for the front tire also silently halved how fast the AI could turn
+   * the wheel, made the cars run wide everywhere, and was reverted as a failure.
+   *
+   * `schedule` carries the same speed taper the rest of the feedback path uses,
+   * because this limit was measured with it in the loop. The point is not to
+   * change the AI's behaviour — it is to make that behaviour independent of the
+   * rack ratio, which is a separate design choice.
+   */
+  private slewSteer(target: number, dt: number, radPerInput = 0.42, schedule = 1): number {
+    // 1.9 rad/s at the road wheel — centre to full lock in a little over 0.2s,
+    // which is about as fast as hands actually move.
+    const RATE_RAD_PER_S = 1.9 * schedule;
+    // Clamped so the very small rack ratios at top speed cannot turn this into
+    // an instantaneous input step the tires could never follow.
+    const maxDelta = Math.min(RATE_RAD_PER_S / Math.max(radPerInput, 0.06), 14) * dt;
     const d = target - this.lastSteer;
     this.lastSteer += d > maxDelta ? maxDelta : d < -maxDelta ? -maxDelta : d;
     return clamp(this.lastSteer, -1, 1);
@@ -735,17 +770,47 @@ export class AIVehicleController {
       track.headingAt(s) + lineHeadingOffset + Math.atan2(effectiveError, Math.max(closeOver, 10));
     const headingError = wrapAngle(aimHeading - car.heading);
 
+    // --- From here the controller works in ROAD-WHEEL RADIANS ---------------
+    //
+    // It used to work in steering-input units and convert with `/ maxSteerRad`,
+    // which is only correct at a standstill: the rack is speed-sensitive, so an
+    // input of 1.0 is 24 degrees of lock parked and 11 at 260km/h. Two separate
+    // things went wrong as a result, and they pull in opposite directions.
+    //
+    // The FEEDFORWARD was simply under-delivered. It is a geometric angle the
+    // corner requires, and it arrived at the tires attenuated by the rack curve
+    // — 46% of it at 260km/h — on exactly the fast corners where it is the whole
+    // of the demand. The AI understeered through every quick corner and made the
+    // shortfall up with the error term a beat late. Delivering it properly is
+    // worth a lot: Silverstone went from 192% of reference lap time to 158%.
+    //
+    // The FEEDBACK gains are the opposite case. They were tuned by measurement
+    // with the same attenuation in the loop, so the rack curve was acting as an
+    // unintended gain schedule — loop gain falling from 1.3 at low speed to 0.6
+    // at 260km/h. That schedule is good control design, and simply removing it
+    // doubled the loop gain at racing speed: the cars weaved, overshot, and the
+    // spread between fastest and slowest blew out on eight circuits.
+    //
+    // So the schedule is kept, explicitly, as what it always was — a gain
+    // schedule on the feedback path — instead of being an accident of the rack
+    // ratio. The two are now independent: `RACK_TAPER_PER_MS` can be geared for
+    // what the front tire wants without silently retuning this controller.
+    const feedbackGain = AI_FEEDBACK_GAIN_SCHEDULE(speed);
+
+    // Road-wheel angle per unit of steering input, at THIS speed.
+    const radPerInput = car.spec.maxSteerRad * steerRackLimit(speed);
+
     // Negated to match the corrected steer convention: positive steer is RIGHT,
     // while increasing heading (which is what ffRad and headingError express) is
     // a turn to the LEFT in this frame.
-    let steer = -(ffRad + headingError * 1.3) / car.spec.maxSteerRad;
+    let steerRad = -(ffRad + headingError * 1.3 * feedbackGain);
 
     // Counter-steer damping: oppose yaw the driver did not ask for. This is what
     // lets the AI catch a slide instead of spinning, and it is exactly what a
     // real driver does with their hands.
     const desiredYawRate = -ffCurvature * speed;
     // Excess left-hand yaw needs right-hand correction, which is now positive.
-    steer += (car.yawRate - desiredYawRate) * 0.05;
+    steerRad += (car.yawRate - desiredYawRate) * 0.05 * car.spec.maxSteerRad * feedbackGain;
 
     // --- Edge guardrail ----------------------------------------------------
     // An inward bias that grows sharply as the car approaches the track edge,
@@ -763,7 +828,7 @@ export class AIVehicleController {
       const urgency = clamp01((edgeUse - 0.68) / 0.28);
       // Lateral is positive to the driver's LEFT, so drifting positive means
       // coming back requires right-hand steer, which is positive.
-      steer += Math.sign(lateral) * urgency * urgency * 0.85;
+      steerRad += Math.sign(lateral) * urgency * urgency * 0.85 * car.spec.maxSteerRad * feedbackGain;
     }
 
     // Human imperfection. A slow sine plus per-driver noise, so cars wander a
@@ -774,13 +839,16 @@ export class AIVehicleController {
     // Scaled down with speed: as a raw steering offset the same number is a few
     // centimetres of wander at 80km/h and a 20 m/s^2 lateral jolt at 330km/h,
     // which is why the quick circuits always looked worse than the slow ones.
-    steer += wander * prof.errorScale * clamp(24 / speed, 0.12, 1);
+    steerRad += wander * prof.errorScale * clamp(24 / speed, 0.12, 1) * car.spec.maxSteerRad * feedbackGain;
+
+    // Back to input units — the one place the rack ratio enters.
+    const steer = steerRad / radPerInput;
 
     // Rate-limit the steering. Real hands take about a quarter second to go from
     // centre to full lock, and without that limit the pure-pursuit controller
     // slams between the stops as soon as the car is off-line — which is what sent
     // it spiralling into the gravel.
-    c.steer = this.slewSteer(clamp(steer, -1, 1), dt);
+    c.steer = this.slewSteer(clamp(steer, -1, 1), dt, radPerInput, feedbackGain);
 
     // --- Target speed ------------------------------------------------------
     // Slow form drift, so a driver has better and worse laps.

@@ -99,14 +99,29 @@ export const BASE_F1_SPEC: VehicleSpec = {
   driveEfficiency: 0.93,
 
   clBase: 3.3,
-  // Matched to the 45% static front weight split. At racing speed downforce
-  // dwarfs the car's own weight, so this number — not the mass distribution —
-  // decides how much load the front axle actually has. Setting it BELOW the
-  // mechanical split meant the aero platform was fighting the chassis: in a
-  // steady turn a bicycle model needs the front to supply 45% of the cornering
-  // force, but it only had 44% of the load to do it with, so the front ran out
-  // first everywhere. 0.455 is still inside the real 44-46% window.
-  aeroBalanceFront: 0.455,
+  // At racing speed downforce dwarfs the car's own weight, so this number — not
+  // the mass distribution — decides how much load the front axle actually has,
+  // and with it the car's understeer margin.
+  //
+  // A steady turn needs the front to supply b/L = 45% of the cornering force. It
+  // was set to 0.455, i.e. the front had very slightly MORE than its share, which
+  // makes the car neutral-to-oversteering by load. That was compensation for a
+  // bug, not a chassis decision: the old yaw damper forced the front axle to
+  // out-pull the rear by ~2kNm at all times (see the yaw-damping block in
+  // VehiclePhysics), a ~10% permanent front overload, and raising aero balance to
+  // 0.455 was an attempt to feed the front enough load to survive it. It could
+  // not — `balance` stayed negative everywhere — and it left the car with no real
+  // stability margin of its own.
+  //
+  // With the damper corrected the compensation has to come off too, or the car
+  // has terminal oversteer: it spun above 140km/h from an ordinary steering
+  // input, and peak lateral at 300km/h fell to 4.6g because the fast runs were
+  // spins. 0.435 gives the front slightly less than its share, which is a real
+  // understeer margin that the chassis owns rather than one borrowed from a
+  // fictitious torque. It is inside the real 43-46% window, and it measures
+  // better everywhere: peak lateral at 200km/h 3.04 -> 3.10g, at 260km/h
+  // 3.99 -> 4.07g, with `balance` now -0.01..-0.14 instead of -0.08..-0.34.
+  aeroBalanceFront: 0.435,
   cdBase: 0.82,
   drsDragReduction: 0.22,
   drsDownforceLoss: 0.16,

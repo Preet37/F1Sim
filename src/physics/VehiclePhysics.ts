@@ -129,44 +129,72 @@ const BARRIER_YAW_DAMP_RATE = 2.5;
 const BARRIER_REST_MS = 0.4;
 
 /**
- * Fraction of full steering lock the rack allows at a given speed.
+ * Sideslip-damper rate, 1/s, and its growth with speed. See the block in
+ * `step()` for what this damps and, more importantly, what it does not.
+ *
+ * Because the damper is now one-sided and referenced to the path rather than to
+ * zero, this number no longer trades against cornering grip — it only sets how
+ * quickly a slide is arrested. It can therefore be strong enough to keep the car
+ * catchable without costing anything in a steady corner, which was not true of
+ * the version that damped toward zero.
+ */
+const YAW_DAMP_BASE = 1.8;
+const YAW_DAMP_PER_V = 0.032;
+
+/**
+ * How fast the rack gears down with speed, per m/s above walking pace.
  *
  * The number this has to respect is the slip angle at which the front tire
- * peaks: alpha = 1.978 / corneringStiffnessFront, about 9 degrees. Steering past
- * that does not turn the car harder, it turns it LESS, because the magic formula
- * is on its falling branch. A steer sweep (`npm run probe:handling`) put peak
- * lateral at 0.40 of full input at 150km/h and 0.30 at 300km/h, and showed full
- * lock at 300km/h throwing away 26% of the available cornering force. That is
- * exactly the "I'm at full lock and it won't turn" complaint, and no amount of
- * extra lock fixes it.
+ * peaks: alpha = 1.978 / corneringStiffnessFront, about 9.1 degrees. Past that
+ * the tire is on the falling branch and, much more importantly, it is over its
+ * friction circle — where `frictionCircleScale` takes up to 22% away for
+ * sliding. Steering beyond the peak therefore does not turn the car harder, it
+ * turns it LESS.
  *
- * So the rack is geared as a real speed-sensitive rack is — a hyperbola in speed
- * — which pulls full lock at 300km/h from 15.9 degrees of front slip down to
- * 12.3, close enough to the peak that the falling branch costs a few percent
- * rather than a quarter of the car's cornering ability. Full lock at 300km/h now
- * makes 3.1g where it used to make 1.8g.
+ * At the old 0.020 the taper was far too gentle to do its job. Full lock put the
+ * front tire at 12.5 degrees of slip at 260km/h and 17.5 at 80km/h — up to
+ * DOUBLE the peak — so the top half of the steering range was not merely wasted
+ * but actively harmful: a steer sweep at 260km/h peaked at 4.07g around half
+ * input and fell to 3.11g at full lock, throwing away a quarter of the car's
+ * cornering ability, and yaw rate fell with it. That is exactly the "I'm at full
+ * lock and it won't turn" complaint, and no amount of extra lock fixes it.
  *
- * It is deliberately NOT tightened all the way to the peak, which measured
- * better still in isolation (3.8g) and was much worse in a race. The AI's
- * steering rate limiter and its counter-steer gain are both expressed in INPUT
- * units, so halving the angle full input buys also halves the angular rate the
- * AI can steer at — and it ran wide everywhere, with off-track excursions
- * tripling and lap times a minute off the pace. This coefficient was chosen by
- * sweeping it against `npm run validate:race`, not by picking the best number on
- * the skidpad.
+ * 0.050 puts full lock at 8.7-10.4 degrees of front slip at racing speed, at or
+ * just past the peak instead of double it. The same sweep now falls only 2-4%
+ * from its peak to full lock, so more steering means more rotation all the way
+ * to the grip limit and then plateaus, which is what a car does.
+ *
+ * This could not be raised before, and the reason is worth recording because it
+ * was not a physics problem. The AI's steering rate limiter and its counter-steer
+ * gain were both expressed in INPUT units, so tightening the rack silently
+ * halved how fast the AI could turn the wheel and how much authority its slide
+ * correction had — it ran wide everywhere and the change was reverted as a
+ * failure. Both are now expressed as road-wheel ANGLES (see `slewSteer` in
+ * AIVehicleController), which decouples the rack ratio from the driver's hands
+ * and lets this be geared for the tire.
  *
  * Full lock is untouched below 50km/h. Monaco's Grand Hotel hairpin is an 11m
  * radius and needs atan(wheelbase/radius) = 18 degrees to geometrically fit;
- * taper any earlier and the car physically cannot make the corner.
+ * taper any earlier and the car physically cannot make the corner. Measured
+ * minimum radius is unchanged at 8.4m at 30km/h and 8.8m at 40km/h, and between
+ * 60 and 100km/h the tighter rack makes the car turn TIGHTER, not wider, because
+ * the front tire is no longer being pushed past its peak.
+ */
+const RACK_TAPER_PER_MS = 0.050;
+
+/**
+ * Fraction of full steering lock the rack allows at a given speed, as a real
+ * speed-sensitive rack is geared — a hyperbola in speed.
  *
  * EXPORTED because the AI has to invert it. A controller that commands a path
  * curvature must divide by the rack limit to know what steering input produces
- * that curvature, and when this lived as a literal in two files they drifted:
- * the AI kept dividing by the old curve, every command above 150km/h arrived at
- * roughly half strength, and no car on the grid could complete a lap.
+ * that curvature. Note that until recently nothing outside this file actually
+ * called it: the AI divided by `maxSteerRad` alone, so every steering command it
+ * issued above 50km/h arrived at the tires attenuated by this curve — 46% at
+ * 260km/h. That is fixed, and this must stay the single source of truth.
  */
 export function steerRackLimit(speedMs: number): number {
-  return 1 / (1 + Math.max(0, speedMs - 14) * 0.020);
+  return 1 / (1 + Math.max(0, speedMs - 14) * RACK_TAPER_PER_MS);
 }
 
 export class VehiclePhysics {
@@ -814,25 +842,59 @@ export class VehiclePhysics {
     const yawMoment = fyFrontFinal * spec.cogToFrontM * Math.cos(steerAngle) - fyRearFinal * rearArm;
     this.yawRate += (yawMoment / yawInertia) * dt;
 
-    // Yaw damping. Real cars have aero yaw stiffness that grows with speed;
-    // without it the model oscillates at the integration frequency.
+    // --- Yaw damping: a SIDESLIP damper, not a brake on rotation ------------
     //
-    // The rate matters far more than it looks. This is a torque the tires have
-    // to fight, and at the old 2.4 + 0.055v it reached 5.8/s at 220km/h — worth
-    // about 4 rad/s^2 of yaw acceleration, which the FRONT axle alone had to
-    // supply because the rear's contribution acts the other way. Measured with
-    // `npm run probe:handling`, that pinned front utilisation at 0.96-1.00 from
-    // barely a third of a turn of lock while the rear idled at 0.77: the car
-    // understeered permanently, could not be made to rotate by adding steering,
-    // and was slow everywhere. Halving it hands that grip back — peak lateral
-    // rises about 3% and, more importantly, the two axles now work together
-    // instead of the front fighting a torque nothing physical produces.
+    // The model needs a stabilising term here. A two-axle model integrated
+    // explicitly has no tire relaxation length, no roll dynamics and no
+    // compliance steer, and those are most of what stops a real car's sideslip
+    // from running away. Without something in their place the car spins above
+    // about 140km/h from a perfectly ordinary steering input.
     //
-    // It cannot go much lower. Below roughly 1.4 + 0.02v a power-on slide at
-    // 90km/h becomes uncatchable even with correctly-timed countersteer, which
-    // is the "it just spins" failure rather than a car that can be driven.
-    const yawDampRate = 1.8 + speed * 0.032;
-    this.yawRate = damp(this.yawRate, 0, yawDampRate, dt);
+    // But what was here damped `yawRate` toward ZERO, and that is a different
+    // thing entirely. Rotation is not an error to be corrected — a car in a
+    // steady corner is rotating, continuously, and it is supposed to be. Pulling
+    // it toward zero applies a torque that opposes cornering itself, and in
+    // steady state that torque does not go away: it has to be paid for, every
+    // frame, out of the tires. Measured at 1.8 + 0.032v it was 1.2-2.8 kNm.
+    //
+    // Which axle pays is the part that ruined the car. A steady turn needs the
+    // front and rear moments to BALANCE — net yaw moment zero. Forcing a
+    // permanent unbalanced moment of +2 kNm means the front axle must out-pull
+    // the rear by that much, all the time, on top of its share of the cornering
+    // load. That is roughly a 10% front overload, and it showed up exactly where
+    // you would expect: `balance` was negative at every speed and every steering
+    // angle in the sweep (-0.08 to -0.34), meaning the front was closer to its
+    // limit than the rear everywhere. The car had terminal understeer built into
+    // it, the rear axle's grip was never used, and the front hit its friction
+    // circle early — so adding steering pushed it further past its cap and the
+    // slide penalty took cornering force AWAY. That is the "no grip, gliding,
+    // won't turn" the car was reported to have, and no amount of extra baseMu
+    // fixes it because the grip was there all along and was being spent on a
+    // torque nothing physical produces.
+    //
+    // What a stabiliser should actually oppose is SIDESLIP — the velocity vector
+    // and the chassis pointing in different directions, and that mismatch
+    // growing. So damp toward the rate at which the velocity vector is itself
+    // turning. `ay / speed` is exactly that rate: from the body-frame equation
+    // vy_dot = ay - r*vx, the world-frame rotation of the velocity vector is
+    // r + beta_dot = ay / v. Damping toward it is damping beta_dot toward zero.
+    //
+    // In a settled corner the chassis already rotates at that rate, the term
+    // vanishes, and the tires keep their grip. When the car starts to spin,
+    // yawRate runs away from it and the term bites at full strength. The
+    // stabilisation is kept; the permanent tax on the front axle is not.
+    //
+    // One-sided, via the clamp. Damping is applied only to rotation BEYOND what
+    // the path is doing (oversteer, the direction that ends in a spin) and never
+    // to a car that is rotating LESS than its path (understeer, which is already
+    // self-correcting and needs no help). A two-sided version measured better on
+    // the skidpad and was worse to drive: it feeds yaw INTO an understeering car,
+    // which is a rotation source the tires did not produce.
+    const yawDampRate = YAW_DAMP_BASE + speed * YAW_DAMP_PER_V;
+    // Blended out at walking pace, where ay/speed is ill-conditioned.
+    const pathYawRate = (ay / Math.max(speed, 6)) * clamp01((speed - 2) / 6);
+    const yawTarget = clamp(this.yawRate, Math.min(0, pathYawRate), Math.max(0, pathYawRate));
+    this.yawRate = damp(this.yawRate, yawTarget, yawDampRate, dt);
 
     // At a standstill, kill residual lateral velocity and yaw so the car settles
     // instead of creeping.
