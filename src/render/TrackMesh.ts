@@ -287,10 +287,16 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   }
 
   // --- Start/finish line ---------------------------------------------------
+  // Markers must span at least a couple of nodes. Asking for a 1.2m-long quad
+  // when nodes are 3m apart resolves both ends to the SAME node index, so the
+  // quad is degenerate and nothing renders — the start line and every DRS marker
+  // were silently invisible.
+  const NODE_M = track.length / track.count;
+  const markerLen = NODE_M * 2;
   {
     const grid = new StripBuilder();
     const i0 = track.indexAt(0);
-    const i1 = track.indexAt(1.2);
+    const i1 = track.indexAt(markerLen);
     const hw = track.width[i0] * 0.5;
     grid.quad(
       px(i0, -hw), py(i0, -hw) + Y_LINE, pz(i0, -hw),
@@ -309,7 +315,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     for (const zone of track.def.drsZones) {
       for (const s of [zone.detectionS, zone.startS]) {
         const i0 = track.indexAt(s);
-        const i1 = track.indexAt(s + 0.8);
+        const i1 = track.indexAt(s + markerLen);
         const hw = track.width[i0] * 0.5;
         marks.quad(
           px(i0, -hw), py(i0, -hw) + Y_LINE, pz(i0, -hw),

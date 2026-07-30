@@ -358,8 +358,10 @@ export class Hud {
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
     // Show the whole field on a wide screen, a window around the player on a phone.
-    const compact = window.innerWidth < 820;
-    const shown = compact ? 7 : Math.min(standings.length, 20);
+    // Height matters as much as width: a 20-row tower does not fit in the 390px
+    // of a landscape iPhone, and it overflowed the viewport.
+    const compact = window.innerWidth < 900 || window.innerHeight < 520;
+    const shown = compact ? 6 : Math.min(standings.length, 20);
     this.ensureRows(shown);
 
     let start = 0;
