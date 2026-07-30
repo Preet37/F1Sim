@@ -1060,32 +1060,36 @@ export class AIVehicleController {
     // satisfies that by simply running at the delta pace, which is what a real
     // driver does because it is the easy way to stay legal.
     if (p.neutralised && p.neutralisedTargetMs > 0) {
-      targetSpeed = Math.min(targetSpeed, p.neutralisedTargetMs);
+      // The neutralisation is a CAP, and it is only ever applied as one.
+      //
+      // Catching the queue up is expressed by raising the cap, never by raising
+      // the target speed itself. Raising the target directly looks equivalent
+      // and is catastrophic: it overrides the cornering limit computed from the
+      // car's own grip, so a car told to close a ten-car-length gap tried to
+      // take Monaco's hairpin at safety car pace and went straight on. Monaco's
+      // off-track count doubled and the field spread went from 89 seconds to
+      // 268 the moment this was a max() instead of a min().
+      let cap = p.neutralisedTargetMs;
 
       // A car that has been waved past is allowed to get on with it: it has a
       // lap to make up on the whole queue and the safety car, and it cannot do
       // that at the delta. Art. 55.14 / B5.13.4c requires it to pass.
-      if (p.mustUnlap) targetSpeed = p.neutralisedTargetMs * UNLAP_PACE_MULT;
-    }
+      if (p.mustUnlap) {
+        cap *= UNLAP_PACE_MULT;
+      } else if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM > p.queueGapM) {
+        // "All F1 Cars must reduce speed and form up behind the Safety Car no
+        // more than ten (10) car lengths apart" — Art. 55.7 / B5.13.2b. When
+        // the gap is over the limit, close it; the concertina that produces is
+        // the single most consequential thing a safety car does to a race.
+        const urgency = clamp01((p.ahead.gapM - p.queueGapM) / (p.queueGapM * 3));
+        cap *= 1 + urgency * 0.32;
+      }
 
-    // --- Forming up behind the safety car ----------------------------------
-    // "All F1 Cars must reduce speed and form up behind the Safety Car no more
-    // than ten (10) car lengths apart" — Art. 55.7 / B5.13.2b.
-    //
-    // Expressed as a speed rather than as a position: when the gap to the car
-    // ahead is over the limit, run above the delta to close it; when it is
-    // under, match. That is what produces the concertina of a field bunching
-    // up, and the queue is the single most consequential thing a safety car
-    // does to a race.
-    if (p.queueGapM > 0 && p.ahead !== null && !p.mustUnlap) {
-      const gap = p.ahead.gapM;
-      if (gap > p.queueGapM) {
-        // Catch up, but not at racing pace — a driver closing a gap under the
-        // safety car is still under a speed obligation.
-        const urgency = clamp01((gap - p.queueGapM) / (p.queueGapM * 3));
-        targetSpeed = Math.max(targetSpeed, p.neutralisedTargetMs * (1 + urgency * 0.32));
-      } else if (gap < p.queueGapM * 0.45) {
-        // Too close. Ease off rather than run into the back of the queue.
+      targetSpeed = Math.min(targetSpeed, cap);
+
+      // Too close to the car ahead: ease off rather than run into the back of
+      // the queue.
+      if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM < p.queueGapM * 0.45) {
         targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * 0.92);
       }
     }

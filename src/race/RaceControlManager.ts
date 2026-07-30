@@ -158,6 +158,17 @@ const SC_MIN_BUNCH_S = 25;
 const SC_LAPS_AFTER_WAVE = 1;
 
 /**
+ * How far ahead of, and behind, the safety car the queue is considered to
+ * reach, metres.
+ *
+ * Twenty cars ten car lengths apart is a train a little over a kilometre long,
+ * and it is the train, not the safety car alone, that a car released from the
+ * pit lane would be released into.
+ */
+const SC_QUEUE_LEAD_M = 120;
+const SC_QUEUE_TAIL_M = 1200;
+
+/**
  * How much quicker than the neutralised pace a car may run before the minimum
  * time is breached.
  *
@@ -631,6 +642,17 @@ export class RaceControlManager {
       }
 
       case 'waving-lapped': {
+        // The pit exit is closed only while the train is actually there.
+        //
+        // The regulation is specific about when: the exit may be closed "while
+        // these cars rejoin ... when the Safety Car and the line of cars are
+        // approaching or passing the pit exit" (Art. 55.14 / B5.13.4c). Holding
+        // it shut for the whole phase instead is a very different rule — it
+        // pins a car that has finished its stop at the end of the lane for a
+        // complete safety car lap, which at Bahrain was over two minutes and
+        // pushed the field's lap-time spread past four minutes.
+        this.pitExitClosed = this.queueNearPitExit();
+
         // "once the message 'LAPPED CARS MAY NOW OVERTAKE' has been sent ... the
         // Safety Car will return to the pits at the end of the following lap"
         // — Art. 55.14 final paragraph / B5.13.5b.
@@ -706,10 +728,30 @@ export class RaceControlManager {
     this.log('LAPPED CARS MAY NOW OVERTAKE', 'warning', sessionTime);
   }
 
+  /**
+   * Is the safety car, and the queue strung out behind it, at the pit exit?
+   *
+   * The queue occupies the road from the safety car backwards, so "approaching
+   * or passing the pit exit" means the exit lies inside a stretch running from
+   * a little ahead of the safety car to some way behind it.
+   */
+  private queueNearPitExit(): boolean {
+    const exitS = this.track.def.pitLane.exitS;
+    // Signed distance from the safety car to the pit exit, forwards positive.
+    const ahead = loopDelta(this.scS, exitS, this.track.length);
+    return ahead < SC_QUEUE_LEAD_M && ahead > -SC_QUEUE_TAIL_M;
+  }
+
   private callSafetyCarIn(sessionTime: number): void {
     this.scPhase = 'in-this-lap';
-    // One more lap of the circuit at safety car pace before the green.
-    this.scTimer = this.track.length / SC_PACE_MS;
+    // "SAFETY CAR IN THIS LAP" means it peels off at the end of the lap it is
+    // ON — so what remains is the distance from where the car actually is to
+    // the pit entry, not a fresh lap of the circuit. Charging a full lap here
+    // instead doubled the length of every deployment and left the field
+    // neutralised for nearly half the race.
+    const toEntry = loopDelta(this.scS, this.track.def.pitLane.entryS, this.track.length);
+    const remaining = toEntry >= 0 ? toEntry : toEntry + this.track.length;
+    this.scTimer = Math.max(remaining, 60) / SC_PACE_MS;
     this.log('SAFETY CAR IN THIS LAP', 'warning', sessionTime);
   }
 
