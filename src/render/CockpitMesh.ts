@@ -22,18 +22,18 @@ import * as THREE from 'three';
 
 /** Driver's eye point, car-local. The camera sits exactly here in cockpit mode. */
 export const EYE_X = 0;
-export const EYE_Y = 0.735;
-export const EYE_Z = 0.14;
+export const EYE_Y = 0.86;
+export const EYE_Z = 0.03;
 
 /** Centre of the steering wheel, car-local. */
 const WHEEL_X = 0;
-const WHEEL_Y = 0.555;
-const WHEEL_Z = 0.50;
+const WHEEL_Y = 0.665;
+const WHEEL_Z = 0.53;
 /** Rake of the wheel: the top is tipped back toward the driver. */
 const WHEEL_TILT = -0.35;
 
-const WHEEL_HALF_W = 0.15;
-const WHEEL_HALF_H = 0.125;
+const WHEEL_HALF_W = 0.145;
+const WHEEL_HALF_H = 0.105;
 
 export interface CockpitState {
   /** Road-wheel angle in radians. The rim turns by RACK_RATIO times this. */
@@ -213,6 +213,7 @@ function clamp01(v: number): number {
  */
 export function buildCockpit(accentColour: number): CockpitVisual {
   const root = new THREE.Group();
+  root.name = 'cockpit';
   root.visible = false;
   // Never let the cockpit cast shadows onto the road: it is inches from the
   // camera and would produce a large, obviously wrong smear on the track.
@@ -256,31 +257,33 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // of the frame and are most of what makes the view feel enclosed.
   for (const side of [-1, 1] as const) {
     const pad = new THREE.BoxGeometry(0.075, 0.055, 0.62);
-    pad.translate(side * 0.30, 0.618, 0.13);
+    pad.translate(side * 0.30, 0.598, 0.13);
     add(pad, carbon);
   }
   // Dash bulkhead ahead of the driver, where the column comes through.
   {
-    const dash = new THREE.BoxGeometry(0.56, 0.075, 0.10);
-    dash.translate(0, 0.575, 0.62);
+    const dash = new THREE.BoxGeometry(0.54, 0.07, 0.10);
+    dash.translate(0, 0.605, 0.70);
     add(dash, carbon);
-    add(strut(0, 0.545, 0.60, 0, 0.50, 0.72, 0.032), carbon);
+    // Steering column, running down from the back of the wheel.
+    add(strut(0, 0.648, 0.58, 0, 0.588, 0.74, 0.030), carbon);
   }
 
   // --- Mirrors ------------------------------------------------------------
   // Mounted well forward on the chassis flanks, which is both where a real car
   // carries them and the only place they are inside a 100-degree field of view.
   for (const side of [-1, 1] as const) {
-    const x = side * 0.455;
-    add(strut(side * 0.30, 0.585, 0.70, x, 0.615, 0.70, 0.014), carbon);
-    const housing = new THREE.BoxGeometry(0.115, 0.075, 0.028);
-    housing.translate(x, 0.625, 0.702);
+    const x = side * 0.47;
+    add(strut(side * 0.30, 0.685, 0.72, x, 0.715, 0.72, 0.014), carbon);
+    const housing = new THREE.BoxGeometry(0.12, 0.078, 0.028);
+    housing.translate(x, 0.722, 0.722);
     add(housing, carbon);
-    // The glass faces back and inward, at the driver's eye.
-    const glass = new THREE.PlaneGeometry(0.10, 0.062);
-    glass.rotateY(Math.PI);
+    // The glass faces back and inward, at the driver's eye. The plane's own
+    // normal is +z, so the mesh rotation alone turns it round — rotating the
+    // geometry as well would flip it back and cull it.
+    const glass = new THREE.PlaneGeometry(0.105, 0.064);
     const g = add(glass, mirrorGlass);
-    g.position.set(x, 0.625, 0.687);
+    g.position.set(x, 0.722, 0.706);
     g.rotation.y = Math.PI + side * 0.30;
   }
 
@@ -303,11 +306,11 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // bottom bars. Two rounded-rect holes cut in a rounded-rect outline give
     // exactly that silhouette in one extrusion.
     const shape = new THREE.Shape();
-    roundedRect(shape, -WHEEL_HALF_W, -WHEEL_HALF_H, WHEEL_HALF_W * 2, WHEEL_HALF_H * 2, 0.052);
+    roundedRect(shape, -WHEEL_HALF_W, -WHEEL_HALF_H, WHEEL_HALF_W * 2, WHEEL_HALF_H * 2, 0.044);
     const holeL = new THREE.Path();
-    roundedRect(holeL, -0.117, -0.072, 0.072, 0.144, 0.028);
+    roundedRect(holeL, -0.113, -0.058, 0.070, 0.116, 0.026);
     const holeR = new THREE.Path();
-    roundedRect(holeR, 0.045, -0.072, 0.072, 0.144, 0.028);
+    roundedRect(holeR, 0.043, -0.058, 0.070, 0.116, 0.026);
     shape.holes.push(holeL, holeR);
 
     const rim = new THREE.ExtrudeGeometry(shape, {
@@ -324,32 +327,33 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // Rubber grips over the two uprights, with an accent flash at the top of
     // each — the same trick a real team uses to mark the straight-ahead point.
     for (const side of [-1, 1] as const) {
-      const grip = new THREE.CylinderGeometry(0.0235, 0.0235, 0.135, 10);
-      grip.translate(side * 0.132, -0.004, 0);
+      const grip = new THREE.CylinderGeometry(0.023, 0.023, 0.118, 10);
+      grip.translate(side * 0.128, -0.004, 0);
       add(grip, rubberGrip, wheelSpin);
-      const flash = new THREE.BoxGeometry(0.05, 0.016, 0.05);
-      flash.translate(side * 0.132, 0.072, 0);
+      const flash = new THREE.BoxGeometry(0.048, 0.014, 0.048);
+      flash.translate(side * 0.128, 0.062, 0);
       add(flash, accent, wheelSpin);
     }
     // Straight-ahead marker at 12 o'clock.
     {
-      const mark = new THREE.BoxGeometry(0.022, 0.014, 0.034);
-      mark.translate(0, 0.118, -0.012);
+      const mark = new THREE.BoxGeometry(0.022, 0.013, 0.034);
+      mark.translate(0, 0.098, -0.012);
       add(mark, accent, wheelSpin);
     }
 
     // Shift paddles, on the far side of the rim from the driver.
     for (const side of [-1, 1] as const) {
-      const paddle = new THREE.BoxGeometry(0.016, 0.085, 0.055);
-      paddle.translate(side * 0.098, -0.005, 0.042);
+      const paddle = new THREE.BoxGeometry(0.016, 0.078, 0.055);
+      paddle.translate(side * 0.094, -0.005, 0.042);
       const p = add(paddle, carbon, wheelSpin);
       p.rotation.y = side * 0.22;
     }
 
     // The display, facing the driver (-z in wheel space).
-    const dashPlane = new THREE.PlaneGeometry(0.118, 0.065);
+    // Sits proud of the rim's bevelled face, or the extrusion swallows it.
+    const dashPlane = new THREE.PlaneGeometry(0.082, 0.046);
     dashPlane.rotateY(Math.PI);
-    dashPlane.translate(0, 0.012, -0.0185);
+    dashPlane.translate(0, 0.020, -0.026);
     const dashMat = mat(new THREE.MeshBasicMaterial({ map: dash.texture, toneMapped: false }));
     add(dashPlane, dashMat, wheelSpin);
 
@@ -358,7 +362,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     for (let i = 0; i < 3; i++) {
       const knob = new THREE.CylinderGeometry(0.011, 0.013, 0.014, 8);
       knob.rotateX(Math.PI / 2);
-      knob.translate(-0.03 + i * 0.03, -0.062, -0.021);
+      knob.translate(-0.03 + i * 0.03, -0.056, -0.021);
       add(knob, rubberGrip, wheelSpin);
     }
   }
@@ -368,40 +372,42 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // the ninety degrees of lock an F1 car has, so they turn with it.
   for (const side of [-1, 1] as const) {
     const hand = new THREE.Group();
-    hand.position.set(side * 0.132, -0.005, 0);
+    hand.position.set(side * 0.128, -0.005, 0);
     wheelSpin.add(hand);
 
-    // Palm, wrapped around the back of the grip.
-    const palm = new THREE.SphereGeometry(0.048, 12, 10);
-    palm.scale(0.72, 1.5, 1.05);
-    palm.translate(side * 0.020, 0.004, -0.020);
+    // Palm, wrapped around the back of the grip rather than stuck to the side
+    // of it — a hand on a wheel is mostly behind the rim, with only the
+    // knuckles showing in front.
+    const palm = new THREE.SphereGeometry(0.037, 12, 10);
+    palm.scale(0.80, 1.30, 1.05);
+    palm.translate(side * 0.014, 0.002, -0.020);
     add(palm, glove, hand);
 
     // Fingers curling over the front of the rim.
     for (let i = 0; i < 4; i++) {
-      const f = new THREE.CapsuleGeometry(0.0105, 0.036, 3, 6);
+      const f = new THREE.CapsuleGeometry(0.0085, 0.028, 3, 6);
       f.rotateZ(Math.PI / 2);
-      f.rotateY(side * 0.25);
-      f.translate(side * -0.006, 0.044 - i * 0.028, 0.021);
+      f.rotateY(side * 0.30);
+      f.translate(side * -0.008, 0.031 - i * 0.021, 0.016);
       add(f, glove, hand);
     }
     // Thumb, hooked over the inside face.
     {
-      const t = new THREE.CapsuleGeometry(0.0115, 0.030, 3, 6);
+      const t = new THREE.CapsuleGeometry(0.0095, 0.024, 3, 6);
       t.rotateX(Math.PI / 2);
-      t.rotateY(side * -0.5);
-      t.translate(side * -0.016, 0.048, -0.012);
+      t.rotateY(side * -0.55);
+      t.translate(side * -0.014, 0.036, -0.010);
       add(t, glove, hand);
     }
-    // Cuff and forearm running back toward the driver.
+    // Cuff and forearm running back toward the driver, out of the frame.
     {
-      const cuff = new THREE.CylinderGeometry(0.040, 0.042, 0.035, 10);
+      const cuff = new THREE.CylinderGeometry(0.031, 0.033, 0.028, 10);
       cuff.rotateX(Math.PI / 2);
       cuff.rotateZ(side * 0.34);
-      cuff.translate(side * 0.045, -0.045, -0.044);
+      cuff.translate(side * 0.034, -0.038, -0.042);
       add(cuff, accent, hand);
 
-      const arm = strut(side * 0.050, -0.055, -0.052, side * 0.115, -0.16, -0.30, 0.041, 0.049);
+      const arm = strut(side * 0.038, -0.046, -0.050, side * 0.10, -0.15, -0.30, 0.032, 0.040);
       add(arm, glove, hand);
     }
   }
@@ -420,10 +426,15 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     },
     update(state: CockpitState): void {
       if (!root.visible) return;
-      // 3:1 rack. The sign matches the road wheels: a positive steer input
-      // turns the car left, and from the driver's seat a left turn is
-      // anticlockwise, which about the wheel's own +z axis is negative.
-      wheelSpin.rotation.z = -state.steerRad * RACK_RATIO;
+      // 3:1 rack, signed to match the road wheels.
+      //
+      // The road wheels take `rotation.y = -steer`, which points them at a
+      // heading of (car heading - steer): a positive steer input is a RIGHT
+      // turn. The wheel's own +z axis points at the nose, so the driver is
+      // looking down it, and a positive rotation about it carries the rim's
+      // twelve o'clock to the driver's right. Same sign, therefore, as the
+      // steer input itself.
+      wheelSpin.rotation.z = state.steerRad * RACK_RATIO;
       dashRef.update(state);
     },
     dispose(): void {

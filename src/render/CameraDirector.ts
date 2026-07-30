@@ -311,12 +311,12 @@ export class CameraDirector {
       targetFov = clamp((Math.atan(9 / dist) * 2 * 180) / Math.PI, 14, 42);
     } else {
       const baseFov =
-        this.mode === 'cockpit' ? 70 :
+        this.mode === 'cockpit' ? 56 :
         this.mode === 'bumper' ? 76 :
         this.mode === 'onboard-t' ? 66 :
         this.mode === 'drone' ? 46 :
         this.mode === 'tv' ? 44 : 56;
-      targetFov = baseFov + clamp01(this.smoothSpeed / 95) * (this.mode === 'cockpit' ? 8 : 14);
+      targetFov = baseFov + clamp01(this.smoothSpeed / 95) * (this.mode === 'cockpit' ? 10 : 14);
     }
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov = damp(this.camera.fov, targetFov, 4, dt);

@@ -73,9 +73,9 @@ const DARK_TRIM = 0x1a1d22;
  * eye point the cockpit camera uses, or it cuts the view in half instead of
  * arcing over it.
  */
-const HALO_Y = 0.90;
-const HALO_Z = 0.22;
-const HALO_R = 0.40;
+const HALO_Y = 0.98;
+const HALO_Z = 0.24;
+const HALO_R = 0.42;
 
 /** A tapered cylinder running between two points. Used for struts and arms. */
 function strutGeo(
@@ -116,9 +116,15 @@ function monocoqueSections(): Section[] {
     { z: 1.25, halfWidth: 0.255, height: 0.33, y: 0.33, round: 0.72 },
     { z: 0.85, halfWidth: 0.30, height: 0.40, y: 0.375, round: 0.62 },
     // Cockpit opening: flat-topped, widest point of the survival cell.
-    { z: 0.45, halfWidth: 0.335, height: 0.46, y: 0.40, round: 0.5, flatTop: 0.55 },
-    { z: 0.05, halfWidth: 0.345, height: 0.50, y: 0.415, round: 0.45, flatTop: 0.7 },
-    { z: -0.35, halfWidth: 0.335, height: 0.54, y: 0.43, round: 0.45, flatTop: 0.35 },
+    //
+    // The coaming here is deliberately lower than the structure either side of
+    // it, because on a real car this IS an opening — the driver sits down in
+    // it. It was previously the highest part of the tub, which meant the
+    // steering wheel and the driver's hands were buried inside solid bodywork
+    // and invisible from the cockpit camera.
+    { z: 0.45, halfWidth: 0.335, height: 0.43, y: 0.365, round: 0.5, flatTop: 0.55 },
+    { z: 0.05, halfWidth: 0.345, height: 0.45, y: 0.375, round: 0.45, flatTop: 0.7 },
+    { z: -0.35, halfWidth: 0.335, height: 0.50, y: 0.415, round: 0.45, flatTop: 0.35 },
     // Over the fuel cell and engine.
     { z: -0.85, halfWidth: 0.305, height: 0.58, y: 0.44, round: 0.55 },
     { z: -1.35, halfWidth: 0.255, height: 0.55, y: 0.435, round: 0.65 },
@@ -163,11 +169,11 @@ interface Part {
 function driverParts(accentColour: number): Part[] {
   const helmet = new THREE.SphereGeometry(0.155, 16, 12);
   helmet.scale(1, 1.05, 1.12);
-  helmet.translate(0, 0.66, 0.05);
+  helmet.translate(0, 0.70, 0.03);
 
   const visor = new THREE.SphereGeometry(0.157, 16, 8, 0, Math.PI * 2, Math.PI * 0.34, Math.PI * 0.2);
   visor.scale(1, 1.05, 1.12);
-  visor.translate(0, 0.66, 0.05);
+  visor.translate(0, 0.70, 0.03);
 
   return [
     { geo: helmet, colour: accentColour },
@@ -322,11 +328,11 @@ function buildParts(bodyColour: number, accentColour: number, includeDriver = tr
     add(hoop, DARK_TRIM);
 
     // Central pillar, straight down the middle of the driver's view.
-    add(strutGeo(0, HALO_Y - 0.005, HALO_Z + HALO_R - 0.005, 0, 0.545, 0.735, 0.034, 0.040), DARK_TRIM);
+    add(strutGeo(0, HALO_Y - 0.005, HALO_Z + HALO_R - 0.01, 0, 0.60, 0.83, 0.034, 0.040), DARK_TRIM);
 
     // Rear mounts onto the chassis flanks.
     for (const side of [-1, 1] as const) {
-      add(strutGeo(side * (HALO_R - 0.02), HALO_Y - 0.015, HALO_Z - 0.08, side * 0.30, 0.60, 0.02, 0.030, 0.038), DARK_TRIM);
+      add(strutGeo(side * (HALO_R - 0.03), HALO_Y - 0.02, HALO_Z - 0.10, side * 0.30, 0.64, 0.00, 0.028, 0.036), DARK_TRIM);
     }
   }
 
@@ -390,12 +396,12 @@ function buildParts(bodyColour: number, accentColour: number, includeDriver = tr
   // even a 100-degree field of view, so a cockpit camera would never see it.
   // Real cars carry them here for the same reason.
   for (const side of [-1, 1] as const) {
-    const stalk = new THREE.CylinderGeometry(0.013, 0.013, 0.17, 6);
+    const stalk = new THREE.CylinderGeometry(0.013, 0.013, 0.19, 6);
     stalk.rotateZ(Math.PI / 2);
-    stalk.translate(side * 0.375, 0.60, 0.70);
+    stalk.translate(side * 0.385, 0.70, 0.72);
     add(stalk, DARK_TRIM);
-    const housing = new THREE.BoxGeometry(0.115, 0.075, 0.03);
-    housing.translate(side * 0.455, 0.625, 0.702);
+    const housing = new THREE.BoxGeometry(0.12, 0.078, 0.03);
+    housing.translate(side * 0.47, 0.722, 0.722);
     add(housing, bodyColour);
   }
 
