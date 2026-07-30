@@ -292,8 +292,26 @@ export class CarEntry {
   }
 
   /** Called when the car crosses a sector boundary. */
-  crossSector(sectorIndex: number, sessionTime: number): void {
+  crossSector(sectorIndex: number, sessionTime: number, sectorCount = 3): void {
     if (sectorIndex === this.currentSectorIndex) return;
+
+    // Only ever advance to the NEXT sector.
+    //
+    // This used to accept any change of sector index, which meant a car moving
+    // BACKWARDS across a boundary — reversing out of a gravel trap, spinning
+    // back over the line, or simply oscillating on the boundary itself —
+    // recorded a sector time of whatever fraction of a second it had been on
+    // the other side. That is where the 0.008s sector times came from, and
+    // once one is recorded it becomes a "personal best" that can never be
+    // beaten, which poisons the delta and the timing board for the session.
+    const expected = (this.currentSectorIndex + 1) % sectorCount;
+    if (sectorIndex !== expected) {
+      // Going backwards over a boundary invalidates the lap: the car has not
+      // driven the full circuit in order.
+      if (sectorIndex !== this.currentSectorIndex) this.currentLapInvalidated = true;
+      return;
+    }
+
     const prev = this.currentSectorIndex;
     if (prev >= 0 && prev < this.currentSectors.length) {
       this.currentSectors[prev] = sessionTime - this.sectorStartTime;

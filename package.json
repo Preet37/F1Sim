@@ -13,9 +13,10 @@
     "calibrate": "tsx scripts/calibrateSolver.ts",
     "validate:physics": "tsx scripts/validatePhysics.ts",
     "validate:race": "tsx scripts/validateRace.ts",
-    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying",
+    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying && npm run validate:integrity",
     "validate:qualifying": "tsx scripts/probeQualifying.ts",
-    "build:circuits": "tsx scripts/buildCircuitGeometry.ts"
+    "build:circuits": "tsx scripts/buildCircuitGeometry.ts",
+    "validate:integrity": "tsx scripts/probeIntegrity.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

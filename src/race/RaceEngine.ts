@@ -576,13 +576,26 @@ export class RaceEngine {
    * punishes a mistake that Silverstone forgives.
    */
   private enforceBarriers(car: CarEntry, dt: number): void {
-    if (car.inPitLane) return;
-
     const idx = this.track.indexAt(car.s);
     const halfWidth = this.track.width[idx] * 0.5;
     // Street circuits are walled; permanent circuits have run-off.
     const runoff = this.track.def.scenery === 'street' ? 2.5 : 14;
-    const limit = halfWidth + runoff;
+    let limit = halfWidth + runoff;
+
+    if (car.inPitLane) {
+      // A car in the pit lane is still contained — just by a different wall.
+      //
+      // This used to return immediately, leaving pit-lane cars with NO
+      // containment at all. That was survivable when the only way to be in the
+      // pit lane was to deliberately drive into it, but garage starts put every
+      // car in the lane at the start of every practice and qualifying session.
+      // Any car whose flag failed to clear could then drive through the
+      // barriers and out across the landscape — which is exactly the "stranded
+      // a hundred metres outside the fence" state.
+      const pitLat = this.track.def.pitLane.lateralOffsetM;
+      limit = Math.abs(pitLat) + 6;
+      if (Math.abs(car.lateral) <= limit) return;
+    }
 
     const lat = car.lateral;
     if (Math.abs(lat) <= limit) return;

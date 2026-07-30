@@ -25,6 +25,14 @@ export type CameraMode =
   | 'drone'
   | 'trackside';
 
+/**
+ * Minimum camera height above the road surface, metres.
+ *
+ * Low enough that the cockpit and bumper cameras are unaffected in normal use,
+ * high enough that the camera can never end up underneath the track.
+ */
+const MIN_CAMERA_HEIGHT_M = 0.35;
+
 export const CAMERA_MODES: readonly CameraMode[] = [
   'chase', 'cockpit', 'onboard-t', 'bumper', 'tv', 'drone', 'trackside',
 ];
@@ -268,6 +276,18 @@ export class CameraDirector {
       this.camera.position.y += Math.sin(this.shakePhase) * this.shake;
       this.camera.position.x += Math.sin(this.shakePhase * 1.7) * this.shake * 0.5;
     }
+
+    // Never let the camera drop below the road.
+    //
+    // The chase camera trails the car by a fixed offset, and on a crest or a
+    // steep descent — or any time the car is pitched nose-down — that offset
+    // can place it under the track surface. The result is a view up through the
+    // underside of the tarmac at the barrier's back face, which reads as the
+    // car having fallen through the world. Clamping to a minimum height above
+    // the road at the CAR's position costs nothing and makes it impossible.
+    const roadY = track.elevationAt(car.s);
+    const minY = roadY + MIN_CAMERA_HEIGHT_M;
+    if (this.camera.position.y < minY) this.camera.position.y = minY;
   }
 
   /**
