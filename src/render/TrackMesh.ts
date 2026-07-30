@@ -1,7 +1,20 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGantryTexture, makeHoardingTexture, makeMarkerTexture } from './Signage';
+import { isPaddockGround } from './Paddock';
+import { buildGrandstandGeometry, grandstandPreset } from './Grandstands';
 import { SurfaceDetail, SURFACES, type SurfaceProfile } from './SurfaceDetail';
+import {
+  pitLaneGeometry,
+  PIT_ENTRY_LEAD_M,
+  PIT_EXIT_JOIN_M,
+  PIT_EXIT_MERGE_M,
+  PIT_APRON_DEPTH_M,
+  PIT_APRON_HEIGHT_M,
+  PIT_GARAGE_COUNT,
+  PIT_GARAGE_SPACING_M,
+  PIT_WALL_HEIGHT_M,
+} from '../track/PitGeometry';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -53,6 +66,15 @@ const COLOUR = {
   armcoGap: new THREE.Color(0x2a2e35),
   pit: new THREE.Color(0x33363c),
   startLine: new THREE.Color(0xe8e8ea),
+  /** Pit wall: painted white concrete under a sponsor band. */
+  pitWallFace: new THREE.Color(0xd7dade),
+  pitWallBand: new THREE.Color(0xa2242c),
+  pitWallTop: new THREE.Color(0xb6bbc1),
+  /** Pit-lane edge kerbing. Blue down the wall, green round the entry road. */
+  pitKerbBlue: new THREE.Color(0x1d4fa0),
+  pitKerbGreen: new THREE.Color(0x1b7a42),
+  /** The stop bar inside a pit box: yellow, so it reads against the asphalt. */
+  pitBoxMark: new THREE.Color(0xd8c23a),
 };
 
 /** Scenery ground colour by circuit type. */
@@ -153,6 +175,28 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   const LINE_W = 0.14;
   const RUNOFF_W = 9;
   const WALL_H = 1.5;
+
+  // The pit lane's full plan and cross-section, derived once and shared by
+  // everything below — the lane surface, its paint, its walls, and the decision
+  // about which pieces of ordinary trackside furniture have to give way to it.
+  const pitGeom = pitLaneGeometry(track.def, track.length);
+  /**
+   * True where the pit lane occupies the ground on this side of the circuit.
+   *
+   * The run-off, barrier, fencing, hoardings and set dressing are all laid down
+   * blindly at a fixed offset from the track edge for the whole lap. Along the
+   * pits that puts an armco through the middle of the fast lane and a strip of
+   * gravel-brown run-off where the apron should be.
+   */
+  const pitSideAt = (node: number, side: -1 | 1): boolean => {
+    if (side !== pitGeom.sign) return false;
+    // Only the lane's working length, not its tapered ends. Over the taper the
+    // circuit's own run-off and barrier are still the right thing to see beside
+    // the entry and exit roads — suppressing them there leaves the track edge
+    // running straight into open grass.
+    const u = pitGeom.u(track.dist[node]);
+    return u > pitGeom.entryOpenU - 25 && u < pitGeom.exitU + 25;
+  };
 
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
@@ -291,6 +335,8 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     // they actually use and it is why they punish a mistake so much harder.
     const barrierOffset = isStreet ? 2.5 : 14;
     for (const side of [-1, 1] as const) {
+      // Along the pits the pit wall and the garages are the boundary.
+      if (isPaddockGround(track, a, side) || pitSideAt(a, side)) continue;
       const oA = side * (hwA + barrierOffset);
       const oB = side * (hwB + barrierOffset);
       const yA = py(a, oA) + Y_RUNOFF;
@@ -339,25 +385,256 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   }
 
   // --- Pit lane ------------------------------------------------------------
+  //
+  // The lane used to be a flat grey ribbon laid between the pit-entry and
+  // pit-exit distances: the same width from end to end, no wall, no paint, and
+  // both ends simply stopping in the middle of the run-off. Driving it, the
+  // circuit was to one side, an invisible barrier to the other, and there was
+  // no visible point at which you had joined or left it.
+  //
+  // A real pit lane is a piece of road with a plan. It leaves the circuit at a
+  // marked split, it is separated from the racing surface by a wall for its
+  // whole working length, it is divided down the middle by a painted line, and
+  // it rejoins over a blend line that converges onto the track edge. All of
+  // that is geometry, not decoration — it is what tells a driver where the lane
+  // begins, which half of it he may drive on, and where he is allowed to put
+  // the car back on the circuit.
+  //
+  // Everything is written in the lane's own frame: `u` metres from the split,
+  // and a MAGNITUDE from the centreline that `pitGeom.sign` puts on the correct
+  // side. That is what makes the same code build a left-hand pit lane and a
+  // right-hand one without a reflected, inside-out copy of itself.
   {
-    const def = track.def;
-    const lane = def.pitLane;
-    const laneHalf = 6;
-    const from = lane.entryS;
-    const toRaw = lane.exitS < from ? lane.exitS + track.length : lane.exitS;
-    const pitStep = 8;
-    for (let s = from; s < toRaw; s += pitStep) {
-      const a = track.indexAt(s);
-      const b = track.indexAt(s + pitStep);
-      const o = lane.lateralOffsetM;
-      pit.quad(
-        px(a, o - laneHalf), py(a, o - laneHalf) + Y_ROAD, pz(a, o - laneHalf),
-        px(b, o - laneHalf), py(b, o - laneHalf) + Y_ROAD, pz(b, o - laneHalf),
-        px(b, o + laneHalf), py(b, o + laneHalf) + Y_ROAD, pz(b, o + laneHalf),
-        px(a, o + laneHalf), py(a, o + laneHalf) + Y_ROAD, pz(a, o + laneHalf),
-        COLOUR.pit,
-      );
+    const g = pitGeom;
+    const sgn = g.sign;
+
+    const idxAt = (u: number) => track.indexAt(g.splitS + u);
+    const hwAt = (u: number) => track.width[idxAt(u)] * 0.5;
+    const edges = (u: number) => g.edgesAt(u, hwAt(u));
+
+    /** A point in the lane's frame: node, lateral magnitude, height above road. */
+    const P = (i: number, m: number, dy: number): [number, number, number] => {
+      const lat = sgn * m;
+      return [px(i, lat), py(i, lat) + dy, pz(i, lat)];
+    };
+    const quadP = (
+      b: StripBuilder,
+      p0: [number, number, number], p1: [number, number, number],
+      p2: [number, number, number], p3: [number, number, number],
+      colour: THREE.Color,
+    ): void => b.quad(
+      p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+      p2[0], p2[1], p2[2], p3[0], p3[1], p3[2], colour,
+    );
+
+    /**
+     * A horizontal strip running along the lane between two magnitudes.
+     *
+     * The road, paint and kerb meshes are all single-sided, so the winding has
+     * to put the smaller SIGNED lateral first. On a right-hand pit lane the
+     * larger magnitude is the smaller signed value, and getting this backwards
+     * does not produce a wrong-looking lane — it produces no lane at all,
+     * because every triangle faces the ground.
+     */
+    const strip = (
+      b: StripBuilder, u0: number, u1: number,
+      in0: number, in1: number, out0: number, out1: number,
+      y: number, colour: THREE.Color,
+    ): void => {
+      if (Math.abs(out0 - in0) < 0.01 && Math.abs(out1 - in1) < 0.01) return;
+      const i0 = idxAt(u0);
+      const i1 = idxAt(u1);
+      if (sgn > 0) {
+        quadP(b, P(i0, in0, y), P(i1, in1, y), P(i1, out1, y), P(i0, out0, y), colour);
+      } else {
+        quadP(b, P(i0, out0, y), P(i1, out1, y), P(i1, in1, y), P(i0, in0, y), colour);
+      }
+    };
+
+    /** A quad with four independent (u, magnitude) corners — for hatching. */
+    const patch = (
+      b: StripBuilder, corners: readonly [number, number][], y: number, colour: THREE.Color,
+    ): void => {
+      const p = corners.map(([u, m]) => P(idxAt(u), m, y)) as [number, number, number][];
+      if (sgn > 0) quadP(b, p[0], p[1], p[2], p[3], colour);
+      else quadP(b, p[3], p[2], p[1], p[0], colour);
+    };
+
+    /** A transverse bar across the lane, `len` metres of it. */
+    const bar = (
+      b: StripBuilder, uc: number, len: number, m0: number, m1: number,
+      y: number, colour: THREE.Color,
+    ): void => strip(b, uc - len * 0.5, uc + len * 0.5, m0, m0, m1, m1, y, colour);
+
+    /** Subdivides a run of lane so it follows the spline round a curve. */
+    const run = (
+      u0: number, u1: number, seg: number,
+      fn: (a: number, b: number, k: number) => void,
+    ): void => {
+      const n = Math.max(1, Math.ceil((u1 - u0) / seg));
+      const d = (u1 - u0) / n;
+      for (let k = 0; k < n; k++) fn(u0 + k * d, u0 + (k + 1) * d, k);
+    };
+
+    /** A vertical slab standing on the lane, tapering between two magnitudes. */
+    const slab = (
+      u0: number, u1: number, mA0: number, mA1: number, mB0: number, mB1: number,
+      y0: number, y1: number, face: THREE.Color, lid: THREE.Color,
+    ): void => {
+      const i0 = idxAt(u0);
+      const i1 = idxAt(u1);
+      quadP(walls, P(i0, mA0, y0), P(i1, mA1, y0), P(i1, mA1, y1), P(i0, mA0, y1), face);
+      quadP(walls, P(i0, mB0, y0), P(i1, mB1, y0), P(i1, mB1, y1), P(i0, mB0, y1), face);
+      quadP(walls, P(i0, mA0, y1), P(i1, mA1, y1), P(i1, mB1, y1), P(i0, mB0, y1), lid);
+    };
+
+    // --- The road surface --------------------------------------------------
+    // Asphalt, the same asphalt as the circuit, with the apron between the
+    // track edge and the wall carried in the same pass so there is never a
+    // sliver of untextured ground between the two.
+    run(0, g.totalU, 4, (a, b2, k) => {
+      const ea = edges(a);
+      const eb = edges(b2);
+      const hwa = Math.min(hwAt(a), ea.inner);
+      const hwb = Math.min(hwAt(b2), eb.inner);
+      strip(pit, a, b2, hwa, hwb, ea.inner, eb.inner, Y_ROAD, COLOUR.asphaltDark);
+      strip(pit, a, b2, ea.inner, eb.inner, ea.outer, eb.outer, Y_ROAD,
+        (k & 3) === 0 ? COLOUR.asphaltDark : COLOUR.asphalt);
+    });
+
+    // --- Painted kerbing ---------------------------------------------------
+    // Blue and white down the foot of the pit wall, green and white round the
+    // outside of the entry and exit roads. Both are what a real pit lane uses,
+    // and both are doing a job: the blue marks the edge of the fast lane, and
+    // the green marks the edge of a road that is no longer the circuit.
+    run(g.entryOpenU, g.exitU, 2.4, (a, b2, k) => {
+      strip(kerbs, a, b2, g.laneInner + 0.75, g.laneInner + 0.75, g.laneInner + 1.35,
+        g.laneInner + 1.35, Y_LINE + 0.004,
+        (k & 1) === 0 ? COLOUR.pitKerbBlue : COLOUR.kerbB);
+    });
+    const outerKerb = (u0: number, u1: number): void => run(u0, u1, 2.4, (a, b2, k) => {
+      const ea = edges(a);
+      const eb = edges(b2);
+      if (ea.outer - hwAt(a) < 1.8 || eb.outer - hwAt(b2) < 1.8) return;
+      strip(kerbs, a, b2, ea.outer - 0.85, eb.outer - 0.85, ea.outer, eb.outer,
+        Y_LINE + 0.004, (k & 1) === 0 ? COLOUR.pitKerbGreen : COLOUR.kerbB);
+    });
+    outerKerb(0, g.entryOpenU);
+    outerKerb(g.exitU, g.exitU + PIT_EXIT_MERGE_M);
+
+    // --- The pit entry -----------------------------------------------------
+    // The lane peels away from the circuit as a wedge, bounded by a bold solid
+    // line, with the widening triangle behind it filled with chevron hatching.
+    // Before this there was nothing at all at the entry: the lane simply
+    // existed, 16 metres to one side, with no road connecting it to the track.
+    run(0, g.entryOpenU, 5, (a, b2) => {
+      const ea = edges(a);
+      const eb = edges(b2);
+      strip(lines, a, b2, ea.inner, eb.inner, ea.inner + 0.34, eb.inner + 0.34,
+        Y_LINE, COLOUR.whiteLine);
+    });
+    const hatchZone = (u0: number, u1: number, every: number): void => {
+      for (let u = u0; u < u1; u += every) {
+        const e = edges(u);
+        const hw = hwAt(u);
+        const gap = e.inner - hw - 0.8;
+        if (gap < 1.2) continue;
+        const skew = Math.min(gap * 0.85, 7);
+        patch(lines, [
+          [u, hw + 0.4], [u + 2.1, hw + 0.4],
+          [u + 2.1 + skew, e.inner - 0.4], [u + skew, e.inner - 0.4],
+        ], Y_LINE, COLOUR.whiteLine);
+      }
+    };
+    hatchZone(8, g.entryOpenU - 6, 5);
+
+    // --- The pit exit ------------------------------------------------------
+    // The exit road runs on beyond the pit-exit line, converges onto the track
+    // edge, and only then narrows away. The solid white blend line follows its
+    // inner edge the whole way: the line a rejoining car must not cross, and
+    // the visual answer to "where does the pit lane become the circuit again".
+    run(g.exitU, g.exitU + PIT_EXIT_MERGE_M * 0.94, 5, (a, b2) => {
+      const ea = edges(a);
+      const eb = edges(b2);
+      strip(lines, a, b2, ea.inner, eb.inner, ea.inner + 0.34, eb.inner + 0.34,
+        Y_LINE, COLOUR.whiteLine);
+    });
+    hatchZone(g.exitU + 6, g.exitU + PIT_EXIT_JOIN_M - 8, 5);
+
+    // --- The speed-limit lines ---------------------------------------------
+    // The two lines the limiter is measured between. Bold, full width, and
+    // exactly at `entryS` and `exitS`, so the mark you cross is the mark the
+    // simulation switches the limiter on and off at.
+    for (const u of [PIT_ENTRY_LEAD_M, g.exitU]) {
+      const e = edges(u);
+      bar(lines, u, 0.55, Math.min(hwAt(u), e.inner) + 0.15, e.outer - 0.15,
+        Y_LINE + 0.001, COLOUR.whiteLine);
     }
+
+    // --- The fast lane / working lane divider ------------------------------
+    run(g.workingStartU, g.workingEndU, 6, (a, b2) => {
+      strip(lines, a, b2, g.divider, g.divider, g.divider + 0.16, g.divider + 0.16,
+        Y_LINE, COLOUR.whiteLine);
+    });
+
+    // --- Pit boxes ---------------------------------------------------------
+    // One marked box per car, in the working lane, laid out from the same
+    // anchor the paddock builds its garages from — so the box, the garage
+    // behind it and the car parked in it all coincide.
+    const boxHalf = PIT_GARAGE_SPACING_M * 0.5 - 0.5;
+    for (let slot = 0; slot < PIT_GARAGE_COUNT; slot++) {
+      const uu = g.u(g.boxS(slot));
+      if (uu < g.workingStartU || uu > g.workingEndU) continue;
+      // The box straddles the step at the garage mouth, so each marking is laid
+      // in two pieces: one on the working lane's asphalt and one on the apron
+      // above it. Painting the whole thing at road level puts most of it
+      // underneath the apron, where it cannot be seen at all.
+      const apronEdge = g.garageFace - PIT_APRON_DEPTH_M;
+      const apronY = PIT_APRON_HEIGHT_M + 0.015;
+      const sideLine = (u: number): void => {
+        bar(lines, u, 0.16, g.divider + 0.25, apronEdge - 0.05, Y_LINE, COLOUR.whiteLine);
+        bar(lines, u, 0.16, apronEdge + 0.05, g.garageFace - 0.45, apronY, COLOUR.whiteLine);
+      };
+      sideLine(uu - boxHalf);
+      sideLine(uu + boxHalf);
+      // The stop position: the bar the front wheels are brought up to.
+      bar(lines, uu + 1.2, 0.5, apronEdge + 0.3, g.garageFace - 1.0, apronY,
+        COLOUR.pitBoxMark);
+    }
+
+    // --- The pit wall ------------------------------------------------------
+    // The paddock builds the wall, the team stands and the garages along the
+    // row of bays. Outside the row the lane still needs separating from the
+    // circuit, so the wall is carried on to the pit entry at one end and to the
+    // pit exit at the other, and the outer edge of the entry and exit roads
+    // gets a wall of its own.
+    const walledFrom = g.entryOpenU;
+    const walledTo = g.exitU;
+    const wallA = g.wallMag - g.wallThick * 0.5;
+    const wallB = g.wallMag + g.wallThick * 0.5;
+    run(walledFrom, walledTo, 6, (a, b2) => {
+      const s = g.splitS + (a + b2) * 0.5;
+      // Skip the stretch the paddock has already walled, so the two do not
+      // fight over the same cubic metre.
+      if (isPaddockGround(track, track.indexAt(s), sgn as -1 | 1)) return;
+      slab(a, b2, wallA, wallA, wallB, wallB, 0, PIT_WALL_HEIGHT_M * 0.62,
+        COLOUR.pitWallFace, COLOUR.pitWallFace);
+      slab(a, b2, wallA, wallA, wallB, wallB, PIT_WALL_HEIGHT_M * 0.62, PIT_WALL_HEIGHT_M,
+        COLOUR.pitWallBand, COLOUR.pitWallTop);
+    });
+
+    const outerWall = (u0: number, u1: number): void => run(u0, u1, 6, (a, b2) => {
+      const ea = edges(a);
+      const eb = edges(b2);
+      // Only where the road is genuinely clear of the circuit: a wall that
+      // followed the wedge all the way in would end up standing on the racing
+      // surface.
+      if (ea.outer - hwAt(a) < 4 || eb.outer - hwAt(b2) < 4) return;
+      slab(a, b2, ea.outer, eb.outer, ea.outer + 0.4, eb.outer + 0.4, 0, 1.1,
+        COLOUR.wall, COLOUR.wallStripe);
+    });
+    outerWall(0, g.workingStartU);
+    outerWall(g.workingEndU, g.exitU + PIT_EXIT_MERGE_M);
   }
 
   // --- Start/finish line ---------------------------------------------------
@@ -440,6 +717,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       const uB = uA + (fenceStep * (track.length / count)) / 4;
 
       for (const side of [-1, 1] as const) {
+        if (isPaddockGround(track, a2, side) || pitSideAt(a2, side)) continue;
         const oA = side * (hwA2 + barrierOffset);
         const oB = side * (hwB2 + barrierOffset);
         const yA = py(a2, oA) + Y_RUNOFF;
@@ -517,6 +795,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       const uB = (track.dist[a2] + hoardStep * (track.length / count)) / BOARD_EVERY_M;
 
       for (const side of [-1, 1] as const) {
+        if (isPaddockGround(track, a2, side) || pitSideAt(a2, side)) continue;
         const oA = side * (hwA2 + barrierOffset - 0.05);
         const oB = side * (hwB2 + barrierOffset - 0.05);
         const yA = py(a2, oA) + Y_RUNOFF;
@@ -768,6 +1047,7 @@ function buildSceneryInstances(
   const scenery = track.def.scenery;
   const isStreet = scenery === 'street';
   const barrier = isStreet ? 2.5 : 14;
+  const pitGeom = pitLaneGeometry(track.def, track.length);
 
   // --- Tree: trunk plus two staggered cones -------------------------------
   const trunk = new THREE.CylinderGeometry(0.22, 0.34, 2.6, 6);
@@ -783,25 +1063,18 @@ function buildSceneryInstances(
   canopyHigh.dispose();
   treeGeo.computeVertexNormals();
 
-  // --- Grandstand: a raked seating deck under a cantilever roof -----------
-  const deck = new THREE.BoxGeometry(26, 7, 11);
-  deck.translate(0, 3.5, 0);
-  const roof = new THREE.BoxGeometry(28, 0.5, 13);
-  roof.translate(0, 9.4, -0.6);
-  const pillarL = new THREE.BoxGeometry(0.6, 4, 0.6);
-  pillarL.translate(-12.5, 7.2, -6);
-  const pillarR = new THREE.BoxGeometry(0.6, 4, 0.6);
-  pillarR.translate(12.5, 7.2, -6);
-  const standGeo = mergeGeometries([deck, roof, pillarL, pillarR], false)
-    ?? new THREE.BoxGeometry(26, 9, 12);
-  deck.dispose(); roof.dispose(); pillarL.dispose(); pillarR.dispose();
-  standGeo.computeVertexNormals();
+  // --- Grandstand: a raked seating deck, a cantilever roof, and a crowd ----
+  // Vertex-coloured, so one instanced mesh covers every stand on the circuit
+  // and each still has seats, steelwork and several hundred people in it.
+  const standGeo = buildGrandstandGeometry(grandstandPreset('trackside', quality, 11));
 
   // --- Building, for street circuits --------------------------------------
   const buildingGeo = new THREE.BoxGeometry(1, 1, 1);
 
   const treeMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
-  const standMat = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05 });
+  const standMat = new THREE.MeshStandardMaterial({
+    roughness: 0.75, metalness: 0.05, vertexColors: true,
+  });
   const buildingMat = new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0.1 });
 
   const trees = new THREE.InstancedMesh(treeGeo, treeMat, slots);
@@ -829,6 +1102,9 @@ function buildSceneryInstances(
     const heading = Math.atan2(track.tx[i], track.tz[i]);
 
     for (const side of [-1, 1] as const) {
+      // Nothing gets planted in the paddock, or in the pit lane.
+      if (isPaddockGround(track, i, side)) continue;
+      if (side === pitGeom.sign && pitGeom.covers(track.dist[i])) continue;
       // Deterministic pseudo-random from the index: identical every load, and no
       // RNG state to thread through.
       const h = Math.abs((Math.sin(k * 12.9898 + side * 78.233) * 43758.5453) % 1);
@@ -867,7 +1143,9 @@ function buildSceneryInstances(
         quat.setFromAxisAngle(up, heading + (side > 0 ? 0 : Math.PI));
         matrix.compose(pos, quat, scale);
         stands.setMatrixAt(standN, matrix);
-        colour.setHSL(0.56, 0.07, 0.3 + h * 0.14);
+        // Near-white: the stand carries its own colours per vertex now, and an
+        // instance tint multiplies them, so anything darker greys out the crowd.
+        colour.setHSL(0.58, 0.05, 0.86 + h * 0.1);
         stands.setColorAt(standN, colour);
         standN++;
         continue;

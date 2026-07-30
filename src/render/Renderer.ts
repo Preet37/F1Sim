@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { clamp, clamp01, damp } from '../core/MathUtils';
 import { buildCar, disposeCarGeometryCache, type CarVisual } from './CarMesh';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
+import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { PostFX } from './PostFX';
@@ -56,6 +57,7 @@ export class Renderer {
   fps = 60;
 
   private trackMeshes: TrackMeshes | null = null;
+  private paddock: PaddockScene | null = null;
   private carVisuals: CarVisual[] = [];
   private readonly canvas: HTMLCanvasElement;
 
@@ -376,8 +378,18 @@ export class Renderer {
     this.trackMeshes = buildTrackMeshes(engine.track, this.quality);
     this.scene.add(this.trackMeshes.root);
 
+    // The pit garages, the paddock behind them and the main grandstand. Built
+    // separately from the circuit because it is architecture rather than track
+    // surface, and because every session that is not a race start opens looking
+    // straight at it.
+    this.paddock = buildPaddock(engine.track, this.quality);
+    this.scene.add(this.paddock.root);
+
     for (const car of engine.cars) {
-      const visual = buildCar(car.team.colour, car.team.accent);
+      // Only the player's car carries the cockpit interior: it is the only one
+      // the cockpit camera can ever be inside, and twenty steering wheels and
+      // twenty pairs of gloves nobody will see is not a good trade.
+      const visual = buildCar(car.team.colour, car.team.accent, car.isPlayer);
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
     }
@@ -502,6 +514,11 @@ export class Renderer {
       this.trackMeshes.dispose();
       this.trackMeshes = null;
     }
+    if (this.paddock) {
+      this.scene.remove(this.paddock.root);
+      this.paddock.dispose();
+      this.paddock = null;
+    }
     for (const v of this.carVisuals) {
       this.scene.remove(v.root);
       v.dispose();
@@ -580,7 +597,7 @@ export class Renderer {
    */
   render(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     this.updateResolutionScale(dt);
-    this.syncCars(dt, engine);
+    this.syncCars(dt, engine, focusCar);
     this.director.update(dt, focusCar, engine.track);
 
     const cam = this.director.camera;
@@ -660,8 +677,9 @@ export class Renderer {
   }
 
   /** Copies simulation state onto the visuals. */
-  private syncCars(dt: number, engine: RaceEngine): void {
+  private syncCars(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     const track = engine.track;
+    const cockpitView = this.director.mode === 'cockpit';
     // One shared wheel-spin phase: individual wheel speeds are indistinguishable
     // at speed and this avoids twenty separate integrations.
     this.wheelSpin += dt;
@@ -704,6 +722,25 @@ export class Renderer {
       const steer = car.appliedControls.steer * p.spec.maxSteerRad;
       v.frontLeftSteer.rotation.y = -steer;
       v.frontRightSteer.rotation.y = -steer;
+
+      // Cockpit interior: shown only for the car the cockpit camera is inside,
+      // so it can never appear floating in a chase or trackside shot.
+      if (v.cockpit) {
+        const inside = cockpitView && car === focusCar;
+        v.setCockpitVisible(inside);
+        if (inside) {
+          v.cockpit.update({
+            steerRad: steer,
+            gearLabel: p.inReverse ? 'R'
+              : p.speedMs < 0.6 && car.appliedControls.throttle < 0.02 ? 'N'
+              : String(p.gear),
+            speedKph: p.speedKph,
+            rpmFraction: p.rpmFraction,
+            drsOpen: p.drsOpen,
+            ersPercent: p.ersChargePercent,
+          });
+        }
+      }
 
       // DRS flap: open is roughly 50 degrees.
       const flapTarget = p.drsOpen ? -0.85 : 0;
