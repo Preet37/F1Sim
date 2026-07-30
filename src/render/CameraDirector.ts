@@ -162,8 +162,8 @@ export class CameraDirector {
         // nose. Closer than this and the rear wing fills the screen; further
         // back and it stops being your car.
         const fast = clamp01(this.smoothSpeed / 90);
-        const dist = lerp(8.2, 10.6, fast);
-        const height = lerp(2.55, 3.05, fast);
+        const dist = lerp(7.0, 9.0, fast);
+        const height = lerp(2.30, 2.75, fast);
         // Bias the camera toward the outside of a slide so the car's angle shows.
         const yaw = heading - slip * 0.55;
         this.desired.set(
@@ -175,9 +175,9 @@ export class CameraDirector {
         // to the bottom of the frame and points the camera at the horizon, which
         // loses both the car and the sense of the road rushing under it.
         this.lookTarget.set(
-          p.position.x + sinH * 5.0,
-          carY + 0.95,
-          p.position.y + cosH * 5.0,
+          p.position.x + sinH * 4.2,
+          carY + 1.0,
+          p.position.y + cosH * 4.2,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
         break;
@@ -256,10 +256,10 @@ export class CameraDirector {
         // the car at several revolutions a second.
         this.dronePhase += dt * 0.2;
         const orbit = this.dronePhase;
-        const dist = 17;
+        const dist = 13;
         this.desired.set(
           p.position.x + Math.sin(orbit) * dist,
-          carY + 8.5 + Math.sin(orbit * 0.7) * 2.5,
+          carY + 6.5 + Math.sin(orbit * 0.7) * 2,
           p.position.y + Math.cos(orbit) * dist,
         );
         this.lookTarget.set(p.position.x, carY + 0.7, p.position.y);
@@ -308,7 +308,7 @@ export class CameraDirector {
       const dx = this.camera.position.x - p.position.x;
       const dz = this.camera.position.z - p.position.y;
       const dist = Math.max(12, Math.hypot(dx, dz));
-      targetFov = clamp((Math.atan(9 / dist) * 2 * 180) / Math.PI, 14, 42);
+      targetFov = clamp((Math.atan(6.5 / dist) * 2 * 180) / Math.PI, 9, 40);
     } else {
       const baseFov =
         this.mode === 'cockpit' ? 56 :
