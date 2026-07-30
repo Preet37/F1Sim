@@ -198,6 +198,8 @@ its fix site.
 | `requiredBrakingDistance` assumed full longitudinal grip | Braked late, then could not slow while already cornering |
 | Tyre thermal model had almost no inertia | Sustained high-g cornering cooked the fronts 0.89 → 0.71 grip in 1.5s |
 | Racing line by Laplacian smoothing | Minimises a quantity that shrinks when the path gets *shorter*, so it produced the shortest path and hugged the inside of long corners at a **tighter** radius than the centreline |
+| Racing line by minimum *bending energy* — the textbook fix for the above | Same bug wearing a suit. `sum \|p[i-1]-2p[i]+p[i+1]\|^2` is curvature times the *fourth power of node spacing*, and cutting inside a corner shortens the spacing faster than it tightens the radius. Monaco's line came out at a 3.5m minimum radius against the centreline's 9.5m. Weighting each term by the inverse cube of the line's own local spacing turns it back into `integral k^2 ds` |
+| Reference lap time integrated centreline spacing, not the racing line's | The solved line runs ~1.2% shorter than the centreline; that 1.2% of lap time was discarded, and every braking point was solved against the wrong `ds` |
 | `TrackSpline`'s "left normal" actually points right | Kerbs rendered and detected on the wrong side |
 | Barriers rebuilt position from a stale along-track value | Any car touching a barrier was pinned there for the session |
 | `targetPitLap` is -1 when no stops remain, and `lap >= -1` is always true | Every car pitted every lap — thousands of stops per race |
@@ -222,10 +224,13 @@ occasional excursions, mostly at Monaco's hairpin and Suzuka's esses. Improving 
 means a better path-tracking controller, which is the single highest-value piece of
 remaining work.
 
-**Circuit layouts are reconstructions, not survey data.** Corner sequence, corner
-character, radius class, straight lengths and elevation profiles are faithful; the
-geometry is not a GPS trace. No licensed circuit data is used, and the teams and
-drivers are fictional.
+**Circuit centrelines are surveyed; everything else about them is authored.** The
+shape of each lap — corner radii, straight lengths, the sequence of direction
+changes — comes from the GeoJSON traces in `data/circuits/`, vendored from
+bacinger/f1-circuits under the MIT licence, and every circuit's traced length
+lands within 0.3% of its published figure. Track width, elevation, banking,
+kerbing, DRS zones and corner names are not in that data and are authored, keyed
+by distance around the lap. Teams and drivers are fictional.
 
 **Braking is at the optimistic end** of published figures (300–0 in about 2.9s and
 95m here, versus roughly 4s and 130m quoted) because peak brake force is applied
@@ -251,16 +256,21 @@ bodywork the crew can reach; floor, suspension and power-unit damage stays with 
 car for the rest of the race, because those are not parts anyone changes in three
 seconds. A damaged nose adds 9-14s to the stop.
 
-**Real circuit geometry is built but not switched on.** `data/circuits/` holds
-surveyed GeoJSON traces for all eleven circuits (vendored from bacinger/f1-circuits,
-MIT), and `npm run build:circuits` converts them into control points — every
-circuit's traced length lands within 0.3% of its published figure, so the
-conversion is right. It is off behind `USE_REAL_GEOMETRY` in `circuits.ts`
-because the speed solver is not calibrated for it: the authored layouts were
-built by picking corner radii that made solved laps match real pole times, so
-the solver absorbed their errors. On the real shapes, solved laps come out 14%
-slow. Recalibrating the solver and widening the track-width profiles to the real
-12-15m is the remaining step.
+**Solved laps run 2% slow, and the racing line is why.** `USE_REAL_GEOMETRY` is
+now on: the circuits are the surveyed shapes from `data/circuits/`. Against real
+pole times the solved reference lap has a mean bias of +2.1% with a worst case of
++5.7% (Jeddah). The residual is the gap between a minimum-curvature line and a
+genuine minimum-*time* one — the former apexes where the corner is tightest, the
+latter apexes late to trade entry speed for exit speed onto a straight, and it is
+consistently worth a percent or two. A cost-to-go formulation over the corridor
+would close it.
+
+The racing line is also low-pass filtered over 15m before the AI is allowed to
+follow it, because the unfiltered optimum is not trackable: with the raw solution
+the AI's mean deviation from the line doubled to 1.5m and most qualifying laps
+were deleted for track limits. That filter costs 1.6% of the theoretical lap
+time, and it is a statement about the path-tracking controller rather than about
+the line.
 
 **Sponsor text on the trackside hoardings renders mirrored.** The cause is not the
 ribbon's UVs: negating them provably reaches the browser and changes nothing on
@@ -293,5 +303,7 @@ is the only practical way to test whether the AI can actually race.
 
 ## Licence
 
-Code is provided as-is for personal use. Teams, drivers and circuit geometry are
-original work; no Formula 1 or circuit-owner intellectual property is included.
+Code is provided as-is for personal use. Teams and drivers are original work and
+no Formula 1 intellectual property is included. Circuit centreline traces in
+`data/circuits/` are vendored from bacinger/f1-circuits under the MIT licence —
+see `data/circuits/LICENSE-f1-circuits.md`.

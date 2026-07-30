@@ -26,6 +26,13 @@ import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 
 const NODE_SPACING_M = 3;
 
+/**
+ * Box-blur radius, in nodes, applied to the solved racing line so that a car
+ * with finite steering and tire response can actually hold it. See the note in
+ * `solveRacingLine`.
+ */
+const LINE_RESPONSE_RADIUS = 2;
+
 /** Reference car used to solve the speed profile. Real cars deviate from it. */
 export interface SpeedSolverParams {
   /** Peak tire friction coefficient on a dry track. */
@@ -421,11 +428,23 @@ export class TrackSpline {
 
     for (let i = 0; i < count; i++) lineOffset[i] = a[i];
 
-    // Deliberately NOT blurred afterwards. The previous, hand-constructed line
-    // needed heavy smoothing because it was built from a piecewise rule and was
-    // not smooth to begin with. This one has smoothness as its objective, so a
-    // blur can only move it away from the optimum — and measurably does: a
-    // single radius-2 box blur put 1.7% back on the mean solved lap time.
+    // Drivability filter.
+    //
+    // The solved line is optimal for a point mass that can be anywhere on the
+    // road at any instant. A car cannot: the steering rack, the tire sidewalls
+    // and the yaw inertia all take time to respond, so the line a real car can
+    // hold is the optimum with its shortest wavelengths taken off. Without this
+    // the AI's mean deviation from the line doubled to 1.5m and it put all four
+    // wheels off often enough that most qualifying laps were deleted.
+    //
+    // The window is set by that response time rather than by taste: a box blur
+    // of radius 2 spans five nodes, 15m, which is the distance a car covers in
+    // roughly 0.15s at racing speed. It costs 1.6% of solved lap time, and that
+    // cost is real — it is the part of the theoretical optimum no driver gets.
+    smoothWrapped(lineOffset, LINE_RESPONSE_RADIUS, 1);
+    for (let i = 0; i < count; i++) {
+      lineOffset[i] = clamp(lineOffset[i], -limit[i], limit[i]);
+    }
 
     this.computeLineCurvature();
   }
@@ -540,7 +559,10 @@ export class TrackSpline {
       }
     };
 
-    const REWEIGHTS = 6;
+    // Four reweights and these pass counts are twice what it takes to converge:
+    // halving every one of them moves no circuit's solved lap time at all. Kept
+    // at double for headroom on layouts tighter than anything on this calendar.
+    const REWEIGHTS = 4;
     for (let outer = 0; outer < REWEIGHTS; outer++) {
       // Coarse to fine. The coarse strides carry the long-wavelength decision —
       // which way across the track this whole sector of the lap should run — and
@@ -550,7 +572,7 @@ export class TrackSpline {
       for (; h >= 1; h = Math.floor(h / 2)) sweep(h, 24);
       // Polish at full resolution. Cheap, and it is what removes the last of the
       // residual left behind by the constrained nodes.
-      sweep(1, 240);
+      sweep(1, 120);
 
       if (outer === REWEIGHTS - 1) break;
 
@@ -617,8 +639,29 @@ export class TrackSpline {
 
   private solveSpeedProfile(p: SpeedSolverParams): number {
     const { count, lineCurvature, targetSpeed, banking, length } = this;
-    const ds = length / count;
     const m = p.massKg;
+
+    // Node-to-node distance along the RACING LINE, not along the centreline.
+    //
+    // The nodes are uniformly spaced on the centreline, but the car is not on
+    // the centreline — it is `lineOffset` metres to one side, and on the inside
+    // of a corner that makes the step between two nodes measurably shorter. Over
+    // a lap the solved line runs about 1.2% shorter than the centreline, which
+    // is a real 1.2% of lap time that integrating uniform spacing simply threw
+    // away. It matters in the braking and traction passes too: those integrate
+    // v dv = a ds, and feeding them the wrong ds moves every braking point.
+    const dsLine = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      const j = i === count - 1 ? 0 : i + 1;
+      const ax = this.px[i] + this.nx[i] * this.lineOffset[i];
+      const az = this.pz[i] + this.nz[i] * this.lineOffset[i];
+      const bx = this.px[j] + this.nx[j] * this.lineOffset[j];
+      const bz = this.pz[j] + this.nz[j] * this.lineOffset[j];
+      dsLine[i] = Math.hypot(bx - ax, bz - az);
+    }
+    // Used only where a nominal spacing is wanted rather than the true one:
+    // window sizes expressed in metres.
+    const ds = length / count;
 
     // Use the WORST curvature in a short window rather than the value at the
     // node. A corner's limiting speed is set by its tightest point, and a car
@@ -672,7 +715,7 @@ export class TrackSpline {
         // cannot actually make, and run wide at every corner.
         const gripLimit = p.mu * (m * G + p.cl * v * v);
         const aBrake = (Math.min(p.maxBrakeForceN, gripLimit) + p.cd * v * v) / m;
-        const vMax = Math.sqrt(vn * vn + 2 * aBrake * ds);
+        const vMax = Math.sqrt(vn * vn + 2 * aBrake * dsLine[i]);
         if (v > vMax) targetSpeed[i] = vMax;
       }
 
@@ -693,7 +736,7 @@ export class TrackSpline {
         // reference car keep gaining speed forever down a long straight.
         const aAccel = (Math.min(fPower, fTraction) - fDrag) / m;
 
-        const vpSq = vp * vp + 2 * aAccel * ds;
+        const vpSq = vp * vp + 2 * aAccel * dsLine[prv];
         const vMax = vpSq > 0 ? Math.sqrt(vpSq) : 0;
         if (v > vMax) targetSpeed[i] = vMax;
       }
@@ -717,7 +760,7 @@ export class TrackSpline {
 
     // Integrate ds/v for the theoretical lap time.
     let t = 0;
-    for (let i = 0; i < count; i++) t += ds / Math.max(targetSpeed[i], 1);
+    for (let i = 0; i < count; i++) t += dsLine[i] / Math.max(targetSpeed[i], 1);
     return t;
   }
 

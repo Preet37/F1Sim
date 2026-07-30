@@ -5,24 +5,35 @@ import { REAL_GEOMETRY } from './realGeometry';
 /**
  * Whether to drive on the surveyed circuit shapes rather than the authored ones.
  *
- * OFF by default, and that is a deliberate, temporary state — the real geometry
- * is correct and the conversion is verified (every circuit's traced length lands
- * within 0.3% of its published figure), but the SPEED SOLVER is not yet
- * calibrated for it.
+ * ON. The surveyed centrelines are the shipping geometry; the authored segment
+ * layouts survive only as the source of the distance-keyed metadata below, and
+ * as the reference `scripts/probeCurvature.ts` compares against.
  *
- * The authored layouts were built by choosing corner radii that made the solved
- * lap times match real pole times, so the solver's parameters silently absorbed
- * whatever those layouts got wrong. Swapping in the true centrelines removes
- * that compensation and the solved laps come out 14% slow — not because the
- * shapes are wrong, but because the car model and the track width profile were
- * tuned against the old ones.
+ * This was off for a long time, and the reason it was off is worth keeping.
+ * Swapping in the true centrelines made every solved lap come out 14% slow. The
+ * diagnosis blamed the reference car, on the theory that the authored layouts
+ * had been built by picking corner radii that made the lap times come out right,
+ * so the car parameters had silently absorbed their errors. That was wrong. The
+ * fault was in the RACING LINE.
  *
- * Turning this on before recalibrating would make every circuit's lap times
- * wrong, so it stays off until `scripts/calibrateSolver.ts` has been re-run
- * against the real shapes and the width profiles have been widened to the real
- * 12-15m. Flip it here to compare:  npm run validate:tracks
+ * The line used to be constructed from rules keyed on curvature — above a
+ * threshold, hug the inside; below it, set up on the outside of the next corner.
+ * On idealised geometry a straight has curvature of exactly zero, so the rule
+ * behaves. A real circuit's straights are not straight: they bend continuously
+ * at a few hundred metres of radius, which cleared the threshold nearly
+ * everywhere, so almost every node was treated as a corner apex and pushed to
+ * the inside. That is the shortest path, and it drives a TIGHTER radius than the
+ * centreline itself. The solver then dutifully braked for bends a real car takes
+ * flat.
+ *
+ * Replacing it with a genuine constrained minimum-curvature solve over the track
+ * width (see `TrackSpline.minimiseCurvature`) took the mean bias from +14.0% to
+ * +2.1% and the worst circuit from +20.7% to +5.7%, with no change to the
+ * reference car and no per-circuit tuning. Check it with:
+ *
+ *     npm run validate:tracks
  */
-const USE_REAL_GEOMETRY = false;
+const USE_REAL_GEOMETRY = true;
 
 /**
  * Circuit library.
