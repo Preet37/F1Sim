@@ -79,6 +79,17 @@ export class CarEntry {
   gapToLeader = 0;
   /** Seconds behind the car directly ahead. */
   interval = 0;
+  /**
+   * Whole laps behind the leader.
+   *
+   * A timing tower's single most important job for a car at the back is to say
+   * that it is a lap down, and this is what lets it. Without it a car one lap
+   * behind is displayed as though it were three seconds behind the car ahead,
+   * which is not merely imprecise — it is the opposite of the truth, and it
+   * makes the whole lower half of the tower read as a close battle that is not
+   * happening.
+   */
+  lapsDown = 0;
 
   // --- Tyres and strategy --------------------------------------------------
   compound: CompoundId = 'medium';

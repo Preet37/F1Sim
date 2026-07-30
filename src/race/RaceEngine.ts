@@ -1023,12 +1023,24 @@ export class RaceEngine {
     for (let i = 0; i < arr.length; i++) {
       const car = arr[i];
       if (isRace) {
-        // Convert a distance deficit into a time gap at the leader's pace.
-        const refSpeed = Math.max(leader.physics.speedMs, 20);
-        car.gapToLeader = (leader.totalDistance - car.totalDistance) / refSpeed;
+        const behindM = Math.max(0, leader.totalDistance - car.totalDistance);
+        // Whole laps down, from distance rather than from lap counters: a car
+        // ten metres behind a leader who has just crossed the line is not a lap
+        // down, though its lap counter says it is.
+        car.lapsDown = Math.floor(behindM / this.track.length);
+        // Convert a distance deficit into a time gap at a REPRESENTATIVE pace,
+        // not at whatever speed the car happens to be doing this instant.
+        //
+        // Instantaneous speed is the wrong divisor and it showed: a car in a
+        // slow corner, or under the pit limiter, divides its distance deficit
+        // by a third of racing speed and its gap trebles for a second before
+        // snapping back. The tower's numbers jittered by tens of seconds every
+        // lap with nothing happening on the road.
+        const pace = this.referencePaceMs();
+        car.gapToLeader = behindM / pace;
         car.interval = i === 0
           ? 0
-          : (arr[i - 1].totalDistance - car.totalDistance) / Math.max(car.physics.speedMs, 20);
+          : Math.max(0, arr[i - 1].totalDistance - car.totalDistance) / pace;
       } else {
         car.gapToLeader = car.bestLapTime > 0 && leader.bestLapTime > 0
           ? car.bestLapTime - leader.bestLapTime
@@ -1038,6 +1050,21 @@ export class RaceEngine {
           : car.bestLapTime - arr[i - 1].bestLapTime;
       }
     }
+  }
+
+  /**
+   * A representative on-track pace, m/s, for turning distance gaps into times.
+   *
+   * The leader's most recent lap when there is one, because that is the pace
+   * the gaps are actually being opened and closed at; the circuit's reference
+   * lap before anyone has completed one.
+   */
+  private referencePaceMs(): number {
+    const leader = this.standings[0];
+    const lapTime = leader && leader.lastLapTime > 5
+      ? leader.lastLapTime
+      : this.track.referenceLapTime;
+    return this.track.length / Math.max(lapTime, 1);
   }
 
   private ordersBefore(a: CarEntry, b: CarEntry, isRace: boolean): boolean {

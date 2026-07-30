@@ -810,11 +810,20 @@ export class Hud {
       setStyle(row.root, 'display', 'flex');
 
       const posText = String(car.position);
+      // A car a lap or more down is reported as such, the way a broadcast tower
+      // does it. Showing it as "+3.114" instead is not a rounding difference —
+      // it says the car is three seconds off the one ahead when it is a whole
+      // lap off, and it turned the bottom half of the tower into a close battle
+      // that was not happening.
+      const ahead = start + i > 0 ? standings[start + i - 1] : null;
+      const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
       const gapText = car.retired ? 'DNF'
         : car.disqualified ? 'DSQ'
         : car.position === 1 ? 'LEADER'
-        : engine.config.kind === 'race' ? formatGap(car.interval)
-        : car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '--';
+        : engine.config.kind !== 'race'
+          ? (car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '--')
+        : lapsBehind > 0 ? '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS')
+        : formatGap(car.interval);
       const tyreText = getCompound(car.compound).code;
 
       if (row.lastText.pos !== posText) { row.pos.textContent = posText; row.lastText.pos = posText; }
