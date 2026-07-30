@@ -75,6 +75,8 @@ const COLOUR = {
   pitKerbGreen: new THREE.Color(0x1b7a42),
   /** The stop bar inside a pit box: yellow, so it reads against the asphalt. */
   pitBoxMark: new THREE.Color(0xd8c23a),
+  /** Box outline on the pale garage apron, where white would vanish. */
+  pitBoxEdge: new THREE.Color(0x24272c),
 };
 
 /** Scenery ground colour by circuit type. */
@@ -408,14 +410,37 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     const g = pitGeom;
     const sgn = g.sign;
 
-    const idxAt = (u: number) => track.indexAt(g.splitS + u);
-    const hwAt = (u: number) => track.width[idxAt(u)] * 0.5;
+    const nodeM = track.length / count;
+    const hwAt = (u: number) => track.width[track.indexAt(g.splitS + u)] * 0.5;
     const edges = (u: number) => g.edgesAt(u, hwAt(u));
 
-    /** A point in the lane's frame: node, lateral magnitude, height above road. */
-    const P = (i: number, m: number, dy: number): [number, number, number] => {
+    /**
+     * World position at a lane parameter and a lateral magnitude, interpolated
+     * BETWEEN nodes.
+     *
+     * Resolving to the nearest node instead — which is what the rest of this
+     * file does, because everything else is built node by node — collapses any
+     * feature shorter than the ~3m node spacing to zero length. Every
+     * transverse marking in a pit lane is shorter than that: the speed-limit
+     * lines, the box outlines and the stop bars are all a few centimetres of
+     * paint across the lane, and every one of them came out as a degenerate
+     * quad that rendered as nothing at all.
+     */
+    const W = (u: number, m: number, dy: number): [number, number, number] => {
+      const w = ((g.splitS + u) % track.length + track.length) % track.length;
+      const f = w / nodeM;
+      const i = Math.floor(f) % count;
+      const j = (i + 1) % count;
+      const t = f - Math.floor(f);
       const lat = sgn * m;
-      return [px(i, lat), py(i, lat) + dy, pz(i, lat)];
+      const cx = track.px[i] + (track.px[j] - track.px[i]) * t;
+      const cz = track.pz[i] + (track.pz[j] - track.pz[i]) * t;
+      const nx = track.nx[i] + (track.nx[j] - track.nx[i]) * t;
+      const nz = track.nz[i] + (track.nz[j] - track.nz[i]) * t;
+      const ey = track.elevation[i] + (track.elevation[j] - track.elevation[i]) * t;
+      const bank = track.banking[i];
+      const y = ey + (bank !== 0 ? -lat * Math.tan(bank) : 0) + dy;
+      return [cx + nx * lat, y, cz + nz * lat];
     };
     const quadP = (
       b: StripBuilder,
@@ -442,12 +467,10 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       y: number, colour: THREE.Color,
     ): void => {
       if (Math.abs(out0 - in0) < 0.01 && Math.abs(out1 - in1) < 0.01) return;
-      const i0 = idxAt(u0);
-      const i1 = idxAt(u1);
       if (sgn > 0) {
-        quadP(b, P(i0, in0, y), P(i1, in1, y), P(i1, out1, y), P(i0, out0, y), colour);
+        quadP(b, W(u0, in0, y), W(u1, in1, y), W(u1, out1, y), W(u0, out0, y), colour);
       } else {
-        quadP(b, P(i0, out0, y), P(i1, out1, y), P(i1, in1, y), P(i0, in0, y), colour);
+        quadP(b, W(u0, out0, y), W(u1, out1, y), W(u1, in1, y), W(u0, in0, y), colour);
       }
     };
 
@@ -455,7 +478,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     const patch = (
       b: StripBuilder, corners: readonly [number, number][], y: number, colour: THREE.Color,
     ): void => {
-      const p = corners.map(([u, m]) => P(idxAt(u), m, y)) as [number, number, number][];
+      const p = corners.map(([u, m]) => W(u, m, y));
       if (sgn > 0) quadP(b, p[0], p[1], p[2], p[3], colour);
       else quadP(b, p[3], p[2], p[1], p[0], colour);
     };
@@ -481,11 +504,9 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       u0: number, u1: number, mA0: number, mA1: number, mB0: number, mB1: number,
       y0: number, y1: number, face: THREE.Color, lid: THREE.Color,
     ): void => {
-      const i0 = idxAt(u0);
-      const i1 = idxAt(u1);
-      quadP(walls, P(i0, mA0, y0), P(i1, mA1, y0), P(i1, mA1, y1), P(i0, mA0, y1), face);
-      quadP(walls, P(i0, mB0, y0), P(i1, mB1, y0), P(i1, mB1, y1), P(i0, mB0, y1), face);
-      quadP(walls, P(i0, mA0, y1), P(i1, mA1, y1), P(i1, mB1, y1), P(i0, mB0, y1), lid);
+      quadP(walls, W(u0, mA0, y0), W(u1, mA1, y0), W(u1, mA1, y1), W(u0, mA0, y1), face);
+      quadP(walls, W(u0, mB0, y0), W(u1, mB1, y0), W(u1, mB1, y1), W(u0, mB0, y1), face);
+      quadP(walls, W(u0, mA0, y1), W(u1, mA1, y1), W(u1, mB1, y1), W(u0, mB0, y1), lid);
     };
 
     // --- The road surface --------------------------------------------------
@@ -592,8 +613,11 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       const apronEdge = g.garageFace - PIT_APRON_DEPTH_M;
       const apronY = PIT_APRON_HEIGHT_M + 0.015;
       const sideLine = (u: number): void => {
-        bar(lines, u, 0.16, g.divider + 0.25, apronEdge - 0.05, Y_LINE, COLOUR.whiteLine);
-        bar(lines, u, 0.16, apronEdge + 0.05, g.garageFace - 0.45, apronY, COLOUR.whiteLine);
+        bar(lines, u, 0.18, g.divider + 0.25, apronEdge - 0.05, Y_LINE, COLOUR.whiteLine);
+        // Dark on the apron rather than white. The apron is pale concrete
+        // under a bright sky and blows out to near-white in the tone map, and
+        // white paint on white concrete is not a marking.
+        bar(lines, u, 0.22, apronEdge + 0.05, g.garageFace - 0.45, apronY, COLOUR.pitBoxEdge);
       };
       sideLine(uu - boxHalf);
       sideLine(uu + boxHalf);

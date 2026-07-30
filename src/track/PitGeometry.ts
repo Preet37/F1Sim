@@ -44,7 +44,7 @@ const LANE_HALF_M = 6;
  * outside it with room to spare — otherwise the "fast lane" line is painted
  * directly under the cars using it.
  */
-const DIVIDER_OFFSET_M = 2.3;
+const DIVIDER_OFFSET_M = 2.0;
 /** Centreline of the pit wall, measured in from the lane's track-side edge. */
 const WALL_INSET_M = 0.5;
 const WALL_THICK_M = 0.45;
