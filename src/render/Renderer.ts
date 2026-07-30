@@ -241,7 +241,13 @@ export class Renderer {
     this.scene.add(this.trackMeshes.root);
 
     for (const car of engine.cars) {
-      const visual = buildCar(car.team.colour, car.team.accent);
+      // The race number and the driver's code are painted into the livery
+      // texture, so they have to be known when the car is built.
+      const visual = buildCar(car.team.colour, car.team.accent, {
+        number: car.driver.raceNumber,
+        code: car.driver.code,
+        quality: this.quality,
+      });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
     }
@@ -408,6 +414,12 @@ export class Renderer {
     // at speed and this avoids twenty separate integrations.
     this.wheelSpin += dt;
 
+    // The cockpit camera sits inside the driver's helmet. Drawing it would fill
+    // the screen with the inside of a shell, so that one car loses its head for
+    // that one view — and only that car, because every other driver on track
+    // should still have one.
+    const insideOwnHelmet = this.director.mode === 'cockpit';
+
     for (let i = 0; i < engine.cars.length; i++) {
       const car = engine.cars[i];
       const v = this.carVisuals[i];
@@ -419,6 +431,7 @@ export class Renderer {
         continue;
       }
       v.root.visible = true;
+      v.driverHead.visible = !(insideOwnHelmet && car.isPlayer);
 
       const p = car.physics;
       const y = track.elevationAt(car.s);
