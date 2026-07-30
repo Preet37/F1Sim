@@ -302,6 +302,30 @@ export class AIVehicleController {
       return;
     }
 
+    // --- Inside the pit lane, nothing else applies -------------------------
+    // This has to come BEFORE the off-track test, because a car in the pit lane
+    // is by definition a long way outside the track's half-width and the test
+    // cannot tell the difference.
+    //
+    // It could not, and the consequences were severe. A pit lane offset ten or
+    // more metres from the centreline — which is most of the calendar — put
+    // every car that entered the pits straight into RECOVER. RECOVER steers for
+    // the racing line; the pit-lane code simultaneously drags the car back to
+    // the pit offset and rebuilds its position from (s, lateral), which
+    // discards exactly the lateral motion the AI was generating. The result is
+    // a car doing 50 km/h whose distance-along-lap does not advance at all: it
+    // sits in the pit lane burning its whole velocity sideways, for the rest of
+    // the race, holding a yellow flag and a safety car with it. Half the field
+    // ended up in that state, which is why races took four times as long as
+    // they should and why almost nobody was classified.
+    //
+    // It is also, from the outside, exactly what the pit lane looked like:
+    // one car crawling, everyone else queued behind it.
+    if ((this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') && this.isInPitLane(s)) {
+      this.targetLateral = track.def.pitLane.lateralOffsetM;
+      return;
+    }
+
     if (offTrack || spun) {
       this.shakenTimer = 6;
       this.setState('RECOVER');
@@ -373,11 +397,16 @@ export class AIVehicleController {
 
     // --- DEFEND. Being attacked takes priority over attacking: losing a place
     // costs more than gaining one is worth, and it is what real drivers do.
+    // The gap the sim reports is unsigned, so "within 0.8s and not losing more
+    // than half a metre a second" described essentially every car in a
+    // twenty-car pack for the whole race: eleven cars at a time sat in DEFEND
+    // on lap one, all moving off the racing line into each other. A driver
+    // defends when someone is genuinely on their gearbox AND genuinely quicker,
+    // which is a much narrower condition than that.
     const underAttack =
       behind !== null &&
-      behind.gapS > -0.05 &&
-      Math.abs(behind.gapS) < 0.8 &&
-      behind.closingMs > -0.5;
+      behind.gapS < 0.45 &&
+      behind.closingMs > 0.6;
 
     if (underAttack && inPassingZone && !p.localYellow) {
       this.setState('DEFEND');
@@ -436,9 +465,14 @@ export class AIVehicleController {
       if (ahead.gapS < prof.followDistanceS * 2.2) {
         this.setState('FOLLOW');
         this.overtakeTargetIndex = -1;
-        // Sit slightly offset for cleaner air and a better run onto the straight.
+        // Sit slightly offset for cleaner air and a better run onto the
+        // straight — but only where there is room to do it. Stepping a metre
+        // off the line in the middle of a corner spends grip the corner needs,
+        // and in a pack it is how cars end up in the gravel on lap one.
         const side = Math.sign(lineOffset || 1);
-        this.targetLateral = clamp(lineOffset - side * 1.1, -halfWidth * 0.8, halfWidth * 0.8);
+        this.targetLateral = inPassingZone
+          ? clamp(lineOffset - side * 1.1, -halfWidth * 0.8, halfWidth * 0.8)
+          : lineOffset;
         return;
       }
     }
