@@ -135,6 +135,18 @@ const GARAGE_RELEASE_GAP_S = 3.4;
  */
 const PIT_EXIT_BLEND_M = 260;
 
+/**
+ * Car collision shape: three discs strung along the car's centreline.
+ *
+ * Radius is the car's half-width, and the offsets span its length, so together
+ * they approximate the real 5.6m x 2.0m footprint. Using the half-width as the
+ * radius is what makes side-by-side racing possible without phantom contact.
+ */
+const DISC_RADIUS_M = 1.0;
+const DISC_OFFSETS_M = [1.85, 0, -1.85] as const;
+/** Centre-to-centre distance beyond which no discs can possibly overlap. */
+const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
+
 /** Fixed grid-slot geometry: 8m between rows, ~4m side offset. */
 const GRID_ROW_SPACING_M = 8;
 const GRID_SIDE_OFFSET_M = 3.4;
@@ -1078,14 +1090,27 @@ export class RaceEngine {
   /**
    * Car-to-car contact.
    *
-   * Treats each car as a circle and resolves overlap with an impulse. Not a full
-   * collision solver — but wheel-to-wheel contact in F1 either nudges a car
-   * offline or launches it, and an impulse plus a spin torque reproduces both.
-   * Front-to-back contact costs the following car more, which is realistic and
-   * discourages the AI from using the car ahead as a brake.
+   * Each car is modelled as three overlapping discs strung along its own
+   * centreline, not as one big circle.
+   *
+   * A single 2.4m-radius circle per car meant contact was reported whenever two
+   * centres came within 4.8 metres — more than twice the width of a real car.
+   * Cars racing properly side by side, a full car's width apart and never
+   * touching, generated a stream of "Contact between..." messages and took
+   * damage for it. The circle has to be big enough to cover a 5.6m-long car,
+   * so making one circle fit the length inevitably makes it far too fat across.
+   *
+   * Three discs of half-width radius, spaced along the length, cover the same
+   * 5.6m x 2.0m footprint while respecting its shape. Side by side, contact now
+   * happens at 2.0m — the real width of two cars touching. Nose to tail it
+   * happens at 5.6m. And because the discs rotate with the car, a car turned
+   * across another is correctly a different shape to one alongside it.
+   *
+   * The response is still an impulse rather than a full rigid-body solve:
+   * wheel-to-wheel contact in F1 either nudges a car offline or launches it,
+   * and an impulse plus a spin torque reproduces both.
    */
   private resolveContacts(): void {
-    const RADIUS = 2.4;
     const cars = this.cars;
 
     for (let i = 0; i < cars.length; i++) {
@@ -1101,13 +1126,36 @@ export class RaceEngine {
         // had set a lap.
         if (a.inPitLane !== b.inPitLane) continue;
 
-        const dx = b.physics.position.x - a.physics.position.x;
-        const dz = b.physics.position.y - a.physics.position.y;
-        const distSq = dx * dx + dz * dz;
-        const minDist = RADIUS * 2;
-        if (distSq > minDist * minDist || distSq < 1e-6) continue;
+        // Cheap reject before the per-disc test: if the centres are further
+        // apart than the two cars' full diagonals, nothing can be touching.
+        const cdx = b.physics.position.x - a.physics.position.x;
+        const cdz = b.physics.position.y - a.physics.position.y;
+        const centreSq = cdx * cdx + cdz * cdz;
+        if (centreSq > BROAD_PHASE_M * BROAD_PHASE_M) continue;
 
-        const dist = Math.sqrt(distSq);
+        // Find the closest pair of discs between the two cars.
+        const aSin = Math.sin(a.physics.heading), aCos = Math.cos(a.physics.heading);
+        const bSin = Math.sin(b.physics.heading), bCos = Math.cos(b.physics.heading);
+
+        let dist = Infinity;
+        let dx = 0;
+        let dz = 0;
+        for (const oa of DISC_OFFSETS_M) {
+          const ax = a.physics.position.x + aSin * oa;
+          const az = a.physics.position.y + aCos * oa;
+          for (const ob of DISC_OFFSETS_M) {
+            const bx = b.physics.position.x + bSin * ob;
+            const bz = b.physics.position.y + bCos * ob;
+            const ex = bx - ax;
+            const ez = bz - az;
+            const d = Math.hypot(ex, ez);
+            if (d < dist) { dist = d; dx = ex; dz = ez; }
+          }
+        }
+
+        const minDist = DISC_RADIUS_M * 2;
+        if (dist > minDist || dist < 1e-6) continue;
+
         const nx = dx / dist;
         const nz = dz / dist;
         const overlap = minDist - dist;
