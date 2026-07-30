@@ -37,8 +37,8 @@ export interface SpeedSolverParams {
   massKg: number;
   /** Peak power in Watts, used for the traction-limited forward pass. */
   powerW: number;
-  /** Longitudinal braking friction budget, usually a touch above lateral. */
-  brakeMu: number;
+  /** Total brake force at full pedal, N — the same cap the car itself has. */
+  maxBrakeForceN: number;
   maxSpeedMs: number;
 }
 
@@ -48,15 +48,15 @@ export interface SpeedSolverParams {
  */
 export const REFERENCE_CAR = {
   mu: 1.70,
-  brakeMu: 2.0,
+  maxBrakeForceN: 38_000,
   massKg: 850,
   powerW: 600_000,
   /** Downforce coefficient at the low-downforce (Monza) and high (Monaco) ends. */
   clLow: 2.1,
   clHigh: 4.5,
   /** Drag coefficient at the same two ends. */
-  cdLow: 0.74,
-  cdHigh: 1.30,
+  cdLow: 0.66,
+  cdHigh: 1.18,
   /** Hard ceiling, never reached in practice — drag binds first. */
   maxSpeedMs: 103,
 };
@@ -75,7 +75,7 @@ export function solverParamsFor(demand: number): SpeedSolverParams {
   const d = clamp01(demand);
   return {
     mu: REFERENCE_CAR.mu,
-    brakeMu: REFERENCE_CAR.brakeMu,
+    maxBrakeForceN: REFERENCE_CAR.maxBrakeForceN,
     massKg: REFERENCE_CAR.massKg,
     powerW: REFERENCE_CAR.powerW,
     cl: lerp(REFERENCE_CAR.clLow, REFERENCE_CAR.clHigh, d),
@@ -465,8 +465,13 @@ export class TrackSpline {
         const nxt = (i + 1) % count;
         const v = targetSpeed[i];
         const vn = targetSpeed[nxt];
-        // Deceleration available at this speed, with downforce helping.
-        const aBrake = (p.brakeMu * (m * G + p.cl * v * v) + p.cd * v * v) / m;
+        // Deceleration available at this speed. Deliberately the same model the
+        // car itself uses: brake force capped by both the pedal's maximum and by
+        // tire grip (which downforce raises), plus aerodynamic drag. If this
+        // disagreed with VehiclePhysics the AI would brake at points its car
+        // cannot actually make, and run wide at every corner.
+        const gripLimit = p.mu * (m * G + p.cl * v * v);
+        const aBrake = (Math.min(p.maxBrakeForceN, gripLimit) + p.cd * v * v) / m;
         const vMax = Math.sqrt(vn * vn + 2 * aBrake * ds);
         if (v > vMax) targetSpeed[i] = vMax;
       }

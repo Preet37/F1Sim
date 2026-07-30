@@ -10,7 +10,8 @@
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
     "validate:tracks": "tsx scripts/validateTracks.ts",
-    "calibrate": "tsx scripts/calibrateSolver.ts"
+    "calibrate": "tsx scripts/calibrateSolver.ts",
+    "validate:physics": "tsx scripts/validatePhysics.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

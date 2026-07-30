@@ -21,7 +21,7 @@ import { TrackSpline, type SpeedSolverParams } from '../src/track/TrackSpline';
 
 /** Aero package endpoints swept over, interpolated by each circuit's demand. */
 interface Sweep {
-  mu: number; brakeMu: number; powerW: number;
+  mu: number; maxBrakeForceN: number; powerW: number;
   clLow: number; clHigh: number; cdLow: number; cdHigh: number;
 }
 
@@ -29,7 +29,7 @@ function paramsFor(sw: Sweep, demand: number): SpeedSolverParams {
   const d = Math.max(0, Math.min(1, demand));
   return {
     mu: sw.mu,
-    brakeMu: sw.brakeMu,
+    maxBrakeForceN: sw.maxBrakeForceN,
     massKg: 850,
     powerW: sw.powerW,
     cl: sw.clLow + (sw.clHigh - sw.clLow) * d,
@@ -83,9 +83,9 @@ function evaluate(sw: Sweep): Result {
 const MU = [1.62, 1.70, 1.78, 1.86];
 const CL_LOW = [2.1, 2.4, 2.7];
 const CL_HIGH = [3.6, 3.9, 4.2, 4.5];
-const CD_LOW = [0.58, 0.66, 0.74];
-const CD_HIGH = [1.0, 1.15, 1.3];
-const BRAKE = [1.7, 1.85, 2.0];
+const CD_LOW = [0.50, 0.58, 0.66];
+const CD_HIGH = [0.92, 1.05, 1.18];
+const BRAKE = [36_000, 42_000, 48_000, 54_000];
 const POWER = [600_000, 660_000, 720_000];
 
 let best: Result | null = null;
@@ -100,9 +100,9 @@ for (const mu of MU) {
     for (const clHigh of CL_HIGH) {
       for (const cdLow of CD_LOW) {
         for (const cdHigh of CD_HIGH) {
-          for (const brakeMu of BRAKE) {
+          for (const maxBrakeForceN of BRAKE) {
             for (const powerW of POWER) {
-              const r = evaluate({ mu, brakeMu, powerW, clLow, clHigh, cdLow, cdHigh });
+              const r = evaluate({ mu, maxBrakeForceN, powerW, clLow, clHigh, cdLow, cdHigh });
               evaluated++;
               if (!best || r.rms < best.rms) best = r;
             }
@@ -122,7 +122,7 @@ console.log('evaluated ' + evaluated + ' sets');
 console.log('');
 console.log('BEST FIT');
 console.log('  mu       ' + best.sweep.mu);
-console.log('  brakeMu  ' + best.sweep.brakeMu);
+console.log('  brakeF   ' + best.sweep.maxBrakeForceN);
 console.log('  powerW   ' + best.sweep.powerW);
 console.log('  clLow    ' + best.sweep.clLow + '   clHigh  ' + best.sweep.clHigh);
 console.log('  cdLow    ' + best.sweep.cdLow + '   cdHigh  ' + best.sweep.cdHigh);
