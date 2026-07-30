@@ -150,6 +150,91 @@ export function createNeighbour(): Neighbour {
   return { index: -1, gapM: 0, gapS: 0, lateral: 0, speedMs: 0, closingMs: 0 };
 }
 
+export type AIDifficultyId = 'easy' | 'medium' | 'hard';
+
+/**
+ * How hard the field is to race against.
+ *
+ * The principle is the same one the whole AI is built on: the opposition drives
+ * the same car through the same physics as the player, with the same five
+ * inputs. Difficulty therefore changes how well they DRIVE it — how close to
+ * the limit they run, how tidy they are, how willing they are to have a go —
+ * and never gives or takes grip, power or lap time directly. An easy field is
+ * beatable because it brakes earlier and makes more mistakes, which is
+ * something the player can watch happening and exploit, rather than because a
+ * number was subtracted from its lap time somewhere off-screen.
+ *
+ * `hard` is the calibrated baseline: every multiplier is 1, so the field runs
+ * exactly as `scripts/tuneAI.ts` tuned it. Easier levels only ever scale down
+ * from there, which means adding a difficulty cannot change what the validation
+ * harness measures.
+ */
+export interface AIDifficulty {
+  id: AIDifficultyId;
+  label: string;
+  /** Description for the settings screen. */
+  blurb: string;
+  /** Scale on the speed the driver attempts everywhere on the lap. */
+  paceScale: number;
+  /** Scale on how close to the computed cornering limit they run. */
+  commitmentScale: number;
+  /** Scale on how late they brake. */
+  brakingScale: number;
+  /** Scale on willingness to attack and to defend. */
+  aggressionScale: number;
+  /** Scale on the size of their errors and the rate they make them. */
+  errorScale: number;
+}
+
+export const AI_DIFFICULTIES: Record<AIDifficultyId, AIDifficulty> = {
+  easy: {
+    id: 'easy', label: 'Easy',
+    blurb: 'Brakes early, holds the line, rarely fights back',
+    paceScale: 0.945, commitmentScale: 0.94, brakingScale: 0.93,
+    aggressionScale: 0.55, errorScale: 1.8,
+  },
+  medium: {
+    id: 'medium', label: 'Medium',
+    blurb: 'Racing pace, will defend a position',
+    paceScale: 0.976, commitmentScale: 0.975, brakingScale: 0.97,
+    aggressionScale: 0.8, errorScale: 1.25,
+  },
+  hard: {
+    id: 'hard', label: 'Hard',
+    blurb: 'Everything the car has, and they want the place back',
+    paceScale: 1, commitmentScale: 1, brakingScale: 1,
+    aggressionScale: 1, errorScale: 1,
+  },
+};
+
+/** What a new player gets. */
+export const DEFAULT_AI_DIFFICULTY: AIDifficultyId = 'medium';
+
+/**
+ * What a session that does not specify a level gets.
+ *
+ * Deliberately NOT the player default. `hard` has every multiplier at 1, so an
+ * unconfigured field is exactly the field `scripts/tuneAI.ts` calibrated and
+ * every validation script has always measured. Defaulting to the player's level
+ * instead would silently re-baseline the entire harness the moment a difficulty
+ * setting was added — every lap-time check in the suite would move because of a
+ * menu option.
+ */
+export const CALIBRATION_DIFFICULTY: AIDifficultyId = 'hard';
+
+/** Coerces anything stored in a save into a valid difficulty id. */
+export function toDifficultyId(value: unknown): AIDifficultyId {
+  if (typeof value === 'string' && value in AI_DIFFICULTIES) return value as AIDifficultyId;
+  // Older saves stored a bare number, 0..1. Map it onto the nearest level so a
+  // career in progress keeps roughly the opposition it was being played at.
+  if (typeof value === 'number') {
+    if (value < 0.75) return 'easy';
+    if (value < 0.92) return 'medium';
+    return 'hard';
+  }
+  return DEFAULT_AI_DIFFICULTY;
+}
+
 /** Tuning derived once from a driver's attributes. */
 interface DriverProfile {
   /** Fraction of the reference speed profile this driver attempts. */
@@ -168,19 +253,24 @@ interface DriverProfile {
   tyreAbuse: number;
 }
 
-function profileFor(d: Driver, wetness: number): DriverProfile {
+function profileFor(d: Driver, wetness: number, diff: AIDifficulty): DriverProfile {
   // Wet conditions shift the weighting from raw pace toward wet skill, which is
   // why the order shuffles in the rain rather than staying fixed.
   const effSkill = lerp(d.skill, d.wetSkill, clamp01(wetness));
+  // Difficulty scales the driver's attributes, so the SPREAD between a good
+  // driver and a poor one survives at every level — an easy field is still led
+  // by the quick drivers, it is just slower and messier as a whole.
+  const aggression = clamp01(d.aggression * diff.aggressionScale);
+  const racecraft = clamp01(d.racecraft * diff.aggressionScale);
   return {
     // A 0.77-skill backmarker runs ~2.5% off the reference; a 0.97 driver is
     // essentially on it. Across a 90s lap that is a spread of about 2.2s.
-    paceFactor: lerp(0.968, 1.0, (effSkill - 0.75) / 0.25),
-    brakingConfidence: lerp(0.9, 1.02, (effSkill - 0.75) / 0.25),
-    overtakeThresholdS: lerp(1.15, 0.55, d.aggression),
-    followDistanceS: lerp(0.9, 0.35, d.aggression),
-    errorScale: lerp(0.028, 0.004, d.consistency),
-    defenceCommitment: lerp(0.45, 1.0, d.racecraft),
+    paceFactor: lerp(0.968, 1.0, (effSkill - 0.75) / 0.25) * diff.paceScale,
+    brakingConfidence: lerp(0.9, 1.02, (effSkill - 0.75) / 0.25) * diff.brakingScale,
+    overtakeThresholdS: lerp(1.15, 0.55, aggression),
+    followDistanceS: lerp(0.9, 0.35, aggression),
+    errorScale: lerp(0.028, 0.004, d.consistency) * diff.errorScale,
+    defenceCommitment: lerp(0.45, 1.0, racecraft),
     tyreAbuse: lerp(1.12, 0.9, d.tyreManagement),
   };
 }
@@ -400,18 +490,30 @@ export class AIVehicleController {
    */
   private readonly runoffCaution: number;
 
-  constructor(driver: Driver, track: TrackSpline, seed: number) {
+  /** How hard this driver is to race against. */
+  private difficulty: AIDifficulty = AI_DIFFICULTIES[CALIBRATION_DIFFICULTY];
+  private lastWetness = 0;
+
+  constructor(driver: Driver, track: TrackSpline, seed: number, difficulty?: AIDifficultyId) {
     this.driver = driver;
     this.track = track;
     this.runoffCaution = track.def.scenery === 'street' ? 0.96 : 1.0;
     this.rng = new Rng(seed);
-    this.profile = profileFor(driver, 0);
+    if (difficulty) this.difficulty = AI_DIFFICULTIES[difficulty];
+    this.profile = profileFor(driver, 0, this.difficulty);
     this.errorPhase = this.rng.range(0, 100);
+  }
+
+  /** Changes the difficulty mid-session. Used by the settings screen. */
+  setDifficulty(id: AIDifficultyId): void {
+    this.difficulty = AI_DIFFICULTIES[id];
+    this.profile = profileFor(this.driver, this.lastWetness, this.difficulty);
   }
 
   /** Recomputes the driver profile when conditions change materially. */
   onConditionsChanged(wetness: number): void {
-    this.profile = profileFor(this.driver, wetness);
+    this.lastWetness = wetness;
+    this.profile = profileFor(this.driver, wetness, this.difficulty);
   }
 
   /**
@@ -1408,6 +1510,10 @@ export class AIVehicleController {
     // A recent excursion makes a driver cautious for a while.
     if (this.shakenTimer > 0) commitment *= 0.94;
     commitment *= AI_TUNING.commitmentScale;
+    // Difficulty, applied to the one number that decides how close to the limit
+    // the driver runs. An easier field genuinely corners slower rather than
+    // being handicapped somewhere the player cannot see.
+    commitment *= this.difficulty.commitmentScale;
     v = Math.min(v, limit * commitment);
 
     // Wet track: slower everywhere, and the better wet drivers lose less.

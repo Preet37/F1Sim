@@ -19,6 +19,7 @@ import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScree
 import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
 import type { CompoundId } from './data/tires';
 import { PRACTICE_SEGMENTS, QUALIFYING_SEGMENTS } from './race/WeekendFormat';
+import { AI_DIFFICULTIES } from './ai/AIVehicleController';
 
 /**
  * Application shell: screens, the game loop, and the wiring between the
@@ -662,6 +663,28 @@ class Game {
       });
     };
 
+    // --- Opposition -------------------------------------------------------
+    // First, because it is the setting that changes the game most and the one
+    // a player is most likely to be looking for.
+    this.el('div', 'section-title', inner, 'Opposition');
+    const dg = this.el('div', 'card-grid', inner);
+    for (const id of ['easy', 'medium', 'hard'] as const) {
+      const level = AI_DIFFICULTIES[id];
+      const selected = this.settings.aiDifficulty === id;
+      const c = this.el('div', 'card' + (selected ? ' selected' : ''), dg);
+      this.el('div', 'card-name', c, level.label);
+      this.el('div', 'card-meta', c, level.blurb);
+      this.el('div', 'card-stat', c, selected ? 'ON' : '');
+      c.addEventListener('click', () => {
+        this.settings.aiDifficulty = id;
+        // Applied live as well as saved, so a player who changes it mid-weekend
+        // sees it immediately instead of wondering whether it took.
+        for (const car of this.engine?.cars ?? []) car.ai?.setDifficulty(id);
+        this.saves.saveSettings(this.settings);
+        this.showSettings();
+      });
+    }
+
     this.el('div', 'section-title', inner, 'Driving');
     const grid = this.el('div', 'card-grid', inner);
     toggle('Speed-sensitive steering', 'Reduces lock at speed, as a real rack does',
@@ -752,6 +775,9 @@ class Game {
       // down the pit lane, which is how a real practice or qualifying session
       // works. Only a race or a sprint forms up on the grid.
       pitLaneStart: kind !== 'race',
+      // The opposition's level, chosen in Settings. Applied at construction, so
+      // it takes effect from the next session rather than mid-lap.
+      aiDifficulty: this.settings.aiDifficulty,
       seed: (Math.random() * 0x7fffffff) | 0,
       ...extra,
     };

@@ -1,6 +1,9 @@
 import { VehiclePhysics, type VehicleControls } from '../physics/VehiclePhysics';
 import { applySetup, baselineSetupFor, specForTeam, type CarSetup } from '../physics/VehicleSpec';
-import { AIVehicleController, createPerception, type AIPerception } from '../ai/AIVehicleController';
+import {
+  AIVehicleController, createPerception,
+  type AIPerception, type AIDifficultyId,
+} from '../ai/AIVehicleController';
 import { createProjection, type TrackProjection } from '../track/TrackSpline';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { Driver, Team } from '../data/teams';
@@ -286,6 +289,7 @@ export class CarEntry {
     seed: number,
     fuelL: number,
     startCompound: CompoundId,
+    difficulty?: AIDifficultyId,
   ) {
     this.index = index;
     this.driver = driver;
@@ -300,7 +304,8 @@ export class CarEntry {
     this.compound = startCompound;
     this.usedCompounds.push(startCompound);
 
-    this.ai = isPlayer ? null : new AIVehicleController(driver, track, seed);
+    // The player's car has no AI, so difficulty can never touch it.
+    this.ai = isPlayer ? null : new AIVehicleController(driver, track, seed, difficulty);
   }
 
   /** Places the car for the start of a session. */

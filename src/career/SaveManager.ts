@@ -1,4 +1,7 @@
 import type { CareerState } from './CareerEngine';
+import {
+  DEFAULT_AI_DIFFICULTY, toDifficultyId, type AIDifficultyId,
+} from '../ai/AIVehicleController';
 
 /**
  * Local persistence.
@@ -42,7 +45,15 @@ export interface GameSettings {
   quality: 'auto' | 'low' | 'high';
   /** Draw the optimal line on the track, coloured by approach speed. */
   racingLine: boolean;
-  aiDifficulty: number;
+  /**
+   * How hard the AI field is to race against.
+   *
+   * Was a bare number that nothing read, so every field was the same field. It
+   * is now a named level, and `toDifficultyId` maps an old numeric save onto
+   * the nearest one so a career in progress keeps roughly the opposition it was
+   * being played against.
+   */
+  aiDifficulty: AIDifficultyId;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -54,7 +65,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   tiltSteering: false,
   quality: 'auto',
   racingLine: true,
-  aiDifficulty: 0.85,
+  aiDifficulty: DEFAULT_AI_DIFFICULTY,
 };
 
 /** True when localStorage is usable. Probed once. */
@@ -200,7 +211,12 @@ export class SaveManager {
       const parsed = JSON.parse(raw) as Partial<GameSettings>;
       // Merged over the defaults so a setting added in a later build gets a
       // sensible value instead of undefined.
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      const merged = { ...DEFAULT_SETTINGS, ...parsed };
+      // The difficulty used to be stored as a bare number. Coerce whatever is
+      // on disk to a valid level rather than letting a stale 0.85 reach the AI
+      // and index the difficulty table with a miss.
+      merged.aiDifficulty = toDifficultyId(parsed.aiDifficulty as unknown);
+      return merged;
     } catch {
       return { ...DEFAULT_SETTINGS };
     }

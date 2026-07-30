@@ -7,7 +7,7 @@ import { bandOf, COMPONENT_NAMES, type ImpactZone } from './DamageModel';
 import { DRIVERS, getTeam, type Driver } from '../data/teams';
 import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
-import type { Neighbour } from '../ai/AIVehicleController';
+import type { Neighbour, AIDifficultyId } from '../ai/AIVehicleController';
 import { createNeighbour } from '../ai/AIVehicleController';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
@@ -62,6 +62,14 @@ export interface SessionConfig {
    * Q2 and Q3 run with a progressively smaller field.
    */
   participants?: readonly number[];
+  /**
+   * How hard the AI field is to race against. Defaults to the medium level.
+   *
+   * Applies to the opposition only — the player's car has no AI to scale — and
+   * the hard level is the calibrated baseline with every multiplier at 1, so
+   * the validation harness measures the same field it always did.
+   */
+  aiDifficulty?: AIDifficultyId;
   seed: number;
 }
 
@@ -277,6 +285,7 @@ export class RaceEngine {
         i === config.playerIndex,
         config.seed + i * 7919,
         fuelL, compound,
+        config.aiDifficulty,
       );
       // Each car gets its own box. Slot order follows the entry list, which is
       // ordered by team with two cars per team — exactly the layout `boxS`
