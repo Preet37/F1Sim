@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { loft, wingElement, type Section } from './Loft';
+import { buildCockpit, type CockpitVisual } from './CockpitMesh';
 
 /**
  * Formula 1 car, built procedurally from lofted cross-sections and aerofoils.
@@ -42,6 +43,15 @@ export interface CarVisual {
   brakeGlow: THREE.Mesh[];
   /** Contact shadow under the car, scaled with speed for a little squash. */
   shadow: THREE.Mesh;
+  /**
+   * The driver's helmet, as a separate mesh, for cars that can be sat in.
+   * Null for every other car, whose head is merged into the body.
+   */
+  driverHead: THREE.Mesh | null;
+  /** Cockpit furniture, or null if this car was not built for the inside view. */
+  cockpit: CockpitVisual | null;
+  /** Shows or hides the cockpit interior, swapping the driver's head out with it. */
+  setCockpitVisible(v: boolean): void;
   dispose(): void;
 }
 
@@ -55,6 +65,35 @@ const RIM_R = 0.229;
 
 const CARBON = 0x0e1013;
 const DARK_TRIM = 0x1a1d22;
+
+/**
+ * Halo hoop geometry, shared with the cockpit camera.
+ *
+ * The hoop has to clear the driver's helmet (top at ~0.82m) and sit above the
+ * eye point the cockpit camera uses, or it cuts the view in half instead of
+ * arcing over it.
+ */
+const HALO_Y = 0.90;
+const HALO_Z = 0.22;
+const HALO_R = 0.40;
+
+/** A tapered cylinder running between two points. Used for struts and arms. */
+function strutGeo(
+  x0: number, y0: number, z0: number,
+  x1: number, y1: number, z1: number,
+  r0: number, r1 = r0,
+): THREE.BufferGeometry {
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+  const len = Math.hypot(dx, dy, dz) || 1e-4;
+  const g = new THREE.CylinderGeometry(r1, r0, len, 8);
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(dx / len, dy / len, dz / len),
+  );
+  g.applyQuaternion(q);
+  g.translate((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
+  return g;
+}
 
 // ===========================================================================
 // Body: lofted monocoque
@@ -112,8 +151,32 @@ interface Part {
   colour: number;
 }
 
+/**
+ * The driver's head, as its own set of parts.
+ *
+ * Split out so it can be built into a separate mesh for the player's car and
+ * hidden while the cockpit camera is active. The eye point is, by definition,
+ * inside the helmet; leaving it in place means the cockpit camera looks at the
+ * back of the visor, or (with backfaces culled) at a hole punched through the
+ * middle of the world.
+ */
+function driverParts(accentColour: number): Part[] {
+  const helmet = new THREE.SphereGeometry(0.155, 16, 12);
+  helmet.scale(1, 1.05, 1.12);
+  helmet.translate(0, 0.66, 0.05);
+
+  const visor = new THREE.SphereGeometry(0.157, 16, 8, 0, Math.PI * 2, Math.PI * 0.34, Math.PI * 0.2);
+  visor.scale(1, 1.05, 1.12);
+  visor.translate(0, 0.66, 0.05);
+
+  return [
+    { geo: helmet, colour: accentColour },
+    { geo: visor, colour: 0x08090d },
+  ];
+}
+
 /** Assembles every static part of the car, ready to merge. */
-function buildParts(bodyColour: number, accentColour: number): Part[] {
+function buildParts(bodyColour: number, accentColour: number, includeDriver = true): Part[] {
   const parts: Part[] = [];
   const add = (geo: THREE.BufferGeometry, colour: number): void => { parts.push({ geo, colour }); };
 
@@ -242,21 +305,32 @@ function buildParts(bodyColour: number, accentColour: number): Part[] {
   }
 
   // --- Halo -------------------------------------------------------------
+  //
+  // The halo is the single most recognisable feature of a modern F1 car and the
+  // dominant object in any onboard shot, so it is worth getting the geometry
+  // right rather than approximating it with a flat arc at cockpit-rim height.
+  //
+  // The real thing is a closed titanium hoop that clears the driver's helmet,
+  // carried on one central pillar in front of the driver's face and two mounts
+  // on the chassis flanks behind them. It is tessellated finely because at
+  // cockpit range — half a metre from the camera — a twenty-segment torus reads
+  // as a polygon, and this same geometry is what the cockpit camera looks at.
   {
-    const hoop = new THREE.TorusGeometry(0.40, 0.038, 8, 20, Math.PI * 1.05);
+    const hoop = new THREE.TorusGeometry(HALO_R, 0.036, 10, 40);
     hoop.rotateX(-Math.PI / 2);
-    hoop.rotateZ(Math.PI);
-    hoop.translate(0, 0.70, 0.30);
+    hoop.translate(0, HALO_Y, HALO_Z);
     add(hoop, DARK_TRIM);
 
-    // The forward strut, the part that is actually visible from the cockpit.
-    const strut = new THREE.CylinderGeometry(0.030, 0.034, 0.30, 8);
-    strut.rotateX(0.35);
-    strut.translate(0, 0.60, 0.70);
-    add(strut, DARK_TRIM);
+    // Central pillar, straight down the middle of the driver's view.
+    add(strutGeo(0, HALO_Y - 0.005, HALO_Z + HALO_R - 0.005, 0, 0.545, 0.735, 0.034, 0.040), DARK_TRIM);
+
+    // Rear mounts onto the chassis flanks.
+    for (const side of [-1, 1] as const) {
+      add(strutGeo(side * (HALO_R - 0.02), HALO_Y - 0.015, HALO_Z - 0.08, side * 0.30, 0.60, 0.02, 0.030, 0.038), DARK_TRIM);
+    }
   }
 
-  // --- Cockpit interior and driver --------------------------------------
+  // --- Cockpit interior -------------------------------------------------
   {
     // Dark cockpit tub, so the opening reads as a hole rather than a decal.
     const tub = loft([
@@ -266,23 +340,15 @@ function buildParts(bodyColour: number, accentColour: number): Part[] {
     ], 14);
     add(tub, 0x0a0b0f);
 
-    const helmet = new THREE.SphereGeometry(0.155, 16, 12);
-    helmet.scale(1, 1.05, 1.12);
-    helmet.translate(0, 0.615, 0.06);
-    add(helmet, accentColour);
-
-    // Visor band.
-    const visor = new THREE.SphereGeometry(0.157, 16, 8, 0, Math.PI * 2, Math.PI * 0.34, Math.PI * 0.2);
-    visor.scale(1, 1.05, 1.12);
-    visor.translate(0, 0.615, 0.06);
-    add(visor, 0x08090d);
-
-    // Headrest.
+    // Headrest. Stays on the body: it is behind the driver's eyes, so it never
+    // needs hiding for the cockpit camera.
     const rest = loft([
       { z: -0.05, halfWidth: 0.20, height: 0.16, y: 0.56, round: 0.5 },
       { z: -0.26, halfWidth: 0.185, height: 0.14, y: 0.555, round: 0.55 },
     ], 12);
     add(rest, DARK_TRIM);
+
+    if (includeDriver) for (const p of driverParts(accentColour)) parts.push(p);
   }
 
   // --- Suspension -------------------------------------------------------
@@ -319,13 +385,17 @@ function buildParts(bodyColour: number, accentColour: number): Part[] {
   }
 
   // --- Mirrors ----------------------------------------------------------
+  // Mounted forward on the chassis flanks, level with the cockpit opening.
+  // Position is not arbitrary: a mirror behind the driver's shoulder is outside
+  // even a 100-degree field of view, so a cockpit camera would never see it.
+  // Real cars carry them here for the same reason.
   for (const side of [-1, 1] as const) {
-    const stalk = new THREE.CylinderGeometry(0.014, 0.014, 0.16, 6);
+    const stalk = new THREE.CylinderGeometry(0.013, 0.013, 0.17, 6);
     stalk.rotateZ(Math.PI / 2);
-    stalk.translate(side * 0.36, 0.545, 0.34);
+    stalk.translate(side * 0.375, 0.60, 0.70);
     add(stalk, DARK_TRIM);
-    const housing = new THREE.BoxGeometry(0.11, 0.06, 0.035);
-    housing.translate(side * 0.44, 0.55, 0.34);
+    const housing = new THREE.BoxGeometry(0.115, 0.075, 0.03);
+    housing.translate(side * 0.455, 0.625, 0.702);
     add(housing, bodyColour);
   }
 
@@ -433,12 +503,8 @@ function material(key: string, make: () => THREE.Material): THREE.Material {
   return m;
 }
 
-function bodyGeometryFor(bodyColour: number, accentColour: number): THREE.BufferGeometry {
-  const key = bodyColour + ':' + accentColour;
-  const cached = bodyCache.get(key);
-  if (cached) return cached;
-
-  const parts = buildParts(bodyColour, accentColour);
+/** Bakes a list of parts down to one vertex-coloured geometry. */
+function mergeParts(parts: Part[]): THREE.BufferGeometry {
   const tmp = new THREE.Color();
   const prepared: THREE.BufferGeometry[] = [];
 
@@ -469,11 +535,43 @@ function bodyGeometryFor(bodyColour: number, accentColour: number): THREE.Buffer
 
   const result = merged ?? new THREE.BoxGeometry(1, 1, 1);
   result.computeBoundingSphere();
+  return result;
+}
+
+/**
+ * Merged bodywork for one livery, cached.
+ *
+ * `withDriver` is part of the cache key: the player's car omits the helmet from
+ * the body so it can be drawn — and hidden — separately.
+ */
+function bodyGeometryFor(bodyColour: number, accentColour: number, withDriver: boolean): THREE.BufferGeometry {
+  const key = bodyColour + ':' + accentColour + ':' + (withDriver ? 'd' : 'x');
+  const cached = bodyCache.get(key);
+  if (cached) return cached;
+  const result = mergeParts(buildParts(bodyColour, accentColour, withDriver));
   bodyCache.set(key, result);
   return result;
 }
 
-export function buildCar(bodyColour: number, accentColour: number): CarVisual {
+/** The driver's head as a standalone geometry, cached per accent colour. */
+function driverGeometryFor(accentColour: number): THREE.BufferGeometry {
+  const key = 'driver:' + accentColour;
+  const cached = bodyCache.get(key);
+  if (cached) return cached;
+  const result = mergeParts(driverParts(accentColour));
+  bodyCache.set(key, result);
+  return result;
+}
+
+/**
+ * Builds one car.
+ *
+ * @param withCockpit build the cockpit furniture (halo-adjacent trim, steering
+ *                    wheel, hands, mirror glass) and split the driver's head
+ *                    into its own hideable mesh. Only worth doing for the car
+ *                    the cockpit camera can actually be inside.
+ */
+export function buildCar(bodyColour: number, accentColour: number, withCockpit = false): CarVisual {
   const root = new THREE.Group();
   const w = wheels();
 
@@ -509,9 +607,22 @@ export function buildCar(bodyColour: number, accentColour: number): CarVisual {
     depthWrite: false,
   }));
 
-  const body = new THREE.Mesh(bodyGeometryFor(bodyColour, accentColour), bodyMat);
+  const body = new THREE.Mesh(bodyGeometryFor(bodyColour, accentColour, !withCockpit), bodyMat);
   body.castShadow = true;
   root.add(body);
+
+  // The head, and the cockpit furniture behind it, only for a car the cockpit
+  // camera can occupy.
+  let driverHead: THREE.Mesh | null = null;
+  let cockpit: CockpitVisual | null = null;
+  if (withCockpit) {
+    driverHead = new THREE.Mesh(driverGeometryFor(accentColour), bodyMat);
+    driverHead.castShadow = true;
+    root.add(driverHead);
+
+    cockpit = buildCockpit(accentColour);
+    root.add(cockpit.root);
+  }
 
   // Contact shadow: a cheap dark ellipse that grounds the car even with real
   // shadows disabled on low-power devices.
@@ -583,8 +694,18 @@ export function buildCar(bodyColour: number, accentColour: number): CarVisual {
     drsFlap: flapPivot,
     brakeGlow,
     shadow,
+    driverHead,
+    cockpit,
+    setCockpitVisible(v: boolean): void {
+      if (!cockpit) return;
+      cockpit.setVisible(v);
+      // The driver's head and the eye point are the same place, so exactly one
+      // of them can exist at a time.
+      if (driverHead) driverHead.visible = !v;
+    },
     dispose(): void {
       accentMat.dispose();
+      cockpit?.dispose();
       for (const d of brakeGlow) (d.material as THREE.Material).dispose();
     },
   };
