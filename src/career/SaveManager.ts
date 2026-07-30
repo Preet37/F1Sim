@@ -40,6 +40,8 @@ export interface GameSettings {
   brakingAssist: boolean;
   tiltSteering: boolean;
   quality: 'auto' | 'low' | 'high';
+  /** Draw the optimal line on the track, coloured by approach speed. */
+  racingLine: boolean;
   aiDifficulty: number;
 }
 
@@ -51,6 +53,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   brakingAssist: false,
   tiltSteering: false,
   quality: 'auto',
+  racingLine: true,
   aiDifficulty: 0.85,
 };
 

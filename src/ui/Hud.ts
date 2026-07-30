@@ -299,6 +299,7 @@ export class Hud {
       '<span class="k">C</span><span>Camera</span>' +
       '<span class="k">L</span><span>Request pit stop</span>' +
       '<span class="k">P</span><span>Pause</span>' +
+      '<span class="k">R</span><span>Racing line</span>' +
       '<span class="k">H</span><span>Toggle this help</span>' +
       '</div>';
 

@@ -53,6 +53,16 @@ and roughness break-up injected into the standard material, so it keeps real sha
 the environment probe and fog. Two incommensurate tiling scales, so the texture's
 repeat period is never visible down a straight.
 
+**Sky** (`src/render/Renderer.ts`). A five-octave fbm cloud deck projected onto a
+flat plane above the viewer, so the clouds foreshorten toward the horizon the way a
+real deck does. Domain-warped for wispy shapes, shaded by the density gradient
+toward the sun, and its coverage follows the weather — a wet race is genuinely
+overcast.
+
+**Racing line** (`src/render/RacingLine.ts`). Drawn from the same `lineOffset` and
+`targetSpeed` the AI drives on, and coloured green-amber-red by whether the car is
+arriving faster than each point ahead will take, given the road left to brake in.
+
 **Post-processing** (`src/render/PostFX.ts`). Bloom before tone mapping — the order
 matters, since scattering is proportional to real radiance and a tone-mapped spark is
 indistinguishable from white bodywork. Then radial speed blur, chromatic aberration
@@ -220,6 +230,15 @@ now well ahead of the racing it presents.
 bodywork the crew can reach; floor, suspension and power-unit damage stays with the
 car for the rest of the race, because those are not parts anyone changes in three
 seconds. A damaged nose adds 9-14s to the stop.
+
+**Circuit geometry is still a reconstruction.** Corner sequence, character and
+elevation are faithful; the geometry is not a survey trace, so a lap does not
+overlay a real satellite image. Making the layouts genuinely accurate is a data
+task, not a rendering one.
+
+**Sessions still start on the grid or on track**, not from the garage down the pit
+lane. Pit-lane procedure exists in the sim (speed limiter, box service, penalties)
+but is not used for the session start.
 
 **Sponsor text on the trackside hoardings renders mirrored.** The cause is not the
 ribbon's UVs: negating them provably reaches the browser and changes nothing on

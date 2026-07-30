@@ -534,6 +534,9 @@ class Game {
     toggle('Traction assist', 'Caps throttle at the rear axle grip limit',
       () => this.settings.tractionAssist,
       (v) => { this.settings.tractionAssist = v; this.input.config.tractionAssist = v; });
+    toggle('Racing line', 'Optimal line, coloured green to red by approach speed',
+      () => this.settings.racingLine,
+      (v) => { this.settings.racingLine = v; this.renderer.setRacingLineVisible(v); });
     toggle('Braking assist', 'Prevents locking the fronts',
       () => this.settings.brakingAssist,
       (v) => { this.settings.brakingAssist = v; this.input.config.brakingAssist = v; });
@@ -650,6 +653,7 @@ class Game {
 
       this.engine = new RaceEngine(def, config, field);
       this.renderer.loadSession(this.engine);
+    this.renderer.setRacingLineVisible(this.settings.racingLine);
       this.audio.configureForTrack(def.scenery, this.engine.weather.wetness);
       this.audio.setSuspended(false);
       this.renderer.director.setMode(this.settings.cameraMode as CameraMode);
@@ -838,6 +842,11 @@ class Game {
         if (this.helpVisible && performance.now() - this.helpShownAt > 6500) {
           this.helpVisible = false;
           this.hud.setHelpVisible(false);
+        }
+        if (this.input.racingLineToggled) {
+          this.settings.racingLine = !this.settings.racingLine;
+          this.renderer.setRacingLineVisible(this.settings.racingLine);
+          this.saves.saveSettings(this.settings);
         }
         if (this.input.pausePressed) {
           this.clock.paused = !this.clock.paused;

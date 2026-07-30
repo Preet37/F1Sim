@@ -106,6 +106,8 @@ export class InputController {
   cameraCyclePressed = false;
   /** Set for one frame when the help key is pressed. */
   helpToggled = false;
+  /** True on the frame the racing-line key was pressed. */
+  racingLineToggled = false;
   pausePressed = false;
   /** Manual gear request, 0 for automatic. */
   gearRequest = 0;
@@ -238,6 +240,7 @@ export class InputController {
     switch (k) {
       case 'c': this.cameraCyclePressed = true; break;
       case 'h': this.helpToggled = true; break;
+      case 'r': this.racingLineToggled = true; break;
       case 'p': case 'escape': this.pausePressed = true; break;
       case 'e': this.cycleErsMode(); break;
       case 'l': this.pitRequestToggled = true; break;
@@ -509,6 +512,7 @@ export class InputController {
   endFrame(): void {
     this.cameraCyclePressed = false;
     this.helpToggled = false;
+    this.racingLineToggled = false;
     this.pausePressed = false;
     this.pitRequestToggled = false;
   }

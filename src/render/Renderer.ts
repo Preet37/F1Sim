@@ -5,6 +5,7 @@ import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { CameraDirector } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { PostFX } from './PostFX';
+import { RacingLine } from './RacingLine';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 
@@ -43,6 +44,8 @@ export class Renderer {
   readonly director: CameraDirector;
   readonly effects: EffectsDirector;
   readonly post: PostFX;
+  /** Racing-line overlay, or null outside a session. */
+  racingLine: RacingLine | null = null;
 
   /** Current resolution scale, 0.5 .. 1.0. */
   resolutionScale = 1;
@@ -169,16 +172,20 @@ export class Renderer {
    * looking outdoors and looking at a background fill.
    */
   private buildSky(): void {
-    const geo = new THREE.SphereGeometry(3600, 24, 16);
+    const geo = new THREE.SphereGeometry(3600, 32, 20);
     const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
       uniforms: {
-        topColor: { value: new THREE.Color(0x2f6fc4) },
-        midColor: { value: new THREE.Color(0x8fc0ea) },
-        bottomColor: { value: new THREE.Color(0xd8e4ee) },
-        offset: { value: 120 },
-        exponent: { value: 0.9 },
+        topColor: { value: new THREE.Color(0x1f5cbe) },
+        midColor: { value: new THREE.Color(0x6fa8e2) },
+        bottomColor: { value: new THREE.Color(0xc0d6ea) },
+        cloudColor: { value: new THREE.Color(0xeef3fa) },
+        cloudShadow: { value: new THREE.Color(0x6a7488) },
+        sunColor: { value: new THREE.Color(0xfff0d0) },
+        sunDir: { value: new THREE.Vector3(-0.45, 0.62, 0.36).normalize() },
+        cloudAmount: { value: 0.5 },
+        uTime: { value: 0 },
       },
       vertexShader: `
         varying vec3 vWorld;
@@ -191,21 +198,122 @@ export class Renderer {
         uniform vec3 topColor;
         uniform vec3 midColor;
         uniform vec3 bottomColor;
-        uniform float offset;
-        uniform float exponent;
+        uniform vec3 cloudColor;
+        uniform vec3 cloudShadow;
+        uniform vec3 sunColor;
+        uniform vec3 sunDir;
+        uniform float cloudAmount;
+        uniform float uTime;
         varying vec3 vWorld;
+
+        // Value noise on a 3D lattice. Cheap, and the sky is drawn once per
+        // frame over a few thousand pixels, so the cost is irrelevant next to
+        // what a flat gradient costs in believability.
+        float hash(vec3 p) {
+          p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+          p *= 17.0;
+          return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+        }
+        float noise(vec3 x) {
+          vec3 i = floor(x);
+          vec3 f = fract(x);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                         mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                         mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }
+        // Five octaves of fractional Brownian motion. The billowing, self-similar
+        // structure of real cloud comes from exactly this: each octave is half
+        // the amplitude at roughly twice the frequency.
+        float fbm(vec3 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 5; i++) {
+            v += a * noise(p);
+            p *= 2.02;
+            a *= 0.5;
+          }
+          return v;
+        }
+
         void main() {
-          float h = normalize(vWorld + vec3(0.0, offset, 0.0)).y;
-          float t = pow(max(h, 0.0), exponent);
-          // Two-stop gradient: pale at the horizon, deeper overhead.
-          vec3 c = mix(bottomColor, midColor, smoothstep(0.0, 0.28, t));
-          c = mix(c, topColor, smoothstep(0.22, 1.0, t));
-          gl_FragColor = vec4(c, 1.0);
+          vec3 dir = normalize(vWorld);
+          float h = dir.y;
+
+          // --- Base sky -------------------------------------------------
+          float t = pow(max(h, 0.0), 0.9);
+          vec3 sky = mix(bottomColor, midColor, smoothstep(0.0, 0.28, t));
+          sky = mix(sky, topColor, smoothstep(0.22, 1.0, t));
+
+          // --- Sun ------------------------------------------------------
+          // A disc plus a wide forward-scattering halo. The halo is what makes
+          // the sky near the sun read as bright *air* rather than as a sticker
+          // of a sun pasted onto a flat gradient.
+          float sd = max(dot(dir, normalize(sunDir)), 0.0);
+          float disc = smoothstep(0.9985, 0.9995, sd);
+          float halo = pow(sd, 12.0) * 0.35 + pow(sd, 3.0) * 0.13;
+          sky += sunColor * halo;
+
+          // --- Clouds ---------------------------------------------------
+          // Projected onto a flat plane above the viewer rather than onto the
+          // sphere. Cloud decks are flat, so the projection is what produces
+          // the foreshortening that makes them stretch and compress toward the
+          // horizon — the single strongest cue that they are a layer at
+          // altitude and not a texture on a dome.
+          float cloud = 0.0;
+          if (h > 0.002) {
+            // The divisor is clamped well above zero. Left unclamped, the
+            // projection blows up toward the horizon — at h = 0.005 it is a 200x
+            // magnification — and the cloud field collapses into high-frequency
+            // mush that aliases into flat grey. Clamping keeps the foreshortening
+            // that sells the altitude while bounding the frequency.
+            vec2 proj = dir.xz / max(h, 0.11);
+            vec3 p = vec3(proj * 0.5, uTime * 0.006);
+            float base = fbm(p);
+            // Warping the domain by another noise field breaks up the regular
+            // lumpiness of plain fbm into wispy, sheared forms.
+            float warped = fbm(p + vec3(base * 0.85, base * 0.6, 0.0));
+
+            // cloudAmount slides the coverage threshold, so the same field can
+            // give a clear day or heavy overcast.
+            // The threshold and, just as importantly, its WIDTH are sized to
+            // the field's actual distribution: warped fbm here has a median
+            // near 0.47 and sits between roughly 0.34 and 0.56 for half its
+            // samples. A ramp wider than that spread never saturates, so every
+            // pixel gets a couple of percent of cloud and the sky reads as
+            // uniformly empty — which is exactly what the first version did.
+            float cover = mix(0.52, 0.34, cloudAmount);
+            cloud = smoothstep(cover, cover + 0.11, warped);
+            // Thin the deck right at the horizon, where distant cloud is lost in
+            // haze. Kept narrow: a chase camera looks along the ground, so the
+            // visible sky is a shallow band just above the horizon and fading
+            // over a wide angle here erases every cloud the player can actually
+            // see.
+            cloud *= smoothstep(0.0, 0.05, h);
+
+            // Shade by the local density gradient toward the sun, so tops are
+            // lit and undersides are grey. Two samples, which is all that is
+            // needed to imply a light direction.
+            float lit = fbm(p + normalize(vec3(sunDir.xz, 0.0)) * 0.16);
+            float shade = clamp((warped - lit) * 3.4 + 0.46, 0.0, 1.0);
+            vec3 body = mix(cloudShadow, cloudColor, shade);
+            // Silver lining: cloud edges near the sun glow.
+            body += sunColor * pow(sd, 6.0) * 0.5 * (1.0 - shade);
+            sky = mix(sky, body, cloud * 0.92);
+          }
+
+          // The sun disc itself draws over everything except thick cloud.
+          sky += sunColor * disc * (1.0 - cloud) * 6.0;
+
+          gl_FragColor = vec4(sky, 1.0);
         }
       `,
     });
     this.sky = new THREE.Mesh(geo, mat);
     this.sky.frustumCulled = false;
+    // Drawn first, with depth test off, so it never fights the scene.
+    this.sky.renderOrder = -1;
     this.scene.add(this.sky);
   }
 
@@ -274,6 +382,10 @@ export class Renderer {
       this.carVisuals.push(visual);
     }
 
+    this.racingLine = new RacingLine(engine.track);
+    this.racingLine.setVisible(this.racingLineVisible);
+    this.scene.add(this.racingLine.mesh);
+
     this.effects.loadSession(engine);
     this.applyAmbience(engine);
     this.director.setMode(this.director.mode);
@@ -296,6 +408,14 @@ export class Renderer {
       (skyMat.uniforms.midColor.value as THREE.Color).setHex(mid);
       (skyMat.uniforms.bottomColor.value as THREE.Color).setHex(bottom);
     };
+    /** Cloud deck colour, coverage, and where the sun sits in the sky. */
+    const setClouds = (lit: number, shadow: number, sun: number, amount: number) => {
+      if (!skyMat) return;
+      (skyMat.uniforms.cloudColor.value as THREE.Color).setHex(lit);
+      (skyMat.uniforms.cloudShadow.value as THREE.Color).setHex(shadow);
+      (skyMat.uniforms.sunColor.value as THREE.Color).setHex(sun);
+      skyMat.uniforms.cloudAmount.value = amount;
+    };
 
     // At night and at dusk the bright things in frame are lights rather than
     // sunlit surfaces, so the bloom is doing most of the atmospheric work and
@@ -303,8 +423,13 @@ export class Renderer {
     this.nightBias = night ? 1 : dusk ? 0.45 : 0;
 
     let fogColour: number;
+    // Cloud cover follows the weather, so a wet race is genuinely overcast
+    // rather than raining out of a clear blue sky.
+    const overcast = clamp01(0.35 + engine.weather.wetness * 0.6);
+
     if (night) {
       setSky(0x02040a, 0x0a1020, 0x1a2233);
+      setClouds(0x2a3348, 0x0b1018, 0x9fb4d8, overcast * 0.8);
       fogColour = 0x0d1420;
       this.hemi.color.setHex(0x2c3a58);
       this.hemi.groundColor.setHex(0x080a10);
@@ -315,6 +440,9 @@ export class Renderer {
       this.renderer.toneMappingExposure = 1.25;
     } else if (dusk) {
       setSky(0x1e2a55, 0x9a5c72, 0xf0a070);
+      // The reference look: a low sun under-lighting a heavy deck, so the cloud
+      // bases go pink and the sky behind them stays deep blue.
+      setClouds(0xffc9a4, 0x6b4a63, 0xffb070, clamp01(overcast + 0.25));
       fogColour = 0xc08a6a;
       this.hemi.color.setHex(0xffb98a);
       this.hemi.groundColor.setHex(0x2a1e22);
@@ -324,7 +452,11 @@ export class Renderer {
       this.sun.position.set(-500, 70, 120);
       this.renderer.toneMappingExposure = 1.1;
     } else {
-      setSky(0x2f6fc4, 0x8fc0ea, 0xd8e4ee);
+      setSky(0x1f5cbe, 0x6fa8e2, 0xc0d6ea);
+      // Cloud white is deliberately below pure: at 1.0 it clears the bloom
+      // pass's threshold and every cloud blooms into the sky around it, which
+      // is what turned the first version into uniform haze.
+      setClouds(0xeef3fa, 0x6e788c, 0xfff0d0, overcast);
       fogColour = 0xc6d8e8;
       this.hemi.color.setHex(0xcfe0ff);
       this.hemi.groundColor.setHex(0x3a3a30);
@@ -334,6 +466,13 @@ export class Renderer {
       this.sun.position.set(-220, 400, 180);
       this.renderer.toneMappingExposure = 1.05;
     }
+    // Point the shader's sun at the same place as the light, so the halo, the
+    // silver lining on the cloud edges and the shadows on the track all agree.
+    if (skyMat) {
+      (skyMat.uniforms.sunDir.value as THREE.Vector3)
+        .copy(this.sun.position).normalize();
+    }
+
     this.scene.background = null; // the sky dome is the background now
 
     // Fog matched to the horizon colour so distance fades into the sky rather
@@ -343,7 +482,20 @@ export class Renderer {
     this.scene.fog = new THREE.Fog(fogColour, far * 0.3, far);
   }
 
+  /** Player preference, kept across sessions. */
+  private racingLineVisible = true;
+
+  setRacingLineVisible(on: boolean): void {
+    this.racingLineVisible = on;
+    this.racingLine?.setVisible(on);
+  }
+
   unloadSession(): void {
+    if (this.racingLine) {
+      this.scene.remove(this.racingLine.mesh);
+      this.racingLine.dispose();
+      this.racingLine = null;
+    }
     this.effects?.unload();
     if (this.trackMeshes) {
       this.scene.remove(this.trackMeshes.root);
@@ -433,12 +585,22 @@ export class Renderer {
 
     const cam = this.director.camera;
 
+    // Drift the cloud deck. Slow enough that it never reads as motion during a
+    // lap, fast enough that a stationary car on the grid is not sitting under a
+    // frozen photograph.
+    const skyMat = this.sky?.material as THREE.ShaderMaterial | undefined;
+    if (skyMat) skyMat.uniforms.uTime.value += dt;
+
     // Particles are sized in metres, so the metres-to-pixels conversion has to
     // track the camera's FOV — which the director widens continuously with
     // speed. Without this, smoke visibly changes size as the car accelerates.
     const buffer = this.renderer.getDrawingBufferSize(this.tmpSize);
     this.effects.setProjection(cam.fov, buffer.y);
     this.effects.update(dt, engine, cam.position);
+
+    // Driven from the focused car, so a spectator camera still shows the line
+    // relevant to whoever is being watched.
+    this.racingLine?.update(focusCar.s, focusCar.physics.speedMs);
 
     // The radial blur converges on the point the car is heading for, not the
     // centre of the screen. In a corner the vanishing point swings wide, and

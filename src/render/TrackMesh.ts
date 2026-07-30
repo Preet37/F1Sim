@@ -42,7 +42,15 @@ const COLOUR = {
   grass: new THREE.Color(0x2c4526),
   desert: new THREE.Color(0x8a7355),
   gravel: new THREE.Color(0x9a9285),
-  wall: new THREE.Color(0x53575e),
+  wall: new THREE.Color(0x9aa0a8),
+  /** Painted stripe along the top of a street circuit's wall. */
+  wallStripe: new THREE.Color(0xd8dce2),
+  /** Concrete footing under the armco, and the fence rail above it. */
+  wallBase: new THREE.Color(0x6f757e),
+  /** Galvanised steel: bright, slightly blue, and it catches the sun. */
+  armco: new THREE.Color(0xb9c0c9),
+  /** The shadowed gap between the two rails. */
+  armcoGap: new THREE.Color(0x2a2e35),
   pit: new THREE.Color(0x33363c),
   startLine: new THREE.Color(0xe8e8ea),
 };
@@ -266,31 +274,66 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
       }
     }
 
-    // --- Barrier walls -----------------------------------------------------
-    // Placed exactly where RaceEngine.enforceBarriers puts them, so a wall you
-    // can see is a wall you actually hit.
+    // --- Barriers ----------------------------------------------------------
+    //
+    // Placed exactly where RaceEngine.enforceBarriers puts them, so a barrier
+    // you can see is a barrier you actually hit.
+    //
+    // Built as real trackside furniture rather than as one flat slab. A permanent
+    // circuit runs steel armco — a concrete base, two or three horizontal rails
+    // with a gap between them, and posts at intervals — with debris fencing
+    // above it. Those horizontal lines streaming past are a large part of the
+    // sensation of speed, and the gap between the rails is what lets you see
+    // through to the run-off and the crowd beyond. A solid wall reads as a
+    // corridor; this reads as a circuit.
+    //
+    // Street circuits get a solid concrete wall instead, because that is what
+    // they actually use and it is why they punish a mistake so much harder.
     const barrierOffset = isStreet ? 2.5 : 14;
     for (const side of [-1, 1] as const) {
       const oA = side * (hwA + barrierOffset);
       const oB = side * (hwB + barrierOffset);
       const yA = py(a, oA) + Y_RUNOFF;
       const yB = py(b, oB) + Y_RUNOFF;
-      if (side > 0) {
-        walls.quad(
-          px(a, oA), yA, pz(a, oA),
-          px(b, oB), yB, pz(b, oB),
-          px(b, oB), yB + WALL_H, pz(b, oB),
-          px(a, oA), yA + WALL_H, pz(a, oA),
-          COLOUR.wall,
-        );
+
+      /**
+       * One vertical band of barrier, from y0 to y1 above the ground.
+       * Wound so the face toward the track is the front face on both sides.
+       */
+      const band = (y0: number, y1: number, colour: THREE.Color) => {
+        if (side > 0) {
+          walls.quad(
+            px(a, oA), yA + y0, pz(a, oA),
+            px(b, oB), yB + y0, pz(b, oB),
+            px(b, oB), yB + y1, pz(b, oB),
+            px(a, oA), yA + y1, pz(a, oA),
+            colour,
+          );
+        } else {
+          walls.quad(
+            px(a, oA), yA + y1, pz(a, oA),
+            px(b, oB), yB + y1, pz(b, oB),
+            px(b, oB), yB + y0, pz(b, oB),
+            px(a, oA), yA + y0, pz(a, oA),
+            colour,
+          );
+        }
+      };
+
+      if (isStreet) {
+        // Solid concrete, with a painted stripe along the top edge the way a
+        // real street circuit marks its walls.
+        band(0, WALL_H * 0.86, COLOUR.wall);
+        band(WALL_H * 0.86, WALL_H, COLOUR.wallStripe);
       } else {
-        walls.quad(
-          px(a, oA), yA + WALL_H, pz(a, oA),
-          px(b, oB), yB + WALL_H, pz(b, oB),
-          px(b, oB), yB, pz(b, oB),
-          px(a, oA), yA, pz(a, oA),
-          COLOUR.wall,
-        );
+        // Concrete footing, then armco: lower rail, gap, upper rail.
+        band(0, 0.30, COLOUR.wallBase);
+        band(0.30, 0.62, COLOUR.armco);
+        band(0.62, 0.74, COLOUR.armcoGap);
+        band(0.74, 1.06, COLOUR.armco);
+        // The fence itself is drawn separately as a transparent mesh; this is
+        // the dark rail it is bolted to.
+        band(1.06, WALL_H, COLOUR.wallBase);
       }
     }
   }
@@ -366,6 +409,90 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   addMesh(root, runoff, false, geometries, materials, detail, SURFACES.runoff);
   addMesh(root, pit, false, geometries, materials, detail, SURFACES.asphalt);
   addMesh(root, walls, true, geometries, materials, detail, SURFACES.wall);
+
+  // --- Catch fencing -------------------------------------------------------
+  //
+  // The debris fence above the armco. Drawn as a transparent alpha-tested mesh
+  // with a generated wire-mesh texture, so you see the crowd and the run-off
+  // *through* it — which is the whole point of a fence and the reason a circuit
+  // feels open rather than walled in.
+  //
+  // Alpha test rather than alpha blend: a blended fence needs sorting against
+  // everything behind it and flickers as the camera moves, whereas a cutout
+  // writes depth normally and costs nothing.
+  if (track.def.scenery !== 'street') {
+    const FENCE_BOTTOM = 1.5;
+    const FENCE_TOP = 5.4;
+    const barrierOffset = 14;
+
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+    const fenceStep = Math.max(step, 2);
+
+    for (let a2 = 0; a2 < count; a2 += fenceStep) {
+      const b2 = (a2 + fenceStep) % count;
+      const hwA2 = track.width[a2] * 0.5;
+      const hwB2 = track.width[b2] * 0.5;
+      // UV runs with distance so the mesh keeps a constant real-world size
+      // instead of stretching around corners.
+      const uA = track.dist[a2] / 4;
+      const uB = uA + (fenceStep * (track.length / count)) / 4;
+
+      for (const side of [-1, 1] as const) {
+        const oA = side * (hwA2 + barrierOffset);
+        const oB = side * (hwB2 + barrierOffset);
+        const yA = py(a2, oA) + Y_RUNOFF;
+        const yB = py(b2, oB) + Y_RUNOFF;
+        const x0 = px(a2, oA), z0 = pz(a2, oA);
+        const x1 = px(b2, oB), z1 = pz(b2, oB);
+        const nx = -track.nx[a2] * side;
+        const nz = -track.nz[a2] * side;
+
+        const quad = side > 0
+          ? [[x0, yA + FENCE_BOTTOM, z0, uA, 1], [x1, yB + FENCE_BOTTOM, z1, uB, 1], [x1, yB + FENCE_TOP, z1, uB, 0],
+             [x0, yA + FENCE_BOTTOM, z0, uA, 1], [x1, yB + FENCE_TOP, z1, uB, 0], [x0, yA + FENCE_TOP, z0, uA, 0]]
+          : [[x0, yA + FENCE_TOP, z0, uA, 0], [x1, yB + FENCE_TOP, z1, uB, 0], [x1, yB + FENCE_BOTTOM, z1, uB, 1],
+             [x0, yA + FENCE_TOP, z0, uA, 0], [x1, yB + FENCE_BOTTOM, z1, uB, 1], [x0, yA + FENCE_BOTTOM, z0, uA, 1]];
+
+        for (const v of quad) {
+          positions.push(v[0], v[1], v[2]);
+          normals.push(nx, 0, nz);
+          uvs.push(v[3], v[4]);
+        }
+      }
+    }
+
+    if (positions.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.computeBoundingSphere();
+
+      const tex = makeFenceTexture();
+      const mat = new THREE.MeshStandardMaterial({
+        map: tex,
+        alphaMap: tex,
+        transparent: false,
+        alphaTest: 0.45,
+        side: THREE.DoubleSide,
+        roughness: 0.75,
+        metalness: 0.25,
+        color: 0x2f4a38,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      // Fencing does not need to catch or cast shadows; it would only produce
+      // a shimmering moire on the run-off for no readable gain.
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      root.add(mesh);
+      geometries.push(geo);
+      materials.push(mat);
+      textures.push(tex);
+    }
+  }
 
   // --- Trackside hoardings -------------------------------------------------
   // A continuous ribbon along the barrier line, UV-mapped by distance so the
@@ -778,4 +905,44 @@ function buildSceneryInstances(
     geometries: [treeGeo, standGeo, buildingGeo],
     materials: [treeMat, standMat, buildingMat],
   };
+}
+
+
+/**
+ * A wire-mesh texture for the catch fencing: a grid of thin wires with posts.
+ *
+ * White on black, used as both the colour map and the alpha map, with the
+ * material's own colour tinting it green. Generating it means the wire gauge
+ * can be tuned to stay visible at speed — too fine and the fence disappears
+ * into aliasing shimmer, too coarse and it reads as a net.
+ */
+function makeFenceTexture(): THREE.Texture {
+  const S = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = S;
+  canvas.height = S;
+  const g = canvas.getContext('2d')!;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, S, S);
+
+  // The diamond weave of real chain-link.
+  g.strokeStyle = '#fff';
+  g.lineWidth = 2;
+  g.beginPath();
+  for (let i = -S; i < S * 2; i += 16) {
+    g.moveTo(i, 0);
+    g.lineTo(i + S, S);
+    g.moveTo(i + S, 0);
+    g.lineTo(i, S);
+  }
+  g.stroke();
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  // Mipmapping a thin wire grid averages it into grey mush at distance, which
+  // turns the fence into a translucent haze. Anisotropy keeps it legible at the
+  // glancing angles a fence is almost always seen at.
+  tex.anisotropy = 8;
+  tex.needsUpdate = true;
+  return tex;
 }
