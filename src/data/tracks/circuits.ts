@@ -826,6 +826,8 @@ function materialise(spec: CircuitSpec): TrackDefinition {
   return {
     ...spec.meta,
     controlPoints,
+    // Kept so scripts/probeCurvature.ts can compare the two side by side.
+    authoredControlPoints: Array.from(built.controlPoints),
     corners: built.corners.map((c) => ({ s: c.s * k, name: c.name })),
     drsZones,
     widthOverrides: built.widthRanges.map((w) => ({

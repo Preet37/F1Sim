@@ -71,6 +71,11 @@ export interface PitLane {
 }
 
 export interface TrackDefinition {
+  /**
+   * The hand-authored centreline, retained alongside the surveyed one purely so
+   * the diagnostic scripts can compare them. Nothing in the sim reads it.
+   */
+  authoredControlPoints?: readonly number[];
   id: string;
   name: string;
   /** Official circuit name, for the UI. */
