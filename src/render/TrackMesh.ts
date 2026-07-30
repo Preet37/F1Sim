@@ -15,6 +15,7 @@ import {
   PIT_GARAGE_SPACING_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
+import type { SceneryItem } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -149,7 +150,11 @@ class StripBuilder {
   }
 }
 
-export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): TrackMeshes {
+export function buildTrackMeshes(
+  track: TrackSpline,
+  quality: 'low' | 'high',
+  scenery: readonly SceneryItem[],
+): TrackMeshes {
   const root = new THREE.Group();
   root.name = 'circuit';
 
@@ -999,7 +1004,7 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   // the eye something to measure speed against, which matters far more for the
   // sensation of speed than any amount of surface detail.
   {
-    const dressing = buildSceneryInstances(track, quality);
+    const dressing = buildSceneryInstances(track, quality, scenery);
     if (dressing) {
       for (const m of dressing.meshes) root.add(m);
       geometries.push(...dressing.geometries);
@@ -1049,29 +1054,35 @@ function addMesh(
 }
 
 /**
- * Set dressing: trees and grandstands as instanced meshes.
+ * Set dressing: trees, grandstands and city blocks as instanced meshes.
  *
  * The first version used boxes, which read exactly as boxes — pale green slabs
  * standing in a field. Scenery is what the eye measures speed against, so it has
  * to at least resolve as *objects* rather than as geometry.
  *
- * Two instanced meshes (one tree, one grandstand) means two draw calls for several
- * hundred objects. A tree is a trunk plus two offset cones, which is enough to read
- * as a tree in peripheral vision at 300 km/h, and that is the only place it is ever
- * seen.
+ * Three instanced meshes means three draw calls for several hundred objects. A
+ * tree is a trunk plus two offset cones, which is enough to read as a tree in
+ * peripheral vision at 300 km/h, and that is the only place it is ever seen.
+ *
+ * WHERE each object goes is not decided here. It is decided by
+ * `buildSceneryLayout`, which tests every candidate footprint against the whole
+ * circuit — because this function used to pick a lateral offset from the local
+ * node and never look further, and a closed loop that folds back on itself will
+ * happily put that offset on top of the road somewhere else. At Monaco that
+ * meant a thirty-metre building standing across the racing surface with the
+ * player's car inside it. The layout also has to be shared with the simulation,
+ * which collides against these objects, and the only way for the drawing and
+ * the colliding to agree is for both to read the same list.
  */
 function buildSceneryInstances(
   track: TrackSpline,
   quality: 'low' | 'high',
+  items: readonly SceneryItem[],
 ): { meshes: THREE.InstancedMesh[]; geometries: THREE.BufferGeometry[]; materials: THREE.Material[] } | null {
-  const spacing = quality === 'low' ? 90 : 55;
-  const slots = Math.floor(track.length / spacing) * 2;
-  if (slots <= 0) return null;
+  if (items.length === 0) return null;
 
   const scenery = track.def.scenery;
   const isStreet = scenery === 'street';
-  const barrier = isStreet ? 2.5 : 14;
-  const pitGeom = pitLaneGeometry(track.def, track.length);
 
   // --- Tree: trunk plus two staggered cones -------------------------------
   const trunk = new THREE.CylinderGeometry(0.22, 0.34, 2.6, 6);
@@ -1101,9 +1112,18 @@ function buildSceneryInstances(
   });
   const buildingMat = new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0.1 });
 
-  const trees = new THREE.InstancedMesh(treeGeo, treeMat, slots);
-  const stands = new THREE.InstancedMesh(standGeo, standMat, Math.max(1, Math.floor(slots * 0.16)));
-  const buildings = new THREE.InstancedMesh(buildingGeo, buildingMat, isStreet ? slots : 1);
+  let treeSlots = 0;
+  let standSlots = 0;
+  let buildingSlots = 0;
+  for (const item of items) {
+    if (item.kind === 'tree') treeSlots++;
+    else if (item.kind === 'grandstand') standSlots++;
+    else buildingSlots++;
+  }
+
+  const trees = new THREE.InstancedMesh(treeGeo, treeMat, Math.max(1, treeSlots));
+  const stands = new THREE.InstancedMesh(standGeo, standMat, Math.max(1, standSlots));
+  const buildings = new THREE.InstancedMesh(buildingGeo, buildingMat, Math.max(1, buildingSlots));
   for (const m of [trees, stands, buildings]) m.frustumCulled = false;
 
   const matrix = new THREE.Matrix4();
@@ -1117,78 +1137,48 @@ function buildSceneryInstances(
   let standN = 0;
   let buildingN = 0;
 
-  for (let k = 0; treeN + standN + buildingN < slots * 1.5; k++) {
-    const s = (k * spacing) % track.length;
-    if (k * spacing > track.length) break;
-    const i = track.indexAt(s);
-    const hw = track.width[i] * 0.5;
-    const groundY = track.elevation[i];
-    const heading = Math.atan2(track.tx[i], track.tz[i]);
+  for (const item of items) {
+    quat.setFromAxisAngle(up, item.yaw);
 
-    for (const side of [-1, 1] as const) {
-      // Nothing gets planted in the paddock, or in the pit lane.
-      if (isPaddockGround(track, i, side)) continue;
-      if (side === pitGeom.sign && pitGeom.covers(track.dist[i])) continue;
-      // Deterministic pseudo-random from the index: identical every load, and no
-      // RNG state to thread through.
-      const h = Math.abs((Math.sin(k * 12.9898 + side * 78.233) * 43758.5453) % 1);
-      const h2 = Math.abs((Math.sin(k * 39.3468 + side * 11.135) * 24634.6345) % 1);
-
-      const lat = side * (hw + barrier + 5 + h * 24);
-      const x = track.px[i] + track.nx[i] * lat;
-      const z = track.pz[i] + track.nz[i] * lat;
-
-      if (isStreet && buildingN < buildings.count) {
-        const height = 11 + h * 30;
-        const w = 9 + h2 * 12;
-        pos.set(x, groundY + height * 0.5, z);
-        scale.set(w, height, w * 0.85);
-        quat.setFromAxisAngle(up, heading);
-        matrix.compose(pos, quat, scale);
-        buildings.setMatrixAt(buildingN, matrix);
-        colour.setHSL(0.58 + h2 * 0.05, 0.06, 0.24 + h * 0.2);
-        buildings.setColorAt(buildingN, colour);
-        buildingN++;
-        continue;
-      }
-
-      // A grandstand on the straights, where a real circuit puts them, and
-      // close to the track so it frames the road.
-      const fast = track.targetSpeed[i] > 62;
-      if (fast && h2 > 0.72 && standN < stands.count) {
-        const standLat = side * (hw + barrier + 9);
-        pos.set(
-          track.px[i] + track.nx[i] * standLat,
-          groundY,
-          track.pz[i] + track.nz[i] * standLat,
-        );
-        scale.set(1, 1, 1);
-        // Face the track.
-        quat.setFromAxisAngle(up, heading + (side > 0 ? 0 : Math.PI));
-        matrix.compose(pos, quat, scale);
-        stands.setMatrixAt(standN, matrix);
-        // Near-white: the stand carries its own colours per vertex now, and an
-        // instance tint multiplies them, so anything darker greys out the crowd.
-        colour.setHSL(0.58, 0.05, 0.86 + h * 0.1);
-        stands.setColorAt(standN, colour);
-        standN++;
-        continue;
-      }
-
-      if (treeN < trees.count) {
-        const size = scenery === 'desert' ? 0.5 + h * 0.4 : 0.8 + h * 0.85;
-        pos.set(x, groundY, z);
-        scale.set(size, size * (0.85 + h2 * 0.5), size);
-        quat.setFromAxisAngle(up, h * 6.283);
-        matrix.compose(pos, quat, scale);
-        trees.setMatrixAt(treeN, matrix);
-        if (scenery === 'desert') colour.setHSL(0.11, 0.3, 0.32 + h2 * 0.1);
-        else if (scenery === 'forest') colour.setHSL(0.31, 0.42, 0.13 + h2 * 0.09);
-        else colour.setHSL(0.28, 0.38, 0.15 + h2 * 0.12);
-        trees.setColorAt(treeN, colour);
-        treeN++;
-      }
+    if (item.kind === 'building') {
+      // The box geometry is a unit cube centred on its origin, so it is lifted
+      // by half its height to stand on the ground.
+      pos.set(item.x, item.y + item.height * 0.5, item.z);
+      scale.set(item.spanX, item.height, item.spanZ);
+      matrix.compose(pos, quat, scale);
+      buildings.setMatrixAt(buildingN, matrix);
+      colour.setHSL(0.58 + item.h2 * 0.05, 0.06, 0.24 + item.h * 0.2);
+      buildings.setColorAt(buildingN, colour);
+      buildingN++;
+      continue;
     }
+
+    if (item.kind === 'grandstand') {
+      pos.set(item.x, item.y, item.z);
+      scale.set(1, 1, 1);
+      matrix.compose(pos, quat, scale);
+      stands.setMatrixAt(standN, matrix);
+      // Near-white: the stand carries its own colours per vertex, and an
+      // instance tint multiplies them, so anything darker greys out the crowd.
+      colour.setHSL(0.58, 0.05, 0.86 + item.h * 0.1);
+      stands.setColorAt(standN, colour);
+      standN++;
+      continue;
+    }
+
+    // The tree geometry is authored around a canopy radius of 1.9m, so the
+    // layout's footprint and this scale have to be derived from the same
+    // number — see `buildSceneryLayout`.
+    const size = scenery === 'desert' ? 0.5 + item.h * 0.4 : 0.8 + item.h * 0.85;
+    pos.set(item.x, item.y, item.z);
+    scale.set(size, size * (0.85 + item.h2 * 0.5), size);
+    matrix.compose(pos, quat, scale);
+    trees.setMatrixAt(treeN, matrix);
+    if (scenery === 'desert') colour.setHSL(0.11, 0.3, 0.32 + item.h2 * 0.1);
+    else if (scenery === 'forest') colour.setHSL(0.31, 0.42, 0.13 + item.h2 * 0.09);
+    else colour.setHSL(0.28, 0.38, 0.15 + item.h2 * 0.12);
+    trees.setColorAt(treeN, colour);
+    treeN++;
   }
 
   trees.count = Math.max(1, treeN);
@@ -1200,7 +1190,7 @@ function buildSceneryInstances(
   }
 
   const meshes: THREE.InstancedMesh[] = [trees, stands];
-  if (isStreet) meshes.push(buildings);
+  if (isStreet && buildingN > 0) meshes.push(buildings);
 
   return {
     meshes,

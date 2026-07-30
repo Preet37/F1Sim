@@ -10,6 +10,8 @@ import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/
 import type { Neighbour } from '../ai/AIVehicleController';
 import { createNeighbour } from '../ai/AIVehicleController';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
+import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
+import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 
 /**
  * The simulation. Owns the track, the cars, race control, timing and the
@@ -147,6 +149,14 @@ const DISC_OFFSETS_M = [1.85, 0, -1.85] as const;
 /** Centre-to-centre distance beyond which no discs can possibly overlap. */
 const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
 
+/** What race control calls each kind of solid object a car can hit. */
+const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
+  building: 'a building',
+  grandstand: 'the grandstand',
+  wall: 'the wall',
+  pitwall: 'the pit wall',
+};
+
 /** Fixed grid-slot geometry: 8m between rows, ~4m side offset. */
 const GRID_ROW_SPACING_M = 8;
 const GRID_SIDE_OFFSET_M = 3.4;
@@ -160,6 +170,15 @@ const MAX_SLIPSTREAM_GAIN = 0.2;
 
 export class RaceEngine {
   readonly track: TrackSpline;
+  /**
+   * The static world: where the set dressing stands, and which of it is solid.
+   *
+   * Built here rather than in the renderer so that the headless validation
+   * harness collides against exactly the same buildings, stands and walls the
+   * browser draws.
+   */
+  readonly world: WorldModel;
+  private readonly pitGeom: PitLaneGeometry;
   readonly cars: CarEntry[] = [];
   readonly raceControl: RaceControlManager;
   readonly weather: Weather;
@@ -191,9 +210,13 @@ export class RaceEngine {
   };
 
   private timingAccumulator = 0;
+  /** Broadphase scratch for the static-obstacle pass. Reused, never reallocated. */
+  private readonly obstacleHits: number[] = [];
 
   constructor(def: TrackDefinition, config: SessionConfig, entries?: readonly Driver[]) {
     this.track = new TrackSpline(def);
+    this.world = buildWorldModel(this.track);
+    this.pitGeom = pitLaneGeometry(def, this.track.length);
     this.config = config;
     this.raceControl = new RaceControlManager(this.track);
     this.weather = new Weather(def, config.seed);
@@ -512,6 +535,7 @@ export class RaceEngine {
 
       const crossedLine = car.updateProjection(this.track);
       this.enforceBarriers(car, dt);
+      this.collideWithObstacles(car, dt);
       this.updateSectorTiming(car);
       this.updatePitLane(car, dt);
 
@@ -632,6 +656,11 @@ export class RaceEngine {
       // a hundred metres outside the fence" state.
       const pitLat = this.track.def.pitLane.lateralOffsetM;
       limit = Math.abs(pitLat) + 6;
+      // ...and on the other side by the pit wall. Without this a car in the
+      // lane could simply drift across the wall and rejoin the circuit through
+      // it, which is the same "the world is not solid" complaint from the
+      // opposite direction.
+      this.enforcePitWall(car, dt);
       if (Math.abs(car.lateral) <= limit) return;
     }
 
@@ -657,11 +686,27 @@ export class RaceEngine {
     // the vehicle model, which owns `velocity` and the body-frame copy of it
     // that has to stay in step. See VehiclePhysics.collideWithBarrier.
     const severity = car.physics.collideWithBarrier(nx, nz, dt);
+    this.onSolidImpact(car, severity, nx, nz, 'the barrier');
+  }
 
+  /**
+   * Books the consequences of hitting something immovable.
+   *
+   * Shared by the circuit's barrier line, the pit wall and every static
+   * obstacle in the world, so a car that drives into a grandstand is punished
+   * exactly as hard as one that drives into an armco at the same speed and the
+   * same angle. Severity comes from the vehicle model and is the closing speed
+   * ALONG THE CONTACT NORMAL as a fraction of the write-off speed — so it
+   * already carries both the speed and the angle of the impact, and a
+   * glancing brush at 300 km/h costs less than a square-on hit at 80.
+   */
+  private onSolidImpact(
+    car: CarEntry, severity: number, nx: number, nz: number, what: string,
+  ): void {
     if (severity > 0.25) {
       this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz));
       this.raceControl.log(
-        car.driver.code + ' into the barrier at ' +
+        car.driver.code + ' into ' + what + ' at ' +
         (this.track.cornerNameAt(car.s) || 'the exit'),
         severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
       );
@@ -672,6 +717,141 @@ export class RaceEngine {
       // carrying its impact speed, so the HUD kept reading a speed for a car
       // that was out of the race and pinned against a barrier.
       car.physics.stop();
+      car.recovered = true;
+      this.raceControl.log(
+        car.driver.code + ' is out on the spot — heavy impact',
+        'critical', this.time, car.index,
+      );
+    }
+  }
+
+  /**
+   * The pit wall, from the pit lane's side.
+   *
+   * Only over the wall's actual length, and with a few metres of slack at each
+   * end: a car joining the lane crosses the wall line diagonally over the entry
+   * wedge, and clamping it there would shove every car sideways as it entered
+   * the pits. The wall is solid from the CIRCUIT's side through the ordinary
+   * static-obstacle pass; this is the mirror of it.
+   */
+  private enforcePitWall(car: CarEntry, dt: number): void {
+    const g = this.pitGeom;
+    const u = g.u(car.s);
+    if (u < g.entryOpenU + 10 || u > g.exitU - 10) return;
+
+    const inner = g.wallMag + g.wallThick * 0.5 + DISC_RADIUS_M;
+    const onSide = car.lateral * g.sign;
+    if (onSide >= inner) return;
+
+    const idx = this.track.indexAt(car.s);
+    const push = inner - onSide;
+    car.physics.position.x += this.track.nx[idx] * g.sign * push;
+    car.physics.position.y += this.track.nz[idx] * g.sign * push;
+    car.lateral = g.sign * inner;
+
+    // The car was travelling toward the circuit, so the normal it hit the wall
+    // along points back across the lane.
+    const nx = -this.track.nx[idx] * g.sign;
+    const nz = -this.track.nz[idx] * g.sign;
+    const severity = car.physics.collideWithBarrier(nx, nz, dt);
+    this.onSolidImpact(car, severity, nx, nz, 'the pit wall');
+  }
+
+  /**
+   * Car versus the solid world: buildings, grandstands, the pit wall and the
+   * walls down the pit entry and exit roads.
+   *
+   * Before this the only thing keeping a car in the world was a lateral limit
+   * on the spline, which is a fine model of a barrier that follows the track
+   * and no model at all of a building standing beside it. Everything else was
+   * scenery in the literal sense — the car drove through it.
+   *
+   * The car is the same three discs `resolveContacts` uses, so its footprint
+   * here and its footprint against another car are the same shape. Each disc is
+   * tested against the obstacle's oriented box by the standard closest-point
+   * construction, the deepest contact wins, and the response is handed to
+   * `VehiclePhysics.collideWithBarrier` — the same restitution, scrape and yaw
+   * damping the circuit's own barrier uses, so hitting a wall feels like
+   * hitting a wall wherever the wall came from.
+   */
+  private collideWithObstacles(car: CarEntry, dt: number): void {
+    const field = this.world.obstacles;
+    if (field.isEmpty) return;
+
+    const p = car.physics;
+    const sinH = Math.sin(p.heading);
+    const cosH = Math.cos(p.heading);
+    const reach = DISC_OFFSETS_M[0] + DISC_RADIUS_M;
+
+    field.query(p.position.x, p.position.y, reach, this.obstacleHits);
+
+    for (const oi of this.obstacleHits) {
+      const o: Obstacle = field.obstacles[oi];
+      // A car in the pit lane is held off the pit wall by `enforcePitWall`,
+      // which knows about the entry and exit tapers. Applying both would fight
+      // over the same car at the split.
+      if (o.kind === 'pitwall' && car.inPitLane) continue;
+
+      let bestPen = 0;
+      let bnx = 0;
+      let bnz = 0;
+
+      for (const off of DISC_OFFSETS_M) {
+        const dx = p.position.x + sinH * off - o.x;
+        const dz = p.position.y + cosH * off - o.z;
+        // Into the box's frame: local +X across the track, +Z along it.
+        const lx = dx * o.cos - dz * o.sin;
+        const lz = dx * o.sin + dz * o.cos;
+        const qx = clamp(lx, -o.halfX, o.halfX);
+        const qz = clamp(lz, -o.halfZ, o.halfZ);
+        const ex = lx - qx;
+        const ez = lz - qz;
+        const d = Math.hypot(ex, ez);
+
+        let pen: number;
+        let nlx: number;
+        let nlz: number;
+        if (d > 1e-6) {
+          pen = DISC_RADIUS_M - d;
+          if (pen <= 0) continue;
+          nlx = ex / d;
+          nlz = ez / d;
+        } else {
+          // The disc's centre is inside the box. Push it out through the
+          // nearest face rather than an arbitrary one, so a car that somehow
+          // ends up inside a building comes out of the side it went in.
+          const outX = o.halfX - Math.abs(lx);
+          const outZ = o.halfZ - Math.abs(lz);
+          if (outX < outZ) {
+            pen = outX + DISC_RADIUS_M;
+            nlx = lx >= 0 ? 1 : -1;
+            nlz = 0;
+          } else {
+            pen = outZ + DISC_RADIUS_M;
+            nlx = 0;
+            nlz = lz >= 0 ? 1 : -1;
+          }
+        }
+
+        if (pen > bestPen) {
+          bestPen = pen;
+          bnx = nlx * o.cos + nlz * o.sin;
+          bnz = -nlx * o.sin + nlz * o.cos;
+        }
+      }
+
+      if (bestPen <= 0) continue;
+
+      // Separate along the contact normal only — the same rule, and for the
+      // same reason, as the barrier: rebuilding the position from the spline
+      // pins the car in place.
+      p.position.x += bnx * bestPen;
+      p.position.y += bnz * bestPen;
+
+      // `collideWithBarrier` wants the normal pointing the way the car was
+      // travelling when it hit, which is into the obstacle.
+      const severity = p.collideWithBarrier(-bnx, -bnz, dt);
+      this.onSolidImpact(car, severity, -bnx, -bnz, OBSTACLE_NAMES[o.kind]);
     }
   }
 
