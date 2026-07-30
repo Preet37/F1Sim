@@ -52,13 +52,16 @@ export class KeepOutField {
   private readonly cx: number[] = [];
   private readonly cz: number[] = [];
   private readonly cr: number[] = [];
+  /** Distance along the lap this disc came from, or -1 for the pit lane. */
+  private readonly cs: number[] = [];
   private maxRadius = 0;
 
-  add(x: number, z: number, r: number): void {
+  add(x: number, z: number, r: number, s = -1): void {
     const i = this.cx.length;
     this.cx.push(x);
     this.cz.push(z);
     this.cr.push(r);
+    this.cs.push(s);
     if (r > this.maxRadius) this.maxRadius = r;
     const c = KeepOutField.CELL_M;
     KeepOutField.push(this.bins, Math.floor(x / c), Math.floor(z / c), i);
@@ -121,6 +124,51 @@ export class KeepOutField {
     }
     return true;
   }
+
+  /**
+   * Distance from a point to the nearest bit of drivable ground, ignoring the
+   * stretch of lap the caller is standing on.
+   *
+   * The exclusion is what makes this useful for placing a barrier. A barrier
+   * fourteen metres off the racing line is, trivially, fourteen metres from the
+   * racing line — the question is whether it is also standing on a DIFFERENT
+   * part of the same circuit, which at a track that doubles back on itself is
+   * exactly what happens. Excluding a window either side of the caller's own
+   * lap distance asks that question and nothing else.
+   *
+   * @param cap distance beyond which the answer stops mattering
+   */
+  clearanceAt(
+    x: number, z: number, cap: number, excludeS: number, window: number, lapLength: number,
+  ): number {
+    const c = KeepOutField.CELL_M;
+    const reach = cap + this.maxRadius;
+    const g0x = Math.floor((x - reach) / c);
+    const g1x = Math.floor((x + reach) / c);
+    const g0z = Math.floor((z - reach) / c);
+    const g1z = Math.floor((z + reach) / c);
+
+    let best = cap;
+    for (let gx = g0x; gx <= g1x; gx++) {
+      for (let gz = g0z; gz <= g1z; gz++) {
+        const bin = this.bins.get(KeepOutField.key(gx, gz));
+        if (!bin) continue;
+        for (const i of bin) {
+          const s = this.cs[i];
+          if (s >= 0 && excludeS >= 0) {
+            let d = Math.abs(s - excludeS);
+            if (d > lapLength * 0.5) d = lapLength - d;
+            if (d <= window) continue;
+          }
+          const dx = this.cx[i] - x;
+          const dz = this.cz[i] - z;
+          const d = Math.hypot(dx, dz) - this.cr[i];
+          if (d < best) best = d;
+        }
+      }
+    }
+    return best;
+  }
 }
 
 /**
@@ -154,7 +202,7 @@ export function buildKeepOutField(track: TrackSpline): KeepOutField {
   const field = new KeepOutField();
 
   for (let i = 0; i < track.count; i++) {
-    field.add(track.px[i], track.pz[i], track.width[i] * 0.5);
+    field.add(track.px[i], track.pz[i], track.width[i] * 0.5, track.dist[i]);
   }
 
   const g = pitLaneGeometry(track.def, track.length);
@@ -167,6 +215,207 @@ export function buildKeepOutField(track: TrackSpline): KeepOutField {
   }
 
   return field;
+}
+
+// ===========================================================================
+// The barrier line
+// ===========================================================================
+
+/**
+ * Nominal distance from the track edge to the barrier.
+ *
+ * Street circuits are walled right at the edge of the road, which is why they
+ * punish a mistake so much harder than a permanent circuit's run-off.
+ */
+export function nominalBarrierOffset(track: TrackSpline): number {
+  return track.def.scenery === 'street' ? 2.5 : 14;
+}
+
+/** How close a barrier is ever allowed to come to the track edge. */
+const BARRIER_MIN_OFFSET_M = 2.2;
+/** Clearance a barrier must keep from any OTHER part of the circuit. */
+const BARRIER_ROAD_CLEARANCE_M = 2.0;
+/** Lap distance either side of a node that counts as "the same bit of road". */
+const BARRIER_SAME_ROAD_M = 70;
+/** Most a barrier may step in or out between adjacent nodes, metres. */
+const BARRIER_SLOPE_M = 0.35;
+
+/**
+ * True where the trackside barrier gives way to the paddock or the pit lane.
+ *
+ * The barrier, the catch fencing, the sponsor hoardings and the set dressing
+ * are all laid down at a fixed offset for the whole lap; along the pits that
+ * puts an armco through the middle of the fast lane. One rule, used by the
+ * renderer and the simulation alike, so what is drawn and what is solid stop
+ * where each other stop.
+ */
+export function barrierSuppressed(
+  track: TrackSpline, node: number, side: -1 | 1, pit: PitLaneGeometry,
+): boolean {
+  if (isPaddockGround(track, node, side)) return true;
+  if (side !== pit.sign) return false;
+  // Only the lane's working length, not its tapered ends: over the taper the
+  // circuit's own barrier is still the right thing beside the entry and exit
+  // roads, and suppressing it there leaves the track edge running into space.
+  const u = pit.u(track.dist[node]);
+  return u > pit.entryOpenU - 25 && u < pit.exitU + 25;
+}
+
+/**
+ * How far off the track edge the barrier actually stands, per node, per side.
+ *
+ * This is the fix for cars ending up on the wrong side of the fence.
+ *
+ * A circuit is a closed loop, and several of them fold back within a few tens
+ * of metres of themselves — Silverstone's Loop and Wellington Straight, the
+ * National and Grand Prix pit straights, Suzuka's crossover. A barrier laid
+ * down blindly fourteen metres off the edge of one of those runs straight
+ * across the OTHER one. There is then no continuous boundary at all: the
+ * "run-off" of the first section is the road of the second, the two barriers
+ * enclose a corridor rather than the circuit, and a car that runs wide is
+ * measured against whichever section its projection happens to snap to —
+ * which, once it is in that corridor, is the far one. Its lateral offset is
+ * small, containment never fires, and it comes to rest behind an armco and a
+ * catch fence with the track on the other side of them.
+ *
+ * So the offset is capped per node at whatever leaves the barrier clear of
+ * every other part of the circuit, and the result is slope-limited so the wall
+ * eases in and out rather than stepping. Where two straights run close, the
+ * barrier now sits between them, close in, exactly as it does in reality.
+ */
+export function barrierOffsets(
+  track: TrackSpline, keepOut: KeepOutField, pit: PitLaneGeometry,
+): { left: Float64Array; right: Float64Array } {
+  const count = track.count;
+  const nominal = nominalBarrierOffset(track);
+  const out = { left: new Float64Array(count), right: new Float64Array(count) };
+
+  for (const side of [-1, 1] as const) {
+    const arr = side > 0 ? out.left : out.right;
+    for (let i = 0; i < count; i++) {
+      const hw = track.width[i] * 0.5;
+      // 0 means "no barrier here at all". If there is nowhere to put one that
+      // is not standing on drivable ground — which happens where the pit exit
+      // road runs alongside the circuit as it merges — then the honest answer
+      // is not to build one. A wall across a road a car is meant to drive down
+      // is worse than a gap in the chain, and the road itself is what the car
+      // is contained by there.
+      let offset = 0;
+
+      // On the inside of a corner, an offset curve tighter than the corner's
+      // own radius folds over itself: the "barrier" doubles back and encloses
+      // the apex run-off in a pocket with no way out. Capping the offset at a
+      // fraction of the radius of curvature keeps the line convex, which is
+      // also what a real circuit does — the armco on the inside of a hairpin
+      // is close to the road, not fourteen metres back.
+      let cap = nominal;
+
+      // Where another part of the circuit runs alongside, the two barriers
+      // meet in the middle of the gap rather than each reaching its full
+      // offset. Without this, section A's barrier stands in section B's
+      // run-off: B's containment lets a car out to a place that has A's armco
+      // and debris fence between it and B's road. That is the strip the
+      // player's car was photographed parked on.
+      {
+        const probeLat = side * (hw + 2);
+        const gap = keepOut.clearanceAt(
+          track.px[i] + track.nx[i] * probeLat,
+          track.pz[i] + track.nz[i] * probeLat,
+          nominal * 2 + 10, track.dist[i], BARRIER_SAME_ROAD_M, track.length,
+        );
+        cap = Math.min(cap, Math.max(BARRIER_MIN_OFFSET_M, (gap + 2) * 0.5));
+      }
+
+      const kappa = track.curvature[i];
+      // Positive curvature turns toward positive lateral, i.e. toward the left
+      // side, so the LEFT barrier is the inner one there.
+      const inner = (side > 0 && kappa > 0) || (side < 0 && kappa < 0);
+      if (inner && Math.abs(kappa) > 1e-4) {
+        cap = Math.min(cap, Math.max(BARRIER_MIN_OFFSET_M, 0.7 / Math.abs(kappa) - hw));
+      }
+
+      // Walk outward and keep the largest offset that is still clear.
+      for (let d = cap; d >= BARRIER_MIN_OFFSET_M; d -= 1) {
+        const lat = side * (hw + d);
+        const x = track.px[i] + track.nx[i] * lat;
+        const z = track.pz[i] + track.nz[i] * lat;
+        const clear = keepOut.clearanceAt(
+          x, z, BARRIER_ROAD_CLEARANCE_M + 1, track.dist[i],
+          BARRIER_SAME_ROAD_M, track.length,
+        );
+        if (clear >= BARRIER_ROAD_CLEARANCE_M) { offset = d; break; }
+      }
+      arr[i] = offset;
+    }
+
+    // Slope-limit, wrapped, downward only — so smoothing can never push the
+    // barrier back out onto a piece of road the search just moved it off.
+    // A suppressed node (0) is skipped rather than dragging its neighbours to
+    // zero with it; the chain simply ends beside it.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let k = 0; k < count; k++) {
+        const i = k % count;
+        const p = (i - 1 + count) % count;
+        if (arr[i] <= 0 || arr[p] <= 0) continue;
+        if (arr[i] > arr[p] + BARRIER_SLOPE_M) arr[i] = arr[p] + BARRIER_SLOPE_M;
+      }
+      for (let k = count - 1; k >= 0; k--) {
+        const i = k % count;
+        const n = (i + 1) % count;
+        if (arr[i] <= 0 || arr[n] <= 0) continue;
+        if (arr[i] > arr[n] + BARRIER_SLOPE_M) arr[i] = arr[n] + BARRIER_SLOPE_M;
+      }
+    }
+  }
+
+  // Suppressed stretches are marked with 0, so a caller can skip them without
+  // having to re-derive the rule.
+  for (let i = 0; i < count; i++) {
+    if (barrierSuppressed(track, i, 1, pit)) out.left[i] = 0;
+    if (barrierSuppressed(track, i, -1, pit)) out.right[i] = 0;
+  }
+
+  return out;
+}
+
+/** A straight run of solid surface, in plan. */
+export interface WallSegment {
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+  /** Unit normal pointing AWAY from the racing surface. */
+  ox: number;
+  oz: number;
+}
+
+/**
+ * The barrier line as a chain of world-space segments — the exact boundary the
+ * renderer draws and the simulation collides against.
+ */
+export function barrierSegments(
+  track: TrackSpline, offsets: { left: Float64Array; right: Float64Array }, step: number,
+): WallSegment[] {
+  const out: WallSegment[] = [];
+  const count = track.count;
+  for (const side of [-1, 1] as const) {
+    const arr = side > 0 ? offsets.left : offsets.right;
+    for (let a = 0; a < count; a += step) {
+      const b = (a + step) % count;
+      if (arr[a] <= 0 || arr[b] <= 0) continue;
+      const la = side * (track.width[a] * 0.5 + arr[a]);
+      const lb = side * (track.width[b] * 0.5 + arr[b]);
+      out.push({
+        ax: track.px[a] + track.nx[a] * la,
+        az: track.pz[a] + track.nz[a] * la,
+        bx: track.px[b] + track.nx[b] * lb,
+        bz: track.pz[b] + track.nz[b] * lb,
+        ox: track.nx[a] * side,
+        oz: track.nz[a] * side,
+      });
+    }
+  }
+  return out;
 }
 
 // ===========================================================================
@@ -396,7 +645,17 @@ export function buildSceneryLayout(track: TrackSpline, keepOut: KeepOutField): S
 // Static obstacles
 // ===========================================================================
 
-export type ObstacleKind = 'building' | 'grandstand' | 'wall' | 'pitwall';
+export type ObstacleKind = 'building' | 'grandstand' | 'barrier' | 'pitwall';
+
+/**
+ * Thickness of the trackside barrier as a collision box.
+ *
+ * Only a collision shape, not the drawn wall: it exists so a car cannot pass
+ * through the chain even at the very shallowest of angles.
+ */
+const BARRIER_THICKNESS_M = 1.2;
+/** Extra length per barrier box, so consecutive boxes overlap at the joint. */
+const BARRIER_JOINT_OVERLAP_M = 1.2;
 
 /** One solid, immovable box, described in plan. */
 export interface Obstacle {
@@ -432,7 +691,9 @@ function boxAt(
  * circuit — they are included anyway, because "solid" should not depend on the
  * layout pass having done its job perfectly.
  */
-export function buildStaticObstacles(track: TrackSpline, scenery: SceneryItem[]): Obstacle[] {
+export function buildStaticObstacles(
+  track: TrackSpline, scenery: SceneryItem[], barrier: readonly WallSegment[],
+): Obstacle[] {
   const out: Obstacle[] = [];
 
   for (const item of scenery) {
@@ -442,6 +703,32 @@ export function buildStaticObstacles(track: TrackSpline, scenery: SceneryItem[])
       kind: item.kind === 'building' ? 'building' : 'grandstand',
       x: f.x, z: f.z, cos: f.cos, sin: f.sin, halfX: f.halfX, halfZ: f.halfZ,
     });
+  }
+
+  // The circuit's own barrier, as real geometry rather than as a lateral limit
+  // on the spline. This is the fix for a car ending up behind the fence: a
+  // spline limit is only ever as good as the projection it is measured
+  // against, and where a circuit runs back close to itself that projection
+  // snaps to the wrong section. A wall in world space does not care which node
+  // the car thinks it is nearest to.
+  for (const s of barrier) {
+    const dx = s.bx - s.ax;
+    const dz = s.bz - s.az;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.01) continue;
+    // The box's inner face sits ON the barrier line, so a car is stopped where
+    // the wall is drawn rather than a car's width short of it.
+    const cx = (s.ax + s.bx) * 0.5 + s.ox * BARRIER_THICKNESS_M * 0.5;
+    const cz = (s.az + s.bz) * 0.5 + s.oz * BARRIER_THICKNESS_M * 0.5;
+    // Overlapped along their length. Butted end to end, the joint between two
+    // segments on a curve leaves a step of an inch or two facing back up the
+    // track, and a car scraping along the wall catches every one of them —
+    // which reads as the barrier being made of teeth. Overlapping buries the
+    // step inside the neighbouring box.
+    out.push(boxAt(
+      'barrier', cx, cz, Math.atan2(dx, dz),
+      BARRIER_THICKNESS_M, len + BARRIER_JOINT_OVERLAP_M,
+    ));
   }
 
   out.push(...buildPitWallObstacles(track));
@@ -506,14 +793,27 @@ function buildPitWallObstacles(track: TrackSpline): Obstacle[] {
     segment('pitwall', u, Math.min(u + SEG_M, g.exitU), g.wallMag, g.wallMag, g.wallThick);
   }
 
-  // The wall down the OUTSIDE of the entry and exit roads is deliberately not
-  // solid. It adds nothing: a car in the lane is already held by the garage
-  // frontage, which is where that wall stands. And it cannot be modelled
-  // honestly — it sits more than twenty metres off the centreline, and where
-  // the lane runs round a corner tighter than that the offset curve folds over
-  // itself, so the "wall" is a smear of overlapping fragments rather than a
-  // line. Making that solid walled cars into the working lane at Austin and
-  // left sixteen of them stuck in the pits.
+  // The garage frontage, which is the far side of the pit lane over the row of
+  // bays — a continuous two-storey building in the paddock's geometry, and now
+  // a continuous wall in the simulation's. Without it a car that lost its
+  // pit-lane flag in the lane simply drove out through the garages and parked
+  // in the paddock behind them.
+  for (let u = 0; u < g.totalU; u += SEG_M) {
+    const b = Math.min(u + SEG_M, g.totalU);
+    const iA = track.indexAt(g.splitS + u);
+    const iB = track.indexAt(g.splitS + b);
+    if (!isPaddockGround(track, iA, g.sign as -1 | 1)) continue;
+    if (!isPaddockGround(track, iB, g.sign as -1 | 1)) continue;
+    segment('pitwall', u, b, g.garageFace, g.garageFace, 0.5);
+  }
+
+  // The wall down the OUTSIDE of the entry and exit roads is deliberately NOT
+  // solid. It cannot be modelled honestly: it sits more than twenty metres off
+  // the centreline, and where the lane runs round a corner tighter than that
+  // the offset curve folds over itself, so the "wall" is a smear of
+  // overlapping fragments rather than a line. Making it solid walled cars into
+  // the working lane at Austin and left sixteen of them stuck in the pits. The
+  // lane's own lateral limit is the boundary there instead.
   return out;
 }
 
@@ -600,15 +900,27 @@ export class ObstacleField {
 export interface WorldModel {
   keepOut: KeepOutField;
   scenery: SceneryItem[];
+  /** Barrier distance from the track edge, per node, per side. 0 = suppressed. */
+  barrierOffsets: { left: Float64Array; right: Float64Array };
+  /** The barrier line as world-space segments — drawn and collided identically. */
+  barrier: WallSegment[];
   obstacles: ObstacleField;
 }
 
+/** Node step used for both the drawn barrier and its collision chain. */
+export const BARRIER_STEP_NODES = 2;
+
 export function buildWorldModel(track: TrackSpline): WorldModel {
   const keepOut = buildKeepOutField(track);
+  const pit = pitLaneGeometry(track.def, track.length);
+  const offsets = barrierOffsets(track, keepOut, pit);
+  const barrier = barrierSegments(track, offsets, BARRIER_STEP_NODES);
   const scenery = buildSceneryLayout(track, keepOut);
   return {
     keepOut,
     scenery,
-    obstacles: new ObstacleField(buildStaticObstacles(track, scenery)),
+    barrierOffsets: offsets,
+    barrier,
+    obstacles: new ObstacleField(buildStaticObstacles(track, scenery, barrier)),
   };
 }

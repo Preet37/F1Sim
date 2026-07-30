@@ -379,7 +379,7 @@ export class Renderer {
     // these are the objects the simulation collides against, and the only way
     // for what you can see and what you can hit to be the same thing is for
     // both to read the same list.
-    this.trackMeshes = buildTrackMeshes(engine.track, this.quality, engine.world.scenery);
+    this.trackMeshes = buildTrackMeshes(engine.track, this.quality, engine.world);
     this.scene.add(this.trackMeshes.root);
 
     // The pit garages, the paddock behind them and the main grandstand. Built

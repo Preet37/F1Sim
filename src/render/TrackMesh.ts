@@ -15,7 +15,7 @@ import {
   PIT_GARAGE_SPACING_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
-import type { SceneryItem } from '../track/WorldObstacles';
+import type { SceneryItem, WorldModel } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -153,7 +153,7 @@ class StripBuilder {
 export function buildTrackMeshes(
   track: TrackSpline,
   quality: 'low' | 'high',
-  scenery: readonly SceneryItem[],
+  world: WorldModel,
 ): TrackMeshes {
   const root = new THREE.Group();
   root.name = 'circuit';
@@ -187,23 +187,18 @@ export function buildTrackMeshes(
   // everything below — the lane surface, its paint, its walls, and the decision
   // about which pieces of ordinary trackside furniture have to give way to it.
   const pitGeom = pitLaneGeometry(track.def, track.length);
+
   /**
-   * True where the pit lane occupies the ground on this side of the circuit.
+   * How far off the track edge the barrier, the fencing and the hoardings
+   * stand at this node — or 0 where the pit lane and the paddock take over.
    *
-   * The run-off, barrier, fencing, hoardings and set dressing are all laid down
-   * blindly at a fixed offset from the track edge for the whole lap. Along the
-   * pits that puts an armco through the middle of the fast lane and a strip of
-   * gravel-brown run-off where the apron should be.
+   * Read from the world model rather than derived here. The simulation collides
+   * against this same line, and a barrier that is drawn in a different place
+   * from the one a car bounces off is precisely the bug that let cars end up on
+   * the far side of the fence.
    */
-  const pitSideAt = (node: number, side: -1 | 1): boolean => {
-    if (side !== pitGeom.sign) return false;
-    // Only the lane's working length, not its tapered ends. Over the taper the
-    // circuit's own run-off and barrier are still the right thing to see beside
-    // the entry and exit roads — suppressing them there leaves the track edge
-    // running straight into open grass.
-    const u = pitGeom.u(track.dist[node]);
-    return u > pitGeom.entryOpenU - 25 && u < pitGeom.exitU + 25;
-  };
+  const barrierAt = (node: number, side: -1 | 1): number =>
+    (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
 
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
@@ -340,12 +335,15 @@ export function buildTrackMeshes(
     //
     // Street circuits get a solid concrete wall instead, because that is what
     // they actually use and it is why they punish a mistake so much harder.
-    const barrierOffset = isStreet ? 2.5 : 14;
     for (const side of [-1, 1] as const) {
-      // Along the pits the pit wall and the garages are the boundary.
-      if (isPaddockGround(track, a, side) || pitSideAt(a, side)) continue;
-      const oA = side * (hwA + barrierOffset);
-      const oB = side * (hwB + barrierOffset);
+      // Along the pits the pit wall and the garages are the boundary, and where
+      // the circuit doubles back on itself the barrier is pulled in so it does
+      // not stand on the other section's road.
+      const offA = barrierAt(a, side);
+      const offB = barrierAt(b, side);
+      if (offA <= 0 || offB <= 0) continue;
+      const oA = side * (hwA + offA);
+      const oB = side * (hwB + offB);
       const yA = py(a, oA) + Y_RUNOFF;
       const yB = py(b, oB) + Y_RUNOFF;
 
@@ -729,7 +727,6 @@ export function buildTrackMeshes(
   if (track.def.scenery !== 'street') {
     const FENCE_BOTTOM = 1.5;
     const FENCE_TOP = 5.4;
-    const barrierOffset = 14;
 
     const positions: number[] = [];
     const normals: number[] = [];
@@ -746,9 +743,11 @@ export function buildTrackMeshes(
       const uB = uA + (fenceStep * (track.length / count)) / 4;
 
       for (const side of [-1, 1] as const) {
-        if (isPaddockGround(track, a2, side) || pitSideAt(a2, side)) continue;
-        const oA = side * (hwA2 + barrierOffset);
-        const oB = side * (hwB2 + barrierOffset);
+        const offA = barrierAt(a2, side);
+        const offB = barrierAt(b2, side);
+        if (offA <= 0 || offB <= 0) continue;
+        const oA = side * (hwA2 + offA);
+        const oB = side * (hwB2 + offB);
         const yA = py(a2, oA) + Y_RUNOFF;
         const yB = py(b2, oB) + Y_RUNOFF;
         const x0 = px(a2, oA), z0 = pz(a2, oA);
@@ -806,8 +805,6 @@ export function buildTrackMeshes(
   // repeating texture shows a different board every ~11m. One draw call for the
   // whole circuit's signage.
   {
-    const isStreetHoard = track.def.scenery === 'street';
-    const barrierOffset = isStreetHoard ? 2.5 : 14;
     const BOARD_H = 1.05;
     const BOARD_EVERY_M = 11;
 
@@ -824,9 +821,11 @@ export function buildTrackMeshes(
       const uB = (track.dist[a2] + hoardStep * (track.length / count)) / BOARD_EVERY_M;
 
       for (const side of [-1, 1] as const) {
-        if (isPaddockGround(track, a2, side) || pitSideAt(a2, side)) continue;
-        const oA = side * (hwA2 + barrierOffset - 0.05);
-        const oB = side * (hwB2 + barrierOffset - 0.05);
+        const offA = barrierAt(a2, side);
+        const offB = barrierAt(b2, side);
+        if (offA <= 0 || offB <= 0) continue;
+        const oA = side * (hwA2 + offA - 0.05);
+        const oB = side * (hwB2 + offB - 0.05);
         const yA = py(a2, oA) + Y_RUNOFF;
         const yB = py(b2, oB) + Y_RUNOFF;
 
@@ -1004,7 +1003,7 @@ export function buildTrackMeshes(
   // the eye something to measure speed against, which matters far more for the
   // sensation of speed than any amount of surface detail.
   {
-    const dressing = buildSceneryInstances(track, quality, scenery);
+    const dressing = buildSceneryInstances(track, quality, world.scenery);
     if (dressing) {
       for (const m of dressing.meshes) root.add(m);
       geometries.push(...dressing.geometries);

@@ -153,7 +153,7 @@ const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
 const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
   building: 'a building',
   grandstand: 'the grandstand',
-  wall: 'the wall',
+  barrier: 'the barrier',
   pitwall: 'the pit wall',
 };
 
@@ -640,9 +640,26 @@ export class RaceEngine {
   private enforceBarriers(car: CarEntry, dt: number): void {
     const idx = this.track.indexAt(car.s);
     const halfWidth = this.track.width[idx] * 0.5;
-    // Street circuits are walled; permanent circuits have run-off.
-    const runoff = this.track.def.scenery === 'street' ? 2.5 : 14;
-    let limit = halfWidth + runoff;
+    // The limit is where the barrier ACTUALLY stands at this node, on this
+    // side, read from the world model. It used to be a flat fourteen metres
+    // (two and a half on a street circuit) all the way round, which is wrong
+    // wherever the circuit doubles back within that distance of itself: the
+    // barrier is drawn pulled in, but the containment kept letting cars run
+    // out to the nominal figure — straight through the wall on screen and into
+    // the corridor between two sections of circuit.
+    const lat0 = car.lateral;
+    const off = lat0 >= 0
+      ? this.world.barrierOffsets.left[idx]
+      : this.world.barrierOffsets.right[idx];
+    // A zero offset means the barrier gives way to the pit lane or the
+    // paddock. There the pit wall is the boundary, and it is enforced as a real
+    // object by `collideWithObstacles`; the spline limit only has to stop a car
+    // wandering off into the landscape behind it.
+    // `garageFace` is already measured from the centreline, not from the track
+    // edge — adding the half width to it puts the backstop several metres
+    // behind the garages, which is where a car that lost its pit-lane flag
+    // ended up parked.
+    let limit = off > 0 ? halfWidth + off : this.pitGeom.garageFace;
 
     if (car.inPitLane) {
       // A car in the pit lane is still contained — just by a different wall.
@@ -656,11 +673,11 @@ export class RaceEngine {
       // a hundred metres outside the fence" state.
       const pitLat = this.track.def.pitLane.lateralOffsetM;
       limit = Math.abs(pitLat) + 6;
-      // ...and on the other side by the pit wall. Without this a car in the
-      // lane could simply drift across the wall and rejoin the circuit through
-      // it, which is the same "the world is not solid" complaint from the
-      // opposite direction.
-      this.enforcePitWall(car, dt);
+      // The other side of the lane is the pit wall, and that is a real object
+      // in `collideWithObstacles` — solid from the lane as well as from the
+      // circuit. It used to be enforced here as a second, spline-relative
+      // clamp, which meant two mechanisms fighting over the same car through
+      // the entry and exit tapers and a car at speed slipping between them.
       if (Math.abs(car.lateral) <= limit) return;
     }
 
@@ -726,38 +743,6 @@ export class RaceEngine {
   }
 
   /**
-   * The pit wall, from the pit lane's side.
-   *
-   * Only over the wall's actual length, and with a few metres of slack at each
-   * end: a car joining the lane crosses the wall line diagonally over the entry
-   * wedge, and clamping it there would shove every car sideways as it entered
-   * the pits. The wall is solid from the CIRCUIT's side through the ordinary
-   * static-obstacle pass; this is the mirror of it.
-   */
-  private enforcePitWall(car: CarEntry, dt: number): void {
-    const g = this.pitGeom;
-    const u = g.u(car.s);
-    if (u < g.entryOpenU + 10 || u > g.exitU - 10) return;
-
-    const inner = g.wallMag + g.wallThick * 0.5 + DISC_RADIUS_M;
-    const onSide = car.lateral * g.sign;
-    if (onSide >= inner) return;
-
-    const idx = this.track.indexAt(car.s);
-    const push = inner - onSide;
-    car.physics.position.x += this.track.nx[idx] * g.sign * push;
-    car.physics.position.y += this.track.nz[idx] * g.sign * push;
-    car.lateral = g.sign * inner;
-
-    // The car was travelling toward the circuit, so the normal it hit the wall
-    // along points back across the lane.
-    const nx = -this.track.nx[idx] * g.sign;
-    const nz = -this.track.nz[idx] * g.sign;
-    const severity = car.physics.collideWithBarrier(nx, nz, dt);
-    this.onSolidImpact(car, severity, nx, nz, 'the pit wall');
-  }
-
-  /**
    * Car versus the solid world: buildings, grandstands, the pit wall and the
    * walls down the pit entry and exit roads.
    *
@@ -787,11 +772,6 @@ export class RaceEngine {
 
     for (const oi of this.obstacleHits) {
       const o: Obstacle = field.obstacles[oi];
-      // A car in the pit lane is held off the pit wall by `enforcePitWall`,
-      // which knows about the entry and exit tapers. Applying both would fight
-      // over the same car at the split.
-      if (o.kind === 'pitwall' && car.inPitLane) continue;
-
       let bestPen = 0;
       let bnx = 0;
       let bnz = 0;
