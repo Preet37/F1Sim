@@ -1,4 +1,4 @@
-import { Vec2, clamp, clamp01, damp, lerp, MS_TO_KPH, wrapAngle } from '../core/MathUtils';
+import { Vec2, clamp, clamp01, damp, MS_TO_KPH, wrapAngle } from '../core/MathUtils';
 import { TireState } from './TireModel';
 import type { CompoundId } from '../data/tires';
 import type { VehicleSpec } from './VehicleSpec';
@@ -436,16 +436,26 @@ export class VehiclePhysics {
     const muRear = spec.baseMu * this.rearTires.grip * surfaceGrip;
 
     // --- Steering ---------------------------------------------------------
-    // Speed-sensitive steering limit. Without it, full lock at 300km/h demands a
-    // lateral acceleration no tire can produce and the car simply spins — which
-    // is realistic but unplayable, and real steering racks are geared for it.
-    // The floor used to be 0.28, which combined with a second reduction in the
-    // input layer left about five degrees of lock at racing speed. A real car
-    // has a fixed rack and the driver simply does not use full lock at 300 —
-    // but modelling that as a hard limit this aggressive makes the car feel
-    // broken rather than fast. 0.45 keeps the car stable without making it feel
-    // like the front wheels have been welded straight.
-    const steerLimit = lerp(1, 0.45, clamp01((speed - 20) / 80));
+    // Speed-sensitive steering limit — the rack, not an assist.
+    //
+    // The number this has to respect is the slip angle at which the front tire
+    // peaks: alpha = 1.978 / corneringStiffnessFront, about 9 degrees. Steering
+    // past that does not turn the car harder, it turns it LESS, because the
+    // magic formula is on its falling branch. A steer sweep (`npm run
+    // probe:handling`) put peak lateral at 0.40 of full input at 150km/h and
+    // 0.30 at 300km/h, and showed full lock at 300km/h throwing away 26% of the
+    // available cornering force. That is precisely the "I'm at full lock and it
+    // won't turn" complaint, and no amount of extra lock fixes it.
+    //
+    // So the rack is geared as a real speed-sensitive rack is — a hyperbola in
+    // speed — sized so full stick lands roughly 40% PAST the peak-grip angle.
+    // That leaves room to overdrive the front and to countersteer a slide, but
+    // removes the range where more input means less cornering.
+    //
+    // Full lock is untouched below 50km/h. Monaco's Grand Hotel hairpin is an
+    // 11m radius and needs atan(wheelbase/radius) = 18 degrees to geometrically
+    // fit; taper any earlier and the car physically cannot make the corner.
+    const steerLimit = 1 / (1 + Math.max(0, speed - 14) * 0.036);
     // Negated: see the note on VehicleControls.steer. The internal lateral axis
     // points to the driver's LEFT, so a right-hand steer input must produce a
     // negative steer angle. Without this, the arrow keys are inverted.
@@ -631,7 +641,22 @@ export class VehiclePhysics {
 
     // Yaw damping. Real cars have aero yaw stiffness that grows with speed;
     // without it the model oscillates at the integration frequency.
-    const yawDampRate = 2.4 + speed * 0.055;
+    //
+    // The rate matters far more than it looks. This is a torque the tires have
+    // to fight, and at the old 2.4 + 0.055v it reached 5.8/s at 220km/h — worth
+    // about 4 rad/s^2 of yaw acceleration, which the FRONT axle alone had to
+    // supply because the rear's contribution acts the other way. Measured with
+    // `npm run probe:handling`, that pinned front utilisation at 0.96-1.00 from
+    // barely a third of a turn of lock while the rear idled at 0.77: the car
+    // understeered permanently, could not be made to rotate by adding steering,
+    // and was slow everywhere. Halving it hands that grip back — peak lateral
+    // rises about 3% and, more importantly, the two axles now work together
+    // instead of the front fighting a torque nothing physical produces.
+    //
+    // It cannot go much lower. Below roughly 1.4 + 0.02v a power-on slide at
+    // 90km/h becomes uncatchable even with correctly-timed countersteer, which
+    // is the "it just spins" failure rather than a car that can be driven.
+    const yawDampRate = 1.8 + speed * 0.032;
     this.yawRate = damp(this.yawRate, 0, yawDampRate, dt);
 
     // At a standstill, kill residual lateral velocity and yaw so the car settles

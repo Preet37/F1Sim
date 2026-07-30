@@ -99,13 +99,32 @@ export const BASE_F1_SPEC: VehicleSpec = {
   driveEfficiency: 0.93,
 
   clBase: 3.3,
-  aeroBalanceFront: 0.44,
+  // Matched to the 45% static front weight split. At racing speed downforce
+  // dwarfs the car's own weight, so this number — not the mass distribution —
+  // decides how much load the front axle actually has. Setting it BELOW the
+  // mechanical split meant the aero platform was fighting the chassis: in a
+  // steady turn a bicycle model needs the front to supply 45% of the cornering
+  // force, but it only had 44% of the load to do it with, so the front ran out
+  // first everywhere. 0.455 is still inside the real 44-46% window.
+  aeroBalanceFront: 0.455,
   cdBase: 0.82,
   drsDragReduction: 0.22,
   drsDownforceLoss: 0.16,
 
   baseMu: 1.70,
-  corneringStiffnessFront: 11.5,
+  // These two set BOTH the linear balance and the limit balance and cannot be
+  // chosen independently: the magic formula peaks at alpha = 1.978 / stiffness,
+  // so a stiffer axle also saturates at a SMALLER slip angle. Keeping the rear
+  // stiffer than the front is what makes the car understeer rather than
+  // oversteer in the linear range, which is the stable way round.
+  //
+  // The front was 11.5, peaking at 9.85 degrees against the rear's 8.85. In
+  // practice the front was operating at 7-13 degrees and the rear at 3-4, so
+  // the front spent most of a corner past its own peak while the rear had grip
+  // to spare. 12.4 pulls the front's peak to 9.14 degrees — close enough to the
+  // rear's that the two axles give up together — and sharpens turn-in without
+  // inverting the understeer gradient.
+  corneringStiffnessFront: 12.4,
   corneringStiffnessRear: 12.8,
 
   // 24 degrees at the road wheels. Monaco's Grand Hotel hairpin is an 11m radius

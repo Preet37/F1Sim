@@ -17,7 +17,8 @@
     "validate:qualifying": "tsx scripts/probeQualifying.ts",
     "build:circuits": "tsx scripts/buildCircuitGeometry.ts",
     "validate:integrity": "tsx scripts/probeIntegrity.ts",
-    "probe:curvature": "tsx scripts/probeCurvature.ts"
+    "probe:curvature": "tsx scripts/probeCurvature.ts",
+    "probe:handling": "tsx scripts/probeHandling.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
