@@ -267,19 +267,43 @@ export class RaceEngine {
       const twoStopTotal = softLife + mediumLife + mediumLife;
       const oneStopTotal = mediumLife + hardLife;
 
+      // Every stop must land on a lap that actually exists.
+      //
+      // The bounds used to be written as fixed lap counts — `clamp(x, 8, laps-6)`
+      // — which for any race shorter than fourteen laps inverts: the low bound
+      // is above the high one, `clamp` returns the high one, and the stop is
+      // scheduled for lap -1, meaning never. Every car then ran the whole
+      // distance on one compound and was disqualified at the flag under the
+      // two-compound rule, which is why the short validation races reported
+      // twenty starters, zero finishers and no pit stops at all.
+      //
+      // Expressing the window as a FRACTION of the distance makes it correct at
+      // every length: a five-lap sprint stops on lap two, a Grand Prix on lap
+      // twenty-four, and the tyre model still decides which of the two.
+      //
+      // The stops are also spread across the field. Twenty cars whose tyre
+      // model happens to agree will otherwise all queue for the same lap, which
+      // in a short race means the entire grid arrives at one pit box at once.
+      // Real teams stagger for exactly this reason.
+      const window = Math.max(1, laps - 1);
+      const spread = Math.min(3, laps * 0.12) * (((car.index * 7) % 5) - 2) * 0.5;
+      const stopLap = (lap: number): number =>
+        clamp(Math.round(lap + spread), 1, window);
+
       const plan: { compound: CompoundId; pitOnLap: number }[] = [];
       if (oneStopTotal >= laps && !this.rng.chance(0.3)) {
-        // One stop: medium then hard.
-        plan.push({ compound: 'medium', pitOnLap: Math.round(clamp(mediumLife * 0.92, 8, laps - 6)) });
+        // One stop: medium then hard, at whichever comes first — the tyre's
+        // useful life or the middle of the race.
+        plan.push({ compound: 'medium', pitOnLap: stopLap(Math.min(mediumLife * 0.92, laps * 0.62)) });
         plan.push({ compound: 'hard', pitOnLap: -1 });
       } else if (twoStopTotal >= laps || this.rng.chance(0.5)) {
-        const first = Math.round(clamp(laps * 0.32, 8, laps - 12));
-        const second = Math.round(clamp(laps * 0.66, first + 6, laps - 5));
+        const first = stopLap(laps * 0.32);
+        const second = stopLap(Math.max(laps * 0.66, first + 1));
         plan.push({ compound: 'medium', pitOnLap: first });
         plan.push({ compound: 'hard', pitOnLap: second });
         plan.push({ compound: 'medium', pitOnLap: -1 });
       } else {
-        plan.push({ compound: 'medium', pitOnLap: Math.round(laps * 0.45) });
+        plan.push({ compound: 'medium', pitOnLap: stopLap(laps * 0.45) });
         plan.push({ compound: 'hard', pitOnLap: -1 });
       }
 
@@ -976,12 +1000,25 @@ export class RaceEngine {
 
     // Drag the car toward the pit lane's lateral offset so it visibly uses the
     // lane rather than the racing line.
-    const targetLat = pit.lateralOffsetM;
-    const p = this.track.tmpB;
-    const blend = clamp01(dt * 2.2);
-    const newLat = car.lateral + (targetLat - car.lateral) * blend;
-    this.track.toWorld(car.s, newLat, p);
-    car.physics.position.set(p.x, p.y);
+    //
+    // Applied as a displacement ALONG THE TRACK NORMAL, not by rebuilding the
+    // position from (s, lateral). Rebuilding looks equivalent and is not: it
+    // overwrites the along-track component with a value from earlier in the
+    // step, so every metre of progress the car makes is thrown away and only
+    // its lateral motion survives. A car whose nose was pointing even slightly
+    // across the lane therefore stopped advancing entirely while its speedo
+    // still read 100 km/h — it sat in the pit lane for the rest of the race,
+    // holding a yellow flag and a safety car with it. In a twenty-car race
+    // seventeen cars ended up in that state, which is why almost no circuit
+    // could get a single car to the finish and why the full-race check saw no
+    // pit stops at all: nobody ever reached the box.
+    //
+    // This is the same mistake, and the same fix, as the one documented at
+    // length in `enforceBarriers` above.
+    const idx = this.track.indexAt(car.s);
+    const dLat = (pit.lateralOffsetM - car.lateral) * clamp01(dt * 2.2);
+    car.physics.position.x += this.track.nx[idx] * dLat;
+    car.physics.position.y += this.track.nz[idx] * dLat;
 
     // The box. One service per visit: without the guard a car that is still
     // within the box window after being serviced simply gets serviced again.
