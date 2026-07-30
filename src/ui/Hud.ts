@@ -65,6 +65,10 @@ export class Hud {
   private tower!: HTMLElement;
   private rows: Row[] = [];
 
+  private buttonBar!: HTMLElement;
+  private cameraButton!: HTMLElement;
+  private pitButton!: HTMLElement;
+
   private touchOverlay!: HTMLElement;
   private joystick!: HTMLElement;
   private joystickKnob!: HTMLElement;
@@ -75,11 +79,27 @@ export class Hud {
   private shownMessages = 0;
   private radioEntries: HTMLElement[] = [];
 
+  /** Called when the on-screen camera button is used. */
+  onCameraPressed: (() => void) | null = null;
+  /** Called when the on-screen pit button is used. */
+  onPitPressed: (() => void) | null = null;
+
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
     this.root.className = 'hud';
     this.build();
     parent.appendChild(this.root);
+
+    // The HUD is pointer-events:none so it never blocks the driving surface;
+    // these two controls opt back in.
+    const wire = (el: HTMLElement, handler: () => void) => {
+      el.style.pointerEvents = 'auto';
+      const fire = (e: Event) => { e.preventDefault(); e.stopPropagation(); handler(); };
+      el.addEventListener('click', fire);
+      el.addEventListener('touchstart', fire, { passive: false });
+    };
+    wire(this.cameraButton, () => this.onCameraPressed?.());
+    wire(this.pitButton, () => this.onPitPressed?.());
   }
 
   private el(cls: string, parent: HTMLElement, text = ''): HTMLElement {
@@ -165,6 +185,11 @@ export class Hud {
     this.radioFeed = this.el('hud-radio', this.root);
 
     // --- Camera + diagnostics ---------------------------------------------
+    // Real buttons, not just a keyboard hint. The camera was bound to the `C` key
+    // only, which is unusable on a phone and undiscoverable anywhere.
+    this.buttonBar = this.el('hud-buttons', this.root);
+    this.cameraButton = this.el('hud-btn', this.buttonBar, 'CAM');
+    this.pitButton = this.el('hud-btn', this.buttonBar, 'PIT');
     this.cameraLabel = this.el('hud-camera', this.root, 'Chase');
     this.diagnostics = this.el('hud-diag', this.root, '');
 
@@ -302,7 +327,8 @@ export class Hud {
     this.updateRadio(engine);
 
     // --- Camera and diagnostics ------------------------------------------
-    setText(this.cameraLabel, engine.config.name + ' · ' + '[C] camera');
+    setText(this.cameraLabel, engine.config.name);
+    setClass(this.pitButton, 'hud-btn' + (player.perception.pitThisLap ? ' armed' : ''));
     setText(this.diagnostics, Math.round(fps) + ' fps · ' + drawCalls + ' calls');
 
     // --- Touch overlay ----------------------------------------------------
@@ -456,6 +482,11 @@ export class Hud {
 
     setClass(this.throttlePad, 'touch-pad touch-throttle' + (input.throttleHeld ? ' active' : ''));
     setClass(this.brakePad, 'touch-pad touch-brake' + (input.brakeHeld ? ' active' : ''));
+  }
+
+  /** Shows the current camera mode on the button. */
+  setCameraLabel(label: string): void {
+    setText(this.cameraButton, label.toUpperCase());
   }
 
   setVisible(v: boolean): void {

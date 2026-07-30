@@ -290,6 +290,36 @@ canvas#view {
 .radio-entry.sev-critical { border-left-color: var(--bad); }
 
 /* --- Camera + diagnostics -------------------------------------------- */
+.hud-buttons {
+  position: absolute;
+  top: calc(10px + var(--safe-t));
+  right: calc(196px + var(--safe-r));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hud-btn {
+  pointer-events: auto;
+  width: 52px;
+  height: 40px;
+  border-radius: 8px;
+  background: var(--hud-bg);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  border: 1px solid var(--hud-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--hud-text);
+  cursor: pointer;
+  user-select: none;
+}
+.hud-btn:active { background: rgba(53, 208, 224, 0.3); }
+.hud-btn.armed { background: rgba(255, 176, 46, 0.32); border-color: var(--warn); color: #fff; }
+
 .hud-camera {
   position: absolute;
   bottom: calc(10px + var(--safe-b));
@@ -532,4 +562,6 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   .hud-radio { top: calc(120px + var(--safe-t)); width: 52vw; }
   .hud-flag { font-size: 16px; padding: 7px 16px; }
   .hud-gaps { bottom: calc(84px + var(--safe-b)); }
+  .hud-buttons { right: calc(150px + var(--safe-r)); }
+  .hud-btn { width: 46px; height: 36px; font-size: 9px; }
 }

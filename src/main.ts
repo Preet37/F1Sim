@@ -69,13 +69,25 @@ class Game {
   }
 
   async start(): Promise<void> {
+    // ?quality=low|high overrides both the saved setting and auto-detection.
+    // Needed for headless verification, where the software rasteriser cannot
+    // afford the shadow pass, and useful for anyone whose device is misdetected.
+    const qs = new URLSearchParams(window.location.search).get('quality');
+    const forced = qs === 'low' || qs === 'high' ? qs : undefined;
+    const setting = this.settings.quality === 'auto' ? undefined : this.settings.quality;
+
     this.renderer = new Renderer({
       canvas: this.canvas,
-      quality: this.settings.quality === 'auto' ? undefined : this.settings.quality,
+      quality: forced ?? setting,
     });
 
     this.hud = new Hud(document.getElementById('app') as HTMLElement);
     this.hud.setVisible(false);
+    this.hud.onCameraPressed = () => this.cycleCamera();
+    this.hud.onPitPressed = () => {
+      const p = this.engine?.playerCar;
+      if (p) p.perception.pitThisLap = !p.perception.pitThisLap;
+    };
 
     this.screenRoot = document.createElement('div');
     this.screenRoot.className = 'screen';
@@ -139,6 +151,14 @@ class Game {
       seed: Number.isFinite(seedParam) && seedParam !== 0 ? seedParam : (Math.random() * 0x7fffffff) | 0,
     };
     return { circuitId, config };
+  }
+
+  /** Cycles the camera and persists the choice. Used by both the key and the button. */
+  private cycleCamera(): void {
+    const mode = this.renderer.director.cycleMode();
+    this.settings.cameraMode = mode;
+    this.saves.saveSettings(this.settings);
+    this.hud.setCameraLabel(this.renderer.director.modeLabel);
   }
 
   private setLoading(on: boolean, text = 'BUILDING CIRCUIT'): void {
@@ -556,6 +576,7 @@ class Game {
       this.engine = new RaceEngine(def, config, field);
       this.renderer.loadSession(this.engine);
       this.renderer.director.setMode(this.settings.cameraMode as CameraMode);
+      this.hud.setCameraLabel(this.renderer.director.modeLabel);
       this.clock.reset();
       this.clock.paused = false;
       this.setLoading(false);
@@ -724,11 +745,7 @@ class Game {
           player.physics.tractionLimitFraction,
         );
 
-        if (this.input.cameraCyclePressed) {
-          const mode = this.renderer.director.cycleMode();
-          this.settings.cameraMode = mode;
-          this.saves.saveSettings(this.settings);
-        }
+        if (this.input.cameraCyclePressed) this.cycleCamera();
         if (this.input.pausePressed) {
           this.clock.paused = !this.clock.paused;
         }

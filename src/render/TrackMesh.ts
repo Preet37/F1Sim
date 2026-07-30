@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -30,13 +31,13 @@ const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 
 const COLOUR = {
-  asphalt: new THREE.Color(0x2a2d33),
-  asphaltDark: new THREE.Color(0x23262b),
-  runoff: new THREE.Color(0x4a3f38),
+  asphalt: new THREE.Color(0x1d1e20),
+  asphaltDark: new THREE.Color(0x181a1c),
+  runoff: new THREE.Color(0x4f4034),
   whiteLine: new THREE.Color(0xd8dade),
   kerbA: new THREE.Color(0xc8353c),
   kerbB: new THREE.Color(0xe8e8ea),
-  grass: new THREE.Color(0x35502f),
+  grass: new THREE.Color(0x2c4526),
   desert: new THREE.Color(0x8a7355),
   gravel: new THREE.Color(0x9a9285),
   wall: new THREE.Color(0x53575e),
@@ -347,7 +348,9 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
     const d = b.maxZ - b.minZ + pad * 2;
     const geo = new THREE.PlaneGeometry(w, d, 1, 1);
     geo.rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshLambertMaterial({ color: groundColour(track.def.scenery) });
+    const mat = new THREE.MeshStandardMaterial({
+      color: groundColour(track.def.scenery), roughness: 0.95, metalness: 0,
+    });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set((b.minX + b.maxX) * 0.5, Y_GROUND - 0.6, (b.minZ + b.maxZ) * 0.5);
     mesh.receiveShadow = false;
@@ -363,9 +366,9 @@ export function buildTrackMeshes(track: TrackSpline, quality: 'low' | 'high'): T
   {
     const dressing = buildSceneryInstances(track, quality);
     if (dressing) {
-      root.add(dressing.mesh);
-      geometries.push(dressing.geometry);
-      materials.push(dressing.material);
+      for (const m of dressing.meshes) root.add(m);
+      geometries.push(...dressing.geometries);
+      materials.push(...dressing.materials);
     }
   }
 
@@ -388,11 +391,18 @@ function addMesh(
 ): void {
   const geo = builder.build();
   if (!geo) return;
-  const mat = new THREE.MeshLambertMaterial({
+  // Standard rather than Lambert: the road picks up the environment probe, which
+  // is what stops asphalt reading as flat paint next to a reflective car.
+  const mat = new THREE.MeshStandardMaterial({
     vertexColors: true,
+    // Slightly glossy asphalt: real track surface has a sheen, and it picks up the
+    // sky, which is what stops a dark road reading as a flat black void.
+    roughness: 0.58,
+    metalness: 0.06,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
   });
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
   mesh.frustumCulled = false; // one object spanning the whole circuit
   root.add(mesh);
   geometries.push(geo);
@@ -400,86 +410,163 @@ function addMesh(
 }
 
 /**
- * Trees, grandstands and marker blocks as a single InstancedMesh.
+ * Set dressing: trees and grandstands as instanced meshes.
  *
- * One instanced draw call for several hundred objects. Placed outside the barrier
- * line so they never obstruct the racing surface, and skipped where the circuit
- * is a street layout (buildings are handled by the wall geometry there).
+ * The first version used boxes, which read exactly as boxes — pale green slabs
+ * standing in a field. Scenery is what the eye measures speed against, so it has
+ * to at least resolve as *objects* rather than as geometry.
+ *
+ * Two instanced meshes (one tree, one grandstand) means two draw calls for several
+ * hundred objects. A tree is a trunk plus two offset cones, which is enough to read
+ * as a tree in peripheral vision at 300 km/h, and that is the only place it is ever
+ * seen.
  */
 function buildSceneryInstances(
   track: TrackSpline,
   quality: 'low' | 'high',
-): { mesh: THREE.InstancedMesh; geometry: THREE.BufferGeometry; material: THREE.Material } | null {
-  const spacing = quality === 'low' ? 120 : 70;
-  const total = Math.floor(track.length / spacing) * 2;
-  if (total <= 0) return null;
-
-  const geo = new THREE.BoxGeometry(1, 1, 1);
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: false, color: 0xffffff });
-  const mesh = new THREE.InstancedMesh(geo, mat, total);
-  mesh.frustumCulled = false;
-
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const pos = new THREE.Vector3();
-  const scale = new THREE.Vector3();
-  const colour = new THREE.Color();
+): { meshes: THREE.InstancedMesh[]; geometries: THREE.BufferGeometry[]; materials: THREE.Material[] } | null {
+  const spacing = quality === 'low' ? 90 : 55;
+  const slots = Math.floor(track.length / spacing) * 2;
+  if (slots <= 0) return null;
 
   const scenery = track.def.scenery;
   const isStreet = scenery === 'street';
   const barrier = isStreet ? 2.5 : 14;
 
-  let n = 0;
-  for (let k = 0; n < total; k++) {
+  // --- Tree: trunk plus two staggered cones -------------------------------
+  const trunk = new THREE.CylinderGeometry(0.22, 0.34, 2.6, 6);
+  trunk.translate(0, 1.3, 0);
+  const canopyLow = new THREE.ConeGeometry(1.9, 4.2, 8);
+  canopyLow.translate(0, 3.6, 0);
+  const canopyHigh = new THREE.ConeGeometry(1.35, 3.4, 8);
+  canopyHigh.translate(0, 5.6, 0);
+  const treeGeo = mergeGeometries([trunk, canopyLow, canopyHigh], false)
+    ?? new THREE.ConeGeometry(2, 6, 8);
+  trunk.dispose();
+  canopyLow.dispose();
+  canopyHigh.dispose();
+  treeGeo.computeVertexNormals();
+
+  // --- Grandstand: a raked seating deck under a cantilever roof -----------
+  const deck = new THREE.BoxGeometry(26, 7, 11);
+  deck.translate(0, 3.5, 0);
+  const roof = new THREE.BoxGeometry(28, 0.5, 13);
+  roof.translate(0, 9.4, -0.6);
+  const pillarL = new THREE.BoxGeometry(0.6, 4, 0.6);
+  pillarL.translate(-12.5, 7.2, -6);
+  const pillarR = new THREE.BoxGeometry(0.6, 4, 0.6);
+  pillarR.translate(12.5, 7.2, -6);
+  const standGeo = mergeGeometries([deck, roof, pillarL, pillarR], false)
+    ?? new THREE.BoxGeometry(26, 9, 12);
+  deck.dispose(); roof.dispose(); pillarL.dispose(); pillarR.dispose();
+  standGeo.computeVertexNormals();
+
+  // --- Building, for street circuits --------------------------------------
+  const buildingGeo = new THREE.BoxGeometry(1, 1, 1);
+
+  const treeMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
+  const standMat = new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05 });
+  const buildingMat = new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0.1 });
+
+  const trees = new THREE.InstancedMesh(treeGeo, treeMat, slots);
+  const stands = new THREE.InstancedMesh(standGeo, standMat, Math.max(1, Math.floor(slots * 0.16)));
+  const buildings = new THREE.InstancedMesh(buildingGeo, buildingMat, isStreet ? slots : 1);
+  for (const m of [trees, stands, buildings]) m.frustumCulled = false;
+
+  const matrix = new THREE.Matrix4();
+  const quat = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  const colour = new THREE.Color();
+  const up = new THREE.Vector3(0, 1, 0);
+
+  let treeN = 0;
+  let standN = 0;
+  let buildingN = 0;
+
+  for (let k = 0; treeN + standN + buildingN < slots * 1.5; k++) {
     const s = (k * spacing) % track.length;
+    if (k * spacing > track.length) break;
     const i = track.indexAt(s);
     const hw = track.width[i] * 0.5;
+    const groundY = track.elevation[i];
+    const heading = Math.atan2(track.tx[i], track.tz[i]);
 
     for (const side of [-1, 1] as const) {
-      if (n >= total) break;
-      // Deterministic pseudo-random from the index: no RNG state, and the
-      // scenery is identical every time the circuit loads.
-      const h = (Math.sin(k * 12.9898 + side * 78.233) * 43758.5453) % 1;
-      const r = Math.abs(h);
+      // Deterministic pseudo-random from the index: identical every load, and no
+      // RNG state to thread through.
+      const h = Math.abs((Math.sin(k * 12.9898 + side * 78.233) * 43758.5453) % 1);
+      const h2 = Math.abs((Math.sin(k * 39.3468 + side * 11.135) * 24634.6345) % 1);
 
-      const dist = barrier + 6 + r * 26;
-      const lat = side * (hw + dist);
+      const lat = side * (hw + barrier + 5 + h * 24);
       const x = track.px[i] + track.nx[i] * lat;
       const z = track.pz[i] + track.nz[i] * lat;
-      const groundY = track.elevation[i];
 
-      let height: number;
-      let width: number;
-      if (isStreet) {
-        height = 12 + r * 26;
-        width = 8 + r * 10;
-        colour.setHSL(0.6, 0.05, 0.28 + r * 0.16);
-      } else if (scenery === 'desert') {
-        height = 2 + r * 3;
-        width = 3 + r * 4;
-        colour.setHSL(0.09, 0.25, 0.42 + r * 0.12);
-      } else if (scenery === 'stadium' && r > 0.6) {
-        height = 9 + r * 8;
-        width = 14 + r * 10;
-        colour.setHSL(0.58, 0.12, 0.35);
-      } else {
-        // Trees: a tall thin block reads convincingly at speed.
-        height = 7 + r * 11;
-        width = 2.5 + r * 2.5;
-        colour.setHSL(0.28, 0.35, 0.16 + r * 0.12);
+      if (isStreet && buildingN < buildings.count) {
+        const height = 11 + h * 30;
+        const w = 9 + h2 * 12;
+        pos.set(x, groundY + height * 0.5, z);
+        scale.set(w, height, w * 0.85);
+        quat.setFromAxisAngle(up, heading);
+        matrix.compose(pos, quat, scale);
+        buildings.setMatrixAt(buildingN, matrix);
+        colour.setHSL(0.58 + h2 * 0.05, 0.06, 0.24 + h * 0.2);
+        buildings.setColorAt(buildingN, colour);
+        buildingN++;
+        continue;
       }
 
-      pos.set(x, groundY + height * 0.5, z);
-      scale.set(width, height, width);
-      m.compose(pos, q, scale);
-      mesh.setMatrixAt(n, m);
-      mesh.setColorAt(n, colour);
-      n++;
+      // A grandstand on the straights, where a real circuit puts them, and
+      // close to the track so it frames the road.
+      const fast = track.targetSpeed[i] > 62;
+      if (fast && h2 > 0.72 && standN < stands.count) {
+        const standLat = side * (hw + barrier + 9);
+        pos.set(
+          track.px[i] + track.nx[i] * standLat,
+          groundY,
+          track.pz[i] + track.nz[i] * standLat,
+        );
+        scale.set(1, 1, 1);
+        // Face the track.
+        quat.setFromAxisAngle(up, heading + (side > 0 ? 0 : Math.PI));
+        matrix.compose(pos, quat, scale);
+        stands.setMatrixAt(standN, matrix);
+        colour.setHSL(0.56, 0.07, 0.3 + h * 0.14);
+        stands.setColorAt(standN, colour);
+        standN++;
+        continue;
+      }
+
+      if (treeN < trees.count) {
+        const size = scenery === 'desert' ? 0.5 + h * 0.4 : 0.8 + h * 0.85;
+        pos.set(x, groundY, z);
+        scale.set(size, size * (0.85 + h2 * 0.5), size);
+        quat.setFromAxisAngle(up, h * 6.283);
+        matrix.compose(pos, quat, scale);
+        trees.setMatrixAt(treeN, matrix);
+        if (scenery === 'desert') colour.setHSL(0.11, 0.3, 0.32 + h2 * 0.1);
+        else if (scenery === 'forest') colour.setHSL(0.31, 0.42, 0.13 + h2 * 0.09);
+        else colour.setHSL(0.28, 0.38, 0.15 + h2 * 0.12);
+        trees.setColorAt(treeN, colour);
+        treeN++;
+      }
     }
   }
 
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  trees.count = Math.max(1, treeN);
+  stands.count = Math.max(1, standN);
+  buildings.count = Math.max(1, buildingN);
+  for (const m of [trees, stands, buildings]) {
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  }
 
-  return { mesh, geometry: geo, material: mat };
+  const meshes: THREE.InstancedMesh[] = [trees, stands];
+  if (isStreet) meshes.push(buildings);
+
+  return {
+    meshes,
+    geometries: [treeGeo, standGeo, buildingGeo],
+    materials: [treeMat, standMat, buildingMat],
+  };
 }

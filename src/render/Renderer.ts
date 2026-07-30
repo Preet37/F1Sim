@@ -54,6 +54,8 @@ export class Renderer {
 
   private sun: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
+  private sky: THREE.Mesh | null = null;
+  private envTarget: THREE.WebGLRenderTarget | null = null;
 
   // Frame-time tracking for the resolution scaler.
   private frameAccum = 0;
@@ -83,9 +85,20 @@ export class Renderer {
       alpha: false,
     });
     this.renderer.setClearColor(0x0a0c10, 1);
-    // Shadows are the single most expensive feature for the least benefit in a
-    // stylised look, so they are off and the car casts a cheap blob instead.
-    this.renderer.shadowMap.enabled = false;
+
+    // Colour pipeline. Rendering in linear light and tone-mapping to sRGB at the
+    // end is what gives highlights roll-off instead of clipping to flat white,
+    // and it is most of the difference between "programmer render" and something
+    // that looks photographed. Without it, a metallic livery under a bright sun
+    // just goes to pure white.
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+
+    // Real shadows on capable hardware; the cars also carry a cheap contact
+    // shadow so they stay grounded when this is off.
+    this.renderer.shadowMap.enabled = this.quality === 'high';
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.scene = new THREE.Scene();
     this.director = new CameraDirector(this.aspect);
@@ -93,11 +106,124 @@ export class Renderer {
     this.hemi = new THREE.HemisphereLight(0xbfd4ff, 0x2a2a24, 0.85);
     this.scene.add(this.hemi);
 
-    this.sun = new THREE.DirectionalLight(0xfff2dd, 1.35);
+    this.sun = new THREE.DirectionalLight(0xfff2dd, 2.6);
     this.sun.position.set(-220, 400, 180);
+    if (this.quality === 'high') {
+      this.sun.castShadow = true;
+      // A tight shadow frustum that follows the car. Trying to cover a whole 7km
+      // circuit with one shadow map gives about one texel per metre, which is
+      // worse than no shadow at all.
+      this.sun.shadow.mapSize.set(1024, 1024);
+      const c = this.sun.shadow.camera;
+      c.near = 1;
+      c.far = 220;
+      c.left = -34;
+      c.right = 34;
+      c.top = 34;
+      c.bottom = -34;
+      this.sun.shadow.bias = -0.0012;
+      this.sun.shadow.normalBias = 0.03;
+      this.scene.add(this.sun.target);
+    }
     this.scene.add(this.sun);
 
+    this.buildSky();
+    this.buildEnvironment();
     this.applySize();
+  }
+
+  /**
+   * Gradient sky dome.
+   *
+   * A flat clear colour puts a hard seam where the ground ends and reads as a
+   * void. A vertical gradient with a warmer band near the horizon costs one
+   * shader and two triangles' worth of thought, and it is the difference between
+   * looking outdoors and looking at a background fill.
+   */
+  private buildSky(): void {
+    const geo = new THREE.SphereGeometry(3600, 24, 16);
+    const mat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        topColor: { value: new THREE.Color(0x2f6fc4) },
+        midColor: { value: new THREE.Color(0x8fc0ea) },
+        bottomColor: { value: new THREE.Color(0xd8e4ee) },
+        offset: { value: 120 },
+        exponent: { value: 0.9 },
+      },
+      vertexShader: `
+        varying vec3 vWorld;
+        void main() {
+          vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 topColor;
+        uniform vec3 midColor;
+        uniform vec3 bottomColor;
+        uniform float offset;
+        uniform float exponent;
+        varying vec3 vWorld;
+        void main() {
+          float h = normalize(vWorld + vec3(0.0, offset, 0.0)).y;
+          float t = pow(max(h, 0.0), exponent);
+          // Two-stop gradient: pale at the horizon, deeper overhead.
+          vec3 c = mix(bottomColor, midColor, smoothstep(0.0, 0.28, t));
+          c = mix(c, topColor, smoothstep(0.22, 1.0, t));
+          gl_FragColor = vec4(c, 1.0);
+        }
+      `,
+    });
+    this.sky = new THREE.Mesh(geo, mat);
+    this.sky.frustumCulled = false;
+    this.scene.add(this.sky);
+  }
+
+  /**
+   * Builds the environment map that the car's paint reflects.
+   *
+   * This is the single highest-impact visual addition: a MeshStandardMaterial with
+   * no environment map has nothing to reflect, so bodywork renders as flat shaded
+   * colour and looks like plastic. A generated room probe gives the sharp
+   * highlights that run along a curved flank as the car turns, which is most of
+   * what makes a car look like painted metal.
+   */
+  private buildEnvironment(): void {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    pmrem.compileEquirectangularShader();
+
+    // A simple procedural probe: bright above, dark below, warm on one side. Far
+    // cheaper than loading an HDR and enough to read as a real reflection.
+    const size = 64;
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      const v = y / (size - 1);
+      for (let x = 0; x < size; x++) {
+        const u = x / (size - 1);
+        const sky = Math.pow(1 - v, 0.7);
+        const warm = 0.5 + 0.5 * Math.cos((u - 0.25) * Math.PI * 2);
+        const r = 40 + sky * 190 + warm * 26;
+        const g = 52 + sky * 190 + warm * 14;
+        const b = 66 + sky * 200;
+        const i = (y * size + x) * 4;
+        data[i] = Math.min(255, r);
+        data[i + 1] = Math.min(255, g);
+        data[i + 2] = Math.min(255, b);
+        data[i + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+
+    const target = pmrem.fromEquirectangular(tex);
+    this.scene.environment = target.texture;
+    this.envTarget = target;
+    tex.dispose();
+    pmrem.dispose();
   }
 
   private get aspect(): number {
@@ -130,41 +256,53 @@ export class Renderer {
     const night = def.ambience === 'night';
     const dusk = def.ambience === 'dusk';
 
-    if (night) {
-      this.scene.background = new THREE.Color(0x05070d);
-      this.hemi.color.setHex(0x35415e);
-      this.hemi.groundColor.setHex(0x0a0c12);
-      this.hemi.intensity = 0.55;
-      this.sun.color.setHex(0xc9d6ff);
-      this.sun.intensity = 0.55;
-      // Floodlit circuits look flat from directly overhead.
-      this.sun.position.set(0, 500, 0);
-    } else if (dusk) {
-      this.scene.background = new THREE.Color(0x2a2036);
-      this.hemi.color.setHex(0xffb98a);
-      this.hemi.intensity = 0.7;
-      this.sun.color.setHex(0xffa860);
-      this.sun.intensity = 1.0;
-      this.sun.position.set(-500, 90, 120);
-    } else {
-      this.scene.background = new THREE.Color(0x8fb8e8);
-      this.hemi.color.setHex(0xbfd4ff);
-      this.hemi.groundColor.setHex(0x2a2a24);
-      this.hemi.intensity = 0.85;
-      this.sun.color.setHex(0xfff2dd);
-      this.sun.intensity = 1.35;
-      this.sun.position.set(-220, 400, 180);
-    }
+    const skyMat = this.sky?.material as THREE.ShaderMaterial | undefined;
+    const setSky = (top: number, mid: number, bottom: number) => {
+      if (!skyMat) return;
+      (skyMat.uniforms.topColor.value as THREE.Color).setHex(top);
+      (skyMat.uniforms.midColor.value as THREE.Color).setHex(mid);
+      (skyMat.uniforms.bottomColor.value as THREE.Color).setHex(bottom);
+    };
 
-    // Fog hides the edge of the world and doubles as a depth cue. Tightened in
-    // the wet, which is both atmospheric and cheaper to draw.
+    let fogColour: number;
+    if (night) {
+      setSky(0x02040a, 0x0a1020, 0x1a2233);
+      fogColour = 0x0d1420;
+      this.hemi.color.setHex(0x2c3a58);
+      this.hemi.groundColor.setHex(0x080a10);
+      this.hemi.intensity = 0.35;
+      this.sun.color.setHex(0xdce6ff);
+      this.sun.intensity = 1.1;
+      this.sun.position.set(60, 300, 40);
+      this.renderer.toneMappingExposure = 1.25;
+    } else if (dusk) {
+      setSky(0x1e2a55, 0x9a5c72, 0xf0a070);
+      fogColour = 0xc08a6a;
+      this.hemi.color.setHex(0xffb98a);
+      this.hemi.groundColor.setHex(0x2a1e22);
+      this.hemi.intensity = 0.6;
+      this.sun.color.setHex(0xffa04c);
+      this.sun.intensity = 2.0;
+      this.sun.position.set(-500, 70, 120);
+      this.renderer.toneMappingExposure = 1.1;
+    } else {
+      setSky(0x2f6fc4, 0x8fc0ea, 0xd8e4ee);
+      fogColour = 0xc6d8e8;
+      this.hemi.color.setHex(0xcfe0ff);
+      this.hemi.groundColor.setHex(0x3a3a30);
+      this.hemi.intensity = 0.75;
+      this.sun.color.setHex(0xfff4e2);
+      this.sun.intensity = 2.6;
+      this.sun.position.set(-220, 400, 180);
+      this.renderer.toneMappingExposure = 1.05;
+    }
+    this.scene.background = null; // the sky dome is the background now
+
+    // Fog matched to the horizon colour so distance fades into the sky rather
+    // than into a differently-coloured haze.
     const wet = engine.weather.wetness;
-    const far = 1500 - wet * 700;
-    this.scene.fog = new THREE.Fog(
-      (this.scene.background as THREE.Color).getHex(),
-      far * 0.25,
-      far,
-    );
+    const far = 1700 - wet * 900;
+    this.scene.fog = new THREE.Fog(fogColour, far * 0.3, far);
   }
 
   unloadSession(): void {
@@ -243,7 +381,24 @@ export class Renderer {
     this.updateResolutionScale(dt);
     this.syncCars(dt, engine);
     this.director.update(dt, focusCar, engine.track);
-    this.renderer.render(this.scene, this.director.camera);
+
+    const cam = this.director.camera;
+    // Keep the sky centred on the camera so it never clips or parallaxes.
+    if (this.sky) this.sky.position.copy(cam.position);
+
+    // Move the shadow frustum with the car; a fixed one covering the circuit
+    // would have roughly one texel per metre.
+    if (this.sun.castShadow) {
+      const y = engine.track.elevationAt(focusCar.s);
+      this.sun.target.position.set(focusCar.physics.position.x, y, focusCar.physics.position.y);
+      this.sun.position.set(
+        focusCar.physics.position.x - 60,
+        y + 110,
+        focusCar.physics.position.y + 48,
+      );
+    }
+
+    this.renderer.render(this.scene, cam);
   }
 
   /** Copies simulation state onto the visuals. */
@@ -277,16 +432,20 @@ export class Renderer {
       v.root.rotation.z = damp(v.root.rotation.z, roll, 8, dt);
       v.root.rotation.x = damp(v.root.rotation.x, pitch, 8, dt);
 
-      // Wheels: spin at road speed and steer the fronts.
+      // Wheels: spin on the inner group, steer on the outer one.
+      //
+      // These must be separate objects. Putting spin (X) and steer (Y) on the
+      // same Euler means that once a wheel has rotated, the steering axis is no
+      // longer vertical, so the front wheels tilt and wobble rather than turning.
       const spin = (p.speedMs / 0.36) * dt;
-      v.frontLeft.rotation.x -= spin;
-      v.frontRight.rotation.x -= spin;
-      v.rearLeft.rotation.x -= spin;
-      v.rearRight.rotation.x -= spin;
+      v.frontLeftSpin.rotation.x -= spin;
+      v.frontRightSpin.rotation.x -= spin;
+      v.rearLeftSpin.rotation.x -= spin;
+      v.rearRightSpin.rotation.x -= spin;
 
       const steer = car.appliedControls.steer * p.spec.maxSteerRad;
-      v.frontLeft.rotation.y = -steer;
-      v.frontRight.rotation.y = -steer;
+      v.frontLeftSteer.rotation.y = -steer;
+      v.frontRightSteer.rotation.y = -steer;
 
       // DRS flap: open is roughly 50 degrees.
       const flapTarget = p.drsOpen ? -0.85 : 0;
@@ -294,7 +453,7 @@ export class Renderer {
 
       // Brake glow from braking effort. Cheap and reads brilliantly at night.
       const heat = clamp01(car.appliedControls.brake * clamp01(p.speedMs / 45));
-      this.tmpColour.setRGB(0.13 + heat * 0.87, 0.08 + heat * 0.18, 0.06);
+      this.tmpColour.setRGB(0.10 + heat * 1.5, 0.055 + heat * 0.22, 0.045);
       for (const disc of v.brakeGlow) {
         (disc.material as THREE.MeshBasicMaterial).color.copy(this.tmpColour);
       }
@@ -305,6 +464,13 @@ export class Renderer {
   dispose(): void {
     this.unloadSession();
     disposeCarGeometryCache();
+    if (this.sky) {
+      this.scene.remove(this.sky);
+      this.sky.geometry.dispose();
+      (this.sky.material as THREE.Material).dispose();
+      this.sky = null;
+    }
+    this.envTarget?.dispose();
     this.renderer.dispose();
   }
 
