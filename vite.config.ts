@@ -6,10 +6,8 @@ export default defineConfig({
   build: {
     target: 'es2020',
     sourcemap: false,
-    rollupOptions: {
-      output: {
-        manualChunks: { three: ['three'] },
-      },
-    },
+    // Vite 8 bundles with rolldown, which does not accept the object form of
+    // manualChunks. Three.js is a single large dependency and splitting it out
+    // buys nothing here — the game needs all of it on the first screen anyway.
   },
 });

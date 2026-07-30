@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "description": "Branching career events. Conditions gate when an event can fire; effects mutate career state. Authored as data so new storylines need no code.",
+  "events": [
+    {
+      "eventId": "mid-season-contract-drama",
+      "title": "Mid-Season Contract Drama",
+      "speaker": "Your Manager",
+      "category": "contract",
+      "weight": 10,
+      "conditions": {
+        "minRoundInSeason": 6,
+        "maxRoundInSeason": 14,
+        "tiers": ["F2", "F1"],
+        "minReputation": 25,
+        "onceEver": true
+      },
+      "promptText": "A rival team has made an approach. They are offering more money and a longer deal, but their car is slower than yours and the team is in turmoil. Your current team has not yet exercised its option on you for next season, and the paddock has noticed. Your engineer pulled you aside this morning and asked, straight out, whether you are staying.",
+      "choices": [
+        {
+          "choiceText": "Sign with the rival immediately. Take the money and the security.",
+          "hint": "Guaranteed seat, weaker car, current team feels betrayed",
+          "consequences": [
+            { "type": "teamMorale", "value": -30 },
+            { "type": "playerReputation", "value": -8 },
+            { "type": "money", "value": 2500000 },
+            { "type": "contractYears", "value": 2 },
+            { "type": "setRivalryState", "target": "teammate", "state": "hostile" },
+            { "type": "flag", "key": "signedRivalMidSeason", "value": true },
+            { "type": "radio", "text": "Word travels fast in this paddock. Your garage found out from a journalist." }
+          ]
+        },
+        {
+          "choiceText": "Stay loyal. Tell your team you are committed and ask them to match.",
+          "hint": "Team morale rises; the option is still theirs to exercise",
+          "consequences": [
+            { "type": "teamMorale", "value": 25 },
+            { "type": "playerReputation", "value": 6 },
+            { "type": "teamTrust", "value": 20 },
+            { "type": "flag", "key": "declaredLoyalty", "value": true },
+            { "type": "radio", "text": "The team principal heard. He did not say much, but he heard." }
+          ]
+        },
+        {
+          "choiceText": "Say nothing publicly and let both teams bid against each other.",
+          "hint": "Higher ceiling, but the paddock reads silence as disloyalty",
+          "consequences": [
+            { "type": "teamMorale", "value": -12 },
+            { "type": "playerReputation", "value": 3 },
+            { "type": "money", "value": 1200000 },
+            { "type": "pressureLevel", "value": 15 },
+            { "type": "flag", "key": "playingTheMarket", "value": true },
+            { "type": "radio", "text": "Two team principals, one seat, and your name in every rumour column." }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "team-orders-hold-position",
+      "title": "Team Orders",
+      "speaker": "Race Engineer",
+      "category": "race",
+      "weight": 14,
+      "conditions": {
+        "tiers": ["F2", "F1"],
+        "requiresRaceResult": true,
+        "minFinishPosition": 1,
+        "maxFinishPosition": 4,
+        "teammateAhead": false
+      },
+      "promptText": "\"We need you to hold position behind your teammate for the rest of this race. He is on the alternate strategy and the team wants those points in that order. Confirm you copy.\"",
+      "choices": [
+        {
+          "choiceText": "Copy that. Hold position.",
+          "hint": "Lose a place, gain the team's trust",
+          "consequences": [
+            { "type": "teamMorale", "value": 20 },
+            { "type": "teamTrust", "value": 25 },
+            { "type": "championshipPoints", "value": -3 },
+            { "type": "setRivalryState", "target": "teammate", "state": "cordial" }
+          ]
+        },
+        {
+          "choiceText": "Ignore it. Race him.",
+          "hint": "Keep the position and the points; the team will not forget",
+          "consequences": [
+            { "type": "teamMorale", "value": -28 },
+            { "type": "teamTrust", "value": -35 },
+            { "type": "playerReputation", "value": 5 },
+            { "type": "setRivalryState", "target": "teammate", "state": "hostile" },
+            { "type": "flag", "key": "ignoredTeamOrders", "value": true },
+            { "type": "radio", "text": "\"We will discuss this afterwards.\"" }
+          ]
+        },
+        {
+          "choiceText": "Ask them to swap you back if you lose time.",
+          "hint": "A negotiated compromise, if they honour it",
+          "consequences": [
+            { "type": "teamMorale", "value": 6 },
+            { "type": "teamTrust", "value": 8 },
+            { "type": "flag", "key": "negotiatedSwap", "value": true }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "press-conference-rivalry",
+      "title": "Thursday Press Conference",
+      "speaker": "Journalist",
+      "category": "press",
+      "weight": 12,
+      "conditions": {
+        "minRivalryScore": 45,
+        "tiers": ["F3", "F2", "F1"]
+      },
+      "promptText": "\"Last time out you and your rival made contact at the final corner. He has told us this morning that you, and I quote, 'do not know where the braking point is'. Do you have a response?\"",
+      "choices": [
+        {
+          "choiceText": "\"He turned in on me. Look at the footage.\"",
+          "hint": "Escalates the rivalry; fans love it",
+          "consequences": [
+            { "type": "rivalryScore", "value": 20 },
+            { "type": "playerReputation", "value": 4 },
+            { "type": "pressureLevel", "value": 10 },
+            { "type": "setRivalryState", "target": "rival", "state": "feud" }
+          ]
+        },
+        {
+          "choiceText": "\"It was a racing incident. I have moved on.\"",
+          "hint": "Defuses it; the paddock respects the maturity",
+          "consequences": [
+            { "type": "rivalryScore", "value": -12 },
+            { "type": "playerReputation", "value": 8 },
+            { "type": "teamMorale", "value": 8 },
+            { "type": "pressureLevel", "value": -8 }
+          ]
+        },
+        {
+          "choiceText": "\"I would rather talk about the car. We have found some pace.\"",
+          "hint": "Neutral, and it flatters the engineers",
+          "consequences": [
+            { "type": "teamMorale", "value": 14 },
+            { "type": "playerReputation", "value": 2 },
+            { "type": "teamTrust", "value": 6 }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "academy-development-day",
+      "title": "Academy Development Day",
+      "speaker": "Academy Director",
+      "category": "development",
+      "weight": 16,
+      "conditions": {
+        "tiers": ["F3", "F2"],
+        "maxRoundInSeason": 8
+      },
+      "promptText": "\"We have one day of running in the simulator and one day on a real test track. You cannot have both — the budget does not stretch. What do you want to work on?\"",
+      "choices": [
+        {
+          "choiceText": "Qualifying pace. Single-lap commitment.",
+          "hint": "Raises raw pace",
+          "consequences": [
+            { "type": "skill", "value": 0.012 },
+            { "type": "radio", "text": "Two tenths in the last sector by the end of the day." }
+          ]
+        },
+        {
+          "choiceText": "Tyre management over a long run.",
+          "hint": "Raises stint consistency",
+          "consequences": [
+            { "type": "tyreManagement", "value": 0.02 },
+            { "type": "consistency", "value": 0.008 }
+          ]
+        },
+        {
+          "choiceText": "Wet-weather running.",
+          "hint": "Raises wet skill, which decides whole races",
+          "consequences": [
+            { "type": "wetSkill", "value": 0.028 }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "engineer-hire",
+      "title": "A New Race Engineer",
+      "speaker": "Team Principal",
+      "category": "staff",
+      "weight": 8,
+      "conditions": {
+        "tiers": ["F2", "F1"],
+        "minReputation": 40,
+        "onceEver": true
+      },
+      "promptText": "\"We can bring in one senior engineer for you. There are three available and each of them would change how your weekend goes. Your call — you are the one who has to work with them.\"",
+      "choices": [
+        {
+          "choiceText": "A strategist. Reads races, calls the right stop.",
+          "hint": "Better pit calls and safety-car reactions",
+          "consequences": [
+            { "type": "hireStaff", "role": "strategist", "quality": 0.8 },
+            { "type": "money", "value": -800000 }
+          ]
+        },
+        {
+          "choiceText": "An aerodynamicist. Finds car performance.",
+          "hint": "Improves the car over the season",
+          "consequences": [
+            { "type": "hireStaff", "role": "aerodynamicist", "quality": 0.8 },
+            { "type": "carDevelopment", "value": 0.03 },
+            { "type": "money", "value": -1100000 }
+          ]
+        },
+        {
+          "choiceText": "A performance coach. Works on you.",
+          "hint": "Raises consistency and resilience under pressure",
+          "consequences": [
+            { "type": "hireStaff", "role": "coach", "quality": 0.8 },
+            { "type": "consistency", "value": 0.02 },
+            { "type": "pressureLevel", "value": -20 },
+            { "type": "money", "value": -600000 }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "sponsor-ultimatum",
+      "title": "Sponsor Ultimatum",
+      "speaker": "Commercial Director",
+      "category": "commercial",
+      "weight": 9,
+      "conditions": {
+        "tiers": ["F1"],
+        "maxChampionshipPosition": 20,
+        "minChampionshipPosition": 12,
+        "minRoundInSeason": 8
+      },
+      "promptText": "\"Our title sponsor is unhappy. They want a top-ten finish in the next two races or they are reviewing the deal. That is real money and real jobs. I am not telling you how to drive, but I am telling you what is at stake.\"",
+      "choices": [
+        {
+          "choiceText": "Promise them a result. Take risks.",
+          "hint": "Raises aggression and pressure; higher variance",
+          "consequences": [
+            { "type": "aggression", "value": 0.06 },
+            { "type": "pressureLevel", "value": 25 },
+            { "type": "flag", "key": "sponsorPromise", "value": true }
+          ]
+        },
+        {
+          "choiceText": "Tell them the truth: the car is not quick enough yet.",
+          "hint": "Honest, and the engineers hear about it",
+          "consequences": [
+            { "type": "teamMorale", "value": 12 },
+            { "type": "playerReputation", "value": -3 },
+            { "type": "money", "value": -500000 }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "f1-seat-offer",
+      "title": "The Call",
+      "speaker": "F1 Team Principal",
+      "category": "promotion",
+      "weight": 100,
+      "conditions": {
+        "tiers": ["F2"],
+        "minChampionshipPosition": 1,
+        "maxChampionshipPosition": 3,
+        "minRoundInSeason": 12,
+        "onceEver": true
+      },
+      "promptText": "\"We have been watching you all year. There is a seat for next season if you want it. I will be honest about what it is: it is not a front-running car, and you will be judged on very little running. But it is Formula 1, and there are twenty of these in the world.\"",
+      "choices": [
+        {
+          "choiceText": "Take it. Whatever the car.",
+          "hint": "Promotion to F1 next season",
+          "consequences": [
+            { "type": "promoteToF1", "value": 1 },
+            { "type": "playerReputation", "value": 20 },
+            { "type": "contractYears", "value": 2 },
+            { "type": "radio", "text": "You are a Formula 1 driver." }
+          ]
+        },
+        {
+          "choiceText": "Wait a year. Win the F2 title first and get a better seat.",
+          "hint": "Higher ceiling, real risk of the seat going elsewhere",
+          "consequences": [
+            { "type": "playerReputation", "value": 5 },
+            { "type": "flag", "key": "declinedFirstF1Offer", "value": true },
+            { "type": "pressureLevel", "value": 20 },
+            { "type": "radio", "text": "He shook your hand and said he respected it. He also said he would not ask twice." }
+          ]
+        }
+      ]
+    },
+    {
+      "eventId": "wet-race-gamble",
+      "title": "The Crossover Call",
+      "speaker": "Race Engineer",
+      "category": "race",
+      "weight": 13,
+      "conditions": {
+        "tiers": ["F3", "F2", "F1"],
+        "requiresWetRace": true
+      },
+      "promptText": "\"Radar says the rain stops in about six laps. You are on intermediates. We can box now for slicks and be slow for two laps but quick for the rest, or we stay out and hope the track dries under us. Everyone behind is watching what we do.\"",
+      "choices": [
+        {
+          "choiceText": "Box now. Commit to the slick.",
+          "hint": "High risk, high reward if the radar is right",
+          "consequences": [
+            { "type": "flag", "key": "gambledOnSlicks", "value": true },
+            { "type": "teamTrust", "value": 10 },
+            { "type": "pressureLevel", "value": 12 }
+          ]
+        },
+        {
+          "choiceText": "Stay out. Wait for certainty.",
+          "hint": "Safe, and safe is usually third",
+          "consequences": [
+            { "type": "teamMorale", "value": 4 },
+            { "type": "consistency", "value": 0.004 }
+          ]
+        },
+        {
+          "choiceText": "Ask them to decide. That is their job.",
+          "hint": "Defers to the strategist's quality",
+          "consequences": [
+            { "type": "flag", "key": "deferredToPitWall", "value": true },
+            { "type": "teamTrust", "value": 5 }
+          ]
+        }
+      ]
+    }
+  ]
+}
