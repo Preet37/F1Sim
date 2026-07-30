@@ -9,6 +9,7 @@ import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
 import type { Neighbour } from '../ai/AIVehicleController';
 import { createNeighbour } from '../ai/AIVehicleController';
+import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
@@ -117,8 +118,6 @@ export class Weather {
   }
 }
 
-/** Spacing between cars queueing in the pit lane at a garage start, metres. */
-const GARAGE_SPACING_M = 11;
 /**
  * Gap between successive cars being released from the garage, seconds.
  *
@@ -136,6 +135,23 @@ const GARAGE_RELEASE_GAP_S = 3.4;
  * before it takes the line. Roughly 250m is what a real circuit paints.
  */
 const PIT_EXIT_BLEND_M = 260;
+
+/**
+ * How near its own box a car has to be for the crew to take it, metres.
+ *
+ * Half a car length either side of the painted stop bar. Wide enough that a
+ * driver who is roughly right is served, tight enough that "stop in your box"
+ * is a real instruction and stopping in somebody else's does nothing.
+ */
+const PIT_BOX_WINDOW_M = 3.2;
+/**
+ * Speed below which a car counts as stopped in its box, m/s.
+ *
+ * Walking pace. This is a "have you stopped" test, and it has to sit well below
+ * the pit lane limiter — see the note in `updatePitLane` for what happens when
+ * it does not.
+ */
+const PIT_BOX_STOP_SPEED_MS = 1.6;
 
 /**
  * Car collision shape: three discs strung along the car's centreline.
@@ -183,6 +199,14 @@ export class RaceEngine {
   readonly raceControl: RaceControlManager;
   readonly weather: Weather;
   readonly config: SessionConfig;
+  /**
+   * The pit lane's plan, shared with the mesh builder and the paddock.
+   *
+   * Deriving box positions here from the same function that paints them is what
+   * makes "stop in your box" mean anything: the simulation services a car at the
+   * distance the paint is at, rather than at one arbitrary point on the lap.
+   */
+  readonly pitGeom: PitLaneGeometry;
 
   /** Session elapsed time, seconds. */
   time = 0;
@@ -218,9 +242,14 @@ export class RaceEngine {
     this.world = buildWorldModel(this.track);
     this.pitGeom = pitLaneGeometry(def, this.track.length);
     this.config = config;
-    this.raceControl = new RaceControlManager(this.track);
-    this.weather = new Weather(def, config.seed);
+    this.pitGeom = pitLaneGeometry(def, this.track.length);
     this.rng = new Rng(config.seed ^ 0x1f2e3d4c);
+    // Race control draws from its own stream so that adding a decision there
+    // cannot shift the sequence the rest of the simulation sees. A replayed
+    // race has to neutralise identically.
+    const rcRng = new Rng(config.seed ^ 0x7a3b1d95);
+    this.raceControl = new RaceControlManager(this.track, () => rcRng.next());
+    this.weather = new Weather(def, config.seed);
 
     const field = entries ?? DRIVERS;
     // Race fuel: enough for the distance plus a small margin. Qualifying runs
@@ -239,6 +268,11 @@ export class RaceEngine {
         config.seed + i * 7919,
         fuelL, compound,
       );
+      // Each car gets its own box. Slot order follows the entry list, which is
+      // ordered by team with two cars per team — exactly the layout `boxS`
+      // assumes when it puts two boxes in front of every garage.
+      car.pitSlot = i;
+      car.pitBoxS = this.pitGeom.boxS(i);
       this.cars.push(car);
       this.standings.push(car);
       this.neighbourPool.push(createNeighbour(), createNeighbour(), createNeighbour(), createNeighbour());
@@ -366,14 +400,14 @@ export class RaceEngine {
       // limiter. This is how every session that is not a race start actually
       // begins — nobody is teleported onto the circuit at speed.
       const pit = this.track.def.pitLane;
-      const len = this.track.length;
 
       for (let i = 0; i < field.length; i++) {
         const car = field[i];
-        // Stack the queue backwards from the box toward the pit entry, so the
-        // cars form an orderly line rather than occupying the same metre.
-        const s = wrapDistance(pit.boxS - i * GARAGE_SPACING_M, len);
-        car.placeOnTrack(this.track, s, pit.lateralOffsetM, 0);
+        // Each car sits in its OWN box, under its own garage, rather than being
+        // stacked in a queue backwards from a single point. That is where the
+        // paint is and where the buildings are, and it is where a driver
+        // looking for their car would expect to find it.
+        car.placeOnTrack(this.track, car.pitBoxS, pit.lateralOffsetM, 0);
         car.lap = 0;
         car.lapStartTime = 0;
         car.inPitLane = true;
@@ -548,9 +582,16 @@ export class RaceEngine {
     this.resolveContacts();
 
     // 4. Race control.
-    this.raceControl.update(dt, this.cars, this.time, this.config.kind === 'race');
+    this.raceControl.update(
+      dt, this.cars, this.standings, this.time,
+      this.config.kind === 'race', this.weather.wetness,
+    );
+    const leadLap = this.leaderLap();
     for (const car of this.cars) {
       car.blueFlag = this.config.kind === 'race' && this.raceControl.shouldShowBlueFlag(car, this.cars);
+      // A car on the lead lap holds the racing line while the lapped runners
+      // come past — Art. 55.14 / B5.13.4c.
+      car.holdRacingLine = this.raceControl.lappedCarsWaved && car.lap >= leadLap;
     }
 
     // 5. Session end.
@@ -911,13 +952,31 @@ export class RaceEngine {
       ? this.fillNeighbour(this.neighbourPool[base + 3], car, rightCar, loopDelta(car.s, rightCar.s, len))
       : null;
 
-    p.localYellow = this.raceControl.overtakingBannedAt(car.s);
+    const rc = this.raceControl;
+    p.localYellow = rc.overtakingBannedAt(car.s) || car.holdUntilLine;
+    p.yellowLevel = rc.yellowLevelAt(car.s);
     p.blueFlag = car.blueFlag;
-    p.neutralised = this.raceControl.neutralisation !== 'none';
-    p.neutralisedTargetMs = this.raceControl.vscTargetMs;
+    p.neutralised = rc.neutralisation !== 'none';
+    p.neutralisedTargetMs = rc.vscTargetMs;
+    p.queueGapM = rc.queueGapLimitM(car, car.position === 1);
+    p.mustUnlap = car.mustUnlap;
+    p.holdRacingLine = car.holdRacingLine;
+    p.holdUntilLine = car.holdUntilLine;
     p.wetness = this.weather.wetness;
     p.blendRemainingM = car.blendRemainingM;
     p.pitThisLap = this.shouldPit(car);
+
+    // Distance to this car's own box, once it is committed to the lane and
+    // still owes it a stop. -1 means "nothing to stop for".
+    if (car.inPitLane && !car.servicedThisVisit && !car.inPitBox && !car.pitTransitOnly) {
+      const d = loopDelta(car.s, car.pitBoxS, len);
+      // Only ahead of us, and only within the lane. A box already passed is not
+      // something to brake for, and the wrap-around would otherwise report a
+      // box just behind the car as being a full lap away.
+      p.pitBoxAheadM = d >= -PIT_BOX_WINDOW_M && d < len * 0.5 ? Math.max(d, 0) : -1;
+    } else {
+      p.pitBoxAheadM = -1;
+    }
   }
 
   private fillNeighbour(n: Neighbour, self: CarEntry, other: CarEntry, gapM: number): Neighbour {
@@ -1004,6 +1063,18 @@ export class RaceEngine {
 
   private onCrossLine(car: CarEntry): void {
     car.completeLap(this.time);
+
+    // Racing resumes for THIS car at the Line, not when the safety car left the
+    // circuit: "no driver may overtake ... until they pass the Line for the
+    // first time after the Safety Car has entered the Pit Entry Road"
+    // (2025 Art. 55.8 / 2026 Art. B5.13.2c). The leader is racing again while a
+    // car half a lap back still is not, which is why the flag is per-car.
+    car.holdUntilLine = false;
+    // A car that has unlapped itself has completed the manoeuvre.
+    if (car.mustUnlap && this.raceControl.lappedCarsWaved) {
+      const leader = this.standings[0];
+      if (leader && car.lap >= leader.lap) car.mustUnlap = false;
+    }
 
     if (this.config.kind === 'race') {
       const laps = this.config.laps || this.track.def.raceLaps;
@@ -1094,9 +1165,23 @@ export class RaceEngine {
   // Pit lane
   // =========================================================================
 
+  /**
+   * Calls the player in, or cancels the call. Owned by the UI.
+   *
+   * Written to `pitRequested` and not to `perception.pitThisLap`, because the
+   * perception buffer is rebuilt from scratch every physics step and any request
+   * left there is erased within 8ms.
+   */
+  requestPit(car: CarEntry, on: boolean): void {
+    car.pitRequested = on;
+  }
+
   /** Does the strategy want this car in the pits on this lap? */
   private shouldPit(car: CarEntry): boolean {
-    if (this.config.kind !== 'race' || car.isPlayer) return false;
+    // The player is called in by the player, not by the strategist. Their
+    // request is a latch that survives until it is served or cancelled.
+    if (car.isPlayer) return car.pitRequested && !car.inPitLane;
+    if (this.config.kind !== 'race') return false;
     if (car.inPitLane) return false;
     if (car.lastPitLap === car.lap) return false;
 
@@ -1114,7 +1199,26 @@ export class RaceEngine {
     // always true — which had every car pitting on every lap.
     const tyresGone = car.physics.rearTires.wear < 0.24;
     const plannedStopDue = car.targetPitLap > 0 && car.lap >= car.targetPitLap;
-    return plannedStopDue || tyresGone;
+    if (plannedStopDue || tyresGone) return true;
+
+    // The cheap stop.
+    //
+    // A stop under a neutralisation costs a fraction of what it costs under
+    // green, because the whole field is circulating slowly while you serve the
+    // pit lane. Every strategist in the paddock takes it, and an AI that did
+    // not would be leaving the single biggest strategic swing in the sport on
+    // the table. It is legal — the pit lane is NOT closed by a safety car in
+    // the current regulations — but it is legal only for one purpose: "no F1
+    // Car may enter the pits whilst the Safety Car is deployed unless it is for
+    // the purpose of changing tyres" (2025 Art. 55.12 / 2026 Art. B5.13.3, and
+    // identically for the VSC at Art. 56.4 / B5.12.3).
+    if (this.raceControl.neutralisation !== 'none') {
+      const worthIt = car.physics.rearTires.lapsOnSet > 6 &&
+        car.targetPitLap > 0 &&
+        this.raceControl.mayEnterPitLane(true, false);
+      if (worthIt) return true;
+    }
+    return false;
   }
 
   /**
@@ -1139,12 +1243,66 @@ export class RaceEngine {
       const wantsPit = car.isPlayer
         ? car.perception.pitThisLap
         : car.ai!.state === 'PIT_APPROACH';
-      if (wantsPit && geometricallyInLane && fromEntry < 40) {
+
+      // Is the driver ALLOWED in? Under a neutralisation the lane stays open
+      // but only for tyres (Art. 55.12 / B5.13.3, Art. 56.4 / B5.12.3), and the
+      // Race Director may close the entry outright, in which case only
+      // "essential and entirely evident repairs" get through (2025 Art. 34.15 /
+      // 2026 Art. B1.6.4). A car serving a penalty is obliged to come in and is
+      // not making a free choice, so it is let through either way.
+      const forRepairs =
+        car.damage.worst().health < 0.7 || car.pendingServePenalty() !== null;
+      const allowed = this.raceControl.mayEnterPitLane(true, forRepairs);
+      if (wantsPit && !allowed && !car.pitEntryRefused) {
+        car.pitEntryRefused = true;
+        this.raceControl.log(
+          car.driver.code + ' — pit entry closed, stay out',
+          'warning', this.time, car.index,
+        );
+      }
+      if (!wantsPit) car.pitEntryRefused = false;
+
+      if (wantsPit && allowed && geometricallyInLane && fromEntry < 40) {
         car.inPitLane = true;
         car.lastPitLap = car.lap;
+        // Every per-visit flag is cleared HERE, on the way in, not on the way
+        // out. Clearing them on exit is the same thing only when the exit path
+        // actually runs, and it does not always: a car that retires in the
+        // lane, is placed in the lane at the start of a session, or is put back
+        // on track by the recovery code leaves `servicedThisVisit` latched true
+        // — and a latched flag means the next visit drives straight past the
+        // box without stopping, for the rest of the race. Resetting on entry
+        // makes a visit self-contained and is why a car can now pit twice.
+        car.servicedThisVisit = false;
+        car.inPitBox = false;
+        car.pitBoxTimer = 0;
+        car.pitSpeedingFlagged = false;
+        // A drive-through is served by transiting the lane without stopping.
+        // A stop-go is not — that one is served stationary in the box.
+        const pen = car.pendingServePenalty();
+        car.pitTransitOnly = pen !== null && pen.kind === 'drive-through';
       }
       return;
     }
+
+    // Held at the pit exit while unlapped cars rejoin the queue.
+    //
+    // "the pit lane exit may be closed at the race director's sole discretion
+    // while these cars rejoin" — 2025 Art. 55.14 / 2026 Art. B5.13.4c. A car
+    // released into the middle of a line of cars unlapping themselves at three
+    // times its speed is exactly the situation the discretion exists for. The
+    // red light at the end of the lane is the mechanism: "F1 Cars may only be
+    // driven out of the Pit Lane when the light at the end of the Pit Lane is
+    // green" (2025 Art. 37.2 / 2026 Art. B1.6.3e).
+    const atExitLight = toExit >= 0 && toExit < 25;
+    if (this.raceControl.pitExitClosed && atExitLight && car.servicedThisVisit) {
+      car.physics.velocity.set(0, 0);
+      car.physics.localVelX = 0;
+      car.physics.localVelY = 0;
+      car.pitExitHold += dt;
+      return;
+    }
+    car.pitExitHold = 0;
 
     if (!geometricallyInLane && !car.inPitBox) {
       // Left the lane. The lap in progress ran through the pit lane, so it is
@@ -1154,6 +1312,22 @@ export class RaceEngine {
       car.blendRemainingM = PIT_EXIT_BLEND_M;
       car.pitSpeedingFlagged = false;
       car.servicedThisVisit = false;
+      // The call has been answered. Leaving it latched would send the car
+      // straight back down the pit lane on the next lap, for ever.
+      car.pitRequested = false;
+      // A drive-through is discharged by the transit itself, and it has just
+      // been completed.
+      if (car.pitTransitOnly) {
+        const pen = car.pendingServePenalty();
+        if (pen && pen.kind === 'drive-through') {
+          pen.served = true;
+          this.raceControl.log(
+            car.driver.code + ' has served the drive-through penalty',
+            'info', this.time, car.index,
+          );
+        }
+        car.pitTransitOnly = false;
+      }
       if (car.ai) car.ai.onRejoinTrack();
       return;
     }
@@ -1180,10 +1354,28 @@ export class RaceEngine {
     car.physics.position.x += this.track.nx[idx] * dLat;
     car.physics.position.y += this.track.nz[idx] * dLat;
 
-    // The box. One service per visit: without the guard a car that is still
-    // within the box window after being serviced simply gets serviced again.
-    const toBox = loopDelta(car.s, pit.boxS, len);
-    if (!car.inPitBox && !car.servicedThisVisit && toBox > -6 && toBox <= 2 && car.physics.speedMs < 22) {
+    // The box.
+    //
+    // THIS car's box, not a single point on the lap shared by twenty cars, and
+    // the stop is triggered by the car having actually STOPPED in it rather
+    // than by a speed threshold it could never satisfy.
+    //
+    // The old test was `speedMs < 22` at a pit lane limited to 80 km/h. 80 km/h
+    // is 22.22 m/s, so a car sitting exactly on its limiter — which is what
+    // every car in a pit lane is doing — was always above the threshold by a
+    // fifth of a metre a second, and the condition never once became true. Cars
+    // drove into the pit lane, straight through the box at the limit, and out
+    // the other end: `pitStops` was zero for all twenty cars in a full race,
+    // no tyres were ever changed, and every car was disqualified at the flag
+    // under the two-compound rule. It also meant the strategy never advanced,
+    // because `targetPitLap` is only moved on by a completed stop.
+    //
+    // One service per visit: without the guard a car that is still within the
+    // box window after being serviced simply gets serviced again.
+    const toBox = loopDelta(car.s, car.pitBoxS, len);
+    const inBoxWindow = toBox > -PIT_BOX_WINDOW_M && toBox <= PIT_BOX_WINDOW_M;
+    if (!car.inPitBox && !car.servicedThisVisit && !car.pitTransitOnly && inBoxWindow &&
+        car.physics.speedMs < PIT_BOX_STOP_SPEED_MS) {
       car.inPitBox = true;
       const crewTime = car.team.performance.pitCrewTimeS;
       // Occasional slow stop — a sticking wheel gun is part of racing.

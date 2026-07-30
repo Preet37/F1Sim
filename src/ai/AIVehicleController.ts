@@ -82,16 +82,55 @@ export interface AIPerception {
   /** Cars alongside, within a car length longitudinally. */
   alongsideLeft: Neighbour | null;
   alongsideRight: Neighbour | null;
-  /** True when a yellow flag covers the sector the car is in. */
+  /** True when overtaking is forbidden here — any yellow, or a neutralisation. */
   localYellow: boolean;
+  /**
+   * 0 green, 1 single waved yellow, 2 double waved yellow.
+   *
+   * Single yellow: "reduce their speed and be prepared to change direction"
+   * (2025 Art. 26.1a / 2026 Art. B1.8.4a). Double: "reduce your speed
+   * significantly ... and be prepared to change direction or stop" (Art. 26.1b /
+   * B1.8.4b). A driver who treats the two the same is not obeying either.
+   */
+  yellowLevel: 0 | 1 | 2;
   /** True when the car is being lapped and must yield. */
   blueFlag: boolean;
   /** Safety car or VSC in force — hold position and respect the delta. */
   neutralised: boolean;
   /** Speed the VSC delta requires, m/s. 0 when not applicable. */
   neutralisedTargetMs: number;
+  /**
+   * Maximum gap to the car ahead under a safety car, metres. 0 when free.
+   * Ten car lengths — Art. 55.7 / B5.13.2b.
+   */
+  queueGapM: number;
+  /**
+   * This car has been waved past and must unlap itself past the lead-lap cars
+   * and the safety car. Art. 55.14 / B5.13.4c.
+   */
+  mustUnlap: boolean;
+  /**
+   * Lead-lap car while others unlap: hold the racing line and let them by.
+   * Art. 55.14 / B5.13.4c.
+   */
+  holdRacingLine: boolean;
+  /**
+   * The safety car has come in but this car has not yet crossed the Line, so
+   * overtaking is still forbidden. Art. 55.8 / B5.13.2c.
+   */
+  holdUntilLine: boolean;
   /** True when the strategy wants this car in the pits this lap. */
   pitThisLap: boolean;
+  /**
+   * Metres still to run to this car's own pit box, or -1 when there is no box
+   * to stop at — not in the lane, or already serviced this visit.
+   *
+   * A driver in the pit lane is not driving to the end of it, they are driving
+   * to a painted rectangle with their own crew standing in front of it, and
+   * they have to arrive at it stopped. Without this the AI simply held the
+   * limiter the length of the lane and drove out the far end.
+   */
+  pitBoxAheadM: number;
   /** 0 dry .. 1 standing water. */
   wetness: number;
 }
@@ -100,8 +139,10 @@ export function createPerception(): AIPerception {
   return {
     blendRemainingM: 0,
     ahead: null, behind: null, alongsideLeft: null, alongsideRight: null,
-    localYellow: false, blueFlag: false, neutralised: false,
-    neutralisedTargetMs: 0, pitThisLap: false, wetness: 0,
+    localYellow: false, yellowLevel: 0, blueFlag: false, neutralised: false,
+    neutralisedTargetMs: 0, queueGapM: 0, mustUnlap: false,
+    holdRacingLine: false, holdUntilLine: false,
+    pitThisLap: false, pitBoxAheadM: -1, wetness: 0,
   };
 }
 
@@ -176,6 +217,83 @@ export const AI_TUNING = {
  * so much grip that the AI began braking half again as early as it needed to.
  */
 const BRAKING_GRIP_SHARE = 0.9;
+
+/**
+ * Deceleration used to bring a car to rest on its pit box, m/s².
+ *
+ * Gentle: this is a driver rolling up to their crew under the limiter, not a
+ * braking zone. From 22 m/s it takes about 40 metres, which is the length of
+ * lane a real stop is set up over.
+ */
+const PIT_BOX_DECEL_MS2 = 6;
+/** How near its box the car counts as having arrived, metres. */
+const PIT_BOX_ARRIVED_M = 0.4;
+/**
+ * Deceleration assumed when planning the approach to the pit entry, m/s².
+ *
+ * Deliberately CONSERVATIVE — well under what the brakes can do. The number is
+ * not a claim about the car, it is the rate the approach is planned at, and
+ * planning at the limit means arriving at the limit with no margin. At 14 m/s²
+ * the cars needed 300 metres from top speed and were given 420, which sounds
+ * like plenty and was not: the brakes do not reach that rate instantly, so
+ * every car crossed the pit entry line between 80 and 116 km/h against a limit
+ * of 80, collected a drive-through for pit lane speeding, came in to serve it,
+ * sped again on the way in, and shuttled in and out of the pit lane for the
+ * rest of the race. Seven visits and no stops was a normal race.
+ */
+const PIT_ENTRY_DECEL_MS2 = 9;
+/** How far before the pit entry line the AI starts thinking about it, metres. */
+const PIT_ENTRY_SCAN_M = 620;
+/**
+ * Share of the pit lane limit the AI aims to cross the entry line at.
+ *
+ * A driver arrives comfortably UNDER the limit and lets the limiter hold them
+ * there, because the penalty for being a single km/h over is a drive-through.
+ */
+const PIT_ENTRY_TARGET_SHARE = 0.92;
+/** How far before the entry line the limiter goes on, metres. */
+const PIT_LIMITER_ARM_M = 25;
+
+/**
+ * Brake pedal needed to be doing `vTarget` in `distance` metres, 0..1.
+ *
+ * Compares the car against the constant-deceleration profile
+ * v = sqrt(vt² + 2·a·d) and brakes only when it is ABOVE it. The comparison
+ * matters: taking the required deceleration on its own and turning it straight
+ * into pedal means a car two hundred metres from its box still needs a third of
+ * a metre per second squared to stop there, which is a small but permanent
+ * brake application. It fought the throttle the whole length of the pit lane
+ * and the car crawled to its box at half the speed limit, losing several
+ * seconds on every stop for no reason a driver would recognise.
+ */
+function brakeFor(speed: number, vTarget: number, distance: number, refDecel: number): number {
+  if (distance <= 0.01) return speed > vTarget ? 1 : 0;
+  const profile = Math.sqrt(vTarget * vTarget + 2 * refDecel * distance);
+  if (speed <= profile) return 0;
+  const needed = (speed * speed - vTarget * vTarget) / (2 * distance);
+  // Slightly over-braking (the 1.15) makes the approach converge instead of
+  // asymptotically never arriving.
+  return clamp01(needed / (refDecel * 1.15));
+}
+
+/**
+ * How much of its speed a driver gives up for a yellow flag.
+ *
+ * A modelling choice, not a regulation — see the note at the call site. The
+ * FIA fixes the ordering (a double must be a bigger lift than a single, and
+ * both must be discernible) and publishes no numbers.
+ */
+const YELLOW_LIFT_SINGLE = 0.88;
+const YELLOW_LIFT_DOUBLE = 0.62;
+
+/**
+ * How much above the delta a car waved past may run while unlapping itself.
+ *
+ * It has a lap to make up on the entire queue and on the safety car, and
+ * Art. 55.14 / B5.13.4c requires it to complete the manoeuvre, so it cannot do
+ * it at the delta. Real unlapping runs are visibly quicker than the queue.
+ */
+const UNLAP_PACE_MULT = 1.75;
 
 /** How often the FSM re-evaluates its state, in seconds. */
 const DECISION_INTERVAL = 0.1;
@@ -389,15 +507,48 @@ export class AIVehicleController {
     if (p.pitThisLap) {
       const pit = track.def.pitLane;
       // Commit once inside the braking distance for the pit entry.
+      //
+      // This has to be at least as far out as the braking scan looks, because
+      // the pit-entry braking only runs in PIT_APPROACH. Committing at 260m
+      // while needing 184m to get from racing speed down to the limit left no
+      // margin at all, and any car that was a little quick on the approach
+      // crossed the pit entry line over the limit and collected a drive-through
+      // before it had even reached its box.
       const toEntry = loopDelta(s, pit.entryS, track.length);
-      if (toEntry > 0 && toEntry < 260) {
+      if (toEntry > 0 && toEntry < PIT_ENTRY_SCAN_M) {
         this.setState('PIT_APPROACH');
         return;
       }
     }
 
     // --- Under a safety car or VSC nobody races.
+    //
+    // Except for one case that the regulations single out: a car that has been
+    // waved past is REQUIRED to unlap itself, and it cannot do that by holding
+    // station. "the message 'LAPPED CARS MAY NOW OVERTAKE' will be sent ... to
+    // signal to all cars that have been lapped by the leader that they are
+    // required to pass the cars on the lead lap and the Safety Car"
+    // (2025 Art. 55.14 / 2026 Art. B5.13.4c). So it goes past, off the racing
+    // line, while the lead-lap cars hold theirs.
+    if (p.mustUnlap) {
+      this.setState('OVERTAKE');
+      const lineOffset = track.lineOffset[track.indexAt(s)];
+      this.targetLateral = clamp(-Math.sign(lineOffset || 1) * halfWidth * 0.6, -halfWidth, halfWidth);
+      return;
+    }
     if (p.neutralised) {
+      this.setState('FOLLOW');
+      // "cars on the lead lap must always stay on the racing line unless
+      // deviating is unavoidable" while lapped cars come past —
+      // Art. 55.14 / B5.13.4c. Off the racing line is precisely where the
+      // unlapping cars are, which is why the rule exists.
+      this.targetLateral = track.lineOffset[track.indexAt(s)];
+      return;
+    }
+
+    // --- The safety car has come in, but this car has not yet reached the
+    // Line. Racing does not resume until it does — Art. 55.8 / B5.13.2c.
+    if (p.holdUntilLine) {
       this.setState('FOLLOW');
       this.targetLateral = track.lineOffset[track.indexAt(s)];
       return;
@@ -879,17 +1030,107 @@ export class AIVehicleController {
       targetSpeed *= lerp(1, 0.85, clamp01((Math.abs(lateral) / halfW - 0.88) / 0.16));
     }
 
-    // Neutralised: obey the delta.
-    if (p.neutralised && p.neutralisedTargetMs > 0) {
-      targetSpeed = Math.min(targetSpeed, p.neutralisedTargetMs);
+    // --- Yellow flags ------------------------------------------------------
+    // Two different instructions, so two different lifts.
+    //
+    // Single waved yellow: "must reduce their speed and be prepared to change
+    // direction ... expected to have braked earlier and/or discernibly reduced
+    // speed in the relevant marshalling sector" (2025 Art. 26.1a / 2026 Art.
+    // B1.8.4a). Double waved yellow: "reduce your speed significantly ... and
+    // be prepared to change direction or stop" (Art. 26.1b / B1.8.4b; ISC
+    // Appendix H Art. 2.5.5b) — the hazard is blocking the track, or there are
+    // marshals standing on it.
+    //
+    // The two factors below are a MODELLING CHOICE, not a regulation. The FIA
+    // publishes no numeric lift for either flag; the standard is qualitative
+    // and judged by the stewards. What the regulations do fix is the ORDERING —
+    // a double yellow must be a bigger lift than a single, and both must be
+    // discernible — and that is what these encode. A car that is already slow
+    // for a corner is not asked to slow further.
+    if (!p.neutralised && p.yellowLevel > 0) {
+      targetSpeed *= p.yellowLevel === 2 ? YELLOW_LIFT_DOUBLE : YELLOW_LIFT_SINGLE;
     }
 
-    // Pit lane speed limit.
+    // Neutralised: obey the delta.
+    //
+    // Note that the regulation's obligation is to stay above the minimum time
+    // "at least once in each marshalling sector" (Art. 55.7 and 56.5 /
+    // B5.13.2b and B5.12.2b) rather than to hold a speed continuously — race
+    // control times the sectors and penalises the ones done too quickly. The AI
+    // satisfies that by simply running at the delta pace, which is what a real
+    // driver does because it is the easy way to stay legal.
+    if (p.neutralised && p.neutralisedTargetMs > 0) {
+      targetSpeed = Math.min(targetSpeed, p.neutralisedTargetMs);
+
+      // A car that has been waved past is allowed to get on with it: it has a
+      // lap to make up on the whole queue and the safety car, and it cannot do
+      // that at the delta. Art. 55.14 / B5.13.4c requires it to pass.
+      if (p.mustUnlap) targetSpeed = p.neutralisedTargetMs * UNLAP_PACE_MULT;
+    }
+
+    // --- Forming up behind the safety car ----------------------------------
+    // "All F1 Cars must reduce speed and form up behind the Safety Car no more
+    // than ten (10) car lengths apart" — Art. 55.7 / B5.13.2b.
+    //
+    // Expressed as a speed rather than as a position: when the gap to the car
+    // ahead is over the limit, run above the delta to close it; when it is
+    // under, match. That is what produces the concertina of a field bunching
+    // up, and the queue is the single most consequential thing a safety car
+    // does to a race.
+    if (p.queueGapM > 0 && p.ahead !== null && !p.mustUnlap) {
+      const gap = p.ahead.gapM;
+      if (gap > p.queueGapM) {
+        // Catch up, but not at racing pace — a driver closing a gap under the
+        // safety car is still under a speed obligation.
+        const urgency = clamp01((gap - p.queueGapM) / (p.queueGapM * 3));
+        targetSpeed = Math.max(targetSpeed, p.neutralisedTargetMs * (1 + urgency * 0.32));
+      } else if (gap < p.queueGapM * 0.45) {
+        // Too close. Ease off rather than run into the back of the queue.
+        targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * 0.92);
+      }
+    }
+
+    // Pit lane speed limit, and the stop in the box.
     if (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') {
       const pit = track.def.pitLane;
       const inLane = this.isInPitLane(s);
-      c.pitLimiter = inLane;
-      if (inLane) targetSpeed = Math.min(targetSpeed, (pit.speedLimitKph - 2) / 3.6);
+      const limitMs = (pit.speedLimitKph - 2) / 3.6;
+
+      // Arm the limiter just BEFORE the line, not on it. The button is pressed
+      // on the approach in a real car, and engaging it on the same step the car
+      // crosses the line loses the race between "am I in the pit lane" and "was
+      // I speeding when I got here" — which race control judges on that step.
+      const toEntryNow = loopDelta(s, pit.entryS, track.length);
+      c.pitLimiter = inLane ||
+        (this.state === 'PIT_APPROACH' && toEntryNow >= 0 && toEntryNow < PIT_LIMITER_ARM_M);
+
+      if (inLane) {
+        targetSpeed = Math.min(targetSpeed, limitMs);
+      } else if (this.state === 'PIT_APPROACH') {
+        // Brake for the pit entry so the car crosses the line AT the limit.
+        //
+        // Without this the AI carried racing speed all the way to the entry and
+        // arrived in the pit lane at 270 km/h, because the limiter only comes on
+        // once the car is already inside. Every stop therefore began with a
+        // drive-through penalty for pit lane speeding, and the car was still
+        // doing three times the limit when it reached its box.
+        const toEntry = toEntryNow;
+        if (toEntry >= 0 && toEntry < PIT_ENTRY_SCAN_M) {
+          const vAtLine = limitMs * PIT_ENTRY_TARGET_SHARE;
+          targetSpeed = Math.min(
+            targetSpeed,
+            Math.sqrt(vAtLine * vAtLine + 2 * PIT_ENTRY_DECEL_MS2 * toEntry),
+          );
+        }
+      }
+
+      // Slow to a standstill on the box. A square-root profile is simply the
+      // constant-deceleration solution v = sqrt(2 a d), so the car sheds speed
+      // smoothly down the lane and arrives at zero on the mark rather than
+      // stamping on the brakes at the last metre.
+      if (p.pitBoxAheadM >= 0) {
+        targetSpeed = Math.min(targetSpeed, Math.sqrt(2 * PIT_BOX_DECEL_MS2 * p.pitBoxAheadM));
+      }
     } else {
       c.pitLimiter = false;
     }
@@ -987,6 +1228,53 @@ export class AIVehicleController {
       const over = speed / Math.max(targetSpeed, 1) - 1;
       const want = clamp01(1 - over * 12);
       c.throttle = Math.min(want, car.tractionLimitFraction * AI_TUNING.throttleShare);
+    }
+
+    // --- Braking for the pit entry and for the box -------------------------
+    // Commanded directly rather than left to the pedal model above, because
+    // that model only ever sees the speed profile of the CIRCUIT: its braking
+    // scan samples `speedTargetAt`, which knows about corners and knows nothing
+    // about a pit entry or a pit box. Feeding either in as a target speed alone
+    // produces a very gentle roll-off spread over thirty metres — the car
+    // coasts through its box at walking pace instead of stopping in it.
+    //
+    // The arithmetic is the whole controller: the deceleration needed to reach
+    // a given speed at a given distance, as a share of what the brakes can do.
+    //
+    // Note what this deliberately does NOT do: hold the brake down whenever the
+    // car happens to be stationary. An earlier version did, via a `speed < 0.6`
+    // clause, and it deadlocked the race. A car that stopped anywhere in the
+    // lane — for instance because it had arrived at the entry far too fast and
+    // stood the car on its nose — satisfied the clause, held full brake for
+    // ever, and sat in the pit lane holding a yellow flag and a safety car for
+    // the rest of the race. The car is only pinned when it is actually ON its
+    // box, and everywhere else it is free to drive away.
+    if (this.state === 'PIT_APPROACH' && !this.isInPitLane(s)) {
+      const pit = track.def.pitLane;
+      const toEntry = loopDelta(s, pit.entryS, track.length);
+      const vAtLine = (pit.speedLimitKph - 2) / 3.6 * PIT_ENTRY_TARGET_SHARE;
+      if (toEntry >= 0 && toEntry < PIT_ENTRY_SCAN_M && speed > vAtLine) {
+        // Capped at the lock-up limit like every other brake application: a
+        // locked wheel stops the car later, not sooner, which is the opposite
+        // of what an over-committed pit entry needs.
+        const pedal = Math.min(
+          brakeFor(speed, vAtLine, toEntry, PIT_ENTRY_DECEL_MS2),
+          car.brakeLimitFraction * AI_TUNING.brakeShare,
+        );
+        if (pedal > c.brake) { c.brake = pedal; c.throttle = 0; }
+      }
+    }
+
+    if (p.pitBoxAheadM >= 0) {
+      if (p.pitBoxAheadM < PIT_BOX_ARRIVED_M) {
+        // On the mark. Hold it still — a car that creeps forward out of its own
+        // box while the crew works on it is a car the crew cannot work on.
+        c.throttle = 0;
+        c.brake = 1;
+      } else {
+        const pedal = brakeFor(speed, 0, p.pitBoxAheadM, PIT_BOX_DECEL_MS2);
+        if (pedal > c.brake) { c.brake = pedal; c.throttle = 0; }
+      }
     }
 
     // Mistakes: occasionally a driver genuinely gets it wrong. Rare, brief, and

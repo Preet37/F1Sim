@@ -98,6 +98,52 @@ export class CarEntry {
   pitSpeedingFlagged = false;
   /** Lap on which the car most recently entered the pit lane. */
   lastPitLap = -1;
+  /**
+   * This car's own pit box: its slot in the row, and where that slot sits.
+   *
+   * A pit lane has one box per car and a driver stops in THEIRS. The simulation
+   * used to service every car at the single `pitLane.boxS` from the track data,
+   * which is one point on the lap for twenty cars — so nobody had a box of their
+   * own to aim at, the player had nowhere marked to stop, and the paint the
+   * circuit builder lays down (which does use one box per slot) described a pit
+   * lane the simulation was not running.
+   *
+   * Assigned by the race engine from `PitGeometry.boxS(slot)`, which is the same
+   * function the mesh builder and the paddock use, so the box the car stops in
+   * is the box painted on the road with this team's garage behind it.
+   */
+  pitSlot = 0;
+  /** Distance along the lap of this car's own box. */
+  pitBoxS = 0;
+  /**
+   * True when this car has been called in, independently of who decided it.
+   *
+   * The player's pit request and the AI strategist's decision have to live in
+   * the same field, because the pit-lane code needs one answer to "is this car
+   * coming in", and they must SURVIVE the perception rebuild. The request used
+   * to be written straight onto `perception.pitThisLap`, which the engine
+   * recomputes from the strategy every single physics step — and the strategy
+   * hard-returns false for the player. A player pressing the pit button
+   * therefore had the request erased 8ms later, every time, which is why the
+   * player could never pit at all.
+   */
+  pitRequested = false;
+  /** True while a pit request is being refused because the entry is closed. */
+  pitEntryRefused = false;
+  /**
+   * This visit is a drive-through, so the car does NOT stop.
+   *
+   * A drive-through penalty is served by entering the pit lane, driving its
+   * length under the limiter and rejoining — the whole point is that the car
+   * does not stop. Requiring it to stop in its box to have the penalty marked
+   * served meant it never was: the car transited the lane, the penalty stayed
+   * outstanding, the strategist called it in again on the next lap, and it
+   * spent the rest of the race shuttling in and out of the pit lane. Six visits
+   * and no stops was a normal race for a car with one drive-through.
+   */
+  pitTransitOnly = false;
+  /** Seconds still to wait at a closed pit exit before being released. */
+  pitExitHold = 0;
 
   // --- Penalties and infractions ------------------------------------------
   readonly penalties: Penalty[] = [];
@@ -171,6 +217,44 @@ export class CarEntry {
 
   // --- Flags ---------------------------------------------------------------
   blueFlag = false;
+  /**
+   * This car has been waved past and is REQUIRED to unlap itself.
+   *
+   * "the message 'LAPPED CARS MAY NOW OVERTAKE' will be sent ... to signal to
+   * all cars that have been lapped by the leader that they are required to pass
+   * the cars on the lead lap and the Safety Car" — 2025 Art. 55.14 / 2026 Art.
+   * B5.13.4c. Required, not permitted.
+   */
+  mustUnlap = false;
+  /**
+   * This car is on the lead lap while lapped cars are coming past, and must
+   * hold the racing line: "cars on the lead lap must always stay on the racing
+   * line unless deviating is unavoidable" — Art. 55.14 / B5.13.4c.
+   */
+  holdRacingLine = false;
+  /**
+   * Overtaking still forbidden until this car has itself crossed the Line.
+   *
+   * "no driver may overtake another F1 Car on the track, including the Safety
+   * Car, until they pass the Line for the first time after the Safety Car has
+   * entered the Pit Entry Road to return to the Pit Lane" — Art. 55.8 /
+   * B5.13.2c. The obligation is per-car, not global: the leader is racing again
+   * while a car half a lap back still is not.
+   */
+  holdUntilLine = false;
+
+  // --- Neutralisation delta ------------------------------------------------
+  /** Seconds spent in the marshalling sector currently being timed. */
+  deltaSectorTime = 0;
+  /** Marshalling sector being timed, or -1 when not under a neutralisation. */
+  deltaSectorIndex = -1;
+  /** Marshalling sectors completed below the minimum time. */
+  deltaBreaches = 0;
+  /**
+   * True while the sector being timed was joined part-way through, so its time
+   * is a stub and must not be judged against a whole sector's minimum.
+   */
+  deltaSectorPartial = true;
 
   /** Perception buffer, reused every tick so the AI never allocates. */
   readonly perception: AIPerception = createPerception();
