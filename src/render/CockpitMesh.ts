@@ -18,22 +18,73 @@ import * as THREE from 'three';
  *
  * Coordinates: +x right, +y up, +z toward the nose. The origin is the contact
  * patch plane at the centre of the car.
+ *
+ * NOT to be confused with DriverMesh.ts, which is the other half of the same
+ * problem: the driver's BODY as seen from outside — helmet, shoulders, HANS
+ * collar, arms — merged into the shared shell so all twenty cars have someone
+ * in them. This module is the reverse view, of one car, from one seat. The two
+ * meet at the steering wheel, which both place, and which is why the wheel's
+ * position, rake and grip points are defined here and imported there.
  */
 
-/** Driver's eye point, car-local. The camera sits exactly here in cockpit mode. */
+/**
+ * Driver's eye point, car-local. The camera sits exactly here in cockpit mode.
+ *
+ * This is not a free parameter. It is the eye socket of the modelled driver in
+ * DriverMesh.ts, whose helmet is centred at y = 0.672 with a scaled vertical
+ * radius of 0.156, so the shell runs from 0.516 to 0.828 and the eyes sit a
+ * little above centre and forward of it. Set it by eye instead and the camera
+ * ends up above the driver's head, looking over the top of the halo hoop
+ * (apex y = 0.820) rather than through it — which is exactly what happened when
+ * this was left at the old car's 0.86 after the body was rebuilt.
+ */
 export const EYE_X = 0;
-export const EYE_Y = 0.86;
-export const EYE_Z = 0.03;
+export const EYE_Y = 0.705;
+export const EYE_Z = 0.100;
 
-/** Centre of the steering wheel, car-local. */
-const WHEEL_X = 0;
-const WHEEL_Y = 0.665;
-const WHEEL_Z = 0.53;
+/**
+ * Centre of the steering wheel, car-local, and its rake.
+ *
+ * Exported because DriverMesh puts the coarse wheel and the driver's hands in
+ * the same place: the two have to agree exactly, or the detailed wheel drawn
+ * for the onboard view sits somewhere other than the one every other camera
+ * sees, and the driver's arms reach for empty air.
+ */
+/**
+ * Height matters more than it looks. The cockpit coaming is at y = 0.578 and
+ * the eye barely 0.13m above it, so anything much below the coaming line is
+ * hidden behind the top of the tub from the driver's own seat. Sitting the
+ * wheel's centre just under that line — which is also where a real car carries
+ * it — is what puts the whole rim, and the display in the middle of it, in the
+ * picture instead of just the top edge.
+ *
+ * Reach matters too: at 0.44m from the eye the rim filled two thirds of the
+ * frame. 0.54m is both an arm's length and a sane framing.
+ */
+export const WHEEL_X = 0;
+export const WHEEL_Y = 0.565;
+export const WHEEL_Z = 0.540;
 /** Rake of the wheel: the top is tipped back toward the driver. */
-const WHEEL_TILT = -0.35;
+export const WHEEL_TILT = -0.45;
+
+/** Where the hands grip the rim, in wheel-local x. */
+export const GRIP_X = 0.128;
 
 const WHEEL_HALF_W = 0.145;
 const WHEEL_HALF_H = 0.105;
+
+/**
+ * Mirror mounts, car-local (right-hand side; the left is mirrored in x).
+ *
+ * Shared with CarMesh, which builds the stalk and the housing into the shell so
+ * that all twenty cars have mirrors, and leaves the reflective pane to this
+ * module because only one car is ever looked out of.
+ */
+export const MIRROR_X = 0.478;
+export const MIRROR_Y = 0.618;
+export const MIRROR_Z = 0.735;
+/** Front face of the housing, where the glass sits. */
+export const MIRROR_GLASS_Z = 0.714;
 
 export interface CockpitState {
   /** Road-wheel angle in radians. The rim turns by RACK_RATIO times this. */
@@ -255,35 +306,39 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // --- Cockpit rim padding ------------------------------------------------
   // The dark bolsters either side of the driver. They occupy the bottom corners
   // of the frame and are most of what makes the view feel enclosed.
+  //
+  // Heights here follow the monocoque in CarMesh, whose cockpit opening has its
+  // rim at y = 0.572..0.596 over this stretch. The pads stand a couple of
+  // centimetres proud of it, as padding does.
   for (const side of [-1, 1] as const) {
     const pad = new THREE.BoxGeometry(0.075, 0.055, 0.62);
-    pad.translate(side * 0.30, 0.598, 0.13);
+    pad.translate(side * 0.30, 0.580, 0.13);
     add(pad, carbon);
   }
-  // Dash bulkhead ahead of the driver, where the column comes through.
+  // Dash bulkhead ahead of the driver, where the column comes through. The tub
+  // has necked down to a rim height of about 0.556 by here.
   {
-    const dash = new THREE.BoxGeometry(0.54, 0.07, 0.10);
-    dash.translate(0, 0.605, 0.70);
+    const dash = new THREE.BoxGeometry(0.50, 0.06, 0.10);
+    dash.translate(0, 0.556, 0.70);
     add(dash, carbon);
-    // Steering column, running down from the back of the wheel.
-    add(strut(0, 0.648, 0.58, 0, 0.588, 0.74, 0.030), carbon);
+    // Steering column, running forward and down from the back of the wheel.
+    add(strut(0, 0.565, 0.572, 0, 0.556, 0.68, 0.030), carbon);
   }
 
   // --- Mirrors ------------------------------------------------------------
-  // Mounted well forward on the chassis flanks, which is both where a real car
-  // carries them and the only place they are inside a 100-degree field of view.
+  // The stalk and the housing are part of the shell (see CarMesh) because every
+  // car needs them. What only the driver needs is the reflection: a fully
+  // metallic, near-zero-roughness pane picks up the environment map and reads
+  // instantly as glass, where the shell's flat dark swatch reads as a sticker.
+  // It is laid a couple of millimetres proud of the shell's pane so it wins the
+  // depth test without z-fighting.
   for (const side of [-1, 1] as const) {
-    const x = side * 0.47;
-    add(strut(side * 0.30, 0.685, 0.72, x, 0.715, 0.72, 0.014), carbon);
-    const housing = new THREE.BoxGeometry(0.12, 0.078, 0.028);
-    housing.translate(x, 0.722, 0.722);
-    add(housing, carbon);
     // The glass faces back and inward, at the driver's eye. The plane's own
     // normal is +z, so the mesh rotation alone turns it round — rotating the
     // geometry as well would flip it back and cull it.
-    const glass = new THREE.PlaneGeometry(0.105, 0.064);
+    const glass = new THREE.PlaneGeometry(0.092, 0.050);
     const g = add(glass, mirrorGlass);
-    g.position.set(x, 0.722, 0.706);
+    g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
     g.rotation.y = Math.PI + side * 0.30;
   }
 
@@ -328,10 +383,10 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // each — the same trick a real team uses to mark the straight-ahead point.
     for (const side of [-1, 1] as const) {
       const grip = new THREE.CylinderGeometry(0.023, 0.023, 0.118, 10);
-      grip.translate(side * 0.128, -0.004, 0);
+      grip.translate(side * GRIP_X, -0.004, 0);
       add(grip, rubberGrip, wheelSpin);
       const flash = new THREE.BoxGeometry(0.048, 0.014, 0.048);
-      flash.translate(side * 0.128, 0.062, 0);
+      flash.translate(side * GRIP_X, 0.062, 0);
       add(flash, accent, wheelSpin);
     }
     // Straight-ahead marker at 12 o'clock.
@@ -372,7 +427,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // the ninety degrees of lock an F1 car has, so they turn with it.
   for (const side of [-1, 1] as const) {
     const hand = new THREE.Group();
-    hand.position.set(side * 0.128, -0.005, 0);
+    hand.position.set(side * GRIP_X, -0.005, 0);
     wheelSpin.add(hand);
 
     // Palm, wrapped around the back of the grip rather than stuck to the side
@@ -399,23 +454,25 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       t.translate(side * -0.014, 0.036, -0.010);
       add(t, glove, hand);
     }
-    // Cuff and forearm running back toward the driver, out of the frame.
+    // Cuff at the wrist. The forearm behind it is NOT built here: DriverMesh
+    // already runs a real arm from the shoulder to this exact point for every
+    // car on the grid, and a second one starting at the wrist reads as a third
+    // limb.
     {
       const cuff = new THREE.CylinderGeometry(0.031, 0.033, 0.028, 10);
       cuff.rotateX(Math.PI / 2);
       cuff.rotateZ(side * 0.34);
       cuff.translate(side * 0.034, -0.038, -0.042);
       add(cuff, accent, hand);
-
-      const arm = strut(side * 0.038, -0.046, -0.050, side * 0.10, -0.15, -0.30, 0.032, 0.040);
-      add(arm, glove, hand);
     }
   }
 
-  // The halo itself is NOT built here. It lives on the shared body mesh (see
-  // CarMesh) at HALO_Y, because it has to be there for the outside views
-  // anyway, and two hoops in the same place would z-fight. What the cockpit
-  // adds is only what nobody can see from outside.
+  // The halo, the roll hoop and the driver's own body are NOT built here. They
+  // live on the shared shell (see CarMesh and DriverMesh), because they have to
+  // be there for the outside views anyway, and two of anything in the same place
+  // would z-fight. What the cockpit adds is only what nobody can see from
+  // outside: a mirror that actually reflects, a wheel with a live dash, and the
+  // hands on it.
 
   const dashRef = dash;
 

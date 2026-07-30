@@ -386,10 +386,18 @@ export class Renderer {
     this.scene.add(this.paddock.root);
 
     for (const car of engine.cars) {
+      // The race number and the driver's code are painted into the livery
+      // texture, so they have to be known when the car is built.
+      //
       // Only the player's car carries the cockpit interior: it is the only one
       // the cockpit camera can ever be inside, and twenty steering wheels and
       // twenty pairs of gloves nobody will see is not a good trade.
-      const visual = buildCar(car.team.colour, car.team.accent, car.isPlayer);
+      const visual = buildCar(car.team.colour, car.team.accent, {
+        number: car.driver.raceNumber,
+        code: car.driver.code,
+        quality: this.quality,
+        withCockpit: car.isPlayer,
+      });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
     }
@@ -696,6 +704,13 @@ export class Renderer {
       }
       v.root.visible = true;
 
+      // The cockpit camera sits inside the driver's helmet, and the detailed
+      // cockpit wheel is drawn on top of the coarse one. Both live in the same
+      // mesh, so one flag deals with both — for that one car only, because
+      // every other driver on track should still have a head.
+      const inside = cockpitView && car === focusCar;
+      v.driverHead.visible = !inside;
+
       const p = car.physics;
       const y = track.elevationAt(car.s);
       v.root.position.set(p.position.x, y, p.position.y);
@@ -726,7 +741,6 @@ export class Renderer {
       // Cockpit interior: shown only for the car the cockpit camera is inside,
       // so it can never appear floating in a chase or trackside shot.
       if (v.cockpit) {
-        const inside = cockpitView && car === focusCar;
         v.setCockpitVisible(inside);
         if (inside) {
           v.cockpit.update({

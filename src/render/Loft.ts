@@ -14,6 +14,20 @@ import * as THREE from 'three';
  * whose normals can be averaged for smooth shading. It is also how the shape would
  * be modelled in a 3D package, so the result is not an approximation of the right
  * technique — it is the right technique.
+ *
+ * Every surface here carries UVs, because a livery is not a colour. It is graphics
+ * — a flash down the sidepod, a contrasting nose, a race number — and graphics
+ * need a parameterisation. A lofted surface has one for free: u runs around the
+ * section, v runs along the car. That is the whole reason the body is lofted
+ * rather than assembled, and it is what lets `Livery.ts` paint a car by drawing
+ * into a canvas instead of by subdividing geometry.
+ *
+ * UV CONVENTION. u = 0 sits on the BOTTOM centreline and runs 0.25 left flank,
+ * 0.5 top centreline, 0.75 right flank, 1.0 back to the bottom. The seam therefore
+ * falls on the underside of the car, where nothing is ever drawn and nobody looks.
+ * v = 0 is the first section (the front) and 1 the last, distributed by arc length
+ * so a long taper does not squash the texture. `setPanelUV` turns that a quarter
+ * turn on its way into the atlas; see the note there for why.
  */
 
 /** A closed cross-section at some distance along the loft axis. */
@@ -42,42 +56,67 @@ export interface Section {
 }
 
 /**
- * Builds one closed ring of vertices for a section.
+ * Builds a section from the two numbers that are actually easy to reason about
+ * on a car: how high off the ground its underside and its upper surface sit.
+ *
+ * Every real constraint on this bodywork is expressed that way — the floor is at
+ * 60mm, the cockpit rim at 550mm, the top of the airbox at 950mm — and converting
+ * those to a centre and a height by hand at every station is how the first version
+ * of this file ended up with a monocoque whose roof line wandered.
+ */
+export function section(
+  z: number,
+  halfWidth: number,
+  bottom: number,
+  top: number,
+  round: number,
+  extra?: { flatTop?: number; undercut?: number },
+): Section {
+  return {
+    z,
+    halfWidth,
+    height: top - bottom,
+    y: (top + bottom) * 0.5,
+    round,
+    flatTop: extra?.flatTop,
+    undercut: extra?.undercut,
+  };
+}
+
+/**
+ * One point on a section's outline.
  *
  * Uses a superellipse rather than a blend of a rectangle and a circle: the
  * exponent gives direct control over how square the corners are, and it produces
  * evenly-distributed points, which matters because uneven spacing shows up as
  * banding in the shading.
+ *
+ * The parameter starts at the bottom of the section rather than the side, which
+ * is what puts the UV seam under the car.
  */
-function ringFor(section: Section, segments: number, out: Float32Array, offset: number): void {
-  const { halfWidth, height, y, round } = section;
-  const flatTop = section.flatTop ?? 0;
-  const undercut = section.undercut ?? 1;
+function profilePoint(s: Section, t01: number): { x: number; y: number } {
+  const flatTop = s.flatTop ?? 0;
+  const undercut = s.undercut ?? 1;
 
   // Superellipse exponent: 2 is an ellipse, higher is squarer.
-  const n = 2 + (1 - round) * 6;
-  const halfHeight = height * 0.5;
+  const n = 2 + (1 - s.round) * 6;
+  const halfHeight = s.height * 0.5;
 
-  for (let i = 0; i < segments; i++) {
-    const t = (i / segments) * Math.PI * 2;
-    const c = Math.cos(t);
-    const s = Math.sin(t);
+  const t = t01 * Math.PI * 2 - Math.PI / 2;
+  const c = Math.cos(t);
+  const sn = Math.sin(t);
 
-    // Superellipse: |x/a|^n + |y/b|^n = 1, parameterised.
-    const px = Math.sign(c) * Math.pow(Math.abs(c), 2 / n) * halfWidth;
-    let py = Math.sign(s) * Math.pow(Math.abs(s), 2 / n) * halfHeight;
+  const px = Math.sign(c) * Math.pow(Math.abs(c), 2 / n) * s.halfWidth;
+  let py = Math.sign(sn) * Math.pow(Math.abs(sn), 2 / n) * halfHeight;
 
-    // Flatten the upper surface toward a plane.
-    if (flatTop > 0 && py > 0) {
-      py = py * (1 - flatTop) + halfHeight * flatTop * (Math.abs(px) < halfWidth * 0.72 ? 1 : 0.35);
-    }
-    // Undercut narrows the lower half.
-    const xScale = py < 0 ? 1 - (1 - undercut) * (-py / halfHeight) : 1;
-
-    out[offset + i * 3] = px * xScale;
-    out[offset + i * 3 + 1] = y + py;
-    out[offset + i * 3 + 2] = section.z;
+  // Flatten the upper surface toward a plane.
+  if (flatTop > 0 && py > 0) {
+    py = py * (1 - flatTop) + halfHeight * flatTop * (Math.abs(px) < s.halfWidth * 0.72 ? 1 : 0.35);
   }
+  // Undercut narrows the lower half.
+  const xScale = py < 0 ? 1 - (1 - undercut) * (-py / halfHeight) : 1;
+
+  return { x: px * xScale, y: s.y + py };
 }
 
 /**
@@ -93,106 +132,164 @@ export function loft(
   capEnds = true,
 ): THREE.BufferGeometry {
   const rings = sections.length;
-  const vertexCount = rings * segments;
-  const positions = new Float32Array(vertexCount * 3);
+  // One extra column duplicating the seam. Without it the last quad has to run
+  // its u from (segments-1)/segments back to 0, so the whole texture is smeared
+  // backwards across a single strip on the underside.
+  const cols = segments + 1;
+  const ringVerts = rings * cols;
+  const capVerts = capEnds ? 2 * (segments + 1) : 0;
+  const total = ringVerts + capVerts;
+
+  const positions = new Float32Array(total * 3);
+  const uvs = new Float32Array(total * 2);
+
+  // v by arc length along the loft axis, so a long slow taper does not get the
+  // same slice of the texture as a short abrupt one.
+  const vs = new Float32Array(rings);
+  let run = 0;
+  for (let r = 1; r < rings; r++) {
+    run += Math.abs(sections[r].z - sections[r - 1].z);
+    vs[r] = run;
+  }
+  if (run > 1e-6) for (let r = 0; r < rings; r++) vs[r] /= run;
+  else for (let r = 0; r < rings; r++) vs[r] = r / Math.max(1, rings - 1);
 
   for (let r = 0; r < rings; r++) {
-    ringFor(sections[r], segments, positions, r * segments * 3);
+    const s = sections[r];
+    for (let i = 0; i < cols; i++) {
+      const t = (i % segments) / segments;
+      const p = profilePoint(s, i === segments ? 1 : t);
+      const o = (r * cols + i) * 3;
+      positions[o] = p.x;
+      positions[o + 1] = p.y;
+      positions[o + 2] = s.z;
+      const uo = (r * cols + i) * 2;
+      // u runs the opposite way round the section to the vertex order. That is
+      // not arbitrary: it makes the (u, v) frame right-handed against the
+      // outward normal, and without it every graphic on the car — numbers
+      // especially — comes out mirrored.
+      uvs[uo] = 1 - i / segments;
+      uvs[uo + 1] = vs[r];
+    }
   }
 
   const indices: number[] = [];
   for (let r = 0; r < rings - 1; r++) {
-    const a = r * segments;
-    const b = (r + 1) * segments;
+    const a = r * cols;
+    const b = (r + 1) * cols;
     for (let i = 0; i < segments; i++) {
-      const j = (i + 1) % segments;
       // Two triangles per quad, wound so the outward face is front-facing.
-      indices.push(a + i, b + i, b + j);
-      indices.push(a + i, b + j, a + j);
+      indices.push(a + i, b + i, b + i + 1);
+      indices.push(a + i, b + i + 1, a + i + 1);
+    }
+  }
+
+  if (capEnds) {
+    // Cap with a fan to a centre point at each end. Without caps the body is
+    // visibly hollow from any angle that sees into it.
+    let base = ringVerts;
+    for (const front of [true, false]) {
+      const s = front ? sections[0] : sections[rings - 1];
+      const v = front ? 0 : 1;
+      positions[base * 3] = 0;
+      positions[base * 3 + 1] = s.y;
+      positions[base * 3 + 2] = s.z;
+      uvs[base * 2] = 0.5;
+      uvs[base * 2 + 1] = v;
+      for (let i = 0; i < segments; i++) {
+        const p = profilePoint(s, i / segments);
+        const idx = base + 1 + i;
+        positions[idx * 3] = p.x;
+        positions[idx * 3 + 1] = p.y;
+        positions[idx * 3 + 2] = s.z;
+        uvs[idx * 2] = 1 - i / segments;
+        uvs[idx * 2 + 1] = v;
+      }
+      for (let i = 0; i < segments; i++) {
+        const a = base + 1 + i;
+        const b = base + 1 + ((i + 1) % segments);
+        if (front) indices.push(base, b, a);
+        else indices.push(base, a, b);
+      }
+      base += segments + 1;
     }
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(indices);
-
-  if (capEnds) {
-    // Cap with a fan to a centre point at each end. Without caps the body is
-    // visibly hollow from any angle that sees into it.
-    const capGeos: THREE.BufferGeometry[] = [geo];
-    capGeos.push(capRing(sections[0], segments, true));
-    capGeos.push(capRing(sections[rings - 1], segments, false));
-    const merged = mergeSimple(capGeos);
-    merged.computeVertexNormals();
-    for (const g of capGeos) if (g !== geo) g.dispose();
-    geo.dispose();
-    return merged;
-  }
 
   // Averaged normals across shared vertices: this is what turns a faceted hull
   // into a smoothly-shaded surface.
   geo.computeVertexNormals();
+
+  // The seam column is a positional duplicate, so its averaged normal only saw
+  // half the surface. Left alone it draws a visible crease down the car.
+  const nrm = geo.attributes.normal as THREE.BufferAttribute;
+  for (let r = 0; r < rings; r++) {
+    const a = r * cols;
+    const b = a + segments;
+    const nx = nrm.getX(a) + nrm.getX(b);
+    const ny = nrm.getY(a) + nrm.getY(b);
+    const nz = nrm.getZ(a) + nrm.getZ(b);
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nrm.setXYZ(a, nx / len, ny / len, nz / len);
+    nrm.setXYZ(b, nx / len, ny / len, nz / len);
+  }
+  nrm.needsUpdate = true;
+
   return geo;
 }
 
-function capRing(section: Section, segments: number, front: boolean): THREE.BufferGeometry {
-  const ring = new Float32Array(segments * 3);
-  ringFor(section, segments, ring, 0);
-
-  const positions = new Float32Array((segments + 1) * 3);
-  // Centre vertex.
-  positions[0] = 0;
-  positions[1] = section.y;
-  positions[2] = section.z;
-  for (let i = 0; i < segments; i++) {
-    positions[(i + 1) * 3] = ring[i * 3];
-    positions[(i + 1) * 3 + 1] = ring[i * 3 + 1];
-    positions[(i + 1) * 3 + 2] = ring[i * 3 + 2];
+/**
+ * Remaps a lofted surface's UVs into a panel of a texture atlas, turning them a
+ * quarter turn on the way.
+ *
+ * The rotation is not cosmetic. A car is three times longer than it is round, so
+ * mapping the length onto the texture's short axis leaves roughly forty pixels
+ * per metre along the car against three hundred across it. Text drawn into that
+ * comes out four characters wide and a metre long — which is exactly what the
+ * first attempt produced. Turning the panel so the car's LENGTH runs along the
+ * atlas's long axis brings the two densities within a factor of one and a half,
+ * and everything drawn into it keeps its proportions.
+ *
+ * Texture u therefore carries the loft's v (front to back) and texture v carries
+ * the loft's u (round the section), negated so the frame stays right-handed
+ * against the outward normal and nothing comes out mirrored.
+ */
+export function setPanelUV(
+  geo: THREE.BufferGeometry,
+  u0: number, v0: number, u1: number, v1: number,
+): THREE.BufferGeometry {
+  const uv = geo.attributes.uv as THREE.BufferAttribute | undefined;
+  if (!uv) return geo;
+  for (let i = 0; i < uv.count; i++) {
+    const around = uv.getX(i);
+    const along = uv.getY(i);
+    uv.setXY(i, u0 + along * (u1 - u0), v0 + (1 - around) * (v1 - v0));
   }
-
-  const indices: number[] = [];
-  for (let i = 0; i < segments; i++) {
-    const a = i + 1;
-    const b = ((i + 1) % segments) + 1;
-    if (front) indices.push(0, b, a);
-    else indices.push(0, a, b);
-  }
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  g.setIndex(indices);
-  return g;
+  uv.needsUpdate = true;
+  return geo;
 }
 
-/** Concatenates position-and-index geometries. Avoids a BufferGeometryUtils import. */
-function mergeSimple(geos: readonly THREE.BufferGeometry[]): THREE.BufferGeometry {
-  let totalVerts = 0;
-  let totalIndices = 0;
-  for (const g of geos) {
-    totalVerts += g.attributes.position.count;
-    totalIndices += g.index ? g.index.count : 0;
+/**
+ * Points every vertex at one texel.
+ *
+ * Parts that are a single flat colour — a wishbone, an endplate, a tyre — do not
+ * need a parameterisation, but they do have to live in the same material as the
+ * painted bodywork or the car costs a draw call per colour. Pinning them to a
+ * swatch in the atlas is what collapses the entire shell to one draw call.
+ */
+export function setFlatUV(geo: THREE.BufferGeometry, u: number, v: number): THREE.BufferGeometry {
+  const count = geo.attributes.position.count;
+  const uvs = new Float32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    uvs[i * 2] = u;
+    uvs[i * 2 + 1] = v;
   }
-
-  const positions = new Float32Array(totalVerts * 3);
-  const indices = new Uint32Array(totalIndices);
-  let vOff = 0;
-  let iOff = 0;
-
-  for (const g of geos) {
-    const pos = g.attributes.position.array as ArrayLike<number>;
-    positions.set(pos as unknown as Float32Array, vOff * 3);
-    const idx = g.index;
-    if (idx) {
-      for (let i = 0; i < idx.count; i++) indices[iOff + i] = idx.getX(i) + vOff;
-      iOff += idx.count;
-    }
-    vOff += g.attributes.position.count;
-  }
-
-  const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  out.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
-  return out;
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  return geo;
 }
 
 /**
@@ -240,8 +337,57 @@ export function wingElement(
   });
   // Extruded along +Z by default; orient across the car and centre it.
   geo.rotateY(Math.PI / 2);
-  geo.translate(-span * 0.5 + span * 0.5, 0, 0);
   geo.center();
   geo.computeVertexNormals();
   return geo;
+}
+
+/**
+ * A straight round member between two points: a wishbone leg, a pushrod, a
+ * mirror stalk.
+ *
+ * Suspension is worth more than it sounds. The gap between a wheel and the
+ * bodywork is a large, obviously-empty void, and filling it with the right
+ * linkage geometry is most of what makes an open-wheeler read as engineered
+ * rather than as a toy.
+ */
+export function strut(
+  x0: number, y0: number, z0: number,
+  x1: number, y1: number, z1: number,
+  r: number,
+  radialSegments = 5,
+  capped = false,
+): THREE.BufferGeometry {
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+  const len = Math.hypot(dx, dy, dz) || 1e-4;
+  // Open-ended by default: a suspension member's ends are buried in an upright
+  // or a chassis pickup, and end caps on twenty-eight of them per car is a few
+  // hundred triangles nobody will ever see.
+  const g = new THREE.CylinderGeometry(r, r, len, radialSegments, 1, !capped);
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(dx / len, dy / len, dz / len),
+  );
+  g.applyQuaternion(q);
+  g.translate((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
+  return g;
+}
+
+/**
+ * A swept tube through a smooth curve. Used for the halo, which is the one part
+ * of the car that is genuinely a bent pipe and looks wrong as anything else.
+ */
+export function tube(
+  points: readonly [number, number, number][],
+  radius: number,
+  tubularSegments = 24,
+  radialSegments = 6,
+): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3(
+    points.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
+    false,
+    'catmullrom',
+    0.5,
+  );
+  return new THREE.TubeGeometry(curve, tubularSegments, radius, radialSegments, false);
 }
