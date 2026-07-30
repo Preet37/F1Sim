@@ -48,7 +48,25 @@ export const DEFAULT_INPUT_CONFIG: InputConfig = {
   keyboardSteerRate: 3.4,
   keyboardCentreRate: 5.5,
   keyboardThrottleRate: 4.5,
-  keyboardBrakeRate: 6.5,
+  /**
+   * Brake pedal ramp, pedal-fraction per second.
+   *
+   * Deliberately SLOWER than the throttle, which is the opposite of what it was.
+   *
+   * The brake needs finer modulation than the throttle, not coarser. Measured
+   * against the tyre model: from about 100 km/h upward the brakes out-grip the
+   * tyres, so the fronts lock at 0.64 pedal at 150 km/h and 0.84 at 200, while
+   * the throttle can be held at 0.99 and 1.00 at those speeds. Only above
+   * 250 km/h, once downforce has caught up, is full pedal usable at all.
+   *
+   * At the old 6.5 the brake reached full travel in 0.154s against the
+   * throttle's 0.222s — 1.44x faster — so a keyboard tap blew straight through
+   * the lock-up threshold before the player could feel it. That is why braking
+   * felt so much harder than accelerating. At 3.2 a tap lands around 0.3 pedal
+   * and holding builds to the limit over a third of a second, which is roughly
+   * how quickly a real driver rolls onto the pedal.
+   */
+  keyboardBrakeRate: 3.2,
   gamepadDeadzone: 0.09,
   tiltFullLockDeg: 26,
   tiltNeutralDeg: 0,
