@@ -106,6 +106,28 @@ const SURFACE_ROLL_DRAG: Record<SurfaceType, number> = {
 
 const G = 9.81;
 
+// --- Barrier contact ------------------------------------------------------
+/** Restitution for a pure graze, where the velocity is parallel to the wall. */
+const BARRIER_RESTITUTION_GRAZE = 0.12;
+/** Restitution for a square-on hit, before the plastic-deformation fade. */
+const BARRIER_RESTITUTION_SQUARE = 0.55;
+/**
+ * How fast restitution falls with closing speed, per m/s.
+ *
+ * Barriers are energy absorbers, so a light knock is springy and a heavy one is
+ * not. At 3 m/s a square hit gives back 47% of the closing speed; at 22 m/s,
+ * only 24% — and by then the car is written off anyway.
+ */
+const BARRIER_PLASTIC_FADE = 0.06;
+/** Closing speed, m/s, that counts as a full-severity impact. */
+const BARRIER_WRITE_OFF_MS = 22;
+/** Speed lost per second while scraping along a barrier: e^-0.5 is about 40%. */
+const BARRIER_SCRAPE_RATE = 0.5;
+/** Rotation damped per second while in contact with a barrier. */
+const BARRIER_YAW_DAMP_RATE = 2.5;
+/** Below this speed, m/s, a car held against a wall is simply stopped. */
+const BARRIER_REST_MS = 0.4;
+
 export class VehiclePhysics {
   spec: VehicleSpec;
   /** The undamaged spec, so damage is applied to a stable baseline. */
@@ -352,6 +374,121 @@ export class VehiclePhysics {
     this.yawRate = 0;
     this.gear = speedMs > 5 ? 3 : 1;
     this.shiftTimer = 0;
+  }
+
+  /**
+   * Brings the car to a complete stop where it stands.
+   *
+   * Used when the car is written off. A retirement that leaves `velocity`
+   * populated leaves the speedometer reading 180km/h for a car wedged in a
+   * barrier, which is the "it still shows speed when it shouldn't" bug: every
+   * speed readout in the game derives from `velocity`, so the only way to read
+   * as stopped is to actually be stopped.
+   */
+  stop(): void {
+    this.velocity.set(0, 0);
+    this.localVelX = 0;
+    this.localVelY = 0;
+    this.yawRate = 0;
+    this.wheelSpin = 0;
+    this.vibration = 0;
+  }
+
+  /**
+   * Recomputes the body-frame velocity from the world velocity.
+   *
+   * `step()` does this at the top of every step, so anything that reaches in
+   * and edits `velocity` from outside — a barrier, a collision between cars —
+   * must call this or leave `localVelX`/`localVelY` describing the motion the
+   * car had BEFORE the impact. That stale pair is what the gearbox, the AI's
+   * spin-recovery test and the reverse gate all read.
+   */
+  syncLocalVelocity(): void {
+    const sinH = Math.sin(this.heading);
+    const cosH = Math.cos(this.heading);
+    this.localVelX = this.velocity.x * sinH + this.velocity.y * cosH;
+    this.localVelY = this.velocity.x * cosH - this.velocity.y * sinH;
+  }
+
+  /**
+   * Resolves contact with a static barrier and returns the impact severity, 0..1.
+   *
+   * `(nx, nz)` is the wall's unit normal pointing OUT of the circuit, i.e. the
+   * direction the car is travelling when it hits. The caller owns depenetration;
+   * this owns the velocity response.
+   *
+   * The response is a real restitution rather than a perfect absorption, because
+   * absorption is what made barrier contact feel broken. Taking the whole normal
+   * component away means a car that touches a wall is instantly welded to it and
+   * simply slides along, which is neither what a barrier does nor what anyone
+   * expects to see. The coefficient scales with how SQUARE the hit is:
+   *
+   *   - A graze, where the velocity is nearly parallel to the wall, has almost
+   *     no normal component to give back, and what little there is comes back at
+   *     a low coefficient. The car slides along the barrier and keeps going,
+   *     which is exactly what happens when a driver brushes the wall at Jeddah.
+   *   - A square-on hit reverses a meaningful fraction of the closing speed and
+   *     pushes the car back onto the circuit.
+   *
+   * Restitution also FALLS with closing speed. Barriers are energy absorbers —
+   * TecPro and tyre walls are designed to deform plastically — so a light knock
+   * is springy and a big one is not. Without that term a 200km/h impact would
+   * fire the car back across the track like a pinball.
+   *
+   * Everything time-dependent below is a RATE, not a per-step multiplier. This
+   * is called once per physics step at 120Hz, so a constant per-call factor of
+   * 0.82 compounds to 1e-10 per second and a car that brushed a barrier was
+   * stopped stone dead within two frames and could never drive away.
+   */
+  collideWithBarrier(nx: number, nz: number, dt: number): number {
+    // Contact resists rotation. A rate, so the driver keeps enough yaw
+    // authority to point the car away from the wall and leave.
+    this.yawRate *= Math.exp(-BARRIER_YAW_DAMP_RATE * dt);
+
+    const vIn = this.velocity.x * nx + this.velocity.y * nz;
+
+    if (vIn <= 0) {
+      // Already leaving, or sliding exactly along the wall. Scraping costs speed
+      // continuously — about 40% per second in contact, enough to punish a long
+      // scrape and slow enough that the car keeps rolling.
+      this.velocity.scale(Math.exp(-BARRIER_SCRAPE_RATE * dt));
+      this.syncLocalVelocity();
+      return 0;
+    }
+
+    const speed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.y * this.velocity.y);
+    // sin of the impact angle: 0 is a parallel graze, 1 is square on.
+    const squareness = clamp01(vIn / Math.max(speed, 0.5));
+    const restitution =
+      (BARRIER_RESTITUTION_GRAZE + (BARRIER_RESTITUTION_SQUARE - BARRIER_RESTITUTION_GRAZE) * squareness) /
+      (1 + vIn * BARRIER_PLASTIC_FADE);
+
+    const severity = clamp01(vIn / BARRIER_WRITE_OFF_MS);
+
+    // Tangential component, taken before the normal one is touched.
+    const tx = this.velocity.x - nx * vIn;
+    const tz = this.velocity.y - nz * vIn;
+
+    // A hard impact scrubs the slide along the wall as well as the closing
+    // speed. Without this a car that hit a barrier square at 200km/h kept
+    // scything down the wall at nearly 200km/h with its race already over —
+    // wrecked, uncontrollable, and still reading a speed on the HUD.
+    const keepTangential = Math.max(0, 1 - severity * severity * 1.2);
+
+    // Restitution acts along -n, i.e. back toward the circuit.
+    const rebound = -vIn * restitution;
+    this.velocity.set(tx * keepTangential + nx * rebound, tz * keepTangential + nz * rebound);
+    this.velocity.scale(Math.exp(-BARRIER_SCRAPE_RATE * dt));
+
+    // Below walking pace there is nothing left to model, and a residual of a
+    // few centimetres per second reads as a non-zero speed on the HUD for a car
+    // that is visibly motionless against a wall.
+    if (this.velocity.x * this.velocity.x + this.velocity.y * this.velocity.y < BARRIER_REST_MS * BARRIER_REST_MS) {
+      this.velocity.set(0, 0);
+    }
+
+    this.syncLocalVelocity();
+    return severity;
   }
 
   /** Refuels and fits fresh tires. Called on a pit stop. */

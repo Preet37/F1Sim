@@ -581,11 +581,13 @@ export class RaceEngine {
    * 126 metres off the road, still "racing", permanently stuck in a gravel trap
    * generating a yellow flag for the rest of the session.
    *
-   * The barrier is modelled as a lateral limit with an inelastic normal
-   * response: the component of velocity into the wall is absorbed, the component
-   * along it is scrubbed, and a hard enough hit damages or ends the car's race.
-   * Street circuits have walls right at the track edge, which is why Monaco
-   * punishes a mistake that Silverstone forgives.
+   * The barrier is modelled as a lateral limit. This function owns only the
+   * geometry — where the wall is and how far the car has gone through it — and
+   * hands the velocity response to the vehicle model, which bounces the car off
+   * with a restitution scaled by how square the hit was: a graze slides along
+   * the wall, a square-on hit rebounds onto the circuit, and a hard enough one
+   * damages or ends the car's race. Street circuits have walls right at the
+   * track edge, which is why Monaco punishes a mistake Silverstone forgives.
    */
   private enforceBarriers(car: CarEntry, dt: number): void {
     const idx = this.track.indexAt(car.s);
@@ -627,48 +629,25 @@ export class RaceEngine {
     car.physics.position.y -= nz * overlap;
     car.lateral = side * limit;
 
-    // Absorb the velocity component into the wall.
-    //
-    // Everything below is carefully split between per-IMPACT and per-SECOND.
-    // The original version applied `velocity.scale(0.82)` and `yawRate *= 0.4`
-    // unconditionally on every call — and this runs once per physics step, at
-    // 120Hz. That compounds to 0.82^120 per second, which is about 1e-10: a car
-    // that so much as brushed a barrier was stopped stone dead within a frame
-    // or two and could never drive away again, because its yaw rate was being
-    // annihilated just as fast. That is the "stuck in the wall" bug.
-    const into = car.physics.velocity.x * nx + car.physics.velocity.y * nz;
-    if (into > 0) {
-      // Remove the component going into the wall. This is the collision itself
-      // and is correctly instantaneous — the wall does not move.
-      car.physics.velocity.x -= nx * into;
-      car.physics.velocity.y -= nz * into;
+    // The velocity response — restitution, scrape and yaw damping — belongs to
+    // the vehicle model, which owns `velocity` and the body-frame copy of it
+    // that has to stay in step. See VehiclePhysics.collideWithBarrier.
+    const severity = car.physics.collideWithBarrier(nx, nz, dt);
+
+    if (severity > 0.25) {
+      this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz));
+      this.raceControl.log(
+        car.driver.code + ' into the barrier at ' +
+        (this.track.cornerNameAt(car.s) || 'the exit'),
+        severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
+      );
     }
-
-    // Scraping along the barrier costs speed continuously, so it must be a
-    // RATE. About 40% of speed per second while in contact: enough to punish a
-    // long scrape, slow enough that the car keeps rolling and can be steered
-    // off the wall.
-    const scrub = Math.exp(-0.5 * dt);
-    car.physics.velocity.scale(scrub);
-
-    // Contact also resists rotation, but again as a rate rather than a per-step
-    // wipe, so the driver retains the yaw authority needed to point the car
-    // away from the wall and leave.
-    car.physics.yawRate *= Math.exp(-2.5 * dt);
-
-    if (into > 0) {
-      const severity = clamp01(into / 22);
-      if (severity > 0.25) {
-        this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz));
-        this.raceControl.log(
-          car.driver.code + ' into the barrier at ' +
-          (this.track.cornerNameAt(car.s) || 'the exit'),
-          severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
-        );
-      }
-      if (severity > 0.72) {
-        car.retire('Accident', this.time);
-      }
+    if (severity > 0.72) {
+      car.retire('Accident', this.time);
+      // A written-off car is stationary. Retiring without this left the wreck
+      // carrying its impact speed, so the HUD kept reading a speed for a car
+      // that was out of the race and pinned against a barrier.
+      car.physics.stop();
     }
   }
 
