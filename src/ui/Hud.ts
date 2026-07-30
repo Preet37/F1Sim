@@ -4,6 +4,7 @@ import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
 import { bandOf, COMPONENT_NAMES, type ComponentId } from '../race/DamageModel';
+import { TrackMap } from './TrackMap';
 
 /**
  * Telemetry HUD, timing tower, team radio and touch overlay.
@@ -54,10 +55,22 @@ export class Hud {
   private readonly damageParts = new Map<ComponentId, SVGElement>();
   private damageSummary!: HTMLElement;
 
-  /** Sector board: latest and best rows, plus the running delta. */
-  private sectorLatest: HTMLElement[] = [];
-  private sectorBest: HTMLElement[] = [];
-  private sectorDelta!: HTMLElement;
+  /** Sector tiles, top right: one per sector, coloured by the rules above. */
+  private sectorCells: HTMLElement[] = [];
+  private sectorTimes: HTMLElement[] = [];
+  /**
+   * The driver's slowest time in each sector this session, and the last
+   * completed value seen, so each sector is folded in exactly once.
+   */
+  private readonly worstSector = [0, 0, 0];
+  private readonly seenSector = [0, 0, 0];
+
+  /** Circuit map, rebuilt when the session's track changes. */
+  private mapPanel!: HTMLElement;
+  private mapHolder!: HTMLElement;
+  private mapTitle!: HTMLElement;
+  private map: TrackMap | null = null;
+
   private fuel!: HTMLElement;
   private fuelDelta!: HTMLElement;
   private lapCounter!: HTMLElement;
@@ -68,7 +81,6 @@ export class Hud {
   private delta!: HTMLElement;
   private gapAhead!: HTMLElement;
   private gapBehind!: HTMLElement;
-  private sectorEls: HTMLElement[] = [];
   private leds: HTMLElement[] = [];
   private deltaBar!: HTMLElement;
   private deltaFill!: HTMLElement;
@@ -87,6 +99,7 @@ export class Hud {
   private cameraLabel!: HTMLElement;
   private diagnostics!: HTMLElement;
 
+  private wheelPanel!: HTMLElement;
   private tower!: HTMLElement;
   private startLights!: HTMLElement;
   private readonly startBulbs: HTMLElement[][] = [];
@@ -141,31 +154,21 @@ export class Hud {
   }
 
   private build(): void {
-    // --- Top left: position and lap ---------------------------------------
-    const topLeft = this.el('hud-panel hud-topleft', this.root);
-    // A team-colour stripe down the edge of the panel: instantly identifies whose
-    // car you are in, and it is how every broadcast graphic does it.
-    this.teamStripe = this.el('hud-stripe', topLeft);
-    const posRow = this.el('hud-posrow', topLeft);
-    this.position = this.el('hud-position', posRow, 'P1');
-    this.lapCounter = this.el('hud-lapcount', posRow, 'LAP 1/50');
+    // --- Top left: the driver tower ---------------------------------------
+    //
+    // Position, code, tyre and gap, leader picked out, with the lap count in
+    // the header — the graphic a broadcast leaves on screen permanently,
+    // because it is the only one that answers "what is happening in the race".
+    this.tower = this.el('hud-panel hud-tower', this.root);
+    const towerHead = this.el('tower-head', this.tower);
+    // A team-colour stripe down the edge: instantly identifies whose car you
+    // are in, and it is how every broadcast graphic does it.
+    this.teamStripe = this.el('hud-stripe', this.tower);
+    this.position = this.el('tower-position', towerHead, 'P1');
+    this.lapCounter = this.el('tower-lapcount', towerHead, 'LAP 1/50');
 
-    const times = this.el('hud-times', topLeft);
-    this.lapTime = this.el('hud-laptime', times, '0:00.000');
-    const small = this.el('hud-timesmall', times);
-    this.lastLap = this.el('hud-last', small, 'LAST --:--.---');
-    this.bestLap = this.el('hud-best', small, 'BEST --:--.---');
-    this.delta = this.el('hud-delta', times, '');
-    // A signed bar for the delta. A number alone tells you the size of the gap;
-    // a bar growing left or right of centre tells you instantly which side of
-    // your best lap you are on, without reading anything.
-    this.deltaBar = this.el('hud-deltabar', times);
-    this.deltaFill = this.el('hud-deltafill', this.deltaBar);
-
-    const sectors = this.el('hud-sectors', topLeft);
-    for (let i = 0; i < 3; i++) {
-      this.sectorEls.push(this.el('hud-sector', sectors, 'S' + (i + 1)));
-    }
+    // --- Top right: sectors and lap times ----------------------------------
+    this.buildTimingPanel();
 
     // --- Start lights -------------------------------------------------------
     // Five red lights illuminate one per second, then all go out together.
@@ -181,8 +184,11 @@ export class Hud {
       ]);
     }
 
-    // --- Top right: timing tower ------------------------------------------
-    this.tower = this.el('hud-panel hud-tower', this.root);
+    // --- Bottom right: the circuit map ------------------------------------
+    // Built lazily, once the session's track is known.
+    this.mapPanel = this.el('hud-panel hud-map', this.root);
+    this.mapTitle = this.el('map-title', this.mapPanel, '');
+    this.mapHolder = this.el('map-holder', this.mapPanel);
 
     // --- Bottom centre: the wheel display ---------------------------------
     //
@@ -193,6 +199,7 @@ export class Hud {
     // in peripheral vision, which is why it gets the largest, highest-contrast
     // element rather than the speed.
     const bottom = this.el('hud-panel hud-wheel', this.root);
+    this.wheelPanel = bottom;
 
     // Shift lights across the top edge. Green to amber to red, then flashing
     // at the limiter — you learn the position of the light you shift on, which
@@ -257,9 +264,6 @@ export class Hud {
 
     // --- Damage panel -------------------------------------------------------
     this.buildDamagePanel();
-
-    // --- Sector board -------------------------------------------------------
-    this.buildSectorBoard();
 
     // --- Gaps -------------------------------------------------------------
     const gaps = this.el('hud-panel hud-gaps', this.root);
@@ -387,32 +391,99 @@ export class Hud {
   }
 
   /**
-   * Latest and best sector times, with the live delta.
+   * Sectors and lap times, top right.
    *
-   * Two rows one above the other so the comparison is vertical and needs no
-   * arithmetic: the sector you just set sits directly above your best for the
-   * same sector. Colour carries the verdict — purple for an overall best,
-   * green for a personal best, yellow for anything slower.
+   * Three sector tiles across the top, the lap in progress underneath in the
+   * largest type on the screen, then last and best. Colour on the tiles carries
+   * the entire verdict, which is why the times themselves can stay small: the
+   * driver reads the colour at a glance mid-corner and the number only on the
+   * straight.
    */
-  private buildSectorBoard(): void {
-    const board = this.el('hud-panel hud-sectorboard', this.root);
+  private buildTimingPanel(): void {
+    const panel = this.el('hud-panel hud-timing', this.root);
 
-    const latestRow = this.el('hud-sectorrow', board);
-    this.el('hud-sectorrowlabel', latestRow, 'LATEST');
-    const bestRow = this.el('hud-sectorrow', board);
-    this.el('hud-sectorrowlabel', bestRow, 'BEST');
-    const headRow = this.el('hud-sectorrow hud-sectorhead', board);
-    this.el('hud-sectorrowlabel', headRow, '');
-
+    const row = this.el('timing-sectors', panel);
     for (let i = 0; i < 3; i++) {
-      this.sectorLatest.push(this.el('hud-sectorcell', latestRow, '--.---'));
-      this.sectorBest.push(this.el('hud-sectorcell', bestRow, '--.---'));
-      this.el('hud-sectorcell hud-sectorname', headRow, 'S' + (i + 1));
+      const cell = this.el('timing-sector', row);
+      this.el('timing-sectorname', cell, 'S' + (i + 1));
+      this.sectorCells.push(cell);
+      this.sectorTimes.push(this.el('timing-sectortime', cell, '--.---'));
     }
 
-    const deltaRow = this.el('hud-deltarow', board);
-    this.el('hud-deltalabel', deltaRow, 'DELTA');
-    this.sectorDelta = this.el('hud-deltavalue', deltaRow, '--.---');
+    this.lapTime = this.el('timing-lap', panel, '0:00.000');
+
+    const small = this.el('timing-small', panel);
+    const lastWrap = this.el('timing-item', small);
+    this.el('timing-label', lastWrap, 'LAST');
+    this.lastLap = this.el('timing-value', lastWrap, '--:--.---');
+    const bestWrap = this.el('timing-item', small);
+    this.el('timing-label', bestWrap, 'BEST');
+    this.bestLap = this.el('timing-value best', bestWrap, '--:--.---');
+
+    // A signed bar for the delta. A number alone tells you the size of the gap;
+    // a bar growing left or right of centre tells you instantly which side of
+    // your best lap you are on, without reading anything.
+    this.delta = this.el('timing-delta', panel, '');
+    this.deltaBar = this.el('hud-deltabar', panel);
+    this.deltaFill = this.el('hud-deltafill', this.deltaBar);
+  }
+
+  /**
+   * Colours the three sector tiles.
+   *
+   * The rules, in priority order:
+   *
+   *   PURPLE  fastest anyone in the field has managed in that sector
+   *   GREEN   the driver's own fastest of the session
+   *   RED     the driver's own SLOWEST of the session
+   *   YELLOW  anything else — slower than their best, but not their worst
+   *
+   * Purple outranks green because a sector can be both, and the field-wide
+   * record is the more interesting fact. Green outranks red for the same
+   * reason it does on a first flying lap, when the one time set is
+   * simultaneously the fastest and the slowest.
+   *
+   * The driver's slowest is not tracked anywhere in the simulation — best
+   * sectors are, worst are not — so it is accumulated here, off completed
+   * sector times as they appear.
+   */
+  private updateTiming(engine: RaceEngine, player: CarEntry): void {
+    const active = player.currentSectorIndex;
+
+    for (let i = 0; i < 3; i++) {
+      // A sector completes into `currentSectors`; watching that array catches
+      // every completed sector exactly once, including the last one, which is
+      // closed out by the line crossing rather than by a boundary.
+      const done = player.currentSectors[i];
+      if (done > 1 && done !== this.seenSector[i]) {
+        this.seenSector[i] = done;
+        if (done > this.worstSector[i]) this.worstSector[i] = done;
+      }
+
+      // Show the sector being driven live, the rest as last set.
+      let time: number;
+      let live = false;
+      if (i === active) {
+        time = player.currentSectorElapsed(engine.time);
+        live = true;
+      } else {
+        time = player.currentSectors[i] > 0 ? player.currentSectors[i] : player.lastSectors[i];
+      }
+
+      setText(this.sectorTimes[i], time > 0 ? time.toFixed(3) : '--.---');
+
+      let cls = 'timing-sector';
+      if (live) cls += ' live';
+      else if (time > 0) {
+        const best = player.bestSectors[i];
+        const worst = this.worstSector[i];
+        if (engine.isSessionBestSector(i, time)) cls += ' purple';
+        else if (best > 0 && time <= best + 1e-4) cls += ' green';
+        else if (worst > 0 && time >= worst - 1e-4) cls += ' red';
+        else cls += ' yellow';
+      }
+      setClass(this.sectorCells[i], cls);
+    }
   }
 
   /**
@@ -442,53 +513,20 @@ export class Hud {
   }
 
   /**
-   * Latest and best sector times, and the delta to the personal best lap.
+   * Builds or rebuilds the circuit map when the session's track changes.
    *
-   * The sector in progress is shown live rather than left blank until it is
-   * completed, so the board is useful mid-sector instead of only three times a
-   * lap.
+   * It cannot be built with the rest of the HUD: the HUD outlives sessions and
+   * exists before any circuit has been chosen. Rebuilding here costs one pass
+   * over the spline, once per session.
    */
-  private updateSectorBoard(engine: RaceEngine, player: CarEntry): void {
-    const active = player.currentSectorIndex;
-
-    for (let i = 0; i < 3; i++) {
-      const last = player.lastSectors[i];
-      const best = player.bestSectors[i];
-
-      // The sector being driven shows its running time; completed sectors of
-      // the current lap show what was actually set on this lap.
-      let latest = last;
-      let live = false;
-      if (i === active) {
-        latest = player.currentSectorElapsed(engine.time);
-        live = true;
-      } else if (i < active && player.currentSectors[i] > 0) {
-        latest = player.currentSectors[i];
-      }
-
-      setText(this.sectorLatest[i], latest > 0 ? latest.toFixed(3) : '--.---');
-      setText(this.sectorBest[i], best > 0 ? best.toFixed(3) : '--.---');
-
-      // Purple for a session best, green for a personal best, plain otherwise.
-      let cls = 'hud-sectorcell';
-      if (live) cls += ' live';
-      else if (latest > 0 && best > 0) {
-        if (latest <= best + 1e-4) {
-          cls += engine.isSessionBestSector(i, latest) ? ' purple' : ' green';
-        } else cls += ' yellow';
-      }
-      setClass(this.sectorLatest[i], cls);
+  private updateMap(engine: RaceEngine): void {
+    if (!this.map || this.map.track !== engine.track) {
+      this.mapHolder.textContent = '';
+      this.map = new TrackMap(engine.track, engine.cars);
+      this.mapHolder.appendChild(this.map.root);
+      setText(this.mapTitle, engine.track.def.name.toUpperCase());
     }
-
-    // Delta to the personal best lap, live.
-    const delta = player.bestLapTime > 0 ? player.deltaToBest(engine.time) : 0;
-    if (player.bestLapTime > 0) {
-      setText(this.sectorDelta, (delta >= 0 ? '+' : '') + delta.toFixed(3));
-      setClass(this.sectorDelta, 'hud-deltavalue ' + (delta < 0 ? 'green' : 'yellow'));
-    } else {
-      setText(this.sectorDelta, '--.---');
-      setClass(this.sectorDelta, 'hud-deltavalue');
-    }
+    this.map.update();
   }
 
   /**
@@ -622,15 +660,15 @@ export class Hud {
     }
 
     setText(this.lapTime, formatLapTime(player.currentLapTime(engine.time)));
-    setText(this.lastLap, 'LAST ' + formatLapTime(player.lastLapTime));
-    setText(this.bestLap, 'BEST ' + formatLapTime(player.bestLapTime));
+    setText(this.lastLap, formatLapTime(player.lastLapTime));
+    setText(this.bestLap, formatLapTime(player.bestLapTime));
 
     // Delta to the player's own best, which is the number that tells you whether
     // the lap in progress is any good.
     if (player.bestLapTime > 0 && player.lap > 0) {
       const projected = player.currentLapTime(engine.time) - progressFraction(player, engine) * player.bestLapTime;
       setText(this.delta, formatDelta(projected));
-      setClass(this.delta, 'hud-delta ' + (projected <= 0 ? 'good' : 'bad'));
+      setClass(this.delta, 'timing-delta ' + (projected <= 0 ? 'good' : 'bad'));
       // Bar grows from the centre; +/- 1.5s spans the full half-width.
       const mag = Math.min(Math.abs(projected) / 1.5, 1) * 50;
       setStyle(this.deltaFill, 'width', mag.toFixed(1) + '%');
@@ -642,15 +680,9 @@ export class Hud {
       setStyle(this.deltaBar, 'opacity', '0');
     }
 
-    for (let i = 0; i < 3; i++) {
-      const st = player.lastSectors[i];
-      setText(this.sectorEls[i], st > 0 ? st.toFixed(3) : 'S' + (i + 1));
-      const isBest = st > 0 && Math.abs(st - player.bestSectors[i]) < 1e-4;
-      setClass(this.sectorEls[i], 'hud-sector ' + (isBest ? 'purple' : st > 0 ? 'set' : ''));
-    }
-
-    this.updateSectorBoard(engine, player);
+    this.updateTiming(engine, player);
     this.updateDamage(player);
+    this.updateMap(engine);
 
     // --- Gaps -------------------------------------------------------------
     const ahead = player.perception.ahead;
@@ -731,11 +763,16 @@ export class Hud {
 
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
-    // Show the whole field on a wide screen, a window around the player on a phone.
-    // Height matters as much as width: a 20-row tower does not fit in the 390px
-    // of a landscape iPhone, and it overflowed the viewport.
-    const compact = window.innerWidth < 900 || window.innerHeight < 520;
-    const shown = compact ? 6 : Math.min(standings.length, 20);
+    // Show as much of the field as the viewport can actually hold, and a window
+    // around the player when it cannot hold much. Height matters as much as
+    // width: a 20-row tower does not fit in the 390px of a landscape iPhone,
+    // and it used to overflow the viewport.
+    const rowH = 19;
+    const fits = Math.floor((window.innerHeight - 150) / rowH);
+    const compact = window.innerWidth < 900 || fits < 10;
+    const shown = compact
+      ? Math.max(5, Math.min(fits, 7))
+      : Math.min(standings.length, fits, 20);
     this.ensureRows(shown);
 
     let start = 0;
@@ -770,7 +807,12 @@ export class Hud {
         row.lastText.tyre = tyreText;
       }
       row.team.style.background = '#' + car.team.colour.toString(16).padStart(6, '0');
-      setClass(row.root, 'tower-row' + (car === player ? ' is-player' : '') + (car.retired ? ' is-out' : ''));
+      // The leader gets its own treatment, as it does on a broadcast tower:
+      // whoever is winning is the one fact the graphic exists to convey.
+      setClass(row.root, 'tower-row'
+        + (car.position === 1 ? ' is-leader' : '')
+        + (car === player ? ' is-player' : '')
+        + (car.retired ? ' is-out' : ''));
     }
   }
 
@@ -837,6 +879,22 @@ export class Hud {
   setCameraLabel(label: string): void {
     setText(this.cameraButton, label.toUpperCase());
   }
+
+  /**
+   * Tells the HUD which camera is live.
+   *
+   * The only thing this changes is the bottom-centre wheel display, which is
+   * hidden in the cockpit: the car has a real steering wheel with a real dash
+   * on it there, and the panel sits directly on top of it showing the same
+   * three numbers.
+   */
+  setCameraMode(mode: string): void {
+    const inCockpit = mode === 'cockpit';
+    if (inCockpit === this.cockpitView) return;
+    this.cockpitView = inCockpit;
+    setStyle(this.wheelPanel, 'display', inCockpit ? 'none' : 'flex');
+  }
+  private cockpitView = false;
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? 'block' : 'none';

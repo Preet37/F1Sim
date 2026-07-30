@@ -210,6 +210,7 @@ class Game {
     this.settings.cameraMode = mode;
     this.saves.saveSettings(this.settings);
     this.hud.setCameraLabel(this.renderer.director.modeLabel);
+    this.hud.setCameraMode(mode);
   }
 
   private setLoading(on: boolean, text = 'BUILDING CIRCUIT'): void {
@@ -860,6 +861,7 @@ class Game {
       this.audio.setSuspended(false);
       this.renderer.director.setMode(this.settings.cameraMode as CameraMode);
       this.hud.setCameraLabel(this.renderer.director.modeLabel);
+      this.hud.setCameraMode(this.renderer.director.mode);
       // Show the controls at the start of every session.
       this.helpVisible = true;
       this.helpShownAt = performance.now();
