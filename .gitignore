@@ -6,3 +6,12 @@ artifacts/
 *.local
 .vite/
 node_modules
+
+# Agent worktrees.
+.claude/
+
+# Frames extracted from the user's own gameplay recordings, used as the visual
+# reference target. Derived data and ~105MB of JPEG — kept on disk, out of git.
+# Regenerate with:
+#   ffmpeg -i <recording>.MP4 -vf "fps=2,scale=1280:-1" -q:v 3 reference/<name>/f_%04d.jpg
+reference/
