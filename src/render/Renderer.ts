@@ -1030,8 +1030,7 @@ export class Renderer {
       if (car.retired) {
         // Deterministic, from the car's index: a stable number per car with no
         // state to store and nothing to reset between sessions.
-        const wobble = Math.sin(car.index * 12.9898) ;
-        roll = wobble * 0.075;
+        roll = Math.sin(car.index * 12.9898) * 0.075;
         pitch = Math.cos(car.index * 4.1414) * 0.045;
       }
       v.root.rotation.z = damp(v.root.rotation.z, roll, 8, dt);

@@ -93,8 +93,6 @@ export interface CarVisual {
   tyreRadiusM: number;
   /** Knocks a piece of bodywork off, or puts it back after a repair. */
   setPartAttached(id: BodyPartId, attached: boolean): void;
-  /** Puts every part back and stands the suspension up. For a pit-stop repair. */
-  resetParts(): void;
   /**
    * The driver's helmet, and the coarse steering wheel and gloves.
    *
@@ -1175,17 +1173,6 @@ export function buildCar(
       // The DRS flap hangs off the rear wing, so it leaves with it. Without this
       // a car that has lost its rear wing still carries a flap in mid-air.
       if (id === 'rearWing') flapPivot.visible = attached;
-    },
-    resetParts(): void {
-      for (const id of BODY_PART_IDS) {
-        bodyParts[id].attached = true;
-        bodyParts[id].mesh.visible = true;
-      }
-      flapPivot.visible = true;
-      for (const w of [fl, fr, rl, rr]) {
-        w.steer.position.y = TYRE_R;
-        w.steer.rotation.set(0, 0, 0);
-      }
     },
     setCockpitVisible(v: boolean): void {
       cockpit?.setVisible(v);
