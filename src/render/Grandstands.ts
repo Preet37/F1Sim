@@ -51,6 +51,22 @@ export interface GrandstandOptions {
   seatColour: number;
   /** Seed, so two stands of the same size do not have identical crowds. */
   seed: number;
+  /**
+   * Chamfer on the structural steel, in metres. Zero for the low tier.
+   *
+   * `buildGrandstandGeometry` never saw the quality tier, so the whole stand
+   * was fixed at both tiers and its roof leading edge — 75 metres of trim seen
+   * against the sky, and the single longest line in the scene — was a raw box.
+   * A chamfer there costs about fifty triangles for the entire stand and it is
+   * the difference between a steel fascia and a shape cut out of the sky.
+   */
+  trim: number;
+  /**
+   * Bevel and curve segments on the extruded seating rake. One is a flat
+   * chamfer on each nosing, which is correct for a precast step; more rounds
+   * them, which is correct for the poured ones.
+   */
+  rakeSegments: number;
 }
 
 const CONCRETE = 0x9ea3a8;
@@ -128,12 +144,16 @@ function rakeGeometry(o: GrandstandOptions, front: number, backDepth: number): T
     bevelThickness: 0.05,
     bevelSize: 0.05,
     bevelOffset: 0,
-    bevelSegments: 1,
-    curveSegments: 1,
+    bevelSegments: o.rakeSegments,
+    curveSegments: o.rakeSegments,
     steps: 1,
   });
   geo.translate(0, 0, -width / 2);
   geo.deleteAttribute('uv');
+  // Flat normals, deliberately: the rake is a genuine staircase and the light
+  // line on each nosing is the whole reason it reads as steps rather than as a
+  // ramp. The bevel segments above round the nosing itself; the treads and
+  // risers behind it stay hard.
   geo.computeVertexNormals();
   return geo;
 }
@@ -314,7 +334,7 @@ export function buildGrandstandGeometry(o: GrandstandOptions): THREE.BufferGeome
   // point: the flashes of seat colour showing through the gaps are what makes
   // the crowd read as sitting in something.
   const seatY: number[] = [];
-  const seatBand = chamferBox(0.52, 0.4, width - 0.4, 0);
+  const seatBand = chamferBox(0.52, 0.4, width - 0.4, o.trim);
   for (let r = 0; r < rows; r++) {
     const y = front + r * rise;
     seatY.push(y);
@@ -362,7 +382,7 @@ export function buildGrandstandGeometry(o: GrandstandOptions): THREE.BufferGeome
     const fascia = chamferBox(0.5, 0.95, width + 0.8, 0.08);
     bin.add(fascia, STEEL, -2.45, roofY - 0.3, 0);
     fascia.dispose();
-    const trim = chamferBox(0.14, 0.3, width + 0.8, 0);
+    const trim = chamferBox(0.14, 0.3, width + 0.8, o.trim * 2);
     bin.add(trim, o.seatColour, -2.75, roofY - 0.42, 0);
     trim.dispose();
 
@@ -371,7 +391,7 @@ export function buildGrandstandGeometry(o: GrandstandOptions): THREE.BufferGeome
     const bays = Math.max(2, Math.round(width / 9));
     const column = chamferBox(0.55, roofY, 0.55, 0.06);
     const strutLen = Math.hypot(deckDepth * 0.75, roofY - topY - 0.6);
-    const strut = chamferBox(strutLen, 0.3, 0.3, 0);
+    const strut = chamferBox(strutLen, 0.3, 0.3, o.trim * 1.6);
     const angle = Math.atan2(roofY - topY - 0.6, deckDepth * 0.75);
     const m = new THREE.Matrix4();
     const tilt = new THREE.Matrix4();
@@ -392,7 +412,7 @@ export function buildGrandstandGeometry(o: GrandstandOptions): THREE.BufferGeome
     strut.dispose();
 
     // Purlins across the underside, so the roof soffit is not a blank plane.
-    const purlin = chamferBox(roofDepth - 0.6, 0.22, 0.22, 0);
+    const purlin = chamferBox(roofDepth - 0.6, 0.22, 0.22, o.trim);
     const purlins = Math.max(3, Math.round(width / 7));
     for (let p = 0; p <= purlins; p++) {
       const z = (p / purlins - 0.5) * (width - 0.4);
@@ -408,7 +428,7 @@ export function buildGrandstandGeometry(o: GrandstandOptions): THREE.BufferGeome
   const facade = chamferBox(0.3, facadeH, width, 0.06);
   bin.add(facade, CONCRETE_DARK, deckDepth + backDepth + 0.1, facadeH * 0.5, 0);
   facade.dispose();
-  const mullion = chamferBox(0.22, facadeH, 0.3, 0);
+  const mullion = chamferBox(0.22, facadeH, 0.3, o.trim);
   const mullions = Math.max(3, Math.round(width / 5.5));
   for (let i = 0; i <= mullions; i++) {
     const z = (i / mullions - 0.5) * (width - 0.3);
@@ -442,6 +462,8 @@ export function grandstandPreset(
       aisles: 3,
       seatColour: 0x1d4f8c,
       seed,
+      trim: low ? 0 : 0.05,
+      rakeSegments: low ? 1 : 2,
     };
   }
   return {
@@ -454,5 +476,7 @@ export function grandstandPreset(
     aisles: 1,
     seatColour: 0x2f6f5a,
     seed,
+    trim: low ? 0 : 0.05,
+    rakeSegments: low ? 1 : 2,
   };
 }

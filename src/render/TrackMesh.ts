@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { chamferBox } from './ChamferKit';
 import { makeGantryTexture, makeHoardingTexture, makeMarkerTexture } from './Signage';
 import { isPaddockGround } from './Paddock';
 import { buildGrandstandGeometry, grandstandPreset } from './Grandstands';
@@ -1007,7 +1008,7 @@ export function buildTrackMeshes(
     const heading = Math.atan2(track.tx[i0], track.tz[i0]);
 
     const group = new THREE.Group();
-    const postGeo = new THREE.BoxGeometry(0.55, 7.2, 0.55);
+    const postGeo = chamferBox(0.55, 7.2, 0.55, 0.05);
     const postMat = new THREE.MeshStandardMaterial({ color: 0x1b1e24, roughness: 0.6, metalness: 0.35 });
     for (const side of [-1, 1] as const) {
       const post = new THREE.Mesh(postGeo, postMat);
@@ -1207,18 +1208,27 @@ function buildSceneryInstances(
   const isStreet = scenery === 'street';
 
   // --- Tree: trunk plus two staggered cones -------------------------------
-  const trunk = new THREE.CylinderGeometry(0.22, 0.34, 2.6, 6);
+  // A six-sided trunk and eight-sided cones are hexagonal and octagonal from
+  // any angle, and there are hundreds of them lining every circuit, so the
+  // faceting repeats across the whole background. One geometry, instanced, so
+  // the extra segments are paid for once.
+  const treeSeg = quality === 'low' ? 6 : 12;
+  const trunk = new THREE.CylinderGeometry(0.22, 0.34, 2.6, treeSeg);
   trunk.translate(0, 1.3, 0);
-  const canopyLow = new THREE.ConeGeometry(1.9, 4.2, 8);
+  const canopyLow = new THREE.ConeGeometry(1.9, 4.2, treeSeg + 2);
   canopyLow.translate(0, 3.6, 0);
-  const canopyHigh = new THREE.ConeGeometry(1.35, 3.4, 8);
+  const canopyHigh = new THREE.ConeGeometry(1.35, 3.4, treeSeg + 2);
   canopyHigh.translate(0, 5.6, 0);
-  const treeGeo = mergeGeometries([trunk, canopyLow, canopyHigh], false)
-    ?? new THREE.ConeGeometry(2, 6, 8);
+  const treeMerged = mergeGeometries([trunk, canopyLow, canopyHigh], false)
+    ?? new THREE.ConeGeometry(2, 6, treeSeg + 2);
   trunk.dispose();
   canopyLow.dispose();
   canopyHigh.dispose();
-  treeGeo.computeVertexNormals();
+  // Angle-based, not `computeVertexNormals`: the merge is non-indexed, so
+  // recomputing could only give per-face normals and the trunk and both canopy
+  // cones came out flat-shaded. Smoothing round each one and leaving the joins
+  // between them hard is what a smoothing group would do.
+  const treeGeo = toCreasedNormals(treeMerged, (50 * Math.PI) / 180);
 
   // --- Grandstand: a raked seating deck, a cantilever roof, and a crowd ----
   // Vertex-coloured, so one instanced mesh covers every stand on the circuit
@@ -1226,7 +1236,13 @@ function buildSceneryInstances(
   const standGeo = buildGrandstandGeometry(grandstandPreset('trackside', quality, 11));
 
   // --- Building, for street circuits --------------------------------------
-  const buildingGeo = new THREE.BoxGeometry(1, 1, 1);
+  // A unit cube, scaled per instance. Chamfered on the unit, so a 20m block
+  // gets a proportionate reveal at its corners — a raw box silhouette against
+  // the sky is the single most obvious tell there is, and on a street circuit
+  // these are most of the horizon.
+  const buildingGeo = quality === 'low'
+    ? new THREE.BoxGeometry(1, 1, 1)
+    : chamferBox(1, 1, 1, 0.012);
 
   const treeMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
   const standMat = new THREE.MeshStandardMaterial({

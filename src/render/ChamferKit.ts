@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
  * Geometry primitives for trackside architecture.
@@ -119,7 +119,58 @@ export function chamferCylinder(
   // refuses a mixture, so flatten it now rather than at every call site.
   const g = new THREE.LatheGeometry(pts, segments).toNonIndexed();
   g.deleteAttribute('uv');
-  g.computeVertexNormals();
+  // This used to call `computeVertexNormals`, which on a non-indexed buffer can
+  // only produce per-face normals — so every cylinder in the paddock was
+  // flat-shaded and an eight-sided tyre read as an octagonal prism rather than
+  // as a coarse cylinder. Angle-based smoothing instead: the barrel becomes a
+  // continuous curve and the chamfer, which meets it at 45 degrees, keeps its
+  // hard highlight. That highlight was the entire point of the chamfer.
+  return toCreasedNormals(g, (36 * Math.PI) / 180);
+}
+
+/**
+ * A capsule: a cylinder with hemispherical ends, smooth-shaded throughout.
+ *
+ * Exists for limbs. A forearm built as a box has four hard edges down its
+ * length and two square ends, and no amount of anything else rescues a figure
+ * whose arms are rectangular — the eye knows exactly what an arm looks like.
+ */
+export function limbGeometry(
+  radius: number, length: number, segments: number, capRings = 3,
+): THREE.BufferGeometry {
+  const g = new THREE.CapsuleGeometry(radius, Math.max(0.001, length), capRings, segments)
+    .toNonIndexed();
+  g.deleteAttribute('uv');
+  return g;
+}
+
+/**
+ * Scales a geometry and corrects its normals for the scale.
+ *
+ * `BufferGeometry.scale` moves the positions and leaves the normal attribute
+ * alone, so a sphere squashed into a head shape is still lit as a sphere. A
+ * normal transforms by the INVERSE of a scale, not by the scale.
+ */
+export function scaleWithNormals(
+  geo: THREE.BufferGeometry, sx: number, sy: number, sz: number,
+): THREE.BufferGeometry {
+  geo.scale(sx, sy, sz);
+  const n = geo.attributes.normal as THREE.BufferAttribute | undefined;
+  if (!n) return geo;
+  for (let i = 0; i < n.count; i++) {
+    const x = n.getX(i) / sx, y = n.getY(i) / sy, z = n.getZ(i) / sz;
+    const len = Math.hypot(x, y, z) || 1;
+    n.setXYZ(i, x / len, y / len, z / len);
+  }
+  n.needsUpdate = true;
+  return geo;
+}
+
+/** A smooth-shaded sphere with no UVs, ready to merge. A head, a helmet. */
+export function ball(radius: number, segments: number): THREE.BufferGeometry {
+  const g = new THREE.SphereGeometry(radius, segments, Math.max(4, Math.round(segments * 0.65)))
+    .toNonIndexed();
+  g.deleteAttribute('uv');
   return g;
 }
 
