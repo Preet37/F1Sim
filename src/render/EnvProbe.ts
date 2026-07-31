@@ -107,9 +107,13 @@ const PALETTES: Record<Ambience, Palette> = {
     // hard specular streaks running along a car's flanks under lights, and it
     // is the entire reason the reference footage reads as a night race rather
     // than as a grey race.
-    zenith: [0.004, 0.006, 0.014],
-    horizon: [0.030, 0.034, 0.052],
-    ground: [0.010, 0.010, 0.012],
+    // The sky is genuinely near-black, but the band around the horizon is not:
+    // it is full of lit grandstand, lit run-off and the city glow behind, and
+    // that band is where a car on a flat piece of road takes most of its
+    // reflection from.
+    zenith: [0.004, 0.006, 0.016],
+    horizon: [0.070, 0.076, 0.098],
+    ground: [0.030, 0.030, 0.033],
     sun: [0.5, 0.6, 0.9],
     sunPower: 0,
     sunElevation: 60,

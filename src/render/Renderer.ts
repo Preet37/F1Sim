@@ -28,6 +28,27 @@ import type { CarEntry } from '../race/CarEntry';
  *     collection pauses show up as stutter exactly when the car is at the limit.
  */
 
+/**
+ * Tone-mapping exposure, by time of day.
+ *
+ * These are well above 1, and that is a correction rather than a taste
+ * decision. Work the numbers through for a piece of dry asphalt: albedo about
+ * 0.07 in linear light, total irradiance from the rig about 3, and the Lambert
+ * BRDF divides by pi — so the surface leaves the shader at roughly 0.07 linear,
+ * ACES pulls that to about 0.08, and sRGB encoding lands it near 0.3 of full
+ * scale. Reference footage of a real circuit, day or night, has its road
+ * sitting closer to 0.45. Every surface in the scene was therefore arriving
+ * about a stop and a half dark, which reads as a dull, muddy image that no
+ * amount of material work fixes — the materials were right and the print was
+ * under-exposed.
+ *
+ * Raising exposure rather than every light's intensity is deliberate: ACES
+ * compresses the top end, so the highlights that were already correct roll off
+ * instead of clipping, and the correction lands where it is needed, in the
+ * midtones.
+ */
+const EXPOSURE = { day: 1.55, dusk: 1.5, night: 1.7 };
+
 /** Target frame rate. Below this, resolution scales down. */
 const TARGET_FPS = 60;
 /** Never scale below this fraction of native resolution. */
@@ -122,12 +143,17 @@ export class Renderer {
     // just goes to pure white.
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    // See `applyAmbience` for why this is not 1.
+    this.renderer.toneMappingExposure = EXPOSURE.day;
 
     // Real shadows on capable hardware; the cars also carry a cheap contact
     // shadow so they stay grounded when this is off.
     this.renderer.shadowMap.enabled = this.quality === 'high';
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // PCF, not PCFSoft: three deprecated the latter and silently substitutes
+    // this one anyway, which meant the `shadow.radius` set below was being
+    // applied to a mode that had already been swapped out from under it. Asking
+    // for what actually runs makes the penumbra width mean something.
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     this.scene = new THREE.Scene();
     this.director = new CameraDirector(this.aspect);
@@ -158,9 +184,9 @@ export class Renderer {
       c.bottom = -22;
       this.sun.shadow.bias = -0.0006;
       this.sun.shadow.normalBias = 0.018;
-      // PCFSoft samples a fixed kernel; the radius widens it into a penumbra
-      // rather than a hard stencil edge.
-      this.sun.shadow.radius = 2.2;
+      // PCF samples a fixed kernel; the radius widens it into a penumbra rather
+      // than a hard stencil edge.
+      this.sun.shadow.radius = 2.6;
       this.scene.add(this.sun.target);
     }
     this.scene.add(this.sun);
@@ -454,17 +480,36 @@ export class Renderer {
       // mid grey — and it is the sky that is black, not the road. The previous
       // settings lit the whole scene at a third of daylight and produced a
       // uniformly murky image in which nothing had a highlight.
-      this.hemi.color.setHex(0x4a566e);
-      this.hemi.groundColor.setHex(0x14161c);
-      this.hemi.intensity = 0.55;
+      // The dominant term at night, by a long way.
+      //
+      // A floodlit circuit is not a dark place. Every reference frame has the
+      // asphalt sitting at a comfortable mid grey with plenty of legible detail
+      // in it, and only the SKY is black — which is the opposite of the
+      // intuition that "night" means "turn everything down". Two hundred lamps
+      // on masts produce a large, nearly uniform irradiance from above, and
+      // that is a hemisphere light, not a key. The ground colour is lifted well
+      // off black too, because the road bounces a great deal of that light back
+      // up into the underside of the cars.
+      this.hemi.color.setHex(0x6d7c96);
+      this.hemi.groundColor.setHex(0x2a2b30);
+      this.hemi.intensity = 1.85;
+      // A floodlit circuit is lit by two hundred lamps from every direction at
+      // once, so the DIRECTIONAL component of it is weak. It is the ambient
+      // and the probe that carry the night, not a key light — and the probe is
+      // the right place for it, because a ring of fourteen sources puts a
+      // string of small highlights along a flank where a single directional
+      // light can only put one. Left at daylight intensity this light mirrored
+      // off the asphalt into one enormous glint that the bloom pass then
+      // spread over the whole frame; the onboard shot went white from the road
+      // alone. Kept low, it survives only as the shadow caster.
       this.sun.color.setHex(0xfff4de);
-      this.sun.intensity = 2.1;
+      this.sun.intensity = 0.75;
       this.sun.position.set(60, 300, 40);
       this.fill.color.setHex(0xa8bcdc);
-      this.fill.intensity = 0.5;
+      this.fill.intensity = 0.55;
       this.rim.color.setHex(0xfff0d4);
-      this.rim.intensity = 1.5;
-      this.renderer.toneMappingExposure = 1.0;
+      this.rim.intensity = 0.85;
+      this.renderer.toneMappingExposure = EXPOSURE.night;
     } else if (dusk) {
       setSky(0x1e2a55, 0x9a5c72, 0xf0a070);
       // The reference look: a low sun under-lighting a heavy deck, so the cloud
@@ -481,7 +526,7 @@ export class Renderer {
       this.fill.intensity = 0.42;
       this.rim.color.setHex(0xffd0a0);
       this.rim.intensity = 1.1;
-      this.renderer.toneMappingExposure = 1.1;
+      this.renderer.toneMappingExposure = EXPOSURE.dusk;
     } else {
       setSky(0x1f5cbe, 0x6fa8e2, 0xc0d6ea);
       // Cloud white is deliberately below pure: at 1.0 it clears the bloom
@@ -499,7 +544,7 @@ export class Renderer {
       this.fill.intensity = 0.55;
       this.rim.color.setHex(0xdfe8ff);
       this.rim.intensity = 0.9;
-      this.renderer.toneMappingExposure = 1.05;
+      this.renderer.toneMappingExposure = EXPOSURE.day;
     }
 
     // The probe has to agree with the light rig, or the reflection on a flank
@@ -518,9 +563,20 @@ export class Renderer {
 
     // Fog matched to the horizon colour so distance fades into the sky rather
     // than into a differently-coloured haze.
+    //
+    // EXPONENTIAL, not linear. Linear fog is zero everywhere nearer than its
+    // near plane and then ramps, and on a flat road that discontinuity is a
+    // perfectly straight horizontal line drawn across the image at whatever
+    // depth the near plane sits — which is exactly what it was doing, a hard
+    // tonal step across the track a few hundred metres ahead of the car in
+    // every chase and onboard shot. Exponential-squared fog has no onset at
+    // all: it is smooth from the camera outwards, which is also how air
+    // actually behaves.
     const wet = engine.weather.wetness;
     const far = 1700 - wet * 900;
-    this.scene.fog = new THREE.Fog(fogColour, far * 0.3, far);
+    // Chosen so the fog is most of the way to opaque at `far`, matching what
+    // the linear version's far plane used to mean.
+    this.scene.fog = new THREE.FogExp2(fogColour, 1.9 / far);
   }
 
   /** Player preference, kept across sessions. */

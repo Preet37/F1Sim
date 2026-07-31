@@ -203,6 +203,53 @@ function carbonFill(
   ctx.restore();
 }
 
+let carbonTex: { map: THREE.CanvasTexture; surface: THREE.CanvasTexture } | null = null;
+
+/**
+ * A standalone tiling carbon weave, for parts that are not on the livery atlas.
+ *
+ * The cockpit is the obvious customer. It is the surface closest to the camera
+ * in the view the game is mostly played from, so it is the one place where a
+ * flat dark grey is not merely dull but actually reads as a bug — at half a
+ * metre the eye expects to resolve the weave and gets a painted board instead.
+ *
+ * Shared by every car that has one, which is one car.
+ */
+export function buildCarbonTexture(): { map: THREE.CanvasTexture; surface: THREE.CanvasTexture } {
+  if (carbonTex) return carbonTex;
+  const size = 256;
+
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  // Eight cells across the tile. Any more and the weave aliases into grey at
+  // the distances this is actually seen from.
+  carbonFill(ctx, 0, 0, size, size, '#15171c', size / 8);
+  const map = new THREE.CanvasTexture(c);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.anisotropy = 8;
+  map.needsUpdate = true;
+
+  // The weave is also a roughness pattern, not just a colour one: the resin
+  // sits in the troughs between tows and pools glossier there. Reusing the same
+  // twill for both is what makes it catch light in two directions.
+  const s = document.createElement('canvas');
+  s.width = s.height = size;
+  const sctx = s.getContext('2d')!;
+  sctx.fillStyle = 'rgb(0,84,13)'; // roughness 0.33, metalness 0.05
+  sctx.fillRect(0, 0, size, size);
+  carbonFill(sctx, 0, 0, size, size, 'rgb(0,84,13)', size / 8);
+  const surface = new THREE.CanvasTexture(s);
+  surface.colorSpace = THREE.NoColorSpace;
+  surface.wrapS = surface.wrapT = THREE.RepeatWrapping;
+  surface.anisotropy = 4;
+  surface.needsUpdate = true;
+
+  carbonTex = { map, surface };
+  return carbonTex;
+}
+
 /**
  * The sponsor set.
  *
@@ -725,4 +772,7 @@ export function disposeLiveryCache(): void {
   cache.clear();
   sharedSurface?.dispose();
   sharedSurface = null;
+  carbonTex?.map.dispose();
+  carbonTex?.surface.dispose();
+  carbonTex = null;
 }

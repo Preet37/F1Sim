@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { makeGantryTexture, makeHoardingTexture, makeMarkerTexture } from './Signage';
+import {
+  makeGantryTexture, makeHoardingTexture, makeMarkerTexture,
+  BOARD_WIDTH_M, HOARDING_BOARDS,
+} from './Signage';
 import { isPaddockGround } from './Paddock';
 import { buildGrandstandGeometry, grandstandPreset } from './Grandstands';
 import { SurfaceDetail, SURFACES, type SurfaceProfile } from './SurfaceDetail';
@@ -53,8 +56,10 @@ const COLOUR = {
   // collapsed to a void with a car floating over it, while the reference
   // footage has night asphalt sitting at a comfortable mid grey. Dry road that
   // has been rubbered in is darker than fresh, hence still under 0x40.
-  asphalt: new THREE.Color(0x34363a),
-  asphaltDark: new THREE.Color(0x2b2d31),
+  asphalt: new THREE.Color(0x44464b),
+  asphaltDark: new THREE.Color(0x3b3d42),
+  /** Scratch for the along-track shade drift; never read directly. */
+  asphaltMix: new THREE.Color(),
   runoff: new THREE.Color(0x4f4034),
   whiteLine: new THREE.Color(0xd8dade),
   kerbA: new THREE.Color(0xc8353c),
@@ -222,9 +227,25 @@ export function buildTrackMeshes(
     const hwB = track.width[b] * 0.5;
 
     // --- Asphalt ---------------------------------------------------------
-    // Alternate the shade slightly every few segments so the surface reads as
-    // asphalt rather than a flat colour, without any texture memory.
-    const shade = ((a / step) & 3) === 0 ? COLOUR.asphaltDark : COLOUR.asphalt;
+    // A slow, irregular drift in shade along the circuit, so the surface reads
+    // as asphalt of varying age rather than as a flat colour.
+    //
+    // This used to darken every fourth quad, which put a hard-edged transverse
+    // band across the full width of the road at an exactly regular 24 metre
+    // pitch. Regular is the problem: nothing in a real road surface repeats on
+    // a fixed interval, so the eye reads the bands as a rendering artefact
+    // rather than as resurfacing — a stripe marching up the track in every
+    // chase and onboard shot. It was invisible only because the asphalt used to
+    // be so dark that a 5-level difference had nowhere to show; lifting the
+    // albedo to something realistic exposed it immediately.
+    //
+    // Two incommensurate sinusoids give an aperiodic wander instead, and the
+    // per-quad step is small enough to be a gradient rather than an edge. The
+    // hard-edged patch repairs a real circuit does have are already handled,
+    // and handled better, by SurfaceDetail's noise-thresholded patch field,
+    // which produces blobs with genuine boundaries in world space.
+    const drift = 0.5 + 0.5 * Math.sin(a * 0.0143) * Math.sin(a * 0.0067 + 1.7);
+    const shade = COLOUR.asphaltMix.copy(COLOUR.asphaltDark).lerp(COLOUR.asphalt, drift);
     road.quad(
       px(a, -hwA), py(a, -hwA) + Y_ROAD, pz(a, -hwA),
       px(b, -hwB), py(b, -hwB) + Y_ROAD, pz(b, -hwB),
@@ -528,8 +549,11 @@ export function buildTrackMeshes(
       const hwa = Math.min(hwAt(a), ea.inner);
       const hwb = Math.min(hwAt(b2), eb.inner);
       strip(pit, a, b2, hwa, hwb, ea.inner, eb.inner, Y_ROAD, COLOUR.asphaltDark);
+      // Same aperiodic drift as the circuit; see the note there for why the
+      // regular every-fourth-quad version had to go.
+      const podDrift = 0.5 + 0.5 * Math.sin(k * 0.31) * Math.sin(k * 0.13 + 1.7);
       strip(pit, a, b2, ea.inner, eb.inner, ea.outer, eb.outer, Y_ROAD,
-        (k & 3) === 0 ? COLOUR.asphaltDark : COLOUR.asphalt);
+        COLOUR.asphaltMix.copy(COLOUR.asphaltDark).lerp(COLOUR.asphalt, podDrift));
     });
 
     // --- Painted kerbing ---------------------------------------------------
@@ -812,7 +836,11 @@ export function buildTrackMeshes(
   // whole circuit's signage.
   {
     const BOARD_H = 1.05;
-    const BOARD_EVERY_M = 11;
+    // The distance over which the whole strip texture repeats: one board's real
+    // width times the number of boards in it. Derived rather than guessed,
+    // because the guess (11 metres for twelve boards) made every board narrower
+    // than it was tall.
+    const BOARD_EVERY_M = BOARD_WIDTH_M * HOARDING_BOARDS;
 
     const positions: number[] = [];
     const normals: number[] = [];
@@ -841,18 +869,27 @@ export function buildTrackMeshes(
         const nx = -track.nx[a2] * side;
         const nz = -track.nz[a2] * side;
 
-        // NOTE: the sponsor text currently renders mirrored on the hoardings.
-        // It is not these UVs — negating U here provably reaches the browser
-        // and changes nothing on screen, so the flip is happening somewhere
-        // else in this ribbon's construction. Left as-is rather than patched
-        // blind; see the README's known issues.
+        // The two barriers face opposite ways, so a u that increases with
+        // distance runs left-to-right across one of them and right-to-left
+        // across the other — and the one it runs backwards across renders every
+        // sponsor name mirrored. Negating u for that side is the fix.
         //
+        // An earlier attempt at this concluded the UVs were not responsible,
+        // because negating u appeared to change nothing. It does change
+        // something: what it does not change is the OVERALL look of a long
+        // strip of repeating coloured boards, which is identical whichever
+        // direction you traverse it. The difference is only legible in the
+        // letterforms, and at the resolution the strip used to be drawn at
+        // there were no legible letterforms to check.
+        const fA = side > 0 ? uA : -uA;
+        const fB = side > 0 ? uB : -uB;
+
         // Two triangles, wound so the inward face is front-facing on each side.
         const v = side > 0
-          ? [[x0, yA, z0, uA, 1], [x1, yB, z1, uB, 1], [x1, yB + BOARD_H, z1, uB, 0],
-             [x0, yA, z0, uA, 1], [x1, yB + BOARD_H, z1, uB, 0], [x0, yA + BOARD_H, z0, uA, 0]]
-          : [[x0, yA + BOARD_H, z0, uA, 0], [x1, yB + BOARD_H, z1, uB, 0], [x1, yB, z1, uB, 1],
-             [x0, yA + BOARD_H, z0, uA, 0], [x1, yB, z1, uB, 1], [x0, yA, z0, uA, 1]];
+          ? [[x0, yA, z0, fA, 1], [x1, yB, z1, fB, 1], [x1, yB + BOARD_H, z1, fB, 0],
+             [x0, yA, z0, fA, 1], [x1, yB + BOARD_H, z1, fB, 0], [x0, yA + BOARD_H, z0, fA, 0]]
+          : [[x0, yA + BOARD_H, z0, fA, 0], [x1, yB + BOARD_H, z1, fB, 0], [x1, yB, z1, fB, 1],
+             [x0, yA + BOARD_H, z0, fA, 0], [x1, yB, z1, fB, 1], [x0, yA, z0, fA, 1]];
 
         for (const p of v) {
           positions.push(p[0], p[1], p[2]);
@@ -867,7 +904,7 @@ export function buildTrackMeshes(
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-      const tex = makeHoardingTexture();
+      const tex = makeHoardingTexture(quality);
       const mat = new THREE.MeshStandardMaterial({
         map: tex, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
       });

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildCarbonTexture } from './Livery';
 
 /**
  * Everything a driver actually sees from inside the car.
@@ -276,8 +277,27 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   const track = <T extends THREE.BufferGeometry>(g: T): T => { owned.push(g); return g; };
   const mat = <T extends THREE.Material>(m: T): T => { materials.push(m); return m; };
 
+  // The cockpit surround, the wheel frame and the dash are all bare laminate,
+  // and they are the surfaces closest to the camera in the view most of the
+  // game is played from. A flat dark grey at half a metre reads as painted
+  // board; the weave is what makes it read as a moulded composite tub.
+  //
+  // Metalness 0.05, not 0.35. Carbon is resin over black cloth. At a third
+  // metallic it borrows the environment's colour and comes out looking like
+  // sandblasted aluminium, which is exactly what the cockpit used to look like.
+  const carbonWeave = buildCarbonTexture();
+  // Box and cylinder UVs run 0..1 per face whatever the face's real size, so
+  // the repeat is a compromise across parts from 50mm to 600mm across. Four
+  // tiles of an eight-cell weave puts the cell somewhere between 1.5 and 20mm,
+  // which reads correctly over the whole range at cockpit distance.
+  carbonWeave.map.repeat.set(4, 4);
+  carbonWeave.surface.repeat.set(4, 4);
   const carbon = mat(new THREE.MeshStandardMaterial({
-    color: 0x14171d, metalness: 0.35, roughness: 0.42, envMapIntensity: 1.1,
+    color: 0xffffff,
+    map: carbonWeave.map,
+    roughnessMap: carbonWeave.surface,
+    metalnessMap: carbonWeave.surface,
+    metalness: 1, roughness: 1, envMapIntensity: 1.2,
   }));
   const rubberGrip = mat(new THREE.MeshStandardMaterial({
     color: 0x0a0b0e, metalness: 0.0, roughness: 0.88, envMapIntensity: 0.4,

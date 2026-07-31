@@ -151,16 +151,39 @@ const GRADE_SHADER = {
      * halo around every car against the sky.
      */
     float ambientOcclusion(vec2 uv, float centre, vec2 texel) {
-      // Slope of the depth field, in metres per pixel. Sampled from the
-      // hardware derivatives of the already-linearised centre depth.
-      float dzdx = dFdx(centre);
-      float dzdy = dFdy(centre);
-      // Derivatives explode across a silhouette. Clamp them to a slope no real
-      // surface plausibly has at this scale, so a pixel on the edge of the car
-      // predicts a sane plane instead of a wall.
-      float lim = 0.25 * max(centre, 1.0);
-      dzdx = clamp(dzdx, -lim, lim);
-      dzdy = clamp(dzdy, -lim, lim);
+      // The plane fit is done in INVERSE depth, and that is not a detail.
+      //
+      // For a planar surface under a perspective projection, 1/z is an exactly
+      // linear function of screen position; z itself is not. Fitting a plane to
+      // z and extrapolating it a few hundred pixels — which is what a
+      // half-metre radius amounts to in the near field — therefore misses by a
+      // margin that grows with the offset, and the miss is read as occlusion.
+      // Since the screen radius shrinks with distance, that error shrinks too,
+      // so the road picked up a wash of false occlusion nearby which faded out
+      // further away: a perfectly straight horizontal band across the middle of
+      // every chase and onboard shot. In 1/z the fit is exact at any angle and
+      // any distance, and a flat road reports zero.
+      float invC = 1.0 / centre;
+      float didx = dFdx(invC);
+      float didy = dFdy(invC);
+      // Derivatives explode across a silhouette. Clamp to a slope no real
+      // surface plausibly has, so a pixel on the edge of the car predicts a
+      // sane plane instead of a wall.
+      //
+      // The limit is a CONSTANT in inverse-depth space, and that matters. For a
+      // plane, d(1/z) per pixel is the same number everywhere on it — that is
+      // the property this whole approach rests on — so a limit that scales with
+      // 1/z inevitably drops below the road's own constant gradient at some
+      // depth, starts clamping, and produces false occlusion from there to the
+      // horizon. The boundary lands at one particular depth, which draws a
+      // perfectly straight horizontal line across the image: the same seam the
+      // linear-depth fit produced, moved rather than removed. A fixed limit has
+      // no such crossover, and it still rejects silhouettes easily, because a
+      // silhouette jumps 1/z by two orders of magnitude more than this in a
+      // single pixel.
+      const float LIM = 0.02;
+      didx = clamp(didx, -LIM, LIM);
+      didy = clamp(didy, -LIM, LIM);
 
       // Twelve taps on a spiral. The rotation comes from a 2x2 ordered pattern
       // rather than a hash: it decorrelates neighbouring pixels enough to break
@@ -188,7 +211,8 @@ const GRADE_SHADER = {
 
         // Where the local plane says this neighbour should be.
         vec2 dp = o / texel;
-        float predicted = centre + dzdx * dp.x + dzdy * dp.y;
+        float predictedInv = invC + didx * dp.x + didy * dp.y;
+        float predicted = 1.0 / max(predictedInv, 1e-4);
 
         float d = linearDepth(uv + o);
         float diff = predicted - d;
@@ -198,9 +222,9 @@ const GRADE_SHADER = {
       }
 
       occ /= float(TAPS);
-      // Fade the whole effect out with distance: at 60m a 0.55m radius is a
-      // couple of pixels and all it contributes is noise.
-      occ *= 1.0 - smoothstep(35.0, 70.0, centre);
+      // Fade the whole effect out with distance: at 90m a half-metre radius is
+      // a couple of pixels and all it contributes is noise.
+      occ *= 1.0 - smoothstep(45.0, 90.0, centre);
       return clamp(occ, 0.0, 1.0);
     }
 
@@ -413,7 +437,19 @@ export class PostFX {
     this.flash = Math.max(0, this.flash - this.flashDecay * dt);
     u.uFlash.value = this.flash;
 
-    if (this.bloom) this.bloom.strength = 0.42 + nightBias * 0.5;
+    if (this.bloom) {
+      // At night the bright things in frame are lights rather than lit
+      // surfaces, so bloom is doing the atmospheric work and is worth pushing.
+      // But the THRESHOLD has to rise with it, and by more than the strength
+      // does. Night lighting deliberately carries a much wider radiance range
+      // than daylight — a floodlight reflected in gloss paint is thirty times
+      // the road beside it — and holding the daytime threshold means most of
+      // the frame clears it and the glow stops being a highlight and becomes a
+      // fog. That is exactly what happened to the onboard shot: it was not the
+      // lights blooming, it was the asphalt.
+      this.bloom.strength = 0.42 + nightBias * 0.3;
+      this.bloom.threshold = 0.85 + nightBias * 0.55;
+    }
   }
 
   /** A full-screen flash: impacts, the start, a chequered flag. */
