@@ -190,7 +190,12 @@ export class PitStopPrompt {
       noseById.set(btn, value);
     };
     mk('CREW', null);
-    mk('CHANGE +' + b.noseChangeCostS.toFixed(0) + 's', true);
+    // "+0s" is worse than no figure: it reads as a cost the player is being
+    // asked to accept, when what it actually means is that the change is free
+    // — the nose is already off, or the stop is long enough to hide it. Only
+    // print the delta when there is one.
+    const noseCost = Math.round(b.noseChangeCostS);
+    mk(noseCost > 0 ? 'CHANGE +' + noseCost + 's' : 'CHANGE', true);
     mk('KEEP', false);
 
     this.refreshSelection();

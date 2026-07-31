@@ -1035,7 +1035,17 @@ canvas#view {
   .hud-camera, .hud-diag { display: none; }
 
   .hud-flag { font-size: 17px; padding: 6px 14px; top: 26%; }
-  .hud-pit-cue { top: auto; bottom: 34%; font-size: 15px; padding: 6px 14px; }
+  /* The cue is centred on the viewport and set `nowrap`, which is right on a
+     wide screen — a race-control message reads as one line. On a 390px phone
+     the longest of them, SECOND COMPOUND REQUIRED — PRESS PIT, is wider than
+     the screen, so it ran off both edges and lost the instruction at the end.
+     A cue whose last two words are missing is worse than no cue. Allowed to
+     wrap and bounded to the viewport, so it grows downward instead. */
+  .hud-pit-cue {
+    top: auto; bottom: 34%; font-size: 15px; padding: 6px 14px;
+    white-space: normal;
+    max-width: calc(100vw - 24px);
+  }
   .hud-pit-cue.cue-box { font-size: 18px; }
 
   .hud-startlights { gap: 6px; padding: 8px 9px; top: calc(7vh + var(--safe-t)); }
@@ -1111,7 +1121,12 @@ canvas#view {
   .hud-camera, .hud-diag { display: none; }
 
   .hud-flag { font-size: 17px; padding: 6px 14px; top: 30%; }
-  .hud-pit-cue { top: auto; bottom: 32%; font-size: 15px; padding: 5px 13px; }
+  /* Same bound as the portrait rule above, for the same reason. */
+  .hud-pit-cue {
+    top: auto; bottom: 32%; font-size: 15px; padding: 5px 13px;
+    white-space: normal;
+    max-width: calc(100vw - 24px);
+  }
   .hud-pit-cue.cue-box { font-size: 18px; }
 
   .hud-startlights { gap: 5px; padding: 6px 8px; top: calc(4px + var(--safe-t)); }
@@ -2820,6 +2835,33 @@ table.standings tr.me td.who { font-weight: 700; }
 .pause-btn-meta { font-size: 10px; font-weight: 600; opacity: 0.72; letter-spacing: 0.04em; }
 .btn.danger { background: rgba(255, 77, 79, 0.16); color: #ffb9ba; }
 .btn.danger:hover { background: rgba(255, 77, 79, 0.26); }
+
+/* A phone held sideways.
+
+   The pause card is four stacked buttons under a heading, and at its desktop
+   metrics that comes to about 360px — taller than the 350px a 390px-high
+   landscape viewport leaves after the overlay's padding. The card scrolls, so
+   nothing looks broken; the fourth button is simply below the fold. That
+   button is Quit to Menu, so the one action a player reaches for when they
+   want OUT is the one they cannot see, and the card gives no hint there is
+   anything under it.
+
+   Tightened rather than rearranged: the same four rows in the same order, with
+   the padding, the title and the button rows all taken down together, which
+   brings the card to about 285px and leaves the whole thing on screen. Keyed
+   to height alone — a short window on a desktop has exactly the same problem
+   and the same answer. */
+@media (max-height: 560px) {
+  .pause-overlay { padding: 10px; }
+  .pause-card { padding: 14px 18px 12px; border-radius: 11px; }
+  .pause-title { font-size: 19px; letter-spacing: 0.10em; }
+  .pause-subtitle { font-size: 11px; margin-top: 2px; }
+  .pause-status { font-size: 10px; margin-top: 5px; }
+  .pause-buttons { margin-top: 10px; gap: 6px; }
+  .pause-buttons .btn { padding: 7px 12px; }
+  .pause-btn-label { font-size: 12.5px; }
+  .pause-btn-meta { font-size: 9.5px; }
+}
 
 /* ======================================================================
    Pit stop sheet
