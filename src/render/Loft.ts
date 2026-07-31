@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
  * Lofted surface generation.
@@ -119,18 +120,156 @@ function profilePoint(s: Section, t01: number): { x: number; y: number } {
   return { x: px * xScale, y: s.y + py };
 }
 
+// ---------------------------------------------------------------------------
+// Section resampling
+// ---------------------------------------------------------------------------
+
+/**
+ * Monotone cubic (Fritsch–Carlson) slopes for a set of samples.
+ *
+ * Plain Catmull-Rom is the obvious choice for smoothing a section list and it
+ * is the wrong one. The shape parameters here are not a path through space,
+ * they are a schedule — `flatTop` steps 0, 0.25, 0.55, 0.70, 0.40 across the
+ * cockpit opening — and a Catmull-Rom through a step OVERSHOOTS, so the roof of
+ * the tub bulges above the highest section it was ever given and then dips
+ * below the lowest. Monotone Hermite has the same C1 continuity and provably
+ * never leaves the interval spanned by its neighbours, so a resampled body is
+ * smooth AND stays inside the shape it was authored as.
+ */
+function monotoneSlopes(t: readonly number[], y: readonly number[]): number[] {
+  const n = t.length;
+  if (n < 2) return [0];
+  const d = new Array<number>(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    const dt = t[i + 1] - t[i];
+    d[i] = dt > 1e-9 ? (y[i + 1] - y[i]) / dt : 0;
+  }
+  const m = new Array<number>(n);
+  m[0] = d[0];
+  m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) * 0.5;
+  }
+  for (let i = 0; i < n - 1; i++) {
+    if (Math.abs(d[i]) < 1e-12) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / d[i];
+    const b = m[i + 1] / d[i];
+    const s = a * a + b * b;
+    if (s > 9) {
+      const tau = 3 / Math.sqrt(s);
+      m[i] = tau * a * d[i];
+      m[i + 1] = tau * b * d[i];
+    }
+  }
+  return m;
+}
+
+/** Evaluates the monotone Hermite spline defined by (t, y, m) at `x`. */
+function hermiteAt(
+  t: readonly number[], y: readonly number[], m: readonly number[], x: number,
+): number {
+  const n = t.length;
+  if (x <= t[0]) return y[0];
+  if (x >= t[n - 1]) return y[n - 1];
+  let i = 0;
+  while (i < n - 2 && t[i + 1] < x) i++;
+  const h = t[i + 1] - t[i];
+  if (h <= 1e-9) return y[i];
+  const s = (x - t[i]) / h;
+  const s2 = s * s, s3 = s2 * s;
+  return (2 * s3 - 3 * s2 + 1) * y[i]
+    + (s3 - 2 * s2 + s) * h * m[i]
+    + (-2 * s3 + 3 * s2) * y[i + 1]
+    + (s3 - s2) * h * m[i + 1];
+}
+
+/**
+ * Resamples a section list onto a finer, smoothly-interpolated one.
+ *
+ * A loft skins STRAIGHT between the sections it is given. The bodywork here is
+ * authored at 200-400mm stations, so the surface it produced was a fan of flat
+ * facets a foot wide, and every station drew a crease across the car that no
+ * amount of normal averaging can hide — averaging the normals only smears the
+ * shading over a silhouette that is still visibly a polygon. This is the single
+ * largest source of "blocky" on the body, and it is fixed here rather than by
+ * hand-authoring forty sections per part.
+ *
+ * Every scalar of the section is interpolated independently against distance
+ * along the loft axis, so a long lazy taper and a short abrupt one each get the
+ * ring density they need.
+ *
+ * v-COORDINATE SAFETY. `loft` derives v from cumulative |Δz|, and resampling
+ * only inserts rings BETWEEN existing ones without moving the ends, so every
+ * original station keeps exactly the v it had. Liveries stay put.
+ *
+ * @param maxStep target ring spacing along the axis, in metres. Zero or less
+ *                returns the input untouched, which is what the low tier wants.
+ */
+export function resample(sections: readonly Section[], maxStep: number): Section[] {
+  if (maxStep <= 0 || sections.length < 3) return sections.slice();
+
+  const n = sections.length;
+  const t = new Array<number>(n);
+  t[0] = 0;
+  for (let i = 1; i < n; i++) t[i] = t[i - 1] + Math.abs(sections[i].z - sections[i - 1].z);
+  if (t[n - 1] < 1e-6) return sections.slice();
+
+  const fields = {
+    z: sections.map((s) => s.z),
+    halfWidth: sections.map((s) => s.halfWidth),
+    height: sections.map((s) => s.height),
+    y: sections.map((s) => s.y),
+    round: sections.map((s) => s.round),
+    flatTop: sections.map((s) => s.flatTop ?? 0),
+    undercut: sections.map((s) => s.undercut ?? 1),
+  };
+  const slopes = {
+    z: monotoneSlopes(t, fields.z),
+    halfWidth: monotoneSlopes(t, fields.halfWidth),
+    height: monotoneSlopes(t, fields.height),
+    y: monotoneSlopes(t, fields.y),
+    round: monotoneSlopes(t, fields.round),
+    flatTop: monotoneSlopes(t, fields.flatTop),
+    undercut: monotoneSlopes(t, fields.undercut),
+  };
+
+  const out: Section[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    out.push(sections[i]);
+    const span = t[i + 1] - t[i];
+    const extra = Math.max(0, Math.ceil(span / maxStep) - 1);
+    for (let k = 1; k <= extra; k++) {
+      const x = t[i] + (span * k) / (extra + 1);
+      out.push({
+        z: hermiteAt(t, fields.z, slopes.z, x),
+        halfWidth: hermiteAt(t, fields.halfWidth, slopes.halfWidth, x),
+        height: hermiteAt(t, fields.height, slopes.height, x),
+        y: hermiteAt(t, fields.y, slopes.y, x),
+        round: hermiteAt(t, fields.round, slopes.round, x),
+        flatTop: hermiteAt(t, fields.flatTop, slopes.flatTop, x),
+        undercut: hermiteAt(t, fields.undercut, slopes.undercut, x),
+      });
+    }
+  }
+  out.push(sections[n - 1]);
+  return out;
+}
+
 /**
  * Skins a surface through the given sections.
  *
  * @param sections    ordered front-to-back; at least two
  * @param segments    vertices per ring; 20 is smooth enough at racing distance
  * @param capEnds     closes the first and last ring with a fan
+ * @param lengthStep  resample the sections to this spacing first; 0 to skip
  */
 export function loft(
   sections: readonly Section[],
   segments = 20,
   capEnds = true,
+  lengthStep = 0,
 ): THREE.BufferGeometry {
+  if (lengthStep > 0) sections = resample(sections, lengthStep);
   const rings = sections.length;
   // One extra column duplicating the seam. Without it the last quad has to run
   // its u from (segments-1)/segments back to 0, so the whole texture is smeared
@@ -307,39 +446,113 @@ export function wingElement(
   camber: number,
   segments = 12,
 ): THREE.BufferGeometry {
-  // Aerofoil profile in the chord/thickness plane, traced upper then lower.
-  const upper: [number, number][] = [];
-  const lower: [number, number][] = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    // Cosine spacing clusters points at the leading edge, where curvature is.
-    const x = (1 - Math.cos(t * Math.PI)) * 0.5;
+  // Closed aerofoil outline, upper surface forward then lower surface back, with
+  // the leading and trailing edge points shared so the ring has no duplicates.
+  const ring: [number, number][] = [];
+  const surfaceY = (x: number, sign: number): number => {
     // NACA-like thickness distribution.
     const yt =
       thickness *
       (1.4845 * Math.sqrt(x) - 0.63 * x - 1.758 * x * x + 1.4215 * x * x * x - 0.5075 * x * x * x * x);
     // Camber line, biased to the rear like a high-downforce wing.
     const yc = camber * Math.sin(Math.pow(x, 0.75) * Math.PI);
-    upper.push([x * chord, yc + yt]);
-    lower.push([x * chord, yc - yt]);
+    return yc + sign * yt;
+  };
+  for (let i = 0; i <= segments; i++) {
+    // Cosine spacing clusters points at the leading edge, where curvature is.
+    const x = (1 - Math.cos((i / segments) * Math.PI)) * 0.5;
+    ring.push([x * chord, surfaceY(x, 1)]);
+  }
+  for (let i = segments - 1; i >= 1; i--) {
+    const x = (1 - Math.cos((i / segments) * Math.PI)) * 0.5;
+    ring.push([x * chord, surfaceY(x, -1)]);
+  }
+  const around = ring.length;
+
+  // Span stations. An extruded aerofoil is a prism: its tips are a flat cut
+  // through the section, and a flat cut looks exactly like what it is — a wing
+  // sawn off. A real element closes its tip over a radius. The interior needs
+  // only its two end stations because the surface is ruled between them; the
+  // cost is entirely in the three rings at each tip.
+  const half = span * 0.5;
+  // The closing radius is the local thickness, not a fraction of the span: a
+  // 1.9m front wing element and a 0.25m winglet want the same physical tuck.
+  const tuck = Math.min(Math.max(thickness * 1.6, chord * 0.05), span * 0.12);
+  const TIP_RINGS = 3;
+  const stations: { z: number; scale: number }[] = [];
+  for (let i = 0; i < TIP_RINGS; i++) {
+    // Quarter-circle blend: full section at the start of the tuck, a point at
+    // the tip itself.
+    const f = i / TIP_RINGS;
+    stations.push({ z: -half + tuck * f, scale: Math.sqrt(Math.max(0, 1 - (1 - f) * (1 - f))) });
+  }
+  stations.push({ z: -half + tuck, scale: 1 });
+  stations.push({ z: half - tuck, scale: 1 });
+  for (let i = TIP_RINGS - 1; i >= 0; i--) {
+    const f = i / TIP_RINGS;
+    stations.push({ z: half - tuck * f, scale: Math.sqrt(Math.max(0, 1 - (1 - f) * (1 - f))) });
   }
 
-  const shape = new THREE.Shape();
-  shape.moveTo(upper[0][0], upper[0][1]);
-  for (let i = 1; i < upper.length; i++) shape.lineTo(upper[i][0], upper[i][1]);
-  for (let i = lower.length - 1; i >= 0; i--) shape.lineTo(lower[i][0], lower[i][1]);
-  shape.closePath();
+  // AXES. Span runs along X (across the car) and chord along -Z (toward the
+  // tail), which is the orientation every caller positions the result in. The
+  // extruded version got here by building in the extruder's frame and then
+  // rotating a quarter turn about Y; building it right way round from the start
+  // removes a step that is easy to get backwards, and the bounding box comes
+  // out identical so `center()` still lands the part exactly where it did.
+  //
+  // The section shrinks about the mid-chord, mid-thickness point so the tip
+  // tuck pulls in from every side rather than collapsing onto the chord line.
+  const cx = chord * 0.5;
+  const rings = stations.length;
+  const positions = new Float32Array(rings * around * 3);
+  for (let r = 0; r < rings; r++) {
+    const st = stations[r];
+    for (let i = 0; i < around; i++) {
+      const o = (r * around + i) * 3;
+      positions[o] = st.z;
+      positions[o + 1] = ring[i][1] * st.scale;
+      positions[o + 2] = -(cx + (ring[i][0] - cx) * st.scale);
+    }
+  }
+  const indices: number[] = [];
+  for (let r = 0; r < rings - 1; r++) {
+    const a = r * around;
+    const b = (r + 1) * around;
+    for (let i = 0; i < around; i++) {
+      const j = (i + 1) % around;
+      indices.push(a + i, b + i, b + j);
+      indices.push(a + i, b + j, a + j);
+    }
+  }
 
-  const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: span,
-    bevelEnabled: false,
-    curveSegments: 4,
-  });
-  // Extruded along +Z by default; orient across the car and centre it.
-  geo.rotateY(Math.PI / 2);
-  geo.center();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  // Indexed and shared: averaging across the ring is what gives the aerofoil a
+  // continuous highlight instead of a row of flat facets. The old version came
+  // out of ExtrudeGeometry, which is NON-indexed, so `computeVertexNormals`
+  // could only produce per-face normals — every wing on the car was faceted no
+  // matter how many points the profile had.
   geo.computeVertexNormals();
+  // Same bounding box as the extruded version had, so every caller's translate
+  // still lands the element where it did before.
+  geo.center();
   return geo;
+}
+
+/**
+ * Angle-based normal smoothing.
+ *
+ * Averages normals across edges shallower than `creaseDeg` and leaves sharper
+ * ones split. This is what an artist means by a smoothing group, and it is the
+ * only correct answer for geometry that is curved in some places and hard in
+ * others — an extruded steering-wheel rim wants a continuous highlight round its
+ * rounded corners and a hard line where the face meets the edge.
+ */
+export function creased(geo: THREE.BufferGeometry, creaseDeg = 40): THREE.BufferGeometry {
+  const out = toCreasedNormals(geo, (creaseDeg * Math.PI) / 180);
+  if (out !== geo) geo.dispose();
+  return out;
 }
 
 /**
@@ -355,7 +568,9 @@ export function strut(
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,
   r: number,
-  radialSegments = 5,
+  // Eight, not five. A wishbone is 22mm across and passes within two metres of
+  // a chase camera, and a pentagon that size shows every one of its five flats.
+  radialSegments = 8,
   capped = false,
 ): THREE.BufferGeometry {
   const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
@@ -381,7 +596,7 @@ export function tube(
   points: readonly [number, number, number][],
   radius: number,
   tubularSegments = 24,
-  radialSegments = 6,
+  radialSegments = 10,
 ): THREE.BufferGeometry {
   const curve = new THREE.CatmullRomCurve3(
     points.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
