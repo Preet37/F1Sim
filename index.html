@@ -21,7 +21,9 @@
   <div id="loading" class="loading">
     <div class="loading-stage" id="loading-art"></div>
     <div class="loading-text" id="loading-text">BUILDING CIRCUIT</div>
-    <div class="loading-bar"></div>
+    <!-- Three segments: sector one, two and three, filling in turn. The middle
+         one is a real element because ::before and ::after only give two. -->
+    <div class="loading-bar"><i></i></div>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>

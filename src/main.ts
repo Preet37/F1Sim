@@ -12,7 +12,10 @@ import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDir
 import { setRubberLine } from './render/SurfaceDetail';
 import { InputController } from './input/InputController';
 import { Hud } from './ui/Hud';
-import { CareerEngine, TIER_INFO, type CareerEvent, type SeasonResult } from './career/CareerEngine';
+import {
+  CareerEngine, TIER_INFO, playerChampionshipPosition,
+  type CareerEvent, type SeasonResult,
+} from './career/CareerEngine';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock } from './ui/Paddock';
@@ -342,9 +345,23 @@ class Game {
     sub?: string;
     back?: () => void;
     meta?: [string, string][];
+    /** Where you are, for the status rail. Defaults to the screen's own tab. */
+    where?: string;
+    /**
+     * The sector rule under the header.
+     *
+     * Three segments whose widths are the real proportions of something: a
+     * circuit's two sector splits, a season's rounds, a weekend's sessions.
+     * `at` is how far through we are, 0-3. Omitted on screens where there is
+     * genuinely nothing to proportion, in which case no rule is drawn — a
+     * decorative one would be exactly the stripe this replaced.
+     */
+    rule?: { parts: number[]; at?: number; best?: boolean };
   }): { body: HTMLElement; actions: HTMLElement } {
     this.screenRoot.innerHTML = '';
     const page = this.el('div', 'page', this.screenRoot);
+
+    this.statusRail(page, opts.where ?? opts.tab ?? '');
 
     if (opts.tab || opts.title || opts.back) {
       const bar = this.el('div', 'topbar', page);
@@ -381,12 +398,142 @@ class Game {
         this.el('div', 'meta-value', item, value);
       }
 
-      this.el('div', 'kerb-rule', page);
     }
+
+    if (opts.rule) this.sectorRule(page, opts.rule);
 
     const body = this.el('div', 'page-body', page);
     const actions = this.el('div', 'actionbar', page);
     return { body, actions };
+  }
+
+  /**
+   * The strip along the top of every screen.
+   *
+   * A timing monitor tells you what it is showing and whether it is showing it
+   * now, before it shows you anything. The right-hand end reads the state of
+   * the career, so the answer to "where am I in this game" is on every screen
+   * rather than only on the hub.
+   */
+  private statusRail(page: HTMLElement, where: string): void {
+    const rail = this.el('div', 'statusrail', page);
+    const mark = this.el('div', 'statusrail-mark', rail);
+    mark.innerHTML = 'F1<b>SIM</b>';
+
+    if (where) {
+      this.el('div', 'statusrail-sep s1', rail, '/');
+      this.el('div', 'statusrail-where', rail, where);
+    }
+
+    this.el('div', 'statusrail-spacer', rail);
+
+    const career = this.career;
+    if (career) {
+      const s = career.state;
+      const pos = playerChampionshipPosition(s);
+      this.el('div', 'statusrail-state', rail,
+        TIER_INFO[s.tier].name + ' · R' + Math.min(s.round + 1, career.calendar.length) +
+        '/' + career.calendar.length + ' · P' + pos);
+      this.el('div', 'statusrail-sep', rail, '/');
+    }
+    this.el('div', 'statusrail-live', rail, 'Live');
+  }
+
+  /**
+   * The sector rule: three segments in the slot the kerb rule used to hold.
+   *
+   * The difference is that these have widths. A circuit's segments are its
+   * actual sector splits, so Monaco's rule and Spa's rule are different
+   * shapes, and the proportions are the ones the timing panel will score in
+   * during the session. Nothing here is drawn unless a real number set it.
+   */
+  private sectorRule(page: HTMLElement, rule: { parts: number[]; at?: number; best?: boolean }): void {
+    const el = this.el('div', 'sectorrule', page);
+    const total = rule.parts.reduce((a, b) => a + b, 0) || 1;
+    for (const [i, part] of rule.parts.entries()) {
+      const seg = this.el('span', '', el);
+      seg.style.flex = String(part / total);
+      const at = rule.at ?? 0;
+      if (i < at) seg.className = rule.best ? 'best' : 'done';
+      else if (i === at) seg.className = 'live';
+    }
+  }
+
+  /** The three sector proportions of a circuit, as the rule wants them. */
+  private circuitRule(def: ReturnType<typeof getCircuit>, at = 0): { parts: number[]; at: number } {
+    return {
+      parts: [
+        def.sector1EndS,
+        def.sector2EndS - def.sector1EndS,
+        def.lengthM - def.sector2EndS,
+      ],
+      at,
+    };
+  }
+
+  /**
+   * The timing row: the unit this whole interface is built out of.
+   *
+   * Position, team colour, code, name, then figures in right-aligned
+   * monospaced columns. Everything in this sport is a ranked order, so
+   * everything in these menus is a list of these — a grid of cards would
+   * throw the order away, which is the one thing the order is for.
+   */
+  private trow(
+    parent: HTMLElement,
+    r: {
+      pos?: string;
+      colour?: string;
+      code?: string;
+      name: string;
+      note?: string;
+      /** Right-aligned figures. `cls` is one of dim/best/gain/loss/out/none. */
+      figs?: { text: string; cls?: string }[];
+      tag?: { text: string; cls?: string };
+      state?: 'me' | 'selected' | 'out' | 'best';
+      index?: number;
+      onClick?: () => void;
+    },
+  ): HTMLElement {
+    const el = document.createElement(r.onClick ? 'button' : 'div');
+    el.className = 'trow' + (r.state ? ' is-' + r.state : '');
+    if (r.index !== undefined) el.style.setProperty('--i', String(r.index));
+    if (r.onClick) (el as HTMLButtonElement).type = 'button';
+
+    let html = '<span class="t-pos">' + escapeHtml(r.pos ?? '') + '</span>';
+    html += '<span class="t-bar"' +
+      (r.colour ? ' style="background:' + escapeHtml(r.colour) + '"' : '') + '></span>';
+    html += '<span class="t-code">' + escapeHtml(r.code ?? '') + '</span>';
+    html += '<span class="t-name">' + escapeHtml(r.name) +
+      (r.note ? '<small>' + escapeHtml(r.note) + '</small>' : '') + '</span>';
+    for (const f of r.figs ?? []) {
+      html += '<span class="t-fig ' + (f.cls ?? '') + '">' + escapeHtml(f.text) + '</span>';
+    }
+    // Keep the grid's column count stable whether or not a row has figures.
+    for (let i = (r.figs ?? []).length; i < 2; i++) html += '<span class="t-fig"></span>';
+    html += r.tag
+      ? '<span class="t-tag"><span class="tag ' + (r.tag.cls ?? '') + '">' +
+        escapeHtml(r.tag.text) + '</span></span>'
+      : '<span class="t-tag"></span>';
+    el.innerHTML = html;
+
+    if (r.onClick) el.addEventListener('click', r.onClick);
+    parent.appendChild(el);
+    return el;
+  }
+
+  /** A board: a column header, then rows. */
+  private board(parent: HTMLElement, cols: string[]): HTMLElement {
+    const b = this.el('div', 'tboard', parent);
+    const head = this.el('div', 'tboard-head', b);
+    head.innerHTML =
+      '<span></span><span></span>' +
+      '<span>' + escapeHtml(cols[0] ?? '') + '</span>' +
+      '<span>' + escapeHtml(cols[1] ?? '') + '</span>' +
+      '<span class="t-fig">' + escapeHtml(cols[2] ?? '') + '</span>' +
+      '<span class="t-fig">' + escapeHtml(cols[3] ?? '') + '</span>' +
+      '<span class="t-tag">' + escapeHtml(cols[4] ?? '') + '</span>';
+    return b;
   }
 
   /** Pushes everything added after it to the right-hand end of the action bar. */
@@ -405,14 +552,18 @@ class Game {
   private circuitCard(
     parent: HTMLElement,
     def: ReturnType<typeof getCircuit>,
-    opts: { selected?: boolean; onClick?: () => void } = {},
+    opts: { selected?: boolean; onClick?: () => void; round?: number; index?: number } = {},
   ): HTMLElement {
     const card = this.el('div', 'circuit-card' + (opts.selected ? ' selected' : ''), parent);
     card.setAttribute('role', 'button');
     card.tabIndex = 0;
+    if (opts.index !== undefined) card.style.setProperty('--i', String(opts.index));
 
     card.innerHTML =
       '<div class="cc-map">' +
+      (opts.round !== undefined
+        ? '<span class="cc-round">R' + String(opts.round).padStart(2, '0') + '</span>'
+        : '') +
       '<span class="cc-code">' + escapeHtml(def.countryCode) + '</span>' +
       circuitSvg(def) +
       '</div>' +
@@ -440,32 +591,49 @@ class Game {
     return card;
   }
 
+  /**
+   * The front page.
+   *
+   * It opens on the state of the world, not on a wordmark. A monitor that has
+   * just been switched on in a garage reads out where the season has got to;
+   * a logo the size of a building would say nothing the title bar does not.
+   * Every token on the status line is read from the save.
+   */
   private showMenu(): void {
     this.setScreen('menu');
-    const { body } = this.page({});
-
-    const hero = this.el('div', 'hero', body);
-    const mark = this.el('div', 'wordmark', hero);
-    mark.innerHTML = 'F1<span class="acc">SIM</span>';
-
-    const line = this.el('div', 'hero-line', hero);
-    this.el('div', 'hero-kerb', line);
-    this.el('div', '', line,
-      'A full physics simulation, eleven real circuits and a career that starts ' +
-      'in Formula 3. Every number on every screen is one the car actually uses.');
-
     const recent = this.saves.mostRecent();
-    const actions = this.el('div', 'menu-actions', hero);
+    const { body } = this.page({
+      where: 'Main Menu',
+      rule: { parts: [1, 1, 1], at: 0 },
+    });
 
-    let index = 0;
-    const entry = (name: string, desc: string, onClick: () => void, lead = false) => {
-      index++;
+    const hero = this.el('div', 'board-hero', body);
+    this.el('div', 'board-hero-label', hero, recent ? 'Career in progress' : 'No career loaded');
+    const line = this.el('div', 'board-hero-line', hero);
+    if (recent) {
+      line.innerHTML =
+        escapeHtml(recent.driverName) + '<span class="sep">·</span>' +
+        escapeHtml(tierInfo(recent.tier).name) + '<span class="sep">·</span>' +
+        '<span class="go">R' + (recent.round + 1) + '/' + tierInfo(recent.tier).rounds + '</span>';
+    } else {
+      line.innerHTML =
+        '<span class="none">F3</span><span class="sep">→</span>' +
+        '<span class="none">F2</span><span class="sep">→</span>' +
+        '<span class="go">F1</span>';
+    }
+    this.el('div', 'board-hero-note', hero,
+      'A full physics simulation, eleven surveyed circuits and a career that starts in ' +
+      'Formula 3. Every number on every screen is one the car actually uses.');
+
+    const actions = this.el('div', 'menu-actions', body);
+
+    const entry = (name: string, desc: string, fig: string, onClick: () => void, lead = false) => {
       const b = document.createElement('button');
       b.className = 'menu-item' + (lead ? ' lead' : '');
       b.type = 'button';
       b.innerHTML =
-        '<span class="menu-index">' + String(index).padStart(2, '0') + '</span>' +
         '<span class="menu-name">' + escapeHtml(name) + '</span>' +
+        '<span class="menu-fig">' + escapeHtml(fig) + '</span>' +
         '<span class="menu-desc">' + escapeHtml(desc) + '</span>';
       b.addEventListener('click', onClick);
       actions.appendChild(b);
@@ -473,26 +641,30 @@ class Game {
     };
 
     if (recent) {
-      entry('Continue', 'Pick your career back up where you left it', () => {
-        const state = this.saves.load(recent.id);
-        if (!state) {
-          alert('That save could not be loaded.');
-          return;
-        }
-        this.careerId = recent.id;
-        this.career = new CareerEngine(state);
-        this.showCareerHub();
-      }, true);
+      entry('Continue', 'Pick your career back up where you left it',
+        'R' + (recent.round + 1) + '/' + tierInfo(recent.tier).rounds, () => {
+          const state = this.saves.load(recent.id);
+          if (!state) {
+            alert('That save could not be loaded.');
+            return;
+          }
+          this.careerId = recent.id;
+          this.career = new CareerEngine(state);
+          this.showCareerHub();
+        }, true);
     }
     entry(recent ? 'New Career' : 'Start Career',
       'Sign for a junior team and race for a Formula 1 seat',
+      TIER_INFO.F3.rounds + ' rounds',
       () => this.showCareerCreate(), !recent);
     entry('Quick Race', 'Any circuit, any session, straight to the grid',
+      CIRCUITS.length + ' circuits',
       () => this.showSessionSelect(true));
     entry('Paddock', 'Every team, every car and what it is good at',
+      TEAMS.length + ' teams',
       () => this.showPaddock());
     entry('Settings', 'Assists, opposition, camera and audio',
-      () => this.showSettings());
+      '', () => this.showSettings());
 
     if (this.saves.isEphemeral) {
       this.el('div', 'notice', body,
@@ -500,11 +672,15 @@ class Game {
         'Everything else works normally.');
     }
 
-    // The circuit list, so the front page shows what is actually in the game.
-    this.el('div', 'section-title', body, 'Circuits');
+    // The calendar. In calendar order, with the round number on each card,
+    // because these eleven circuits are a season and not a shelf.
+    const head = this.el('div', 'section-title', body, 'The calendar');
+    this.el('span', 'section-count', head, CIRCUITS.length + ' circuits');
     const grid = this.el('div', 'grid-circuits', body);
-    for (const c of CIRCUITS) {
+    for (const [i, c] of CIRCUITS.entries()) {
       this.circuitCard(grid, c, {
+        round: i + 1,
+        index: i,
         onClick: () => {
           this.quickCircuitId = c.id;
           this.showSessionSelect(true);
@@ -517,9 +693,12 @@ class Game {
     this.setScreen('career-create');
     const { body, actions } = this.page({
       tab: 'Main Menu',
+      where: 'New Career',
       title: 'New Career',
       sub: 'You start in Formula 3 with a junior team. Earn a Formula 1 seat, then a championship.',
       back: () => this.showMenu(),
+      // The three tiers, as the three sectors of a career.
+      rule: { parts: [TIER_INFO.F3.rounds, TIER_INFO.F2.rounds, TIER_INFO.F1.rounds], at: 0 },
     });
 
     this.el('div', 'section-title', body, 'Driver');
@@ -575,6 +754,7 @@ class Game {
 
     const { body, actions } = this.page({
       tab: TIER_INFO[s.tier].name + ' · ' + s.seasonYear,
+      where: 'Career',
       title: s.player.firstName + ' ' + s.player.lastName,
       sub: team.name + ' · ' + s.player.nationality,
       back: () => this.showMenu(),
@@ -582,26 +762,95 @@ class Game {
         ['Round', round + ' / ' + career.calendar.length],
         ['Points', String(mine?.points ?? 0)],
       ],
+      // The season, in three parts: rounds done, the round in hand, the rest.
+      rule: {
+        parts: [
+          Math.max(0, s.round),
+          1,
+          Math.max(0, career.calendar.length - s.round - 1),
+        ],
+        at: 1,
+      },
     });
 
     // --- Driver and team state -------------------------------------------
-    this.el('div', 'section-title', body, 'Season so far');
+    const seasonHead = this.el('div', 'section-title', body, 'Season so far');
+    this.el('span', 'section-count', seasonHead,
+      s.round + ' of ' + career.calendar.length + ' run');
     const statGrid = this.el('div', 'stat-grid', body);
-    const stat = (name: string, value: string, meta = '', hero = false) => {
-      const c = this.el('div', 'stat' + (hero ? ' hero' : ''), statGrid);
+    let statIndex = 0;
+    const stat = (
+      name: string, value: string, meta = '',
+      opts: { hero?: boolean; meter?: number; band?: string } = {},
+    ) => {
+      const c = this.el('div',
+        'stat' + (opts.hero ? ' hero' : '') + (opts.band ? ' ' + opts.band : ''), statGrid);
+      c.style.setProperty('--i', String(statIndex++));
       this.el('div', 'stat-label', c, name);
       this.el('div', 'stat-value', c, value);
       if (meta) this.el('div', 'stat-meta', c, meta);
+      // A 0..100 figure gets a meter, because "62" means nothing without the
+      // scale and "out of 100" printed six times is six wasted lines.
+      if (opts.meter !== undefined) {
+        const m = this.el('div', 'stat-meter', c);
+        const fill = this.el('span', opts.band ?? '', m);
+        fill.style.width = clamp(opts.meter, 0, 100) + '%';
+      }
     };
+    // Bands read the same way everywhere: green is healthy, yellow is a
+    // warning, red is trouble.
+    const band = (v: number, invert = false) => {
+      const x = invert ? 100 - v : v;
+      return x >= 60 ? 'good' : x >= 30 ? 'warn' : 'bad';
+    };
+
+    const leading = champPos === 1 && (mine?.points ?? 0) > 0;
     stat('Championship', 'P' + champPos,
-      (mine?.points ?? 0) + ' pts · ' + (mine?.wins ?? 0) + ' wins', true);
-    stat('Reputation', Math.round(s.reputation) + '', 'out of 100');
-    stat('Team morale', Math.round(s.teamMorale) + '', 'out of 100');
-    stat('Pressure', Math.round(s.pressureLevel) + '', 'out of 100');
-    stat('Pace', (s.player.skill * 100).toFixed(0) + '',
-      'consistency ' + (s.player.consistency * 100).toFixed(0));
+      (mine?.points ?? 0) + ' pts · ' + (mine?.wins ?? 0) + ' wins',
+      leading ? { hero: true } : { hero: true, band: champPos <= 3 ? 'good' : 'plain' });
+    stat('Reputation', String(Math.round(s.reputation)), 'F1 seats open above 60',
+      { meter: s.reputation, band: band(s.reputation) });
+    stat('Team morale', String(Math.round(s.teamMorale)), 'how the garage feels',
+      { meter: s.teamMorale, band: band(s.teamMorale) });
+    // Pressure is the one figure where high is bad, so its band is inverted
+    // and a high number goes red rather than green.
+    stat('Pressure', String(Math.round(s.pressureLevel)), 'high is worse',
+      { meter: s.pressureLevel, band: band(s.pressureLevel, true) });
+    stat('Pace', (s.player.skill * 100).toFixed(0),
+      'consistency ' + (s.player.consistency * 100).toFixed(0),
+      { meter: s.player.skill * 100, band: band(s.player.skill * 100) });
     stat('Budget', '£' + (s.money / 1000).toFixed(0) + 'k',
       s.contractYears + (s.contractYears === 1 ? ' year on the contract' : ' years on the contract'));
+
+    // --- Form -------------------------------------------------------------
+    // The rounds already run, as a timesheet. This is the most characteristic
+    // data the career holds and it was previously thrown away — the hub knew
+    // every finishing position of the season and printed none of them.
+    if (s.results.length > 0) {
+      const formHead = this.el('div', 'section-title', body, 'Form');
+      this.el('span', 'section-count', formHead, s.results.length + ' rounds');
+      const b = this.board(body, ['Rnd', 'Circuit', 'Finish', 'Points', '']);
+      b.classList.add('tboard-form');
+      for (const [i, r] of s.results.entries()) {
+        const def = getCircuit(r.circuitId);
+        const p = r.playerPosition;
+        this.trow(b, {
+          pos: String(r.round + 1),
+          colour: hexColour(team.colour),
+          code: def.countryCode,
+          name: def.name,
+          index: i,
+          figs: [
+            { text: 'P' + p, cls: p === 1 ? 'best' : p <= 3 ? 'gain' : p <= 10 ? '' : 'dim' },
+            { text: String(r.playerPoints), cls: r.playerPoints > 0 ? '' : 'none' },
+          ],
+          tag: r.fastestLapDriverId === 'PLAYER'
+            ? { text: 'FL', cls: 'best' }
+            : r.wetRace ? { text: 'Wet', cls: 'warn' } : undefined,
+          state: p === 1 ? 'best' : undefined,
+        });
+      }
+    }
 
     if (s.titles.length > 0) {
       this.el('div', 'section-title', body, 'Honours');
@@ -679,41 +928,48 @@ class Game {
 
     const rows = career.sortedStandings();
     const leader = rows[0];
+    const s = career.state;
     const { body } = this.page({
-      tab: TIER_INFO[career.state.tier].name,
+      tab: TIER_INFO[s.tier].name,
+      where: 'Championship',
       title: 'Championship',
-      sub: career.state.seasonYear + ' · ' + (career.state.round === 0
+      sub: s.seasonYear + ' · ' + (s.round === 0
         ? 'before the first round'
-        : 'after ' + career.state.round + (career.state.round === 1 ? ' round' : ' rounds')),
+        : 'after ' + s.round + (s.round === 1 ? ' round' : ' rounds')),
       back: () => this.showCareerHub(),
       meta: leader ? [['Leader', career.displayName(leader)]] : [],
+      rule: {
+        parts: [Math.max(0, s.round), 1, Math.max(0, career.calendar.length - s.round - 1)],
+        at: 1,
+      },
     });
 
-    const wrap = this.el('div', 'table-wrap', body);
-    const table = document.createElement('table');
-    table.className = 'standings';
-    table.innerHTML =
-      '<thead><tr><th>Pos</th><th>Driver</th><th>Team</th>' +
-      '<th class="num">Pts</th><th class="num">Wins</th><th class="num">Podiums</th></tr></thead>';
-    const tbody = document.createElement('tbody');
+    // The gap to the lead is the number a championship table is read for, and
+    // it was the one number the old table did not have.
+    const topPoints = leader?.points ?? 0;
+    const b = this.board(body, ['Code', 'Driver', 'Points', 'Gap', 'Won']);
+    b.classList.add('tboard-champ');
     for (const [i, e] of rows.entries()) {
-      const tr = document.createElement('tr');
-      if (e.driverId === 'PLAYER') tr.className = 'me';
       const team = e.teamId ? getTeam(e.teamId) : null;
-      const chip = team
-        ? '<span class="team-chip" style="background:' + hexColour(team.colour) + '"></span>'
-        : '';
-      tr.innerHTML =
-        '<td class="pos">' + (i + 1) + '</td>' +
-        '<td>' + chip + escapeHtml(career.displayName(e)) + '</td>' +
-        '<td>' + escapeHtml(team ? team.shortName : '—') + '</td>' +
-        '<td class="num">' + e.points + '</td>' +
-        '<td class="num">' + e.wins + '</td>' +
-        '<td class="num">' + e.podiums + '</td>';
-      tbody.appendChild(tr);
+      const me = e.driverId === 'PLAYER';
+      const gap = topPoints - e.points;
+      this.trow(b, {
+        pos: String(i + 1),
+        colour: team ? hexColour(team.colour) : undefined,
+        code: career.displayCode(e),
+        name: career.displayName(e),
+        note: team ? team.shortName : undefined,
+        index: i,
+        figs: [
+          { text: String(e.points), cls: e.points > 0 ? '' : 'none' },
+          i === 0
+            ? { text: '—', cls: 'best' }
+            : { text: gap === 0 ? 'level' : '-' + gap, cls: 'dim' },
+        ],
+        tag: e.wins > 0 ? { text: e.wins + '×', cls: 'best' } : undefined,
+        state: me ? 'me' : i === 0 ? 'best' : undefined,
+      });
     }
-    table.appendChild(tbody);
-    wrap.appendChild(table);
   }
 
   private showSessionSelect(quick: boolean): void {
@@ -722,6 +978,7 @@ class Game {
 
     const { body } = this.page({
       tab: quick && !this.career ? 'Quick Race' : 'Race Weekend',
+      where: circuit.name,
       title: circuit.name,
       sub: circuit.officialName + ' · ' + circuit.city + ', ' + circuit.country,
       back: () => (this.career ? this.showCareerHub() : this.showMenu()),
@@ -729,6 +986,9 @@ class Game {
         ['Lap', (circuit.lengthM / 1000).toFixed(3) + ' km'],
         ['Pole', formatLapTime(circuit.referencePoleTimeS)],
       ],
+      // This circuit's own sector splits — so Monaco's rule and Spa's rule
+      // are visibly different shapes.
+      rule: this.circuitRule(circuit),
     });
 
     // The circuit itself, at the size it deserves: this is the decision the
@@ -756,39 +1016,66 @@ class Game {
     // of the page.
     this.garageCard(body, circuit.id, () => this.showSessionSelect(quick));
 
+    // The sessions, as a board. A session has a length and a distance, and
+    // those are the two figures you choose between — so they get columns
+    // rather than being buried in a sentence on a card.
     this.el('div', 'section-title', body, 'Choose a session');
-    const grid = this.el('div', 'card-grid', body);
+    const sessions = this.board(body, ['', 'Session', 'Runs for', 'Distance', '']);
+    sessions.classList.add('tboard-sessions');
 
-    const option = (name: string, meta: string, make: () => SessionConfig[]) => {
-      const c = this.el('div', 'card', grid);
-      this.el('div', 'card-name', c, name);
-      this.el('div', 'card-meta', c, meta);
-      c.addEventListener('click', () => {
-        this.resetQualifying();
-        this.weekend = make();
-        this.weekendIndex = 0;
-        this.beginSession(circuit.id);
+    const mins = (s: number) => Math.round(s / 60) + ' min';
+    const lapsOf = (n: number) => n + ' laps · ' + ((circuit.lengthM * n) / 1000).toFixed(0) + ' km';
+    let sIndex = 0;
+
+    const option = (
+      name: string, runsFor: string, distance: string,
+      make: () => SessionConfig[], tag?: { text: string; cls?: string },
+    ) => {
+      this.trow(sessions, {
+        name,
+        index: sIndex++,
+        figs: [
+          { text: runsFor, cls: 'dim' },
+          { text: distance },
+        ],
+        tag,
+        onClick: () => {
+          this.resetQualifying();
+          this.weekend = make();
+          this.weekendIndex = 0;
+          this.beginSession(circuit.id);
+        },
       });
     };
 
-    option('Free Practice', '10 minutes, learn the circuit',
+    const sprintLaps = Math.max(5, Math.round(circuit.raceLaps * 0.25));
+    const qualTotal = QUALIFYING_SEGMENTS.reduce((a, q) => a + q.durationS, 0);
+    const practiceTotal = PRACTICE_SEGMENTS.reduce((a, p) => a + p.durationS, 0);
+
+    option('Free Practice', mins(600), 'Open running',
       () => [this.sessionConfig('practice', 'Free Practice', circuit.id, 600, 0)]);
-    option('Qualifying', 'Q1, Q2 and Q3 knockout for grid position',
+    option('Qualifying', mins(qualTotal), 'Q1 · Q2 · Q3',
       () => QUALIFYING_SEGMENTS.map((q) =>
         this.sessionConfig('qualifying', q.name, circuit.id, q.durationS, 0,
-          { qualifyingPhase: q.phase, advancing: q.advancing })));
-    option('Sprint Race', '25% distance, standing start',
-      () => [this.sessionConfig('race', 'Sprint', circuit.id, 0, Math.max(5, Math.round(circuit.raceLaps * 0.25)))]);
-    option('Grand Prix', circuit.raceLaps + ' laps, full distance',
-      () => [this.sessionConfig('race', 'Grand Prix', circuit.id, 0, circuit.raceLaps)]);
-    option('Full Weekend', 'Three practice sessions, Q1-Q2-Q3, then the race',
-      () => this.weekendSessions(circuit.id));
+          { qualifyingPhase: q.phase, advancing: q.advancing })),
+      { text: 'Knockout', cls: 'warn' });
+    option('Sprint Race', '—', lapsOf(sprintLaps),
+      () => [this.sessionConfig('race', 'Sprint', circuit.id, 0, sprintLaps)]);
+    option('Grand Prix', '—', lapsOf(circuit.raceLaps),
+      () => [this.sessionConfig('race', 'Grand Prix', circuit.id, 0, circuit.raceLaps)],
+      { text: 'Full', cls: 'go' });
+    option('Full Weekend', mins(practiceTotal + qualTotal), 'FP1-3 · Q · Race',
+      () => this.weekendSessions(circuit.id),
+      { text: 'All', cls: 'best' });
 
-    this.el('div', 'section-title', body, 'Race somewhere else');
+    const elseHead = this.el('div', 'section-title', body, 'Race somewhere else');
+    this.el('span', 'section-count', elseHead, CIRCUITS.length + ' circuits');
     const other = this.el('div', 'grid-circuits', body);
-    for (const c of CIRCUITS) {
+    for (const [i, c] of CIRCUITS.entries()) {
       this.circuitCard(other, c, {
         selected: c.id === circuit.id,
+        round: i + 1,
+        index: i,
         onClick: () => {
           this.quickCircuitId = c.id;
           this.showSessionSelect(quick);
@@ -869,6 +1156,8 @@ class Game {
     this.setScreen('setup');
     const { body, actions } = this.page({
       tab: 'Garage · ' + circuit.name,
+      where: 'Garage',
+      rule: this.circuitRule(circuit),
       title: 'Car Setup',
       sub: 'Every slider changes a number the physics integrates, not a rating. ' +
         'The readout at the top is what the car will actually do.',
@@ -915,6 +1204,8 @@ class Game {
     this.setScreen('paddock');
     const { body } = this.page({
       tab: 'Main Menu',
+      where: 'Paddock',
+      rule: { parts: [1, 1, 1], at: 0 },
       title: 'The Paddock',
       sub: 'Every bar reads a multiplier the physics applies directly. These cars really ' +
         'are different, and the order below is the order they should finish in.',
@@ -931,6 +1222,7 @@ class Game {
     this.setScreen('settings');
     const { body } = this.page({
       tab: 'Main Menu',
+      where: 'Settings',
       title: 'Settings',
       sub: 'Assists are off by default. The car is the same either way — an assist ' +
         'limits what your input can ask for, it does not change the machine.',
@@ -1109,6 +1401,7 @@ class Game {
     this.setScreen('controller');
     const { body, actions } = this.page({
       tab: 'Settings',
+      where: 'Controller',
       title: 'Controller',
       sub: 'Bindings, calibration and steering feel — for a gamepad or a wheel. ' +
         'Every bar on this page is live.',
@@ -1535,20 +1828,25 @@ class Game {
 
     const { body, actions } = this.page({
       tab: engine.config.name,
+      where: engine.track.def.name,
       title: 'Classification',
       sub: engine.track.def.officialName + ' · ' + engine.weather.label,
       meta: [
         ['Session', engine.config.name],
         ['Runners', String(engine.standings.length)],
       ],
+      // The session is over, so all three sectors are done.
+      rule: { ...this.circuitRule(engine.track.def), at: 3 },
     });
 
     // The player's own result first, because that is the question they are
     // asking the screen. The classification below answers everything else.
     if (player) {
       const grid = this.el('div', 'stat-grid', body);
-      const tile = (label: string, value: string, meta = '', hero = false) => {
-        const s = this.el('div', 'stat' + (hero ? ' hero' : ''), grid);
+      let tIndex = 0;
+      const tile = (label: string, value: string, meta = '', cls = '') => {
+        const s = this.el('div', 'stat' + (cls ? ' ' + cls : ''), grid);
+        s.style.setProperty('--i', String(tIndex++));
         this.el('div', 'stat-label', s, label);
         this.el('div', 'stat-value', s, value);
         if (meta) this.el('div', 'stat-meta', s, meta);
@@ -1564,16 +1862,28 @@ class Game {
         kind === 'race' ? 'Won it'
         : kind === 'qualifying' ? 'Pole position'
         : 'Quickest of the lot';
+      // The headline tile is scored the way every other figure in the game
+      // is: purple for the outright best, green for a good day, red for a
+      // retirement. It cannot be purple just for being the headline.
+      const outcome =
+        player.retired ? 'bad'
+        : player.position === 1 ? 'hero'
+        : player.position <= 3 ? 'good'
+        : '';
       tile(headline,
         player.retired ? 'DNF' : 'P' + player.position,
         player.retired ? player.retirementReason
           : player.position === 1 ? topNote : 'of ' + engine.standings.length + ' cars',
-        true);
-      tile('Your best lap', formatLapTime(player.bestLapTime),
-        player.pitStops + (player.pitStops === 1 ? ' stop' : ' stops'));
-      if (fastest) {
+        outcome);
+
+      const mineIsFastest = fastest ? fastest.car.isPlayer : false;
+      tile('Your best lap',
+        player.bestLapTime > 0 ? formatLapTime(player.bestLapTime) : '--:--.---',
+        player.pitStops + (player.pitStops === 1 ? ' stop' : ' stops'),
+        mineIsFastest ? 'hero' : '');
+      if (fastest && !mineIsFastest) {
         tile('Fastest lap', formatLapTime(fastest.time),
-          fastest.car.driver.firstName + ' ' + fastest.car.driver.lastName);
+          fastest.car.driver.firstName + ' ' + fastest.car.driver.lastName, 'hero');
       }
       if (isRace && !player.retired && player.position > 1) {
         tile('Gap to the win', '+' + player.gapToLeader.toFixed(3) + 's',
@@ -1594,41 +1904,49 @@ class Game {
       this.el('div', 'notice', body, 'Q3 is done. That is the front of the grid decided.');
     }
 
-    this.el('div', 'section-title', body, isRace ? 'Race classification' : 'Timesheet');
+    const classHead = this.el('div', 'section-title', body,
+      isRace ? 'Race classification' : 'Timesheet');
+    this.el('span', 'section-count', classHead, engine.standings.length + ' cars');
 
-    const wrap = this.el('div', 'table-wrap', body);
-    const table = document.createElement('table');
-    table.className = 'standings';
-    table.innerHTML =
-      '<thead><tr><th>Pos</th><th>Driver</th><th>Team</th>' +
-      '<th class="num">Gap</th>' +
-      '<th class="num">Best Lap</th><th class="num">Stops</th><th>Notes</th></tr></thead>';
-    const tbody = document.createElement('tbody');
+    // The classification, as the timing board it is. The fastest lap of the
+    // session is purple, everything else is white — the sport's own rule, so
+    // the board needs no legend.
+    const bestOfAll = fastest?.time ?? 0;
+    const board = this.board(body, ['Code', 'Driver', 'Best Lap', 'Gap', 'Stops']);
+    board.classList.add('tboard-class');
 
-    for (const car of engine.standings) {
-      const tr = document.createElement('tr');
-      if (car.isPlayer) tr.className = 'me';
+    for (const [i, car] of engine.standings.entries()) {
       const notes: string[] = [];
-      if (car.retired) notes.push(car.retirementReason);
       if (car.disqualified) notes.push('DSQ');
+      else if (car.retired) notes.push(car.retirementReason);
       if (car.penaltySeconds > 0) notes.push('+' + car.penaltySeconds + 's');
       if (car.trackLimitStrikes > 0) notes.push(car.trackLimitStrikes + ' limits');
 
-      const gapCell = resultGapCell(car, isRace);
+      const hasLap = car.bestLapTime > 0;
+      const isFastest = hasLap && bestOfAll > 0 && Math.abs(car.bestLapTime - bestOfAll) < 1e-6;
+      const gap = resultGapCell(car, isRace);
 
-      tr.innerHTML =
-        '<td class="pos">' + car.position + '</td>' +
-        '<td><span class="team-chip" style="background:' + hexColour(car.team.colour) + '"></span>' +
-        escapeHtml(car.driver.firstName + ' ' + car.driver.lastName) + '</td>' +
-        '<td>' + escapeHtml(car.team.shortName) + '</td>' +
-        '<td class="num">' + gapCell + '</td>' +
-        '<td class="num">' + formatLapTime(car.bestLapTime) + '</td>' +
-        '<td class="num">' + car.pitStops + '</td>' +
-        '<td>' + (notes.length ? '<span class="pill bad">' + escapeHtml(notes.join(', ')) + '</span>' : '') + '</td>';
-      tbody.appendChild(tr);
+      this.trow(board, {
+        pos: car.retired || car.disqualified ? '—' : String(car.position),
+        colour: hexColour(car.team.colour),
+        code: car.driver.code,
+        name: car.driver.firstName + ' ' + car.driver.lastName,
+        note: car.team.shortName,
+        index: i,
+        figs: [
+          hasLap
+            ? { text: formatLapTime(car.bestLapTime), cls: isFastest ? 'best' : '' }
+            : { text: '--:--.---', cls: 'none' },
+          { text: gap, cls: gap === 'WINNER' || gap === 'FASTEST' ? 'best' : gap.startsWith('+') ? 'dim' : 'none' },
+        ],
+        tag: notes.length
+          ? { text: notes[0], cls: 'out' }
+          : car.pitStops > 0 ? { text: car.pitStops + ' stop' + (car.pitStops === 1 ? '' : 's') } : undefined,
+        state: car.isPlayer ? 'me'
+          : car.retired || car.disqualified ? 'out'
+          : car.position === 1 ? 'best' : undefined,
+      });
     }
-    table.appendChild(tbody);
-    wrap.appendChild(table);
 
     this.spacer(actions);
     this.button('Continue', actions, () => {
@@ -1663,6 +1981,7 @@ class Game {
     this.setScreen('event');
     const { body } = this.page({
       tab: 'Paddock · ' + career.state.seasonYear,
+      where: 'Team radio',
       title: ev.title,
     });
 
@@ -1817,6 +2136,11 @@ class Game {
 /** A team's livery colour as a CSS hex string. */
 function hexColour(colour: number): string {
   return '#' + colour.toString(16).padStart(6, '0');
+}
+
+/** A save slot records its tier as a plain string; this narrows it back. */
+function tierInfo(tier: string): (typeof TIER_INFO)[keyof typeof TIER_INFO] {
+  return TIER_INFO[tier as keyof typeof TIER_INFO] ?? TIER_INFO.F3;
 }
 
 function escapeHtml(s: string): string {

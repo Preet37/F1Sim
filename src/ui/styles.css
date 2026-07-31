@@ -1,79 +1,116 @@
 /*
  * F1SIM — HUD and menu styling.
  *
- * Visual direction: the pit wall. Everything the player is not driving through
- * is presented as trackside equipment — a carbon deck, hairline rules, tabular
- * data in a monospaced face, and the kerb (the red-and-white stripe every
- * circuit in the game is edged with) as the one recurring graphic device. The
- * kerb marks the primary action, underlines every section, and runs across the
- * loading bar, so a single motif taken from the subject carries the identity
- * instead of a decorative accent colour.
+ * Visual direction: THE MONITOR.
  *
- * Colour has three jobs and does not stray between them:
- *   red    — identity and the primary action. Never used for data.
- *   amber  — live values and the current selection.
- *   ice    — instrument readouts inside the HUD only.
+ * The identity comes from the pit wall's screens rather than from the trackside
+ * furniture. A kerb stripe is the first thing anyone reaches for when they are
+ * asked to design a Formula 1 interface — it is available to every product in
+ * the category and says nothing about this one. What this game actually is, is
+ * timing data: sectors, deltas, purple and green, knockout eliminations, stint
+ * plans, per-component damage. A timing monitor is a genuinely distinctive
+ * visual world, and it is the one this game already lives in. So every screen
+ * outside the car is presented as a monitor on the wall: a status rail, a block
+ * of figures, and dense columns of ranked rows.
  *
- * Typography pairs a condensed grotesque for headings (present on every Apple
- * platform, with Impact and Arial Narrow behind it) against the system UI face
- * for prose and a monospace for anything numeric. A lap time is data and is set
- * like data; a circuit name is a name and is set like signage.
+ * COLOUR IS THE DISCIPLINE. There is no brand accent. Five signals carry fixed
+ * meanings taken from the sport's own timing vocabulary, and nothing on any
+ * screen is coloured for decoration — every coloured element asserts a fact:
+ *
+ *   purple  the outright best. A record, a championship leader, the fastest.
+ *   green   an improvement. A personal best, a healthy part, a car advancing,
+ *           and the primary action — because a grid is released on GREEN.
+ *   yellow  caution. Off the pace, worn, degraded, an assist that is limiting.
+ *   red     stopped. Out, eliminated, retired, critical, destructive.
+ *   white   live. The thing happening now, and the current selection.
+ *   grey    no data yet.
+ *
+ * That last rule is why the primary action is green and not red. Red in this
+ * system means a session has been stopped, so it cannot also mean "go".
+ *
+ * TYPE. The monospace is the display face, not just the number face. A timing
+ * monitor has exactly one typeface on it and every column lines up, so titles,
+ * the wordmark, labels and values are all set in it, tracked wide and cut in
+ * uppercase. The system UI face survives only as small prose — an annotation
+ * written on a machine, which is what prose is on this screen.
+ *
+ * STRUCTURE. The recurring device is the timing row: position, team colour,
+ * code, name, then figures in right-aligned monospaced columns. Every list in
+ * the game is built from it, because everything in this sport is a ranked
+ * order and a grid of cards throws that away. Under every header runs the
+ * sector rule — three segments proportioned to the real sector splits of the
+ * circuit in hand — which occupies the structural slot the kerb used to hold
+ * but reads a genuine number instead of decorating.
  *
  * Layout is fixed to the viewport with safe-area insets, so a notched phone in
  * either orientation needs no second layout.
  */
 
 :root {
-  /* --- Surfaces --------------------------------------------------------- */
-  --carbon-0: #07090c;
-  --carbon-1: #0d1117;
-  --carbon-2: #151b23;
-  --carbon-3: #1d242e;
-  --line: rgba(255, 255, 255, 0.085);
-  --line-2: rgba(255, 255, 255, 0.17);
+  /* --- Surfaces ---------------------------------------------------------
+     Flat, cool and unlit. No gradients and no glass: a monitor is an emissive
+     panel, and a gradient on every card is the tell of a generic dark theme. */
+  --carbon-0: #06080b;
+  --carbon-1: #0d1218;
+  --carbon-2: #141b23;
+  --carbon-3: #1d252f;
+  --line: rgba(150, 180, 214, 0.13);
+  --line-2: rgba(150, 180, 214, 0.26);
 
   /* --- Ink -------------------------------------------------------------- */
-  --ink: #eef2f7;
-  --ink-2: #98a3b2;
-  --ink-3: #626e7d;
+  --ink: #f2f6fb;
+  --ink-2: #93a1b2;
+  --ink-3: #5a6673;
 
-  /* --- Signal ----------------------------------------------------------- */
-  --race-red: #e8112d;
-  --race-red-hi: #ff3b3b;
-  --race-red-dk: #7d0b1c;
-  --amber: #ffc400;
-  --mint: #00e08a;
-  --violet: #b46cff;
-  --ice: #35d0e0;
+  /* --- The five signals -------------------------------------------------
+     Fixed meanings. Never used for anything else, anywhere. */
+  --sig-purple: #c04dff;   /* outright best */
+  --sig-green:  #00d95f;   /* improvement, go */
+  --sig-yellow: #ffd21f;   /* caution, off the pace */
+  --sig-red:    #ff2d3c;   /* stopped, out */
+  --sig-white:  #f2f6fb;   /* live, now */
+  --sig-grey:   #5a6673;   /* no data */
 
-  /* --- Type ------------------------------------------------------------- */
-  --font-display: 'HelveticaNeue-CondensedBlack', 'HelveticaNeue-CondensedBold',
-    'Helvetica Neue Condensed', 'Arial Narrow', Impact, 'Helvetica Neue', sans-serif;
+  /* Dimmed fills of the same five, for row backgrounds and bars. */
+  --fill-purple: rgba(192, 77, 255, 0.16);
+  --fill-green:  rgba(0, 217, 95, 0.14);
+  --fill-yellow: rgba(255, 210, 31, 0.14);
+  --fill-red:    rgba(255, 45, 60, 0.14);
+  --fill-white:  rgba(242, 246, 251, 0.1);
+
+  /* --- Type -------------------------------------------------------------
+     One face does the display work. The stack is every monospace already on
+     the machine; nothing is downloaded. */
+  --font-data: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Cascadia Mono',
+    'Roboto Mono', Consolas, monospace;
+  --font-display: var(--font-data);
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-data: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* The kerb. One definition, reused everywhere it appears. */
-  --kerb: repeating-linear-gradient(90deg,
-    var(--race-red) 0 12px, #f4f6f9 12px 24px);
-  --kerb-diag: repeating-linear-gradient(115deg,
-    var(--race-red) 0 10px, #f4f6f9 10px 20px);
-  /* For the 3px edge stripes, where a diagonal repeat degrades into slivers. */
-  --kerb-v: repeating-linear-gradient(180deg,
-    var(--race-red) 0 9px, #f4f6f9 9px 18px);
+  /* The chequer, for a session that has finished. The one piece of trackside
+     vocabulary kept, because it is literal rather than decorative. */
+  --chequer: repeating-conic-gradient(#f2f6fb 0% 25%, #0b0f14 0% 50%) 0 0 / 8px 8px;
 
-  /* Legacy aliases. The HUD's instrument colour and the UI's border token are
-     named separately because they are not the same decision. */
-  --hud-bg: rgba(10, 12, 18, 0.76);
-  --hud-bg-solid: #0d1017;
+  /* Legacy aliases, so the HUD, the setup sheet and the controller page all
+     speak the new language without being restructured. The names are kept;
+     the decisions behind them have moved. */
+  --race-red: var(--sig-red);
+  --race-red-hi: #ff5563;
+  --race-red-dk: #7d0b1c;
+  --amber: var(--sig-yellow);
+  --mint: var(--sig-green);
+  --violet: var(--sig-purple);
+  --ice: var(--sig-white);
+  --hud-bg: rgba(8, 11, 16, 0.82);
+  --hud-bg-solid: #0b0f14;
   --hud-border: var(--line);
   --hud-text: var(--ink);
   --hud-dim: var(--ink-2);
-  --accent: var(--amber);
-  --data: var(--ice);
-  --good: #3ddc84;
-  --warn: #ffb02e;
-  --bad: #ff4d4f;
-  --purple: var(--violet);
+  --accent: var(--sig-yellow);
+  --data: var(--sig-white);
+  --good: var(--sig-green);
+  --warn: var(--sig-yellow);
+  --bad: var(--sig-red);
+  --purple: var(--sig-purple);
 
   --safe-l: env(safe-area-inset-left, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
@@ -112,9 +149,23 @@ canvas#view {
   touch-action: none;
 }
 
+/* Focus is white, because white in this system means "the thing you are on
+   now" — which is exactly what keyboard focus is. */
 :focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--sig-white);
   outline-offset: 2px;
+}
+/* Rows and cells sit edge to edge, so a focus ring has to be lifted above its
+   neighbours or half of it is painted over. */
+.trow:focus-visible,
+.menu-item:focus-visible,
+.card:focus-visible,
+.circuit-card:focus-visible,
+.choice:focus-visible,
+.paddock-card:focus-visible {
+  position: relative;
+  z-index: 2;
+  outline-offset: -2px;
 }
 
 /* ===================================================================== */
@@ -1083,15 +1134,22 @@ canvas#view {
 }
 
 /* ===================================================================== */
-/* Menus and screens                                                      */
+/* Menus and screens — THE MONITOR                                        */
 /* ===================================================================== */
 
 /*
- * Every screen is built on the same chassis: a fixed header carrying the
- * breadcrumb tab and the title, a scrolling body, and an action bar pinned to
- * the bottom. Only the body scrolls, so the primary action is in the same place
- * on every screen and can never be pushed off the end of a long list — which is
- * exactly what used to happen to "Race Weekend" underneath a grid of circuits.
+ * Every screen is a monitor on the pit wall, and is built on one chassis:
+ *
+ *   status rail   what you are looking at, and the state of the world
+ *   title block   the name, and its figures in a right-aligned column
+ *   sector rule   three segments, proportioned to something real
+ *   body          dense ranked rows; only this scrolls
+ *   action bar    pinned, so the primary action is never below the fold
+ *
+ * The action bar is pinned for a reason that is not decorative: "Race Weekend"
+ * used to sit at the end of a page that ran past the fold on a laptop and a
+ * thousand pixels past it on a phone, so the one thing the screen existed to
+ * offer was the one thing you had to go looking for.
  */
 
 .screen {
@@ -1103,28 +1161,12 @@ canvas#view {
   pointer-events: auto;
   overflow: hidden;
   color: var(--ink);
-  background:
-    /* A faint diagonal sheen, the way a carbon panel catches the light. */
-    linear-gradient(114deg, rgba(255, 255, 255, 0.035) 0%, transparent 26%, transparent 74%, rgba(255, 255, 255, 0.02) 100%),
-    radial-gradient(120% 80% at 50% -10%, rgba(232, 17, 45, 0.11), transparent 60%),
-    linear-gradient(180deg, #0b0f15 0%, var(--carbon-0) 62%, #04060a 100%);
+  /* Flat. A monitor is an emissive panel, not a lit surface, and the vignettes
+     and diagonal sheens that used to be here were the only thing on the page
+     not carrying information. */
+  background: var(--carbon-0);
 }
 .screen.hidden { display: none; }
-
-/* Hairline grid over the deck. Static, purely to give the flat background a
-   sense of surface — a drawing board rather than a void. */
-.screen::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
-  background-size: 68px 68px;
-  mask-image: radial-gradient(130% 100% at 50% 0%, #000 30%, transparent 78%);
-  -webkit-mask-image: radial-gradient(130% 100% at 50% 0%, #000 30%, transparent 78%);
-}
 
 .page {
   position: relative;
@@ -1133,10 +1175,64 @@ canvas#view {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  max-width: 1180px;
+  max-width: 1240px;
   margin: 0 auto;
   min-height: 0;
 }
+
+/* --- Status rail ------------------------------------------------------
+   The strip along the top of every timing monitor: where you are on the left,
+   the state of the world on the right. Set in the smallest type on the page
+   because it is reference, not content. */
+
+.statusrail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 26px;
+  padding: 0 calc(18px + var(--safe-r)) 0 calc(18px + var(--safe-l));
+  margin-top: var(--safe-t);
+  border-bottom: 1px solid var(--line);
+  background: var(--carbon-1);
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.statusrail-mark { color: var(--ink); letter-spacing: 0.2em; }
+.statusrail-mark b { font-weight: 700; color: var(--sig-green); }
+.statusrail-sep { color: var(--line-2); }
+.statusrail-where,
+.statusrail-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-2);
+}
+.statusrail-state { color: var(--ink-2); }
+.statusrail-spacer { flex: 1 1 auto; }
+
+/* The live lamp. A monitor that is showing you something now says so. */
+.statusrail-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sig-green);
+}
+.statusrail-live::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: livepulse 2s ease-in-out infinite;
+}
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* --- Header ---------------------------------------------------------- */
 
@@ -1146,110 +1242,132 @@ canvas#view {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 14px;
-  padding: calc(16px + var(--safe-t)) calc(20px + var(--safe-r)) 12px calc(20px + var(--safe-l));
+  padding: 14px calc(18px + var(--safe-r)) 12px calc(18px + var(--safe-l));
 }
 
-/* The back chevron. Same position on every screen, so leaving is never a hunt
-   through a row of identical grey buttons. */
+/* The way back. Same place on every screen, so leaving is never a hunt
+   through a row of identical buttons. */
 .navback {
   grid-row: 1 / span 2;
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   padding: 0;
   border: 1px solid var(--line-2);
-  border-radius: 4px;
-  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
-  color: var(--ink);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
 }
-.navback svg { width: 16px; height: 16px; display: block; }
-.navback-gap { width: 44px; height: 1px; }
-.navback:hover { background: var(--race-red); border-color: var(--race-red-hi); }
-.navback:active { transform: scale(0.94); }
+.navback svg { width: 15px; height: 15px; display: block; }
+.navback:hover { color: var(--ink); border-color: var(--sig-white); background: var(--fill-white); }
+.navback:active { background: rgba(242, 246, 251, 0.2); }
+.navback-gap { width: 40px; height: 1px; }
 
 .topbar-titles { min-width: 0; }
 
-/* The breadcrumb tab: a sheared red flag with a chevron point, the one shape
-   carried across every screen. */
+/* The breadcrumb, set as a monitor label rather than a graphic device: a
+   bracket, wide tracking, no fill. The sheared red flag it replaces was
+   borrowed furniture. */
 .tab {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 20px 0 11px;
-  background: linear-gradient(96deg, var(--race-red-dk) 0%, var(--race-red) 58%, #ff2f2a 100%);
-  clip-path: polygon(0 0, 100% 0, calc(100% - 11px) 100%, 0 100%);
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.15em;
+  display: inline-block;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: #fff;
+  color: var(--ink-3);
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
+.tab::before { content: '['; margin-right: 6px; color: var(--line-2); }
+.tab::after { content: ']'; margin-left: 6px; color: var(--line-2); }
 
+/* The title, set in the monospace. Long circuit names naturally set narrower
+   as they lengthen, which is a discipline a proportional face would not
+   impose and which keeps every title inside a phone. */
 .page-title {
-  font-family: var(--font-display);
-  font-size: clamp(30px, 5.4vw, 54px);
-  font-weight: 800;
-  line-height: 0.92;
-  letter-spacing: 0.005em;
+  font-family: var(--font-data);
+  font-size: clamp(26px, 4.6vw, 46px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
   text-transform: uppercase;
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   overflow-wrap: anywhere;
+  color: var(--ink);
 }
-/* The one place a second colour enters the wordmark. */
-.page-title .acc { color: var(--race-red); }
+.page-title .acc { color: var(--sig-green); }
 
 .page-sub {
   color: var(--ink-2);
+  font-family: var(--font-ui);
   font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  margin-top: 5px;
-  max-width: 62ch;
-  line-height: 1.45;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  margin-top: 7px;
+  max-width: 66ch;
+  line-height: 1.5;
 }
 
-/* Right-hand slot: a short column of figures about the screen you are on. */
+/* Right-hand slot: figures about the screen you are on, in a column whose
+   decimal points line up with every other column on the page. */
 .topbar-meta {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
+  gap: 7px;
   text-align: right;
 }
 .meta-item { min-width: 0; }
 .meta-label {
-  font-size: 8.5px;
-  font-weight: 800;
-  letter-spacing: 0.17em;
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
 .meta-value {
   font-family: var(--font-data);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--ink);
   white-space: nowrap;
+  letter-spacing: -0.01em;
 }
 
-/* The kerb under the header. The identity motif, doing a structural job. */
-.kerb-rule {
+/* --- The sector rule --------------------------------------------------
+   Three segments under the header, in the structural slot the kerb held.
+   Its proportions are the real sector splits of the circuit in hand, taken
+   from sector1EndS / sector2EndS / lengthM — the same distances the timing
+   panel colours during a session. Where there is no circuit it reads the
+   session or the season instead. It is never drawn without a number behind
+   it, which is the whole difference between this and a stripe. */
+
+.sectorrule {
   flex: 0 0 auto;
-  height: 4px;
-  margin: 0 calc(20px + var(--safe-r)) 0 calc(20px + var(--safe-l));
-  background: var(--kerb);
-  background-size: 24px 100%;
-  opacity: 0.92;
+  display: flex;
+  gap: 3px;
+  height: 3px;
+  margin: 0 calc(18px + var(--safe-r)) 0 calc(18px + var(--safe-l));
 }
+.sectorrule span {
+  display: block;
+  height: 100%;
+  background: var(--line-2);
+  transition: background 0.2s ease;
+}
+/* A segment that is done, live, or still to come. */
+.sectorrule span.done { background: var(--sig-green); }
+.sectorrule span.live { background: var(--sig-white); }
+.sectorrule span.best { background: var(--sig-purple); }
 
 /* --- Body ------------------------------------------------------------ */
 
@@ -1259,52 +1377,60 @@ canvas#view {
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 18px calc(20px + var(--safe-r)) 20px calc(20px + var(--safe-l));
+  padding: 16px calc(18px + var(--safe-r)) 20px calc(18px + var(--safe-l));
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-color: var(--line-2) transparent;
 }
 .page-body::-webkit-scrollbar { width: 8px; }
-.page-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 4px; }
+.page-body::-webkit-scrollbar-thumb { background: var(--line-2); }
 
-/* One orchestrated entrance per screen: the header arrives, then the body.
-   Nothing else on the page animates on load. */
+/* One orchestrated entrance, and it is the timing screen's own: the page
+   populates from the top, the way a timing board fills in when it connects.
+   Rows carry a --i index set once when they are built, so the stagger costs
+   nothing per frame. */
 @keyframes rise {
-  from { opacity: 0; transform: translateY(10px); }
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
-.screen .topbar { animation: rise 0.26s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
-.screen .kerb-rule { animation: rise 0.26s cubic-bezier(0.2, 0.7, 0.3, 1) 0.04s both; }
-.screen .page-body { animation: rise 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) 0.07s both; }
-.screen .actionbar { animation: rise 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) 0.1s both; }
+.screen .statusrail { animation: rise 0.2s ease-out both; }
+.screen .topbar { animation: rise 0.24s cubic-bezier(0.2, 0.7, 0.3, 1) 0.03s both; }
+.screen .sectorrule { animation: rise 0.24s cubic-bezier(0.2, 0.7, 0.3, 1) 0.06s both; }
+.screen .page-body { animation: rise 0.28s cubic-bezier(0.2, 0.7, 0.3, 1) 0.09s both; }
+.screen .actionbar { animation: rise 0.28s cubic-bezier(0.2, 0.7, 0.3, 1) 0.12s both; }
 
+@keyframes rowin {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+.trow, .circuit-card, .stat, .choice {
+  animation: rowin 0.26s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  /* Capped, so a twenty-car classification does not take two seconds to
+     arrive and a scrolled-past row is never still animating. */
+  animation-delay: calc(min(var(--i, 0), 14) * 22ms);
+}
+
+/* A section head is a column header on a timesheet: a label on the left and
+   a count on the right, over a hairline. No graphic stub. */
 .section-title {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: var(--font-display);
-  font-size: 13px;
-  letter-spacing: 0.19em;
-  color: var(--ink-2);
-  font-weight: 800;
-  margin: 24px 0 11px;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: var(--ink-3);
+  font-weight: 700;
+  margin: 26px 0 9px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
   text-transform: uppercase;
 }
 .section-title:first-child { margin-top: 0; }
-/* A short kerb stub instead of a full rule: enough to mark the start of a
-   block without drawing a line across the whole page. */
-.section-title::before {
-  content: '';
-  flex: 0 0 auto;
-  width: 22px;
-  height: 3px;
-  background: var(--kerb);
-  background-size: 11px 100%;
-}
-.section-title::after {
-  content: '';
-  flex: 1 1 auto;
-  height: 1px;
-  background: var(--line);
+.section-count {
+  margin-left: auto;
+  color: var(--ink-3);
+  letter-spacing: 0.14em;
+  font-weight: 500;
 }
 
 /* --- Action bar ------------------------------------------------------ */
@@ -1315,16 +1441,17 @@ canvas#view {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 12px calc(20px + var(--safe-r)) calc(14px + var(--safe-b)) calc(20px + var(--safe-l));
+  padding: 11px calc(18px + var(--safe-r)) calc(13px + var(--safe-b)) calc(18px + var(--safe-l));
   border-top: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(7, 9, 12, 0.55), rgba(7, 9, 12, 0.94));
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: var(--carbon-1);
 }
 .actionbar-spacer { flex: 1 1 auto; }
 .actionbar:empty { display: none; }
 
-/* --- Buttons --------------------------------------------------------- */
+/* --- Buttons ---------------------------------------------------------
+   Square, hairline, monospaced. The primary action is GREEN: in this colour
+   system red means a session has been stopped, so it cannot also mean go.
+   A grid is released on green, and that is what this button does. */
 
 .btn {
   position: relative;
@@ -1333,242 +1460,477 @@ canvas#view {
   justify-content: center;
   gap: 8px;
   border: 1px solid var(--line-2);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 11px 20px;
-  background: linear-gradient(180deg, var(--carbon-3), var(--carbon-1));
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-data);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   cursor: pointer;
-  overflow: hidden;
-  transition: border-color 0.16s ease, background 0.16s ease, transform 0.1s ease, color 0.16s ease;
+  transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
 }
-.btn:hover { border-color: rgba(255, 255, 255, 0.34); background: linear-gradient(180deg, #262f3b, #171d25); }
-.btn:active { transform: translateY(1px); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn:hover { color: var(--ink); border-color: var(--sig-white); background: var(--fill-white); }
+.btn:active { background: rgba(242, 246, 251, 0.2); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
-/* The primary action. Red, larger, and the only control on the page with a
-   kerb along its edge — the same stripe that marks the racing surface. */
 .btn.primary {
   padding: 12px 26px;
-  border-color: transparent;
-  background: linear-gradient(180deg, var(--race-red-hi) 0%, var(--race-red) 46%, var(--race-red-dk) 100%);
-  color: #fff;
-  box-shadow: 0 6px 18px rgba(232, 17, 45, 0.28);
+  border-color: var(--sig-green);
+  background: var(--sig-green);
+  color: #04180c;
 }
-.btn.primary::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: var(--kerb);
-  background-size: 20px 100%;
-  opacity: 0.85;
-  transition: background-position 0.5s linear;
-}
-.btn.primary:hover { filter: brightness(1.12); }
-.btn.primary:hover::after { background-position: 40px 0; }
+.btn.primary:hover { background: #24f27c; border-color: #24f27c; color: #04180c; }
+.btn.primary:active { background: var(--sig-green); }
 
-/* `secondary` is the historical name for a quieter button; keep it working. */
+/* `secondary` and `ghost` are the historical names for a quieter button. */
 .btn.secondary, .btn.ghost {
   background: transparent;
-  border-color: var(--line-2);
-  color: var(--ink-2);
+  border-color: var(--line);
+  color: var(--ink-3);
 }
-.btn.secondary:hover, .btn.ghost:hover { color: var(--ink); background: rgba(255, 255, 255, 0.06); }
+.btn.secondary:hover, .btn.ghost:hover { color: var(--ink); border-color: var(--sig-white); background: var(--fill-white); }
+
+/* Leaving, abandoning, resetting: red, because red means stopped. */
+.btn.danger { border-color: rgba(255, 45, 60, 0.5); color: #ff8f97; }
+.btn.danger:hover { border-color: var(--sig-red); background: var(--fill-red); color: #ffd7da; }
 
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 
-/* --- Cards ----------------------------------------------------------- */
+/* ======================================================================
+   THE TIMING ROW
+   The recurring device, and the thing this interface is built out of.
 
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 9px; }
+       P  ▐ CODE   NAME .................   FIGURE   FIGURE   TAG
 
-.card {
-  position: relative;
-  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+   A position, a team colour, a fixed-width code, a name that takes up the
+   slack, and figures in right-aligned monospaced columns whose digits line
+   up down the page. Every list in the game is made of these, because
+   everything in this sport is a ranked order and a grid of cards throws the
+   order away.
+   ====================================================================== */
+
+.tboard {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 12px 13px;
-  cursor: pointer;
-  overflow: hidden;
-  transition: border-color 0.16s ease, background 0.16s ease, transform 0.12s ease;
+  background: var(--carbon-1);
 }
-/* Selection is a kerb down the leading edge, not a coloured fill: a filled card
-   competes with the data printed on it. */
-.card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--kerb-v);
-  opacity: 0;
-  transition: opacity 0.16s ease;
-}
-.card:hover { border-color: rgba(255, 255, 255, 0.26); background: linear-gradient(168deg, #1b222c, #10151b); }
-.card:hover::before { opacity: 0.55; }
-.card:active { transform: translateY(1px); }
-.card.selected { border-color: rgba(255, 196, 0, 0.5); background: linear-gradient(168deg, #22201a, #14130f); }
-.card.selected::before { opacity: 1; }
 
-.card-name { font-size: 15px; font-weight: 700; letter-spacing: 0.01em; }
-.card-meta { font-size: 11px; color: var(--ink-2); margin-top: 4px; line-height: 1.4; }
-.card-stat {
+/* The column header. Same grid as the rows beneath it, so the labels sit
+   over the columns they name. */
+.tboard-head,
+.trow {
+  display: grid;
+  grid-template-columns:
+    var(--col-pos, 30px)      /* position   */
+    var(--col-bar, 3px)       /* team colour */
+    var(--col-code, 46px)     /* code        */
+    minmax(0, 1fr)            /* name        */
+    var(--col-a, 88px)        /* figure      */
+    var(--col-b, 74px)        /* figure      */
+    var(--col-c, 42px);       /* tag         */
+  align-items: center;
+  gap: 0 10px;
+  padding: 0 12px;
   font-family: var(--font-data);
-  font-size: 11px;
-  color: var(--amber);
-  margin-top: 6px;
-  font-weight: 600;
 }
 
-/* A card that is a toggle wears its state as a word, top right. */
-.card-state {
-  float: right;
-  margin: 0 0 2px 10px;
-  font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.13em;
+.tboard-head {
+  height: 26px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--ink-3);
+  background: var(--carbon-2);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 3;
 }
-.card.selected .card-state { color: var(--amber); }
 
-/* --- Stat tiles ------------------------------------------------------ */
+.trow {
+  height: 34px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  border-bottom: 1px solid rgba(150, 180, 214, 0.06);
+  text-align: left;
+  background: transparent;
+  cursor: default;
+  width: 100%;
+  transition: background 0.12s ease;
+}
+.trow:last-child { border-bottom: 0; }
+button.trow, .trow[role='button'] { cursor: pointer; }
+button.trow:hover, .trow[role='button']:hover { background: var(--fill-white); }
+button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink); }
 
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; }
-.stat {
-  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+/* The player's own row, and the row currently selected: white, because white
+   means "this one, now". */
+.trow.is-me,
+.trow.is-selected {
+  background: var(--fill-white);
+  box-shadow: inset 3px 0 0 var(--sig-white);
+}
+.trow.is-me .t-name, .trow.is-selected .t-name { color: var(--ink); font-weight: 700; }
+/* A car that is out is dimmed and its position is struck through — a timing
+   screen does not delete a retirement, it greys it. */
+.trow.is-out { color: var(--ink-3); }
+.trow.is-out .t-pos { color: var(--sig-red); }
+
+.t-pos {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.trow.is-me .t-pos { color: var(--ink); }
+/* The leader, and anything else that is the outright best on the board. */
+.trow.is-best .t-pos { color: var(--sig-purple); }
+.t-bar { width: 100%; height: 18px; background: var(--line-2); }
+.t-code {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+.t-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+.t-name small {
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-left: 8px;
+}
+/* Figures. Right-aligned and tabular, so tenths sit under tenths. */
+.t-fig {
+  text-align: right;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+.t-fig.dim { color: var(--ink-3); font-weight: 500; }
+.t-fig.best { color: var(--sig-purple); }
+.t-fig.gain { color: var(--sig-green); }
+.t-fig.loss { color: var(--sig-yellow); }
+.t-fig.out { color: var(--sig-red); }
+/* No data yet. A timing screen shows the SHAPE of a figure before the figure
+   exists, which is why this is dashes and not an empty cell. */
+.t-fig.none { color: var(--sig-grey); font-weight: 500; }
+
+.t-tag {
+  justify-self: end;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* The compound disc, exactly as the tyre reads on the timing tower. */
+.t-tyre {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+/* Per-board columns. Each board has its own figures, and their widths are the
+   widths those figures actually need — a lap time is not a points total. */
+.tboard-champ { --col-c: 56px; }
+.tboard-class { --col-c: 54px; }
+.tboard-form  { --col-pos: 34px; --col-code: 54px; }
+.tboard-sessions {
+  --col-pos: 0px;
+  --col-bar: 0px;
+  --col-code: 0px;
+  --col-a: 86px;
+  --col-b: 152px;
+  --col-c: 84px;
+}
+.tboard-sessions .t-name { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+
+/* --- Tags ------------------------------------------------------------
+   The two- to four-character tokens a timing screen is written in. */
+.tag {
+  display: inline-block;
+  padding: 2px 6px 3px;
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  border: 1px solid var(--line-2);
+}
+.tag.out    { color: var(--sig-red);    border-color: rgba(255, 45, 60, 0.45);  background: var(--fill-red); }
+.tag.go     { color: var(--sig-green);  border-color: rgba(0, 217, 95, 0.45);   background: var(--fill-green); }
+.tag.warn   { color: var(--sig-yellow); border-color: rgba(255, 210, 31, 0.45); background: var(--fill-yellow); }
+.tag.best   { color: var(--sig-purple); border-color: rgba(192, 77, 255, 0.45); background: var(--fill-purple); }
+.tag.live   { color: var(--ink);        border-color: var(--sig-white);         background: var(--fill-white); }
+.tag.none   { color: var(--sig-grey);   border-color: var(--line); }
+
+/* `pill` is the historical name; it is the same object. */
+.pill { display: inline-block; padding: 2px 6px 3px; font-family: var(--font-data); font-size: 9.5px;
+  font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-2); border: 1px solid var(--line-2); }
+.pill.bad { color: var(--sig-red); border-color: rgba(255, 45, 60, 0.45); background: var(--fill-red); }
+.pill.good { color: var(--sig-green); border-color: rgba(0, 217, 95, 0.45); background: var(--fill-green); }
+
+/* ======================================================================
+   Menu — the front page
+   Opens on the state of the world and then on the calendar, because that is
+   what the game has. A wordmark the size of a building tells you nothing.
+   ====================================================================== */
+
+.board-hero {
   border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 10px 12px 11px;
+  background: var(--carbon-1);
+  padding: 14px 18px 16px;
 }
-.stat-label {
-  font-size: 8.5px;
-  font-weight: 800;
-  letter-spacing: 0.17em;
+.board-hero-label {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
-.stat-value {
-  font-family: var(--font-display);
-  font-size: 26px;
-  font-weight: 800;
-  line-height: 1.05;
-  margin-top: 4px;
+/* The status line: the largest type on the page, and every token in it is
+   read from the save rather than written by hand. */
+.board-hero-line {
+  font-family: var(--font-data);
+  font-size: clamp(21px, 3.2vw, 34px);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin-top: 8px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
-.stat-meta { font-family: var(--font-data); font-size: 10.5px; color: var(--ink-2); margin-top: 3px; }
-/* A tile whose number is the headline of the screen. */
-.stat.hero { border-color: rgba(255, 196, 0, 0.35); background: linear-gradient(168deg, #221f16, #14120c); }
-.stat.hero .stat-value { color: var(--amber); }
+.board-hero-line .sep { color: var(--line-2); margin: 0 0.32em; }
+.board-hero-line .go { color: var(--sig-green); }
+.board-hero-line .best { color: var(--sig-purple); }
+.board-hero-line .none { color: var(--sig-grey); }
+.board-hero-note {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  margin-top: 9px;
+  max-width: 62ch;
+}
 
-/* --- Circuit cards ---------------------------------------------------
-   The signature element. Each card is the circuit's own surveyed centreline,
-   the same geometry the physics drives on, with the start/finish bar and the
-   two sector splits marked. On hover the outline draws itself — one lap. */
+/* The ways in. A row apiece, each carrying one real figure, because four
+   entrances to a game are not a numbered sequence and 01/02/03 down the side
+   of them is a graphic pretending to be information. */
+.menu-actions {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: var(--carbon-1);
+}
+.menu-item {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr) 104px;
+  align-items: center;
+  gap: 0 20px;
+  padding: 13px 16px;
+  border: 0;
+  border-bottom: 1px solid rgba(150, 180, 214, 0.07);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-data);
+  transition: background 0.14s ease, box-shadow 0.14s ease;
+}
+.menu-item:last-child { border-bottom: 0; }
+.menu-item:hover { background: var(--fill-white); box-shadow: inset 3px 0 0 var(--sig-white); }
+.menu-name {
+  font-family: var(--font-data);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  line-height: 1.1;
+}
+.menu-desc {
+  grid-row: 1;
+  grid-column: 2;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.4;
+  min-width: 0;
+}
+/* The figure attached to each way in — the real one. */
+.menu-fig {
+  grid-row: 1;
+  grid-column: 3;
+  text-align: right;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* Picking a career back up is the way in that matters, so it is the one on
+   green — the same green as the primary action, meaning the same thing. */
+.menu-item.lead .menu-name { color: var(--sig-green); }
+.menu-item.lead .menu-fig { color: var(--sig-green); }
+.menu-item.lead:hover { box-shadow: inset 3px 0 0 var(--sig-green); background: var(--fill-green); }
+
+/* --- Notice ----------------------------------------------------------
+   Yellow, because a notice is a caution. */
+.notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid rgba(255, 210, 31, 0.32);
+  border-left: 3px solid var(--sig-yellow);
+  background: var(--fill-yellow);
+  padding: 10px 13px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: #f7e6b0;
+  line-height: 1.5;
+  margin-top: 14px;
+}
+
+/* ======================================================================
+   Circuit cards
+   The outlines stay. They are the one piece of imagery in the game drawn
+   from surveyed data the physics actually drives on, and a figure-of-eight
+   is recognisable from across the room in a way that "5.807 km" is not.
+   What changes is the frame around them: flat, square, with the figures set
+   as a timing strip rather than as card furniture.
+   ====================================================================== */
 
 .grid-circuits {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 0;
 }
 
 .circuit-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(168deg, var(--carbon-2) 0%, var(--carbon-1) 68%);
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  background: var(--carbon-1);
+  box-shadow: 0 0 0 1px var(--line);
+  border: 0;
+  border-radius: 0;
   padding: 0;
   cursor: pointer;
   overflow: hidden;
-  transition: border-color 0.18s ease, transform 0.14s ease, box-shadow 0.18s ease;
+  transition: background 0.16s ease;
 }
-.circuit-card:hover {
-  border-color: rgba(255, 255, 255, 0.28);
-  transform: translateY(-2px);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
-}
-.circuit-card:active { transform: translateY(0); }
-.circuit-card.selected { border-color: var(--race-red); }
-.circuit-card.selected::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: var(--kerb);
-  background-size: 18px 100%;
-}
+.circuit-card:hover { background: var(--carbon-2); }
+.circuit-card:hover, .circuit-card.selected { z-index: 1; }
+.circuit-card.selected { background: var(--carbon-2); box-shadow: 0 0 0 1px var(--line), inset 0 3px 0 var(--sig-white); }
 
 .cc-map {
   position: relative;
-  padding: 12px 12px 4px;
-  background:
-    radial-gradient(80% 70% at 50% 40%, rgba(255, 255, 255, 0.045), transparent 70%);
+  padding: 14px 12px 2px;
 }
 .cc-code {
   position: absolute;
-  top: 9px;
+  top: 10px;
   right: 11px;
   font-family: var(--font-data);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+}
+/* The round number, where a circuit sits on the calendar. Real ordinal
+   information, so it earns the numeral the menu items lost. */
+.cc-round {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   color: var(--ink-3);
 }
 
 .circuit-art { width: 100%; height: auto; display: block; overflow: visible; }
-.ca-casing { fill: none; stroke: rgba(0, 0, 0, 0.55); stroke-linejoin: round; stroke-linecap: round; stroke-width: 8; }
-.ca-road { fill: none; stroke: rgba(196, 209, 226, 0.58); stroke-linejoin: round; stroke-linecap: round; }
+.ca-casing { fill: none; stroke: #05070a; stroke-linejoin: round; stroke-linecap: round; stroke-width: 8; }
+.ca-road { fill: none; stroke: #303c4a; stroke-linejoin: round; stroke-linecap: round; }
 .ca-trace {
   fill: none;
-  stroke: #fff;
+  stroke: var(--ink-2);
   stroke-width: 1;
   stroke-linejoin: round;
-  opacity: 0.75;
+  opacity: 0.8;
 }
-.ca-start { fill: none; stroke: #fff; stroke-width: 2.4; }
-.ca-sector { fill: none; stroke: var(--amber); stroke-width: 1.6; opacity: 0.7; }
+.ca-start { fill: none; stroke: var(--sig-white); stroke-width: 2.4; }
+/* The sector ticks mark where the splits fall. A boundary is not a scored
+   value, so it gets no signal colour — that would spend purple on something
+   that is not the best of anything. */
+.ca-sector { fill: none; stroke: var(--ink-3); stroke-width: 1.6; opacity: 0.9; }
 
-/* The lap. `pathLength` is not set, so the dash length is a generous constant
-   that exceeds any of these outlines; the animation simply sweeps it clear. */
+/* One lap, drawn on hover. */
 .circuit-card:hover .ca-trace,
 .circuit-card:focus-visible .ca-trace {
-  stroke: var(--race-red-hi);
+  stroke: var(--sig-white);
   opacity: 1;
   stroke-width: 1.8;
   stroke-dasharray: 600;
-  animation: lap 1.5s cubic-bezier(0.35, 0, 0.2, 1) forwards;
+  animation: lap 1.4s cubic-bezier(0.35, 0, 0.2, 1) forwards;
 }
 @keyframes lap {
   from { stroke-dashoffset: 600; }
   to { stroke-dashoffset: 0; }
 }
 
-.cc-body { padding: 4px 12px 12px; }
+.cc-body { padding: 2px 12px 12px; }
 .cc-name {
-  font-family: var(--font-display);
-  font-size: 21px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
+  font-family: var(--font-data);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   text-transform: uppercase;
-  line-height: 1;
+  line-height: 1.05;
+  color: var(--ink);
 }
-.cc-where { font-size: 10.5px; color: var(--ink-2); margin-top: 4px; line-height: 1.35; }
+.cc-where {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 4px;
+  line-height: 1.35;
+}
 
-/* The timing strip: three figures in the monospaced face, the way a circuit
-   fact sheet prints them. */
+/* Three figures, set as a timesheet strip. */
 .cc-strip {
   display: grid;
-  grid-template-columns: 1.35fr 0.6fr 1.15fr;
+  grid-template-columns: 1.3fr 0.55fr 1.15fr;
   gap: 8px;
   margin-top: 10px;
   padding-top: 9px;
@@ -1576,9 +1938,10 @@ canvas#view {
 }
 .cc-cell { min-width: 0; }
 .cc-cell-label {
-  font-size: 7.5px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--ink-3);
 }
@@ -1587,351 +1950,386 @@ canvas#view {
   font-size: 12px;
   font-weight: 700;
   color: var(--ink);
-  margin-top: 2px;
+  margin-top: 3px;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
-.cc-cell-value.record { color: var(--amber); }
+/* The reference pole lap is the outright best time anyone has done here. */
+.cc-cell-value.record { color: var(--sig-purple); }
 
-/* --- The next round, and the circuit hero ---------------------------
-   The same idea at two sizes: the circuit large enough to recognise, with the
-   figures that describe it set beside rather than beneath it. */
+/* --- The next round, and the circuit hero --------------------------- */
 
 .round-card,
 .circuit-hero {
   display: flex;
-  gap: 20px;
+  gap: 22px;
   align-items: center;
   flex-wrap: wrap;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  background: var(--carbon-1);
   padding: 16px 18px;
-  background:
-    radial-gradient(70% 120% at 12% 50%, rgba(255, 255, 255, 0.05), transparent 60%),
-    linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
 }
-.round-card { border-left: 3px solid var(--race-red); }
+.round-card { box-shadow: inset 3px 0 0 var(--sig-white); }
 
 .round-map, .circuit-hero-map {
   flex: 0 0 auto;
-  width: 148px;
-  height: 148px;
+  width: 152px;
+  height: 152px;
 }
-.circuit-hero-map { width: 176px; height: 176px; }
+.circuit-hero-map { width: 178px; height: 178px; }
 .round-map .circuit-art, .circuit-hero-map .circuit-art { width: 100%; height: 100%; }
 
-.round-text, .circuit-hero-facts { flex: 1 1 260px; min-width: 0; }
+.round-text, .circuit-hero-facts { flex: 1 1 280px; min-width: 0; }
 
 .round-name {
-  font-family: var(--font-display);
-  font-size: clamp(24px, 3.4vw, 34px);
-  font-weight: 800;
+  font-family: var(--font-data);
+  font-size: clamp(22px, 3.2vw, 32px);
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.02em;
   line-height: 1;
+  color: var(--ink);
 }
-.round-official { font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+.round-official {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-top: 7px;
+}
 
 .round-facts, .circuit-hero-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(94px, 1fr));
-  gap: 12px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 14px 20px;
   margin-top: 14px;
-  max-width: 560px;
 }
-.circuit-hero-facts { margin-top: 0; flex-grow: 0; }
+.circuit-hero-facts { margin-top: 0; flex: 1 1 320px; }
 .circuit-hero { justify-content: flex-start; }
 .round-fact { min-width: 0; }
 
-/* --- Key map ---------------------------------------------------------- */
+/* ======================================================================
+   Stat tiles
+   A strip of readouts, gapless and square, like a bank of instruments.
+   ====================================================================== */
 
-.keymap {
+.stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 4px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
+  gap: 0;
 }
-.keymap-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+.stat {
+  background: var(--carbon-1);
+  box-shadow: 0 0 0 1px var(--line);
+  border: 0;
+  border-radius: 0;
+  padding: 11px 13px 12px;
 }
-.keymap-key {
-  flex: 0 0 auto;
-  min-width: 76px;
-  text-align: center;
+.stat-label {
   font-family: var(--font-data);
-  font-size: 11px;
+  font-size: 8.5px;
   font-weight: 700;
-  color: var(--ink);
-  background: var(--carbon-3);
-  border: 1px solid var(--line-2);
-  border-bottom-width: 2px;
-  border-radius: 3px;
-  padding: 3px 8px;
-}
-.keymap-what { font-size: 12px; color: var(--ink-2); }
-
-/* --- Menu hero -------------------------------------------------------
-   The front page opens on the wordmark and the four things you can do, not on
-   a list. The circuit grid is below it, where a list belongs. */
-
-.hero {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 6px 0 4px;
-}
-.wordmark {
-  font-family: var(--font-display);
-  font-size: clamp(56px, 13vw, 132px);
-  font-weight: 800;
-  line-height: 0.82;
-  letter-spacing: -0.005em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  margin: 0;
+  color: var(--ink-3);
 }
-.wordmark .acc { color: var(--race-red); }
-.hero-line {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--ink-2);
-  font-size: 13px;
-  letter-spacing: 0.03em;
-  max-width: 54ch;
-  line-height: 1.5;
-}
-.hero-kerb {
-  flex: 0 0 auto;
-  align-self: stretch;
-  width: 4px;
-  min-height: 34px;
-  background: var(--kerb-v);
-}
-
-.menu-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
-  gap: 9px;
-  max-width: 820px;
-}
-
-/* A menu entry is a wide plate with a number, a name and a line of copy — the
-   number is the running order of the four ways into the game, which is real
-   sequence information, not decoration. */
-.menu-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  min-height: 92px;
-  padding: 13px 14px 12px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: linear-gradient(160deg, var(--carbon-2), var(--carbon-1));
+.stat-value {
+  font-family: var(--font-data);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.05;
+  margin-top: 5px;
+  letter-spacing: -0.02em;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.stat-meta {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+/* The headline figure of the screen. Purple, because on every one of these
+   screens the hero tile is the best thing you have done. */
+.stat.hero { background: var(--carbon-2); }
+.stat.hero .stat-value { color: var(--sig-purple); }
+.stat.hero.good .stat-value { color: var(--sig-green); }
+.stat.hero.plain .stat-value { color: var(--ink); }
+.stat.plain .stat-value { color: var(--ink); }
+/* Bands, for a figure that is scored rather than merely reported. */
+.stat.good .stat-value { color: var(--sig-green); }
+.stat.warn .stat-value { color: var(--sig-yellow); }
+.stat.bad .stat-value  { color: var(--sig-red); }
+
+/* A meter under a stat, for the 0..100 figures a career is made of. */
+.stat-meter {
+  height: 3px;
+  margin-top: 8px;
+  background: var(--line);
+}
+.stat-meter span { display: block; height: 100%; background: var(--ink-2); }
+.stat-meter span.good { background: var(--sig-green); }
+.stat-meter span.warn { background: var(--sig-yellow); }
+.stat-meter span.bad  { background: var(--sig-red); }
+
+/* ======================================================================
+   Cards — the remaining non-ranked choices
+   A session, an assist, a camera. These are options rather than an order,
+   so they stay as plates; but they are flat, square and gapless like
+   everything else, and their state is a word, not a colour wash.
+   ====================================================================== */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0;
+}
+
+.card {
+  position: relative;
+  background: var(--carbon-1);
+  box-shadow: 0 0 0 1px var(--line);
+  border: 0;
+  border-radius: 0;
+  padding: 12px 13px 13px;
   cursor: pointer;
-  text-align: left;
   overflow: hidden;
+  transition: background 0.14s ease, box-shadow 0.14s ease;
+}
+.card:hover { background: var(--carbon-2); }
+.card:active { background: var(--carbon-3); }
+/* Selected is white: this one, now. */
+.card:hover, .card.selected { z-index: 1; }
+.card.selected { background: var(--carbon-2); box-shadow: 0 0 0 1px var(--line), inset 3px 0 0 var(--sig-white); }
+
+.card-name {
+  font-family: var(--font-data);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.card-meta {
   font-family: var(--font-ui);
-  transition: border-color 0.16s ease, transform 0.14s ease, background 0.16s ease;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  margin-top: 5px;
+  line-height: 1.45;
 }
-.menu-item::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--kerb-v);
-  opacity: 0;
-  transition: opacity 0.16s ease;
-}
-.menu-item:hover { border-color: rgba(255, 255, 255, 0.3); transform: translateY(-2px); }
-.menu-item:hover::before { opacity: 1; }
-.menu-item:active { transform: none; }
-.menu-index {
-  position: absolute;
-  top: 10px;
-  right: 12px;
+.card-stat {
   font-family: var(--font-data);
   font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 7px;
+  font-weight: 700;
+}
+
+/* A card that is a toggle wears its state as a word, top right. */
+.card-state {
+  float: right;
+  margin: 0 0 2px 10px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.card.selected .card-state { color: var(--sig-white); }
+
+/* ======================================================================
+   Tables
+   The classification and the championship. Same columns, same alignment
+   and same colour rules as the timing row — a table here IS a timing
+   board, it just happens to be built from <tr>.
+   ====================================================================== */
+
+.table-wrap {
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  background: var(--carbon-1);
+}
+table.standings {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-data);
+  font-size: 12.5px;
+  min-width: 520px;
+}
+table.standings th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-family: var(--font-data);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 8px 10px;
+  background: var(--carbon-2);
+  border-bottom: 1px solid var(--line);
+  font-weight: 700;
+  white-space: nowrap;
+}
+table.standings td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(150, 180, 214, 0.06);
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+table.standings tbody tr:hover { background: rgba(150, 180, 214, 0.05); }
+table.standings tr.me { background: var(--fill-white); box-shadow: inset 3px 0 0 var(--sig-white); }
+table.standings tr.me td { color: var(--ink); font-weight: 700; }
+table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.standings td.pos {
+  font-family: var(--font-data);
+  font-size: 13px;
   font-weight: 700;
   color: var(--ink-3);
-  letter-spacing: 0.08em;
+  width: 1%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
-.menu-name {
-  font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.05em;
+table.standings tr.me td.pos { color: var(--ink); }
+/* Whoever leads the championship or won the race is the outright best. */
+table.standings tbody tr:first-child td.pos { color: var(--sig-purple); }
+/* The driver name is the one proportional thing in the table, so a field of
+   twenty names does not read as a wall of typewriter. */
+table.standings td.who { font-family: var(--font-ui); color: var(--ink); }
+table.standings tr.me td.who { font-weight: 700; }
+
+/* The team colour as a chip, the same cue the timing tower uses in the race. */
+.team-chip {
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  margin-right: 9px;
+  vertical-align: -2px;
+}
+
+/* ======================================================================
+   Narrative events
+   The one screen that is genuinely prose. It is set as a radio transcript:
+   who is speaking, then what they said, then what you can say back.
+   ====================================================================== */
+
+.event-prompt {
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink);
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--sig-white);
+  padding: 16px 18px;
+  margin-bottom: 18px;
+  max-width: 74ch;
+}
+.event-speaker {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
-  line-height: 1;
+  color: var(--ink-3);
+  font-weight: 700;
+  margin-bottom: 10px;
 }
-.menu-desc { font-size: 11px; color: var(--ink-2); margin-top: 5px; line-height: 1.4; }
-/* The way back in gets the red plate. */
-.menu-item.lead {
-  background: linear-gradient(150deg, #2a0a11, var(--carbon-1) 72%);
-  border-color: rgba(232, 17, 45, 0.45);
+.choice {
+  position: relative;
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  padding: 13px 16px;
+  margin-bottom: -1px;
+  cursor: pointer;
+  max-width: 74ch;
+  transition: background 0.14s ease, box-shadow 0.14s ease;
 }
-.menu-item.lead::before { opacity: 1; }
-.menu-item.lead .menu-name { color: #ff8b80; }
-
-/* --- Notice ---------------------------------------------------------- */
-.notice {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  border: 1px solid rgba(255, 196, 0, 0.3);
-  border-left: 3px solid var(--amber);
-  border-radius: 4px;
-  background: rgba(255, 196, 0, 0.06);
-  padding: 10px 13px;
-  font-size: 12px;
-  color: #f3e2b4;
+.choice:last-child { margin-bottom: 0; }
+.choice:hover {
+  background: var(--carbon-2);
+  box-shadow: inset 3px 0 0 var(--sig-white);
+  position: relative;
+  z-index: 1;
+}
+.choice-text {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.choice-hint {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-top: 7px;
   line-height: 1.45;
-  margin-top: 14px;
+  letter-spacing: 0.04em;
 }
 
-/* --- Forms ----------------------------------------------------------- */
+/* ======================================================================
+   Forms
+   ====================================================================== */
 
 .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label {
+  font-family: var(--font-data);
   font-size: 8.5px;
   color: var(--ink-3);
-  letter-spacing: 0.17em;
-  font-weight: 800;
+  letter-spacing: 0.18em;
+  font-weight: 700;
   text-transform: uppercase;
 }
 .field input, .field select {
   background: var(--carbon-0);
   border: 1px solid var(--line-2);
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--ink);
   padding: 11px 12px;
-  font-size: 15px;
-  font-family: var(--font-ui);
+  font-size: 14px;
+  font-family: var(--font-data);
   min-width: 200px;
-  transition: border-color 0.16s ease;
+  transition: border-color 0.14s ease;
 }
-.field input:focus, .field select:focus { outline: none; border-color: var(--amber); }
+.field input:focus, .field select:focus { outline: none; border-color: var(--sig-white); }
 
-/* --- Tables ---------------------------------------------------------- */
+/* --- Key map --------------------------------------------------------- */
 
-.table-wrap {
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  overflow-x: auto;
-  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+.keymap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0 24px;
 }
-table.standings { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 480px; }
-table.standings th {
-  position: sticky;
-  top: 0;
-  text-align: left;
-  font-family: var(--font-display);
+.keymap-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(150, 180, 214, 0.06);
+}
+.keymap-key {
+  flex: 0 0 auto;
+  min-width: 82px;
+  text-align: center;
+  font-family: var(--font-data);
   font-size: 11px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  color: var(--ink-2);
-  padding: 9px 10px;
-  background: var(--carbon-3);
-  border-bottom: 2px solid var(--race-red);
-  font-weight: 800;
-  white-space: nowrap;
+  font-weight: 700;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line-2);
+  border-radius: 0;
+  padding: 3px 8px;
 }
-table.standings td { padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.045); white-space: nowrap; }
-table.standings tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
-table.standings tr.me { background: rgba(255, 196, 0, 0.1); box-shadow: inset 3px 0 0 var(--amber); }
-table.standings tr.me td { color: #fff; font-weight: 600; }
-table.standings td.num { text-align: right; font-family: var(--font-data); }
-table.standings td.pos {
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 800;
-  color: var(--ink-2);
-  width: 1%;
-}
-table.standings tr.me td.pos { color: var(--amber); }
-/* The team colour as a chip, so the field is readable by livery as well as by
-   name — the same cue the timing tower uses in the race. */
-.team-chip {
-  display: inline-block;
-  width: 4px;
-  height: 13px;
-  border-radius: 1px;
-  margin-right: 8px;
-  vertical-align: -2px;
-}
+.keymap-what { font-family: var(--font-ui); font-size: 12px; color: var(--ink-2); }
 
-.pill {
-  display: inline-block;
-  padding: 2px 8px 3px;
-  border-radius: 3px;
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--ink-2);
-}
-.pill.bad { background: rgba(255, 77, 79, 0.16); color: #ffb3b4; }
-.pill.good { background: rgba(0, 224, 138, 0.14); color: #8bf0c6; }
-
-/* --- Narrative events ------------------------------------------------ */
-
-.event-prompt {
-  font-size: 15.5px;
-  line-height: 1.6;
-  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--race-red);
-  border-radius: 5px;
-  padding: 16px 18px;
-  margin-bottom: 16px;
-  max-width: 74ch;
-}
-.event-speaker {
-  font-family: var(--font-display);
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--race-red-hi);
-  font-weight: 800;
-  margin-bottom: 8px;
-}
-.choice {
-  position: relative;
-  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 14px 16px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  max-width: 74ch;
-  overflow: hidden;
-  transition: border-color 0.16s ease, background 0.16s ease, transform 0.12s ease;
-}
-.choice::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 3px;
-  background: var(--kerb-v);
-  opacity: 0;
-  transition: opacity 0.16s ease;
-}
-.choice:hover { border-color: rgba(255, 255, 255, 0.28); transform: translateX(2px); }
-.choice:hover::before { opacity: 1; }
-.choice-text { font-size: 14.5px; font-weight: 600; line-height: 1.45; }
-.choice-hint { font-size: 11px; color: var(--ink-2); margin-top: 6px; line-height: 1.4; }
-
-/* --- Loading ---------------------------------------------------------
-   Not a spinner. The circuit that is being built draws itself, and a kerb
-   runs underneath it — so the wait shows you the lap you are about to drive
-   rather than an abstract token of delay. */
+/* ======================================================================
+   Loading
+   Not a spinner. The circuit being built draws itself, and the three sector
+   segments underneath fill as it goes — so the wait shows you the lap you
+   are about to drive, in the same three parts it will be timed in.
+   ====================================================================== */
 
 .loading {
   position: fixed;
@@ -1941,10 +2339,8 @@ table.standings tr.me td.pos { color: var(--amber); }
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 18px;
-  background:
-    radial-gradient(90% 70% at 50% 42%, rgba(232, 17, 45, 0.1), transparent 62%),
-    var(--carbon-0);
+  gap: 20px;
+  background: var(--carbon-0);
   padding: 24px;
 }
 .loading.hidden { display: none; }
@@ -1956,16 +2352,15 @@ table.standings tr.me td.pos { color: var(--amber); }
 }
 .loading-stage:empty { display: none; }
 .loading-art { width: 100%; height: 100%; display: block; overflow: visible; }
-.loading-art .ca-casing { stroke: rgba(226, 234, 246, 0.15); stroke-width: 6; }
+.loading-art .ca-casing { stroke: #10161d; stroke-width: 6; }
 .loading-art .ca-draw {
   fill: none;
-  stroke: var(--race-red-hi);
+  stroke: var(--sig-white);
   stroke-width: 2.4;
   stroke-linejoin: round;
   stroke-linecap: round;
-  filter: drop-shadow(0 0 6px rgba(255, 59, 59, 0.55));
 }
-.loading-art .ca-start { stroke: #fff; stroke-width: 2.6; }
+.loading-art .ca-start { stroke: var(--sig-green); stroke-width: 2.6; }
 /* The trace runs a lap, pauses at the line, and goes again. `--lap-length` is
    the measured path length, written in by setLoading(). */
 .loading-art .ca-draw {
@@ -1978,119 +2373,179 @@ table.standings tr.me td.pos { color: var(--amber); }
 }
 
 .loading-text {
-  font-family: var(--font-display);
-  font-size: 15px;
-  letter-spacing: 0.26em;
+  font-family: var(--font-data);
+  font-size: 12px;
+  letter-spacing: 0.28em;
   text-transform: uppercase;
   color: var(--ink-2);
-  font-weight: 800;
+  font-weight: 700;
   text-align: center;
 }
-/* The kerb, running. */
+
+/* Three segments, timed so each lights in turn: the sector rule, working. */
 .loading-bar {
+  display: flex;
+  gap: 3px;
   width: min(280px, 70vw);
-  height: 4px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.08);
+  height: 3px;
+  background: transparent;
 }
-.loading-bar::after {
+.loading-bar::before,
+.loading-bar::after,
+.loading-bar > i {
   content: '';
   display: block;
-  width: 200%;
+  flex: 1;
   height: 100%;
-  background: var(--kerb);
-  background-size: 22px 100%;
-  animation: kerbrun 0.9s linear infinite;
+  background: var(--line-2);
+  animation: sectorfill 1.8s steps(1, end) infinite;
 }
-@keyframes kerbrun {
-  from { transform: translateX(-22px); }
-  to { transform: none; }
+.loading-bar::before { animation-delay: 0s; }
+.loading-bar > i { animation-delay: 0.6s; }
+.loading-bar::after { animation-delay: 1.2s; }
+@keyframes sectorfill {
+  0%, 33% { background: var(--sig-green); }
+  34%, 100% { background: var(--line-2); }
 }
-/* No spinner is drawn any more, but the class survives in case anything else
-   still references it. */
 .spinner { display: none; }
 
+/* ======================================================================
+   Reduced motion
+   Everything that moves is either an entrance or an ambient loop, and both
+   are optional. The information never depends on the movement.
+   ====================================================================== */
+
 @media (prefers-reduced-motion: reduce) {
-  .screen .topbar, .screen .kerb-rule, .screen .page-body, .screen .actionbar { animation: none; }
+  .screen .statusrail,
+  .screen .topbar,
+  .screen .sectorrule,
+  .screen .page-body,
+  .screen .actionbar,
+  .trow, .circuit-card, .stat, .choice {
+    animation: none;
+  }
   .circuit-card:hover .ca-trace { animation: none; stroke-dasharray: none; }
-  .loading-bar::after { animation: none; }
+  .loading-art .ca-draw { animation: none; stroke-dasharray: none; }
+  .loading-bar::before, .loading-bar::after, .loading-bar > i { animation: none; background: var(--sig-green); }
+  .statusrail-live::before { animation: none; }
   .flag-red { animation: none; }
 }
 
-/* --- Screens on a phone ---------------------------------------------- */
+/* ======================================================================
+   Screens on a phone
+   ====================================================================== */
 
 @media (max-width: 720px) {
-  .topbar { gap: 10px; padding-bottom: 10px; }
+  .topbar { gap: 10px; padding: 11px calc(14px + var(--safe-r)) 10px calc(14px + var(--safe-l)); }
   .topbar-meta { display: none; }
-  .page-body { padding-top: 14px; }
+  .statusrail { padding: 0 calc(14px + var(--safe-r)) 0 calc(14px + var(--safe-l)); font-size: 9px; letter-spacing: 0.12em; }
+  .statusrail-where, .statusrail-sep.s1 { display: none; }
+  .sectorrule { margin: 0 calc(14px + var(--safe-r)) 0 calc(14px + var(--safe-l)); }
+  .page-body { padding: 14px calc(14px + var(--safe-r)) 18px calc(14px + var(--safe-l)); }
+  .actionbar { padding: 10px calc(14px + var(--safe-r)) calc(12px + var(--safe-b)) calc(14px + var(--safe-l)); gap: 6px; }
   .page-sub { font-size: 11.5px; }
-  .grid-circuits { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-  .cc-name { font-size: 17px; }
+
+  .grid-circuits { grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
+  .cc-name { font-size: 14px; }
   .cc-cell-value { font-size: 10.5px; }
   .cc-cell-label { font-size: 7px; letter-spacing: 0.1em; }
-  .card-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-  .stat-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }
+  .card-grid { grid-template-columns: repeat(auto-fit, minmax(146px, 1fr)); }
+  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
   .stat-value { font-size: 21px; }
-  .menu-actions { grid-template-columns: 1fr 1fr; }
+  .stat { padding: 9px 11px 10px; }
   .round-card, .circuit-hero { gap: 14px; padding: 13px 14px; }
-  .round-map, .circuit-hero-map { width: 108px; height: 108px; }
-  .round-facts, .circuit-hero-facts { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px 12px; }
+  .round-map, .circuit-hero-map { width: 104px; height: 104px; }
+  .round-facts, .circuit-hero-facts { grid-template-columns: repeat(auto-fit, minmax(82px, 1fr)); gap: 9px 12px; }
   .keymap { grid-template-columns: 1fr; }
-  .menu-item { min-height: 78px; padding: 11px 12px 10px; }
-  .menu-name { font-size: 17px; }
-  .menu-desc { font-size: 10px; }
-  .btn { padding: 10px 15px; font-size: 13px; letter-spacing: 0.07em; }
+  .btn { padding: 10px 14px; font-size: 11.5px; letter-spacing: 0.1em; }
   .btn.primary { padding: 11px 18px; }
-  .actionbar { gap: 6px; padding-top: 10px; }
   .field input, .field select { min-width: 0; width: 100%; }
   .field { flex: 1 1 140px; }
+
+  /* The timing row on a phone. The name column is the one that can give up
+     room, and the third figure column goes entirely — a 390px screen cannot
+     hold five columns and still have digits you can read. */
+  .tboard-head, .trow {
+    grid-template-columns:
+      var(--col-pos, 22px) var(--col-bar, 3px) var(--col-code, 40px)
+      minmax(0, 1fr) var(--col-a, 74px) var(--col-b, 60px);
+    gap: 0 8px;
+    padding: 0 9px;
+  }
+  .tboard-head .t-tag, .trow .t-tag { display: none; }
+  .tboard-champ { --col-c: 0px; }
+  .tboard-class { --col-c: 0px; }
+  .tboard-form { --col-pos: 26px; --col-code: 34px; }
+  .tboard-sessions { --col-a: 60px; --col-b: 104px; --col-c: 0px; }
+  .tboard-sessions .t-name { font-size: 12px; }
+  .trow { height: 32px; font-size: 11.5px; }
+  .t-name { font-size: 12px; }
+  .t-name small { display: none; }
+  .t-fig { font-size: 11.5px; }
+  .t-code { font-size: 10.5px; letter-spacing: 0.06em; }
+
+  .menu-item { grid-template-columns: minmax(0, 1fr) auto; padding: 11px 13px; gap: 3px 12px; }
+  .menu-name { font-size: 14px; }
+  .menu-desc { grid-row: 2; grid-column: 1; font-size: 10.5px; }
+  .menu-fig { grid-row: 1; grid-column: 2; font-size: 13px; }
+  .board-hero { padding: 13px 14px 15px; }
+  .board-hero-note { font-size: 11.5px; }
 }
 
-/* A landscape phone has almost no vertical room, so the header collapses to a
-   single line and the entrance animation is dropped. */
+/* A landscape phone has almost no vertical room: the header collapses to a
+   single line, the prose goes, and the entrance animation is dropped. */
 @media (max-height: 470px) {
-  .topbar { padding-top: calc(9px + var(--safe-t)); padding-bottom: 8px; gap: 10px; }
-  .navback { width: 36px; height: 36px; flex-basis: 36px; }
-  .navback-gap { width: 36px; }
-  .navback svg { width: 13px; height: 13px; }
-  .tab { height: 18px; font-size: 10px; padding: 0 16px 0 9px; }
-  .page-title { font-size: clamp(20px, 3.4vw, 28px); margin-top: 4px; }
+  .statusrail { height: 22px; font-size: 9px; }
+  .topbar { padding-top: 8px; padding-bottom: 7px; gap: 10px; }
+  .navback { width: 32px; height: 32px; flex-basis: 32px; }
+  .navback-gap { width: 32px; }
+  .navback svg { width: 12px; height: 12px; }
+  .tab { font-size: 9px; }
+  .page-title { font-size: clamp(19px, 3.2vw, 26px); margin-top: 5px; }
   .page-sub { display: none; }
-  .page-body { padding-top: 12px; padding-bottom: 12px; }
-  .section-title { margin: 15px 0 8px; font-size: 11px; }
-  .actionbar { padding-top: 8px; padding-bottom: calc(9px + var(--safe-b)); }
-  .btn { padding: 8px 14px; font-size: 12.5px; }
+  .page-body { padding-top: 11px; padding-bottom: 11px; }
+  .section-title { margin: 16px 0 7px; font-size: 9.5px; padding-bottom: 5px; }
+  .actionbar { padding-top: 8px; padding-bottom: calc(8px + var(--safe-b)); }
+  .btn { padding: 8px 14px; font-size: 11.5px; }
   .btn.primary { padding: 9px 18px; }
-  .hero { gap: 10px; }
-  .wordmark { font-size: clamp(34px, 7vw, 56px); }
-  .hero-line { font-size: 11.5px; }
-  .menu-item { min-height: 66px; }
-  .stat-value { font-size: 20px; }
-  .loading-stage { width: min(150px, 34vmin); height: min(150px, 34vmin); }
+  .board-hero { padding: 11px 13px 12px; }
+  .board-hero-line { font-size: clamp(17px, 3.2vw, 26px); }
+  .board-hero-note { display: none; }
+  .menu-item { padding: 8px 13px; }
+  .menu-desc { display: none; }
+  .stat-value { font-size: 19px; }
+  .stat { padding: 8px 10px 9px; }
+  .trow { height: 28px; }
+  .tboard-head { height: 22px; }
+  .round-map, .circuit-hero-map { width: 96px; height: 96px; }
+  .loading-stage { width: min(140px, 32vmin); height: min(140px, 32vmin); }
   .loading { gap: 12px; }
 }
 
-/* ==========================================================================
+/* ======================================================================
    Paddock
-   One card per team, ordered front of the grid first. Each card is built like a
-   garage: a nameplate in the livery colour, the car standing in its bay, what
-   the car is good at, and the two drivers on the door.
-   ========================================================================== */
+   One row per team, front of the grid first — because the paddock IS a
+   ranked order and the old grid of garage cards was hiding it. The car
+   silhouette and the livery colour stay; the metrics become the same
+   right-aligned figure columns as every other board in the game.
+   ====================================================================== */
+
 .paddock-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 0;
 }
 .paddock-card {
   position: relative;
-  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  background: var(--carbon-1);
+  box-shadow: 0 0 0 1px var(--line);
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
-  transition: border-color 0.16s ease, transform 0.14s ease;
+  transition: background 0.14s ease;
 }
-.paddock-card:hover { border-color: rgba(255, 255, 255, 0.22); transform: translateY(-2px); }
-.paddock-card.current { border-color: var(--amber); }
+.paddock-card:hover { background: var(--carbon-2); }
+.paddock-card.current { box-shadow: 0 0 0 1px var(--line), inset 3px 0 0 var(--sig-white); background: var(--carbon-2); z-index: 1; }
 
 /* --- Nameplate ------------------------------------------------------- */
 .pad-plate {
@@ -2099,83 +2554,82 @@ table.standings tr.me td.pos { color: var(--amber); }
   align-items: center;
   gap: 11px;
   padding: 11px 13px 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent),
-    linear-gradient(100deg, var(--team) 0%, rgba(6, 8, 11, 0.86) 76%);
+  background: var(--carbon-2);
   border-bottom: 2px solid var(--team);
 }
 .pad-rank {
-  font-family: var(--font-display);
-  font-size: 26px;
-  font-weight: 800;
+  font-family: var(--font-data);
+  font-size: 22px;
+  font-weight: 700;
   line-height: 1;
-  color: rgba(255, 255, 255, 0.5);
-  min-width: 34px;
+  color: var(--ink-3);
+  min-width: 30px;
+  font-variant-numeric: tabular-nums;
 }
 .pad-titles { flex: 1; min-width: 0; }
 .pad-team {
-  font-family: var(--font-display);
-  font-size: 21px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
+  font-family: var(--font-data);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   text-transform: uppercase;
-  line-height: 1;
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  line-height: 1.05;
+  color: var(--ink);
 }
 .pad-engine {
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  color: rgba(255, 255, 255, 0.7);
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
   text-transform: uppercase;
-  margin-top: 4px;
+  margin-top: 5px;
 }
-/* The code as a sheared tab, the shape the breadcrumb tab uses everywhere else. */
+/* The three-letter code, on the team's own colour — the same token the
+   timing tower prints. */
 .pad-code {
   flex: 0 0 auto;
-  font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 800;
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 700;
   letter-spacing: 0.14em;
-  padding: 4px 16px 4px 10px;
-  background: #fff;
-  clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
-  color: #0a0c10;
+  padding: 4px 9px;
+  background: var(--team);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 /* --- Bay ------------------------------------------------------------- */
 .pad-body { display: flex; gap: 14px; align-items: center; padding: 13px; }
 .pad-bay {
-  flex: 0 0 78px;
-  width: 78px;
+  flex: 0 0 74px;
+  width: 74px;
   padding: 6px 2px;
-  border-radius: 4px;
-  /* The floor of a garage: a pool of light over the car and a hard shadow under
-     it, so the silhouette stands somewhere rather than floating. */
-  background:
-    radial-gradient(60% 42% at 50% 88%, rgba(0, 0, 0, 0.6), transparent 70%),
-    radial-gradient(70% 55% at 50% 34%, rgba(255, 255, 255, 0.09), transparent 72%);
+  background: var(--carbon-0);
 }
-.pad-car { width: 100%; height: auto; display: block; filter: drop-shadow(0 5px 9px rgba(0, 0, 0, 0.6)); }
+.pad-car { width: 100%; height: auto; display: block; }
 
-.pad-metrics { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.pad-metric { display: flex; align-items: center; gap: 8px; }
+.pad-metrics { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pad-metric { display: flex; align-items: center; gap: 9px; }
 .pad-metric-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--ink-2);
-  width: 62px;
-  flex: 0 0 62px;
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  width: 66px;
+  flex: 0 0 66px;
 }
-.pad-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
-.pad-bar-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--team), var(--team-accent)); }
+.pad-bar { flex: 1; height: 3px; background: var(--line); overflow: hidden; }
+.pad-bar-fill { display: block; height: 100%; background: var(--team); }
 .pad-metric-value {
   font-family: var(--font-data);
   font-size: 10.5px;
-  font-weight: 600;
-  color: var(--ink);
-  width: 48px;
+  font-weight: 700;
+  color: var(--ink-2);
+  width: 46px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- Drivers --------------------------------------------------------- */
@@ -2183,47 +2637,59 @@ table.standings tr.me td.pos { color: var(--amber); }
 .pad-driver {
   display: flex;
   align-items: center;
-  gap: 9px;
-  font-size: 12.5px;
+  gap: 10px;
+  font-family: var(--font-data);
+  font-size: 12px;
   padding: 7px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid rgba(150, 180, 214, 0.07);
 }
-/* A neutral, always-legible numeral. Several teams run a near-black accent
-   colour, and tinting the number with it made it invisible on a dark card. */
 .pad-num {
-  font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 800;
-  color: var(--ink-2);
-  width: 26px;
+  font-family: var(--font-data);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-3);
+  width: 24px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .pad-dcode {
   font-family: var(--font-data);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  color: #0a0c10;
+  letter-spacing: 0.12em;
+  color: #fff;
   background: var(--team);
-  border-radius: 2px;
   padding: 2px 5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
-.pad-dname { flex: 1; color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pad-nat { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
+.pad-dname {
+  flex: 1;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--ink);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pad-nat { font-family: var(--font-ui); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 .pad-skill {
   font-family: var(--font-data);
   font-weight: 700;
-  color: var(--ink);
+  color: var(--ink-2);
   min-width: 24px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .pad-select { margin: 0 13px 13px; width: calc(100% - 26px); }
 
 @media (max-width: 720px) {
-  .paddock-grid { grid-template-columns: 1fr; gap: 10px; }
-  .pad-bay { flex-basis: 62px; width: 62px; }
-  .pad-metric-label { width: 54px; flex-basis: 54px; }
-  .pad-team { font-size: 17px; }
-  .pad-rank { font-size: 21px; min-width: 26px; }
+  .paddock-grid { grid-template-columns: 1fr; }
+  .pad-bay { flex-basis: 58px; width: 58px; }
+  .pad-metric-label { width: 76px; flex-basis: 76px; font-size: 8.5px; letter-spacing: 0.06em; }
+  .pad-metric-value { width: 42px; }
+  .pad-metric { gap: 7px; }
+  .pad-team { font-size: 15px; }
+  .pad-rank { font-size: 18px; min-width: 24px; }
   .pad-nat { display: none; }
 }
