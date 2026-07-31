@@ -1069,9 +1069,9 @@ export interface CircleScale { lon: number; lat: number }
  * Enforces the friction circle on one axle, writing into `out`.
  *
  * If the combined longitudinal and lateral demand exceeds the grip budget, both
- * are scaled back. Longitudinal is given slight priority under braking because
- * that is what a real tire does — you keep stopping and lose the ability to turn,
- * which is why locking the fronts means going straight on at the corner.
+ * are scaled back — by the SAME factor, so the force that comes out points the
+ * way the demand pointed and its magnitude is the budget. That sounds like a
+ * detail and it is not; see below.
  */
 function frictionCircleScale(fx: number, fy: number, cap: number, out: CircleScale): void {
   const demand = Math.sqrt(fx * fx + fy * fy);
@@ -1093,8 +1093,33 @@ function frictionCircleScale(fx: number, fy: number, cap: number, out: CircleSca
   const slide = 1 - Math.min(0.22, excess * 0.55);
   const achieved = cap * slide;
 
+  // ONE factor for both components.
+  //
+  // This used to give longitudinal a boost under braking (`s * 1.12`) and take
+  // it back out of lateral (`s * 0.9`), on the reasoning that a locking tire
+  // keeps stopping and loses the ability to turn. The reasoning is right about
+  // the FRONT axle and it is a disaster on the rear, because it does not cap the
+  // axle at all: at 3% over budget the boost returns the full longitudinal
+  // demand and pays for it by cutting cornering force 14%, so the axle delivers
+  // MORE than the circle it is supposed to be enforcing and the surplus is taken
+  // from precisely the force that keeps the car pointing forwards.
+  //
+  // On the rear axle that is a spin generator, and it was generating them. Under
+  // combined braking and cornering the rear runs out first — it is the unloaded
+  // end under braking and it carries 42% of the pedal — so the rear alone was
+  // being asked to hand over its lateral grip in exchange for stopping power it
+  // was not entitled to. Measured at 150 km/h into a 100m radius: brake 0.30
+  // settles at 1.4 degrees of rear slip, brake 0.40 diverged to a spin, with
+  // nothing in between. That cliff is what was eating the AI field — 17 of 20
+  // cars out on lap one at Silverstone, 13 of 17 retirements at Spa inside a
+  // hundred metres of one corner.
+  //
+  // Scaling both by `s` keeps the sliding-tire penalty (which is `slide`, and is
+  // what makes lock-ups cost distance) and drops the part that was never a tire
+  // model. Front lock-up still means going straight on at the corner: the front
+  // axle's lateral force falls because its own budget is spent, which is the
+  // real mechanism and does not need help.
   const s = achieved / demand;
-  const braking = fx < 0;
-  out.lon = braking ? Math.min(1, s * 1.12) : s;
-  out.lat = braking ? s * 0.9 : s;
+  out.lon = s;
+  out.lat = s;
 }

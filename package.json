@@ -21,7 +21,8 @@
     "probe:curvature": "tsx scripts/probeCurvature.ts",
     "probe:handling": "tsx scripts/probeHandling.ts",
     "validate:world": "tsx scripts/probeWorld.ts",
-    "probe:racingline": "tsx scripts/probeRacingLine.ts"
+    "probe:racingline": "tsx scripts/probeRacingLine.ts",
+    "probe:attrition": "tsx scripts/probeAttrition.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

@@ -116,12 +116,33 @@ export const BASE_F1_SPEC: VehicleSpec = {
   // With the damper corrected the compensation has to come off too, or the car
   // has terminal oversteer: it spun above 140km/h from an ordinary steering
   // input, and peak lateral at 300km/h fell to 4.6g because the fast runs were
-  // spins. 0.435 gives the front slightly less than its share, which is a real
+  // spins. 0.435 gave the front slightly less than its share, which is a real
   // understeer margin that the chassis owns rather than one borrowed from a
-  // fictitious torque. It is inside the real 43-46% window, and it measures
-  // better everywhere: peak lateral at 200km/h 3.04 -> 3.10g, at 260km/h
-  // 3.99 -> 4.07g, with `balance` now -0.01..-0.14 instead of -0.08..-0.34.
-  aeroBalanceFront: 0.435,
+  // fictitious torque.
+  //
+  // 0.435 was not ENOUGH margin, and the reason is that it was measured on a
+  // skidpad with no longitudinal force on the car. Real cornering never happens
+  // that way. Longitudinal load transfer is `a * m * h / L`, so at 200km/h in
+  // maximum-downforce trim, drag ALONE is worth 0.37g and moves the front's
+  // share of the load from 0.44 to 0.452 — past the 0.45 the moment balance
+  // needs, before the driver has touched anything. The whole 1.5-point margin is
+  // spent by the car simply travelling fast. Add four percent of brake pedal and
+  // the front is at 0.457, the rear has to work past the peak of its own tire
+  // curve to make up its share, and beyond that peak there is no equilibrium at
+  // all: the car spins. Four percent. Measured, at 200km/h on a 3.6g corner.
+  //
+  // That is what was destroying the field — 17 of 20 cars out on lap one at
+  // Silverstone, 13 of 17 retirements at Spa inside a hundred metres of one
+  // corner, every one of them trail-braking into a fast turn.
+  //
+  // 0.40 buys a five-point margin, which is roughly 1.4g of longitudinal load
+  // transfer — a real braking zone — before the balance crosses over. It costs
+  // about 2% of peak lateral grip (300km/h skidpad 5.71 -> 5.62g), and it is
+  // still inside the real 40-46% window. Over 55 races it is worth 12.0 -> 8.4
+  // mean retirements and a FASTER field, not a slower one: mean lap 1.507 ->
+  // 1.444 of the solved reference, because the cars now finish their corners
+  // instead of spinning in them.
+  aeroBalanceFront: 0.40,
   cdBase: 0.82,
   drsDragReduction: 0.22,
   drsDownforceLoss: 0.16,
