@@ -15,9 +15,13 @@
   <div id="app">
     <canvas id="view"></canvas>
   </div>
+  <!-- The loading screen draws the circuit it is building. The stage is filled
+       in by setLoading() once the circuit is known, and stays collapsed on the
+       very first paint, when there is no circuit yet. -->
   <div id="loading" class="loading">
-    <div class="spinner"></div>
-    <div id="loading-text">BUILDING CIRCUIT</div>
+    <div class="loading-stage" id="loading-art"></div>
+    <div class="loading-text" id="loading-text">BUILDING CIRCUIT</div>
+    <div class="loading-bar"></div>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
