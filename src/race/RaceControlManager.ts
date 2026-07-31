@@ -20,6 +20,43 @@ export type FlagState = 'green' | 'yellow' | 'double-yellow' | 'red' | 'chequere
 export type NeutralisationState = 'none' | 'vsc' | 'safety-car' | 'sc-ending';
 
 /**
+ * What a marshal post is actually displaying at a point on the circuit.
+ *
+ * A superset of `FlagState`, because a neutralisation is signalled by boards and
+ * light panels rather than by a flag — "all FIA light panels will display 'VSC'"
+ * (Art. 56.2 / B5.12.1), and the safety car is signalled by "SC" boards and
+ * waved yellows at every post (Art. 55.5 / B5.13.2a). Modelling them as one
+ * enumeration is what lets one lookup drive the map, the trackside panels and
+ * the HUD banner, so the three can never disagree with each other.
+ */
+export type FlagSignal = FlagState | 'vsc' | 'safety-car';
+
+/**
+ * Display ordering, worst last.
+ *
+ * Used to fold twenty marshalling sectors into three timing sectors for the
+ * circuit map, and to decide which of two overlapping signals a post shows. It
+ * is a presentation ranking, not a regulatory one: a local double yellow ranks
+ * above the safety car boards because it is the more urgent instruction to the
+ * driver arriving at that specific corner, which is exactly why the yellows keep
+ * being waved at the incident while the rest of the lap shows SC.
+ */
+const SIGNAL_RANK: Record<FlagSignal, number> = {
+  green: 0,
+  chequered: 1,
+  vsc: 2,
+  'safety-car': 3,
+  yellow: 4,
+  'double-yellow': 5,
+  red: 6,
+};
+
+/** The more severe of two signals, for folding sectors together. */
+export function worseSignal(a: FlagSignal, b: FlagSignal): FlagSignal {
+  return SIGNAL_RANK[b] > SIGNAL_RANK[a] ? b : a;
+}
+
+/**
  * Where a safety car period has got to.
  *
  * The regulations do not describe a safety car as a single state; they describe
@@ -130,9 +167,62 @@ const SC_MAX_GAP_CAR_LENGTHS_LOW_VIS = 20;
  * They were originally 22 and 32 m/s, which capped a safety car lap of Monza at
  * over four minutes; a single deployment then consumed a fifth of the race and
  * the field spent more than half of every race neutralised.
+ *
+ * They are only half the pace model. A cap alone cannot hold a lap-time ratio
+ * across circuits — see `SC_PACE_SCALE` below, and the measurement that showed
+ * it.
  */
-const SC_PACE_MS = 44;
-const VSC_PACE_MS = 54;
+const SC_PACE_MS = 40;
+const VSC_PACE_MS = 50;
+
+/**
+ * The other half of the neutralised pace: a fraction of the racing-line speed.
+ *
+ * A speed CAP alone cannot produce a neutralised lap of the right length, and
+ * measuring it is what shows this. A cap only binds where the car would have
+ * been faster than it — which is the straights — so at Monza, where most of the
+ * lap is straight, a 44 m/s cap produced a safety car lap of x1.30 a green one,
+ * and at Monaco, where almost nothing on the lap is quicker than 44 m/s anyway,
+ * it produced a safety car lap barely slower than a racing one. Neither is a
+ * safety car. A real one runs at x1.6 to x2 EVERYWHERE, because the safety car
+ * itself is slow through the corners too and the field is queued behind it.
+ *
+ * So the neutralised target is `min(racingLineSpeed * scale, cap)`. The scale
+ * sets the lap-time ratio and holds it across circuits; the cap stops a queue
+ * from doing 200 km/h down a long straight, which no safety car does.
+ *
+ * These two numbers are a MODELLING CHOICE, like the caps they replace: the
+ * regulations fix no percentage and the FIA publishes no formula, only the
+ * requirement to stay above the ECU minimum time (Art. 55.7 and 56.5 /
+ * B5.13.2b and B5.12.2b). They are calibrated against the one thing that is
+ * observable — how long a neutralised lap takes relative to a racing one, about
+ * x1.6-2 under the safety car and about x1.4 under the VSC — and
+ * `scripts/probeFlags.ts` measures exactly that and fails if it drifts.
+ */
+const SC_PACE_SCALE = 0.42;
+const VSC_PACE_SCALE = 0.5;
+
+/**
+ * How much quicker than the neutralised pace a car catching the queue may run.
+ *
+ * Deliberately just under `DELTA_REFERENCE_MARGIN`: a car closing a gap must be
+ * able to close it without earning a penalty for doing so, and the regulation
+ * requires it to close (ten car lengths, Art. 55.7 / B5.13.2b) while also
+ * requiring it to stay above the minimum time. The only value that satisfies
+ * both is one just inside the threshold.
+ */
+const SC_CATCHUP_MULT = 1.4;
+
+/**
+ * How long the safety car may keep bunching before it gives up and comes in.
+ *
+ * Art. 55.10 / B5.13.5a says the car "shall be used at least until the leader is
+ * behind it and all remaining cars are lined up behind them" — a condition, not
+ * a timer. But a condition with no escape is a race that never restarts: a field
+ * containing a car with a broken engine may simply never line up. Two safety car
+ * laps is the longest a real deployment spends bunching.
+ */
+const SC_MAX_BUNCH_EXTRA_S = 120;
 
 /**
  * Seconds between "VSC ENDING" and the panels going green.
@@ -195,8 +285,17 @@ export class RaceControlManager {
   sessionFlag: FlagState = 'green';
   neutralisation: NeutralisationState = 'none';
 
-  /** Speed all cars must respect under a neutralisation, m/s. */
+  /** Speed cap all cars must respect under a neutralisation, m/s. */
   vscTargetMs = 0;
+  /**
+   * Fraction of the racing-line speed the field runs at under a neutralisation.
+   *
+   * Zero when the race is green. See `SC_PACE_SCALE` for why a cap on its own is
+   * not enough to make a neutralised lap the right length.
+   */
+  neutralisedScale = 0;
+  /** Multiplier a car over the queue gap limit may use to close it. */
+  readonly catchUpMult = SC_CATCHUP_MULT;
   /** Lap on which the current neutralisation began. */
   neutralisedSinceLap = 0;
   private neutralisationTimer = 0;
@@ -271,6 +370,7 @@ export class RaceControlManager {
     this.sessionFlag = 'green';
     this.neutralisation = 'none';
     this.vscTargetMs = 0;
+    this.neutralisedScale = 0;
     this.neutralisationTimer = 0;
     this.raceFinished = false;
     this.messages.length = 0;
@@ -282,6 +382,60 @@ export class RaceControlManager {
     this.lowVisibility = false;
     this.scWaveLap = -1;
     this.vscGreenIn = -1;
+  }
+
+  /** How many marshalling sectors the lap is divided into. */
+  get marshalSectorCount(): number {
+    return MARSHAL_SECTORS;
+  }
+
+  /** Distance along the lap at which marshalling sector `i` begins, metres. */
+  marshalSectorStartS(i: number): number {
+    return (i / MARSHAL_SECTORS) * this.track.length;
+  }
+
+  /**
+   * What the marshal post covering this sector is displaying.
+   *
+   * The local flag wins over the neutralisation boards, because that is what the
+   * posts actually do: the incident keeps its waved yellows while the rest of the
+   * circuit shows SC or VSC. Everything the player sees — the coloured circuit
+   * map, the trackside panels and the HUD banner — reads from this one function,
+   * so they cannot drift apart.
+   */
+  signalForSector(i: number): FlagSignal {
+    if (this.sessionFlag === 'red') return 'red';
+    const local = this.sectorFlags[((i % MARSHAL_SECTORS) + MARSHAL_SECTORS) % MARSHAL_SECTORS];
+    if (local === 'yellow' || local === 'double-yellow' || local === 'red') return local;
+    if (this.neutralisation === 'safety-car') return 'safety-car';
+    if (this.neutralisation === 'vsc') return 'vsc';
+    if (this.sessionFlag === 'chequered') return 'chequered';
+    return 'green';
+  }
+
+  /** What the posts are displaying at a distance along the lap. */
+  signalAt(s: number): FlagSignal {
+    return this.signalForSector(this.sectorIndexAt(s));
+  }
+
+  /**
+   * The worst signal anywhere between two distances along the lap.
+   *
+   * This is how a timing sector gets a colour: a timing sector spans several
+   * marshalling sectors, and the one that matters is the worst of them. Handles
+   * a range that wraps the start/finish line, which sector 3 always does not but
+   * a caller might.
+   */
+  signalBetween(fromS: number, toS: number): FlagSignal {
+    const len = this.track.length;
+    const first = this.sectorIndexAt(fromS);
+    const last = this.sectorIndexAt((toS - 1e-3 + len) % len);
+    let worst: FlagSignal = this.signalForSector(first);
+    for (let i = first; i !== last; ) {
+      i = (i + 1) % MARSHAL_SECTORS;
+      worst = worseSignal(worst, this.signalForSector(i));
+    }
+    return worst;
   }
 
   /** Marshalling sector index for a distance along the lap. */
@@ -531,6 +685,7 @@ export class RaceControlManager {
   private deployVirtualSafetyCar(sessionTime: number): void {
     this.neutralisation = 'vsc';
     this.vscTargetMs = VSC_PACE_MS;
+    this.neutralisedScale = VSC_PACE_SCALE;
     this.neutralisationTimer = 30;
     this.vscGreenIn = -1;
     // The message and the panels are both part of the procedure: "the message
@@ -546,6 +701,7 @@ export class RaceControlManager {
       if (this.vscGreenIn <= 0) {
         this.neutralisation = 'none';
         this.vscTargetMs = 0;
+        this.neutralisedScale = 0;
         this.vscGreenIn = -1;
         this.log('GREEN FLAG — VSC ended', 'info', sessionTime);
       }
@@ -572,6 +728,7 @@ export class RaceControlManager {
     this.neutralisation = 'safety-car';
     this.scPhase = 'bunching';
     this.vscTargetMs = SC_PACE_MS;
+    this.neutralisedScale = SC_PACE_SCALE;
     this.scOnTrack = true;
     this.scTimer = SC_MIN_BUNCH_S;
     this.lappedCarsWaved = false;
@@ -636,8 +793,17 @@ export class RaceControlManager {
         // "The Safety Car ... shall be used at least until the leader is behind
         // it and all remaining cars are lined up behind them" —
         // Art. 55.10 / B5.13.5a.
+        //
+        // That is a CONDITION, and it used to be implemented as a 25-second
+        // timer, which is a different rule with a different result. Measured on
+        // a staged deployment at Monza the field was still strung out over
+        // 590 metres a car when the safety car left this phase — it had spent
+        // fifty seconds bunching a field that needed two laps, and then come in
+        // and restarted a race that had never formed up. The condition below is
+        // the sentence the regulation actually contains.
         if (this.scTimer > 0 || this.activeIncidents > 0) return;
         if (!leader) return;
+        if (!this.fieldFormedUp(standings) && this.scTimer > -SC_MAX_BUNCH_EXTRA_S) return;
 
         // Are there cars a lap or more down? If so they are told to unlap
         // themselves before the car comes in.
@@ -685,6 +851,7 @@ export class RaceControlManager {
           this.scPhase = 'restart';
           this.neutralisation = 'none';
           this.vscTargetMs = 0;
+          this.neutralisedScale = 0;
           // "no driver may overtake another F1 Car on the track ... until they
           // pass the Line for the first time after the Safety Car has entered
           // the Pit Entry Road" — Art. 55.8 / B5.13.2c. Each car carries the
@@ -711,6 +878,42 @@ export class RaceControlManager {
    * here as "a lap or more down on the leader", which is the same set in every
    * case that matters.
    */
+  /**
+   * Is the leader behind the safety car with the field lined up behind them?
+   *
+   * The literal test from Art. 55.10 / B5.13.5a, with two allowances that the
+   * regulation's own structure implies rather than states.
+   *
+   * Cars a lap or more down are not required to be in the queue at this point:
+   * they are precisely the cars the next phase exists to deal with, and waiting
+   * for a car that is half a lap behind the leader to close onto the car
+   * classified ahead of it would mean waiting for it to make up a lap under the
+   * safety car, which is the opposite of what is about to be asked of it.
+   *
+   * The tolerance is 2.5x the stated gap rather than 1x because the gap rule is
+   * a target the drivers close onto, not a tripwire — a queue whose cars are
+   * each within a couple of car lengths of the limit IS formed up, and demanding
+   * that all twenty simultaneously sit inside it is a condition a real safety
+   * car period never satisfies either.
+   */
+  private fieldFormedUp(standings: readonly CarEntry[]): boolean {
+    const running = standings.filter((c) => !c.retired && !c.inPitLane);
+    if (running.length < 2) return true;
+
+    const leader = running[0];
+    // The leader has to be behind the safety car, and reasonably close to it.
+    const toSafetyCar = loopDelta(leader.s, this.scS, this.track.length);
+    if (toSafetyCar < 0 || toSafetyCar > this.maxQueueGapM * 3) return false;
+
+    const tolerance = this.maxQueueGapM * 2.5;
+    for (let i = 1; i < running.length; i++) {
+      if (running[i].lap < leader.lap) continue;
+      const gap = loopDelta(running[i].s, running[i - 1].s, this.track.length);
+      if (gap < 0 || gap > tolerance) return false;
+    }
+    return true;
+  }
+
   private countLappedCars(cars: CarEntry[], leader: CarEntry): number {
     let n = 0;
     for (const car of cars) {
@@ -782,6 +985,18 @@ export class RaceControlManager {
    * stop-and-go (Art. 55.7 / 56.5, cross-referencing Art. 54.3a-d).
    */
   private checkNeutralisationDelta(car: CarEntry, index: number, dt: number, sessionTime: number): void {
+    // A car that has been waved past is under an instruction to pass the whole
+    // queue and the safety car within a lap (Art. 55.14 / B5.13.4c), which is
+    // not something that can be done above the minimum time. Timing it against
+    // the delta penalises it for obeying the other article — measured, twenty
+    // five-second penalties were issued in a single race to cars doing exactly
+    // what race control had just told them to do.
+    if (car.mustUnlap) {
+      car.deltaSectorTime = 0;
+      car.deltaSectorIndex = -1;
+      car.deltaSectorPartial = true;
+      return;
+    }
     if (this.neutralisation === 'none' || car.inPitLane) {
       car.deltaSectorTime = 0;
       car.deltaSectorIndex = -1;
