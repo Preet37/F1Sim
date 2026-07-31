@@ -742,6 +742,15 @@ export class Renderer {
       const inside = cockpitView && car === focusCar;
       v.driverHead.visible = !inside;
 
+      // Compound colour on the sidewalls.
+      //
+      // Polled rather than pushed. A pit stop changes `car.compound` deep inside
+      // the race engine's service path, which knows nothing about the renderer
+      // and should not have to; `setCompound` early-outs when the compound is
+      // unchanged, so asking every car every frame costs one comparison and
+      // cannot go stale the way a missed notification would.
+      v.setCompound(car.compound);
+
       const p = car.physics;
       const y = track.elevationAt(car.s);
       v.root.position.set(p.position.x, y, p.position.y);

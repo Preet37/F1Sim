@@ -10,6 +10,10 @@ import {
   buildCockpit, MIRROR_X, MIRROR_Y, MIRROR_Z, MIRROR_GLASS_Z,
   type CockpitVisual,
 } from './CockpitMesh';
+import {
+  buildSidewallBands, disposeTyreTextureCache, sidewallMaterial, tyreProfile,
+} from './TyreTexture';
+import type { CompoundId } from '../data/tires';
 
 /**
  * A current-generation Formula 1 car, built procedurally.
@@ -97,6 +101,16 @@ export interface CarVisual {
    * is actually inside. The renderer owns that, via `driverHead`.
    */
   setCockpitVisible(v: boolean): void;
+  /**
+   * Repaints the four sidewall bands for a compound.
+   *
+   * Cheap and idempotent — it swaps a shared material reference and returns
+   * immediately if nothing changed — so the renderer can simply call it every
+   * frame with `car.compound` rather than needing the race engine to notify it
+   * when a pit stop fits a new set. Nothing in the pit-stop path knows the
+   * render layer exists, and it should stay that way.
+   */
+  setCompound(id: CompoundId): void;
   dispose(): void;
 }
 
@@ -566,16 +580,11 @@ function buildWheel(width: number, radial: number): THREE.BufferGeometry {
 
   // Tyre as a surface of revolution: crowned tread, bulging shoulders, sidewalls
   // that pull back in to the bead. A plain cylinder reads as a hockey puck.
+  //
+  // The cross-section is defined in TyreTexture, because the compound band is a
+  // separate shell that has to sit exactly on this surface.
   const half = width * 0.5;
-  const profile: { r: number; x: number }[] = [
-    { r: RIM_R + 0.004, x: -half },
-    { r: TYRE_R * 0.895, x: -half * 1.015 },
-    { r: TYRE_R * 0.995, x: -half * 0.74 },
-    { r: TYRE_R * 1.002, x: 0 },
-    { r: TYRE_R * 0.995, x: half * 0.74 },
-    { r: TYRE_R * 0.895, x: half * 1.015 },
-    { r: RIM_R + 0.004, x: half },
-  ];
+  const profile = tyreProfile(width, TYRE_R, RIM_R);
 
   const rings = profile.length;
   const positions = new Float32Array(rings * radial * 3);
@@ -681,6 +690,9 @@ interface CachedGeometry {
   head: THREE.BufferGeometry;
   frontWheel: THREE.BufferGeometry;
   rearWheel: THREE.BufferGeometry;
+  /** Compound bands. Shared like everything else; only the material varies. */
+  frontBand: THREE.BufferGeometry;
+  rearBand: THREE.BufferGeometry;
   disc: THREE.BufferGeometry;
   flap: THREE.BufferGeometry;
   shadow: THREE.BufferGeometry;
@@ -718,6 +730,8 @@ function geometryFor(quality: 'low' | 'high'): CachedGeometry {
     head: mergeParts([...driver.head, ...driver.grip]),
     frontWheel: buildWheel(FRONT_TYRE_W, t.wheel),
     rearWheel: buildWheel(REAR_TYRE_W, t.wheel),
+    frontBand: buildSidewallBands(FRONT_TYRE_W, TYRE_R, RIM_R, t.wheel),
+    rearBand: buildSidewallBands(REAR_TYRE_W, TYRE_R, RIM_R, t.wheel),
     disc: (() => {
       const d = new THREE.CylinderGeometry(0.165, 0.165, 0.028, quality === 'high' ? 12 : 8);
       d.rotateZ(Math.PI / 2);
@@ -819,6 +833,7 @@ export function buildCar(
   root.add(flapPivot);
 
   const brakeGlow: THREE.Mesh[] = [];
+  const bands: THREE.Mesh[] = [];
 
   /**
    * Builds a wheel as steer group -> spin group -> meshes.
@@ -837,6 +852,20 @@ export function buildCar(
     if (x < 0) wheel.rotation.y = Math.PI;
     spin.add(wheel);
 
+    // Compound band. It MUST go on the spin group, not the steer group.
+    //
+    // The band is a surface of revolution, so spinning it changes nothing you
+    // can see and hanging it off the steer group looks like a free saving. It is
+    // not. Both the band and the tyre are sixteen-sided prisms sampled at the
+    // same angles, which is what makes a five-millimetre offset enough to keep
+    // one clear of the other — but only while they stay in phase. Leave the band
+    // stationary and the spinning carcass's vertices sweep past its flat facets
+    // and poke through, and the solid ring becomes a ring of dashes that
+    // flickers as the wheel turns.
+    const band = new THREE.Mesh(rear ? geo.rearBand : geo.frontBand, sidewallMaterial('medium'));
+    spin.add(band);
+    bands.push(band);
+
     // Brake disc glows under load. Unlit so it reads at night.
     const discMat = new THREE.MeshBasicMaterial({ color: 0x1a1210 });
     const disc = new THREE.Mesh(geo.disc, discMat);
@@ -849,6 +878,9 @@ export function buildCar(
     root.add(steer);
     return { steer, spin };
   };
+
+  /** Last compound painted on the bands; see `setCompound`. */
+  let fittedCompound: CompoundId = 'medium';
 
   const fl = makeWheel(-FRONT_HUB_X, FRONT_AXLE_Z, false);
   const fr = makeWheel(FRONT_HUB_X, FRONT_AXLE_Z, false);
@@ -871,9 +903,17 @@ export function buildCar(
     setCockpitVisible(v: boolean): void {
       cockpit?.setVisible(v);
     },
+    setCompound(id: CompoundId): void {
+      if (id === fittedCompound) return;
+      fittedCompound = id;
+      const mat = sidewallMaterial(id);
+      for (const b of bands) b.material = mat;
+    },
     dispose(): void {
       cockpit?.dispose();
       for (const d of brakeGlow) (d.material as THREE.Material).dispose();
+      // The band materials are shared across the whole field and owned by
+      // TyreTexture's cache, so they are emphatically NOT disposed here.
     },
   };
 }
@@ -884,6 +924,8 @@ export function disposeCarGeometryCache(): void {
     set.head.dispose();
     set.frontWheel.dispose();
     set.rearWheel.dispose();
+    set.frontBand.dispose();
+    set.rearBand.dispose();
     set.disc.dispose();
     set.flap.dispose();
     set.shadow.dispose();
@@ -894,4 +936,5 @@ export function disposeCarGeometryCache(): void {
     delete sharedMaterials[key];
   }
   disposeLiveryCache();
+  disposeTyreTextureCache();
 }
