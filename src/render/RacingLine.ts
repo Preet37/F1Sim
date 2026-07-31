@@ -70,6 +70,8 @@ export class RacingLine {
   private readonly material: THREE.MeshBasicMaterial;
   private readonly positions: Float32Array;
   private readonly colours: Float32Array;
+  /** Per-segment braking urgency, before the backward maximum is applied. */
+  private readonly ratio: Float32Array;
   private readonly segments: number;
   private readonly track: TrackSpline;
   /** Metres between drawn segments. */
@@ -90,6 +92,7 @@ export class RacingLine {
     const verts = this.segments * 6;
     this.positions = new Float32Array(verts * 3);
     this.colours = new Float32Array(verts * 3);
+    this.ratio = new Float32Array(this.segments);
 
     const geo = new THREE.BufferGeometry();
     const pos = new THREE.BufferAttribute(this.positions, 3);
@@ -186,29 +189,54 @@ export class RacingLine {
       px[p + 12] = bx - bnx; px[p + 13] = by; px[p + 14] = bz - bnz;
       px[p + 15] = bx + bnx; px[p + 16] = by; px[p + 17] = bz + bnz;
 
-      // --- Colour ---------------------------------------------------------
-      // The distance available to shed speed before reaching this segment.
+      // --- Braking urgency for this segment ---------------------------------
+      // The distance available to shed speed before reaching it.
       const ahead = Math.max(dB, 0);
       const target = track.targetSpeed[iB];
 
       // Highest speed the car could be doing NOW and still be down to `target`
-      // by the time it arrives, given a realistic rate of deceleration:
-      //   v_max^2 = target^2 + 2 * a * distance
+      // by the time it arrives:  v_max^2 = target^2 + 2 * a * distance
       const reachable = Math.sqrt(target * target + 2 * BRAKE_DECEL * ahead);
 
-      // Below 1, the car is inside its budget. Above 1, it is arriving too fast.
-      const ratio = speedMs / Math.max(reachable, 1);
-      const rgb = colourFor(ratio);
+      // Below 1, the car is inside its budget for this point. Above 1, it is
+      // arriving too fast. Stored rather than coloured immediately — see the
+      // backward pass below, which is what makes the warning arrive in time.
+      this.ratio[i] = speedMs / Math.max(reachable, 1);
 
-      const cc = v * 3;
-      const cl = this.colours;
+      v += 6;
+      c += 6;
+    }
+
+    // --- Propagate urgency backwards --------------------------------------
+    //
+    // Each segment now takes the WORST ratio of itself and everything beyond
+    // it, so a corner the car cannot make lights up the road in front of the
+    // car, not the corner itself.
+    //
+    // Colouring each segment by its own reachability — which is what this did
+    // before — is subtly useless. A corner 400m away has 400m of braking
+    // distance available, so it scores green no matter how fast the car is
+    // going; it only turns red once it is close enough that its own braking
+    // distance has run out. By then the driver is already too late, which is
+    // exactly the complaint: green all the way up to the turn, red at the
+    // apex. Taking the running maximum from the far end backwards means the
+    // tarmac immediately ahead reports the most urgent thing anywhere in the
+    // lookahead — which is the question a driver is actually asking.
+    let worst = 0;
+    for (let i = this.segments - 1; i >= 0; i--) {
+      if (this.ratio[i] > worst) worst = this.ratio[i];
+      else this.ratio[i] = worst;
+    }
+
+    // --- Write the colours -------------------------------------------------
+    const cl = this.colours;
+    for (let i = 0; i < this.segments; i++) {
+      const rgb = colourFor(this.ratio[i]);
+      const cc = i * 6 * 3;
       for (let k = 0; k < 6; k++) {
         const o = cc + k * 3;
         cl[o] = rgb[0]; cl[o + 1] = rgb[1]; cl[o + 2] = rgb[2];
       }
-
-      v += 6;
-      c += 6;
     }
 
     (this.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;

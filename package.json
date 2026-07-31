@@ -20,7 +20,8 @@
     "validate:integrity": "tsx scripts/probeIntegrity.ts",
     "probe:curvature": "tsx scripts/probeCurvature.ts",
     "probe:handling": "tsx scripts/probeHandling.ts",
-    "validate:world": "tsx scripts/probeWorld.ts"
+    "validate:world": "tsx scripts/probeWorld.ts",
+    "probe:racingline": "tsx scripts/probeRacingLine.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

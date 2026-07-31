@@ -312,12 +312,35 @@ const BRAKING_GRIP_SHARE = 0.9;
  * Deceleration used to bring a car to rest on its pit box, m/s².
  *
  * Gentle: this is a driver rolling up to their crew under the limiter, not a
- * braking zone. From 22 m/s it takes about 40 metres, which is the length of
- * lane a real stop is set up over.
+ * braking zone.
+ *
+ * MEASURED, not chosen. This was 6, which reads like a modest number next to
+ * the 20-plus a braking zone uses — but a car in the pit lane is doing 80km/h
+ * on tyres that have been cooling since the entry, and the friction circle was
+ * scaling its brake demand down to under a tenth. Full pedal delivered about
+ * 4m/s². Planning the approach at 6 meant the profile was never achievable, so
+ * the car crossed its own box at 8-9m/s, was not serviced, left the lane, and
+ * — its strategy still calling for a stop — came straight back in next lap.
+ * Half the field spent the race doing that.
+ *
+ * At 3.2 the approach is planned at a rate the car can actually hold with the
+ * pedal in reserve. From the limit that needs about 77 metres, and the boxes
+ * sit at least 90 past the pit entry (see PitGeometry), so there is room.
  */
-const PIT_BOX_DECEL_MS2 = 6;
+const PIT_BOX_DECEL_MS2 = 3.2;
 /** How near its box the car counts as having arrived, metres. */
 const PIT_BOX_ARRIVED_M = 0.4;
+/**
+ * How near its box a car is committed to stopping, metres.
+ *
+ * Inside this, the driver is stopping — full stop, on the brakes, whatever the
+ * approach profile says. Without it the controller let go of the brake the
+ * instant the box went behind the car (the perception reports -1 for "no box
+ * ahead") and drove away from a stop it was two metres from completing.
+ */
+const PIT_BOX_COMMIT_M = 12;
+/** How long a committed car keeps the brake on after its box goes behind it. */
+const PIT_BOX_HOLD_S = 3;
 /**
  * Deceleration assumed when planning the approach to the pit entry, m/s².
  *
@@ -431,6 +454,10 @@ export class AIVehicleController {
   private readonly rng: Rng;
 
   state: AIState = 'LINE_FOLLOWER';
+  /** True once the car is close enough to its box to be stopping at it. */
+  private boxCommitted = false;
+  /** Seconds spent on the brake past the box while committed to the stop. */
+  private boxOvershootS = 0;
   /** Seconds spent in the current state. */
   stateTime = 0;
 
@@ -1436,6 +1463,7 @@ export class AIVehicleController {
     }
 
     if (p.pitBoxAheadM >= 0) {
+      if (p.pitBoxAheadM <= PIT_BOX_COMMIT_M) this.boxCommitted = true;
       if (p.pitBoxAheadM < PIT_BOX_ARRIVED_M) {
         // On the mark. Hold it still — a car that creeps forward out of its own
         // box while the crew works on it is a car the crew cannot work on.
@@ -1445,6 +1473,17 @@ export class AIVehicleController {
         const pedal = brakeFor(speed, 0, p.pitBoxAheadM, PIT_BOX_DECEL_MS2);
         if (pedal > c.brake) { c.brake = pedal; c.throttle = 0; }
       }
+    } else if (this.boxCommitted) {
+      // Committed to the stop and the box has gone behind us: the driver is a
+      // metre long, not back on his way. Stay on the brake — that is what a
+      // driver does, and stopping just past the mark is still inside the box.
+      //
+      // Time-limited, because a car that came in far too hot is past any help
+      // from the brake, and a car sitting stationary on the brake for ever in
+      // the middle of the pit lane is a worse outcome than a missed stop.
+      this.boxOvershootS += dt;
+      if (this.boxOvershootS < PIT_BOX_HOLD_S) { c.throttle = 0; c.brake = 1; }
+      else this.boxCommitted = false;
     }
 
     // Mistakes: occasionally a driver genuinely gets it wrong. Rare, brief, and
@@ -1610,11 +1649,15 @@ export class AIVehicleController {
 
   /** Called by the session when this car enters the pit box. */
   onPitStopComplete(): void {
+    this.boxCommitted = false;
+    this.boxOvershootS = 0;
     this.setState('PIT_EXIT');
   }
 
   /** Called when the car rejoins the track after a stop. */
   onRejoinTrack(): void {
+    this.boxCommitted = false;
+    this.boxOvershootS = 0;
     this.setState('LINE_FOLLOWER');
     this.defensiveMoveUsed = false;
   }

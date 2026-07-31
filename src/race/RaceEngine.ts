@@ -12,7 +12,6 @@ import { createNeighbour } from '../ai/AIVehicleController';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
-import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 
 /**
  * The simulation. Owns the track, the cars, race control, timing and the
@@ -212,7 +211,6 @@ export class RaceEngine {
    * browser draws.
    */
   readonly world: WorldModel;
-  private readonly pitGeom: PitLaneGeometry;
   readonly cars: CarEntry[] = [];
   readonly raceControl: RaceControlManager;
   readonly weather: Weather;
@@ -258,7 +256,6 @@ export class RaceEngine {
   constructor(def: TrackDefinition, config: SessionConfig, entries?: readonly Driver[]) {
     this.track = new TrackSpline(def);
     this.world = buildWorldModel(this.track);
-    this.pitGeom = pitLaneGeometry(def, this.track.length);
     this.config = config;
     this.pitGeom = pitLaneGeometry(def, this.track.length);
     this.rng = new Rng(config.seed ^ 0x1f2e3d4c);

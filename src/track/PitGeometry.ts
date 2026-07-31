@@ -125,6 +125,15 @@ export interface PitLaneGeometry {
   covers(s: number): boolean;
   /** The lane's two edges at a lane parameter, given the track's half width. */
   edgesAt(u: number, halfWidth: number): LaneEdges;
+  /**
+   * Distance along the lap the row of boxes is anchored at.
+   *
+   * The track data's `pitLane.boxS` is a wish; this is where the row actually
+   * ended up once it was made to fit inside the working lane. Anything laid out
+   * alongside the boxes — garages, crews, the paint — has to use THIS, or it
+   * describes a pit lane the simulation is not running.
+   */
+  rowAnchorS: number;
   /** Distance along the lap of pit box `slot`, 0 being nearest the exit. */
   boxS(slot: number): number;
 }
@@ -187,8 +196,44 @@ export function pitLaneGeometry(def: TrackDefinition, lengthM: number): PitLaneG
 
   // Two boxes per team garage, laid out from the same anchor the paddock builds
   // its bays from, so a painted box always has a garage behind it.
+  //
+  // The row is laid out BACKWARDS from the anchor — box 0 nearest the exit,
+  // box 19 furthest up the lane — so twenty boxes reach 203m back from it. The
+  // track data's `boxS` is a single hand-placed number that predates there
+  // being twenty of them, and on several circuits the row it anchors runs off
+  // the top of the lane: at Bahrain the anchor is 235m down a lane whose
+  // working section starts at 145m, so the last four boxes were painted level
+  // with, or BEFORE, the pit entry line itself.
+  //
+  // That is not a cosmetic problem. A car is serviced where its box is, so a
+  // car whose box sits before the entry can never reach it: it enters the lane,
+  // drives the length of it without ever passing its own mark, leaves
+  // unserviced, and — its strategy still calling for a stop — comes straight
+  // back in on the next lap, for the rest of the race. Half the field at
+  // Bahrain was in that loop, entering the pit lane twenty times and stopping
+  // never.
+  //
+  // So the row is fitted to the lane it is painted in. The working lane is
+  // where the garages are by definition (`workingStartU`/`workingEndU` above),
+  // and it begins ~90m past the pit entry — comfortably more than the 41m a car
+  // needs to stop from the 80km/h limit. Where the hand-placed anchor already
+  // fits, it is left exactly where it is.
+  const rowFrontM = PIT_GARAGE_SPACING_M * 0.5;
+  const rowBackM =
+    Math.floor((PIT_GARAGE_COUNT - 1) / 2) * (PIT_GARAGE_SPACING_M * 2) + PIT_GARAGE_SPACING_M * 0.5;
+  const anchorU = (() => {
+    const wanted = u(norm(lane.boxS + PIT_ROW_ANCHOR_M));
+    const lo = workingStartU + rowBackM;
+    const hi = workingEndU - rowFrontM;
+    // A lane too short to hold twenty boxes at full pitch: centre them and let
+    // the row overhang symmetrically rather than dropping it off one end.
+    if (hi < lo) return (workingStartU + workingEndU) * 0.5 + (rowBackM - rowFrontM) * 0.5;
+    return wanted < lo ? lo : wanted > hi ? hi : wanted;
+  })();
+  const rowAnchorS = norm(splitS + anchorU);
+
   const boxS = (slot: number): number =>
-    norm(lane.boxS + PIT_ROW_ANCHOR_M
+    norm(rowAnchorS
       - Math.floor(slot / 2) * (PIT_GARAGE_SPACING_M * 2)
       + (slot % 2 === 0 ? PIT_GARAGE_SPACING_M * 0.5 : -PIT_GARAGE_SPACING_M * 0.5));
 
@@ -209,6 +254,7 @@ export function pitLaneGeometry(def: TrackDefinition, lengthM: number): PitLaneG
     u,
     covers,
     edgesAt,
+    rowAnchorS,
     boxS,
   };
 }

@@ -6,7 +6,6 @@ import {
   isPaddockGround,
   pitLaneGeometry,
   PIT_BAY_PITCH_M,
-  PIT_ROW_ANCHOR_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
 import { buildKeepOutField, MAIN_STAND_DEPTH_M, MAIN_STAND_WIDTH_M } from '../track/WorldObstacles';
@@ -444,7 +443,6 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
   const textures: THREE.Texture[] = [];
   const low = quality === 'low';
 
-  const lane = track.def.pitLane;
   // The pit complex's cross-section, shared with the circuit builder and the
   // race engine: where the wall stands, where the fast lane runs, and where the
   // garage frontage is. Building the garages off the same numbers is what keeps
@@ -502,7 +500,7 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
    * Lap distance of the centre of team `k`'s bay: the midpoint of the team's
    * two pit boxes, off the same anchor the painted boxes are laid out from.
    */
-  const bayS = (k: number) => lane.boxS + PIT_ROW_ANCHOR_M - k * BAY_PITCH;
+  const bayS = (k: number) => pit.rowAnchorS - k * BAY_PITCH;
 
   for (let k = 0; k < bayCount; k++) {
     const team = teams[k];
@@ -877,7 +875,7 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     const back = new PartsBin();
     const backGlass = new PartsBin();
     const rowLen = BAY_PITCH * bayCount;
-    const centreS = lane.boxS + PIT_ROW_ANCHOR_M - ((bayCount - 1) * BAY_PITCH) / 2;
+    const centreS = pit.rowAnchorS - ((bayCount - 1) * BAY_PITCH) / 2;
     const m = frameAt(centreS, frontLat);
 
     // The paddock apron itself: tarmac, with a painted edge line.
@@ -1036,7 +1034,7 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     const stands = 3;
     const mat = structureMaterial({ roughness: 0.8, metalness: 0.06 });
     const mesh = new THREE.InstancedMesh(geo, mat, stands);
-    const rowCentre = lane.boxS + PIT_ROW_ANCHOR_M - ((bayCount - 1) * BAY_PITCH) / 2;
+    const rowCentre = pit.rowAnchorS - ((bayCount - 1) * BAY_PITCH) / 2;
     const m = new THREE.Matrix4();
     // The pit straight is not the only piece of circuit near the pit straight.
     // On a street circuit the lap folds back on itself within a few dozen
