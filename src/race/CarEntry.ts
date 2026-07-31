@@ -48,6 +48,16 @@ export class CarEntry {
   /** Total distance covered this session, metres. Drives race position. */
   totalDistance = 0;
   private lastS = 0;
+  /**
+   * `totalDistance` at the last crossing of the Line that was accepted as a lap.
+   *
+   * Negative infinity until the first crossing, so the first one always counts —
+   * a car starts on the grid a few metres behind the Line and has covered almost
+   * nothing when it first passes it.
+   *
+   * See `updateProjection` for why this exists.
+   */
+  private distanceAtLastCrossing = -Infinity;
 
   /**
    * Where the car was at the top of this physics step, in world space.
@@ -359,7 +369,31 @@ export class CarEntry {
     // being counted as progress.
     if (Math.abs(delta) < 60) this.totalDistance += delta;
 
-    const crossedLine = this.lastS > track.length * 0.75 && this.s < track.length * 0.25;
+    // Geometric crossing of the Line, travelling forwards.
+    //
+    // On its own this is not enough to call a lap. Nothing about it says the car
+    // went ROUND: reversing back over the Line does not fire (the test is
+    // deliberately one-directional), so the counter never comes back down, and
+    // the next forward crossing — which may be forty metres later — scores
+    // another full lap. Rocking back and forth over the Line therefore adds a lap
+    // every few seconds, for free, and since a race ends on the lap counter that
+    // is enough to take the chequered flag from a standstill. A car spun round at
+    // the Line in traffic hits the same thing by accident.
+    //
+    // So a crossing only counts if the car has actually covered most of a lap's
+    // worth of ground since the last one that did. `totalDistance` is the right
+    // yardstick because it is SIGNED — it goes down when the car goes backwards —
+    // and it is already what decides race position.
+    //
+    // Half a lap is a deliberately loose bar. It has to sit above anything a car
+    // can gain by shuffling around near the Line, and below the shortest honest
+    // lap, which is a full lap minus whatever the pit lane cuts off and whatever
+    // the 60m projection guard above drops at a crossover. Nothing legitimate
+    // comes close to it from either side.
+    const geometricCrossing = this.lastS > track.length * 0.75 && this.s < track.length * 0.25;
+    const crossedLine = geometricCrossing &&
+      this.totalDistance - this.distanceAtLastCrossing >= track.length * 0.5;
+    if (crossedLine) this.distanceAtLastCrossing = this.totalDistance;
     this.lastS = this.s;
     return crossedLine;
   }

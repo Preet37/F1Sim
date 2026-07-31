@@ -4,6 +4,7 @@ import { SimClock } from './core/SimClock';
 import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
 import type { CarEntry } from './race/CarEntry';
+import { resultGapCell } from './race/Classification';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
@@ -261,6 +262,13 @@ class Game {
     const inSession = s === 'racing';
     this.screenRoot.classList.toggle('hidden', inSession);
     this.hud.setVisible(inSession);
+    // The pause menu belongs to the track and to nothing else. Leaving without
+    // clearing it would strand a modal over the menus.
+    if (!inSession && this.pauseOverlay) {
+      this.pauseOverlay.classList.add('hidden');
+      this.pauseOverlay.style.display = 'none';
+      this.clock.paused = false;
+    }
     // Leaving the track cuts the car but keeps the context alive, so returning
     // to a session does not have to rebuild the whole graph.
     if (!inSession) {
@@ -1108,6 +1116,100 @@ class Game {
     );
   }
 
+  // =======================================================================
+  // Pause and abandon
+  // =======================================================================
+
+  /**
+   * The pause menu.
+   *
+   * This exists because there was no way out of a session. Pause froze the
+   * simulation and drew nothing, so the game looked like it had hung, and the
+   * only routes back to the menu were finishing the session or reloading the
+   * page — a fifty-seven lap Grand Prix with the exit disabled.
+   *
+   * It is built here, in the app shell, rather than in the HUD, because the HUD
+   * is the instrument cluster of a car that is being driven and this is the
+   * question of whether to keep driving it at all. It also means the overlay
+   * survives independently of whatever the HUD is doing.
+   */
+  private pauseOverlay: HTMLElement | null = null;
+
+  private buildPauseOverlay(): HTMLElement {
+    const o = document.createElement('div');
+    o.className = 'pause-overlay hidden';
+    // Styled inline so the overlay is self-contained and cannot be knocked out
+    // by a change to the HUD stylesheet.
+    o.style.cssText =
+      'position:absolute;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;' +
+      'background:rgba(4,6,10,0.78);backdrop-filter:blur(3px);';
+
+    const card = document.createElement('div');
+    card.style.cssText =
+      'display:flex;flex-direction:column;gap:12px;align-items:stretch;min-width:min(280px,80vw);' +
+      'padding:22px 26px;border-radius:14px;background:rgba(12,15,21,0.96);' +
+      'border:1px solid rgba(255,255,255,0.12);box-shadow:0 18px 60px rgba(0,0,0,0.6);' +
+      'font-family:inherit;color:#e9edf4;text-align:center;';
+    o.appendChild(card);
+
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:20px;letter-spacing:0.16em;text-transform:uppercase;opacity:0.9;';
+    title.textContent = 'Paused';
+    card.appendChild(title);
+
+    this.pauseSubtitle = document.createElement('div');
+    this.pauseSubtitle.style.cssText = 'font-size:12px;opacity:0.6;margin-bottom:6px;';
+    card.appendChild(this.pauseSubtitle);
+
+    const mk = (label: string, onClick: () => void, primary: boolean) => {
+      const b = document.createElement('button');
+      b.className = primary ? 'btn' : 'btn secondary';
+      b.textContent = label;
+      b.addEventListener('click', onClick);
+      card.appendChild(b);
+      return b;
+    };
+    mk('Resume', () => this.setPaused(false), true);
+    mk('Abandon session', () => this.abandonSession(), false);
+
+    (document.getElementById('app') as HTMLElement).appendChild(o);
+    return o;
+  }
+
+  private pauseSubtitle: HTMLElement | null = null;
+
+  private setPaused(paused: boolean): void {
+    // Only meaningful on track. Pausing the menu would be an odd thing to offer.
+    if (paused && this.screen !== 'racing') return;
+    this.clock.paused = paused;
+    this.audio.setSuspended(paused);
+    if (!this.pauseOverlay) this.pauseOverlay = this.buildPauseOverlay();
+    if (this.pauseSubtitle && this.engine) {
+      this.pauseSubtitle.textContent =
+        this.engine.config.name + ' · ' + this.engine.track.def.name;
+    }
+    this.pauseOverlay.classList.toggle('hidden', !paused);
+    this.pauseOverlay.style.display = paused ? 'flex' : 'none';
+  }
+
+  /**
+   * Leaves a session that is still running.
+   *
+   * The session is thrown away rather than classified: the player did not
+   * complete it, so recording a result for it would put a fictitious finishing
+   * position into a career. A weekend abandoned part-way is abandoned whole,
+   * which is why the queue is cleared as well as the engine.
+   */
+  private abandonSession(): void {
+    this.setPaused(false);
+    this.renderer.unloadSession();
+    this.engine = null;
+    this.weekend = [];
+    this.weekendIndex = 0;
+    this.resetQualifying();
+    if (this.career) this.showCareerHub(); else this.showMenu();
+  }
+
   private finishSession(): void {
     const engine = this.engine;
     if (!engine) return;
@@ -1177,7 +1279,7 @@ class Game {
     const isRace = engine.config.kind === 'race';
     table.innerHTML =
       '<thead><tr><th>Pos</th><th>Driver</th><th>Team</th>' +
-      '<th class="num">' + (isRace ? 'Gap' : 'Best') + '</th>' +
+      '<th class="num">Gap</th>' +
       '<th class="num">Best Lap</th><th class="num">Stops</th><th>Notes</th></tr></thead>';
     const tbody = document.createElement('tbody');
 
@@ -1190,10 +1292,7 @@ class Game {
       if (car.penaltySeconds > 0) notes.push('+' + car.penaltySeconds + 's');
       if (car.trackLimitStrikes > 0) notes.push(car.trackLimitStrikes + ' limits');
 
-      const gapCell = car.retired ? 'DNF'
-        : car.position === 1 ? 'WINNER'
-        : isRace ? '+' + car.gapToLeader.toFixed(3)
-        : formatLapTime(car.bestLapTime);
+      const gapCell = resultGapCell(car, isRace);
 
       tr.innerHTML =
         '<td>' + car.position + '</td>' +
@@ -1310,10 +1409,7 @@ class Game {
           this.renderer.setRacingLineVisible(this.settings.racingLine);
           this.saves.saveSettings(this.settings);
         }
-        if (this.input.pausePressed) {
-          this.clock.paused = !this.clock.paused;
-          this.audio.setSuspended(this.clock.paused);
-        }
+        if (this.input.pausePressed) this.setPaused(!this.clock.paused);
         if (this.input.pitRequestToggled) this.togglePitRequest();
 
         // Paddle shifts. Resolved here rather than in the input layer because
