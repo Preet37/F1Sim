@@ -91,12 +91,11 @@ export interface CarVisual {
   /**
    * Chooses a geometry tier for this car from its distance to the camera.
    *
-   * The high tier costs about four times what the low one does, and beyond
-   * sixty metres a car is roughly a hundred pixels tall — the body loft's ring
-   * spacing is under a pixel by then and the tyre's thirty-two segments resolve
-   * to about three, so none of the tessellation that makes a wing endplate read
-   * as a moulded part at three metres is visible at all. On a full grid that is
-   * nineteen of the twenty cars for most of a lap.
+   * The high tier costs about five times what the low one does, and past the
+   * threshold below a car is barely a hundred pixels wide — none of the
+   * tessellation that makes a wing endplate read as a moulded part at three
+   * metres survives at all. On a full grid that is most of the field for most
+   * of a lap.
    *
    * Both tiers are the SHARED cached geometry, so a swap is one pointer
    * assignment per mesh: no extra memory, no extra draw call, and no per-car
@@ -147,7 +146,7 @@ const REAR_AXLE_Z = -1.68;
  * Not the same thing as the renderer's quality setting, though it shares its
  * names: the renderer picks ONE quality for the session and then this is chosen
  * per car per frame by distance, so a car two hundred metres away is drawn from
- * the cheap set even in a high-quality session. See `carTierForDistance`.
+ * the cheap set even in a high-quality session. See `CarVisual.updateDetail`.
  */
 export type CarTier = 'low' | 'high';
 
@@ -158,9 +157,8 @@ export type CarTier = 'low' | 'high';
  * Two thresholds, not one: with a single threshold a car running exactly
  * alongside at that distance swaps tier every few frames, and the swap is
  * visible as the wing endplates and the tyre silhouette twitching.
- */
-/**
- * Where these come from: at a 42-degree vertical field of view the frame is
+ *
+ * Where the numbers come from: at a 42-degree vertical field of view the frame is
  * 2*d*tan(21) metres tall at distance d, so at 45m a car five metres long spans
  * about 115 pixels of a 1280-wide frame and stands about 20 high. The body
  * loft's 110mm ring spacing is a quarter of a pixel at that size and the tyre's
@@ -471,11 +469,11 @@ function buildShellParts(
     // property of the SECTION (round), not of the station list.
     for (const side of [-1, 1] as const) {
       const ep = small([
-        section(3.02, 0.021, 0.038, 0.230, 0.30),
-        section(2.84, 0.025, 0.042, 0.318, 0.28),
-        section(2.64, 0.027, 0.058, 0.372, 0.28),
-        section(2.44, 0.024, 0.090, 0.366, 0.30),
-        section(2.32, 0.019, 0.140, 0.328, 0.36),
+        section(3.02, 0.021, 0.038, 0.230, 0.22),
+        section(2.84, 0.025, 0.042, 0.318, 0.20),
+        section(2.64, 0.027, 0.058, 0.372, 0.20),
+        section(2.44, 0.024, 0.090, 0.366, 0.22),
+        section(2.32, 0.019, 0.140, 0.328, 0.28),
       ], t.body - 8);
       ep.translate(side * 0.965, 0, 0);
       p.flat(ep, 'accent');
@@ -529,10 +527,10 @@ function buildShellParts(
 
     for (const side of [-1, 1] as const) {
       const ep = small([
-        section(-2.20, 0.020, 0.640, 0.872, 0.30),
-        section(-2.36, 0.023, 0.612, 0.930, 0.28),
-        section(-2.52, 0.022, 0.600, 0.946, 0.28),
-        section(-2.66, 0.018, 0.642, 0.920, 0.34),
+        section(-2.20, 0.020, 0.640, 0.872, 0.22),
+        section(-2.36, 0.023, 0.612, 0.930, 0.20),
+        section(-2.52, 0.022, 0.600, 0.946, 0.20),
+        section(-2.66, 0.018, 0.642, 0.920, 0.26),
       ], t.body - 8);
       ep.translate(side * 0.505, 0, 0);
       p.flat(ep, 'accent');

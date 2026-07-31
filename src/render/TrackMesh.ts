@@ -1352,9 +1352,15 @@ function makeFenceTexture(): THREE.Texture {
   // visible staircase on the largest surface in almost every frame, and a
   // staircase reads as "blocky" for exactly the same reason a facet does.
   // One texture for the whole circuit, so this costs 256KB.
-  const S = 256;
-  const PITCH = S / 4;
-  const GAUGE = S / 32;
+  const S = 512;
+  // Six diamonds per tile rather than four. One tile covers four metres of
+  // barrier, so the old pitch made every link a metre across — which is not a
+  // catch fence, it is a cargo net, and at that size its stepped diagonals were
+  // the most obviously pixelated thing in the frame. The wire keeps the same
+  // fraction of the opening it had, so it is no more prone to shimmering at
+  // speed than before.
+  const PITCH = S / 6;
+  const GAUGE = PITCH * 0.13;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
