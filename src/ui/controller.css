@@ -1,0 +1,229 @@
+/* ======================================================================= */
+/* Controller setup and calibration                                         */
+/*                                                                          */
+/* The organising idea of this page is that every control on it is next to  */
+/* a bar that moves. A binding screen where you have to look away from the  */
+/* control to find out whether the device responded is a screen that cannot */
+/* be used to diagnose a device that is misbehaving — which is the only     */
+/* reason anyone opens one.                                                 */
+/* ======================================================================= */
+
+.ctrl-banner {
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin: 10px 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 600;
+  border: 1px solid var(--hud-border);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--hud-dim);
+}
+.ctrl-banner.warn {
+  border-color: rgba(255, 176, 46, 0.5);
+  background: rgba(255, 176, 46, 0.12);
+  color: #ffd79a;
+}
+.ctrl-banner.live {
+  border-color: rgba(53, 208, 224, 0.45);
+  background: rgba(53, 208, 224, 0.1);
+  color: #bfeef4;
+}
+.ctrl-banner b { color: var(--hud-text); font-weight: 800; }
+
+.ctrl-list { display: flex; flex-direction: column; gap: 8px; }
+
+.ctrl-row {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--hud-border);
+  border-radius: 9px;
+  padding: 10px 13px;
+}
+.ctrl-row.active { border-color: var(--accent); background: rgba(53, 208, 224, 0.1); }
+
+.ctrl-row-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.ctrl-name { font-size: 14px; font-weight: 700; min-width: 86px; }
+.ctrl-binding {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  color: var(--accent);
+  background: rgba(53, 208, 224, 0.13);
+  border-radius: 5px;
+  padding: 3px 8px;
+  min-width: 72px;
+  text-align: center;
+}
+.ctrl-binding.none { color: var(--hud-dim); background: rgba(255, 255, 255, 0.06); }
+.ctrl-binding.waiting { color: #06210f; background: var(--good); }
+.ctrl-spacer { flex: 1; }
+
+.ctrl-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--hud-text);
+  border: 1px solid var(--hud-border);
+  border-radius: 6px;
+  padding: 6px 11px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.ctrl-btn:hover { background: rgba(53, 208, 224, 0.2); border-color: rgba(53, 208, 224, 0.5); }
+.ctrl-btn.on { background: var(--accent); color: #04161a; border-color: transparent; }
+.ctrl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* --- The live bar ----------------------------------------------------- */
+.ctrl-bar {
+  position: relative;
+  height: 16px;
+  margin-top: 9px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--hud-border);
+  overflow: hidden;
+}
+.ctrl-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  opacity: 0.85;
+}
+.ctrl-bar-fill.wide { background: var(--good); }
+/* Centre tick for a bipolar axis, so "centred" is a visible place. */
+.ctrl-bar-centre {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  left: 50%;
+  background: rgba(255, 255, 255, 0.4);
+}
+.ctrl-bar-raw {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fff;
+  opacity: 0.75;
+}
+.ctrl-readout {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--hud-dim);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.ctrl-readout .val { color: var(--hud-text); }
+
+/* --- Calibration wizard ------------------------------------------------ */
+.ctrl-calib {
+  margin-top: 10px;
+  border-top: 1px solid var(--hud-border);
+  padding-top: 10px;
+}
+.ctrl-calib-step {
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: #cfe9ee;
+  margin-bottom: 8px;
+}
+.ctrl-calib-step b { color: var(--accent); }
+.ctrl-calib-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ctrl-calib-nums {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-dim);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* --- Button grid ------------------------------------------------------- */
+.ctrl-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+.ctrl-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  flex: 0 0 auto;
+  border: 1px solid var(--hud-border);
+}
+.ctrl-dot.on { background: var(--good); border-color: #b6f2d0; box-shadow: 0 0 8px rgba(61, 220, 132, 0.75); }
+
+/* --- Tuning and the response plot -------------------------------------- */
+.ctrl-tune {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(200px, 260px);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .ctrl-tune { grid-template-columns: 1fr; }
+}
+.ctrl-sliders { display: flex; flex-direction: column; gap: 11px; }
+.ctrl-slider-item {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--hud-border);
+  border-radius: 9px;
+  padding: 9px 13px 11px;
+}
+.ctrl-slider-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.ctrl-slider-name { font-size: 13px; font-weight: 700; }
+.ctrl-slider-value { font-size: 11px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ctrl-slider-item input[type='range'] {
+  width: 100%;
+  margin-top: 7px;
+  accent-color: var(--accent);
+  height: 22px;
+}
+.ctrl-slider-note { font-size: 10px; color: var(--hud-dim); line-height: 1.45; margin-top: 4px; font-weight: 600; }
+
+/* Pinned while the sliders scroll past it. The curve is the readout for every
+   control in this section, and a readout you have to scroll away from the
+   control to see is a readout nobody looks at. */
+.ctrl-plot {
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid var(--hud-border);
+  border-radius: 9px;
+  padding: 10px;
+  position: sticky;
+  top: 8px;
+}
+@media (max-width: 720px) {
+  /* On one column the plot sits above the sliders, so pinning it would cover
+     the control being dragged. */
+  .ctrl-plot { position: static; }
+}
+.ctrl-plot svg { width: 100%; height: auto; display: block; }
+.ctrl-plot-caption {
+  font-size: 10px;
+  color: var(--hud-dim);
+  margin-top: 7px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.ctrl-plot-grid { stroke: rgba(255, 255, 255, 0.12); stroke-width: 0.5; }
+.ctrl-plot-ref { stroke: rgba(255, 255, 255, 0.22); stroke-width: 0.6; stroke-dasharray: 2 2; }
+.ctrl-plot-curve { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+.ctrl-plot-dot { fill: var(--good); }
