@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { PartsBin, chamferBox, chamferCylinder, quadXY, rand, structureMaterial } from './ChamferKit';
 import { buildGrandstandGeometry, grandstandPreset } from './Grandstands';
 import { TEAMS } from '../data/teams';
+import { getCompound } from '../data/tires';
 import {
   isPaddockGround,
   pitLaneGeometry,
@@ -616,8 +617,13 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     chest.dispose();
 
     // Tyre stacks at the back of the box, the compound bands showing.
+    //
+    // Read from the compound table rather than eyeballed. These four literals
+    // used to be near-misses of the real values, so a stack in the garage was a
+    // slightly different red from the sidewall on the car and the dot in the
+    // timing tower — three shades of "soft" on one screen.
     const stacks = low ? 2 : 3;
-    const bands = [0xd42a2a, 0xe3d33a, 0xf0f0f0, 0x2aa5d4];
+    const bands = (['soft', 'medium', 'hard', 'wet'] as const).map((id) => getCompound(id).colour);
     for (let t = 0; t < stacks; t++) {
       tyreStack(
         bay,

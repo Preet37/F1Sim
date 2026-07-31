@@ -8,6 +8,7 @@ import {
 import { buildDriverParts } from './DriverMesh';
 import {
   wheelMaterial, wheelSwatchUV, disposeTyreCache, PROFILE_V, TYRE_BAND,
+  buildSidewallBands, sidewallMaterial, tyreProfile,
   type WheelSwatch,
 } from './TyreTexture';
 import type { CompoundId } from '../data/tires';
@@ -105,9 +106,17 @@ export interface CarVisual {
   /**
    * Swaps the tyres to a compound.
    *
-   * The compound band on the sidewall is painted into the tyre texture, not
-   * tinted at draw time, so a pit stop is a material swap. Materials are shared
-   * across the field by compound, so the whole grid on softs costs one.
+   * Two things change, and both are material swaps: the wheel material, which
+   * carries the compound stripe painted into the tyre texture, and the raised
+   * sidewall band's material. Nothing is tinted at draw time and no geometry is
+   * rebuilt. Materials are shared across the field by compound, so the whole
+   * grid on softs costs one of each.
+   *
+   * Cheap and idempotent — it returns immediately if the compound has not
+   * changed — so the renderer can simply call it every frame with
+   * `car.compound` rather than needing the race engine to notify it when a pit
+   * stop fits a new set. Nothing in the pit-stop path knows the render layer
+   * exists, and it should stay that way.
    */
   setCompound(id: CompoundId): void;
   dispose(): void;
@@ -601,15 +610,13 @@ function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THR
   // A surface of revolution: bead, sidewall bulge, shoulder, crowned tread, and
   // back again. The stations line up one-for-one with PROFILE_V, which is what
   // puts the compound stripe on the sidewall and not across the tread.
-  const profile: { r: number; x: number }[] = [
-    { r: RIM_R + 0.004, x: -half * 0.98 },      // inboard bead
-    { r: TYRE_R * 0.855, x: -half * 1.045 },    // sidewall bulge
-    { r: TYRE_R * 0.965, x: -half * 0.95 },     // shoulder
-    { r: TYRE_R * 1.002, x: 0 },                // tread crown
-    { r: TYRE_R * 0.965, x: half * 0.95 },      // shoulder
-    { r: TYRE_R * 0.855, x: half * 1.045 },     // sidewall bulge
-    { r: RIM_R + 0.004, x: half * 0.98 },       // outboard bead
-  ];
+  //
+  // The cross-section itself lives in TyreTexture, next to the paint that has to
+  // land on it and next to the raised compound band that has to sit exactly on
+  // top of it. Two copies of these numbers would drift the moment either was
+  // tuned, and the failure mode is the band z-fighting through the carcass —
+  // which reads as the tyre flickering, not as a mis-set constant.
+  const profile = tyreProfile(width, TYRE_R, RIM_R);
 
   const rings = profile.length;
   // One extra column duplicating the seam, so u can reach 1.0 instead of
@@ -788,6 +795,9 @@ interface CachedGeometry {
   head: THREE.BufferGeometry;
   frontWheel: THREE.BufferGeometry;
   rearWheel: THREE.BufferGeometry;
+  /** Compound bands. Shared like everything else; only the material varies. */
+  frontBand: THREE.BufferGeometry;
+  rearBand: THREE.BufferGeometry;
   disc: THREE.BufferGeometry;
   flap: THREE.BufferGeometry;
   shadow: THREE.BufferGeometry;
@@ -825,6 +835,8 @@ function geometryFor(quality: 'low' | 'high'): CachedGeometry {
     head: mergeParts([...driver.head, ...driver.grip]),
     frontWheel: buildWheel(FRONT_TYRE_W, t.wheel, quality),
     rearWheel: buildWheel(REAR_TYRE_W, t.wheel, quality),
+    frontBand: buildSidewallBands(FRONT_TYRE_W, TYRE_R, RIM_R, t.wheel),
+    rearBand: buildSidewallBands(REAR_TYRE_W, TYRE_R, RIM_R, t.wheel),
     disc: (() => {
       // The glow ring. Sits just outboard of the real disc so it reads as heat
       // coming off it rather than as a separate object.
@@ -995,7 +1007,10 @@ export function buildCar(
 
   const brakeGlow: THREE.Mesh[] = [];
   const wheels: THREE.Mesh[] = [];
-  let wheelMat = wheelMaterial(opts.compound ?? 'medium', t.texture);
+  const bands: THREE.Mesh[] = [];
+  /** Compound currently fitted; see `setCompound`. */
+  let fittedCompound: CompoundId = opts.compound ?? 'medium';
+  let wheelMat = wheelMaterial(fittedCompound, t.texture);
 
   /**
    * Builds a wheel as steer group -> spin group -> meshes.
@@ -1014,6 +1029,20 @@ export function buildCar(
     if (x < 0) wheel.rotation.y = Math.PI;
     spin.add(wheel);
     wheels.push(wheel);
+
+    // Compound band. It MUST go on the spin group, not the steer group.
+    //
+    // The band is a surface of revolution, so spinning it changes nothing you
+    // can see and hanging it off the steer group looks like a free saving. It is
+    // not. Both the band and the tyre are sixteen-sided prisms sampled at the
+    // same angles, which is what makes a five-millimetre offset enough to keep
+    // one clear of the other — but only while they stay in phase. Leave the band
+    // stationary and the spinning carcass's vertices sweep past its flat facets
+    // and poke through, and the solid ring becomes a ring of dashes that
+    // flickers as the wheel turns.
+    const band = new THREE.Mesh(rear ? geo.rearBand : geo.frontBand, sidewallMaterial(fittedCompound));
+    spin.add(band);
+    bands.push(band);
 
     // Brake disc glows under load. Unlit so it reads at night.
     const discMat = new THREE.MeshBasicMaterial({
@@ -1056,14 +1085,18 @@ export function buildCar(
       cockpit?.setVisible(v);
     },
     setCompound(id: CompoundId): void {
-      const next = wheelMaterial(id, t.texture);
-      if (next === wheelMat) return;
-      wheelMat = next;
-      for (const w of wheels) w.material = next;
+      if (id === fittedCompound) return;
+      fittedCompound = id;
+      wheelMat = wheelMaterial(id, t.texture);
+      for (const w of wheels) w.material = wheelMat;
+      const bandMat = sidewallMaterial(id);
+      for (const b of bands) b.material = bandMat;
     },
     dispose(): void {
       cockpit?.dispose();
       for (const d of brakeGlow) (d.material as THREE.Material).dispose();
+      // The band materials are shared across the whole field and owned by
+      // TyreTexture's cache, so they are emphatically NOT disposed here.
     },
   };
 }
@@ -1074,6 +1107,8 @@ export function disposeCarGeometryCache(): void {
     set.head.dispose();
     set.frontWheel.dispose();
     set.rearWheel.dispose();
+    set.frontBand.dispose();
+    set.rearBand.dispose();
     set.disc.dispose();
     set.flap.dispose();
     set.shadow.dispose();

@@ -862,9 +862,15 @@ export class Renderer {
         }
       }
 
-      // Tyres. Cheap to check every frame — `setCompound` returns immediately
-      // when the material is already the right one — and it means a pit stop
-      // changes the sidewall colour the instant the sim says it has.
+      // Tyres.
+      //
+      // POLLED, not pushed. A pit stop changes `car.compound` deep inside the
+      // race engine's service path (`serviceInBox`), which knows nothing about
+      // the renderer and should not have to. `setCompound` returns immediately
+      // when the compound is already the right one, so asking every car every
+      // frame costs one comparison — and it cannot go stale the way a missed
+      // notification would. The sidewall changes colour the instant the sim says
+      // the new set is on.
       v.setCompound(car.compound);
 
       // DRS flap: open is roughly 50 degrees.

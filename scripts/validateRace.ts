@@ -26,6 +26,21 @@ import { getCompound } from '../src/data/tires';
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
 
+/**
+ * Shifts every seed in this harness by a constant.
+ *
+ * A race is a chaotic system: two cars a tenth apart into turn one decide who
+ * leads for the next thirty laps, and a change of a couple of percent anywhere
+ * in the physics reshuffles which circuits happen to trip an assertion. Judging
+ * a change by ONE run of the default seeds therefore measures the weather, not
+ * the code. Sweep the offset (`RACE_SEED_OFFSET=1 npm run validate:race`, and
+ * so on) and compare the DISTRIBUTION of failure counts before and after.
+ *
+ * Zero by default, so the committed `npm run validate:race` is bit-identical to
+ * what it has always been.
+ */
+const SEED_OFFSET = Number(process.env.RACE_SEED_OFFSET ?? 0) | 0;
+
 interface RaceResult {
   trackName: string;
   wallMs: number;
@@ -48,7 +63,8 @@ interface RaceResult {
   order: { code: string; team: string; pos: number; laps: number; best: number; stops: number }[];
 }
 
-function runRace(trackId: string, laps: number, seed: number): RaceResult {
+function runRace(trackId: string, laps: number, seedBase: number): RaceResult {
+  const seed = seedBase + SEED_OFFSET * 7919;
   const def = getCircuit(trackId);
   const config: SessionConfig = {
     kind: 'race',

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, wrapAngle } from '../core/MathUtils';
 import { EYE_X, EYE_Y, EYE_Z } from './CockpitMesh';
+import { nominalBarrierOffset } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
 
@@ -46,6 +47,51 @@ const MIN_CAMERA_HEIGHT_M = 0.35;
 const NEAR_COCKPIT = 0.08;
 const NEAR_DEFAULT = 0.35;
 
+/**
+ * Field of view, per mode: the resting angle and how much it opens at speed.
+ *
+ * THESE ARE VERTICAL ANGLES. three.js takes a vertical FOV, and that is the
+ * thing this file had wrong: the old figures — 56 for the chase, 76 for the
+ * bumper, plus fourteen degrees at speed — are perfectly sensible HORIZONTAL
+ * numbers and were obviously picked as such. Used as vertical angles on a 16:9
+ * display they come out at 102 and 121 degrees ACROSS. That is a fisheye, and it
+ * is the whole reason the car was a speck in the middle of the chase shot, the
+ * barriers bowed, and every mode felt like it was filmed through a door viewer.
+ *
+ * Widening with speed stays, because it is the most honest way to convey speed
+ * and costs nothing. The swing is now a few degrees rather than fourteen; past
+ * about eight the frame visibly breathes and it reads as a zoom effect rather
+ * than as going faster.
+ */
+const FOV: Record<CameraMode, { base: number; gain: number }> = {
+  // ~63 degrees across at 16:9, opening to ~71. A normal lens: the car keeps a
+  // believable size and straight things stay straight.
+  chase: { base: 39, gain: 6 },
+  // The one view that wants to be wide. A driver's useful field is far wider
+  // than a screen, and a narrow cockpit loses the mirrors and the front tyres —
+  // which are most of what tells you the car is a car.
+  cockpit: { base: 44, gain: 6 },
+  'onboard-t': { base: 43, gain: 6 },
+  // Lowest camera, so the widest: at 0.44m the ground shear does the work and a
+  // wide lens amplifies it.
+  bumper: { base: 47, gain: 7 },
+  // Broadcast follow. A long lens is what makes a TV shot read as a TV shot —
+  // it compresses the background and makes the car the subject.
+  tv: { base: 27, gain: 4 },
+  drone: { base: 31, gain: 3 },
+  // Unused: the trackside camera zooms to hold the car, below.
+  trackside: { base: 24, gain: 0 },
+};
+
+/**
+ * Height of the frame the trackside camera tries to fill with the car, metres.
+ *
+ * A real trackside operator holds the car at a roughly constant size as it
+ * approaches and goes past, which is what makes the shot feel operated rather
+ * than mounted.
+ */
+const TRACKSIDE_FRAMED_M = 5.0;
+
 export const CAMERA_MODES: readonly CameraMode[] = [
   'chase', 'cockpit', 'onboard-t', 'bumper', 'tv', 'drone', 'trackside',
 ];
@@ -79,6 +125,9 @@ export class CameraDirector {
   private readonly smoothedOffset = new THREE.Vector3();
   private readonly smoothedLookOffset = new THREE.Vector3();
   private readonly anchor = new THREE.Vector3();
+  /** Scratch for the cockpit eye offset and the chassis attitude it rides on. */
+  private readonly eye = new THREE.Vector3();
+  private readonly carEuler = new THREE.Euler();
   private initialised = false;
 
   /** Smoothed speed, so FOV does not flicker on gear changes. */
@@ -94,7 +143,7 @@ export class CameraDirector {
   private dronePhase = 0;
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(62, aspect, 0.35, 4000);
+    this.camera = new THREE.PerspectiveCamera(FOV.chase.base, aspect, NEAR_DEFAULT, 4000);
   }
 
   setAspect(aspect: number): void {
@@ -156,14 +205,25 @@ export class CameraDirector {
         // Distance and height grow slightly with speed, which reads as the car
         // pulling away from the camera.
         //
-        // The numbers are set so the car occupies the lower-middle third of the
-        // frame with a clear view of the road beyond it: about a car and a half
-        // back, a little over head height, aiming at a point just ahead of the
-        // nose. Closer than this and the rear wing fills the screen; further
-        // back and it stops being your car.
+        // It sits LOWER and CLOSER than it used to. At 2.3-2.75m and up to 9m
+        // back the camera was looking down on the roll hoop from well above head
+        // height, which flattens the road into a plan view and throws the
+        // horizon up near the top of the frame. Half a metre down and a metre in
+        // puts it just above the airbox, where every broadcast chase camera
+        // lives, and lets the road run away to a horizon in the upper third.
         const fast = clamp01(this.smoothSpeed / 90);
-        const dist = lerp(7.0, 9.0, fast);
-        const height = lerp(2.30, 2.75, fast);
+        let dist = lerp(6.9, 8.1, fast);
+        const height = lerp(1.92, 2.16, fast);
+
+        // Longitudinal g closes and opens the gap.
+        //
+        // Smoothing the OFFSET rather than the world position — see
+        // `applySmoothed` — deliberately removed the lag that used to do this
+        // for free, and with it went the sense of the car braking back INTO the
+        // frame. Putting it back explicitly, driven by the actual acceleration,
+        // is both more responsive and more controllable than the accident was.
+        dist += clamp(p.longitudinalG * 0.20, -1.0, 0.7);
+
         // Bias the camera toward the outside of a slide so the car's angle shows.
         const yaw = heading - slip * 0.55;
         this.desired.set(
@@ -171,13 +231,18 @@ export class CameraDirector {
           carY + height,
           p.position.y - Math.cos(yaw) * dist,
         );
-        // Aim a short way ahead of the car. A distant look target pushes the car
-        // to the bottom of the frame and points the camera at the horizon, which
-        // loses both the car and the sense of the road rushing under it.
+        // Aim a short way ahead of the car, and low.
+        //
+        // Both numbers are framing controls and they pull opposite ways: aiming
+        // FURTHER ahead or HIGHER tilts the camera up and pushes the car down
+        // the frame — far enough and it disappears behind the dash readout along
+        // the bottom edge. Aiming short and low lifts the car back up but buries
+        // the horizon. This pair puts the car around two thirds down and the
+        // horizon around a third from the top, which is the broadcast framing.
         this.lookTarget.set(
-          p.position.x + sinH * 4.2,
-          carY + 1.0,
-          p.position.y + cosH * 4.2,
+          p.position.x + sinH * 5.0,
+          carY + 0.86,
+          p.position.y + cosH * 5.0,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
         break;
@@ -191,15 +256,18 @@ export class CameraDirector {
       case 'onboard-t': {
         // The broadcast T-cam, sitting on the airbox directly above and just
         // behind the driver's head. The airbox crown is at 0.85m and the helmet
-        // at 0.82m, so 1.12m clears both and still frames the halo and the
-        // helmet in the bottom of the shot the way a real onboard does.
+        // at 0.82m, so 1.14m clears both and still frames the halo, the mirrors
+        // and the crown of the helmet along the bottom of the shot — which is
+        // exactly what the reference onboard footage looks like, and what makes
+        // this read as a camera bolted to a car rather than a floating eye.
         this.desired.set(
-          p.position.x - sinH * 0.34,
-          carY + 1.12,
-          p.position.y - cosH * 0.34,
+          p.position.x - sinH * 0.40,
+          carY + 1.14,
+          p.position.y - cosH * 0.40,
         );
         // Aim at a point on the road well ahead, not at the horizon: the
-        // shallow downward angle is what keeps the track in the frame.
+        // shallow downward angle is what keeps the track in the frame and puts
+        // the horizon just above the middle of it.
         this.lookTarget.set(
           p.position.x + sinH * 34,
           carY + 0.35,
@@ -210,16 +278,25 @@ export class CameraDirector {
       }
 
       case 'bumper': {
-        // Nose height, ahead of the front axle. The lowest, fastest-feeling
-        // view — the front wing is inside the near plane so it never obstructs.
+        // Nose height, AHEAD OF THE WHOLE CAR. The lowest, fastest-feeling view.
+        //
+        // The front wing's foremost element reaches z = 3.075 and its endplates
+        // z = 3.02, so anything behind about 3.1 has the wing in shot. It used
+        // to sit at 2.35 on the theory that the wing was inside the near plane
+        // and therefore invisible — but the near plane is 0.35m and the wing
+        // runs from 2.5 to 3.08, so most of it is beyond that and duly filled
+        // the bottom half of the frame with a yellow slab. 3.20 clears the lot.
+        //
+        // Being a metre ahead of the car's mass is not a defect here: it is why
+        // a nose camera turns in early and feels quick.
         this.desired.set(
-          p.position.x + sinH * 2.35,
-          carY + 0.44,
-          p.position.y + cosH * 2.35,
+          p.position.x + sinH * 3.20,
+          carY + 0.46,
+          p.position.y + cosH * 3.20,
         );
         this.lookTarget.set(
           p.position.x + sinH * 40,
-          carY + 0.55,
+          carY + 0.62,
           p.position.y + cosH * 40,
         );
         this.applySmoothed(dt, 60, 22, this.anchor);
@@ -231,19 +308,24 @@ export class CameraDirector {
         // through a corner, close enough that the car is still the subject. It
         // trails lazily, so the car leads it into a turn rather than staying
         // welded to the centre of frame.
-        const dist = lerp(11, 14, clamp01(this.smoothSpeed / 90));
+        //
+        // On a long lens the aim can no longer afford to be as lazy as it was:
+        // a rate of 6 let the car drift a long way off centre, which was
+        // invisible at the old 87-degree spread and would now put it out of
+        // frame entirely.
+        const dist = lerp(12, 15, clamp01(this.smoothSpeed / 90));
         const yaw = heading - slip * 0.3;
         this.desired.set(
           p.position.x - Math.sin(yaw) * dist,
-          carY + 4.6,
+          carY + 3.4,
           p.position.y - Math.cos(yaw) * dist,
         );
         this.lookTarget.set(
           p.position.x + sinH * 2.5,
-          carY + 0.55,
+          carY + 1.00,
           p.position.y + cosH * 2.5,
         );
-        this.applySmoothed(dt, 3.6, 6, this.anchor);
+        this.applySmoothed(dt, 4.5, 9, this.anchor);
         break;
       }
 
@@ -254,16 +336,20 @@ export class CameraDirector {
         // camera shake, which is advanced at 55 radians per second whenever the
         // car is vibrating — so hitting a kerb sent the drone whipping around
         // the car at several revolutions a second.
+        //
+        // Closer and lower than it was. At 13m out and 6.5m up on a 60-degree
+        // vertical spread the car was a detail in a wide shot of empty tarmac;
+        // the point of this camera is to look AT the car.
         this.dronePhase += dt * 0.2;
         const orbit = this.dronePhase;
-        const dist = 13;
+        const dist = 10.5;
         this.desired.set(
           p.position.x + Math.sin(orbit) * dist,
-          carY + 6.5 + Math.sin(orbit * 0.7) * 2,
+          carY + 4.6 + Math.sin(orbit * 0.7) * 1.5,
           p.position.y + Math.cos(orbit) * dist,
         );
-        this.lookTarget.set(p.position.x, carY + 0.7, p.position.y);
-        this.applySmoothed(dt, 2.6, 5, this.anchor);
+        this.lookTarget.set(p.position.x, carY + 0.55, p.position.y);
+        this.applySmoothed(dt, 3.0, 8, this.anchor);
         break;
       }
 
@@ -274,7 +360,16 @@ export class CameraDirector {
         // The hand-over point is chosen so a camera is picked up while the car
         // is still approaching it and dropped once the car is past, rather than
         // cutting to a camera the car has already gone by.
-        const spacing = 340;
+        // Cameras every 220m rather than every 340m.
+        //
+        // Spacing sets how far the car can get from whichever camera has it: at
+        // 340 it was up to 190m away, and at that range on a circuit that turns,
+        // the sightline leaves the road and crosses the debris fence further
+        // round the lap — so the shot was through a fence even with the camera
+        // itself standing inside the barrier. Halving the reach mostly removes
+        // the geometry that causes it, and cutting every three seconds or so is
+        // what a broadcast director does anyway.
+        const spacing = 220;
         const nextAnchor = Math.floor(car.s / spacing) * spacing;
         if (nextAnchor !== this.tracksideAnchorS) {
           this.tracksideAnchorS = nextAnchor;
@@ -282,16 +377,35 @@ export class CameraDirector {
           this.tracksideSide = (Math.floor(nextAnchor / spacing) & 1) === 0 ? 1 : -1;
           this.initialised = false;
         }
-        const i = track.indexAt(this.tracksideAnchorS + spacing * 0.55);
-        const off = (track.width[i] * 0.5 + 16) * this.tracksideSide;
+        const i = track.indexAt(this.tracksideAnchorS + spacing * 0.5);
+
+        // INSIDE the barrier line, not outside it.
+        //
+        // This camera used to stand 16m beyond the track edge, which on a
+        // permanent circuit is two metres past the armco — so every shot was
+        // taken through the debris fence, and the fence runs from 1.5m to 5.4m
+        // above the barrier. Climbing over it is not an option: from any
+        // sensible offset the sightline to a car on the racing line would need
+        // the camera twelve metres in the air. The answer is to stand in front
+        // of the fence, where a real trackside operator stands.
+        //
+        // The offset is a fraction of wherever the armco actually is — read from
+        // the same function that places it — rather than a constant, so a Monaco
+        // camera is tucked into the barrier a metre off the road and a
+        // Silverstone one stands well back. A constant cannot be both.
+        const standoff = Math.min(7.0, nominalBarrierOffset(track) * 0.55);
+        const off = (track.width[i] * 0.5 + standoff) * this.tracksideSide;
         this.desired.set(
           track.px[i] + track.nx[i] * off,
-          track.elevation[i] + 6.5,
+          // Head height plus a low platform, scaled with how far back it is.
+          // Six and a half metres was a helicopter looking down on the roofs.
+          track.elevation[i] + 2.1 + standoff * 0.22,
           track.pz[i] + track.nz[i] * off,
         );
-        this.lookTarget.set(p.position.x, carY + 0.7, p.position.y);
-        // The camera position is static; only the aim tracks the car.
-        this.applySmoothed(dt, 100, 9);
+        this.lookTarget.set(p.position.x, carY + 0.55, p.position.y);
+        // The camera position is static; only the aim tracks the car, and on a
+        // long lens it has to track it briskly or the car leaves the frame.
+        this.applySmoothed(dt, 100, 12);
         break;
       }
     }
@@ -299,27 +413,30 @@ export class CameraDirector {
     // --- Field of view ------------------------------------------------------
     // Widening the FOV with speed is the single most effective way to convey it:
     // peripheral detail rushes past faster than the centre of the frame, which is
-    // exactly what happens to a driver's vision.
+    // exactly what happens to a driver's vision. See FOV above for what the
+    // numbers mean and why they are not what they used to be.
     let targetFov: number;
+    let fovRate = 4;
     if (this.mode === 'trackside') {
       // A real trackside camera zooms to hold the car at a usable size as it
       // approaches and goes past. A fixed focal length either loses the car in
       // the distance or has it fill the frame for a tenth of a second.
       const dx = this.camera.position.x - p.position.x;
       const dz = this.camera.position.z - p.position.y;
-      const dist = Math.max(12, Math.hypot(dx, dz));
-      targetFov = clamp((Math.atan(6.5 / dist) * 2 * 180) / Math.PI, 9, 40);
+      const dist = Math.max(10, Math.hypot(dx, dz));
+      // The long end has to be genuinely long. An 8-degree floor was already
+      // biting at ninety metres, which is well inside the range this camera
+      // covers, so the car stopped growing and simply shrank away up the road.
+      targetFov = clamp((Math.atan(TRACKSIDE_FRAMED_M / dist) * 2 * 180) / Math.PI, 5.5, 32);
+      // A car covers ground far faster than a rate of 4 can follow, and the zoom
+      // arriving a second late is worse than no zoom at all.
+      fovRate = 9;
     } else {
-      const baseFov =
-        this.mode === 'cockpit' ? 56 :
-        this.mode === 'bumper' ? 76 :
-        this.mode === 'onboard-t' ? 66 :
-        this.mode === 'drone' ? 46 :
-        this.mode === 'tv' ? 44 : 56;
-      targetFov = baseFov + clamp01(this.smoothSpeed / 95) * (this.mode === 'cockpit' ? 10 : 14);
+      const f = FOV[this.mode];
+      targetFov = f.base + clamp01(this.smoothSpeed / 95) * f.gain;
     }
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
-      this.camera.fov = damp(this.camera.fov, targetFov, 4, dt);
+      this.camera.fov = damp(this.camera.fov, targetFov, fovRate, dt);
       this.camera.updateProjectionMatrix();
     }
 
@@ -365,28 +482,48 @@ export class CameraDirector {
    */
   private updateCockpit(dt: number, car: CarEntry, track: TrackSpline, carY: number): void {
     const p = car.physics;
-    const sinH = Math.sin(p.heading);
-    const cosH = Math.cos(p.heading);
 
-    // Eye point, car-local to world. The car root carries the same transform,
-    // so this lands exactly where the modelled driver's eyes are.
+    // Chassis attitude, matching what the renderer applies to the car body so
+    // the modelled cockpit and the view stay locked together. Computed FIRST,
+    // because the eye point rides on it.
+    this.rigRoll = damp(this.rigRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
+    this.rigPitch = damp(this.rigPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
+
+    // Eye point, car-local to world.
+    //
+    // The roll and pitch have to be applied to the OFFSET, not just to the
+    // camera's orientation. The renderer rolls and pitches the whole car root
+    // about the contact-patch plane, so the modelled eye socket 0.7m up swings
+    // sideways by roll * 0.7 — about 42mm at full lock. Ignoring that left the
+    // camera stationary while the cockpit moved underneath it, and 42mm at the
+    // 0.44m the steering wheel sits from your face is five degrees of apparent
+    // shift. That is the "swim" that made the rim and the halo look like they
+    // were floating rather than bolted down; the rotation angles were already
+    // right, it was the position that was wrong.
+    this.eye.set(EYE_X, EYE_Y, EYE_Z);
+    this.carEuler.set(this.rigPitch, p.heading, this.rigRoll, 'XYZ');
+    this.eye.applyEuler(this.carEuler);
     this.camera.position.set(
-      p.position.x + cosH * EYE_X + sinH * EYE_Z,
-      carY + EYE_Y,
-      p.position.y - sinH * EYE_X + cosH * EYE_Z,
+      p.position.x + this.eye.x,
+      carY + this.eye.y,
+      p.position.y + this.eye.z,
     );
 
     // Drivers look at the apex, not at the nose. Take the heading of the track
     // a second or so ahead and turn part of the way toward it.
+    //
+    // A SMALL part of the way. Half the heading error, capped at 24 degrees, put
+    // the view a quarter turn off the car's axis at the apex — and because the
+    // cockpit is bolted to the car and the head is not, the halo, the wheel and
+    // the mirrors all slid bodily across the frame while the tub stayed put. The
+    // reference onboard footage does not do this at all: through every corner in
+    // it the cockpit sits dead centre and symmetric. Eleven degrees is enough to
+    // feel like a driver leaning into a corner and little enough that the car
+    // still frames the shot.
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
     const aheadHeading = track.headingAt(car.s + lookAheadM);
-    const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.5, -0.42, 0.42);
+    const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.30, -0.20, 0.20);
     this.headYaw = damp(this.headYaw, target, 2.6, dt);
-
-    // Chassis attitude, matching what the renderer applies to the car body so
-    // the modelled cockpit and the view stay locked together.
-    this.rigRoll = damp(this.rigRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
-    this.rigPitch = damp(this.rigPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
 
     // A three-degree nose-down bias: a driver's eyeline is on the road a hundred
     // metres away, not on the horizon.
