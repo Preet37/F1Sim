@@ -1008,12 +1008,26 @@ export function buildTrackMeshes(
         const fA = side > 0 ? uA : -uA;
         const fB = side > 0 ? uB : -uB;
 
+        // v runs 1 at the TOP of the board and 0 at the bottom, and getting that
+        // the wrong way round is what was still left of the mirrored-signage bug
+        // after the u fix above.
+        //
+        // three uploads a CanvasTexture with flipY on, so v=1 is the top row of
+        // the canvas as it was drawn. The strip is drawn with the sponsor's name
+        // across the upper half and the plinth band along the bottom. Mapping
+        // v=1 to the board's bottom edge therefore hung every board upside down
+        // — and upside-down text is mirrored text plus a vertical flip, which at
+        // a glance is indistinguishable from the horizontal mirroring the u fix
+        // had just dealt with. That is why negating u looked like it had not
+        // worked, and why negating it the other way looked like it had: one of
+        // the two mirrorings cancelled and the other did not.
+        //
         // Two triangles, wound so the inward face is front-facing on each side.
         const v = side > 0
-          ? [[x0, yA, z0, fA, 1], [x1, yB, z1, fB, 1], [x1, yB + BOARD_H, z1, fB, 0],
-             [x0, yA, z0, fA, 1], [x1, yB + BOARD_H, z1, fB, 0], [x0, yA + BOARD_H, z0, fA, 0]]
-          : [[x0, yA + BOARD_H, z0, fA, 0], [x1, yB + BOARD_H, z1, fB, 0], [x1, yB, z1, fB, 1],
-             [x0, yA + BOARD_H, z0, fA, 0], [x1, yB, z1, fB, 1], [x0, yA, z0, fA, 1]];
+          ? [[x0, yA, z0, fA, 0], [x1, yB, z1, fB, 0], [x1, yB + BOARD_H, z1, fB, 1],
+             [x0, yA, z0, fA, 0], [x1, yB + BOARD_H, z1, fB, 1], [x0, yA + BOARD_H, z0, fA, 1]]
+          : [[x0, yA + BOARD_H, z0, fA, 1], [x1, yB + BOARD_H, z1, fB, 1], [x1, yB, z1, fB, 0],
+             [x0, yA + BOARD_H, z0, fA, 1], [x1, yB, z1, fB, 0], [x0, yA, z0, fA, 0]];
 
         for (const p of v) {
           positions.push(p[0], p[1], p[2]);

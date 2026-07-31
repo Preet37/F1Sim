@@ -126,7 +126,11 @@ const clickPauseButton = async (pattern, what) => {
 
 console.log('\nRESUME PUTS THE PLAYER BACK ON TRACK');
 await clickPauseButton('^resume$', 'clicking Resume');
-await page.waitForTimeout(1200);
+// Long enough for the clock to move on a software rasteriser that is sharing
+// the machine. 1200ms was a handful of frames on a quiet box and none at all on
+// a busy one, which made this assertion fail for reasons that had nothing to do
+// with pausing.
+await page.waitForTimeout(4000);
 const resumed = await st();
 check(!resumed.paused && !resumed.overlayShown, 'the overlay is gone and the clock is running');
 check(resumed.simTime > t2, `time is moving again (${t2} -> ${resumed.simTime})`);
@@ -141,8 +145,19 @@ check(quit.screen !== 'racing', `the player is off the track (screen "${quit.scr
 check(!quit.hasEngine, 'the session engine has been released');
 check(!quit.overlayShown, 'the pause menu is not stranded over the menus');
 check(!quit.paused, 'the clock is not left paused');
-const title = await page.evaluate(() =>
-  (document.querySelector('.screen .title')?.textContent || '').trim());
+// What names a screen depends on which screen it is: the main menu carries the
+// wordmark, every other page carries a title in the top bar. Asking for all of
+// them is what keeps this assertion about "did we land somewhere real" rather
+// than about one screen's markup — the previous version looked for `.title`,
+// which the front-end redesign retired, so it went on passing right up until it
+// reported an empty string on a menu that was rendering perfectly.
+const title = await page.evaluate(() => {
+  for (const sel of ['.page-title', '.wordmark', '.title']) {
+    const t = (document.querySelector(sel)?.textContent || '').trim();
+    if (t) return t;
+  }
+  return '';
+});
 check(title.length > 0, `a real screen is showing ("${title}")`);
 
 console.log('\nAND THE GAME STILL WORKS AFTERWARDS');
