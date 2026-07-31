@@ -1477,9 +1477,23 @@ export class RaceEngine {
     // faster than the car was going forwards. The car does not feel it, because
     // it is a displacement and not a velocity, but the driver watches the world
     // slide across the screen and corrects for a slide that is not there.
+    //
+    // With one hard constraint on top: the entry road has to be finished with by
+    // the time the lane is fully open, because the PIT WALL starts there and it
+    // is solid. Merely slowing the transition down put the car alongside the
+    // wall while it was still crossing the line of it, and it stopped dead
+    // against it forty metres inside the lane. So the rate is whatever the
+    // remaining entry road demands, and the cap applies only where there is room
+    // for it — which is everywhere except the entry itself.
     const idx = this.track.indexAt(car.s);
     const want = targetLat - car.lateral;
-    const shift = Math.min(Math.abs(want), PIT_LANE_SHIFT_MS * dt) * Math.sign(want);
+    const roadLeftM = this.pitGeom.entryOpenU - this.pitGeom.u(car.s);
+    let rate = PIT_LANE_SHIFT_MS;
+    if (roadLeftM > 0) {
+      const secsLeft = roadLeftM / Math.max(car.physics.speedMs, 6);
+      rate = secsLeft > 0.05 ? Math.max(rate, Math.abs(want) / secsLeft) : Infinity;
+    }
+    const shift = Math.min(Math.abs(want), rate * dt) * Math.sign(want);
     car.physics.position.x += this.track.nx[idx] * shift;
     car.physics.position.y += this.track.nz[idx] * shift;
 
