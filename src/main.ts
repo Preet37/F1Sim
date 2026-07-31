@@ -1192,7 +1192,7 @@ class Game {
     const isRace = engine.config.kind === 'race';
     table.innerHTML =
       '<thead><tr><th>Pos</th><th>Driver</th><th>Team</th>' +
-      '<th class="num">' + (isRace ? 'Gap' : 'Best') + '</th>' +
+      '<th class="num">Gap</th>' +
       '<th class="num">Best Lap</th><th class="num">Stops</th><th>Notes</th></tr></thead>';
     const tbody = document.createElement('tbody');
 

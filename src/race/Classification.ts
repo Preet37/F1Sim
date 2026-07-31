@@ -6,8 +6,6 @@
  * `npm run regress:results`.
  */
 
-import { formatLapTime } from '../core/MathUtils';
-
 /** The subset of a car the classification actually reads. */
 export interface ClassifiedCar {
   position: number;
@@ -37,8 +35,17 @@ export function resultGapCell(car: ClassifiedCar, isRace: boolean): string {
   if (car.retired) return 'DNF';
 
   if (!isRace) {
-    // Pace sessions: the leading column is the lap that put the car here.
-    return formatLapTime(car.bestLapTime);
+    // Pace sessions: the deficit to the fastest car. The lap itself is in the
+    // next column, so printing it here too would waste one of only seven columns
+    // on a duplicate — which is what happened when this first stopped saying
+    // WINNER. A timing screen exists to answer "by how much", and in practice
+    // and qualifying that question is about pace, not about the flag.
+    // Written as `> 0` rather than `<= 0` so a NaN lap time — which compares
+    // false against everything — falls into the "no lap" branch rather than
+    // sailing past a `<=` test and printing a gap for a car that never ran.
+    if (car.position === 1) return car.bestLapTime > 0 ? 'FASTEST' : '—';
+    if (!(car.bestLapTime > 0) || !Number.isFinite(car.gapToLeader)) return '--.---';
+    return '+' + car.gapToLeader.toFixed(3);
   }
 
   if (car.position === 1) return 'WINNER';

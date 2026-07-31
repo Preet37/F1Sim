@@ -29,13 +29,15 @@ const car = (o: Partial<ClassifiedCar>): ClassifiedCar => ({
   bestLapTime: 0, gapToLeader: 0, lapsDown: 0, ...o,
 });
 
-console.log('\nPRACTICE AND QUALIFYING (no winner; the column is the lap)');
-eq(resultGapCell(car({ position: 1, bestLapTime: 89.762 }), false), '1:29.762',
-  'the fastest car in practice shows its lap');
-eq(resultGapCell(car({ position: 2, bestLapTime: 90.104 }), false), '1:30.104',
-  'the second car shows its lap');
-eq(resultGapCell(car({ position: 18, bestLapTime: 0 }), false), '--:--.---',
-  'a car that set no lap shows no lap');
+console.log('\nPRACTICE AND QUALIFYING (no winner; the column is the deficit in pace)');
+eq(resultGapCell(car({ position: 1, bestLapTime: 89.762 }), false), 'FASTEST',
+  'the quickest car is the quickest, not the winner of free practice');
+eq(resultGapCell(car({ position: 2, bestLapTime: 90.104, gapToLeader: 0.342 }), false), '+0.342',
+  'the second car shows how far off the pace it is');
+eq(resultGapCell(car({ position: 18, bestLapTime: 0 }), false), '--.---',
+  'a car that set no lap has no gap to show');
+eq(resultGapCell(car({ position: 1, bestLapTime: 0 }), false), '—',
+  'a session in which nobody set a lap has no fastest car');
 eq(resultGapCell(car({ position: 1, bestLapTime: 89.762, retired: true }), false), 'DNF',
   'a car that broke down is still DNF');
 
@@ -58,7 +60,9 @@ eq(resultGapCell(car({ position: 4, gapToLeader: NaN }), true), '--.---',
   'a gap that never resolved does not print NaN');
 eq(resultGapCell(car({ position: 4, gapToLeader: Infinity }), true), '--.---',
   'an infinite gap does not print Infinity');
-eq(resultGapCell(car({ position: 4, bestLapTime: NaN }), false), '--:--.---',
+eq(resultGapCell(car({ position: 4, bestLapTime: 90, gapToLeader: NaN }), false), '--.---',
+  'a practice gap that never resolved does not print NaN');
+eq(resultGapCell(car({ position: 4, bestLapTime: NaN, gapToLeader: 1 }), false), '--.---',
   'a lap time that never resolved does not print NaN');
 
 console.log('');
