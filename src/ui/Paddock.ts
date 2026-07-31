@@ -181,22 +181,26 @@ export function buildPaddock(parent: HTMLElement, opts: PaddockOptions = {}): vo
     const driverRows = drivers.map((d) => `
       <div class="pad-driver">
         <span class="pad-num">${d.raceNumber}</span>
+        <span class="pad-dcode">${d.code}</span>
         <span class="pad-dname">${d.firstName} ${d.lastName}</span>
         <span class="pad-nat">${d.nationality}</span>
         <span class="pad-skill">${Math.round(d.skill * 100)}</span>
       </div>`).join('');
 
+    // The header is the garage nameplate: the constructors' position, the team,
+    // its engine and its three-letter code, over a band of the livery colour.
+    // A team should be identifiable from the band alone, before any text.
     card.innerHTML = `
-      <div class="pad-head">
-        <span class="pad-rank">${rank + 1}</span>
+      <div class="pad-plate">
+        <span class="pad-rank">${String(rank + 1).padStart(2, '0')}</span>
         <div class="pad-titles">
           <div class="pad-team">${team.name}</div>
-          <div class="pad-engine">${team.engine}${team.id === opts.currentTeamId ? ' · YOUR TEAM' : ''}</div>
+          <div class="pad-engine">${team.engine}${team.id === opts.currentTeamId ? ' · your team' : ''}</div>
         </div>
         <span class="pad-code">${team.code}</span>
       </div>
       <div class="pad-body">
-        ${carSvg(team)}
+        <div class="pad-bay">${carSvg(team)}</div>
         <div class="pad-metrics">${metricRows}</div>
       </div>
       <div class="pad-drivers">${driverRows}</div>`;

@@ -15,6 +15,7 @@ import { CareerEngine, TIER_INFO, type CareerEvent, type SeasonResult } from './
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock } from './ui/Paddock';
+import { circuitSvg, circuitLoadingArt } from './ui/CircuitArt';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
 import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
 import type { CompoundId } from './data/tires';
@@ -49,6 +50,7 @@ class Game {
   private readonly canvas: HTMLCanvasElement;
   private readonly loading: HTMLElement;
   private readonly loadingText: HTMLElement;
+  private readonly loadingArt: HTMLElement;
 
   private renderer!: Renderer;
   private readonly input = new InputController();
@@ -91,6 +93,7 @@ class Game {
     this.canvas = document.getElementById('view') as HTMLCanvasElement;
     this.loading = document.getElementById('loading') as HTMLElement;
     this.loadingText = document.getElementById('loading-text') as HTMLElement;
+    this.loadingArt = document.getElementById('loading-art') as HTMLElement;
     this.settings = this.saves.loadSettings();
   }
 
@@ -217,8 +220,30 @@ class Game {
     this.hud.setCameraMode(mode);
   }
 
-  private setLoading(on: boolean, text = 'BUILDING CIRCUIT'): void {
+  /**
+   * The loading screen.
+   *
+   * When the circuit is known it draws itself while the session is built —
+   * the surveyed outline the physics is about to run on, traced by a red line
+   * over a kerb-striped bar. A spinner says "wait"; this says what you are
+   * waiting for, which is a lap of Suzuka.
+   */
+  private setLoading(on: boolean, text = 'BUILDING CIRCUIT', circuitId?: string): void {
     this.loadingText.textContent = text;
+    this.loadingArt.replaceChildren();
+    if (on && circuitId) {
+      const art = circuitLoadingArt(getCircuit(circuitId));
+      this.loadingArt.appendChild(art);
+      // The dash length has to be the path's own length or the trace either
+      // stops short or finishes early. It is only measurable once the element
+      // is in the document, which is why it happens here and not in CircuitArt.
+      const draw = art.querySelector('.ca-draw') as SVGPathElement | null;
+      if (draw && typeof draw.getTotalLength === 'function') {
+        const len = draw.getTotalLength();
+        draw.style.setProperty('--lap-length', String(len));
+        draw.style.strokeDasharray = String(len);
+      }
+    }
     this.loading.classList.toggle('hidden', !on);
   }
 
@@ -253,21 +278,159 @@ class Game {
     return b;
   }
 
+  /**
+   * The chassis every screen is built on.
+   *
+   * A header carrying the breadcrumb tab, the title and a short column of
+   * figures; a scrolling body; and an action bar pinned to the bottom edge. The
+   * point of pinning the action bar is not decoration: "Race Weekend" used to
+   * sit at the end of a page that ran past the fold on a laptop and a thousand
+   * pixels past it on a phone, so the one thing the screen existed to offer was
+   * the one thing you had to go looking for.
+   *
+   * Going back is a chevron in the top-left corner, in the same place on every
+   * screen, rather than a grey button of the same size and colour as four
+   * others in a row at the bottom.
+   */
+  private page(opts: {
+    tab?: string;
+    title?: string;
+    titleHtml?: string;
+    sub?: string;
+    back?: () => void;
+    meta?: [string, string][];
+  }): { body: HTMLElement; actions: HTMLElement } {
+    this.screenRoot.innerHTML = '';
+    const page = this.el('div', 'page', this.screenRoot);
+
+    if (opts.tab || opts.title || opts.back) {
+      const bar = this.el('div', 'topbar', page);
+
+      if (opts.back) {
+        const back = document.createElement('button');
+        back.className = 'navback';
+        back.type = 'button';
+        back.setAttribute('aria-label', 'Back');
+        back.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" ' +
+          'stroke-linecap="square"><path d="M15 4 L7 12 L15 20"/></svg>';
+        back.addEventListener('click', opts.back);
+        bar.appendChild(back);
+      } else {
+        // Keeps the title column in the same place whether or not there is a
+        // way back, so the title does not jump sideways between screens.
+        this.el('div', 'navback-gap', bar);
+      }
+
+      const titles = this.el('div', 'topbar-titles', bar);
+      if (opts.tab) this.el('div', 'tab', titles, opts.tab);
+      if (opts.title || opts.titleHtml) {
+        const t = this.el('h1', 'page-title', titles);
+        if (opts.titleHtml) t.innerHTML = opts.titleHtml;
+        else t.textContent = opts.title ?? '';
+      }
+      if (opts.sub) this.el('div', 'page-sub', titles, opts.sub);
+
+      const meta = this.el('div', 'topbar-meta', bar);
+      for (const [label, value] of opts.meta ?? []) {
+        const item = this.el('div', 'meta-item', meta);
+        this.el('div', 'meta-label', item, label);
+        this.el('div', 'meta-value', item, value);
+      }
+
+      this.el('div', 'kerb-rule', page);
+    }
+
+    const body = this.el('div', 'page-body', page);
+    const actions = this.el('div', 'actionbar', page);
+    return { body, actions };
+  }
+
+  /** Pushes everything added after it to the right-hand end of the action bar. */
+  private spacer(actions: HTMLElement): void {
+    this.el('div', 'actionbar-spacer', actions);
+  }
+
+  /**
+   * A circuit as a card: its own surveyed outline, then the three numbers that
+   * decide whether you want to drive it.
+   *
+   * The map is the point. Eleven cards reading "5.807 km · 53 laps" are eleven
+   * rows of a table; eleven outlines are eleven circuits, and the figure-of-
+   * eight is recognisable from across the room.
+   */
+  private circuitCard(
+    parent: HTMLElement,
+    def: ReturnType<typeof getCircuit>,
+    opts: { selected?: boolean; onClick?: () => void } = {},
+  ): HTMLElement {
+    const card = this.el('div', 'circuit-card' + (opts.selected ? ' selected' : ''), parent);
+    card.setAttribute('role', 'button');
+    card.tabIndex = 0;
+
+    card.innerHTML =
+      '<div class="cc-map">' +
+      '<span class="cc-code">' + escapeHtml(def.countryCode) + '</span>' +
+      circuitSvg(def) +
+      '</div>' +
+      '<div class="cc-body">' +
+      '<div class="cc-name">' + escapeHtml(def.name) + '</div>' +
+      '<div class="cc-where">' + escapeHtml(def.city + ', ' + def.country) + '</div>' +
+      '<div class="cc-strip">' +
+      '<div class="cc-cell"><div class="cc-cell-label">Length</div>' +
+      '<div class="cc-cell-value">' + (def.lengthM / 1000).toFixed(3) + ' km</div></div>' +
+      '<div class="cc-cell"><div class="cc-cell-label">Laps</div>' +
+      '<div class="cc-cell-value">' + def.raceLaps + '</div></div>' +
+      '<div class="cc-cell"><div class="cc-cell-label">Pole</div>' +
+      '<div class="cc-cell-value record">' + formatLapTime(def.referencePoleTimeS) + '</div></div>' +
+      '</div></div>';
+
+    if (opts.onClick) {
+      card.addEventListener('click', opts.onClick);
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          opts.onClick?.();
+        }
+      });
+    }
+    return card;
+  }
+
   private showMenu(): void {
     this.setScreen('menu');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
+    const { body } = this.page({});
 
-    const title = this.el('div', 'title', inner);
-    title.innerHTML = 'F1<span class="acc">SIM</span>';
-    this.el('div', 'subtitle', inner,
-      'Full-simulation Formula racing · driver academy to world champion');
+    const hero = this.el('div', 'hero', body);
+    const mark = this.el('div', 'wordmark', hero);
+    mark.innerHTML = 'F1<span class="acc">SIM</span>';
+
+    const line = this.el('div', 'hero-line', hero);
+    this.el('div', 'hero-kerb', line);
+    this.el('div', '', line,
+      'A full physics simulation, eleven real circuits and a career that starts ' +
+      'in Formula 3. Every number on every screen is one the car actually uses.');
 
     const recent = this.saves.mostRecent();
-    const row = this.el('div', 'btn-row', inner);
+    const actions = this.el('div', 'menu-actions', hero);
+
+    let index = 0;
+    const entry = (name: string, desc: string, onClick: () => void, lead = false) => {
+      index++;
+      const b = document.createElement('button');
+      b.className = 'menu-item' + (lead ? ' lead' : '');
+      b.type = 'button';
+      b.innerHTML =
+        '<span class="menu-index">' + String(index).padStart(2, '0') + '</span>' +
+        '<span class="menu-name">' + escapeHtml(name) + '</span>' +
+        '<span class="menu-desc">' + escapeHtml(desc) + '</span>';
+      b.addEventListener('click', onClick);
+      actions.appendChild(b);
+      return b;
+    };
 
     if (recent) {
-      this.button('Continue Career', row, () => {
+      entry('Continue', 'Pick your career back up where you left it', () => {
         const state = this.saves.load(recent.id);
         if (!state) {
           alert('That save could not be loaded.');
@@ -276,46 +439,48 @@ class Game {
         this.careerId = recent.id;
         this.career = new CareerEngine(state);
         this.showCareerHub();
-      });
+      }, true);
     }
-    this.button(recent ? 'New Career' : 'Start Career', row, () => this.showCareerCreate(),
-      recent ? 'btn secondary' : 'btn');
-    this.button('Quick Race', row, () => this.showSessionSelect(true), 'btn secondary');
-    this.button('Paddock', row, () => this.showPaddock(), 'btn secondary');
-    this.button('Settings', row, () => this.showSettings(), 'btn secondary');
+    entry(recent ? 'New Career' : 'Start Career',
+      'Sign for a junior team and race for a Formula 1 seat',
+      () => this.showCareerCreate(), !recent);
+    entry('Quick Race', 'Any circuit, any session, straight to the grid',
+      () => this.showSessionSelect(true));
+    entry('Paddock', 'Every team, every car and what it is good at',
+      () => this.showPaddock());
+    entry('Settings', 'Assists, opposition, camera and audio',
+      () => this.showSettings());
 
     if (this.saves.isEphemeral) {
-      const warn = this.el('div', 'card-meta', inner,
-        'Storage is unavailable in this browser mode — progress will not survive a reload.');
-      warn.style.marginTop = '14px';
+      this.el('div', 'notice', body,
+        'This browser is blocking storage, so a career will not survive a reload. ' +
+        'Everything else works normally.');
     }
 
-    // Circuit list, so the front page shows what is actually in the game.
-    this.el('div', 'section-title', inner, 'Circuits');
-    const grid = this.el('div', 'card-grid', inner);
+    // The circuit list, so the front page shows what is actually in the game.
+    this.el('div', 'section-title', body, 'Circuits');
+    const grid = this.el('div', 'grid-circuits', body);
     for (const c of CIRCUITS) {
-      const card = this.el('div', 'card', grid);
-      this.el('div', 'card-name', card, c.name);
-      this.el('div', 'card-meta', card, c.officialName + ' · ' + c.country);
-      this.el('div', 'card-stat', card,
-        (c.lengthM / 1000).toFixed(3) + ' km · ' + c.raceLaps + ' laps · pole ' +
-        formatLapTime(c.referencePoleTimeS));
-      card.addEventListener('click', () => {
-        this.quickCircuitId = c.id;
-        this.showSessionSelect(true);
+      this.circuitCard(grid, c, {
+        onClick: () => {
+          this.quickCircuitId = c.id;
+          this.showSessionSelect(true);
+        },
       });
     }
   }
 
   private showCareerCreate(): void {
     this.setScreen('career-create');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, 'New Career');
-    this.el('div', 'subtitle', inner,
-      'You start in Formula 3 with a junior team. Earn a Formula 1 seat, then a championship.');
+    const { body, actions } = this.page({
+      tab: 'Main Menu',
+      title: 'New Career',
+      sub: 'You start in Formula 3 with a junior team. Earn a Formula 1 seat, then a championship.',
+      back: () => this.showMenu(),
+    });
 
-    const form = this.el('div', 'row', inner);
+    this.el('div', 'section-title', body, 'Driver');
+    const form = this.el('div', 'row', body);
     const mk = (label: string, value: string): HTMLInputElement => {
       const f = this.el('div', 'field', form);
       const l = document.createElement('label');
@@ -330,16 +495,27 @@ class Game {
     const last = mk('Last name', 'Carter');
     const nat = mk('Nationality', 'United Kingdom');
 
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Begin', row, () => {
+    this.el('div', 'section-title', body, 'What happens next');
+    const grid = this.el('div', 'stat-grid', body);
+    const step = (label: string, value: string, meta: string) => {
+      const s = this.el('div', 'stat', grid);
+      this.el('div', 'stat-label', s, label);
+      this.el('div', 'stat-value', s, value);
+      this.el('div', 'stat-meta', s, meta);
+    };
+    step('Starting tier', TIER_INFO.F3.name, 'A junior seat, and a car to match');
+    step('Calendar', TIER_INFO.F3.rounds + ' rounds', 'One season to prove yourself');
+    step('Promotion', 'On results', 'Reputation opens the door to F2, then F1');
+
+    this.spacer(actions);
+    this.button('Begin Career', actions, () => {
       const f = first.value.trim() || 'Alex';
       const l = last.value.trim() || 'Carter';
       this.career = CareerEngine.create(f, l, nat.value.trim() || 'United Kingdom');
       this.careerId = 'career-' + Date.now().toString(36);
       this.saves.save(this.careerId, this.career.state);
       this.showCareerHub();
-    });
-    this.button('Back', row, () => this.showMenu(), 'btn secondary');
+    }, 'btn primary');
   }
 
   private showCareerHub(): void {
@@ -347,138 +523,198 @@ class Game {
     if (!career) { this.showMenu(); return; }
 
     this.setScreen('career-hub');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
     const s = career.state;
     const team = getTeam(s.teamId);
+    const standings = career.sortedStandings();
+    const mine = standings.find((e) => e.driverId === 'PLAYER');
+    const champPos = Math.max(1, standings.findIndex((e) => e.driverId === 'PLAYER') + 1);
+    const round = Math.min(s.round + 1, career.calendar.length);
 
-    this.el('div', 'title', inner, s.player.firstName + ' ' + s.player.lastName);
-    this.el('div', 'subtitle', inner,
-      TIER_INFO[s.tier].name + ' · ' + team.name + ' · ' + s.seasonYear +
-      ' · Round ' + Math.min(s.round + 1, career.calendar.length) + ' of ' + career.calendar.length);
+    const { body, actions } = this.page({
+      tab: TIER_INFO[s.tier].name + ' · ' + s.seasonYear,
+      title: s.player.firstName + ' ' + s.player.lastName,
+      sub: team.name + ' · ' + s.player.nationality,
+      back: () => this.showMenu(),
+      meta: [
+        ['Round', round + ' / ' + career.calendar.length],
+        ['Points', String(mine?.points ?? 0)],
+      ],
+    });
 
     // --- Driver and team state -------------------------------------------
-    this.el('div', 'section-title', inner, 'Status');
-    const statGrid = this.el('div', 'card-grid', inner);
-    const stat = (name: string, value: string, meta = '') => {
-      const c = this.el('div', 'card', statGrid);
-      this.el('div', 'card-meta', c, name);
-      this.el('div', 'card-name', c, value);
-      if (meta) this.el('div', 'card-stat', c, meta);
+    this.el('div', 'section-title', body, 'Season so far');
+    const statGrid = this.el('div', 'stat-grid', body);
+    const stat = (name: string, value: string, meta = '', hero = false) => {
+      const c = this.el('div', 'stat' + (hero ? ' hero' : ''), statGrid);
+      this.el('div', 'stat-label', c, name);
+      this.el('div', 'stat-value', c, value);
+      if (meta) this.el('div', 'stat-meta', c, meta);
     };
-    stat('Championship', 'P' + Math.max(1, career.sortedStandings().findIndex((e) => e.driverId === 'PLAYER') + 1),
-      (career.sortedStandings().find((e) => e.driverId === 'PLAYER')?.points ?? 0) + ' pts');
-    stat('Reputation', Math.round(s.reputation) + '/100');
-    stat('Team morale', Math.round(s.teamMorale) + '/100');
-    stat('Pressure', Math.round(s.pressureLevel) + '/100');
-    stat('Pace', (s.player.skill * 100).toFixed(0) + '/100', 'consistency ' + (s.player.consistency * 100).toFixed(0));
+    stat('Championship', 'P' + champPos,
+      (mine?.points ?? 0) + ' pts · ' + (mine?.wins ?? 0) + ' wins', true);
+    stat('Reputation', Math.round(s.reputation) + '', 'out of 100');
+    stat('Team morale', Math.round(s.teamMorale) + '', 'out of 100');
+    stat('Pressure', Math.round(s.pressureLevel) + '', 'out of 100');
+    stat('Pace', (s.player.skill * 100).toFixed(0) + '',
+      'consistency ' + (s.player.consistency * 100).toFixed(0));
     stat('Budget', '£' + (s.money / 1000).toFixed(0) + 'k',
-      s.contractYears + (s.contractYears === 1 ? ' year left' : ' years left'));
+      s.contractYears + (s.contractYears === 1 ? ' year on the contract' : ' years on the contract'));
 
     if (s.titles.length > 0) {
-      this.el('div', 'section-title', inner, 'Honours');
-      const t = this.el('div', 'card-grid', inner);
+      this.el('div', 'section-title', body, 'Honours');
+      const t = this.el('div', 'stat-grid', body);
       for (const title of s.titles) {
-        const c = this.el('div', 'card selected', t);
-        this.el('div', 'card-name', c, title.year + ' ' + TIER_INFO[title.tier].name);
-        this.el('div', 'card-meta', c, title.type === 'drivers' ? "Drivers' Champion" : "Constructors' Champion");
+        const c = this.el('div', 'stat hero', t);
+        this.el('div', 'stat-label', c, String(title.year));
+        this.el('div', 'stat-value', c, TIER_INFO[title.tier].name);
+        this.el('div', 'stat-meta', c,
+          title.type === 'drivers' ? "Drivers' Champion" : "Constructors' Champion");
       }
     }
 
     // --- Next round -------------------------------------------------------
     if (career.seasonComplete) {
-      this.el('div', 'section-title', inner, 'Season complete');
-      const row = this.el('div', 'btn-row', inner);
-      this.button('End Season', row, () => {
+      this.el('div', 'section-title', body, 'Season complete');
+      this.el('div', 'notice', body,
+        'Every round has been run. Close the season to take your promotion, your ' +
+        'contract offers and next year’s calendar.');
+
+      this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
+      this.spacer(actions);
+      this.button('End Season', actions, () => {
         const outcome = career.endSeason();
         this.saves.save(this.careerId, career.state);
         alert(outcome.summary);
         this.showCareerHub();
-      });
-      this.button('Standings', row, () => this.showStandings(), 'btn secondary');
+      }, 'btn primary');
       return;
     }
 
     const circuit = getCircuit(career.currentCircuitId);
-    this.el('div', 'section-title', inner, 'Next round');
-    const rc = this.el('div', 'card selected', inner);
-    this.el('div', 'card-name', rc, circuit.name + ' — ' + circuit.officialName);
-    this.el('div', 'card-meta', rc, circuit.city + ', ' + circuit.country);
-    this.el('div', 'card-stat', rc,
-      (circuit.lengthM / 1000).toFixed(3) + ' km · ' + circuit.raceLaps + ' laps · ' +
-      circuit.corners?.length + ' named corners');
+    this.el('div', 'section-title', body, 'Round ' + round + ' — next up');
 
-    this.garageCard(inner, circuit.id, () => this.showCareerHub());
+    const round1 = this.el('div', 'round-card', body);
+    const art = this.el('div', 'round-map', round1);
+    art.innerHTML = circuitSvg(circuit);
+    const rtext = this.el('div', 'round-text', round1);
+    this.el('div', 'round-name', rtext, circuit.name);
+    this.el('div', 'round-official', rtext, circuit.officialName + ' · ' + circuit.city + ', ' + circuit.country);
+    const rfacts = this.el('div', 'round-facts', rtext);
+    const fact = (label: string, value: string) => {
+      const f = this.el('div', 'round-fact', rfacts);
+      this.el('div', 'cc-cell-label', f, label);
+      this.el('div', 'cc-cell-value', f, value);
+    };
+    fact('Distance', (circuit.lengthM / 1000).toFixed(3) + ' km × ' + circuit.raceLaps);
+    fact('Corners', String(circuit.corners?.length ?? 0));
+    fact('Pole', formatLapTime(circuit.referencePoleTimeS));
+    fact('Rain risk', Math.round(circuit.rainChance * 100) + '%');
 
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Race Weekend', row, () => this.startWeekend(circuit.id));
-    this.button('Practice Only', row, () => {
+    this.garageCard(body, circuit.id, () => this.showCareerHub());
+
+    this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
+    this.button('Practice Only', actions, () => {
       this.weekend = [this.sessionConfig('practice', 'Practice', circuit.id, 600, 0)];
       this.weekendIndex = 0;
       this.beginSession(circuit.id);
-    }, 'btn secondary');
-    this.button('Simulate Race', row, () => {
+    }, 'btn ghost');
+    this.button('Simulate Race', actions, () => {
       const wet = Math.random() < circuit.rainChance;
       const result = career.simulateRace(circuit.id, wet);
       career.recordResult(result);
       this.saves.save(this.careerId, career.state);
       this.afterRace(result);
-    }, 'btn secondary');
-    this.button('Standings', row, () => this.showStandings(), 'btn secondary');
-    this.button('Main Menu', row, () => this.showMenu(), 'btn secondary');
+    }, 'btn ghost');
+    this.spacer(actions);
+    this.button('Race Weekend', actions, () => this.startWeekend(circuit.id), 'btn primary');
   }
 
   private showStandings(): void {
     const career = this.career;
     if (!career) { this.showMenu(); return; }
     this.setScreen('standings');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, 'Championship');
-    this.el('div', 'subtitle', inner, TIER_INFO[career.state.tier].name + ' · ' + career.state.seasonYear);
 
+    const rows = career.sortedStandings();
+    const leader = rows[0];
+    const { body } = this.page({
+      tab: TIER_INFO[career.state.tier].name,
+      title: 'Championship',
+      sub: career.state.seasonYear + ' · ' + (career.state.round === 0
+        ? 'before the first round'
+        : 'after ' + career.state.round + (career.state.round === 1 ? ' round' : ' rounds')),
+      back: () => this.showCareerHub(),
+      meta: leader ? [['Leader', career.displayName(leader)]] : [],
+    });
+
+    const wrap = this.el('div', 'table-wrap', body);
     const table = document.createElement('table');
     table.className = 'standings';
     table.innerHTML =
       '<thead><tr><th>Pos</th><th>Driver</th><th>Team</th>' +
       '<th class="num">Pts</th><th class="num">Wins</th><th class="num">Podiums</th></tr></thead>';
     const tbody = document.createElement('tbody');
-    for (const [i, e] of career.sortedStandings().entries()) {
+    for (const [i, e] of rows.entries()) {
       const tr = document.createElement('tr');
       if (e.driverId === 'PLAYER') tr.className = 'me';
-      const teamName = e.teamId ? getTeam(e.teamId).shortName : '—';
+      const team = e.teamId ? getTeam(e.teamId) : null;
+      const chip = team
+        ? '<span class="team-chip" style="background:' + hexColour(team.colour) + '"></span>'
+        : '';
       tr.innerHTML =
-        '<td>' + (i + 1) + '</td>' +
-        '<td>' + escapeHtml(career.displayName(e)) + '</td>' +
-        '<td>' + escapeHtml(teamName) + '</td>' +
+        '<td class="pos">' + (i + 1) + '</td>' +
+        '<td>' + chip + escapeHtml(career.displayName(e)) + '</td>' +
+        '<td>' + escapeHtml(team ? team.shortName : '—') + '</td>' +
         '<td class="num">' + e.points + '</td>' +
         '<td class="num">' + e.wins + '</td>' +
         '<td class="num">' + e.podiums + '</td>';
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    inner.appendChild(table);
-
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Back', row, () => this.showCareerHub(), 'btn secondary');
+    wrap.appendChild(table);
   }
 
   private showSessionSelect(quick: boolean): void {
     this.setScreen('session-select');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
     const circuit = getCircuit(this.quickCircuitId);
 
-    this.el('div', 'title', inner, circuit.name);
-    this.el('div', 'subtitle', inner, circuit.officialName + ' · ' + circuit.city);
+    const { body } = this.page({
+      tab: quick && !this.career ? 'Quick Race' : 'Race Weekend',
+      title: circuit.name,
+      sub: circuit.officialName + ' · ' + circuit.city + ', ' + circuit.country,
+      back: () => (this.career ? this.showCareerHub() : this.showMenu()),
+      meta: [
+        ['Lap', (circuit.lengthM / 1000).toFixed(3) + ' km'],
+        ['Pole', formatLapTime(circuit.referencePoleTimeS)],
+      ],
+    });
+
+    // The circuit itself, at the size it deserves: this is the decision the
+    // screen is about, and the shape of the place tells you more about the
+    // session ahead than any of the figures beside it.
+    const hero = this.el('div', 'circuit-hero', body);
+    const map = this.el('div', 'circuit-hero-map', hero);
+    map.innerHTML = circuitSvg(circuit, { weight: 4.4 });
+    const facts = this.el('div', 'circuit-hero-facts', hero);
+    const fact = (label: string, value: string) => {
+      const f = this.el('div', 'round-fact', facts);
+      this.el('div', 'cc-cell-label', f, label);
+      this.el('div', 'cc-cell-value', f, value);
+    };
+    fact('Grand Prix', circuit.raceLaps + ' laps');
+    fact('Corners', String(circuit.corners?.length ?? 0));
+    fact('Direction', circuit.clockwise ? 'Clockwise' : 'Anti-clockwise');
+    fact('DRS zones', String(circuit.drsZones.length));
+    fact('Downforce', circuit.downforceDemand >= 0.66 ? 'High'
+      : circuit.downforceDemand >= 0.4 ? 'Medium' : 'Low');
+    fact('Rain risk', Math.round(circuit.rainChance * 100) + '%');
 
     // The garage before the session, because the setup is a decision you make
     // about the car and then go and drive — not an afterthought at the bottom
     // of the page.
-    this.garageCard(inner, circuit.id, () => this.showSessionSelect(quick));
+    this.garageCard(body, circuit.id, () => this.showSessionSelect(quick));
 
-    this.el('div', 'section-title', inner, 'Session');
-    const grid = this.el('div', 'card-grid', inner);
+    this.el('div', 'section-title', body, 'Choose a session');
+    const grid = this.el('div', 'card-grid', body);
 
     const option = (name: string, meta: string, make: () => SessionConfig[]) => {
       const c = this.el('div', 'card', grid);
@@ -505,20 +741,17 @@ class Game {
     option('Full Weekend', 'Three practice sessions, Q1-Q2-Q3, then the race',
       () => this.weekendSessions(circuit.id));
 
-    this.el('div', 'section-title', inner, 'Circuit');
-    const other = this.el('div', 'card-grid', inner);
+    this.el('div', 'section-title', body, 'Race somewhere else');
+    const other = this.el('div', 'grid-circuits', body);
     for (const c of CIRCUITS) {
-      const card = this.el('div', 'card' + (c.id === circuit.id ? ' selected' : ''), other);
-      this.el('div', 'card-name', card, c.name);
-      this.el('div', 'card-meta', card, c.country);
-      card.addEventListener('click', () => {
-        this.quickCircuitId = c.id;
-        this.showSessionSelect(quick);
+      this.circuitCard(other, c, {
+        selected: c.id === circuit.id,
+        onClick: () => {
+          this.quickCircuitId = c.id;
+          this.showSessionSelect(quick);
+        },
       });
     }
-
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Back', row, () => (this.career ? this.showCareerHub() : this.showMenu()), 'btn secondary');
   }
 
   /** The team whose car the player is driving. */
@@ -591,14 +824,20 @@ class Game {
     const setup = this.ensureSetup(circuitId);
 
     this.setScreen('setup');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, 'Car Setup');
-    this.el('div', 'subtitle', inner,
-      circuit.name + ' · ' + this.playerTeam().name +
-      ' — every slider changes a number the physics integrates, not a rating');
+    const { body, actions } = this.page({
+      tab: 'Garage · ' + circuit.name,
+      title: 'Car Setup',
+      sub: 'Every slider changes a number the physics integrates, not a rating. ' +
+        'The readout at the top is what the car will actually do.',
+      back,
+      meta: [
+        ['Team', this.playerTeam().shortName],
+        ['Downforce', circuit.downforceDemand >= 0.66 ? 'High'
+          : circuit.downforceDemand >= 0.4 ? 'Medium' : 'Low'],
+      ],
+    });
 
-    buildSetupScreen(inner, {
+    buildSetupScreen(body, {
       setup,
       compound: this.playerCompound ?? 'medium',
       team: this.playerTeam(),
@@ -613,13 +852,13 @@ class Game {
       },
     });
 
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Done', row, back);
-    this.button('Reset to baseline', row, () => {
+    this.button('Reset to baseline', actions, () => {
       this.playerSetup = defaultSetupFor(circuit);
       this.playerCompound = null;
       this.showSetup(circuitId, back);
-    }, 'btn secondary');
+    }, 'btn ghost');
+    this.spacer(actions);
+    this.button('Done', actions, back, 'btn primary');
   }
 
   /**
@@ -631,31 +870,35 @@ class Game {
    */
   private showPaddock(): void {
     this.setScreen('paddock');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, 'Paddock');
-    this.el('div', 'subtitle', inner,
-      'Every bar reads a multiplier the physics applies directly — these cars really are different.');
-
-    buildPaddock(inner, {
-      currentTeamId: this.career?.state.teamId,
+    const { body } = this.page({
+      tab: 'Main Menu',
+      title: 'The Paddock',
+      sub: 'Every bar reads a multiplier the physics applies directly. These cars really ' +
+        'are different, and the order below is the order they should finish in.',
+      back: () => this.showMenu(),
+      meta: [['Teams', String(TEAMS.length)], ['Drivers', String(DRIVERS.length)]],
     });
 
-    this.button('Back', inner, () => this.showMenu(), 'btn secondary');
+    buildPaddock(body, {
+      currentTeamId: this.career?.state.teamId,
+    });
   }
 
   private showSettings(): void {
     this.setScreen('settings');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, 'Settings');
-    this.el('div', 'subtitle', inner, 'Assists are off by default. The car is the same either way.');
+    const { body } = this.page({
+      tab: 'Main Menu',
+      title: 'Settings',
+      sub: 'Assists are off by default. The car is the same either way — an assist ' +
+        'limits what your input can ask for, it does not change the machine.',
+      back: () => (this.career ? this.showCareerHub() : this.showMenu()),
+    });
 
     const toggle = (label: string, meta: string, get: () => boolean, set: (v: boolean) => void) => {
       const c = this.el('div', 'card' + (get() ? ' selected' : ''), grid);
+      this.el('div', 'card-state', c, get() ? 'On' : 'Off');
       this.el('div', 'card-name', c, label);
       this.el('div', 'card-meta', c, meta);
-      this.el('div', 'card-stat', c, get() ? 'ON' : 'OFF');
       c.addEventListener('click', () => {
         set(!get());
         this.saves.saveSettings(this.settings);
@@ -666,15 +909,15 @@ class Game {
     // --- Opposition -------------------------------------------------------
     // First, because it is the setting that changes the game most and the one
     // a player is most likely to be looking for.
-    this.el('div', 'section-title', inner, 'Opposition');
-    const dg = this.el('div', 'card-grid', inner);
+    this.el('div', 'section-title', body, 'Opposition');
+    const dg = this.el('div', 'card-grid', body);
     for (const id of ['easy', 'medium', 'hard'] as const) {
       const level = AI_DIFFICULTIES[id];
       const selected = this.settings.aiDifficulty === id;
       const c = this.el('div', 'card' + (selected ? ' selected' : ''), dg);
+      if (selected) this.el('div', 'card-state', c, 'Racing');
       this.el('div', 'card-name', c, level.label);
       this.el('div', 'card-meta', c, level.blurb);
-      this.el('div', 'card-stat', c, selected ? 'ON' : '');
       c.addEventListener('click', () => {
         this.settings.aiDifficulty = id;
         // Applied live as well as saved, so a player who changes it mid-weekend
@@ -685,8 +928,8 @@ class Game {
       });
     }
 
-    this.el('div', 'section-title', inner, 'Driving');
-    const grid = this.el('div', 'card-grid', inner);
+    this.el('div', 'section-title', body, 'Driving');
+    const grid = this.el('div', 'card-grid', body);
     toggle('Speed-sensitive steering', 'Reduces lock at speed, as a real rack does',
       () => this.settings.speedSensitiveSteering,
       (v) => { this.settings.speedSensitiveSteering = v; this.input.config.speedSensitiveSteering = v; });
@@ -700,15 +943,15 @@ class Game {
       () => this.settings.brakingAssist,
       (v) => { this.settings.brakingAssist = v; this.input.config.brakingAssist = v; });
 
-    this.el('div', 'section-title', inner, 'Audio');
-    const ag = this.el('div', 'card-grid', inner);
-    // Five steps rather than a slider: a slider is fiddly on a phone and nobody
+    this.el('div', 'section-title', body, 'Volume');
+    const ag = this.el('div', 'card-grid', body);
+    // Four steps rather than a slider: a slider is fiddly on a phone and nobody
     // needs finer resolution than this on a master volume.
     for (const [label, value] of [['Off', 0], ['Quiet', 0.35], ['Normal', 0.7], ['Loud', 1]] as const) {
       const selected = Math.abs(this.settings.masterVolume - value) < 0.03;
       const c = this.el('div', 'card' + (selected ? ' selected' : ''), ag);
+      this.el('div', 'card-state', c, Math.round(value * 100) + '%');
       this.el('div', 'card-name', c, label);
-      this.el('div', 'card-stat', c, Math.round(value * 100) + '%');
       c.addEventListener('click', () => {
         this.settings.masterVolume = value;
         this.audio.setVolume(value);
@@ -720,12 +963,12 @@ class Game {
     }
 
     if (this.input.touchAvailable) {
-      this.el('div', 'section-title', inner, 'Mobile');
-      const mg = this.el('div', 'card-grid', inner);
+      this.el('div', 'section-title', body, 'On a phone');
+      const mg = this.el('div', 'card-grid', body);
       const c = this.el('div', 'card' + (this.input.tiltEnabled ? ' selected' : ''), mg);
+      this.el('div', 'card-state', c, this.input.tiltEnabled ? 'On' : 'Off');
       this.el('div', 'card-name', c, 'Tilt steering');
-      this.el('div', 'card-meta', c, 'Steer by tilting the phone (needs permission)');
-      this.el('div', 'card-stat', c, this.input.tiltEnabled ? 'ON' : 'OFF');
+      this.el('div', 'card-meta', c, 'Steer by tilting the phone. Needs permission.');
       c.addEventListener('click', async () => {
         if (this.input.tiltEnabled) {
           this.input.disableTilt();
@@ -740,10 +983,12 @@ class Game {
       });
     }
 
-    this.el('div', 'section-title', inner, 'Camera');
-    const cams = this.el('div', 'card-grid', inner);
+    this.el('div', 'section-title', body, 'Camera');
+    const cams = this.el('div', 'card-grid', body);
     for (const mode of CAMERA_MODES) {
-      const c = this.el('div', 'card' + (this.settings.cameraMode === mode ? ' selected' : ''), cams);
+      const selected = this.settings.cameraMode === mode;
+      const c = this.el('div', 'card' + (selected ? ' selected' : ''), cams);
+      if (selected) this.el('div', 'card-state', c, 'In use');
       this.el('div', 'card-name', c, CAMERA_LABELS[mode]);
       c.addEventListener('click', () => {
         this.settings.cameraMode = mode;
@@ -753,8 +998,31 @@ class Game {
       });
     }
 
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Back', row, () => (this.career ? this.showCareerHub() : this.showMenu()), 'btn secondary');
+    this.el('div', 'section-title', body, 'Controls');
+    const keys = this.el('div', 'keymap', body);
+    const KEYS: [string, string][] = [
+      ['↑ / W', 'Accelerate'],
+      ['B / Space', 'Brake'],
+      ['↓', 'Brake, then reverse when stopped'],
+      ['← →', 'Steer'],
+      ['Shift', 'DRS, where it is available'],
+      ['E', 'Cycle ERS mode'],
+      ['C', 'Change camera'],
+      ['L', 'Call yourself into the pits'],
+      ['P', 'Pause'],
+      ['R', 'Show the racing line'],
+      ['H', 'Show the controls in a session'],
+    ];
+    for (const [key, what] of KEYS) {
+      const r = this.el('div', 'keymap-row', keys);
+      this.el('kbd', 'keymap-key', r, key);
+      this.el('span', 'keymap-what', r, what);
+    }
+    if (this.input.touchAvailable) {
+      this.el('div', 'card-meta', body,
+        'On a touchscreen the pedals and the steering pad appear over the track once ' +
+        'a session starts.');
+    }
   }
 
   // =======================================================================
@@ -901,7 +1169,7 @@ class Game {
     const config = this.weekend[this.weekendIndex];
     if (!config) { this.showCareerHub(); return; }
 
-    this.setLoading(true, 'BUILDING ' + getCircuit(circuitId).name.toUpperCase());
+    this.setLoading(true, getCircuit(circuitId).name + ' — ' + config.name, circuitId);
 
     // Yield a frame so the loading screen paints before the synchronous build,
     // which takes a few hundred milliseconds for the racing line solve.
@@ -1067,11 +1335,57 @@ class Game {
     if (!engine) { onContinue(); return; }
 
     this.setScreen('results');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, engine.config.name + ' — Result');
-    this.el('div', 'subtitle', inner,
-      engine.track.def.officialName + ' · ' + engine.weather.label);
+    const isRace = engine.config.kind === 'race';
+    const player = engine.playerCar;
+    const fastest = engine.fastestLap();
+
+    const { body, actions } = this.page({
+      tab: engine.config.name,
+      title: 'Classification',
+      sub: engine.track.def.officialName + ' · ' + engine.weather.label,
+      meta: [
+        ['Session', engine.config.name],
+        ['Runners', String(engine.standings.length)],
+      ],
+    });
+
+    // The player's own result first, because that is the question they are
+    // asking the screen. The classification below answers everything else.
+    if (player) {
+      const grid = this.el('div', 'stat-grid', body);
+      const tile = (label: string, value: string, meta = '', hero = false) => {
+        const s = this.el('div', 'stat' + (hero ? ' hero' : ''), grid);
+        this.el('div', 'stat-label', s, label);
+        this.el('div', 'stat-value', s, value);
+        if (meta) this.el('div', 'stat-meta', s, meta);
+      };
+      // Each session kind gets its own words. "You qualified P1 — won it" is
+      // what the old wording would have printed after a practice session.
+      const kind = engine.config.kind;
+      const headline =
+        kind === 'race' ? 'You finished'
+        : kind === 'qualifying' ? 'You qualified'
+        : 'You ended up';
+      const topNote =
+        kind === 'race' ? 'Won it'
+        : kind === 'qualifying' ? 'Pole position'
+        : 'Quickest of the lot';
+      tile(headline,
+        player.retired ? 'DNF' : 'P' + player.position,
+        player.retired ? player.retirementReason
+          : player.position === 1 ? topNote : 'of ' + engine.standings.length + ' cars',
+        true);
+      tile('Your best lap', formatLapTime(player.bestLapTime),
+        player.pitStops + (player.pitStops === 1 ? ' stop' : ' stops'));
+      if (fastest) {
+        tile('Fastest lap', formatLapTime(fastest.time),
+          fastest.car.driver.firstName + ' ' + fastest.car.driver.lastName);
+      }
+      if (isRace && !player.retired && player.position > 1) {
+        tile('Gap to the win', '+' + player.gapToLeader.toFixed(3) + 's',
+          engine.standings[0].driver.lastName + ' took it');
+      }
+    }
 
     // After a knockout segment, say plainly who went through and who is out.
     // A bare classification does not communicate that five cars just had their
@@ -1079,15 +1393,18 @@ class Game {
     const phase = engine.config.qualifyingPhase;
     if (phase && engine.config.advancing !== undefined) {
       const out = engine.participants.length - this.qualifyingSurvivors.length;
-      this.el('div', 'section-title', inner,
-        `Q${phase} — ${this.qualifyingSurvivors.length} advance to Q${phase + 1}, ${out} eliminated`);
+      this.el('div', 'notice', body,
+        `${this.qualifyingSurvivors.length} cars go through to Q${phase + 1}. ${out} are out, ` +
+        'and keep the grid slots they have just earned.');
     } else if (phase === 3) {
-      this.el('div', 'section-title', inner, 'Q3 — pole position decided');
+      this.el('div', 'notice', body, 'Q3 is done. That is the front of the grid decided.');
     }
 
+    this.el('div', 'section-title', body, isRace ? 'Race classification' : 'Timesheet');
+
+    const wrap = this.el('div', 'table-wrap', body);
     const table = document.createElement('table');
     table.className = 'standings';
-    const isRace = engine.config.kind === 'race';
     table.innerHTML =
       '<thead><tr><th>Pos</th><th>Driver</th><th>Team</th>' +
       '<th class="num">' + (isRace ? 'Gap' : 'Best') + '</th>' +
@@ -1109,24 +1426,25 @@ class Game {
         : formatLapTime(car.bestLapTime);
 
       tr.innerHTML =
-        '<td>' + car.position + '</td>' +
-        '<td>' + escapeHtml(car.driver.firstName + ' ' + car.driver.lastName) + '</td>' +
+        '<td class="pos">' + car.position + '</td>' +
+        '<td><span class="team-chip" style="background:' + hexColour(car.team.colour) + '"></span>' +
+        escapeHtml(car.driver.firstName + ' ' + car.driver.lastName) + '</td>' +
         '<td>' + escapeHtml(car.team.shortName) + '</td>' +
         '<td class="num">' + gapCell + '</td>' +
         '<td class="num">' + formatLapTime(car.bestLapTime) + '</td>' +
         '<td class="num">' + car.pitStops + '</td>' +
-        '<td>' + escapeHtml(notes.join(', ')) + '</td>';
+        '<td>' + (notes.length ? '<span class="pill bad">' + escapeHtml(notes.join(', ')) + '</span>' : '') + '</td>';
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    inner.appendChild(table);
+    wrap.appendChild(table);
 
-    const row = this.el('div', 'btn-row', inner);
-    this.button('Continue', row, () => {
+    this.spacer(actions);
+    this.button('Continue', actions, () => {
       this.renderer.unloadSession();
       this.engine = null;
       onContinue();
-    });
+    }, 'btn primary');
   }
 
   /** After a race, offer a narrative event if one is eligible. */
@@ -1152,23 +1470,31 @@ class Game {
     if (!career) { this.showMenu(); return; }
 
     this.setScreen('event');
-    this.screenRoot.innerHTML = '';
-    const inner = this.el('div', 'screen-inner', this.screenRoot);
-    this.el('div', 'title', inner, ev.title);
+    const { body } = this.page({
+      tab: 'Paddock · ' + career.state.seasonYear,
+      title: ev.title,
+    });
 
-    const prompt = this.el('div', 'event-prompt', inner);
-    this.el('div', 'event-speaker', prompt, ev.speaker.toUpperCase());
+    const prompt = this.el('div', 'event-prompt', body);
+    this.el('div', 'event-speaker', prompt, ev.speaker);
     this.el('div', '', prompt, ev.promptText);
 
+    this.el('div', 'section-title', body, 'What do you say?');
     ev.choices.forEach((choice, i) => {
-      const c = this.el('div', 'choice', inner);
+      const c = this.el('div', 'choice', body);
+      c.setAttribute('role', 'button');
+      c.tabIndex = 0;
       this.el('div', 'choice-text', c, choice.choiceText);
       if (choice.hint) this.el('div', 'choice-hint', c, choice.hint);
-      c.addEventListener('click', () => {
+      const answer = () => {
         const messages = career.applyEventChoice(ev, i);
         this.saves.save(this.careerId, career.state);
         if (messages.length > 0) alert(messages.join('\n\n'));
         this.showCareerHub();
+      };
+      c.addEventListener('click', answer);
+      c.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); answer(); }
       });
     });
   }
@@ -1273,6 +1599,11 @@ class Game {
   }
 }
 
+/** A team's livery colour as a CSS hex string. */
+function hexColour(colour: number): string {
+  return '#' + colour.toString(16).padStart(6, '0');
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -1297,5 +1628,4 @@ try {
 }
 
 // Keep unused imports honest.
-void TEAMS;
 void clamp;

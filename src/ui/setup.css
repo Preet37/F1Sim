@@ -14,9 +14,9 @@
 }
 
 .setup-item {
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid var(--hud-border);
-  border-radius: 9px;
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-radius: 5px;
   padding: 12px 14px 13px;
 }
 
@@ -28,27 +28,28 @@
 }
 
 .setup-name {
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 /* The real number, in real units. A setup screen that only shows a slider
    position is asking the player to guess. */
 .setup-value {
+  font-family: var(--font-data);
   font-size: 13px;
-  font-weight: 800;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--amber);
   white-space: nowrap;
 }
 
 .setup-trade {
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--hud-dim);
-  font-weight: 600;
-  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  margin-top: 8px;
 }
 
 /* Slider ------------------------------------------------------------------ */
@@ -66,10 +67,10 @@
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
-  border-radius: 7px;
-  border: 1px solid var(--hud-border);
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--hud-text);
+  border-radius: 4px;
+  border: 1px solid var(--line-2);
+  background: var(--carbon-3);
+  color: var(--ink);
   font-size: 16px;
   font-weight: 800;
   line-height: 1;
@@ -77,7 +78,7 @@
   cursor: pointer;
   transition: background 0.14s ease, border-color 0.14s ease;
 }
-.setup-step:hover { background: rgba(53, 208, 224, 0.18); border-color: rgba(53, 208, 224, 0.5); }
+.setup-step:hover { background: var(--race-red); border-color: var(--race-red-hi); color: #fff; }
 .setup-step:active { transform: scale(0.94); }
 
 .setup-slider {
@@ -90,6 +91,7 @@
   background: rgba(255, 255, 255, 0.16);
   outline: none;
   touch-action: manipulation;
+  cursor: pointer;
 }
 .setup-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -97,16 +99,17 @@
   width: 19px;
   height: 19px;
   border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #071417;
+  background: var(--amber);
+  border: 2px solid var(--carbon-0);
   cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 .setup-slider::-moz-range-thumb {
   width: 17px;
   height: 17px;
   border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #071417;
+  background: var(--amber);
+  border: 2px solid var(--carbon-0);
   cursor: pointer;
 }
 
@@ -117,8 +120,8 @@
   letter-spacing: 0.11em;
   text-transform: uppercase;
   font-weight: 800;
-  color: rgba(141, 150, 166, 0.72);
-  margin-top: 5px;
+  color: var(--ink-3);
+  margin-top: 6px;
 }
 
 /* Derived readout ---------------------------------------------------------
@@ -138,7 +141,7 @@
   z-index: 5;
   margin: 0 -6px 4px;
   padding: 9px 6px 10px;
-  background: linear-gradient(180deg, rgba(10, 14, 22, 0.97) 0%, rgba(10, 14, 22, 0.97) 82%, rgba(10, 14, 22, 0) 100%);
+  background: linear-gradient(180deg, rgba(7, 9, 12, 0.97) 0%, rgba(7, 9, 12, 0.97) 82%, rgba(7, 9, 12, 0) 100%);
   backdrop-filter: blur(9px);
   -webkit-backdrop-filter: blur(9px);
 }
@@ -148,20 +151,22 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  font-size: 11px;
-  letter-spacing: 0.16em;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   font-weight: 800;
-  color: var(--hud-dim);
+  color: var(--ink-2);
   margin-bottom: 8px;
 }
 .setup-receipt-live {
-  letter-spacing: 0.08em;
+  font-family: var(--font-ui);
+  letter-spacing: 0.02em;
   text-transform: none;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--accent);
-  opacity: 0.85;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--amber);
+  opacity: 0.9;
 }
 
 .setup-derived {
@@ -171,9 +176,9 @@
 }
 
 .setup-derived-cell {
-  background: rgba(53, 208, 224, 0.08);
-  border: 1px solid rgba(53, 208, 224, 0.22);
-  border-radius: 8px;
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-radius: 4px;
   padding: 7px 9px 8px;
   min-width: 0;
 }
@@ -182,16 +187,16 @@
   letter-spacing: 0.12em;
   text-transform: uppercase;
   font-weight: 800;
-  color: var(--hud-dim);
+  color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .setup-derived-value {
-  font-size: 17px;
-  font-weight: 800;
-  margin-top: 2px;
-  font-variant-numeric: tabular-nums;
+  font-family: var(--font-data);
+  font-size: 16px;
+  font-weight: 700;
+  margin-top: 3px;
   white-space: nowrap;
 }
 .setup-derived-delta {
@@ -202,14 +207,14 @@
 }
 .setup-derived-delta.gain { color: var(--good); }
 .setup-derived-delta.cost { color: var(--warn); }
-.setup-derived-delta.flat { color: var(--hud-dim); }
+.setup-derived-delta.flat { color: var(--ink-3); }
 
 /* A cell whose number actually moved flashes. With eight readouts on screen,
    two of them quietly changing by a decimal place is easy to miss — and
    "nothing seemed to happen" is precisely the complaint this screen had. */
 @keyframes setup-bump {
-  0%   { background: rgba(53, 208, 224, 0.42); border-color: var(--accent); transform: translateY(-1px); }
-  100% { background: rgba(53, 208, 224, 0.08); border-color: rgba(53, 208, 224, 0.22); transform: none; }
+  0%   { background: rgba(255, 196, 0, 0.3); border-color: var(--amber); transform: translateY(-1px); }
+  100% { background: var(--carbon-1); border-color: var(--line); transform: none; }
 }
 .setup-derived-cell.bump { animation: setup-bump 0.45s ease-out; }
 
@@ -239,15 +244,30 @@
  * in that row is what nobody found.
  */
 
+/* A kerb down the leading edge, the same stripe that marks the primary action,
+   because opening the setup sheet is the decision this banner exists to offer. */
 .garage-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
-  background: linear-gradient(120deg, rgba(53, 208, 224, 0.13) 0%, rgba(255, 255, 255, 0.05) 62%);
-  border: 1px solid rgba(53, 208, 224, 0.42);
-  border-radius: 11px;
+  margin-top: 12px;
+  background: linear-gradient(120deg, rgba(255, 196, 0, 0.07) 0%, var(--carbon-1) 58%);
+  border: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  border-radius: 5px;
   padding: 14px 16px;
+}
+.garage-card::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -1px;
+  bottom: -1px;
+  width: 3px;
+  background: var(--kerb-diag);
+  background-size: 100% 18px;
 }
 
 .garage-text { flex: 1 1 320px; min-width: 0; }
@@ -257,38 +277,40 @@
   align-items: center;
   gap: 9px;
   flex-wrap: wrap;
-  font-size: 10px;
-  letter-spacing: 0.13em;
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
   font-weight: 800;
-  color: var(--hud-dim);
+  color: var(--ink-3);
 }
 
 .garage-tag {
-  border-radius: 999px;
+  border-radius: 3px;
   padding: 2px 8px 3px;
-  background: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.08);
   letter-spacing: 0.08em;
   font-size: 9px;
+  color: var(--ink-2);
 }
-.garage-tag.modified { background: rgba(53, 208, 224, 0.24); color: var(--accent); }
+.garage-tag.modified { background: rgba(255, 196, 0, 0.2); color: var(--amber); }
 
 .garage-headline {
-  font-size: clamp(16px, 2.4vw, 21px);
-  font-weight: 800;
-  margin-top: 6px;
-  font-variant-numeric: tabular-nums;
+  font-family: var(--font-data);
+  font-size: clamp(15px, 2.2vw, 20px);
+  font-weight: 700;
+  margin-top: 7px;
+  letter-spacing: -0.01em;
 }
 
 .garage-detail {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--hud-dim);
-  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  margin-top: 5px;
+  line-height: 1.45;
 }
 
 .garage-action { flex: 0 0 auto; }
-.garage-action .btn { padding: 13px 26px; }
+.garage-action .btn { padding: 12px 24px; }
 
 /* Compound swatch --------------------------------------------------------- */
 
@@ -299,5 +321,5 @@
   border-radius: 50%;
   margin-right: 7px;
   vertical-align: -1px;
-  border: 2px solid rgba(255, 255, 255, 0.28);
+  border: 2px solid rgba(255, 255, 255, 0.35);
 }

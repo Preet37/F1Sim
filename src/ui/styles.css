@@ -1,25 +1,80 @@
 /*
- * HUD and menu styling.
+ * F1SIM — HUD and menu styling.
  *
- * Design intent: a broadcast timing graphic, not a game UI. Tabular numerals
- * everywhere so digits do not jitter as they change, heavy condensed weights for
- * the big readouts, and a restrained palette so the track stays readable.
+ * Visual direction: the pit wall. Everything the player is not driving through
+ * is presented as trackside equipment — a carbon deck, hairline rules, tabular
+ * data in a monospaced face, and the kerb (the red-and-white stripe every
+ * circuit in the game is edged with) as the one recurring graphic device. The
+ * kerb marks the primary action, underlines every section, and runs across the
+ * loading bar, so a single motif taken from the subject carries the identity
+ * instead of a decorative accent colour.
  *
- * Layout uses fixed positioning against the viewport with safe-area insets, so it
- * works on a notched iPhone in landscape without a second layout.
+ * Colour has three jobs and does not stray between them:
+ *   red    — identity and the primary action. Never used for data.
+ *   amber  — live values and the current selection.
+ *   ice    — instrument readouts inside the HUD only.
+ *
+ * Typography pairs a condensed grotesque for headings (present on every Apple
+ * platform, with Impact and Arial Narrow behind it) against the system UI face
+ * for prose and a monospace for anything numeric. A lap time is data and is set
+ * like data; a circuit name is a name and is set like signage.
+ *
+ * Layout is fixed to the viewport with safe-area insets, so a notched phone in
+ * either orientation needs no second layout.
  */
 
 :root {
-  --hud-bg: rgba(10, 12, 18, 0.74);
+  /* --- Surfaces --------------------------------------------------------- */
+  --carbon-0: #07090c;
+  --carbon-1: #0d1117;
+  --carbon-2: #151b23;
+  --carbon-3: #1d242e;
+  --line: rgba(255, 255, 255, 0.085);
+  --line-2: rgba(255, 255, 255, 0.17);
+
+  /* --- Ink -------------------------------------------------------------- */
+  --ink: #eef2f7;
+  --ink-2: #98a3b2;
+  --ink-3: #626e7d;
+
+  /* --- Signal ----------------------------------------------------------- */
+  --race-red: #e8112d;
+  --race-red-hi: #ff3b3b;
+  --race-red-dk: #7d0b1c;
+  --amber: #ffc400;
+  --mint: #00e08a;
+  --violet: #b46cff;
+  --ice: #35d0e0;
+
+  /* --- Type ------------------------------------------------------------- */
+  --font-display: 'HelveticaNeue-CondensedBlack', 'HelveticaNeue-CondensedBold',
+    'Helvetica Neue Condensed', 'Arial Narrow', Impact, 'Helvetica Neue', sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-data: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* The kerb. One definition, reused everywhere it appears. */
+  --kerb: repeating-linear-gradient(90deg,
+    var(--race-red) 0 12px, #f4f6f9 12px 24px);
+  --kerb-diag: repeating-linear-gradient(115deg,
+    var(--race-red) 0 10px, #f4f6f9 10px 20px);
+  /* For the 3px edge stripes, where a diagonal repeat degrades into slivers. */
+  --kerb-v: repeating-linear-gradient(180deg,
+    var(--race-red) 0 9px, #f4f6f9 9px 18px);
+
+  /* Legacy aliases. The HUD's instrument colour and the UI's border token are
+     named separately because they are not the same decision. */
+  --hud-bg: rgba(10, 12, 18, 0.76);
   --hud-bg-solid: #0d1017;
-  --hud-border: rgba(255, 255, 255, 0.1);
-  --hud-text: #eef1f6;
-  --hud-dim: #8d96a6;
-  --accent: #35d0e0;
+  --hud-border: var(--line);
+  --hud-text: var(--ink);
+  --hud-dim: var(--ink-2);
+  --accent: var(--amber);
+  --data: var(--ice);
   --good: #3ddc84;
   --warn: #ffb02e;
   --bad: #ff4d4f;
-  --purple: #b46cff;
+  --purple: var(--violet);
+
   --safe-l: env(safe-area-inset-left, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
@@ -33,9 +88,9 @@ html, body {
   padding: 0;
   height: 100%;
   overflow: hidden;
-  background: #05070b;
-  color: var(--hud-text);
-  font-family: 'Helvetica Neue', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--carbon-0);
+  color: var(--ink);
+  font-family: var(--font-ui);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   /* A racing game must never rubber-band or zoom on a double tap. */
@@ -57,6 +112,11 @@ canvas#view {
   touch-action: none;
 }
 
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
 /* ===================================================================== */
 /* HUD                                                                    */
 /* ===================================================================== */
@@ -72,8 +132,8 @@ canvas#view {
 
 .hud-panel {
   position: absolute;
-  /* Darker and less transparent than before: the old panels let the track show
-     through enough that numbers were hard to read against light asphalt. */
+  /* Darker and less transparent than a glass panel: the track shows through
+     enough at low opacity that numbers become hard to read on light asphalt. */
   background: linear-gradient(160deg, rgba(10, 13, 20, 0.9), rgba(6, 9, 15, 0.82));
   backdrop-filter: blur(14px) saturate(1.2);
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
@@ -90,7 +150,7 @@ canvas#view {
   bottom: 8px;
   width: 3px;
   border-radius: 0 2px 2px 0;
-  background: var(--accent);
+  background: var(--data);
 }
 
 /* --- Top left: the driver tower --------------------------------------
@@ -112,15 +172,17 @@ canvas#view {
   border-bottom: 1px solid rgba(255, 255, 255, 0.11);
 }
 .tower-position {
-  font-size: 21px;
+  font-family: var(--font-display);
+  font-size: 22px;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.01em;
   line-height: 1;
 }
 .tower-lapcount {
+  font-family: var(--font-data);
   font-size: 10px;
   color: var(--hud-dim);
-  letter-spacing: 0.11em;
+  letter-spacing: 0.08em;
   font-weight: 700;
 }
 .tower-row {
@@ -147,7 +209,7 @@ canvas#view {
   background: linear-gradient(90deg, rgba(255, 214, 92, 0.26), rgba(53, 208, 224, 0.2));
 }
 .tower-row.is-out { opacity: 0.42; }
-.tower-pos { width: 16px; text-align: right; color: var(--hud-dim); font-weight: 700; }
+.tower-pos { width: 16px; text-align: right; color: var(--hud-dim); font-weight: 700; font-family: var(--font-data); font-size: 10.5px; }
 .tower-team { width: 3px; height: 13px; border-radius: 2px; flex: 0 0 auto; }
 .tower-code { width: 34px; letter-spacing: 0.05em; font-weight: 700; }
 .tower-tyre {
@@ -156,7 +218,7 @@ canvas#view {
   display: flex; align-items: center; justify-content: center;
   flex: 0 0 auto;
 }
-.tower-gap { flex: 1; text-align: right; color: var(--hud-dim); font-size: 10px; }
+.tower-gap { flex: 1; text-align: right; color: var(--hud-dim); font-size: 10px; font-family: var(--font-data); }
 
 /* --- Top right: sectors and lap times ---------------------------------
    Three tiles, then the lap in progress in the largest type on screen.
@@ -184,16 +246,16 @@ canvas#view {
   color: var(--hud-dim);
 }
 .timing-sectortime {
-  font-size: 13px;
+  font-family: var(--font-data);
+  font-size: 12.5px;
   font-weight: 700;
   color: #e7ecf4;
-  font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
 /* Purple, green, yellow, red — the sport's own vocabulary, so no legend is
    needed. A filled tile rather than coloured text: a 13px number tinted
    green is not legible at a glance, a green block is. */
-.timing-sector.purple { background: var(--purple); border-top-color: #d9b6ff; }
+.timing-sector.purple { background: var(--violet); border-top-color: #d9b6ff; }
 .timing-sector.green  { background: var(--good);   border-top-color: #b6f2d0; }
 .timing-sector.yellow { background: #e2cb3a;       border-top-color: #f7ecb0; }
 .timing-sector.red    { background: var(--bad);    border-top-color: #ffc0c1; }
@@ -205,16 +267,16 @@ canvas#view {
 .timing-sector.green .timing-sectorname,
 .timing-sector.yellow .timing-sectortime,
 .timing-sector.yellow .timing-sectorname { color: #08120b; }
-.timing-sector.live { border-top-color: var(--accent); }
+.timing-sector.live { border-top-color: var(--data); }
 .timing-sector.live .timing-sectortime { color: #9aa4b4; }
 
 .timing-lap {
-  font-size: 30px;
-  font-weight: 800;
-  letter-spacing: -0.025em;
+  font-family: var(--font-data);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   line-height: 1.05;
   margin-top: 6px;
-  font-variant-numeric: tabular-nums;
 }
 .timing-small {
   display: flex;
@@ -223,9 +285,9 @@ canvas#view {
 }
 .timing-item { display: flex; align-items: baseline; gap: 5px; }
 .timing-label { font-size: 8.5px; font-weight: 800; letter-spacing: 0.12em; color: var(--hud-dim); }
-.timing-value { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: #cfd6e2; white-space: nowrap; }
-.timing-value.best { color: var(--purple); }
-.timing-delta { font-size: 15px; font-weight: 800; margin-top: 4px; min-height: 18px; }
+.timing-value { font-family: var(--font-data); font-size: 11.5px; font-weight: 700; color: #cfd6e2; white-space: nowrap; }
+.timing-value.best { color: var(--violet); }
+.timing-delta { font-family: var(--font-data); font-size: 15px; font-weight: 800; margin-top: 4px; min-height: 18px; }
 .timing-delta.good { color: var(--good); }
 .timing-delta.bad { color: var(--bad); }
 
@@ -284,14 +346,7 @@ canvas#view {
 .map-dot { stroke: rgba(4, 6, 10, 0.85); stroke-width: 0.5; }
 .map-dot.is-player { stroke: #fff; stroke-width: 1; }
 
-/* --- Bottom centre: speed, gear, rpm --------------------------------- */
-.hud-bottom-legacy {
-  bottom: calc(10px + var(--safe-b));
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 6px 14px 9px;
-  min-width: 320px;
-}
+/* --- Shift lights and bars ------------------------------------------- */
 .hud-leds {
   display: flex;
   gap: 3px;
@@ -316,31 +371,10 @@ canvas#view {
   overflow: hidden;
   margin-bottom: 7px;
 }
-.hud-rpmfill { height: 100%; width: 0; background: var(--accent); transition: none; }
+.hud-rpmfill { height: 100%; width: 0; background: var(--data); transition: none; }
 .hud-rpmfill.rpm-amber { background: var(--warn); }
 .hud-rpmfill.rpm-red { background: var(--bad); }
 
-.hud-readout { display: flex; align-items: flex-end; gap: 18px; justify-content: center; }
-.hud-speedblock { display: flex; align-items: baseline; gap: 4px; }
-.hud-speed {
-  font-size: 52px;
-  font-weight: 800;
-  line-height: 0.88;
-  letter-spacing: -0.04em;
-  font-variant-numeric: tabular-nums;
-}
-.hud-speedunit { font-size: 10px; color: var(--hud-dim); font-weight: 700; letter-spacing: 0.1em; }
-.hud-gear {
-  font-size: 44px;
-  font-weight: 800;
-  line-height: 0.9;
-  color: var(--accent);
-  min-width: 40px;
-  text-align: center;
-  text-shadow: 0 0 18px rgba(53, 208, 224, 0.45);
-}
-.hud-gear.reverse { color: var(--warn); text-shadow: 0 0 18px rgba(255, 176, 46, 0.5); }
-.hud-rightblock { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 84px; }
 .hud-drs {
   font-size: 11px; font-weight: 800; letter-spacing: 0.13em; text-align: center;
   padding: 2px 0; border-radius: 3px;
@@ -349,8 +383,7 @@ canvas#view {
 .hud-drs.drs-armed { background: rgba(255, 176, 46, 0.22); color: var(--warn); }
 .hud-drs.drs-open { background: var(--good); color: #06210f; }
 .hud-ersbar { height: 5px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; }
-.hud-ersfill { height: 100%; width: 100%; background: var(--purple); }
-.hud-ersmode { font-size: 9px; color: var(--hud-dim); letter-spacing: 0.1em; text-align: center; font-weight: 700; }
+.hud-ersfill { height: 100%; width: 100%; background: var(--violet); }
 
 /* --- Bottom left: tyres and fuel ------------------------------------- */
 .hud-carstate {
@@ -367,24 +400,25 @@ canvas#view {
 .hud-tyrefill { height: 100%; background: var(--good); }
 .hud-tyrefill.warn { background: var(--warn); }
 .hud-tyrefill.critical { background: var(--bad); }
-.hud-tyretemp { font-size: 10px; width: 34px; text-align: right; font-weight: 700; }
+.hud-tyretemp { font-family: var(--font-data); font-size: 10px; width: 36px; text-align: right; font-weight: 700; }
 .hud-tyretemp.ideal { color: var(--good); }
 .hud-tyretemp.hot { color: var(--bad); }
 .hud-tyretemp.cold { color: #6fb4ff; }
-.hud-fuelrow { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; font-weight: 700; }
-.hud-fuel { color: var(--hud-dim); letter-spacing: 0.05em; }
+.hud-fuelrow { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; font-weight: 700; gap: 8px; }
+.hud-fuel { color: var(--hud-dim); letter-spacing: 0.05em; font-family: var(--font-data); }
+.hud-fueldelta { font-family: var(--font-data); }
 .hud-fueldelta.good { color: var(--good); }
 .hud-fueldelta.bad { color: var(--bad); }
 
 /* --- Gaps ------------------------------------------------------------ */
 .hud-gaps {
-  /* Clear of the wheel display, which is ~120px tall. At the old 96px this sat
-     directly on top of it and clipped the KMH label. */
+  /* Clear of the wheel display, which is ~120px tall. */
   bottom: calc(152px + var(--safe-b));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   gap: 16px;
+  font-family: var(--font-data);
   font-size: 12px;
   font-weight: 700;
   padding: 4px 12px;
@@ -405,6 +439,7 @@ canvas#view {
   letter-spacing: 0.09em;
   font-weight: 700;
   padding: 5px 12px;
+  white-space: nowrap;
 }
 
 /* --- Flag banner ----------------------------------------------------- */
@@ -413,11 +448,12 @@ canvas#view {
   top: 20%;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 24px;
+  font-family: var(--font-display);
+  font-size: 26px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   padding: 9px 26px;
-  border-radius: 6px;
+  border-radius: 4px;
   text-align: center;
   white-space: nowrap;
 }
@@ -425,33 +461,32 @@ canvas#view {
 .flag-red { background: var(--bad); color: #fff; animation: flagpulse 0.75s ease-in-out infinite; }
 .flag-sc, .flag-vsc { background: #ffd21f; color: #241c00; }
 .flag-blue { background: #2f6fd0; color: #fff; }
-.flag-start { background: var(--good); color: #06210f; font-size: 30px; }
+.flag-start { background: var(--good); color: #06210f; font-size: 32px; }
 .flag-chequered {
   color: #0b0d12;
-  background:
-    repeating-conic-gradient(#fff 0% 25%, #111 0% 50%) 0 0 / 15px 15px;
+  background: repeating-conic-gradient(#fff 0% 25%, #111 0% 50%) 0 0 / 15px 15px;
 }
 @keyframes flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 /* --- Pit line --------------------------------------------------------
    Below the flag banner and below the deepest a burst of team radio can reach,
    so race control cannot bury the one instruction the driver is reading the
-   screen for. On a short landscape screen there is no room below the radio, so
-   it goes under the flag instead, above the dash. */
+   screen for. */
 .hud-pit-cue {
   position: absolute;
   top: 30%;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 21px;
+  font-family: var(--font-display);
+  font-size: 22px;
   font-weight: 800;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.05em;
   padding: 8px 22px;
-  border-radius: 6px;
+  border-radius: 4px;
   text-align: center;
   white-space: nowrap;
   background: rgba(9, 12, 18, 0.88);
-  border: 2px solid var(--accent);
+  border: 2px solid var(--data);
   color: #eef3ff;
 }
 .hud-pit-cue.cue-live { border-color: var(--good); color: #d6ffe6; }
@@ -460,13 +495,10 @@ canvas#view {
   background: var(--good);
   border-color: var(--good);
   color: #06210f;
-  font-size: 27px;
+  font-size: 28px;
 }
 
-/* --- Team radio ------------------------------------------------------
-   Under the conditions strip, top centre. The left edge is now a full-field
-   driver tower and the bottom left is the car state, so this is the only
-   place a burst of five messages can appear without landing on something. */
+/* --- Team radio ------------------------------------------------------ */
 .hud-radio {
   position: absolute;
   left: 50%;
@@ -482,8 +514,8 @@ canvas#view {
   background: var(--hud-bg);
   backdrop-filter: blur(9px);
   -webkit-backdrop-filter: blur(9px);
-  border-left: 3px solid var(--accent);
-  border-radius: 4px;
+  border-left: 3px solid var(--data);
+  border-radius: 3px;
   padding: 5px 9px;
   font-size: 11px;
   font-weight: 600;
@@ -507,17 +539,17 @@ canvas#view {
   pointer-events: auto;
   width: 52px;
   height: 40px;
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--hud-bg);
   backdrop-filter: blur(9px);
   -webkit-backdrop-filter: blur(9px);
-  border: 1px solid var(--hud-border);
+  border: 1px solid var(--line-2);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--hud-text);
   cursor: pointer;
   user-select: none;
@@ -538,9 +570,9 @@ canvas#view {
   position: absolute;
   bottom: calc(28px + var(--safe-b));
   right: calc(212px + var(--safe-r));
+  font-family: var(--font-data);
   font-size: 9px;
   color: rgba(141, 150, 166, 0.6);
-  letter-spacing: 0.06em;
 }
 
 .hud-help {
@@ -552,17 +584,21 @@ canvas#view {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 18px 24px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.25s ease, transform 0.25s ease;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
 }
 .hud-help.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .help-title {
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  color: var(--amber);
   font-weight: 800;
   margin-bottom: 12px;
 }
@@ -574,11 +610,12 @@ canvas#view {
   align-items: center;
 }
 .help-grid .k {
-  font-weight: 800;
+  font-family: var(--font-data);
+  font-weight: 700;
   font-size: 11px;
   background: rgba(255, 255, 255, 0.09);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 4px;
+  border-radius: 3px;
   padding: 3px 8px;
   text-align: center;
   white-space: nowrap;
@@ -612,7 +649,7 @@ canvas#view {
 .touch-pad {
   position: absolute;
   bottom: calc(24px + var(--safe-b));
-  border-radius: 14px;
+  border-radius: 12px;
   border: 1.5px solid rgba(255, 255, 255, 0.17);
   background: rgba(255, 255, 255, 0.06);
   display: flex;
@@ -640,185 +677,6 @@ canvas#view {
 }
 .touch-reverse.active { background: rgba(255, 176, 46, 0.32); border-color: var(--warn); color: #fff; }
 
-/* ===================================================================== */
-/* Menus and screens                                                      */
-/* ===================================================================== */
-
-.screen {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: linear-gradient(160deg, #080b12 0%, #101725 55%, #0a0e16 100%);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: calc(20px + var(--safe-t)) calc(20px + var(--safe-r)) calc(20px + var(--safe-b)) calc(20px + var(--safe-l));
-  pointer-events: auto;
-}
-.screen.hidden { display: none; }
-
-.screen-inner { max-width: 1020px; margin: 0 auto; width: 100%; }
-
-.title {
-  font-size: clamp(30px, 7vw, 60px);
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 0.98;
-  margin: 4px 0 2px;
-}
-.title .acc { color: var(--accent); }
-.subtitle { color: var(--hud-dim); font-size: 13px; letter-spacing: 0.05em; margin-bottom: 22px; font-weight: 600; }
-
-.section-title {
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  color: var(--hud-dim);
-  font-weight: 800;
-  margin: 22px 0 9px;
-  text-transform: uppercase;
-}
-
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 9px; }
-
-.card {
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid var(--hud-border);
-  border-radius: 9px;
-  padding: 11px 13px;
-  cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
-}
-.card:hover { background: rgba(255, 255, 255, 0.085); border-color: rgba(53, 208, 224, 0.45); }
-.card:active { transform: scale(0.985); }
-.card.selected { border-color: var(--accent); background: rgba(53, 208, 224, 0.13); }
-.card-name { font-size: 15px; font-weight: 700; }
-.card-meta { font-size: 10px; color: var(--hud-dim); margin-top: 3px; letter-spacing: 0.05em; font-weight: 600; }
-.card-stat { font-size: 10px; color: var(--accent); margin-top: 5px; font-weight: 700; }
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  background: var(--accent);
-  color: #04161a;
-  border: none;
-  border-radius: 7px;
-  padding: 12px 24px;
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  cursor: pointer;
-  font-family: inherit;
-  transition: filter 0.14s ease, transform 0.14s ease;
-}
-.btn:hover { filter: brightness(1.12); }
-.btn:active { transform: scale(0.98); }
-.btn.secondary { background: rgba(255, 255, 255, 0.1); color: var(--hud-text); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-row { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 20px; }
-
-.row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.field { display: flex; flex-direction: column; gap: 5px; }
-.field label { font-size: 10px; color: var(--hud-dim); letter-spacing: 0.11em; font-weight: 800; text-transform: uppercase; }
-.field input, .field select {
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid var(--hud-border);
-  border-radius: 6px;
-  color: var(--hud-text);
-  padding: 9px 11px;
-  font-size: 14px;
-  font-family: inherit;
-  min-width: 168px;
-}
-
-table.standings { width: 100%; border-collapse: collapse; font-size: 12px; }
-table.standings th {
-  text-align: left;
-  font-size: 9px;
-  letter-spacing: 0.13em;
-  color: var(--hud-dim);
-  padding: 6px 7px;
-  border-bottom: 1px solid var(--hud-border);
-  font-weight: 800;
-}
-table.standings td { padding: 6px 7px; border-bottom: 1px solid rgba(255, 255, 255, 0.045); }
-table.standings tr.me { background: rgba(53, 208, 224, 0.11); }
-table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.pill {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: 9px;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.07em;
-}
-
-/* Narrative event choices */
-.event-prompt {
-  font-size: 15px;
-  line-height: 1.55;
-  background: rgba(255, 255, 255, 0.045);
-  border-left: 3px solid var(--accent);
-  border-radius: 7px;
-  padding: 15px 17px;
-  margin-bottom: 16px;
-}
-.event-speaker { font-size: 10px; letter-spacing: 0.13em; color: var(--accent); font-weight: 800; margin-bottom: 7px; }
-.choice {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--hud-border);
-  border-radius: 8px;
-  padding: 13px 15px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease;
-}
-.choice:hover { background: rgba(53, 208, 224, 0.1); border-color: var(--accent); }
-.choice-text { font-size: 14px; font-weight: 600; line-height: 1.4; }
-.choice-hint { font-size: 10px; color: var(--hud-dim); margin-top: 5px; letter-spacing: 0.04em; }
-
-.loading {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 14px;
-  background: #05070b;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--hud-dim);
-  font-weight: 700;
-}
-.loading.hidden { display: none; }
-.spinner {
-  width: 30px; height: 30px;
-  border: 2px solid rgba(255, 255, 255, 0.14);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.85s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* Small screens: shrink the HUD so it does not swamp the track. */
-@media (max-width: 820px) {
-  .hud { font-size: 11px; }
-  .hud-speed { font-size: 34px; }
-  .hud-gear { font-size: 30px; }
-  .tower-position { font-size: 17px; }
-  .hud-bottom-legacy { min-width: 0; padding: 5px 10px 7px; }
-  .hud-radio { top: calc(38px + var(--safe-t)); width: 52vw; }
-  .hud-pit-cue { top: auto; bottom: 27%; font-size: 15px; padding: 6px 14px; }
-  .hud-pit-cue.cue-box { font-size: 18px; }
-  .hud-flag { font-size: 16px; padding: 7px 16px; }
-  .hud-gaps { bottom: calc(122px + var(--safe-b)); }
-  .hud-btn { width: 44px; height: 32px; font-size: 9px; }
-}
-
 /* --- Start gantry ---------------------------------------------------------
    Five columns of two bulbs, centred above the horizon. Positioned high in the
    frame rather than centre-screen so it never covers the car or the braking
@@ -831,7 +689,7 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   display: flex;
   gap: 10px;
   padding: 12px 14px;
-  border-radius: 10px;
+  border-radius: 8px;
   background: rgba(4, 6, 10, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
@@ -860,12 +718,6 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
     inset 0 1px 3px rgba(255, 255, 255, 0.35);
 }
 
-@media (max-width: 820px) {
-  .hud-startlights { gap: 6px; padding: 8px 9px; top: calc(7vh + var(--safe-t)); }
-  .hud-bulb { width: 17px; height: 17px; }
-  .hud-lightcol { gap: 5px; }
-}
-
 /* ==========================================================================
    Steering-wheel display
    Modelled on a real wheel dash: a gear numeral in its own disc, numeric
@@ -882,7 +734,8 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   gap: 6px;
   padding: 8px 24px 10px;
   min-width: 470px;
-  border-radius: 46px;
+  max-width: calc(100vw - 20px);
+  border-radius: 44px;
   background: linear-gradient(180deg, rgba(20, 23, 30, 0.94), rgba(9, 11, 15, 0.96));
   border: 2px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -905,30 +758,30 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   border: 3px solid rgba(255, 255, 255, 0.55);
   box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.7);
 }
-.hud-wheel .hud-gear {
+.hud-gear {
+  font-family: var(--font-display);
   font-size: 44px;
   font-weight: 800;
   line-height: 1;
   color: #fff;
-  font-variant-numeric: tabular-nums;
   text-shadow: 0 0 18px rgba(255, 255, 255, 0.25);
 }
-.hud-wheel .hud-gear.reverse { color: var(--warn); }
+.hud-gear.reverse { color: var(--warn); }
 
-.hud-wheelstats { display: flex; align-items: center; gap: 20px; flex: 1; }
+.hud-wheelstats { display: flex; align-items: center; gap: 20px; flex: 1; min-width: 0; }
 .hud-cell { display: flex; flex-direction: column; align-items: center; min-width: 62px; }
 .hud-celllabel {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: #f2f4f8;
 }
 .hud-cellvalue {
-  font-size: 26px;
+  font-family: var(--font-data);
+  font-size: 25px;
   font-weight: 700;
   color: #fff;
   line-height: 1.05;
-  font-variant-numeric: tabular-nums;
 }
 
 /* ERS reads as a physical button, because that is what the driver presses. */
@@ -937,7 +790,7 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   flex-direction: column;
   align-items: center;
   padding: 4px 14px;
-  border-radius: 8px;
+  border-radius: 6px;
   background: rgba(150, 156, 168, 0.55);
   min-width: 92px;
 }
@@ -945,11 +798,11 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
 .hud-ersbadge.ers-balanced { background: rgba(150, 156, 168, 0.55); }
 .hud-ersbadge.ers-push     { background: rgba(200, 140, 50, 0.6); }
 .hud-ersbadge.ers-overtake { background: rgba(190, 60, 70, 0.65); }
-.hud-ersmodetext { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: 0.02em; }
-.hud-erspercent { font-size: 13px; color: rgba(255, 255, 255, 0.85); font-variant-numeric: tabular-nums; }
+.hud-ersmodetext { font-size: 14px; font-weight: 800; color: #fff; letter-spacing: 0.02em; white-space: nowrap; }
+.hud-erspercent { font-family: var(--font-data); font-size: 12px; color: rgba(255, 255, 255, 0.85); }
 
 .hud-wheelbars { display: flex; flex-direction: column; gap: 5px; }
-.hud-wheel .hud-rpmbar { height: 4px; border-radius: 2px; }
+.hud-wheel .hud-rpmbar { height: 4px; border-radius: 2px; margin-bottom: 0; }
 .hud-ersrow { display: flex; align-items: center; gap: 8px; }
 .hud-erslabel { font-size: 10px; font-weight: 800; color: var(--hud-dim); letter-spacing: 0.1em; }
 .hud-ersrow .hud-ersbar { flex: 1; height: 9px; border-radius: 5px; }
@@ -988,144 +841,1389 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   font-size: 8.5px;
   font-weight: 700;
   letter-spacing: 0.05em;
+  line-height: 1.2;
   text-align: center;
   color: var(--good);
+  /* The panel is 60px wide on a phone and "FRONT WING (L)" is not. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .hud-damagesummary.dmg-text-worn { color: #e2cb3a; }
 .hud-damagesummary.dmg-text-damaged { color: var(--warn); }
 .hud-damagesummary.dmg-text-critical { color: var(--bad); }
 
-@media (max-width: 820px) {
-  .hud-wheel { min-width: 0; padding: 6px 12px 8px; border-radius: 36px; }
-  .hud-geardisc { width: 52px; height: 52px; flex-basis: 52px; }
-  .hud-wheel .hud-gear { font-size: 30px; }
-  .hud-cellvalue { font-size: 19px; }
-  .hud-celllabel { font-size: 10px; }
+/* ==========================================================================
+   HUD — small screens
+   Two separate problems, so two separate queries.
+
+   A phone in PORTRAIT is narrow: the tower and the timing panel cannot both be
+   full width and the wheel dash cannot be 470px wide. The panels split the top
+   edge between them, everything else stacks up the bottom, and the wheel spans
+   the full width instead of overflowing off both sides of a 390px screen.
+
+   A phone in LANDSCAPE is short: 390px of height with a 120px dash at the
+   bottom and a 90px timing panel at the top leaves almost nothing, so every
+   panel shrinks and the ones that can be dropped are.
+   ========================================================================== */
+
+/* --- Portrait: narrow ------------------------------------------------ */
+@media (max-width: 620px) and (orientation: portrait) {
+  .hud { font-size: 11px; }
+
+  .hud-tower {
+    width: calc(50% - 14px);
+    max-width: 176px;
+    padding: 5px 5px 6px 8px;
+  }
+  .tower-row { font-size: 10px; height: 16px; gap: 4px; padding: 1px 3px; }
+  .tower-position { font-size: 17px; }
+  .tower-lapcount { font-size: 9px; }
+  .tower-code { width: 30px; }
+  .tower-gap { font-size: 9px; }
+
+  .hud-timing {
+    width: calc(50% - 14px);
+    max-width: 176px;
+    padding: 5px 6px 6px;
+  }
+  .timing-lap { font-size: 19px; }
+  .timing-sectortime { font-size: 9.5px; }
+  .timing-sectorname { font-size: 7px; letter-spacing: 0.08em; }
+  .timing-small { gap: 8px; }
+  .timing-value { font-size: 9.5px; }
+  .timing-label { font-size: 7.5px; }
+  .timing-delta { font-size: 13px; }
+
+  /* Below the two top panels rather than under them. */
+  .hud-radio {
+    top: auto;
+    bottom: calc(304px + var(--safe-b));
+    left: calc(10px + var(--safe-l));
+    right: calc(62px + var(--safe-r));
+    transform: none;
+    width: auto;
+    align-items: stretch;
+  }
+  .radio-entry { font-size: 10px; padding: 4px 8px; }
+
+  /* Top centre is fully occupied in portrait, so the conditions strip goes to
+     the bottom, immediately above the car state. */
+  .hud-conditions {
+    top: auto;
+    bottom: calc(268px + var(--safe-b));
+    font-size: 9px;
+    padding: 4px 10px;
+  }
+
+  .hud-gaps { bottom: calc(236px + var(--safe-b)); font-size: 11px; }
+  .hud-gaps.cockpit { bottom: calc(236px + var(--safe-b)); }
+
+  .hud-carstate {
+    bottom: calc(126px + var(--safe-b));
+    left: calc(10px + var(--safe-l));
+    width: calc(50% - 16px);
+    min-width: 0;
+    padding: 6px 8px;
+  }
+  .hud-tyrelabel { width: 26px; font-size: 8px; }
+  .hud-tyretemp { width: 30px; font-size: 9px; }
+  .hud-fuelrow { font-size: 9px; }
+
+  .hud-damage {
+    left: auto;
+    right: calc(134px + var(--safe-r));
+    bottom: calc(126px + var(--safe-b));
+    width: 60px;
+    padding: 5px 5px 6px;
+  }
+  .hud-damagetitle { font-size: 8px; }
+  .hud-damagesummary { font-size: 7.5px; }
+
+  .hud-map {
+    bottom: calc(126px + var(--safe-b));
+    right: calc(10px + var(--safe-r));
+    width: 116px;
+    padding: 5px 6px 6px;
+  }
+
+  /* Full width, so nothing is cut off at either edge. */
+  .hud-wheel {
+    left: calc(8px + var(--safe-l));
+    right: calc(8px + var(--safe-r));
+    transform: none;
+    min-width: 0;
+    max-width: none;
+    padding: 6px 12px 8px;
+    border-radius: 26px;
+  }
+  .hud-wheelrow { gap: 8px; }
+  .hud-geardisc { width: 48px; height: 48px; flex-basis: 48px; border-width: 2px; }
+  .hud-gear { font-size: 28px; }
+  .hud-wheelstats { gap: 6px; justify-content: space-around; }
+  .hud-cell { min-width: 0; }
+  .hud-celllabel { font-size: 9px; letter-spacing: 0.04em; }
+  .hud-cellvalue { font-size: 18px; }
+  .hud-ersbadge { min-width: 0; padding: 3px 7px; }
+  .hud-ersmodetext { font-size: 11px; }
+  .hud-erspercent { font-size: 10px; }
+  .hud-drs { font-size: 9px; padding: 2px 5px; letter-spacing: 0.06em; }
+  .hud-erslabel { font-size: 8px; }
+  .hud-leds { gap: 2px; }
+  .hud-led { width: 7px; height: 4px; }
+
+  /* Stacked on the right edge, clear of the timing panel above and the map
+     below, which is the only column with room for them. */
+  .hud-buttons {
+    top: auto;
+    bottom: calc(280px + var(--safe-b));
+    right: calc(10px + var(--safe-r));
+    flex-direction: column;
+  }
+  .hud-btn { width: 44px; height: 34px; font-size: 9px; }
+
+  .hud-camera, .hud-diag { display: none; }
+
+  .hud-flag { font-size: 17px; padding: 6px 14px; top: 26%; }
+  .hud-pit-cue { top: auto; bottom: 34%; font-size: 15px; padding: 6px 14px; }
+  .hud-pit-cue.cue-box { font-size: 18px; }
+
+  .hud-startlights { gap: 6px; padding: 8px 9px; top: calc(7vh + var(--safe-t)); }
+  .hud-bulb { width: 17px; height: 17px; }
+  .hud-lightcol { gap: 5px; }
+
+  .hud-help { padding: 14px 16px; }
+  .help-grid { font-size: 11px; gap: 5px 12px; }
+}
+
+/* --- Short viewports: landscape phones ------------------------------- */
+@media (max-height: 470px) {
+  .hud { font-size: 11px; }
+
+  .hud-tower { width: 168px; padding: 4px 5px 5px 8px; }
+  .tower-row { font-size: 9.5px; height: 15px; }
+  .tower-position { font-size: 16px; }
+  .tower-lapcount { font-size: 8.5px; }
+
+  .hud-timing { width: 180px; padding: 5px 6px 6px; }
+  .timing-lap { font-size: 20px; margin-top: 4px; }
+  .timing-sectortime { font-size: 10px; }
+  .timing-sectorname { font-size: 7px; }
+  .timing-value { font-size: 10px; }
+  .timing-delta { font-size: 12px; min-height: 14px; }
+
+  /* Between the two top panels, which is the only horizontal space left. */
+  .hud-radio {
+    top: calc(6px + var(--safe-t));
+    width: min(340px, calc(100vw - 380px));
+  }
+  .radio-entry { font-size: 9.5px; padding: 3px 7px; }
+  .hud-conditions { top: auto; bottom: calc(150px + var(--safe-b)); font-size: 9px; padding: 3px 9px; }
+
+  .hud-wheel {
+    padding: 4px 14px 6px;
+    min-width: 0;
+    gap: 3px;
+    border-radius: 30px;
+    bottom: calc(6px + var(--safe-b));
+  }
+  .hud-wheelrow { gap: 9px; }
+  .hud-geardisc { width: 44px; height: 44px; flex-basis: 44px; border-width: 2px; }
+  .hud-gear { font-size: 26px; }
   .hud-wheelstats { gap: 10px; }
-  .hud-cell { min-width: 44px; }
-  .hud-ersbadge { min-width: 66px; padding: 3px 8px; }
-  .hud-ersmodetext { font-size: 12px; }
-  .hud-damage { width: 62px; left: calc(174px + var(--safe-l)); }
-  .hud-gaps.cockpit { bottom: calc(178px + var(--safe-b)); }
-  .hud-tower { width: 172px; padding: 5px 5px 6px 8px; }
-  .tower-row { font-size: 10.5px; height: 17px; }
-  .hud-timing { width: 192px; padding: 6px 7px 7px; }
-  .timing-lap { font-size: 22px; }
-  .timing-sectortime { font-size: 11px; }
-  .hud-map { width: 128px; }
-  .hud-buttons { top: calc(150px + var(--safe-t)); }
-  .hud-camera, .hud-diag { right: calc(152px + var(--safe-r)); }
+  .hud-cell { min-width: 42px; }
+  .hud-celllabel { font-size: 9px; }
+  .hud-cellvalue { font-size: 17px; }
+  .hud-ersbadge { min-width: 62px; padding: 2px 7px; }
+  .hud-ersmodetext { font-size: 11px; }
+  .hud-erspercent { font-size: 10px; }
+  .hud-leds { margin-bottom: 0; gap: 2px; }
+  .hud-led { width: 8px; height: 4px; }
+  .hud-ersrow .hud-ersbar { height: 6px; }
+
+  .hud-carstate { bottom: calc(6px + var(--safe-b)); min-width: 0; width: 138px; padding: 5px 7px; }
+  .hud-tyrelabel { width: 26px; font-size: 8px; }
+  .hud-tyretemp { width: 30px; font-size: 9px; }
+  .hud-fuelrow { font-size: 9px; }
+
+  .hud-damage { left: calc(152px + var(--safe-l)); bottom: calc(6px + var(--safe-b)); width: 58px; padding: 4px 5px 5px; }
+  .hud-damagetitle { font-size: 7.5px; }
+  .hud-damagesummary { font-size: 7px; }
+
+  .hud-map { width: 108px; bottom: calc(6px + var(--safe-b)); padding: 4px 5px 5px; }
+  .map-title { font-size: 7.5px; margin-bottom: 2px; }
+
+  .hud-gaps { bottom: calc(122px + var(--safe-b)); font-size: 10.5px; padding: 3px 10px; }
+  .hud-gaps.cockpit { bottom: calc(122px + var(--safe-b)); }
+
+  .hud-buttons { top: calc(100px + var(--safe-t)); right: calc(10px + var(--safe-r)); flex-direction: column; }
+  .hud-btn { width: 42px; height: 30px; font-size: 9px; }
+  .hud-camera, .hud-diag { display: none; }
+
+  .hud-flag { font-size: 17px; padding: 6px 14px; top: 30%; }
+  .hud-pit-cue { top: auto; bottom: 32%; font-size: 15px; padding: 5px 13px; }
+  .hud-pit-cue.cue-box { font-size: 18px; }
+
+  .hud-startlights { gap: 5px; padding: 6px 8px; top: calc(4px + var(--safe-t)); }
+  .hud-bulb { width: 15px; height: 15px; }
+  .hud-lightcol { gap: 4px; }
+
+  .hud-help { padding: 12px 16px; }
+  .help-title { margin-bottom: 8px; }
+  .help-grid { font-size: 10.5px; gap: 4px 12px; }
+  .help-grid .k { padding: 2px 6px; font-size: 10px; }
+}
+
+/* Mid-size screens: shrink the largest readouts without relaying anything. */
+@media (min-width: 621px) and (max-width: 900px) and (min-height: 471px) {
+  .hud-wheel { min-width: 0; }
+  .hud-tower { width: 190px; }
+  .hud-timing { width: 210px; }
+  .hud-map { width: 150px; }
+  .hud-camera, .hud-diag { right: calc(172px + var(--safe-r)); }
+}
+
+/* ===================================================================== */
+/* Menus and screens                                                      */
+/* ===================================================================== */
+
+/*
+ * Every screen is built on the same chassis: a fixed header carrying the
+ * breadcrumb tab and the title, a scrolling body, and an action bar pinned to
+ * the bottom. Only the body scrolls, so the primary action is in the same place
+ * on every screen and can never be pushed off the end of a long list — which is
+ * exactly what used to happen to "Race Weekend" underneath a grid of circuits.
+ */
+
+.screen {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  overflow: hidden;
+  color: var(--ink);
+  background:
+    /* A faint diagonal sheen, the way a carbon panel catches the light. */
+    linear-gradient(114deg, rgba(255, 255, 255, 0.035) 0%, transparent 26%, transparent 74%, rgba(255, 255, 255, 0.02) 100%),
+    radial-gradient(120% 80% at 50% -10%, rgba(232, 17, 45, 0.11), transparent 60%),
+    linear-gradient(180deg, #0b0f15 0%, var(--carbon-0) 62%, #04060a 100%);
+}
+.screen.hidden { display: none; }
+
+/* Hairline grid over the deck. Static, purely to give the flat background a
+   sense of surface — a drawing board rather than a void. */
+.screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size: 68px 68px;
+  mask-image: radial-gradient(130% 100% at 50% 0%, #000 30%, transparent 78%);
+  -webkit-mask-image: radial-gradient(130% 100% at 50% 0%, #000 30%, transparent 78%);
+}
+
+.page {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  min-height: 0;
+}
+
+/* --- Header ---------------------------------------------------------- */
+
+.topbar {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+  padding: calc(16px + var(--safe-t)) calc(20px + var(--safe-r)) 12px calc(20px + var(--safe-l));
+}
+
+/* The back chevron. Same position on every screen, so leaving is never a hunt
+   through a row of identical grey buttons. */
+.navback {
+  grid-row: 1 / span 2;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+.navback svg { width: 16px; height: 16px; display: block; }
+.navback-gap { width: 44px; height: 1px; }
+.navback:hover { background: var(--race-red); border-color: var(--race-red-hi); }
+.navback:active { transform: scale(0.94); }
+
+.topbar-titles { min-width: 0; }
+
+/* The breadcrumb tab: a sheared red flag with a chevron point, the one shape
+   carried across every screen. */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 20px 0 11px;
+  background: linear-gradient(96deg, var(--race-red-dk) 0%, var(--race-red) 58%, #ff2f2a 100%);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 11px) 100%, 0 100%);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #fff;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.page-title {
+  font-family: var(--font-display);
+  font-size: clamp(30px, 5.4vw, 54px);
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: 0.005em;
+  text-transform: uppercase;
+  margin: 7px 0 0;
+  overflow-wrap: anywhere;
+}
+/* The one place a second colour enters the wordmark. */
+.page-title .acc { color: var(--race-red); }
+
+.page-sub {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  margin-top: 5px;
+  max-width: 62ch;
+  line-height: 1.45;
+}
+
+/* Right-hand slot: a short column of figures about the screen you are on. */
+.topbar-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  text-align: right;
+}
+.meta-item { min-width: 0; }
+.meta-label {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.meta-value {
+  font-family: var(--font-data);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* The kerb under the header. The identity motif, doing a structural job. */
+.kerb-rule {
+  flex: 0 0 auto;
+  height: 4px;
+  margin: 0 calc(20px + var(--safe-r)) 0 calc(20px + var(--safe-l));
+  background: var(--kerb);
+  background-size: 24px 100%;
+  opacity: 0.92;
+}
+
+/* --- Body ------------------------------------------------------------ */
+
+.page-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 18px calc(20px + var(--safe-r)) 20px calc(20px + var(--safe-l));
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.page-body::-webkit-scrollbar { width: 8px; }
+.page-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 4px; }
+
+/* One orchestrated entrance per screen: the header arrives, then the body.
+   Nothing else on the page animates on load. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.screen .topbar { animation: rise 0.26s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.screen .kerb-rule { animation: rise 0.26s cubic-bezier(0.2, 0.7, 0.3, 1) 0.04s both; }
+.screen .page-body { animation: rise 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) 0.07s both; }
+.screen .actionbar { animation: rise 0.3s cubic-bezier(0.2, 0.7, 0.3, 1) 0.1s both; }
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.19em;
+  color: var(--ink-2);
+  font-weight: 800;
+  margin: 24px 0 11px;
+  text-transform: uppercase;
+}
+.section-title:first-child { margin-top: 0; }
+/* A short kerb stub instead of a full rule: enough to mark the start of a
+   block without drawing a line across the whole page. */
+.section-title::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 22px;
+  height: 3px;
+  background: var(--kerb);
+  background-size: 11px 100%;
+}
+.section-title::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+/* --- Action bar ------------------------------------------------------ */
+
+.actionbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px calc(20px + var(--safe-r)) calc(14px + var(--safe-b)) calc(20px + var(--safe-l));
+  border-top: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(7, 9, 12, 0.55), rgba(7, 9, 12, 0.94));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.actionbar-spacer { flex: 1 1 auto; }
+.actionbar:empty { display: none; }
+
+/* --- Buttons --------------------------------------------------------- */
+
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 11px 20px;
+  background: linear-gradient(180deg, var(--carbon-3), var(--carbon-1));
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.1s ease, color 0.16s ease;
+}
+.btn:hover { border-color: rgba(255, 255, 255, 0.34); background: linear-gradient(180deg, #262f3b, #171d25); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* The primary action. Red, larger, and the only control on the page with a
+   kerb along its edge — the same stripe that marks the racing surface. */
+.btn.primary {
+  padding: 12px 26px;
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--race-red-hi) 0%, var(--race-red) 46%, var(--race-red-dk) 100%);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(232, 17, 45, 0.28);
+}
+.btn.primary::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--kerb);
+  background-size: 20px 100%;
+  opacity: 0.85;
+  transition: background-position 0.5s linear;
+}
+.btn.primary:hover { filter: brightness(1.12); }
+.btn.primary:hover::after { background-position: 40px 0; }
+
+/* `secondary` is the historical name for a quieter button; keep it working. */
+.btn.secondary, .btn.ghost {
+  background: transparent;
+  border-color: var(--line-2);
+  color: var(--ink-2);
+}
+.btn.secondary:hover, .btn.ghost:hover { color: var(--ink); background: rgba(255, 255, 255, 0.06); }
+
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+
+/* --- Cards ----------------------------------------------------------- */
+
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 9px; }
+
+.card {
+  position: relative;
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 12px 13px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.12s ease;
+}
+/* Selection is a kerb down the leading edge, not a coloured fill: a filled card
+   competes with the data printed on it. */
+.card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--kerb-v);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.card:hover { border-color: rgba(255, 255, 255, 0.26); background: linear-gradient(168deg, #1b222c, #10151b); }
+.card:hover::before { opacity: 0.55; }
+.card:active { transform: translateY(1px); }
+.card.selected { border-color: rgba(255, 196, 0, 0.5); background: linear-gradient(168deg, #22201a, #14130f); }
+.card.selected::before { opacity: 1; }
+
+.card-name { font-size: 15px; font-weight: 700; letter-spacing: 0.01em; }
+.card-meta { font-size: 11px; color: var(--ink-2); margin-top: 4px; line-height: 1.4; }
+.card-stat {
+  font-family: var(--font-data);
+  font-size: 11px;
+  color: var(--amber);
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+/* A card that is a toggle wears its state as a word, top right. */
+.card-state {
+  float: right;
+  margin: 0 0 2px 10px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  color: var(--ink-3);
+}
+.card.selected .card-state { color: var(--amber); }
+
+/* --- Stat tiles ------------------------------------------------------ */
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; }
+.stat {
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 10px 12px 11px;
+}
+.stat-label {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.05;
+  margin-top: 4px;
+}
+.stat-meta { font-family: var(--font-data); font-size: 10.5px; color: var(--ink-2); margin-top: 3px; }
+/* A tile whose number is the headline of the screen. */
+.stat.hero { border-color: rgba(255, 196, 0, 0.35); background: linear-gradient(168deg, #221f16, #14120c); }
+.stat.hero .stat-value { color: var(--amber); }
+
+/* --- Circuit cards ---------------------------------------------------
+   The signature element. Each card is the circuit's own surveyed centreline,
+   the same geometry the physics drives on, with the start/finish bar and the
+   two sector splits marked. On hover the outline draws itself — one lap. */
+
+.grid-circuits {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 10px;
+}
+
+.circuit-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(168deg, var(--carbon-2) 0%, var(--carbon-1) 68%);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.18s ease, transform 0.14s ease, box-shadow 0.18s ease;
+}
+.circuit-card:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+.circuit-card:active { transform: translateY(0); }
+.circuit-card.selected { border-color: var(--race-red); }
+.circuit-card.selected::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--kerb);
+  background-size: 18px 100%;
+}
+
+.cc-map {
+  position: relative;
+  padding: 12px 12px 4px;
+  background:
+    radial-gradient(80% 70% at 50% 40%, rgba(255, 255, 255, 0.045), transparent 70%);
+}
+.cc-code {
+  position: absolute;
+  top: 9px;
+  right: 11px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.circuit-art { width: 100%; height: auto; display: block; overflow: visible; }
+.ca-casing { fill: none; stroke: rgba(0, 0, 0, 0.55); stroke-linejoin: round; stroke-linecap: round; stroke-width: 8; }
+.ca-road { fill: none; stroke: rgba(196, 209, 226, 0.58); stroke-linejoin: round; stroke-linecap: round; }
+.ca-trace {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1;
+  stroke-linejoin: round;
+  opacity: 0.75;
+}
+.ca-start { fill: none; stroke: #fff; stroke-width: 2.4; }
+.ca-sector { fill: none; stroke: var(--amber); stroke-width: 1.6; opacity: 0.7; }
+
+/* The lap. `pathLength` is not set, so the dash length is a generous constant
+   that exceeds any of these outlines; the animation simply sweeps it clear. */
+.circuit-card:hover .ca-trace,
+.circuit-card:focus-visible .ca-trace {
+  stroke: var(--race-red-hi);
+  opacity: 1;
+  stroke-width: 1.8;
+  stroke-dasharray: 600;
+  animation: lap 1.5s cubic-bezier(0.35, 0, 0.2, 1) forwards;
+}
+@keyframes lap {
+  from { stroke-dashoffset: 600; }
+  to { stroke-dashoffset: 0; }
+}
+
+.cc-body { padding: 4px 12px 12px; }
+.cc-name {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+.cc-where { font-size: 10.5px; color: var(--ink-2); margin-top: 4px; line-height: 1.35; }
+
+/* The timing strip: three figures in the monospaced face, the way a circuit
+   fact sheet prints them. */
+.cc-strip {
+  display: grid;
+  grid-template-columns: 1.35fr 0.6fr 1.15fr;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.cc-cell { min-width: 0; }
+.cc-cell-label {
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.cc-cell-value {
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.cc-cell-value.record { color: var(--amber); }
+
+/* --- The next round, and the circuit hero ---------------------------
+   The same idea at two sizes: the circuit large enough to recognise, with the
+   figures that describe it set beside rather than beneath it. */
+
+.round-card,
+.circuit-hero {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 16px 18px;
+  background:
+    radial-gradient(70% 120% at 12% 50%, rgba(255, 255, 255, 0.05), transparent 60%),
+    linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+}
+.round-card { border-left: 3px solid var(--race-red); }
+
+.round-map, .circuit-hero-map {
+  flex: 0 0 auto;
+  width: 148px;
+  height: 148px;
+}
+.circuit-hero-map { width: 176px; height: 176px; }
+.round-map .circuit-art, .circuit-hero-map .circuit-art { width: 100%; height: 100%; }
+
+.round-text, .circuit-hero-facts { flex: 1 1 260px; min-width: 0; }
+
+.round-name {
+  font-family: var(--font-display);
+  font-size: clamp(24px, 3.4vw, 34px);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+.round-official { font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+
+.round-facts, .circuit-hero-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(94px, 1fr));
+  gap: 12px 18px;
+  margin-top: 14px;
+  max-width: 560px;
+}
+.circuit-hero-facts { margin-top: 0; flex-grow: 0; }
+.circuit-hero { justify-content: flex-start; }
+.round-fact { min-width: 0; }
+
+/* --- Key map ---------------------------------------------------------- */
+
+.keymap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 4px 18px;
+}
+.keymap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.keymap-key {
+  flex: 0 0 auto;
+  min-width: 76px;
+  text-align: center;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--carbon-3);
+  border: 1px solid var(--line-2);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 3px 8px;
+}
+.keymap-what { font-size: 12px; color: var(--ink-2); }
+
+/* --- Menu hero -------------------------------------------------------
+   The front page opens on the wordmark and the four things you can do, not on
+   a list. The circuit grid is below it, where a list belongs. */
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 6px 0 4px;
+}
+.wordmark {
+  font-family: var(--font-display);
+  font-size: clamp(56px, 13vw, 132px);
+  font-weight: 800;
+  line-height: 0.82;
+  letter-spacing: -0.005em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.wordmark .acc { color: var(--race-red); }
+.hero-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-2);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  max-width: 54ch;
+  line-height: 1.5;
+}
+.hero-kerb {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 4px;
+  min-height: 34px;
+  background: var(--kerb-v);
+}
+
+.menu-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: 9px;
+  max-width: 820px;
+}
+
+/* A menu entry is a wide plate with a number, a name and a line of copy — the
+   number is the running order of the four ways into the game, which is real
+   sequence information, not decoration. */
+.menu-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 92px;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: linear-gradient(160deg, var(--carbon-2), var(--carbon-1));
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  transition: border-color 0.16s ease, transform 0.14s ease, background 0.16s ease;
+}
+.menu-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--kerb-v);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.menu-item:hover { border-color: rgba(255, 255, 255, 0.3); transform: translateY(-2px); }
+.menu-item:hover::before { opacity: 1; }
+.menu-item:active { transform: none; }
+.menu-index {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-3);
+  letter-spacing: 0.08em;
+}
+.menu-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+.menu-desc { font-size: 11px; color: var(--ink-2); margin-top: 5px; line-height: 1.4; }
+/* The way back in gets the red plate. */
+.menu-item.lead {
+  background: linear-gradient(150deg, #2a0a11, var(--carbon-1) 72%);
+  border-color: rgba(232, 17, 45, 0.45);
+}
+.menu-item.lead::before { opacity: 1; }
+.menu-item.lead .menu-name { color: #ff8b80; }
+
+/* --- Notice ---------------------------------------------------------- */
+.notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid rgba(255, 196, 0, 0.3);
+  border-left: 3px solid var(--amber);
+  border-radius: 4px;
+  background: rgba(255, 196, 0, 0.06);
+  padding: 10px 13px;
+  font-size: 12px;
+  color: #f3e2b4;
+  line-height: 1.45;
+  margin-top: 14px;
+}
+
+/* --- Forms ----------------------------------------------------------- */
+
+.row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label {
+  font-size: 8.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.17em;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.field input, .field select {
+  background: var(--carbon-0);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  color: var(--ink);
+  padding: 11px 12px;
+  font-size: 15px;
+  font-family: var(--font-ui);
+  min-width: 200px;
+  transition: border-color 0.16s ease;
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--amber); }
+
+/* --- Tables ---------------------------------------------------------- */
+
+.table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow-x: auto;
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+}
+table.standings { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 480px; }
+table.standings th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  padding: 9px 10px;
+  background: var(--carbon-3);
+  border-bottom: 2px solid var(--race-red);
+  font-weight: 800;
+  white-space: nowrap;
+}
+table.standings td { padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.045); white-space: nowrap; }
+table.standings tbody tr:hover { background: rgba(255, 255, 255, 0.035); }
+table.standings tr.me { background: rgba(255, 196, 0, 0.1); box-shadow: inset 3px 0 0 var(--amber); }
+table.standings tr.me td { color: #fff; font-weight: 600; }
+table.standings td.num { text-align: right; font-family: var(--font-data); }
+table.standings td.pos {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink-2);
+  width: 1%;
+}
+table.standings tr.me td.pos { color: var(--amber); }
+/* The team colour as a chip, so the field is readable by livery as well as by
+   name — the same cue the timing tower uses in the race. */
+.team-chip {
+  display: inline-block;
+  width: 4px;
+  height: 13px;
+  border-radius: 1px;
+  margin-right: 8px;
+  vertical-align: -2px;
+}
+
+.pill {
+  display: inline-block;
+  padding: 2px 8px 3px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink-2);
+}
+.pill.bad { background: rgba(255, 77, 79, 0.16); color: #ffb3b4; }
+.pill.good { background: rgba(0, 224, 138, 0.14); color: #8bf0c6; }
+
+/* --- Narrative events ------------------------------------------------ */
+
+.event-prompt {
+  font-size: 15.5px;
+  line-height: 1.6;
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--race-red);
+  border-radius: 5px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  max-width: 74ch;
+}
+.event-speaker {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--race-red-hi);
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.choice {
+  position: relative;
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  max-width: 74ch;
+  overflow: hidden;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.12s ease;
+}
+.choice::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--kerb-v);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.choice:hover { border-color: rgba(255, 255, 255, 0.28); transform: translateX(2px); }
+.choice:hover::before { opacity: 1; }
+.choice-text { font-size: 14.5px; font-weight: 600; line-height: 1.45; }
+.choice-hint { font-size: 11px; color: var(--ink-2); margin-top: 6px; line-height: 1.4; }
+
+/* --- Loading ---------------------------------------------------------
+   Not a spinner. The circuit that is being built draws itself, and a kerb
+   runs underneath it — so the wait shows you the lap you are about to drive
+   rather than an abstract token of delay. */
+
+.loading {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 18px;
+  background:
+    radial-gradient(90% 70% at 50% 42%, rgba(232, 17, 45, 0.1), transparent 62%),
+    var(--carbon-0);
+  padding: 24px;
+}
+.loading.hidden { display: none; }
+
+.loading-stage {
+  width: min(240px, 52vmin);
+  height: min(240px, 52vmin);
+  position: relative;
+}
+.loading-stage:empty { display: none; }
+.loading-art { width: 100%; height: 100%; display: block; overflow: visible; }
+.loading-art .ca-casing { stroke: rgba(226, 234, 246, 0.15); stroke-width: 6; }
+.loading-art .ca-draw {
+  fill: none;
+  stroke: var(--race-red-hi);
+  stroke-width: 2.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 6px rgba(255, 59, 59, 0.55));
+}
+.loading-art .ca-start { stroke: #fff; stroke-width: 2.6; }
+/* The trace runs a lap, pauses at the line, and goes again. `--lap-length` is
+   the measured path length, written in by setLoading(). */
+.loading-art .ca-draw {
+  animation: lap-run 2.6s cubic-bezier(0.4, 0, 0.25, 1) infinite;
+}
+@keyframes lap-run {
+  0%   { stroke-dashoffset: var(--lap-length, 600); }
+  72%  { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: 0; }
+}
+
+.loading-text {
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  font-weight: 800;
+  text-align: center;
+}
+/* The kerb, running. */
+.loading-bar {
+  width: min(280px, 70vw);
+  height: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+.loading-bar::after {
+  content: '';
+  display: block;
+  width: 200%;
+  height: 100%;
+  background: var(--kerb);
+  background-size: 22px 100%;
+  animation: kerbrun 0.9s linear infinite;
+}
+@keyframes kerbrun {
+  from { transform: translateX(-22px); }
+  to { transform: none; }
+}
+/* No spinner is drawn any more, but the class survives in case anything else
+   still references it. */
+.spinner { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .screen .topbar, .screen .kerb-rule, .screen .page-body, .screen .actionbar { animation: none; }
+  .circuit-card:hover .ca-trace { animation: none; stroke-dasharray: none; }
+  .loading-bar::after { animation: none; }
+  .flag-red { animation: none; }
+}
+
+/* --- Screens on a phone ---------------------------------------------- */
+
+@media (max-width: 720px) {
+  .topbar { gap: 10px; padding-bottom: 10px; }
+  .topbar-meta { display: none; }
+  .page-body { padding-top: 14px; }
+  .page-sub { font-size: 11.5px; }
+  .grid-circuits { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .cc-name { font-size: 17px; }
+  .cc-cell-value { font-size: 10.5px; }
+  .cc-cell-label { font-size: 7px; letter-spacing: 0.1em; }
+  .card-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .stat-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }
+  .stat-value { font-size: 21px; }
+  .menu-actions { grid-template-columns: 1fr 1fr; }
+  .round-card, .circuit-hero { gap: 14px; padding: 13px 14px; }
+  .round-map, .circuit-hero-map { width: 108px; height: 108px; }
+  .round-facts, .circuit-hero-facts { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px 12px; }
+  .keymap { grid-template-columns: 1fr; }
+  .menu-item { min-height: 78px; padding: 11px 12px 10px; }
+  .menu-name { font-size: 17px; }
+  .menu-desc { font-size: 10px; }
+  .btn { padding: 10px 15px; font-size: 13px; letter-spacing: 0.07em; }
+  .btn.primary { padding: 11px 18px; }
+  .actionbar { gap: 6px; padding-top: 10px; }
+  .field input, .field select { min-width: 0; width: 100%; }
+  .field { flex: 1 1 140px; }
+}
+
+/* A landscape phone has almost no vertical room, so the header collapses to a
+   single line and the entrance animation is dropped. */
+@media (max-height: 470px) {
+  .topbar { padding-top: calc(9px + var(--safe-t)); padding-bottom: 8px; gap: 10px; }
+  .navback { width: 36px; height: 36px; flex-basis: 36px; }
+  .navback-gap { width: 36px; }
+  .navback svg { width: 13px; height: 13px; }
+  .tab { height: 18px; font-size: 10px; padding: 0 16px 0 9px; }
+  .page-title { font-size: clamp(20px, 3.4vw, 28px); margin-top: 4px; }
+  .page-sub { display: none; }
+  .page-body { padding-top: 12px; padding-bottom: 12px; }
+  .section-title { margin: 15px 0 8px; font-size: 11px; }
+  .actionbar { padding-top: 8px; padding-bottom: calc(9px + var(--safe-b)); }
+  .btn { padding: 8px 14px; font-size: 12.5px; }
+  .btn.primary { padding: 9px 18px; }
+  .hero { gap: 10px; }
+  .wordmark { font-size: clamp(34px, 7vw, 56px); }
+  .hero-line { font-size: 11.5px; }
+  .menu-item { min-height: 66px; }
+  .stat-value { font-size: 20px; }
+  .loading-stage { width: min(150px, 34vmin); height: min(150px, 34vmin); }
+  .loading { gap: 12px; }
 }
 
 /* ==========================================================================
    Paddock
-   One card per team, ordered front-of-grid first. The livery colour drives
-   each card's own accents, so a team is recognisable before any text is read.
+   One card per team, ordered front of the grid first. Each card is built like a
+   garage: a nameplate in the livery colour, the car standing in its bay, what
+   the car is good at, and the two drivers on the door.
    ========================================================================== */
 .paddock-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
   gap: 12px;
-  margin: 14px 0 20px;
 }
 .paddock-card {
   position: relative;
-  background: linear-gradient(150deg, rgba(28, 32, 41, 0.94), rgba(14, 16, 21, 0.96));
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  /* The livery colour as a spine down the edge, the way a pit board reads. */
-  border-left: 4px solid var(--team);
-  border-radius: 10px;
-  padding: 12px 14px 14px;
+  background: linear-gradient(168deg, var(--carbon-2), var(--carbon-1));
+  border: 1px solid var(--line);
+  border-radius: 5px;
   overflow: hidden;
+  transition: border-color 0.16s ease, transform 0.14s ease;
 }
-/* A wash of the team colour behind the card, so it feels liveried rather than
-   labelled. Kept very low so text contrast never suffers. */
-.paddock-card::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(120% 90% at 100% 0%, var(--team), transparent 62%);
-  opacity: 0.13;
-  pointer-events: none;
-}
-.paddock-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.paddock-card:hover { border-color: rgba(255, 255, 255, 0.22); transform: translateY(-2px); }
+.paddock-card.current { border-color: var(--amber); }
 
-.pad-head { display: flex; align-items: center; gap: 10px; }
+/* --- Nameplate ------------------------------------------------------- */
+.pad-plate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent),
+    linear-gradient(100deg, var(--team) 0%, rgba(6, 8, 11, 0.86) 76%);
+  border-bottom: 2px solid var(--team);
+}
 .pad-rank {
-  font-size: 20px;
+  font-family: var(--font-display);
+  font-size: 26px;
   font-weight: 800;
-  color: var(--hud-dim);
-  min-width: 24px;
-  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.5);
+  min-width: 34px;
 }
 .pad-titles { flex: 1; min-width: 0; }
-.pad-team { font-size: 16px; font-weight: 800; color: #f0f3f8; }
-.pad-engine { font-size: 10px; letter-spacing: 0.08em; color: var(--hud-dim); text-transform: uppercase; }
-.pad-code {
-  font-size: 12px;
+.pad-team {
+  font-family: var(--font-display);
+  font-size: 21px;
   font-weight: 800;
-  letter-spacing: 0.08em;
-  padding: 3px 8px;
-  border-radius: 5px;
-  background: var(--team);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.pad-engine {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+/* The code as a sheared tab, the shape the breadcrumb tab uses everywhere else. */
+.pad-code {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  padding: 4px 16px 4px 10px;
+  background: #fff;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
   color: #0a0c10;
 }
 
-.pad-body { display: flex; gap: 14px; align-items: center; margin-top: 10px; }
-.pad-car { width: 76px; height: auto; flex: 0 0 76px; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5)); }
+/* --- Bay ------------------------------------------------------------- */
+.pad-body { display: flex; gap: 14px; align-items: center; padding: 13px; }
+.pad-bay {
+  flex: 0 0 78px;
+  width: 78px;
+  padding: 6px 2px;
+  border-radius: 4px;
+  /* The floor of a garage: a pool of light over the car and a hard shadow under
+     it, so the silhouette stands somewhere rather than floating. */
+  background:
+    radial-gradient(60% 42% at 50% 88%, rgba(0, 0, 0, 0.6), transparent 70%),
+    radial-gradient(70% 55% at 50% 34%, rgba(255, 255, 255, 0.09), transparent 72%);
+}
+.pad-car { width: 100%; height: auto; display: block; filter: drop-shadow(0 5px 9px rgba(0, 0, 0, 0.6)); }
 
 .pad-metrics { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.pad-metric { display: flex; align-items: center; gap: 7px; }
+.pad-metric { display: flex; align-items: center; gap: 8px; }
 .pad-metric-label {
   font-size: 10px;
-  font-weight: 700;
-  color: var(--hud-dim);
+  font-weight: 600;
+  color: var(--ink-2);
   width: 62px;
   flex: 0 0 62px;
-  letter-spacing: 0.03em;
 }
-.pad-bar { flex: 1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.pad-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
 .pad-bar-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--team), var(--team-accent)); }
 .pad-metric-value {
-  font-size: 10px;
-  font-weight: 700;
-  color: #cbd3e0;
-  width: 46px;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink);
+  width: 48px;
   text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
-.pad-drivers {
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+/* --- Drivers --------------------------------------------------------- */
+.pad-drivers { padding: 0 13px 13px; display: flex; flex-direction: column; }
+.pad-driver {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  padding: 7px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
-.pad-driver { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 /* A neutral, always-legible numeral. Several teams run a near-black accent
    colour, and tinting the number with it made it invisible on a dark card. */
 .pad-num {
+  font-family: var(--font-display);
+  font-size: 16px;
   font-weight: 800;
-  color: #aeb8c8;
-  width: 24px;
+  color: var(--ink-2);
+  width: 26px;
   text-align: right;
-  font-variant-numeric: tabular-nums;
 }
-.pad-dname { flex: 1; color: #e6eaf2; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pad-nat { font-size: 10px; color: var(--hud-dim); letter-spacing: 0.05em; }
+.pad-dcode {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #0a0c10;
+  background: var(--team);
+  border-radius: 2px;
+  padding: 2px 5px;
+}
+.pad-dname { flex: 1; color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pad-nat { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
 .pad-skill {
-  font-weight: 800;
-  color: #f0f3f8;
-  font-variant-numeric: tabular-nums;
-  min-width: 22px;
+  font-family: var(--font-data);
+  font-weight: 700;
+  color: var(--ink);
+  min-width: 24px;
   text-align: right;
 }
-.pad-select { margin-top: 10px; width: 100%; }
+.pad-select { margin: 0 13px 13px; width: calc(100% - 26px); }
 
-@media (max-width: 820px) {
+@media (max-width: 720px) {
   .paddock-grid { grid-template-columns: 1fr; gap: 10px; }
-  .pad-car { width: 58px; flex-basis: 58px; }
+  .pad-bay { flex-basis: 62px; width: 62px; }
   .pad-metric-label { width: 54px; flex-basis: 54px; }
+  .pad-team { font-size: 17px; }
+  .pad-rank { font-size: 21px; min-width: 26px; }
+  .pad-nat { display: none; }
 }
