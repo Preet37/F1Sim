@@ -97,28 +97,52 @@ function swatchRectPx(name: WheelSwatch, size: number): [number, number, number,
 }
 
 /**
- * The tyre's cross-section, as v coordinates in the band.
+ * A point on the tyre's surface of revolution.
  *
- * These are the stations the wheel geometry maps its profile rings onto, and
- * they have to match: `buildWheel` walks the same list. Kept here so the paint
- * and the geometry cannot drift apart.
- *
- * 0 is the inboard bead, 1 the outboard bead.
+ * `v` is the station's coordinate across the painted tyre band: 0 at the
+ * inboard bead, 0.5 at the tread crown, 1 at the outboard bead. It is carried
+ * on the point rather than held in a parallel array because the number of
+ * stations now varies with the detail tier, and a parallel array would have to
+ * be regenerated in lockstep by every caller.
  */
-export const PROFILE_V = [0.0, 0.10, 0.26, 0.5, 0.74, 0.90, 1.0];
-
-/** A point on the tyre's surface of revolution: radius, and position along the axle. */
 export interface TyreProfilePoint {
   r: number;
   x: number;
+  v: number;
 }
+
+/**
+ * Anchors for the v mapping, and the only numbers the paint below is tuned
+ * against.
+ *
+ * The paint places the tread between 0.30 and 0.70, the shoulder turn from 0.24,
+ * and the moulded lettering at 0.045 and 0.955. Those constants only mean
+ * anything if a given v lands on the same PART of the tyre regardless of how
+ * finely it happens to be tessellated, so the two arcs below are parameterised
+ * by their own generating angle and pinned at the ends: inboard bead at 0,
+ * maximum width at 0.10 and 0.90, crown at 0.5, outboard bead at 1. Tessellate
+ * harder and the stations get denser; every one of them keeps the v it would
+ * have had, and the paint does not move.
+ *
+ * These are the values the previous hand-placed seven-station profile used, so
+ * the paint above needed no retuning when the section became a real curve.
+ */
+const V_MAX_WIDTH = 0.10;
 
 /**
  * The tyre's cross-section in metres, from inboard bead to outboard bead.
  *
- * One station per entry in PROFILE_V, in the same order: `buildWheel` walks this
- * list and maps ring `i` to `PROFILE_V[i]`, which is what puts the compound
- * stripe on the sidewall and not across the tread.
+ * Two arcs rather than hand-placed control points, because the shoulder is the
+ * one part of a tyre that is unambiguously a radius and skinning straight
+ * between control points turned it into a single flat chamfer:
+ *
+ *  - crown to maximum width is a quadrant of a SUPERELLIPSE. The exponent
+ *    controls how square the shoulder is — on a slick, quite square but never a
+ *    corner — and sampling it in the generating angle puts the points where the
+ *    curvature is;
+ *  - maximum width to bead is a quarter ellipse tucking back in under the rim.
+ *
+ * Maximum width is outboard of the nominal half-width, because a tyre bulges.
  *
  * It lives HERE rather than in CarMesh for two reasons. The paint has to know
  * the shape it is landing on, and — more sharply — the raised compound band is a
@@ -126,18 +150,50 @@ export interface TyreProfilePoint {
  * of these numbers would drift the moment either was tuned, and the failure mode
  * is the band z-fighting through the carcass, which reads as the tyre flickering
  * rather than as a mis-set constant.
+ *
+ * `crownRings` is the tier's tyre tessellation: stations from crown to maximum
+ * width, with half as many again closing the bead tuck.
  */
-export function tyreProfile(width: number, tyreR: number, rimR: number): TyreProfilePoint[] {
+export function tyreProfile(
+  width: number, tyreR: number, rimR: number, crownRings = 3,
+): TyreProfilePoint[] {
   const half = width * 0.5;
-  return [
-    { r: rimR + 0.004, x: -half * 0.98 },      // inboard bead
-    { r: tyreR * 0.855, x: -half * 1.045 },    // sidewall bulge
-    { r: tyreR * 0.965, x: -half * 0.95 },     // shoulder
-    { r: tyreR * 1.002, x: 0 },                // tread crown
-    { r: tyreR * 0.965, x: half * 0.95 },      // shoulder
-    { r: tyreR * 0.855, x: half * 1.045 },     // sidewall bulge
-    { r: rimR + 0.004, x: half * 0.98 },       // outboard bead
-  ];
+  const rMaxW = tyreR * 0.80;
+  const xMaxW = half * 1.012;
+  const rBead = rimR + 0.004;
+  /** Superellipse exponent. Higher is squarer in the shoulder. */
+  const N = 4.6;
+  const p = 2 / N;
+
+  // Outboard half, crown first: v runs 0.5 at the crown to 1.0 at the bead.
+  const vMaxW = 1 - V_MAX_WIDTH;
+  const out: TyreProfilePoint[] = [];
+  for (let i = 0; i <= crownRings; i++) {
+    const f = i / crownRings;
+    const th = f * Math.PI * 0.5;
+    out.push({
+      x: xMaxW * Math.pow(Math.sin(th), p),
+      r: rMaxW + (tyreR - rMaxW) * Math.pow(Math.cos(th), p),
+      v: 0.5 + (vMaxW - 0.5) * f,
+    });
+  }
+  const beadRings = Math.max(2, Math.round(crownRings * 0.5));
+  for (let i = 1; i <= beadRings; i++) {
+    const f = i / beadRings;
+    const th = f * Math.PI * 0.5;
+    out.push({
+      x: xMaxW - (xMaxW - half) * (1 - Math.cos(th)),
+      r: rMaxW - (rMaxW - rBead) * Math.sin(th),
+      v: vMaxW + (1 - vMaxW) * f,
+    });
+  }
+
+  // The section is symmetric, so the inboard half is the outboard one mirrored
+  // in x with v reflected about the crown. Ordered inboard bead -> crown ->
+  // outboard bead, which is the order `buildWheel` skins and the order the
+  // paint's v runs in.
+  const inboard = out.slice(1).reverse().map((q) => ({ x: -q.x, r: q.r, v: 1 - q.v }));
+  return [...inboard, ...out];
 }
 
 /** Canvas y for a profile station, within the tyre band. */
@@ -438,16 +494,20 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
  */
 
 /**
- * Where the band sits, as a position along the profile returned by
- * `tyreProfile`. Station 4 is the outboard shoulder, 5 the sidewall bulge.
+ * Where the band sits, in the profile's own v coordinate.
  *
- * 4.25 is a quarter of the way up the shoulder turn — far enough round to be
- * seen from behind the car. 5.05 is just past the widest point, which is as far
- * down the sidewall as it can go without burying the moulded lettering that
- * lives between here and the bead.
+ * Given as v — not as a station index — because the number of stations now
+ * varies with the detail tier, so "station 4.25" would put the band in a
+ * different physical place on the high and low tiers and the two would not line
+ * up across an LOD swap.
+ *
+ * 0.78 is a quarter of the way up the shoulder turn, far enough round to be seen
+ * from behind the car. 0.905 is just past the widest point, which is as far down
+ * the sidewall as the band can go without burying the moulded lettering that
+ * lives between there and the bead.
  */
-const BAND_FROM = 4.25;
-const BAND_TO = 5.05;
+const BAND_V_FROM = 0.78;
+const BAND_V_TO = 0.905;
 /** Rows across the band. Enough to follow the shoulder's curve without faceting. */
 const BAND_ROWS = 6;
 /**
@@ -461,21 +521,25 @@ const BAND_ROWS = 6;
  */
 const BAND_LIFT = 0.006;
 
-function sampleProfile(profile: readonly TyreProfilePoint[], t: number): TyreProfilePoint {
-  const i = Math.min(Math.floor(t), profile.length - 2);
-  const f = t - i;
+/** The profile point at a given v, interpolated between the stations either side. */
+function sampleProfile(profile: readonly TyreProfilePoint[], v: number): TyreProfilePoint {
+  // v increases monotonically along the profile, inboard bead to outboard.
+  let i = 0;
+  while (i < profile.length - 2 && profile[i + 1].v < v) i++;
   const a = profile[i];
   const b = profile[i + 1];
-  return { r: a.r + (b.r - a.r) * f, x: a.x + (b.x - a.x) * f };
+  const span = b.v - a.v;
+  const f = span > 1e-9 ? (v - a.v) / span : 0;
+  return { r: a.r + (b.r - a.r) * f, x: a.x + (b.x - a.x) * f, v };
 }
 
-/** Outward normal of the profile at t, in the (x, r) plane. */
+/** Outward normal of the profile at v, in the (x, r) plane. */
 function profileNormalAt(
-  profile: readonly TyreProfilePoint[], t: number,
+  profile: readonly TyreProfilePoint[], v: number,
 ): { nx: number; nr: number } {
-  const e = 0.02;
-  const a = sampleProfile(profile, Math.max(0, t - e));
-  const b = sampleProfile(profile, Math.min(profile.length - 1, t + e));
+  const e = 0.004;
+  const a = sampleProfile(profile, Math.max(0, v - e));
+  const b = sampleProfile(profile, Math.min(1, v + e));
   // Tangent (dx, dr); the outward perpendicular is (-dr, dx) with the profile
   // running inboard-to-outboard.
   const dx = b.x - a.x;
@@ -496,9 +560,14 @@ function profileNormalAt(
  * inner edge to its outer one, so the strip texture below lands upright.
  */
 export function buildSidewallBands(
-  width: number, tyreR: number, rimR: number, radial: number,
+  width: number, tyreR: number, rimR: number, radial: number, crownRings = 3,
 ): THREE.BufferGeometry {
-  const profile = tyreProfile(width, tyreR, rimR);
+  // Sampled by v, so the same `crownRings` the carcass was built with is passed
+  // in and the band's rows land on the surface the carcass actually has. Build
+  // the band against a coarser section than the tyre and the two curves diverge
+  // between stations by more than BAND_LIFT, which is the z-fight all over
+  // again.
+  const profile = tyreProfile(width, tyreR, rimR, crownRings);
   const positions: number[] = [];
   const uvs: number[] = [];
   const idx: number[] = [];
@@ -507,13 +576,12 @@ export function buildSidewallBands(
     const base = positions.length / 3;
     for (let k = 0; k <= BAND_ROWS; k++) {
       const f = k / BAND_ROWS;
-      // The profile is symmetric, so the inboard band is the outboard one
-      // sampled from the far end — no second set of constants.
-      const t = side > 0
-        ? BAND_FROM + (BAND_TO - BAND_FROM) * f
-        : (profile.length - 1) - (BAND_FROM + (BAND_TO - BAND_FROM) * f);
-      const p = sampleProfile(profile, t);
-      const n = profileNormalAt(profile, t);
+      // The section is symmetric about v = 0.5, so the inboard band is the
+      // outboard one reflected — no second set of constants.
+      const vOut = BAND_V_FROM + (BAND_V_TO - BAND_V_FROM) * f;
+      const v = side > 0 ? vOut : 1 - vOut;
+      const p = sampleProfile(profile, v);
+      const n = profileNormalAt(profile, v);
       // The normal is already outward on BOTH sides — the profile is traversed
       // inboard-to-outboard, so its perpendicular flips sign along with the
       // sidewall it belongs to. Negating the axial term for the inboard ring

@@ -7,7 +7,7 @@ import {
 } from './Livery';
 import { buildDriverParts } from './DriverMesh';
 import {
-  wheelMaterial, wheelSwatchUV, disposeTyreCache, PROFILE_V, TYRE_BAND,
+  wheelMaterial, wheelSwatchUV, disposeTyreCache, TYRE_BAND,
   buildSidewallBands, sidewallMaterial, tyreProfile,
   type WheelSwatch,
 } from './TyreTexture';
@@ -95,6 +95,23 @@ export interface CarVisual {
    */
   cockpit: CockpitVisual | null;
   /**
+   * Chooses a geometry tier for this car from its distance to the camera.
+   *
+   * The high tier costs about five times what the low one does, and past the
+   * threshold below a car is barely a hundred pixels wide — none of the
+   * tessellation that makes a wing endplate read as a moulded part at three
+   * metres survives at all. On a full grid that is most of the field for most
+   * of a lap.
+   *
+   * Both tiers are the SHARED cached geometry, so a swap is one pointer
+   * assignment per mesh: no extra memory, no extra draw call, and no per-car
+   * geometry — the cache stays exactly as shared as it was.
+   *
+   * A no-op on a session already running the low tier: there is nothing
+   * cheaper to fall back to.
+   */
+  updateDetail(distance: number): void;
+  /**
    * Shows or hides the cockpit interior.
    *
    * Hiding the driver's head is NOT done here, because the two are not the same
@@ -147,6 +164,33 @@ const HALF_WIDTH = 1.0;
 const FRONT_AXLE_Z = 1.72;
 const REAR_AXLE_Z = -1.68;
 
+/**
+ * Geometry detail tier.
+ *
+ * Not the same thing as the renderer's quality setting, though it shares its
+ * names: the renderer picks ONE quality for the session and then this is chosen
+ * per car per frame by distance, so a car two hundred metres away is drawn from
+ * the cheap set even in a high-quality session. See `CarVisual.updateDetail`.
+ */
+export type CarTier = 'low' | 'high';
+
+/**
+ * Distance at which a car drops to the cheap geometry, and the one at which it
+ * comes back.
+ *
+ * Two thresholds, not one: with a single threshold a car running exactly
+ * alongside at that distance swaps tier every few frames, and the swap is
+ * visible as the wing endplates and the tyre silhouette twitching.
+ *
+ * Where the numbers come from: at a 42-degree vertical field of view the frame is
+ * 2*d*tan(21) metres tall at distance d, so at 45m a car five metres long spans
+ * about 115 pixels of a 1280-wide frame and stands about 20 high. The body
+ * loft's 110mm ring spacing is a quarter of a pixel at that size and the tyre's
+ * thirty-two segments resolve to three. Nothing above the cheap tier survives.
+ */
+const LOD_FAR_M = 45;
+const LOD_NEAR_M = 34;
+
 /** 18-inch wheels: 0.36m rolling radius; fronts narrower than rears. */
 const TYRE_R = 0.36;
 const FRONT_TYRE_W = 0.31;
@@ -162,28 +206,66 @@ const DRS_PIVOT_Y = 0.905;
 const DRS_PIVOT_Z = -2.325;
 
 interface Tiers {
-  /** Ring resolution for the main body lofts. */
+  /** Vertices around a ring on the main body lofts. */
   body: number;
-  /** Ring resolution for small lofts: endplates, fins, ducts. */
+  /** Vertices around a ring on small lofts: endplates, fins, ducts. */
   detail: number;
+  /**
+   * Ring SPACING along the body lofts, in metres.
+   *
+   * This matters more than the count around the ring and it was the thing that
+   * was missing. Sections are authored at 200-400mm stations and a loft skins
+   * flat between them, so the body was a fan of facets a foot wide with a
+   * crease across the car at every station. See `resample` in Loft.ts.
+   */
+  bodyStep: number;
+  /** Ring spacing along small lofts, in metres. */
+  detailStep: number;
   /** Radial segments around a tyre. */
   wheel: number;
-  /** Segments along the halo tube. */
+  /** Profile rings across a tyre, shoulder to shoulder. */
+  tyreRings: number;
+  /** Spokes and their radial resolution. */
+  spoke: number;
+  /** Segments along the halo tube, and around it. */
   halo: number;
+  haloRadial: number;
+  /** Radial segments on a suspension member. */
+  strut: number;
+  /** Aerofoil profile resolution on a wing element. */
+  wing: number;
   /** Livery texture edge, in pixels. */
   texture: number;
 }
 
-const TIERS: Record<'low' | 'high', Tiers> = {
-  // 1024 rather than 512 on the high tier. The atlas carries the whole car —
-  // three unwrapped panels and twelve swatches — so 512 left the sidepod's
-  // painted flank about 190 pixels long, which is why sponsor type came out as
-  // grey mush and the panel seams as staircases. At 1024 the flank gets 380
-  // and the type is legible from a chase camera. Twenty unique liveries at
-  // 1024 RGBA with mipmaps is around 100MB of texture, which a desktop GPU
-  // does not notice and a phone must never be asked for; hence the tier split.
-  high: { body: 20, detail: 10, wheel: 16, halo: 22, texture: 1024 },
-  low: { body: 14, detail: 8, wheel: 12, halo: 14, texture: 256 },
+/**
+ * `high` is what a still frame is judged on and `low` is what a phone runs, and
+ * the gap between them is deliberately large. Nothing on the low tier is any
+ * coarser than it used to be; everything on the high tier is finer, and the
+ * distance LOD below means the extra triangles are only ever paid for by the
+ * two or three cars close enough to see them.
+ */
+const TIERS: Record<CarTier, Tiers> = {
+  high: {
+    body: 32, detail: 20, bodyStep: 0.11, detailStep: 0.055,
+    wheel: 32, tyreRings: 6, spoke: 6, halo: 44, haloRadial: 12,
+    // 1024, not 512. This is the one non-geometric number in the table and it
+    // belongs with them: the atlas carries the whole car — three unwrapped
+    // panels and twelve swatches — so at 512 the sidepod's painted flank is
+    // about 190 pixels long, sponsor type comes out as grey mush and the
+    // diagonal edge of a colour flash resolves as a visible staircase from the
+    // chase camera. That staircase reads as "blocky" exactly as a faceted
+    // silhouette does, and no amount of extra tessellation under it helps. At
+    // 1024 the flank gets 380 and the type is legible. Ten teams share ten maps
+    // and one surface map, which a desktop GPU does not notice and a phone must
+    // never be asked for; hence the tier split.
+    strut: 9, wing: 14, texture: 1024,
+  },
+  low: {
+    body: 14, detail: 8, bodyStep: 0, detailStep: 0,
+    wheel: 12, tyreRings: 3, spoke: 4, halo: 14, haloRadial: 4,
+    strut: 5, wing: 6, texture: 256,
+  },
 };
 
 // ===========================================================================
@@ -262,52 +344,77 @@ function sidepod(): Section[] {
 
 const POD_X = 0.505;
 
+/**
+ * A bar with rounded long edges: a splitter, a diffuser strake, a cooling slat.
+ *
+ * These were `BoxGeometry`, and a box is the one shape that never occurs on a
+ * car — a moulded carbon part has a radius on every edge because it was laid up
+ * in a tool, and that radius is what puts a highlight along the part and tells
+ * you how big it is. Built as a two-station loft so it shares the superellipse
+ * profile the rest of the bodywork uses: `r` sets the corner radius.
+ */
+function roundedBar(
+  w: number, h: number, d: number, r: number, t: Tiers,
+): THREE.BufferGeometry {
+  const round = Math.max(0.08, Math.min(0.75, (r * 2) / Math.max(1e-4, Math.min(w, h))));
+  const cols = Math.max(8, Math.round(t.detail * 0.7));
+  return loft([
+    section(-d / 2, w / 2, -h / 2, h / 2, round),
+    section(d / 2, w / 2, -h / 2, h / 2, round),
+  ], cols);
+}
+
 function buildShellParts(
-  quality: 'low' | 'high',
+  quality: CarTier,
   driverBody: readonly THREE.BufferGeometry[],
 ): THREE.BufferGeometry[] {
   const t = TIERS[quality];
   const p = new Parts();
 
+  /** A body-scale lofted panel: fine around the ring AND along the car. */
+  const big = (s: readonly Section[], cols = t.body) => loft(s, cols, true, t.bodyStep);
+  /** A small lofted part — an endplate, a fin, a duct. */
+  const small = (s: readonly Section[], cols = t.detail) => loft(s, cols, true, t.detailStep);
+
   // --- Monocoque ---------------------------------------------------------
-  p.painted(loft(monocoque(), t.body), 'body');
+  p.painted(big(monocoque()), 'body');
 
   // --- Nose-to-wing transition -------------------------------------------
   // The nose does not stop in mid-air; it drops onto the second wing element.
   // This little wedge is what makes the front of the car read as one piece.
-  p.flat(loft([
+  p.flat(small([
     section(2.34, 0.126, 0.210, 0.368, 0.42),
     section(2.58, 0.106, 0.192, 0.302, 0.40),
     section(2.76, 0.086, 0.170, 0.238, 0.40),
-  ], t.detail), 'accent');
+  ], t.body - 6), 'accent');
 
   // --- Sidepods -----------------------------------------------------------
   for (const side of [-1, 1] as const) {
-    const g = loft(sidepod(), t.body - 4);
+    const g = big(sidepod(), t.body - 4);
     g.translate(side * POD_X, 0, 0);
     p.painted(g, 'pod');
 
     // Inlet: a dark duct standing proud of the pod face, so the mouth reads as a
     // hole in bodywork rather than as a painted-on rectangle. Nearly square
     // corners, because the current generation's inlets are letterboxes.
-    const mouth = loft([
+    const mouth = small([
       section(0.845, 0.168, 0.282, 0.508, 0.10),
       section(0.70, 0.140, 0.300, 0.478, 0.20),
       section(0.54, 0.100, 0.325, 0.442, 0.35),
-    ], t.detail);
+    ]);
     mouth.translate(side * POD_X, 0, 0);
     p.flat(mouth, 'dark');
 
     // Splitter across the inlet. One bar is the difference between a duct and a
     // black rectangle.
-    const splitter = new THREE.BoxGeometry(0.320, 0.026, 0.055);
+    const splitter = roundedBar(0.320, 0.026, 0.055, 0.008, t);
     splitter.translate(side * POD_X, 0.396, 0.842);
     p.flat(splitter, 'body');
   }
 
   // --- Floor --------------------------------------------------------------
   // Wider than the bodywork, as the current floor is, so it shows in plan view.
-  p.flat(loft([
+  p.flat(big([
     section(1.95, 0.215, 0.045, 0.100, 0.25, { flatTop: 0.80 }),
     section(1.35, 0.330, 0.045, 0.105, 0.20, { flatTop: 0.85 }),
     section(0.78, 0.640, 0.045, 0.110, 0.15, { flatTop: 0.90 }),
@@ -317,7 +424,7 @@ function buildShellParts(
   ], t.body - 6), 'carbon');
 
   // Diffuser: the floor ramping up under the rear crash structure.
-  p.flat(loft([
+  p.flat(big([
     section(-1.45, 0.740, 0.055, 0.145, 0.20, { flatTop: 0.85 }),
     section(-1.85, 0.700, 0.090, 0.190, 0.25, { flatTop: 0.80 }),
     section(-2.15, 0.640, 0.150, 0.252, 0.30, { flatTop: 0.75 }),
@@ -328,15 +435,15 @@ function buildShellParts(
   // Diffuser exit and strakes. The exit is a dark volume standing proud of the
   // diffuser's rear face; the strakes are the vertical fins across it.
   {
-    const exit = loft([
+    const exit = small([
       section(-2.575, 0.486, 0.256, 0.326, 0.40),
       section(-2.28, 0.552, 0.196, 0.296, 0.35),
-    ], t.detail);
+    ], t.body - 8);
     p.flat(exit, 'dark');
     // Strakes sit INSIDE the diffuser throat. Hung off the back they read as a
     // comb bolted to the tail, which is what the first attempt looked like.
     for (const x of [-0.35, -0.13, 0.13, 0.35]) {
-      const fin = new THREE.BoxGeometry(0.013, 0.080, 0.30);
+      const fin = roundedBar(0.013, 0.080, 0.30, 0.004, t);
       fin.translate(x, 0.276, -2.42);
       p.flat(fin, 'carbon');
     }
@@ -345,7 +452,7 @@ function buildShellParts(
   // Floor edge: the thin vertical lip that runs the length of the floor. It is
   // what stops the car looking like a body floating over a plate.
   for (const side of [-1, 1] as const) {
-    const edge = loft([
+    const edge = small([
       section(1.30, 0.018, 0.062, 0.150, 0.2),
       section(0.60, 0.020, 0.052, 0.178, 0.2),
       section(-0.40, 0.020, 0.050, 0.182, 0.2),
@@ -372,7 +479,7 @@ function buildShellParts(
       [0.175, 0.033, 0.306, 2.600, 0.48, 'accent'],
     ];
     for (const [chord, thick, y, z, angle, swatch] of elements) {
-      const g = wingElement(1.92, chord, thick, -0.030, quality === 'high' ? 10 : 6);
+      const g = wingElement(1.92, chord, thick, -0.030, t.wing);
       // Positive rotation about X drops the leading edge and lifts the trailing
       // edge, which is the way round an inverted wing works.
       g.rotateX(angle);
@@ -381,14 +488,20 @@ function buildShellParts(
     }
 
     // Endplates: tall, swept out and up, with the trailing edge rolled outward.
+    //
+    // The extra stations at the top and the bottom are not shape changes, they
+    // are there so the resampler has something to work with at the ends — a
+    // monotone spline through five points 180mm apart still has to be told where
+    // the plate stops, and the rolled outer edge that the reference car has is a
+    // property of the SECTION (round), not of the station list.
     for (const side of [-1, 1] as const) {
-      const ep = loft([
-        section(3.02, 0.021, 0.038, 0.230, 0.20),
-        section(2.84, 0.025, 0.042, 0.318, 0.18),
-        section(2.64, 0.027, 0.058, 0.372, 0.18),
-        section(2.44, 0.024, 0.090, 0.366, 0.20),
-        section(2.32, 0.019, 0.140, 0.328, 0.25),
-      ], t.detail);
+      const ep = small([
+        section(3.02, 0.021, 0.038, 0.230, 0.22),
+        section(2.84, 0.025, 0.042, 0.318, 0.20),
+        section(2.64, 0.027, 0.058, 0.372, 0.20),
+        section(2.44, 0.024, 0.090, 0.366, 0.22),
+        section(2.32, 0.019, 0.140, 0.328, 0.28),
+      ], t.body - 8);
       ep.translate(side * 0.965, 0, 0);
       p.flat(ep, 'accent');
     }
@@ -396,11 +509,11 @@ function buildShellParts(
 
   // --- Front brake ducts / wheel-wake fins --------------------------------
   for (const side of [-1, 1] as const) {
-    const duct = loft([
+    const duct = small([
       section(FRONT_AXLE_Z + 0.30, 0.030, 0.160, 0.420, 0.30),
       section(FRONT_AXLE_Z + 0.02, 0.046, 0.130, 0.500, 0.25),
       section(FRONT_AXLE_Z - 0.28, 0.034, 0.150, 0.440, 0.30),
-    ], t.detail);
+    ]);
     duct.translate(side * 0.645, 0, 0);
     p.flat(duct, 'carbon');
   }
@@ -409,7 +522,7 @@ function buildShellParts(
   // BEHIND the driver's head, not on top of it. Put the front of the airbox at
   // the driver's z and the roll hoop eats him, which is precisely what the first
   // attempt did — the cockpit looked empty because the head was inside a duct.
-  p.painted(loft([
+  p.painted(big([
     section(-0.24, 0.128, 0.520, 0.905, 0.38),
     section(-0.44, 0.152, 0.528, 0.898, 0.44),
     section(-0.78, 0.148, 0.538, 0.822, 0.55),
@@ -418,61 +531,64 @@ function buildShellParts(
   ], t.body - 6), 'airbox');
 
   // The intake itself. Dark, and proud of the airbox face, so it reads as a duct.
-  p.flat(loft([
+  p.flat(small([
     section(-0.215, 0.088, 0.664, 0.872, 0.45),
     section(-0.32, 0.076, 0.680, 0.850, 0.50),
     section(-0.46, 0.062, 0.696, 0.824, 0.60),
-  ], t.detail), 'dark');
+  ], t.body - 8), 'dark');
 
   // --- Shark fin ----------------------------------------------------------
-  p.flat(loft([
-    section(-1.48, 0.014, 0.510, 0.648, 0.20),
-    section(-1.85, 0.013, 0.450, 0.660, 0.20),
-    section(-2.18, 0.012, 0.390, 0.652, 0.20),
-    section(-2.42, 0.011, 0.330, 0.622, 0.20),
-  ], t.detail - 4), 'accent');
+  p.flat(small([
+    section(-1.48, 0.014, 0.510, 0.648, 0.30),
+    section(-1.85, 0.013, 0.450, 0.660, 0.30),
+    section(-2.18, 0.012, 0.390, 0.652, 0.30),
+    section(-2.42, 0.011, 0.330, 0.622, 0.30),
+  ], t.detail), 'accent');
 
   // --- Rear wing ----------------------------------------------------------
   {
-    const main = wingElement(0.98, 0.255, 0.050, -0.050, quality === 'high' ? 12 : 7);
+    const main = wingElement(0.98, 0.255, 0.050, -0.050, t.wing);
     main.rotateX(0.20);
     main.translate(0, 0.790, REAR_WING_Z);
     p.flat(main, 'body');
 
     for (const side of [-1, 1] as const) {
-      const ep = loft([
-        section(-2.20, 0.020, 0.640, 0.872, 0.20),
-        section(-2.36, 0.023, 0.612, 0.930, 0.18),
-        section(-2.52, 0.022, 0.600, 0.946, 0.18),
-        section(-2.66, 0.018, 0.642, 0.920, 0.22),
-      ], t.detail);
+      const ep = small([
+        section(-2.20, 0.020, 0.640, 0.872, 0.22),
+        section(-2.36, 0.023, 0.612, 0.930, 0.20),
+        section(-2.52, 0.022, 0.600, 0.946, 0.20),
+        section(-2.66, 0.018, 0.642, 0.920, 0.26),
+      ], t.body - 8);
       ep.translate(side * 0.505, 0, 0);
       p.flat(ep, 'accent');
     }
 
     // Swan-neck pylon: mounts on top of the main plane, as every current car's
     // does, rather than hanging off its underside.
-    p.flat(loft([
-      section(-2.10, 0.034, 0.395, 0.470, 0.30),
-      section(-2.28, 0.029, 0.560, 0.645, 0.30),
-      section(-2.38, 0.026, 0.735, 0.815, 0.30),
-    ], t.detail - 4), 'carbon');
+    p.flat(small([
+      section(-2.10, 0.034, 0.395, 0.470, 0.35),
+      section(-2.28, 0.029, 0.560, 0.645, 0.35),
+      section(-2.38, 0.026, 0.735, 0.815, 0.35),
+    ], t.detail), 'carbon');
 
     // Beam wing, two elements, bridging the crash structure to the endplates.
-    const beamA = wingElement(0.88, 0.150, 0.032, -0.028, quality === 'high' ? 8 : 5);
+    const beamA = wingElement(0.88, 0.150, 0.032, -0.028, Math.max(5, t.wing - 3));
     beamA.translate(0, 0.352, -2.44);
     p.flat(beamA, 'carbon');
-    const beamB = wingElement(0.86, 0.125, 0.028, -0.024, quality === 'high' ? 8 : 5);
+    const beamB = wingElement(0.86, 0.125, 0.028, -0.024, Math.max(5, t.wing - 3));
     beamB.translate(0, 0.442, -2.47);
     p.flat(beamB, 'carbon');
 
     // Rain light.
-    const light = new THREE.BoxGeometry(0.075, 0.105, 0.030);
+    const light = roundedBar(0.075, 0.105, 0.030, 0.012, t);
     light.translate(0, 0.300, -2.585);
     p.flat(light, 'light');
   }
 
   // --- Halo ---------------------------------------------------------------
+  // The halo is a 46mm titanium tube that passes within half a metre of the
+  // onboard camera. At five radial segments it was a pentagonal bar, and it is
+  // the single object in the scene with the least excuse for being one.
   {
     p.flat(tube([
       [-0.325, 0.640, -0.30],
@@ -484,10 +600,10 @@ function buildShellParts(
       [0.370, 0.762, 0.30],
       [0.375, 0.700, -0.05],
       [0.325, 0.640, -0.30],
-    ], 0.023, t.halo, quality === 'high' ? 5 : 4), 'trim');
+    ], 0.023, t.halo, t.haloRadial), 'trim');
 
     // The forward strut, the only part of the halo a driver actually sees.
-    p.flat(strut(0, 0.500, 0.770, 0, 0.815, 0.737, 0.026, 6), 'trim');
+    p.flat(strut(0, 0.500, 0.770, 0, 0.815, 0.737, 0.026, t.haloRadial), 'trim');
   }
 
   // --- Sidepod winglet and cooling louvres ---------------------------------
@@ -495,13 +611,13 @@ function buildShellParts(
   // radiator exit. Both are on every current car, and a sidepod without either
   // is a featureless blue blade from every angle.
   for (const side of [-1, 1] as const) {
-    const winglet = wingElement(0.245, 0.165, 0.020, -0.018, quality === 'high' ? 6 : 4);
+    const winglet = wingElement(0.245, 0.165, 0.020, -0.018, Math.max(4, t.wing - 5));
     winglet.rotateX(0.14);
     winglet.translate(side * 0.600, 0.602, 0.565);
     p.flat(winglet, 'carbon');
 
     for (const z of [-0.54, -0.70, -0.86]) {
-      const slat = new THREE.BoxGeometry(0.235, 0.010, 0.034);
+      const slat = roundedBar(0.235, 0.010, 0.034, 0.004, t);
       slat.rotateX(0.30);
       slat.translate(side * POD_X, 0.548 + z * 0.086, z);
       p.flat(slat, 'dark');
@@ -520,9 +636,17 @@ function buildShellParts(
   // where a real car mounts them, and for the same reason — they land inside
   // the frame.
   for (const side of [-1, 1] as const) {
-    p.flat(strut(side * 0.300, 0.548, MIRROR_Z, side * 0.430, MIRROR_Y - 0.008, MIRROR_Z, 0.014, 5), 'trim');
-    const housing = new THREE.BoxGeometry(0.105, 0.058, 0.040);
-    housing.translate(side * MIRROR_X, MIRROR_Y, MIRROR_Z);
+    p.flat(strut(side * 0.300, 0.548, MIRROR_Z, side * 0.430, MIRROR_Y - 0.008, MIRROR_Z, 0.014, t.strut), 'trim');
+    // A moulded pod, not a brick: the housing tapers rearward and is rounded on
+    // every edge, which is what it looks like on the reference car and what
+    // makes the two of them read as aerodynamic parts rather than as luggage.
+    const housing = small([
+      section(MIRROR_Z + 0.021, 0.0525, MIRROR_Y - 0.029, MIRROR_Y + 0.029, 0.42),
+      section(MIRROR_Z + 0.004, 0.0530, MIRROR_Y - 0.030, MIRROR_Y + 0.030, 0.45),
+      section(MIRROR_Z - 0.014, 0.0470, MIRROR_Y - 0.027, MIRROR_Y + 0.028, 0.55),
+      section(MIRROR_Z - 0.026, 0.0330, MIRROR_Y - 0.020, MIRROR_Y + 0.022, 0.80),
+    ], t.detail);
+    housing.translate(side * MIRROR_X, 0, 0);
     p.flat(housing, 'body');
     // A flat dark pane, so the mirrors read from outside too. The player's own
     // car covers this with a reflective one; see CockpitMesh.
@@ -539,28 +663,29 @@ function buildShellParts(
   {
     const fz = FRONT_AXLE_Z;
     const rz = REAR_AXLE_Z;
+    const sg = t.strut;
     for (const s of [-1, 1] as const) {
       const fh = s * (FRONT_HUB_X - 0.035);
       // Front upper wishbone.
-      p.flat(strut(s * 0.290, 0.398, fz + 0.30, fh, 0.455, fz + 0.02, 0.022), 'trim');
-      p.flat(strut(s * 0.272, 0.402, fz - 0.26, fh, 0.455, fz + 0.02, 0.022), 'trim');
+      p.flat(strut(s * 0.290, 0.398, fz + 0.30, fh, 0.455, fz + 0.02, 0.022, sg), 'trim');
+      p.flat(strut(s * 0.272, 0.402, fz - 0.26, fh, 0.455, fz + 0.02, 0.022, sg), 'trim');
       // Front lower wishbone.
-      p.flat(strut(s * 0.278, 0.136, fz + 0.28, fh, 0.196, fz + 0.01, 0.026), 'trim');
-      p.flat(strut(s * 0.262, 0.142, fz - 0.28, fh, 0.196, fz + 0.01, 0.026), 'trim');
+      p.flat(strut(s * 0.278, 0.136, fz + 0.28, fh, 0.196, fz + 0.01, 0.026, sg), 'trim');
+      p.flat(strut(s * 0.262, 0.142, fz - 0.28, fh, 0.196, fz + 0.01, 0.026, sg), 'trim');
       // Track rod and pushrod.
-      p.flat(strut(s * 0.262, 0.300, fz - 0.33, fh, 0.300, fz - 0.13, 0.016), 'trim');
-      p.flat(strut(fh, 0.212, fz + 0.06, s * 0.262, 0.470, fz - 0.24, 0.019), 'trim');
+      p.flat(strut(s * 0.262, 0.300, fz - 0.33, fh, 0.300, fz - 0.13, 0.016, sg), 'trim');
+      p.flat(strut(fh, 0.212, fz + 0.06, s * 0.262, 0.470, fz - 0.24, 0.019, sg), 'trim');
       // Upright.
-      p.flat(strut(s * (FRONT_HUB_X - 0.030), 0.190, fz, s * (FRONT_HUB_X - 0.030), 0.470, fz, 0.036), 'carbon');
+      p.flat(strut(s * (FRONT_HUB_X - 0.030), 0.190, fz, s * (FRONT_HUB_X - 0.030), 0.470, fz, 0.036, sg), 'carbon');
 
       const rh = s * (REAR_HUB_X - 0.035);
-      p.flat(strut(s * 0.242, 0.470, rz + 0.30, rh, 0.472, rz - 0.02, 0.024), 'trim');
-      p.flat(strut(s * 0.222, 0.470, rz - 0.26, rh, 0.472, rz - 0.02, 0.024), 'trim');
-      p.flat(strut(s * 0.238, 0.172, rz + 0.28, rh, 0.206, rz, 0.028), 'trim');
-      p.flat(strut(s * 0.218, 0.176, rz - 0.28, rh, 0.206, rz, 0.028), 'trim');
-      p.flat(strut(s * 0.222, 0.292, rz - 0.32, rh, 0.300, rz - 0.10, 0.016), 'trim');
-      p.flat(strut(s * 0.150, 0.248, rz, rh, 0.248, rz, 0.030), 'carbon');
-      p.flat(strut(s * (REAR_HUB_X - 0.030), 0.200, rz, s * (REAR_HUB_X - 0.030), 0.470, rz, 0.036), 'carbon');
+      p.flat(strut(s * 0.242, 0.470, rz + 0.30, rh, 0.472, rz - 0.02, 0.024, sg), 'trim');
+      p.flat(strut(s * 0.222, 0.470, rz - 0.26, rh, 0.472, rz - 0.02, 0.024, sg), 'trim');
+      p.flat(strut(s * 0.238, 0.172, rz + 0.28, rh, 0.206, rz, 0.028, sg), 'trim');
+      p.flat(strut(s * 0.218, 0.176, rz - 0.28, rh, 0.206, rz, 0.028, sg), 'trim');
+      p.flat(strut(s * 0.222, 0.292, rz - 0.32, rh, 0.300, rz - 0.10, 0.016, sg), 'trim');
+      p.flat(strut(s * 0.150, 0.248, rz, rh, 0.248, rz, 0.030, sg), 'carbon');
+      p.flat(strut(s * (REAR_HUB_X - 0.030), 0.200, rz, s * (REAR_HUB_X - 0.030), 0.470, rz, 0.036, sg), 'carbon');
     }
   }
 
@@ -597,7 +722,8 @@ function buildShellParts(
  * rotation goes on the mesh rather than on the spin group, because the group's X
  * axis is the axis the renderer spins about.
  */
-function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THREE.BufferGeometry {
+function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeometry {
+  const radial = t.wheel;
   const parts: THREE.BufferGeometry[] = [];
   const push = (geo: THREE.BufferGeometry, swatch: WheelSwatch) => {
     const [u, v] = wheelSwatchUV(swatch);
@@ -607,16 +733,16 @@ function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THR
   const half = width * 0.5;
 
   // --- Tyre ---------------------------------------------------------------
-  // A surface of revolution: bead, sidewall bulge, shoulder, crowned tread, and
-  // back again. The stations line up one-for-one with PROFILE_V, which is what
-  // puts the compound stripe on the sidewall and not across the tread.
+  // A surface of revolution: bead, sidewall, shoulder radius, crowned tread, and
+  // back again. Each station carries the v it maps to, which is what puts the
+  // compound stripe on the sidewall and not across the tread.
   //
   // The cross-section itself lives in TyreTexture, next to the paint that has to
   // land on it and next to the raised compound band that has to sit exactly on
   // top of it. Two copies of these numbers would drift the moment either was
   // tuned, and the failure mode is the band z-fighting through the carcass —
   // which reads as the tyre flickering, not as a mis-set constant.
-  const profile = tyreProfile(width, TYRE_R, RIM_R);
+  const profile = tyreProfile(width, TYRE_R, RIM_R, t.tyreRings);
 
   const rings = profile.length;
   // One extra column duplicating the seam, so u can reach 1.0 instead of
@@ -626,7 +752,7 @@ function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THR
   const positions = new Float32Array(rings * cols * 3);
   const uvs = new Float32Array(rings * cols * 2);
   for (let pi = 0; pi < rings; pi++) {
-    const v = TYRE_BAND.v0 + PROFILE_V[pi] * (TYRE_BAND.v1 - TYRE_BAND.v0);
+    const v = TYRE_BAND.v0 + profile[pi].v * (TYRE_BAND.v1 - TYRE_BAND.v0);
     for (let i = 0; i < cols; i++) {
       const a = (i / radial) * Math.PI * 2;
       const o = (pi * cols + i) * 3;
@@ -679,7 +805,7 @@ function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THR
   barrel.rotateZ(Math.PI / 2);
   push(barrel, 'rimFace');
 
-  const faceX = half * 0.90;
+  const faceX = half * 0.86;
   for (const [x, r0, r1] of [[faceX, RIM_R * 0.955, RIM_R * 1.0]] as const) {
     const lip = new THREE.CylinderGeometry(r1, r0, 0.026, radial, 1, true);
     lip.rotateZ(Math.PI / 2);
@@ -713,37 +839,38 @@ function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THR
   push(caliper, 'caliper');
 
   // --- Wheel face ----------------------------------------------------------
-  // A dark cover with radial slots cut through it, rather than a solid disc
-  // with spokes bolted on the front. The slots are what let the disc behind
-  // show, and the alternating light/dark as the wheel turns is what makes it
-  // read as an open wheel face.
-  const spokes = quality === 'high' ? 10 : 7;
-  const rInner = RIM_R * 0.30;
-  const rOuter = RIM_R * 0.93;
-  for (let k = 0; k < spokes; k++) {
-    const a = (k / spokes) * Math.PI * 2;
-    // A tapered blade, wider at the rim than at the hub, which is how a real
-    // wheel's cover is shaped and what stops the face reading as a pinwheel.
-    const blade = new THREE.BufferGeometry();
-    const wIn = 0.030, wOut = 0.062;
-    const ca = Math.cos(a), sa = Math.sin(a);
-    const pt = (r: number, w: number, side: number) => {
-      const px = r * sa + side * w * ca;
-      const py = r * ca - side * w * sa;
-      return [faceX, px, py];
-    };
-    const v0 = pt(rInner, wIn, -1), v1 = pt(rInner, wIn, 1);
-    const v2 = pt(rOuter, wOut, 1), v3 = pt(rOuter, wOut, -1);
-    blade.setAttribute('position', new THREE.Float32BufferAttribute([
-      ...v0, ...v1, ...v2,
-      ...v0, ...v2, ...v3,
-    ], 3));
-    blade.computeVertexNormals();
-    push(blade, k % 2 === 0 ? 'rimSpoke' : 'rimFace');
+  // An outer ring, six machined spokes and a centre nut — an OPEN face, with the
+  // brake disc above showing through the gaps.
+  //
+  // There is deliberately no backing disc behind the spokes. One would stop the
+  // wheel reading as hollow, which is what it is for, but it would also mask the
+  // disc and caliper completely and those are the whole reason the disc is set
+  // inboard. The disc itself closes the void, and closes it with something worth
+  // looking at.
+  const ring = new THREE.RingGeometry(RIM_R * 0.84, RIM_R * 0.995, radial);
+  ring.rotateY(Math.PI / 2);
+  ring.translate(faceX + 0.004, 0, 0);
+  push(ring, 'rimFace');
+
+  // A machined spoke is wider at the rim than at the hub and has a radius on all
+  // four of its long edges; as square-cut boxes they read as six matchsticks
+  // glued to a disc, which is precisely what a stock rim never looks like. Built
+  // as a three-station loft that tapers as it goes outward.
+  for (let k = 0; k < 6; k++) {
+    const spoke = loft([
+      section(RIM_R * 0.26, 0.0155, -0.024, 0.024, 0.55),
+      section(RIM_R * 0.60, 0.0175, -0.027, 0.027, 0.45),
+      section(RIM_R * 0.88, 0.0135, -0.023, 0.023, 0.55),
+    ], t.spoke * 2);
+    // Lofted along its own +z; stand it up as a radial arm and swing it round.
+    spoke.rotateX(-Math.PI / 2);
+    spoke.rotateX((k * Math.PI) / 3);
+    spoke.translate(faceX, 0, 0);
+    push(spoke, 'rimSpoke');
   }
 
   // Centre lock nut.
-  const hub = new THREE.CylinderGeometry(rInner * 1.05, rInner * 1.15, 0.034, 6);
+  const hub = new THREE.CylinderGeometry(RIM_R * 0.26, RIM_R * 0.30, 0.030, t.spoke * 2);
   hub.rotateZ(Math.PI / 2);
   hub.translate(faceX + 0.014, 0, 0);
   push(hub, 'hub');
@@ -811,14 +938,14 @@ interface CachedGeometry {
  */
 const geometryCache = new Map<string, CachedGeometry>();
 
-function geometryFor(quality: 'low' | 'high'): CachedGeometry {
+function geometryFor(quality: CarTier): CachedGeometry {
   const hit = geometryCache.get(quality);
   if (hit) return hit;
 
   const t = TIERS[quality];
   // Closed, the DRS flap stands at a steep angle above the main plane; the
   // renderer rotates its pivot toward flat when the system is open.
-  const flapGeo = wingElement(0.95, 0.185, 0.034, -0.030, quality === 'high' ? 10 : 6);
+  const flapGeo = wingElement(0.95, 0.185, 0.034, -0.030, t.wing);
   flapGeo.rotateX(0.62);
   const [fu, fv] = swatchUV('accent');
   setFlatUV(flapGeo, fu, fv);
@@ -833,14 +960,16 @@ function geometryFor(quality: 'low' | 'high'): CachedGeometry {
   const built: CachedGeometry = {
     shell: mergeParts(buildShellParts(quality, driver.body)),
     head: mergeParts([...driver.head, ...driver.grip]),
-    frontWheel: buildWheel(FRONT_TYRE_W, t.wheel, quality),
-    rearWheel: buildWheel(REAR_TYRE_W, t.wheel, quality),
-    frontBand: buildSidewallBands(FRONT_TYRE_W, TYRE_R, RIM_R, t.wheel),
-    rearBand: buildSidewallBands(REAR_TYRE_W, TYRE_R, RIM_R, t.wheel),
+    frontWheel: buildWheel(FRONT_TYRE_W, t, quality),
+    rearWheel: buildWheel(REAR_TYRE_W, t, quality),
+    // Built with the same tyre tessellation as the carcass they sit on, so the
+    // 6mm lift still clears it at both tiers.
+    frontBand: buildSidewallBands(FRONT_TYRE_W, TYRE_R, RIM_R, t.wheel, t.tyreRings),
+    rearBand: buildSidewallBands(REAR_TYRE_W, TYRE_R, RIM_R, t.wheel, t.tyreRings),
     disc: (() => {
       // The glow ring. Sits just outboard of the real disc so it reads as heat
       // coming off it rather than as a separate object.
-      const d = new THREE.CylinderGeometry(0.168, 0.168, 0.020, quality === 'high' ? 14 : 8, 1, true);
+      const d = new THREE.CylinderGeometry(0.168, 0.168, 0.020, quality === 'high' ? 24 : 8, 1, true);
       d.rotateZ(Math.PI / 2);
       return d;
     })(),
@@ -979,6 +1108,13 @@ export function buildCar(
   driverHead.castShadow = true;
   root.add(driverHead);
 
+  // Meshes whose geometry the distance LOD swaps, paired with the field of
+  // CachedGeometry each one reads.
+  const swappable: { mesh: THREE.Mesh; key: keyof CachedGeometry }[] = [
+    { mesh: shell, key: 'shell' },
+    { mesh: driverHead, key: 'head' },
+  ];
+
   // Everything only the driver can see. Parented to the car root, so it inherits
   // the chassis' position, heading, roll and pitch for free.
   const cockpit = opts.withCockpit ? buildCockpit(accentColour) : null;
@@ -1004,6 +1140,7 @@ export function buildCar(
   flap.position.set(0, 0, -0.092);
   flapPivot.add(flap);
   root.add(flapPivot);
+  swappable.push({ mesh: flap, key: 'flap' });
 
   const brakeGlow: THREE.Mesh[] = [];
   const wheels: THREE.Mesh[] = [];
@@ -1029,20 +1166,24 @@ export function buildCar(
     if (x < 0) wheel.rotation.y = Math.PI;
     spin.add(wheel);
     wheels.push(wheel);
+    swappable.push({ mesh: wheel, key: rear ? 'rearWheel' : 'frontWheel' });
 
     // Compound band. It MUST go on the spin group, not the steer group.
     //
     // The band is a surface of revolution, so spinning it changes nothing you
     // can see and hanging it off the steer group looks like a free saving. It is
-    // not. Both the band and the tyre are sixteen-sided prisms sampled at the
-    // same angles, which is what makes a five-millimetre offset enough to keep
-    // one clear of the other — but only while they stay in phase. Leave the band
-    // stationary and the spinning carcass's vertices sweep past its flat facets
-    // and poke through, and the solid ring becomes a ring of dashes that
-    // flickers as the wheel turns.
+    // not. Both the band and the tyre are prisms sampled at the same angles,
+    // which is what makes a six-millimetre offset enough to keep one clear of
+    // the other — but only while they stay in phase. Leave the band stationary
+    // and the spinning carcass's vertices sweep past its flat facets and poke
+    // through, and the solid ring becomes a ring of dashes that flickers as the
+    // wheel turns.
     const band = new THREE.Mesh(rear ? geo.rearBand : geo.frontBand, sidewallMaterial(fittedCompound));
     spin.add(band);
     bands.push(band);
+    // Swapped with the carcass, and for the same reason: the two have to be
+    // built from the same section or the lift no longer clears it.
+    swappable.push({ mesh: band, key: rear ? 'rearBand' : 'frontBand' });
 
     // Brake disc glows under load. Unlit so it reads at night.
     const discMat = new THREE.MeshBasicMaterial({
@@ -1054,6 +1195,7 @@ export function buildCar(
     });
     const disc = new THREE.Mesh(geo.disc, discMat);
     disc.position.x = x > 0 ? -0.036 : 0.036;
+    swappable.push({ mesh: disc, key: 'disc' });
     // On the steer group, not the spin group: a brake disc does rotate with the
     // wheel, but the glow is what matters and a static disc avoids strobing.
     steer.add(disc);
@@ -1068,7 +1210,21 @@ export function buildCar(
   const rl = makeWheel(-REAR_HUB_X, REAR_AXLE_Z, true);
   const rr = makeWheel(REAR_HUB_X, REAR_AXLE_Z, true);
 
+  let detail: CarTier = quality;
+
   return {
+    updateDetail(distance: number): void {
+      // A session that asked for the cheap geometry does not want the expensive
+      // set back when a car comes close.
+      if (quality === 'low') return;
+      const want: CarTier = detail === 'high'
+        ? (distance > LOD_FAR_M ? 'low' : 'high')
+        : (distance < LOD_NEAR_M ? 'high' : 'low');
+      if (want === detail) return;
+      detail = want;
+      const set = geometryFor(want);
+      for (const s of swappable) s.mesh.geometry = set[s.key];
+    },
     root,
     frontLeftSteer: fl.steer,
     frontRightSteer: fr.steer,

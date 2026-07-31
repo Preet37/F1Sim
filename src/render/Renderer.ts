@@ -822,6 +822,13 @@ export class Renderer {
       v.root.position.set(p.position.x, y, p.position.y);
       v.root.rotation.y = p.heading;
 
+      // Geometry LOD, from the camera's position at the END of the previous
+      // frame — the director has not moved it yet this frame. A frame of lag on
+      // a sixty-metre threshold is not something anybody can see, and reading it
+      // here rather than after the director runs keeps all the per-car work in
+      // one loop.
+      v.updateDetail(this.director.camera.position.distanceTo(v.root.position));
+
       // Body roll and pitch from the actual accelerations, which is what makes
       // the car look loaded up rather than sliding around on rails.
       const roll = clamp(-p.lateralG * 0.016, -0.06, 0.06);

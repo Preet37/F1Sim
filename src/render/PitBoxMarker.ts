@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { chamferBox } from './ChamferKit';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from '../race/CarEntry';
 import {
@@ -176,7 +177,10 @@ export function buildPitBoxMarker(track: TrackSpline, player: CarEntry): PitBoxM
   // the lane at eighty km/h, which is precisely where the driver needs to start
   // aiming for it. Something standing up, above the pit wall line, is not — and
   // the posts were 2.6m of 8.5cm pole, which at that distance is a hair.
-  const pylonGeo = new THREE.CylinderGeometry(PYLON_R, PYLON_R * 1.35, PYLON_H, 10);
+  // Twenty sides, not ten. There is exactly one of this geometry in the scene
+  // — both pylons share it — so the extra thirty triangles are free, and a
+  // decagon 150mm across shows its flats at pit-lane speed.
+  const pylonGeo = new THREE.CylinderGeometry(PYLON_R, PYLON_R * 1.35, PYLON_H, 20);
   disposables.push(pylonGeo);
   const feet: THREE.Vector3[] = [];
   for (const s of [boxS - half, boxS + half]) {
@@ -187,7 +191,10 @@ export function buildPitBoxMarker(track: TrackSpline, player: CarEntry): PitBoxM
     feet.push(base);
   }
   if (feet.length === 2) {
-    const barGeo = new THREE.BoxGeometry(feet[0].distanceTo(feet[1]), BAR_H, 0.16);
+    // Chamfered. This bar is deliberately the thing the driver's eye lands on
+    // from a hundred metres up the lane, and it was the one raw BoxGeometry in
+    // the scene with a spotlight on it.
+    const barGeo = chamferBox(feet[0].distanceTo(feet[1]), BAR_H, 0.16, 0.03);
     disposables.push(barGeo);
     const bar = new THREE.Mesh(barGeo, teamMat);
     bar.position.set(
