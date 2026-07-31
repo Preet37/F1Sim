@@ -1347,7 +1347,14 @@ function buildSceneryInstances(
  * into aliasing shimmer, too coarse and it reads as a net.
  */
 function makeFenceTexture(): THREE.Texture {
-  const S = 64;
+  // 256, not 64. The wire gauge below is expressed as a fraction of S so the
+  // fence looks identical — but at 64 pixels an alpha-tested diagonal is a
+  // visible staircase on the largest surface in almost every frame, and a
+  // staircase reads as "blocky" for exactly the same reason a facet does.
+  // One texture for the whole circuit, so this costs 256KB.
+  const S = 256;
+  const PITCH = S / 4;
+  const GAUGE = S / 32;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
@@ -1357,9 +1364,9 @@ function makeFenceTexture(): THREE.Texture {
 
   // The diamond weave of real chain-link.
   g.strokeStyle = '#fff';
-  g.lineWidth = 2;
+  g.lineWidth = GAUGE;
   g.beginPath();
-  for (let i = -S; i < S * 2; i += 16) {
+  for (let i = -S; i < S * 2; i += PITCH) {
     g.moveTo(i, 0);
     g.lineTo(i + S, S);
     g.moveTo(i + S, 0);

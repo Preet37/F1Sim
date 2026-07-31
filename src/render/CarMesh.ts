@@ -89,6 +89,24 @@ export interface CarVisual {
    */
   cockpit: CockpitVisual | null;
   /**
+   * Chooses a geometry tier for this car from its distance to the camera.
+   *
+   * The high tier costs about four times what the low one does, and beyond
+   * sixty metres a car is roughly a hundred pixels tall — the body loft's ring
+   * spacing is under a pixel by then and the tyre's thirty-two segments resolve
+   * to about three, so none of the tessellation that makes a wing endplate read
+   * as a moulded part at three metres is visible at all. On a full grid that is
+   * nineteen of the twenty cars for most of a lap.
+   *
+   * Both tiers are the SHARED cached geometry, so a swap is one pointer
+   * assignment per mesh: no extra memory, no extra draw call, and no per-car
+   * geometry — the cache stays exactly as shared as it was.
+   *
+   * A no-op on a session already running the low tier: there is nothing
+   * cheaper to fall back to.
+   */
+  updateDetail(distance: number): void;
+  /**
    * Shows or hides the cockpit interior.
    *
    * Hiding the driver's head is NOT done here, because the two are not the same
@@ -132,6 +150,24 @@ const REAR_AXLE_Z = -1.68;
  * the cheap set even in a high-quality session. See `carTierForDistance`.
  */
 export type CarTier = 'low' | 'high';
+
+/**
+ * Distance at which a car drops to the cheap geometry, and the one at which it
+ * comes back.
+ *
+ * Two thresholds, not one: with a single threshold a car running exactly
+ * alongside at that distance swaps tier every few frames, and the swap is
+ * visible as the wing endplates and the tyre silhouette twitching.
+ */
+/**
+ * Where these come from: at a 42-degree vertical field of view the frame is
+ * 2*d*tan(21) metres tall at distance d, so at 45m a car five metres long spans
+ * about 115 pixels of a 1280-wide frame and stands about 20 high. The body
+ * loft's 110mm ring spacing is a quarter of a pixel at that size and the tyre's
+ * thirty-two segments resolve to three. Nothing above the cheap tier survives.
+ */
+const LOD_FAR_M = 45;
+const LOD_NEAR_M = 34;
 
 /** 18-inch wheels: 0.36m rolling radius; fronts narrower than rears. */
 const TYRE_R = 0.36;
@@ -191,7 +227,14 @@ const TIERS: Record<CarTier, Tiers> = {
   high: {
     body: 32, detail: 20, bodyStep: 0.11, detailStep: 0.055,
     wheel: 32, tyreRings: 6, spoke: 6, halo: 44, haloRadial: 12,
-    strut: 9, wing: 14, texture: 512,
+    // 1024, not 512. This is the one non-geometric number in the table and it
+    // belongs with them: at 512 the livery atlas gives the flank about 130
+    // pixels across a metre, so the diagonal edge of a colour flash resolves as
+    // a visible staircase from the chase camera. That staircase reads as
+    // "blocky" exactly as a faceted silhouette does, and no amount of extra
+    // tessellation under it helps. Ten teams share ten maps and one surface
+    // map, so the cost is about fifty megabytes on the desktop tier only.
+    strut: 9, wing: 14, texture: 1024,
   },
   low: {
     body: 14, detail: 8, bodyStep: 0, detailStep: 0,
@@ -925,6 +968,13 @@ export function buildCar(
   driverHead.castShadow = true;
   root.add(driverHead);
 
+  // Meshes whose geometry the distance LOD swaps, paired with the field of
+  // CachedGeometry each one reads.
+  const swappable: { mesh: THREE.Mesh; key: keyof CachedGeometry }[] = [
+    { mesh: shell, key: 'shell' },
+    { mesh: driverHead, key: 'head' },
+  ];
+
   // Everything only the driver can see. Parented to the car root, so it inherits
   // the chassis' position, heading, roll and pitch for free.
   const cockpit = opts.withCockpit ? buildCockpit(accentColour) : null;
@@ -945,6 +995,7 @@ export function buildCar(
   flap.position.set(0, 0, -0.092);
   flapPivot.add(flap);
   root.add(flapPivot);
+  swappable.push({ mesh: flap, key: 'flap' });
 
   const brakeGlow: THREE.Mesh[] = [];
 
@@ -964,11 +1015,13 @@ export function buildCar(
     // Turn the left-hand wheels around so their spoked face points outboard.
     if (x < 0) wheel.rotation.y = Math.PI;
     spin.add(wheel);
+    swappable.push({ mesh: wheel, key: rear ? 'rearWheel' : 'frontWheel' });
 
     // Brake disc glows under load. Unlit so it reads at night.
     const discMat = new THREE.MeshBasicMaterial({ color: 0x1a1210 });
     const disc = new THREE.Mesh(geo.disc, discMat);
     disc.position.x = x > 0 ? -0.055 : 0.055;
+    swappable.push({ mesh: disc, key: 'disc' });
     // On the steer group, not the spin group: a brake disc does rotate with the
     // wheel, but the glow is what matters and a static disc avoids strobing.
     steer.add(disc);
@@ -983,7 +1036,21 @@ export function buildCar(
   const rl = makeWheel(-REAR_HUB_X, REAR_AXLE_Z, true);
   const rr = makeWheel(REAR_HUB_X, REAR_AXLE_Z, true);
 
+  let detail: CarTier = quality;
+
   return {
+    updateDetail(distance: number): void {
+      // A session that asked for the cheap geometry does not want the expensive
+      // set back when a car comes close.
+      if (quality === 'low') return;
+      const want: CarTier = detail === 'high'
+        ? (distance > LOD_FAR_M ? 'low' : 'high')
+        : (distance < LOD_NEAR_M ? 'high' : 'low');
+      if (want === detail) return;
+      detail = want;
+      const set = geometryFor(want);
+      for (const s of swappable) s.mesh.geometry = set[s.key];
+    },
     root,
     frontLeftSteer: fl.steer,
     frontRightSteer: fr.steer,
