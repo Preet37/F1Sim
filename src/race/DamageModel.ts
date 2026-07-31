@@ -91,10 +91,13 @@ export class CarDamage {
    *
    * @param zone     which face took the hit
    * @param severity 0..1, already normalised from closing speed by the caller
+   * @param writeOff true when this impact ended the car's session, which is a
+   *                 decision only the race engine can make — see the note on
+   *                 the destruction term below
    * @returns the components that crossed into a visibly worse state, so race
    *          control can report the specific failure rather than "damage"
    */
-  applyImpact(zone: ImpactZone, severity: number): ComponentId[] {
+  applyImpact(zone: ImpactZone, severity: number, writeOff = false): ComponentId[] {
     const s = clamp01(severity);
     if (s <= 0.001) return [];
 
@@ -108,14 +111,41 @@ export class CarDamage {
       : zone === 'right' ? { sidepodR: 1.0, suspFR: 0.6, suspRR: 0.6, frontWingR: 0.5, floor: 0.3 }
       : { floor: 1.0, sidepodL: 0.2, sidepodR: 0.2 };
 
+    // How much of a component a full-weight hit takes off.
+    //
+    // Two terms, because "an impact" covers two things that are not the same
+    // event. The linear term is RACING CONTACT: wheels touched, a car was
+    // nudged into a wall on the exit of a corner, somebody was optimistic into
+    // turn one. Those accumulate — roughly three of them to the same corner
+    // before the part is beyond use — and that is the right feel for them.
+    //
+    // The second term is DESTRUCTION, and it applies only when the caller has
+    // already decided this impact ends the car's session. Without it a written
+    // off car kept immaculate bodywork: a 200 km/h square-on hit produced a
+    // severity of 1.0, retired the car on the spot, and left the front wing at
+    // 68% health — undamaged enough to still be attached. The car was destroyed
+    // with nothing to show for it, so nothing fell off, and the wreck was a
+    // pristine car standing still. That is half of the "it just poof gone"
+    // report: even when the crash was drawn, it did not look like one.
+    //
+    // Why it is gated on `writeOff` rather than on severity crossing a
+    // threshold: severity saturates at 1.0 far too easily for it to stand in
+    // for "this was an accident". An AI car running wide and touching a barrier
+    // at 120 km/h and 45 degrees reads 1.0, and it happens constantly. Scaling
+    // destruction off severity alone therefore tore the bodywork off cars that
+    // were still racing, which cost them grip, which made them run wide again —
+    // a feedback loop that took Silverstone from thirteen finishers out of
+    // twenty to eight. Tying it to the retirement decision instead means the
+    // extra damage can only ever land on a car whose session is already over,
+    // where by construction it cannot affect anybody's race.
+    const rate = writeOff ? s * 0.32 + 0.85 : s * 0.32;
+
     const broken: ComponentId[] = [];
     for (const id of COMPONENT_IDS) {
       const w = spread[id];
       if (!w) continue;
       const before = this.health[id];
-      // 0.32 at full severity on the primary component: roughly three heavy
-      // hits to the same corner before it is beyond use.
-      const loss = s * 0.32 * w;
+      const loss = rate * w;
       const after = clamp(before - loss, FLOORS[id], 1);
       this.health[id] = after;
       // Report only when a component crosses a threshold, so a graze does not

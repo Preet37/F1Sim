@@ -2227,3 +2227,180 @@ table.standings tr.me td.pos { color: var(--amber); }
   .pad-rank { font-size: 21px; min-width: 26px; }
   .pad-nat { display: none; }
 }
+
+/* === Retirement ========================================================
+   Shown over the track when the player's own race ends in an accident.
+
+   It is a full-bleed overlay rather than a card in the corner because a
+   retirement is not a notification — it is the end of the session, and the
+   player needs to be told so plainly that there is no ambiguity about what
+   just happened. The previous behaviour said nothing at all: the car stopped
+   being drawn and the player was left looking at an empty circuit trying to
+   work out whether the game had crashed.
+
+   It fades in over the live scene rather than replacing it, so the wreck and
+   the debris stay visible behind the words explaining them. That is the whole
+   point of leaving them there.
+   ==================================================================== */
+
+.retire-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(120% 90% at 50% 40%, rgba(4, 6, 10, 0.55) 0%, rgba(3, 4, 7, 0.93) 78%);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  transition: opacity 0.55s ease;
+  pointer-events: none;
+}
+.retire-overlay.shown { opacity: 1; pointer-events: auto; }
+.retire-overlay.hidden { display: none; }
+
+.retire-card {
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(21, 27, 35, 0.97), rgba(9, 12, 17, 0.98));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.72);
+  color: var(--ink);
+  text-align: left;
+}
+
+/* The red bar across the top is the same signal the flag panels use. */
+.retire-flag {
+  height: 4px;
+  background: var(--kerb-diag);
+  background-size: 20px 100%;
+  border-radius: 5px 5px 0 0;
+}
+
+.retire-body { padding: 22px 24px 24px; }
+
+.retire-tag {
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.retire-title {
+  margin-top: 6px;
+  font-family: var(--font-display);
+  font-size: clamp(34px, 8vw, 52px);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  line-height: 0.95;
+  text-transform: uppercase;
+  color: var(--race-red-hi);
+}
+
+.retire-lede {
+  margin-top: 12px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.retire-lede strong { color: #fff; }
+
+.retire-sub {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* The technical account of what broke. A driver gets told this on the radio,
+   and it is the difference between "you crashed" and knowing why the car
+   could not continue. */
+.retire-facts {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.retire-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 0;
+}
+.retire-fact + .retire-fact { border-top: 1px solid var(--line); }
+.retire-fact-label {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.retire-fact-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: right;
+}
+.retire-fact-value.is-bad { color: var(--race-red-hi); }
+.retire-fact-value.is-warn { color: var(--amber); }
+
+/* Every component that took damage, worst first. Bars rather than numbers:
+   the shape of the damage is the readable thing, not the percentages. */
+.retire-parts { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.retire-part { display: flex; align-items: center; gap: 10px; }
+.retire-part-name {
+  flex: 0 0 128px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.retire-part-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.retire-part-fill { height: 100%; border-radius: 3px; }
+.retire-part-pct {
+  flex: 0 0 40px;
+  font-family: var(--font-data);
+  font-size: 11px;
+  text-align: right;
+  color: var(--ink-3);
+}
+
+/* Two columns, so all four ways out fit on screen together at 720p.
+   Stacking them ran the last one off the bottom of the card, which on a screen
+   about leaving a session is the one button that must never be the one you
+   cannot see. The primary action spans the row. */
+.retire-actions {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.retire-actions .btn { width: 100%; }
+.retire-actions .btn.primary { grid-column: 1 / -1; }
+
+.retire-hint {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+/* A phone held in landscape has almost no height to give. Drop the parts
+   breakdown first — it is the detail, not the message. */
+@media (max-height: 560px) {
+  .retire-title { font-size: clamp(26px, 6vw, 34px); }
+  .retire-body { padding: 14px 18px 16px; }
+  .retire-sub, .retire-parts, .retire-hint { display: none; }
+  .retire-fact { padding: 6px 0; }
+}

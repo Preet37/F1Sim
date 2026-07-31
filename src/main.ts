@@ -4,6 +4,7 @@ import { SimClock } from './core/SimClock';
 import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
 import type { CarEntry } from './race/CarEntry';
+import { bandOf, COMPONENT_IDS, COMPONENT_NAMES } from './race/DamageModel';
 import { resultGapCell } from './race/Classification';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
@@ -294,6 +295,10 @@ class Game {
       this.pauseOverlay.style.display = 'none';
       this.clock.paused = false;
     }
+    // The retirement screen belongs to the track for the same reason, and it
+    // pauses the clock, so it has to unpause it on the way out or the next
+    // session opens frozen.
+    if (!inSession && this.retireOverlay) this.dismissRetirement();
     // Leaving the track cuts the car but keeps the context alive, so returning
     // to a session does not have to rebuild the whole graph.
     if (!inSession) {
@@ -1302,6 +1307,10 @@ class Game {
 
       this.engine = new RaceEngine(def, config, field);
       this.applyPlayerSetup(this.engine);
+      // A fresh session is a fresh chance to crash.
+      this.retirementShown = false;
+      this.spectating = false;
+      this.retiredAt = 0;
       // The rubbered-in racing line, rasterised from this circuit's spline into
       // the shared surface map. Done before the track mesh is built so the
       // asphalt has it the first frame it is drawn.
@@ -1465,6 +1474,189 @@ class Game {
     this.pauseOverlay.style.display = paused ? 'flex' : 'none';
   }
 
+  // =======================================================================
+  // Retirement
+  // =======================================================================
+
+  /**
+   * Tells the player their session is over, and why.
+   *
+   * This screen exists because there was nothing here at all. A car written off
+   * against a barrier was retired by the race engine, marked recovered on the
+   * same frame, and stopped being drawn — so from the driver's seat the entire
+   * experience of ending your race was that the world went quiet and the car
+   * disappeared. No message, no classification, no way forward; the player was
+   * left holding a controller that no longer did anything, on a circuit they
+   * were no longer on. Reported twice, in the player's own words: "it just poof
+   * gone."
+   *
+   * What it says is modelled on what actually happens to a driver. They are
+   * told it is over, they are told what broke, and then they are asked what
+   * they want to do next. The three answers are the three real ones: leave,
+   * take the session again, or stay and watch the race you are no longer in.
+   */
+  private retireOverlay: HTMLElement | null = null;
+  /** True once the overlay has been raised for the current session. */
+  private retirementShown = false;
+  /** Set when the player dismisses the overlay to keep watching. */
+  private spectating = false;
+  /** Session time at which the player's car retired, for the delay. */
+  private retiredAt = 0;
+
+  /**
+   * Seconds between the accident and the screen.
+   *
+   * Not zero, and the reason is the whole point of this piece of work. The
+   * moment of the crash is the moment the player most wants to see: the car
+   * spearing into the barrier, the wing going over the top of it, the pieces
+   * coming to rest. Covering that with a modal instantly is a second way of
+   * taking the accident away from them. The delay is long enough to watch it
+   * happen and short enough that nobody wonders whether the game has hung.
+   */
+  private static readonly RETIREMENT_DELAY_S = 2.6;
+
+  private updateRetirement(engine: RaceEngine, player: CarEntry): void {
+    if (!player.retired) {
+      // A new session, or a car that has not yet come to grief.
+      this.retirementShown = false;
+      this.spectating = false;
+      this.retiredAt = 0;
+      return;
+    }
+    if (this.retirementShown || this.spectating) return;
+    if (this.retiredAt === 0) this.retiredAt = engine.time;
+    if (engine.time - this.retiredAt < Game.RETIREMENT_DELAY_S) return;
+
+    this.retirementShown = true;
+    this.showRetirement(engine, player);
+  }
+
+  private showRetirement(engine: RaceEngine, player: CarEntry): void {
+    this.retireOverlay?.remove();
+
+    const o = document.createElement('div');
+    o.className = 'retire-overlay';
+    const card = this.el('div', 'retire-card', o);
+    this.el('div', 'retire-flag', card);
+    const body = this.el('div', 'retire-body', card);
+
+    this.el('div', 'retire-tag', body, engine.config.name + ' · ' + engine.track.def.name);
+    this.el('div', 'retire-title', body, 'Retired');
+
+    // The player's own words for what this screen should say. It acknowledges
+    // the accident before it explains it, because that is the order a person
+    // needs those two things in.
+    const lede = this.el('div', 'retire-lede', body);
+    lede.innerHTML =
+      'Unfortunately you have to retire — <strong>' +
+      escapeHtml(player.retirementReason || 'the car is beyond use') +
+      '</strong>. Better luck next time.';
+
+    const worst = player.damage.worst();
+    const accident = /accident/i.test(player.retirementReason);
+    this.el('div', 'retire-sub', body,
+      accident
+        ? 'The car is in the barrier and the marshals are on their way to it. ' +
+          'The damage is beyond anything the crew could put right in the pit lane.'
+        : 'The car cannot continue. The crew will look at it back in the garage.');
+
+    // --- The facts ---------------------------------------------------------
+    const facts = this.el('div', 'retire-facts', body);
+    const fact = (label: string, value: string, tone = '') => {
+      const row = this.el('div', 'retire-fact', facts);
+      this.el('div', 'retire-fact-label', row, label);
+      this.el('div', 'retire-fact-value' + (tone ? ' ' + tone : ''), row, value);
+    };
+
+    fact('Cause', player.retirementReason || 'Accident', 'is-bad');
+    fact('Worst damage', COMPONENT_NAMES[worst.id], bandOf(worst.health) === 'critical' ? 'is-bad' : 'is-warn');
+    // Corners have names on the circuits that have them; everywhere else, the
+    // sector. "On circuit" told the player something they already knew.
+    fact('Where', engine.track.cornerNameAt(player.s)
+      || 'Sector ' + (player.currentSectorIndex + 1));
+    fact('Lap', String(player.lap + 1) + (engine.config.laps ? ' of ' + engine.config.laps : ''));
+    fact('Classified', player.position > 0 ? 'P' + player.position + ' — DNF' : 'DNF');
+    if (player.bestLapTime > 0) fact('Your best lap', formatLapTime(player.bestLapTime));
+
+    // --- What broke --------------------------------------------------------
+    // Only the parts that took damage, worst first. A list of twelve components
+    // that all read 100% is a list nobody reads.
+    const hurt = COMPONENT_IDS
+      .filter((id) => player.damage.health[id] < 0.995)
+      .sort((a, b) => player.damage.health[a] - player.damage.health[b])
+      .slice(0, 6);
+    if (hurt.length > 0) {
+      const parts = this.el('div', 'retire-parts', body);
+      for (const id of hurt) {
+        const health = player.damage.health[id];
+        const row = this.el('div', 'retire-part', parts);
+        this.el('div', 'retire-part-name', row, COMPONENT_NAMES[id]);
+        const bar = this.el('div', 'retire-part-bar', row);
+        const fill = this.el('div', 'retire-part-fill', bar);
+        const band = bandOf(health);
+        fill.style.width = Math.round(health * 100) + '%';
+        fill.style.background =
+          band === 'critical' ? 'var(--race-red-hi)'
+          : band === 'damaged' ? 'var(--amber)'
+          : band === 'worn' ? '#9fb0c4' : 'var(--mint)';
+        this.el('div', 'retire-part-pct', row, Math.round(health * 100) + '%');
+      }
+    }
+
+    // --- Where to go next --------------------------------------------------
+    const actions = this.el('div', 'retire-actions', body);
+    const act = (label: string, cls: string, onClick: () => void) => {
+      const b = document.createElement('button');
+      b.className = 'btn ' + cls;
+      b.textContent = label;
+      b.addEventListener('click', onClick);
+      actions.appendChild(b);
+    };
+
+    // Ending the session is the primary action, because a retirement IS the end
+    // of the session and pretending otherwise would be the coy version of the
+    // bug this screen is fixing.
+    act('End session', 'primary', () => {
+      this.dismissRetirement();
+      this.finishSession();
+    });
+    act('Restart session', 'secondary', () => {
+      const id = engine.track.def.id;
+      this.dismissRetirement();
+      this.beginSession(id);
+    });
+    // Staying to watch is a real thing drivers and viewers do, and it is the
+    // only one of the three that needs the wreck to still be on the circuit —
+    // which it now is.
+    act('Watch the rest', 'secondary', () => {
+      this.spectating = true;
+      this.dismissRetirement();
+    });
+    act(this.career ? 'Back to the paddock' : 'Back to the menu', 'ghost', () => {
+      this.dismissRetirement();
+      this.abandonSession();
+    });
+
+    this.el('div', 'retire-hint', body,
+      'Watching keeps the session running to the flag, with the cameras following the leaders.');
+
+    (document.getElementById('app') as HTMLElement).appendChild(o);
+    this.retireOverlay = o;
+    // One frame before the class goes on, so the transition has a start state
+    // to run from rather than being applied to an element that was born visible.
+    window.requestAnimationFrame(() => o.classList.add('shown'));
+
+    this.clock.paused = true;
+    this.audio.setSuspended(true);
+  }
+
+  private dismissRetirement(): void {
+    this.retireOverlay?.remove();
+    this.retireOverlay = null;
+    this.clock.paused = false;
+    this.audio.setSuspended(false);
+  }
+
   /**
    * Leaves a session that is still running.
    *
@@ -1474,6 +1666,9 @@ class Game {
    * which is why the queue is cleared as well as the engine.
    */
   private abandonSession(): void {
+    this.dismissRetirement();
+    this.retirementShown = false;
+    this.spectating = false;
     this.setPaused(false);
     this.renderer.unloadSession();
     this.engine = null;
@@ -1771,7 +1966,18 @@ class Game {
         if (engine.over) break;
       }
 
-      const focus = player ?? engine.standings[0];
+      // Raise the retirement screen once the player's car is out. Checked after
+      // the physics has run, so `retirementReason` and the damage report the
+      // screen prints are the ones the accident actually produced.
+      if (player) this.updateRetirement(engine, player);
+
+      // Who the cameras follow. A retired player is no longer driving, so the
+      // director follows the race instead — otherwise "watch the rest" would be
+      // three minutes of a stationary wreck.
+      const focus = player && !(player.retired && this.spectating)
+        ? player
+        : engine.standings.find((c) => !c.retired) ?? engine.standings[0] ?? player;
+      if (!focus) return;
       this.renderer.render(this.clock.frameDt, engine, focus);
 
       // Audio is driven from the focused car and panned around the camera, so a

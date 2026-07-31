@@ -71,12 +71,30 @@ export interface CarVisual {
    */
   frontLeftSteer: THREE.Object3D;
   frontRightSteer: THREE.Object3D;
+  /**
+   * The rear hubs, which do not steer but do collapse.
+   *
+   * They are here for the same reason the fronts are: a broken suspension
+   * corner drops the wheel and throws it out of camber, and that has to be
+   * applied to the group the wheel hangs from rather than to the spinning
+   * wheel itself, or the camber rotates away as the wheel turns.
+   */
+  rearLeftSteer: THREE.Object3D;
+  rearRightSteer: THREE.Object3D;
   frontLeftSpin: THREE.Object3D;
   frontRightSpin: THREE.Object3D;
   rearLeftSpin: THREE.Object3D;
   rearRightSpin: THREE.Object3D;
   drsFlap: THREE.Object3D;
   brakeGlow: THREE.Mesh[];
+  /** The bodywork that can be knocked off, by name. */
+  bodyParts: Record<BodyPartId, BodyPart>;
+  /** Rolling radius, so the renderer knows the wheel's resting height. */
+  tyreRadiusM: number;
+  /** Knocks a piece of bodywork off, or puts it back after a repair. */
+  setPartAttached(id: BodyPartId, attached: boolean): void;
+  /** Puts every part back and stands the suspension up. For a pit-stop repair. */
+  resetParts(): void;
   /**
    * The driver's helmet, and the coarse steering wheel and gloves.
    *
@@ -184,21 +202,67 @@ const TIERS: Record<'low' | 'high', Tiers> = {
 /**
  * Collects the geometries that make up the shell, tagging each with the piece of
  * the livery atlas it should sample.
+ *
+ * Geometry goes into one of five BUCKETS. Four of them are the parts a car can
+ * lose — both wings and both sidepods — and the fifth is everything that stays
+ * bolted on. They are merged separately so each becomes a mesh the renderer can
+ * switch off on its own, which is what lets a destroyed front wing actually be
+ * missing from the car rather than merely recolored.
+ *
+ * The split costs four extra draw calls per car. That is the whole price of
+ * visible damage, and it is worth it: a merged shell can only ever be all there
+ * or all gone, and "all gone" is the bug this is fixing.
  */
 class Parts {
-  readonly list: THREE.BufferGeometry[] = [];
+  readonly core: THREE.BufferGeometry[] = [];
+  readonly frontWing: THREE.BufferGeometry[] = [];
+  readonly rearWing: THREE.BufferGeometry[] = [];
+  readonly sidepodL: THREE.BufferGeometry[] = [];
+  readonly sidepodR: THREE.BufferGeometry[] = [];
+
+  private target: THREE.BufferGeometry[] = this.core;
+
+  /** Directs everything added from here on into the named bucket. */
+  into(bucket: 'core' | BodyPartId): void {
+    this.target = this[bucket];
+  }
 
   /** Adds a part that samples a single flat colour from the atlas. */
   flat(geo: THREE.BufferGeometry, swatch: SwatchName): void {
     const [u, v] = swatchUV(swatch);
-    this.list.push(setFlatUV(geo, u, v));
+    this.target.push(setFlatUV(geo, u, v));
   }
 
   /** Adds a lofted part that carries painted livery graphics. */
   painted(geo: THREE.BufferGeometry, panel: PanelName): void {
     const r = PANEL[panel];
-    this.list.push(setPanelUV(geo, r.u0, r.v0, r.u1, r.v1));
+    this.target.push(setPanelUV(geo, r.u0, r.v0, r.u1, r.v1));
   }
+}
+
+/**
+ * The bodywork a car can lose in an accident.
+ *
+ * These four are the ones a viewer reads instantly from any camera: a car with
+ * no front wing, a car with no rear wing, a car with the chassis exposed down
+ * one flank. Everything else that gets damaged — floor, engine, gearbox — is
+ * either invisible from outside or does not come off, and is expressed through
+ * the handling instead.
+ */
+export type BodyPartId = 'frontWing' | 'rearWing' | 'sidepodL' | 'sidepodR';
+
+export const BODY_PART_IDS: readonly BodyPartId[] = ['frontWing', 'rearWing', 'sidepodL', 'sidepodR'];
+
+/** A detachable piece of bodywork, and where it sits in the car's own frame. */
+export interface BodyPart {
+  readonly id: BodyPartId;
+  readonly mesh: THREE.Mesh;
+  /** Centre of the part in car-local space, for throwing debris from. */
+  readonly origin: THREE.Vector3;
+  /** Bounding size in car-local space, so the debris is scaled to the part. */
+  readonly size: THREE.Vector3;
+  /** False once the part has been knocked off. */
+  attached: boolean;
 }
 
 /**
@@ -256,7 +320,7 @@ const POD_X = 0.505;
 function buildShellParts(
   quality: 'low' | 'high',
   driverBody: readonly THREE.BufferGeometry[],
-): THREE.BufferGeometry[] {
+): Parts {
   const t = TIERS[quality];
   const p = new Parts();
 
@@ -266,14 +330,21 @@ function buildShellParts(
   // --- Nose-to-wing transition -------------------------------------------
   // The nose does not stop in mid-air; it drops onto the second wing element.
   // This little wedge is what makes the front of the car read as one piece.
+  //
+  // It belongs to the WING, not to the nose: it is the fairing over the wing
+  // mounts, so when the wing is torn off this goes with it and the nose is left
+  // as the blunt stub a real car is left with.
+  p.into('frontWing');
   p.flat(loft([
     section(2.34, 0.126, 0.210, 0.368, 0.42),
     section(2.58, 0.106, 0.192, 0.302, 0.40),
     section(2.76, 0.086, 0.170, 0.238, 0.40),
   ], t.detail), 'accent');
+  p.into('core');
 
   // --- Sidepods -----------------------------------------------------------
   for (const side of [-1, 1] as const) {
+    p.into(side < 0 ? 'sidepodL' : 'sidepodR');
     const g = loft(sidepod(), t.body - 4);
     g.translate(side * POD_X, 0, 0);
     p.painted(g, 'pod');
@@ -294,6 +365,7 @@ function buildShellParts(
     const splitter = new THREE.BoxGeometry(0.320, 0.026, 0.055);
     splitter.translate(side * POD_X, 0.396, 0.842);
     p.flat(splitter, 'body');
+    p.into('core');
   }
 
   // --- Floor --------------------------------------------------------------
@@ -351,6 +423,7 @@ function buildShellParts(
   // camber: an F1 wing is an inverted aerofoil, and a wing that bulges upward
   // instead of downward looks wrong even to people who could not say why.
   {
+    p.into('frontWing');
     // Each element sits higher, further back and at more incidence than the one
     // in front of it. The staircase is the point: four aerofoils at the same
     // angle stacked close together fuse into one slab, which is what the first
@@ -383,6 +456,7 @@ function buildShellParts(
       ep.translate(side * 0.965, 0, 0);
       p.flat(ep, 'accent');
     }
+    p.into('core');
   }
 
   // --- Front brake ducts / wheel-wake fins --------------------------------
@@ -425,6 +499,7 @@ function buildShellParts(
 
   // --- Rear wing ----------------------------------------------------------
   {
+    p.into('rearWing');
     const main = wingElement(0.98, 0.255, 0.050, -0.050, quality === 'high' ? 12 : 7);
     main.rotateX(0.20);
     main.translate(0, 0.790, REAR_WING_Z);
@@ -457,7 +532,10 @@ function buildShellParts(
     beamB.translate(0, 0.442, -2.47);
     p.flat(beamB, 'carbon');
 
-    // Rain light.
+    // Rain light. Mounted on the crash structure rather than on the wing, so it
+    // stays with the car when the wing goes — which is how a real one is, and it
+    // means a wrecked car still shows a light in the spray.
+    p.into('core');
     const light = new THREE.BoxGeometry(0.075, 0.105, 0.030);
     light.translate(0, 0.300, -2.585);
     p.flat(light, 'light');
@@ -486,6 +564,8 @@ function buildShellParts(
   // radiator exit. Both are on every current car, and a sidepod without either
   // is a featureless blue blade from every angle.
   for (const side of [-1, 1] as const) {
+    // Both are bolted to the pod, so they leave with it.
+    p.into(side < 0 ? 'sidepodL' : 'sidepodR');
     const winglet = wingElement(0.245, 0.165, 0.020, -0.018, quality === 'high' ? 6 : 4);
     winglet.rotateX(0.14);
     winglet.translate(side * 0.600, 0.602, 0.565);
@@ -497,6 +577,7 @@ function buildShellParts(
       slat.translate(side * POD_X, 0.548 + z * 0.086, z);
       p.flat(slat, 'dark');
     }
+    p.into('core');
   }
 
   // --- Mirrors ------------------------------------------------------------
@@ -557,9 +638,9 @@ function buildShellParts(
 
   // --- Driver and cockpit -------------------------------------------------
   // Already tagged with their own swatches by DriverMesh.
-  p.list.push(...driverBody);
+  p.core.push(...driverBody);
 
-  return p.list;
+  return p;
 }
 
 // ===========================================================================
@@ -783,7 +864,10 @@ function mergeParts(parts: readonly THREE.BufferGeometry[]): THREE.BufferGeometr
 }
 
 interface CachedGeometry {
+  /** Everything that stays bolted to the car whatever happens to it. */
   shell: THREE.BufferGeometry;
+  /** The four pieces of bodywork an accident can take off. */
+  bodyParts: Record<BodyPartId, THREE.BufferGeometry>;
   /** Helmet plus the coarse wheel and gloves: everything the onboard view hides. */
   head: THREE.BufferGeometry;
   frontWheel: THREE.BufferGeometry;
@@ -820,8 +904,16 @@ function geometryFor(quality: 'low' | 'high'): CachedGeometry {
   // and the coarse wheel into the mesh that the onboard view hides.
   const driver = buildDriverParts(quality);
 
+  const parts = buildShellParts(quality, driver.body);
+
   const built: CachedGeometry = {
-    shell: mergeParts(buildShellParts(quality, driver.body)),
+    shell: mergeParts(parts.core),
+    bodyParts: {
+      frontWing: mergeParts(parts.frontWing),
+      rearWing: mergeParts(parts.rearWing),
+      sidepodL: mergeParts(parts.sidepodL),
+      sidepodR: mergeParts(parts.sidepodR),
+    },
     head: mergeParts([...driver.head, ...driver.grip]),
     frontWheel: buildWheel(FRONT_TYRE_W, t.wheel, quality),
     rearWheel: buildWheel(REAR_TYRE_W, t.wheel, quality),
@@ -963,6 +1055,25 @@ export function buildCar(
   shell.castShadow = true;
   root.add(shell);
 
+  // The bodywork that can come off. Same material and same group as the shell,
+  // so an intact car looks exactly as it did when this was one merged mesh.
+  const bodyParts = {} as Record<BodyPartId, BodyPart>;
+  for (const id of BODY_PART_IDS) {
+    const g = geo.bodyParts[id];
+    if (!g.boundingBox) g.computeBoundingBox();
+    const box = g.boundingBox!;
+    const mesh = new THREE.Mesh(g, shellMat);
+    mesh.castShadow = true;
+    root.add(mesh);
+    bodyParts[id] = {
+      id,
+      mesh,
+      origin: box.getCenter(new THREE.Vector3()),
+      size: box.getSize(new THREE.Vector3()),
+      attached: true,
+    };
+  }
+
   const driverHead = new THREE.Mesh(geo.head, shellMat);
   driverHead.castShadow = true;
   root.add(driverHead);
@@ -1043,6 +1154,8 @@ export function buildCar(
     root,
     frontLeftSteer: fl.steer,
     frontRightSteer: fr.steer,
+    rearLeftSteer: rl.steer,
+    rearRightSteer: rr.steer,
     frontLeftSpin: fl.spin,
     frontRightSpin: fr.spin,
     rearLeftSpin: rl.spin,
@@ -1052,6 +1165,28 @@ export function buildCar(
     driverHead,
     shadow,
     cockpit,
+    bodyParts,
+    tyreRadiusM: TYRE_R,
+    setPartAttached(id: BodyPartId, attached: boolean): void {
+      const part = bodyParts[id];
+      if (part.attached === attached) return;
+      part.attached = attached;
+      part.mesh.visible = attached;
+      // The DRS flap hangs off the rear wing, so it leaves with it. Without this
+      // a car that has lost its rear wing still carries a flap in mid-air.
+      if (id === 'rearWing') flapPivot.visible = attached;
+    },
+    resetParts(): void {
+      for (const id of BODY_PART_IDS) {
+        bodyParts[id].attached = true;
+        bodyParts[id].mesh.visible = true;
+      }
+      flapPivot.visible = true;
+      for (const w of [fl, fr, rl, rr]) {
+        w.steer.position.y = TYRE_R;
+        w.steer.rotation.set(0, 0, 0);
+      }
+    },
     setCockpitVisible(v: boolean): void {
       cockpit?.setVisible(v);
     },
@@ -1071,6 +1206,7 @@ export function buildCar(
 export function disposeCarGeometryCache(): void {
   for (const set of geometryCache.values()) {
     set.shell.dispose();
+    for (const id of BODY_PART_IDS) set.bodyParts[id].dispose();
     set.head.dispose();
     set.frontWheel.dispose();
     set.rearWheel.dispose();

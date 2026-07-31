@@ -242,6 +242,23 @@ export class RaceEngine {
   /** Cars in classified order. Rebuilt each timing tick, never reallocated. */
   readonly standings: CarEntry[] = [];
 
+  /**
+   * Impacts since the renderer last looked.
+   *
+   * The renderer cannot detect a collision for itself: contact is resolved
+   * inside a 120Hz physics step and is over well before the next frame is
+   * drawn, so a hit at 300 km/h can happen, damage the car and finish between
+   * one drawn frame and the next with nothing on screen to say it did. This is
+   * the only channel that carries "something just hit something" out of the
+   * simulation, and it is why `EffectsDirector.reportImpact` had never once
+   * fired despite being written, wired and correct.
+   *
+   * A plain array, drained by the renderer each frame and bounded so a pile-up
+   * cannot grow it without limit. Cars are named by index rather than by
+   * reference so nothing here keeps a car alive past a session.
+   */
+  readonly impacts: { carIndex: number; severity: number }[] = [];
+
   readonly environment: EnvironmentState = {
     trackTempC: 38, airTempC: 24, wetness: 0, airDensityRatio: 1, abrasion: 1,
   };
@@ -535,10 +552,16 @@ export class RaceEngine {
     // yellow for the rest of the race, which keeps the safety car deployed
     // permanently and turns every remaining lap into a safety-car lap.
     for (const car of this.cars) {
-      if (car.retired && !car.recovered) {
-        car.recoveryTimer += dt;
-        if (car.recoveryTimer > 22) car.recovered = true;
-      }
+      if (!car.retired) continue;
+      // The timer keeps running after the marshals have cleared the yellow,
+      // because two different clocks hang off it and they are not the same
+      // length. `recovered` is the RACE's answer — when it is safe again — and
+      // it has to be short or a race with three retirements spends its life
+      // behind a safety car. How long the wreck stays where it stopped is a
+      // question for the renderer, and the honest answer is much longer: a car
+      // in a barrier is still in that barrier next time you come past it.
+      car.recoveryTimer += dt;
+      if (!car.recovered && car.recoveryTimer > 22) car.recovered = true;
     }
 
     for (let i = 0; i < this.cars.length; i++) {
@@ -798,15 +821,20 @@ export class RaceEngine {
   private onSolidImpact(
     car: CarEntry, severity: number, nx: number, nz: number, what: string,
   ): void {
+    this.reportImpact(car, severity);
+    // Decided before the damage is applied, because the damage model needs to
+    // know: an impact that ends the session destroys the bodywork it hit, and
+    // one that does not merely wears it. See `CarDamage.applyImpact`.
+    const writeOff = severity > 0.72;
     if (severity > 0.25) {
-      this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz));
+      this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz), writeOff);
       this.raceControl.log(
         car.driver.code + ' into ' + what + ' at ' +
         (this.track.cornerNameAt(car.s) || 'the exit'),
         severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
       );
     }
-    if (severity > 0.72) {
+    if (writeOff) {
       car.retire('Accident', this.time);
       // A written-off car is stationary. Retiring without this left the wreck
       // carrying its impact speed, so the HUD kept reading a speed for a car
@@ -1823,15 +1851,45 @@ export class RaceEngine {
    * wheel-to-wheel contact in F1 either nudges a car offline or launches it,
    * and an impulse plus a spin torque reproduces both.
    */
+  /**
+   * Is this wreck something other cars can hit?
+   *
+   * Only off the racing surface, and the restriction is not cosmetic caution —
+   * it is the difference between a race that finishes and one that does not.
+   *
+   * A retired car used to be excluded from contact entirely, so it was a ghost
+   * and cars drove through the wreckage. Making it solid everywhere fixed that
+   * and broke something worse: a wreck sitting on the road is an immovable
+   * object that the AI cannot see (it is excluded from perception, because
+   * treating a permanently stationary car as the car ahead makes the whole
+   * field queue behind it at walking pace). Cars arrived at it, stopped dead
+   * against it, and stayed there. At Spa the chequered flag stopped coming out
+   * at all — the race simply never ended.
+   *
+   * Off the road there is nothing to block. A wreck in the gravel or against
+   * the barriers is exactly where the cameras find it and exactly where it can
+   * be solid for free: the only cars that can reach it are cars that have also
+   * left the circuit, and them hitting it is correct.
+   *
+   * A wreck ON the road stays a ghost. That is a compromise, and an honest one:
+   * the alternative is a simulation that can deadlock.
+   */
+  private isSolidWreck(car: CarEntry): boolean {
+    if (car.recovered) return false;
+    return Math.abs(car.lateral) > this.track.halfWidthAt(car.s);
+  }
+
   private resolveContacts(): void {
     const cars = this.cars;
 
     for (let i = 0; i < cars.length; i++) {
       const a = cars[i];
-      if (a.retired || a.inPitBox) continue;
+      if (a.inPitBox || (a.retired && !this.isSolidWreck(a))) continue;
       for (let j = i + 1; j < cars.length; j++) {
         const b = cars[j];
-        if (b.retired || b.inPitBox) continue;
+        if (b.inPitBox || (b.retired && !this.isSolidWreck(b))) continue;
+        // Two wrecks lying against each other have nothing left to resolve.
+        if (a.retired && b.retired) continue;
         // A car in the pit lane and a car on the circuit are separated by the
         // pit wall, however close their spline coordinates are. Without this
         // the two collide through the wall wherever the lane runs near the
@@ -1874,27 +1932,42 @@ export class RaceEngine {
         const overlap = minDist - dist;
 
         // Separate them.
-        const push = overlap * 0.5;
-        a.physics.position.x -= nx * push;
-        a.physics.position.y -= nz * push;
-        b.physics.position.x += nx * push;
-        b.physics.position.y += nz * push;
+        //
+        // A wreck does not move. Its race is over, it has been stopped by the
+        // thing it hit, and pushing it around the circuit for the rest of the
+        // session with the noses of cars that arrive later would walk it out of
+        // the place the accident actually happened. So the share of the
+        // separation each car takes is weighted: two runners split it, and a
+        // runner meeting a wreck takes all of it. Without this the wreck was
+        // not merely soft — it was not there at all, and cars drove through it.
+        const aFixed = a.retired ? 1 : 0;
+        const bFixed = b.retired ? 1 : 0;
+        const aShare = aFixed ? 0 : bFixed ? 1 : 0.5;
+        const bShare = bFixed ? 0 : aFixed ? 1 : 0.5;
+        a.physics.position.x -= nx * overlap * aShare;
+        a.physics.position.y -= nz * overlap * aShare;
+        b.physics.position.x += nx * overlap * bShare;
+        b.physics.position.y += nz * overlap * bShare;
 
         // Exchange momentum along the contact normal.
         const relVx = b.physics.velocity.x - a.physics.velocity.x;
         const relVz = b.physics.velocity.y - a.physics.velocity.y;
         const approach = relVx * nx + relVz * nz;
         if (approach < 0) {
+          // The same weighting again: hitting a stopped wreck is hitting
+          // something immovable, so the running car absorbs the whole impulse
+          // rather than half of it.
           const impulse = -approach * 0.42;
-          a.physics.velocity.x -= nx * impulse;
-          a.physics.velocity.y -= nz * impulse;
-          b.physics.velocity.x += nx * impulse;
-          b.physics.velocity.y += nz * impulse;
+          a.physics.velocity.x -= nx * impulse * (aShare * 2);
+          a.physics.velocity.y -= nz * impulse * (aShare * 2);
+          b.physics.velocity.x += nx * impulse * (bShare * 2);
+          b.physics.velocity.y += nz * impulse * (bShare * 2);
 
           // A meaningful hit unsettles the cars and can spin them.
           const severity = clamp01(-approach / 12);
-          a.physics.yawRate += severity * 0.55 * (nx * 0.4 + 0.2);
-          b.physics.yawRate -= severity * 0.55 * (nx * 0.4 + 0.2);
+          a.physics.yawRate += severity * 0.55 * (nx * 0.4 + 0.2) * (aShare * 2);
+          b.physics.yawRate -= severity * 0.55 * (nx * 0.4 + 0.2) * (bShare * 2);
+          this.reportImpact(a.retired ? b : a, severity);
 
           if (severity > 0.35) {
             // Work out which face of each car was struck. The contact normal
@@ -1915,11 +1988,30 @@ export class RaceEngine {
   }
 
   /**
-   * @param zone which face of the car took the hit, so the damage lands on the
-   *             components that would actually have been in the way
+   * Queues a hit for the renderer.
+   *
+   * Deliberately quiet below a threshold: cars rub wheels and brush walls
+   * constantly, and a shower of sparks for every one of those is noise that
+   * makes the shower for a real accident mean nothing.
    */
-  private applyContactDamage(car: CarEntry, severity: number, zone: ImpactZone = 'front'): void {
-    const broken = car.damage.applyImpact(zone, severity);
+  private reportImpact(car: CarEntry, severity: number): void {
+    if (severity < 0.08) return;
+    // Bounded. Twenty cars in a first-corner accident can report a lot of
+    // contacts in one frame, and the renderer only needs to know that it was
+    // bad, not to draw every individual one.
+    if (this.impacts.length >= 24) return;
+    this.impacts.push({ carIndex: car.index, severity });
+  }
+
+  /**
+   * @param zone     which face of the car took the hit, so the damage lands on
+   *                 the components that would actually have been in the way
+   * @param writeOff true when this impact has already been judged terminal
+   */
+  private applyContactDamage(
+    car: CarEntry, severity: number, zone: ImpactZone = 'front', writeOff = false,
+  ): void {
+    const broken = car.damage.applyImpact(zone, severity, writeOff);
 
     // Rebuild the spec from the PRISTINE baseline every time. Deriving it from
     // the current spec instead compounds the multiplier on every hit, and the
@@ -1940,6 +2032,13 @@ export class RaceEngine {
 
     if (severity > 0.85 && this.rng.chance(0.12)) {
       car.retire('Accident damage', this.time);
+      // The same rule as a barrier write-off: the impact that ends a session
+      // is the one that takes the bodywork off. Applied here rather than in the
+      // call above because whether this contact was terminal is decided by a
+      // dice roll, and the destruction has to follow the roll rather than
+      // precede it — otherwise every hard racing contact would strip the car.
+      car.damage.applyImpact(zone, severity, true);
+      car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
       this.raceControl.log(car.driver.code + ' is out of the race', 'critical', this.time, car.index);
     }
   }
