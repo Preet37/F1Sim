@@ -145,20 +145,26 @@ check(quit.screen !== 'racing', `the player is off the track (screen "${quit.scr
 check(!quit.hasEngine, 'the session engine has been released');
 check(!quit.overlayShown, 'the pause menu is not stranded over the menus');
 check(!quit.paused, 'the clock is not left paused');
-// What names a screen depends on which screen it is: the main menu carries the
-// wordmark, every other page carries a title in the top bar. Asking for all of
-// them is what keeps this assertion about "did we land somewhere real" rather
-// than about one screen's markup — the previous version looked for `.title`,
-// which the front-end redesign retired, so it went on passing right up until it
-// reported an empty string on a menu that was rendering perfectly.
-const title = await page.evaluate(() => {
-  for (const sel of ['.page-title', '.wordmark', '.title']) {
-    const t = (document.querySelector(sel)?.textContent || '').trim();
-    if (t) return t;
-  }
-  return '';
+// "Did we land somewhere real" is a question about the screen layer, not about
+// any particular heading, and it has to be asked that way.
+//
+// This assertion has now been broken twice by front-end work that was perfectly
+// correct: first it looked for `.title`, which the redesign retired, and then
+// for `.wordmark`, which the menu rebuild retired in turn. Both times it
+// reported an empty string for a menu that was rendering fine. So it now asks
+// the only thing that is actually invariant — the screen layer is visible and
+// has content in it — and reports the first heading it can find purely as a
+// label, without depending on one existing.
+const landed = await page.evaluate(() => {
+  const root = document.querySelector('.screen');
+  if (!root || root.classList.contains('hidden')) return { ok: false, label: '(screen layer hidden)' };
+  const text = (root.textContent || '').replace(/\s+/g, ' ').trim();
+  const heading = ['.page-title', '.wordmark', '.title', 'h1', '.section-title']
+    .map((s) => (root.querySelector(s)?.textContent || '').trim())
+    .find((t) => t.length > 0);
+  return { ok: text.length > 20, label: heading || text.slice(0, 40) };
 });
-check(title.length > 0, `a real screen is showing ("${title}")`);
+check(landed.ok, `a real screen is showing ("${landed.label}")`);
 
 console.log('\nAND THE GAME STILL WORKS AFTERWARDS');
 const before = await page.evaluate(() => {
