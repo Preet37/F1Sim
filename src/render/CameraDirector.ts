@@ -136,6 +136,8 @@ export class CameraDirector {
   private headYaw = 0;
   private rigRoll = 0;
   private rigPitch = 0;
+  /** Chase camera bank, radians. See the chase case in `update`. */
+  private bank = 0;
   /** Trackside camera state: which anchor it is currently using. */
   private tracksideAnchorS = 0;
   private tracksideSide = 1;
@@ -211,9 +213,28 @@ export class CameraDirector {
         // horizon up near the top of the frame. Half a metre down and a metre in
         // puts it just above the airbox, where every broadcast chase camera
         // lives, and lets the road run away to a horizon in the upper third.
+        // Closer and lower again, and this pass is about how the shot LOOKS
+        // rather than about whether it is correct.
+        //
+        // The framing it had was already the broadcast one — car two thirds
+        // down, horizon a third from the top — and it still read as flat. Two
+        // reasons, both fixable without touching the field of view, which is
+        // where the previous fisheye came from and is not going back:
+        //
+        //  - the car was small. At 6.9m on a 39-degree lens it occupies a
+        //    quarter of the frame width, and a quarter of the frame is a
+        //    subject you are watching rather than one you are behind. 6.1m puts
+        //    it at nearly a third without the wide-angle distortion that
+        //    getting there by opening the lens would cost;
+        //  - the camera was above the car looking slightly down at it. At 1.92m
+        //    the eye is a metre over the airbox, which flattens the road into a
+        //    plan and hides the one surface that sells speed — the tarmac
+        //    rushing under the floor. At 1.64m the camera is just above the
+        //    rear wing, the road runs away underneath rather than out in front,
+        //    and the car sits ON the picture instead of in the middle of it.
         const fast = clamp01(this.smoothSpeed / 90);
-        let dist = lerp(6.9, 8.1, fast);
-        const height = lerp(1.92, 2.16, fast);
+        let dist = lerp(6.1, 7.3, fast);
+        const height = lerp(1.64, 1.90, fast);
 
         // Longitudinal g closes and opens the gap.
         //
@@ -240,11 +261,23 @@ export class CameraDirector {
         // the horizon. This pair puts the car around two thirds down and the
         // horizon around a third from the top, which is the broadcast framing.
         this.lookTarget.set(
-          p.position.x + sinH * 5.0,
-          carY + 0.86,
-          p.position.y + cosH * 5.0,
+          p.position.x + sinH * 6.4,
+          carY + 0.74,
+          p.position.y + cosH * 6.4,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
+        // Bank into the corner.
+        //
+        // The one thing a fixed follow camera can do that a tripod cannot, and
+        // the cheapest cinematic move available: roll the frame a couple of
+        // degrees with the car's lateral load. A camera welded square to the
+        // world tells you nothing about how hard the car is working; a camera
+        // that leans with it turns every corner into something the shot is
+        // participating in. Applied after `lookAt`, which resolves roll to zero
+        // by construction, and deliberately small — past about four degrees it
+        // stops reading as weight and starts reading as a tilted television.
+        this.bank = damp(this.bank, clamp(-p.lateralG * 0.011, -0.055, 0.055), 5, dt);
+        this.camera.rotateZ(this.bank);
         break;
       }
 

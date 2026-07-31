@@ -1012,16 +1012,26 @@ export class Hud {
   /**
    * Tells the HUD which camera is live.
    *
-   * The only thing this changes is the bottom-centre wheel display, which is
-   * hidden in the cockpit: the car has a real steering wheel with a real dash
-   * on it there, and the panel sits directly on top of it showing the same
-   * three numbers.
+   * The bottom-centre wheel display SHRINKS in the cockpit. It used to be
+   * hidden outright, on the reasoning that the car has a real wheel with a real
+   * dash on it there and the panel sat on top of it showing the same numbers.
+   * That reasoning is wrong on the only point that matters: the modelled dash
+   * is 40mm of screen at half a metre, angled away from the camera and shared
+   * with the road behind it, so the one number a driver reads constantly —
+   * speed — went from a 25px numeral in a fixed, known place to something you
+   * have to go looking for. A readout you have to hunt for is not a readout.
+   *
+   * So the panel stays put, in the same place, in every camera mode. What the
+   * cockpit gets is a stripped version of it: gear, speed and rpm only, at
+   * about half the height, with the shift lights, the bars and the ERS badge
+   * dropped — all of which the modelled wheel genuinely does show.
    */
   setCameraMode(mode: string): void {
     const inCockpit = mode === 'cockpit';
     if (inCockpit === this.cockpitView) return;
     this.cockpitView = inCockpit;
-    setStyle(this.wheelPanel, 'display', inCockpit ? 'none' : 'flex');
+    setStyle(this.wheelPanel, 'display', 'flex');
+    setClass(this.wheelPanel, 'hud-panel hud-wheel' + (inCockpit ? ' compact' : ''));
     setClass(this.gapsPanel, 'hud-panel hud-gaps' + (inCockpit ? ' cockpit' : ''));
   }
   private cockpitView = false;

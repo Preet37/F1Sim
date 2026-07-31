@@ -98,8 +98,25 @@ export const SURFACES: Record<string, SurfaceProfile> = {
   asphalt: {
     scaleA: 1.4, scaleB: 0.055,
     strengthA: 0.3, strengthB: 0.22,
-    normalStrength: 0.55,
-    roughnessVariation: 0.3,
+    normalStrength: 0.42,
+    // Down from 0.55, and the aggregate terms below are down much further.
+    //
+    // Measured, not guessed: with every post-processing pass disabled, the
+    // asphalt within five metres of a bumper camera carried 2.6 display levels
+    // of high-frequency variance against the sky's 0.0. That is the "still
+    // grainy" report, and none of it was the dither in the grade pass — which
+    // measures 0.01 of a level and is doing exactly what it was retuned to do.
+    // It was here.
+    //
+    // The mechanism is specular aliasing. A normal map fed by a noise field
+    // whose finest octave has a four-pixel period, sampled at five and a half
+    // tiles per metre, puts a 3mm bump on the road; three metres from the
+    // camera that is a fifth of a pixel. Mip-mapping averages the NORMALS but
+    // cannot widen the specular lobe to match, so every one of those sub-pixel
+    // facets either catches a floodlight or does not, and the road boils.
+    // Under a floodlit night sky, where the sheen is most of what the surface
+    // is, it boils hard.
+    roughnessVariation: 0.16,
     // 0.58 rather than 0.62. Asphalt is rough, but it is not chalk: a wide,
     // low-frequency sheen sweeps across it wherever a light source is roughly
     // mirrored, and under floodlights that sheen is most of what the surface
@@ -108,7 +125,14 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     // 0.55 it goes the other way and the lobe tightens into a single glaring
     // hotspot that fills the onboard camera.
     roughness: 0.58, metalness: 0.05,
-    aggregate: 0.55, aggregateScale: 5.5,
+    // Half the strength at just over half the frequency. Doubling the stone
+    // size takes the finest octave from a fifth of a pixel to nearly half of
+    // one at the range that was boiling, which is the side of the sampling
+    // limit it has to be on; halving the strength deals with what is left.
+    // The road still reads as a surface with stones in it — that is what the
+    // term is for, and every reference frame of real asphalt has one — it just
+    // stops sparkling.
+    aggregate: 0.34, aggregateScale: 3.0,
     seams: 0.55, seamScale: 0.045,
     patches: 0.85, patchScale: 0.02,
     rubber: 1,
@@ -146,7 +170,11 @@ export const SURFACES: Record<string, SurfaceProfile> = {
   runoff: {
     scaleA: 0.75, scaleB: 0.09,
     strengthA: 0.42, strengthB: 0.3,
-    normalStrength: 1.1,
+    // 0.85, not 1.1, for the same sampling reason as the asphalt above: run-off
+    // fills the outside of every corner, so it is on screen at grazing angles
+    // constantly, and a bump map past about 0.9 sparkles there for exactly the
+    // same reason it did on the road.
+    normalStrength: 0.85,
     roughnessVariation: 0.15,
     roughness: 0.92, metalness: 0,
   },
@@ -199,9 +227,18 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
 
   // Octaves at powers of two so every one divides the texture exactly and
   // therefore wraps.
+  //
+  // The finest octave carries 0.34 rather than 0.5 of the total, with the
+  // difference handed to the eight-pixel band. That octave is the one the
+  // normal map is differentiated from and it has a four-pixel period, so it is
+  // the finest thing the texture can express — and on a road tiled several
+  // times per metre it lands below one screen pixel at any useful range. Energy
+  // there cannot be resolved; it can only alias. Moving it one octave coarser
+  // keeps the same overall contrast in the colour, where it is wanted, and
+  // takes it out of the derivative, where it was only ever sparkle.
   const octaves = [
-    { period: 4, amp: 0.5, blob: 0, mid: 0 },
-    { period: 8, amp: 0.26, blob: 0, mid: 0.18 },
+    { period: 4, amp: 0.34, blob: 0, mid: 0 },
+    { period: 8, amp: 0.38, blob: 0, mid: 0.18 },
     { period: 16, amp: 0.14, blob: 0, mid: 0.5 },
     { period: 32, amp: 0.07, blob: 0.34, mid: 1 },
     { period: 64, amp: 0.03, blob: 1, mid: 0 },
@@ -267,7 +304,12 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
       const dx = height[y * size + xp] - height[y * size + xm];
       const dy = height[yp * size + x] - height[ym * size + x];
       // Tangent-space normal of the height field, packed to 0..255.
-      let nx = -dx * 4, ny = -dy * 4, nz = 1;
+      //
+      // Gain 2.4, not 4. A central difference over a normalised field times
+      // four produces slopes past 60 degrees on the steepest cells, and a
+      // 60-degree facet either mirrors a floodlight into the camera or misses
+      // it entirely — there is no middle. Real asphalt has no such facets.
+      let nx = -dx * 2.4, ny = -dy * 2.4, nz = 1;
       const len = Math.hypot(nx, ny, nz);
       nx /= len; ny /= len; nz /= len;
       normalData[o] = Math.round((nx * 0.5 + 0.5) * 255);
@@ -283,7 +325,13 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
     t.magFilter = THREE.LinearFilter;
     t.minFilter = THREE.LinearMipmapLinearFilter;
     t.generateMipmaps = true;
-    t.anisotropy = 4;
+    // 16, not 4. These are the only two textures in the game that are viewed at
+    // a genuinely grazing angle — a road under a bumper camera is compressed
+    // twenty to one along the view direction — and four samples across a
+    // twenty-to-one footprint leaves most of the footprint unsampled, which is
+    // the streaky half of the sparkle. They are 256px each, so the extra taps
+    // cost almost nothing; three.js clamps the figure to what the GPU offers.
+    t.anisotropy = 16;
     if (srgb) t.colorSpace = THREE.SRGBColorSpace;
     t.needsUpdate = true;
     return t;
@@ -479,7 +527,10 @@ export class SurfaceDetail {
     // ever looks at from two metres away.
     const aggCode = aggregate <= 0 ? '' : /* glsl */`
       float aggN = texture2D(uGrain, vDetailPos.xz * ${f(profile.aggregateScale ?? 5.5)} + vec2(0.31, 0.67)).r;
-      agg = smoothstep(0.40, 0.76, aggN);
+      // A gentler contrast stretch than 0.40..0.76. Narrowing the window is
+      // what turns a smooth noise field into discrete speckle, and discrete
+      // speckle a fraction of a pixel across is the definition of aliasing.
+      agg = smoothstep(0.34, 0.86, aggN);
       dMix *= mix(1.0, 0.74 + agg * 0.46, ${f(aggregate)});
     `;
     // The half-value contour of the mid band, taken twice at different scales
@@ -542,6 +593,30 @@ export class SurfaceDetail {
             coarse = texture2D(uGrain, vDetailPos.xz * uScale.y).r;
             return a;
           }
+
+          /**
+           * How much of a detail band at \`cyclesPerMetre\` this pixel can
+           * actually resolve, 1 down to 0.
+           *
+           * This is the term the whole grain problem turned on. A bump map is
+           * a promise that the surface has features of a certain size; once
+           * those features are smaller than the pixel that is sampling them,
+           * the promise cannot be kept. Mip-mapping averages the NORMALS,
+           * which is the wrong average — the correct one would widen the
+           * specular lobe to cover the range of normals in the footprint — so
+           * what actually happens is that each sub-pixel facet either mirrors
+           * a floodlight or misses it, at random, every frame. That is the
+           * sparkle.
+           *
+           * \`fwidth\` of the projected world position is the footprint in
+           * metres. Multiplied by the band's frequency it gives cycles per
+           * pixel, and past about half a cycle per pixel the band is fading
+           * out because nothing else can be done with it honestly.
+           */
+          float detailResolve(float cyclesPerMetre) {
+            float footprintM = max(fwidth(vDetailPos.x), fwidth(vDetailPos.z));
+            return 1.0 - smoothstep(0.25, 0.85, footprintM * cyclesPerMetre);
+          }
         `)
         // After the base colour is established, darken it by the two octaves.
         // Multiplying keeps the vertex colour in charge of hue — the grain
@@ -559,6 +634,11 @@ export class SurfaceDetail {
           float agg = 0.0;
           float sdPatch = 0.0;
           float rub = 0.0;
+          // The noise texture's finest octave has a four-pixel period in a
+          // 256px map, so it carries 64 cycles per tile — hence the factor
+          // below. Computed here rather than in the normal block because the
+          // roughness stage runs first and has to know about it too.
+          float resolveA = detailResolve(uScale.x * 64.0);
           ${aggCode}
           ${seamCode}
           ${patchCode}
@@ -579,8 +659,17 @@ export class SurfaceDetail {
         // which of the injected snippets is at fault.
         .replace('#include <roughnessmap_fragment>', /* glsl */`
           #include <roughnessmap_fragment>
+          // The roughness swing is faded out with the bump it belongs to, and
+          // the roughness itself is nudged UP by however much of the bump had
+          // to be given away. That second term is the honest half of the
+          // trade: the microfacets are still there on the real surface, they
+          // are simply too small to draw, and a surface whose bumps have been
+          // averaged away without a matching widening of the specular lobe
+          // comes back as polished sheet rather than as distant asphalt.
           roughnessFactor = clamp(
-            roughnessFactor + (dFine - 0.5) * uRoughVar - rub * 0.26 + sdPatch * 0.07,
+            roughnessFactor + (dFine - 0.5) * uRoughVar * resolveA
+              + (1.0 - resolveA) * uRoughVar * 0.5
+              - rub * 0.26 + sdPatch * 0.07,
             0.04, 1.0);
         `)
         // Bump last, so it perturbs the normal three.js has already resolved.
@@ -591,13 +680,19 @@ export class SurfaceDetail {
           #include <normal_fragment_maps>
           if (uNormalStrength > 0.0) {
             vec3 bumpA = texture2D(uGrainNormal, vDetailPos.xz * uScale.x).xyz * 2.0 - 1.0;
-            vec3 bump = vec3(bumpA.x, 0.0, bumpA.y) * uNormalStrength;
+            vec3 bump = vec3(bumpA.x, 0.0, bumpA.y) * uNormalStrength * resolveA;
             ${aggregate <= 0 ? '' : /* glsl */`
               // The stones themselves. A second, much finer bump is what makes
               // a close camera see a surface with a texture instead of a tinted
               // plane, and it is the difference between "grey road" and "road".
               vec3 bumpB = texture2D(uGrainNormal, vDetailPos.xz * ${f((profile.aggregateScale ?? 5.5))} + vec2(0.31, 0.67)).xyz * 2.0 - 1.0;
-              bump += vec3(bumpB.x, 0.0, bumpB.y) * ${f(aggregate * 0.7)};
+              // 0.30 of the aggregate strength, not 0.70, and faded on its own
+              // footprint rather than the coarse band's — this is the finest
+              // normal perturbation anywhere in the scene, applied at the
+              // highest tiling frequency, so it is the first thing to drop
+              // below a pixel and the single largest contributor to sparkle.
+              float resolveB = detailResolve(${f((profile.aggregateScale ?? 5.5) * 64)});
+              bump += vec3(bumpB.x, 0.0, bumpB.y) * ${f(aggregate * 0.3)} * resolveB;
             `}
             // Rubber fills the surface texture in. Where the band is heaviest
             // the road is visibly smoother, not just darker.

@@ -662,24 +662,58 @@ function buildShellParts(
   }
 
   // --- Halo ---------------------------------------------------------------
-  // The halo is a 46mm titanium tube that passes within half a metre of the
-  // onboard camera. At five radial segments it was a pentagonal bar, and it is
-  // the single object in the scene with the least excuse for being one.
+  // The halo is a titanium tube that passes within half a metre of the driver's
+  // eyes, and it is the one piece of the car whose geometry is judged from
+  // INSIDE rather than from outside. At five radial segments it was a
+  // pentagonal bar; at the height and diameter it used to have it was worse
+  // than that, and this is why.
+  //
+  // The old hoop crowned at y = 0.820 — level with the top of the helmet and
+  // BELOW the airbox at 0.905, which no real car's does — and carried a
+  // constant 46mm section all the way round. From the eye point at y ~ 0.70
+  // that put the side rails only 57mm above the sightline, so instead of
+  // arcing across the top of the frame they sat across the middle of it, and a
+  // 46mm tube at the 0.45m they pass the head subtends nearly seven degrees.
+  // The result was the "enormously thick black bar spanning the entire top of
+  // the frame" — a bar because the rails were near-level with the eye, and
+  // enormous because at that range nothing round is ever small.
+  //
+  // Two corrections, both of which move toward the real article rather than
+  // away from it:
+  //
+  //  - the crown goes UP, to 0.882, which is where a real halo sits relative
+  //    to the roll hoop, and the rails go OUTBOARD to 0.398. Together those
+  //    lift the visible arc from six degrees above the sightline to sixteen,
+  //    which is the difference between a bar through the middle of the picture
+  //    and a line hugging the top edge of it;
+  //  - the section TAPERS, thick at the two rear mounts where the structure's
+  //    whole load goes into the survival cell and slim over the crown. That is
+  //    how the part is actually made, and the crown is precisely the stretch
+  //    that crosses the driver's view.
   {
     p.flat(tube([
-      [-0.325, 0.640, -0.30],
-      [-0.375, 0.700, -0.05],
-      [-0.370, 0.762, 0.30],
-      [-0.235, 0.808, 0.62],
-      [0.000, 0.820, 0.735],
-      [0.235, 0.808, 0.62],
-      [0.370, 0.762, 0.30],
-      [0.375, 0.700, -0.05],
-      [0.325, 0.640, -0.30],
-    ], 0.023, t.halo, t.haloRadial), 'trim');
+      [-0.330, 0.648, -0.30],
+      [-0.392, 0.726, -0.05],
+      [-0.398, 0.818, 0.30],
+      [-0.252, 0.868, 0.62],
+      [0.000, 0.882, 0.735],
+      [0.252, 0.868, 0.62],
+      [0.398, 0.818, 0.30],
+      [0.392, 0.726, -0.05],
+      [0.330, 0.648, -0.30],
+    ], 0.021, t.halo, t.haloRadial,
+    // 1.0 at both mounts, 0.62 over the crown: 42mm down to 26mm.
+    (u) => 0.62 + 0.38 * Math.abs(u * 2 - 1)), 'trim');
 
-    // The forward strut, the only part of the halo a driver actually sees.
-    p.flat(strut(0, 0.500, 0.770, 0, 0.815, 0.737, 0.026, t.haloRadial), 'trim');
+    // The forward strut: the only part of the halo a driver looks straight down.
+    //
+    // It was a 52mm round bar 0.65m from the eye, which is four and a half
+    // degrees of solid black up the centre of the frame — the "fat central
+    // pillar splitting the view in two". A real one is a blade about 20mm
+    // across and three times that front to back, shaped exactly so that the
+    // driver sees the edge and not the face. Built round it cannot be both
+    // strong and thin; built as the blade it really is, it is both.
+    p.flat(strut(0, 0.512, 0.782, 0, 0.876, 0.742, 0.030, t.haloRadial, false, 0.34), 'trim');
   }
 
   // --- Sidepod winglet and cooling louvres ---------------------------------
@@ -715,21 +749,29 @@ function buildShellParts(
   // where a real car mounts them, and for the same reason — they land inside
   // the frame.
   for (const side of [-1, 1] as const) {
-    p.flat(strut(side * 0.300, 0.548, MIRROR_Z, side * 0.430, MIRROR_Y - 0.008, MIRROR_Z, 0.014, t.strut), 'trim');
+    p.flat(strut(side * 0.300, 0.548, MIRROR_Z, side * 0.430, MIRROR_Y - 0.008, MIRROR_Z, 0.010, t.strut), 'trim');
     // A moulded pod, not a brick: the housing tapers rearward and is rounded on
     // every edge, which is what it looks like on the reference car and what
     // makes the two of them read as aerodynamic parts rather than as luggage.
+    //
+    // Wider and flatter than it was, and in CARBON rather than in the team's
+    // paint. Both changes are about the onboard view, where a mirror is 0.8m
+    // from the eye and therefore large whatever its real size: a body-coloured
+    // block that close reads as two bright slabs pushing in from the edges of
+    // the frame, which is exactly the complaint. Every reference frame has dark
+    // pods with only a slim lit top surface, so the eye files them with the
+    // cockpit surround instead of treating them as objects.
     const housing = small([
-      section(MIRROR_Z + 0.021, 0.0525, MIRROR_Y - 0.029, MIRROR_Y + 0.029, 0.42),
-      section(MIRROR_Z + 0.004, 0.0530, MIRROR_Y - 0.030, MIRROR_Y + 0.030, 0.45),
-      section(MIRROR_Z - 0.014, 0.0470, MIRROR_Y - 0.027, MIRROR_Y + 0.028, 0.55),
-      section(MIRROR_Z - 0.026, 0.0330, MIRROR_Y - 0.020, MIRROR_Y + 0.022, 0.80),
+      section(MIRROR_Z + 0.021, 0.0580, MIRROR_Y - 0.023, MIRROR_Y + 0.023, 0.42),
+      section(MIRROR_Z + 0.004, 0.0585, MIRROR_Y - 0.024, MIRROR_Y + 0.024, 0.45),
+      section(MIRROR_Z - 0.014, 0.0520, MIRROR_Y - 0.022, MIRROR_Y + 0.023, 0.55),
+      section(MIRROR_Z - 0.026, 0.0360, MIRROR_Y - 0.017, MIRROR_Y + 0.019, 0.80),
     ], t.detail);
     housing.translate(side * MIRROR_X, 0, 0);
-    p.flat(housing, 'body');
+    p.flat(housing, 'carbon');
     // A flat dark pane, so the mirrors read from outside too. The player's own
     // car covers this with a reflective one; see CockpitMesh.
-    const glass = new THREE.PlaneGeometry(0.088, 0.046);
+    const glass = new THREE.PlaneGeometry(0.096, 0.036);
     glass.rotateY(Math.PI);
     glass.translate(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z);
     p.flat(glass, 'glass');

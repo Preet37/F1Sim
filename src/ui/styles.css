@@ -793,6 +793,34 @@ canvas#view {
 }
 .hud-wheel .hud-leds { justify-content: center; margin-bottom: 2px; }
 
+/* Cockpit variant.
+   Speed has to be in the same place in every camera, so the panel never goes
+   away — it loses everything the modelled wheel dash already shows (shift
+   lights, ERS store, DRS, the rpm and ERS traces) and keeps the three numbers
+   that have to be legible without looking for them. Roughly half the height,
+   so it clears the modelled rim below it. */
+.hud-wheel.compact {
+  min-width: 0;
+  gap: 0;
+  padding: 5px 18px 6px;
+  border-radius: 34px;
+}
+.hud-wheel.compact .hud-leds,
+.hud-wheel.compact .hud-wheelbars,
+.hud-wheel.compact .hud-ersbadge,
+.hud-wheel.compact .hud-drs { display: none; }
+.hud-wheel.compact .hud-wheelrow { gap: 12px; }
+.hud-wheel.compact .hud-geardisc {
+  width: 50px;
+  height: 50px;
+  flex-basis: 50px;
+  border-width: 2px;
+}
+.hud-wheel.compact .hud-gear { font-size: 30px; }
+.hud-wheel.compact .hud-wheelstats { gap: 14px; flex: 0 0 auto; }
+.hud-wheel.compact .hud-celllabel { font-size: 10px; }
+.hud-wheel.compact .hud-cellvalue { font-size: 21px; }
+
 .hud-wheelrow { display: flex; align-items: center; gap: 14px; }
 
 /* The gear disc. Largest, highest-contrast element on the whole HUD, because
