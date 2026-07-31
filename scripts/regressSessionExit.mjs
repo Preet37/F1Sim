@@ -84,7 +84,12 @@ const st = () => page.evaluate(() => {
     paused: g.clock.paused,
     hasEngine: !!g.engine,
     overlayShown: !!o && getComputedStyle(o).display !== 'none',
-    buttons: o ? [...o.querySelectorAll('button')].map((b) => b.textContent.trim()) : [],
+    // The label, not the whole button. A pause-menu entry now carries a label
+    // and a line of explanatory meta in separate spans, so `textContent` on the
+    // button reads "ResumeBack to the car" — which no test looking for "Resume"
+    // will ever match, on a menu that offers Resume perfectly well.
+    buttons: o ? [...o.querySelectorAll('button')].map((b) =>
+      (b.querySelector('.pause-btn-label') ?? b).textContent.trim()) : [],
     simTime: g.engine?.time ?? null,
   };
 });
@@ -115,7 +120,8 @@ check(t1 === t2, `paused time really stands still (${t1} -> ${t2})`);
 const clickPauseButton = async (pattern, what) => {
   const clicked = await page.evaluate((p) => {
     const b = [...document.querySelectorAll('.pause-overlay button')]
-      .find((e) => new RegExp(p, 'i').test(e.textContent || ''));
+      .find((e) => new RegExp(p, 'i').test(
+        ((e.querySelector('.pause-btn-label') ?? e).textContent || '').trim()));
     if (!b) return false;
     b.click();
     return true;
@@ -175,7 +181,15 @@ await page.evaluate(() => {
   const g = window.__game;
   g.weekend = [g.sessionConfig('race', 'Grand Prix', 'monza', 0, 2)];
   g.weekendIndex = 0;
-  g.beginSession('monza');
+  // The method that puts a session on track has been called both
+  // `beginSession` and `launchSession`. This test is about whether the game
+  // still works after abandoning one, not about what that method is called
+  // this week, so it takes whichever is there and says so plainly if neither
+  // is — a missing entry point should read as a broken test, not as a broken
+  // game.
+  const start = g.launchSession ?? g.beginSession;
+  if (typeof start !== 'function') throw new Error('no launchSession/beginSession on the game');
+  start.call(g, 'monza');
 });
 await page.waitForTimeout(4000);
 const again = await st();
