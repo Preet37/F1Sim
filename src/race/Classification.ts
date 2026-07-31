@@ -1,0 +1,51 @@
+/**
+ * Formatting for the classification a session ends on.
+ *
+ * Lives in its own module, away from the app shell, because the app shell boots
+ * a whole game on import and this needs to be testable from a script. See
+ * `npm run regress:results`.
+ */
+
+import { formatLapTime } from '../core/MathUtils';
+
+/** The subset of a car the classification actually reads. */
+export interface ClassifiedCar {
+  position: number;
+  retired: boolean;
+  disqualified: boolean;
+  bestLapTime: number;
+  gapToLeader: number;
+  lapsDown: number;
+}
+
+/**
+ * The leading result column: a gap in a race, a lap time everywhere else.
+ *
+ * The two halves are genuinely different questions. A race classifies on who
+ * got there first, so the interesting number is the deficit to the winner. A
+ * practice or qualifying session classifies on outright pace, so the interesting
+ * number is the lap itself — there is no winner and no gap to the flag.
+ *
+ * This used to print the literal word WINNER for whoever was first, in every
+ * session type. In a race that is fair enough. In FP2 it announced a winner of
+ * free practice, and — worse — it did so in the column headed "Best", so the one
+ * car whose lap time the player most wanted to see was the only car whose lap
+ * time was replaced by a word.
+ */
+export function resultGapCell(car: ClassifiedCar, isRace: boolean): string {
+  if (car.disqualified) return 'DSQ';
+  if (car.retired) return 'DNF';
+
+  if (!isRace) {
+    // Pace sessions: the leading column is the lap that put the car here.
+    return formatLapTime(car.bestLapTime);
+  }
+
+  if (car.position === 1) return 'WINNER';
+  // A lapped car's gap is not a time anyone reads as a time. Twenty seconds and
+  // a lap and twenty seconds look identical once you print them both in
+  // seconds, and only one of them means the car is out of the fight.
+  if (car.lapsDown >= 1) return '+' + car.lapsDown + (car.lapsDown === 1 ? ' LAP' : ' LAPS');
+  if (!Number.isFinite(car.gapToLeader)) return '--.---';
+  return '+' + car.gapToLeader.toFixed(3);
+}
