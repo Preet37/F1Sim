@@ -98,6 +98,7 @@ export class Hud {
 
   private conditions!: HTMLElement;
   private flagBanner!: HTMLElement;
+  private pitCue!: HTMLElement;
   private radioFeed!: HTMLElement;
   private cameraLabel!: HTMLElement;
   private diagnostics!: HTMLElement;
@@ -278,6 +279,16 @@ export class Hud {
     this.conditions = this.el('hud-panel hud-conditions', this.root, '');
     this.flagBanner = this.el('hud-flag', this.root, '');
     this.flagBanner.style.display = 'none';
+
+    // The pit lane gets a line of its own, rather than a share of the flag
+    // banner. It used to be written into that banner, which sits directly under
+    // the team radio: five race-control messages in a row cover it completely,
+    // and the one moment a driver is reading the screen rather than the road is
+    // the one moment it was unreadable. It also has to coexist with a flag — a
+    // driver can be under a yellow AND looking for his box — so it is a second
+    // line, below the first, and it reports the limiter as well as the box.
+    this.pitCue = this.el('hud-pit-cue', this.root, '');
+    this.pitCue.style.display = 'none';
 
     // --- Radio ------------------------------------------------------------
     this.radioFeed = this.el('hud-radio', this.root);
@@ -720,6 +731,7 @@ export class Hud {
     this.updateTower(engine, player);
 
     // --- Radio ------------------------------------------------------------
+    this.updatePitCue(engine, player);
     this.updateRadio(engine);
 
     // --- Camera and diagnostics ------------------------------------------
@@ -763,21 +775,6 @@ export class Hud {
       else if (local === 'yellow') { text = 'YELLOW FLAG'; cls = 'hud-flag flag-yellow'; }
     }
 
-    // In the pit lane, the one thing the driver needs is how far it is to their
-    // own box. The box is marked on the road, but a distance is what turns
-    // "somewhere along here" into "brake now", and it is what the crew would be
-    // saying on the radio.
-    if (player.inPitLane && !player.servicedThisVisit && !player.pitTransitOnly) {
-      const d = player.perception.pitBoxAheadM;
-      if (player.inPitBox) {
-        text = 'IN THE BOX — ' + player.pitBoxTimer.toFixed(1) + 's';
-        cls = 'hud-flag flag-start';
-      } else if (d >= 0) {
-        text = 'YOUR BOX  ' + Math.round(d) + 'm';
-        cls = 'hud-flag flag-start';
-      }
-    }
-
     // Penalties take precedence — the player needs to know immediately.
     const pen = player.penalties[player.penalties.length - 1];
     if (!text && pen && !pen.served && pen.kind === 'drive-through') {
@@ -792,6 +789,54 @@ export class Hud {
       setStyle(this.flagBanner, 'display', 'block');
     } else {
       setStyle(this.flagBanner, 'display', 'none');
+    }
+  }
+
+  /**
+   * The pit line: when to come in, where the box is, and what the limiter is
+   * doing.
+   *
+   * All three were missing or unreadable. Nothing anywhere prompted the player
+   * to pit — the strategist knows, the tyre model knows, the damage model knows,
+   * and the one car never told was the player's. The box distance was written
+   * into a banner the team radio covers. And nothing said whether the limiter
+   * was engaged. "That pitstop logic is fucked, I don't even know when to pit or
+   * where to be at" is a fair reading of that.
+   */
+  private updatePitCue(engine: RaceEngine, player: CarEntry): void {
+    let text = '';
+    let cls = 'hud-pit-cue';
+
+    if (player.inPitLane) {
+      const limiter = player.appliedControls.pitLimiter ? 'LIMITER ON' : 'LIMITER OFF';
+      if (player.inPitBox) {
+        text = 'IN THE BOX — ' + player.pitBoxTimer.toFixed(1) + 's';
+        cls += ' cue-box';
+      } else if (player.servicedThisVisit) {
+        text = 'PIT EXIT · ' + limiter;
+        cls += ' cue-live';
+      } else if (player.pitTransitOnly) {
+        text = 'SERVING DRIVE-THROUGH · ' + limiter;
+        cls += ' cue-warn';
+      } else {
+        const d = player.perception.pitBoxAheadM;
+        text = (d >= 0 ? 'YOUR BOX ' + Math.round(d) + 'm' : 'YOUR BOX AHEAD') + ' · ' + limiter;
+        cls += ' cue-live';
+      }
+    } else if (player.pitRequested) {
+      text = 'PIT CONFIRMED — BOX THIS LAP';
+      cls += ' cue-live';
+    } else {
+      const advice = engine.pitAdvice(player);
+      if (advice) { text = advice + ' — PRESS PIT'; cls += ' cue-warn'; }
+    }
+
+    if (text) {
+      setText(this.pitCue, text);
+      setClass(this.pitCue, cls);
+      setStyle(this.pitCue, 'display', 'block');
+    } else {
+      setStyle(this.pitCue, 'display', 'none');
     }
   }
 

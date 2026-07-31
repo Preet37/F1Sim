@@ -152,6 +152,13 @@ const PIT_EXIT_BLEND_M = 260;
  */
 const PIT_BOX_WINDOW_M = 3.2;
 /**
+ * How far before its box a car pulls out of the fast lane and across into the
+ * working lane — a car's length, plus the room to make the move in.
+ */
+const PIT_BOX_PULL_IN_M = 34;
+/** How fast a car changes lane inside the pit lane, m/s. */
+const PIT_LANE_SHIFT_MS = 3.5;
+/**
  * Speed below which a car counts as stopped in its box, m/s.
  *
  * Walking pace. This is a "have you stopped" test, and it has to sit well below
@@ -1220,6 +1227,44 @@ export class RaceEngine {
   }
 
   /** Does the strategy want this car in the pits on this lap? */
+  /**
+   * Why the player should be thinking about the pit lane, or null if they
+   * should not.
+   *
+   * The AI has known this all along — `shouldPit` below is exactly this
+   * decision, made every step for nineteen cars — and the player was the one
+   * car it was never told to. Nothing is being given away: this is the radio
+   * call the driver would already have had.
+   */
+  pitAdvice(car: CarEntry): string | null {
+    if (this.config.kind !== 'race') return null;
+    if (car.inPitLane || car.retired || car.finished || car.disqualified) return null;
+
+    const pen = car.pendingServePenalty();
+    if (pen !== null) {
+      return pen.kind === 'drive-through' ? 'DRIVE-THROUGH TO SERVE' : 'PENALTY TO SERVE';
+    }
+    if (car.damage.worst().health < 0.7) return 'DAMAGE — PIT FOR REPAIRS';
+
+    const onSlicks = !getCompound(car.compound).isWetWeather;
+    if (this.weather.wetness > 0.4 && onSlicks) return 'RAIN — WET TYRES';
+    if (this.weather.wetness < 0.12 && !onSlicks && car.physics.rearTires.lapsOnSet > 2) {
+      return 'TRACK DRY — SLICKS';
+    }
+
+    const wear = car.physics.rearTires.wear;
+    if (wear < 0.24) return 'TYRES GONE';
+
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const lapsLeft = totalLaps - car.lap;
+    if (!this.weather.hasRained && lapsLeft <= MANDATORY_COMPOUND_MARGIN_LAPS) {
+      const dryUsed = new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather));
+      if (dryUsed.size < 2) return 'SECOND COMPOUND REQUIRED';
+    }
+    if (wear < 0.45) return 'TYRES WORN — PIT WINDOW OPEN';
+    return null;
+  }
+
   private shouldPit(car: CarEntry): boolean {
     // The player is called in by the player, not by the strategist. Their
     // request is a latch that survives until it is served or cancelled.
@@ -1411,10 +1456,32 @@ export class RaceEngine {
     //
     // This is the same mistake, and the same fix, as the one documented at
     // length in `enforceBarriers` above.
+    // WHERE in the lane depends on what the car is here to do.
+    //
+    // A car passing through runs down the fast lane, which is the lane centre.
+    // A car being serviced pulls ACROSS into the working lane and stops on its
+    // own box, against the garages — which is where the paint is, where the crew
+    // stands and where the marker is drawn. Servicing the car on the lane centre
+    // left it stopped in the middle of the road with its box, its crew and its
+    // marker four metres away to the side: "it says my box is 0m away but where,
+    // I don't see shit" is precisely that, and it was right.
+    const workingLat = this.pitGeom.sign * (this.pitGeom.divider + this.pitGeom.garageFace) * 0.5;
+    const headingForBox = !car.servicedThisVisit && !car.pitTransitOnly;
+    const pullingIn = headingForBox && loopDelta(car.s, car.pitBoxS, len) < PIT_BOX_PULL_IN_M;
+    const targetLat = pullingIn || car.inPitBox ? workingLat : pit.lateralOffsetM;
+
+    // Moved at a rate a car can actually change lane at, rather than at whatever
+    // rate closes the gap. The correction used to be proportional and unbounded:
+    // at the pit entry the error is the full width of the lane, which came out
+    // as two tenths of a metre PER STEP — twenty-four metres a second sideways,
+    // faster than the car was going forwards. The car does not feel it, because
+    // it is a displacement and not a velocity, but the driver watches the world
+    // slide across the screen and corrects for a slide that is not there.
     const idx = this.track.indexAt(car.s);
-    const dLat = (pit.lateralOffsetM - car.lateral) * clamp01(dt * 2.2);
-    car.physics.position.x += this.track.nx[idx] * dLat;
-    car.physics.position.y += this.track.nz[idx] * dLat;
+    const want = targetLat - car.lateral;
+    const shift = Math.min(Math.abs(want), PIT_LANE_SHIFT_MS * dt) * Math.sign(want);
+    car.physics.position.x += this.track.nx[idx] * shift;
+    car.physics.position.y += this.track.nz[idx] * shift;
 
     // The box.
     //

@@ -38,8 +38,15 @@ export interface PitBoxMarker {
 }
 
 /** How far the pylons stand above the apron, metres. */
-const PYLON_H = 2.6;
-const PYLON_R = 0.085;
+const PYLON_H = 4.2;
+const PYLON_R = 0.15;
+/** Height of the crossbar between them. */
+const BAR_H = 0.55;
+/** Chevrons laid up the working lane towards the box, and their spacing. */
+const CHEVRONS = 6;
+const CHEVRON_PITCH_M = 7;
+const CHEVRON_LEN_M = 2.4;
+const CHEVRON_W_M = 0.85;
 /** How far the paint floats above the apron, to stay out of a z-fight. */
 const PAINT_LIFT = 0.02;
 /** Width of the painted lines, metres. */
@@ -105,6 +112,7 @@ export function buildPitBoxMarker(track: TrackSpline, player: CarEntry): PitBoxM
 
   const verts: number[] = [];
   const accentVerts: number[] = [];
+  const chevronVerts: number[] = [];
 
   /** A flat quad between two distances and two lateral magnitudes. */
   const quad = (
@@ -139,16 +147,57 @@ export function buildPitBoxMarker(track: TrackSpline, player: CarEntry): PitBoxM
   mkMesh(verts, teamMat);
   mkMesh(accentVerts, accentMat);
 
-  // Pylons at the mouth of the box. A marking on the floor of a pit lane is
-  // invisible from a hundred metres up the lane at eighty km/h, which is
-  // precisely where the driver needs to start aiming for it.
-  const pylonGeo = new THREE.CylinderGeometry(PYLON_R, PYLON_R * 1.3, PYLON_H, 8);
+  // Chevrons up the working lane, pointing in.
+  //
+  // Paint inside the box tells a driver nothing until he is level with it, and
+  // by then the stop is missed. This is the cue he picks up first: a run of
+  // arrows laid up the lane towards the box, starting far enough back to be in
+  // view while there is still room to slow and pull across.
+  const chevIn = g.divider + 0.4;
+  const chevOut = g.garageFace - 0.4;
+  const chevMid = (chevIn + chevOut) * 0.5;
+  for (let k = 1; k <= CHEVRONS; k++) {
+    const s0 = boxS - half - k * CHEVRON_PITCH_M;
+    const tip = s0 + CHEVRON_LEN_M;
+    for (const [m0, m1] of [[chevIn, chevMid], [chevOut, chevMid]] as [number, number][]) {
+      const a = W(s0, m0, yPaint);
+      const b = W(s0 + CHEVRON_W_M, m0, yPaint);
+      const c = W(tip + CHEVRON_W_M, m1, yPaint);
+      const d = W(tip, m1, yPaint);
+      chevronVerts.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+      chevronVerts.push(a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z);
+    }
+  }
+  mkMesh(chevronVerts, accentMat);
+
+  // The gate: two posts and a crossbar over the mouth of the box.
+  //
+  // A marking on the floor of a pit lane is invisible from a hundred metres up
+  // the lane at eighty km/h, which is precisely where the driver needs to start
+  // aiming for it. Something standing up, above the pit wall line, is not — and
+  // the posts were 2.6m of 8.5cm pole, which at that distance is a hair.
+  const pylonGeo = new THREE.CylinderGeometry(PYLON_R, PYLON_R * 1.35, PYLON_H, 10);
   disposables.push(pylonGeo);
+  const feet: THREE.Vector3[] = [];
   for (const s of [boxS - half, boxS + half]) {
     const base = W(s, inner - 0.15, PIT_APRON_HEIGHT_M);
     const pylon = new THREE.Mesh(pylonGeo, accentMat);
     pylon.position.set(base.x, base.y + PYLON_H * 0.5, base.z);
     root.add(pylon);
+    feet.push(base);
+  }
+  if (feet.length === 2) {
+    const barGeo = new THREE.BoxGeometry(feet[0].distanceTo(feet[1]), BAR_H, 0.16);
+    disposables.push(barGeo);
+    const bar = new THREE.Mesh(barGeo, teamMat);
+    bar.position.set(
+      (feet[0].x + feet[1].x) * 0.5,
+      (feet[0].y + feet[1].y) * 0.5 + PYLON_H - BAR_H * 0.5,
+      (feet[0].z + feet[1].z) * 0.5,
+    );
+    bar.lookAt(feet[1].x, bar.position.y, feet[1].z);
+    bar.rotateY(Math.PI / 2);
+    root.add(bar);
   }
 
   return {

@@ -433,6 +433,36 @@ canvas#view {
 }
 @keyframes flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
+/* --- Pit line --------------------------------------------------------
+   Below the flag banner and below the deepest a burst of team radio can reach,
+   so race control cannot bury the one instruction the driver is reading the
+   screen for. On a short landscape screen there is no room below the radio, so
+   it goes under the flag instead, above the dash. */
+.hud-pit-cue {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  padding: 8px 22px;
+  border-radius: 6px;
+  text-align: center;
+  white-space: nowrap;
+  background: rgba(9, 12, 18, 0.88);
+  border: 2px solid var(--accent);
+  color: #eef3ff;
+}
+.hud-pit-cue.cue-live { border-color: var(--good); color: #d6ffe6; }
+.hud-pit-cue.cue-warn { border-color: #ffd21f; color: #ffeaa0; }
+.hud-pit-cue.cue-box {
+  background: var(--good);
+  border-color: var(--good);
+  color: #06210f;
+  font-size: 27px;
+}
+
 /* --- Team radio ------------------------------------------------------
    Under the conditions strip, top centre. The left edge is now a full-field
    driver tower and the bottom left is the car state, so this is the only
@@ -782,6 +812,8 @@ table.standings td.num { text-align: right; font-variant-numeric: tabular-nums; 
   .tower-position { font-size: 17px; }
   .hud-bottom-legacy { min-width: 0; padding: 5px 10px 7px; }
   .hud-radio { top: calc(38px + var(--safe-t)); width: 52vw; }
+  .hud-pit-cue { top: auto; bottom: 27%; font-size: 15px; padding: 6px 14px; }
+  .hud-pit-cue.cue-box { font-size: 18px; }
   .hud-flag { font-size: 16px; padding: 7px 16px; }
   .hud-gaps { bottom: calc(122px + var(--safe-b)); }
   .hud-btn { width: 44px; height: 32px; font-size: 9px; }

@@ -763,7 +763,24 @@ export class VehiclePhysics {
       const limitMs = 80 / 3.6;
       if (vx > limitMs) {
         driveForce = 0;
-        brakeForceRear += (vx - limitMs) * mass * 2.2;
+        // What a real pit limiter does is cut the engine. It has no brakes.
+        //
+        // This was `brakeForceRear += (vx - limit) * mass * 2.2`, which is
+        // unbounded and REAR-ONLY: a car crossing the pit entry line at 250km/h
+        // had a hundred and forty kilonewtons put through its rear axle alone in
+        // a single step. The rears lock instantly, the back steps out, and the
+        // car spins on the spot. "The moment I entered the pit lane I spun, idk
+        // how" is exactly what that feels like, and it was not the driver.
+        //
+        // So: cut the drive, then shed the excess BALANCED across the axles on
+        // the car's own brake balance and BOUNDED at half a g. A car that
+        // arrives far too fast still cannot be rescued by the limiter — it
+        // speeds through the lane and collects the penalty, which is the correct
+        // outcome and the reason the limiter is not a teleport.
+        const wanted = (vx - limitMs) * mass * 2.2;
+        const applied = Math.min(wanted, mass * G * 0.5);
+        brakeForceFront += applied * spec.brakeBalanceFront;
+        brakeForceRear += applied * (1 - spec.brakeBalanceFront);
       }
     }
 
