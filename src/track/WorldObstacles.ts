@@ -378,6 +378,81 @@ export function barrierOffsets(
   return out;
 }
 
+/**
+ * How far out the car is allowed to go, per node, per side — which is NOT the
+ * same question as where the wall stands.
+ *
+ * A barrier chain is allowed to have gaps in it. Where the pit exit road runs
+ * alongside the circuit there is nowhere to put a wall that would not be a wall
+ * across a road, so `barrierOffsets` honestly reports nothing there. The trouble
+ * is what the gap's far END looks like: the chain resumes at the minimum offset,
+ * two metres off the track edge, and a car that used the gap to run out to
+ * thirteen metres arrives beside a wall it is already behind. It then hits the
+ * back of that wall, stops, and sits there — off the road, out of the race, with
+ * an armco between it and the circuit. That is the Suzuka escape, and the same
+ * shape of gap exists on every circuit on the calendar.
+ *
+ * So containment is the barrier line SLOPE-LIMITED ACROSS ITS OWN GAPS, at the
+ * same 0.35m per node the wall itself is smoothed with. Near the end of a gap
+ * the limit has closed back down to where the wall is about to be, so a car is
+ * funnelled in ahead of it rather than finding it side-on; a hundred metres
+ * deeper into the gap the allowance has opened out to fifteen-odd metres and the
+ * limit is no more restrictive than the run-off. Nothing is drawn for it,
+ * because nothing is there — this is the edge of the run-off, not a solid
+ * object, and it is enforced the way the run-off edge always was.
+ *
+ * Stretches suppressed for the pit lane or the paddock keep their zero. A car in
+ * the lane is contained by the lane, a car in the paddock is meant to be able to
+ * reach a garage, and neither wants a funnel.
+ */
+export function containmentOffsets(
+  track: TrackSpline, offsets: { left: Float64Array; right: Float64Array },
+  pit: PitLaneGeometry,
+): { left: Float64Array; right: Float64Array } {
+  const count = track.count;
+  const out = {
+    left: Float64Array.from(offsets.left),
+    right: Float64Array.from(offsets.right),
+  };
+
+  for (const side of [-1, 1] as const) {
+    const src = side > 0 ? offsets.left : offsets.right;
+    const arr = side > 0 ? out.left : out.right;
+
+    // Nothing to spread from, and nothing to spread into.
+    let anyWall = false;
+    for (let i = 0; i < count; i++) if (src[i] > 0) { anyWall = true; break; }
+    if (!anyWall) continue;
+
+    for (let i = 0; i < count; i++) arr[i] = src[i] > 0 ? src[i] : Infinity;
+
+    // Two wrapped sweeps, forward then back: the standard way to take a
+    // minimum over "value at j, plus the cost of walking from j to i".
+    for (let pass = 0; pass < 2; pass++) {
+      for (let k = 0; k < count; k++) {
+        const i = k % count;
+        const p = (i - 1 + count) % count;
+        const via = arr[p] + BARRIER_SLOPE_M;
+        if (via < arr[i]) arr[i] = via;
+      }
+      for (let k = count - 1; k >= 0; k--) {
+        const i = k % count;
+        const n = (i + 1) % count;
+        const via = arr[n] + BARRIER_SLOPE_M;
+        if (via < arr[i]) arr[i] = via;
+      }
+    }
+
+    // Back to "0 means no limit from here" for the stretches that want it, and
+    // for anything the sweeps could not reach.
+    for (let i = 0; i < count; i++) {
+      if (!Number.isFinite(arr[i]) || barrierSuppressed(track, i, side, pit)) arr[i] = 0;
+    }
+  }
+
+  return out;
+}
+
 /** A straight run of solid surface, in plan. */
 export interface WallSegment {
   ax: number;
@@ -902,6 +977,12 @@ export interface WorldModel {
   scenery: SceneryItem[];
   /** Barrier distance from the track edge, per node, per side. 0 = suppressed. */
   barrierOffsets: { left: Float64Array; right: Float64Array };
+  /**
+   * How far off the track edge a car may go, per node, per side. 0 = no limit
+   * from here. The same line as `barrierOffsets` wherever there is a wall, and
+   * closed across the gaps between walls — see `containmentOffsets`.
+   */
+  containment: { left: Float64Array; right: Float64Array };
   /** The barrier line as world-space segments — drawn and collided identically. */
   barrier: WallSegment[];
   obstacles: ObstacleField;
@@ -920,6 +1001,7 @@ export function buildWorldModel(track: TrackSpline): WorldModel {
     keepOut,
     scenery,
     barrierOffsets: offsets,
+    containment: containmentOffsets(track, offsets, pit),
     barrier,
     obstacles: new ObstacleField(buildStaticObstacles(track, scenery, barrier)),
   };

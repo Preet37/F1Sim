@@ -577,6 +577,14 @@ export class RaceEngine {
 
       copyControls(controls, car.appliedControls);
       car.physics.drsAvailable = this.isDrsAllowed(car);
+      // Where the car is BEFORE it moves, for the swept test against the solid
+      // world below. Recorded here rather than at the end of the previous step
+      // so that a car which was teleported (placed on the grid, reset by a
+      // probe, craned back on) sweeps from where it now is and not from where
+      // it used to be several hundred metres away.
+      car.prevX = car.physics.position.x;
+      car.prevZ = car.physics.position.y;
+      car.prevHeading = car.physics.heading;
       car.physics.step(dt, car.appliedControls, this.environment);
 
       // Attrition from riding kerbs, running through gravel and holding the
@@ -712,9 +720,15 @@ export class RaceEngine {
     // out to the nominal figure — straight through the wall on screen and into
     // the corridor between two sections of circuit.
     const lat0 = car.lateral;
+    // `containment`, not `barrierOffsets`: the same line wherever a wall
+    // stands, but closed across the gaps BETWEEN walls. A gap in the chain is
+    // not an invitation to leave — the chain resumes two metres off the track
+    // edge at the far end of it, and a car that used the gap to get fifteen
+    // metres out arrives beside a wall it is already behind. See
+    // `containmentOffsets`.
     const off = lat0 >= 0
-      ? this.world.barrierOffsets.left[idx]
-      : this.world.barrierOffsets.right[idx];
+      ? this.world.containment.left[idx]
+      : this.world.containment.right[idx];
     // A zero offset means the barrier gives way to the pit lane or the
     // paddock. There the pit wall is the boundary, and it is enforced as a real
     // object by `collideWithObstacles`; the spline limit only has to stop a car
@@ -822,17 +836,49 @@ export class RaceEngine {
    * `VehiclePhysics.collideWithBarrier` — the same restitution, scrape and yaw
    * damping the circuit's own barrier uses, so hitting a wall feels like
    * hitting a wall wherever the wall came from.
+   *
+   * TWO passes, and the order matters.
+   *
+   * `sweepIntoObstacles` runs first and asks where along this step's motion the
+   * car FIRST touched something, then puts it there. The pass below it asks only
+   * about the position the car is at now. On its own that second question is not
+   * enough, and the reason is arithmetic: a step at 120Hz is 8.3ms, so a car at
+   * 72 m/s covers 0.6m in one, and a barrier box is 1.2m thick in plan. Sample
+   * the endpoints of a 0.6m stride either side of a thin wall and both are
+   * legitimately clear of it — the wall passes between two consecutive frames
+   * and never reports a contact at all. That is a tunnel, and it does not need
+   * anything exotic to happen: driving at a barrier at 260 km/h is enough.
+   *
+   * The discrete pass is kept because the swept one does not replace it. A car
+   * resting against a wall, or pushed into one by another car after this runs,
+   * has no motion to sweep and still has to be pushed back out.
    */
   private collideWithObstacles(car: CarEntry, dt: number): void {
     const field = this.world.obstacles;
     if (field.isEmpty) return;
 
     const p = car.physics;
-    const sinH = Math.sin(p.heading);
-    const cosH = Math.cos(p.heading);
     const reach = DISC_OFFSETS_M[0] + DISC_RADIUS_M;
 
-    field.query(p.position.x, p.position.y, reach, this.obstacleHits);
+    // ONE broadphase query for both passes. A circle around the midpoint of the
+    // step's motion, grown by half its length, contains the whole swept
+    // footprint and therefore also the end position the discrete pass needs —
+    // so sweeping costs no extra grid work, which is what makes it affordable
+    // for twenty cars at 120Hz.
+    const travelX = p.position.x - car.prevX;
+    const travelZ = p.position.y - car.prevZ;
+    const travel = Math.hypot(travelX, travelZ);
+    field.query(
+      (car.prevX + p.position.x) * 0.5,
+      (car.prevZ + p.position.y) * 0.5,
+      reach + travel * 0.5,
+      this.obstacleHits,
+    );
+
+    this.sweepIntoObstacles(car, dt, travel);
+
+    const sinH = Math.sin(p.heading);
+    const cosH = Math.cos(p.heading);
 
     for (const oi of this.obstacleHits) {
       const o: Obstacle = field.obstacles[oi];
@@ -897,6 +943,139 @@ export class RaceEngine {
       const severity = p.collideWithBarrier(-bnx, -bnz, dt);
       this.onSolidImpact(car, severity, -bnx, -bnz, OBSTACLE_NAMES[o.kind]);
     }
+  }
+
+  /**
+   * The swept half of the static-world collision: where along this step's
+   * motion did the car first touch something, and put it there.
+   *
+   * The car's footprint is the same three discs as everywhere else, and each
+   * one traces a segment from where it was at the top of the step to where it
+   * is now. A disc of radius r sweeping against a box is, by the standard
+   * Minkowski argument, a POINT sweeping against that box grown by r — so each
+   * test is a ray against a box in the box's own frame, which the slab method
+   * answers in a handful of multiplies. Growing the box squares off the corners
+   * that ought to be rounded, which can register a corner contact a couple of
+   * centimetres early; erring toward "solid" is the right way to be wrong here.
+   *
+   * The earliest contact across every disc and every candidate box wins, the
+   * car is placed at that fraction of its motion, and the impact is booked
+   * exactly as the discrete pass books one. Everything after the contact point
+   * is discarded, which is the whole point: the car stops AT the wall instead of
+   * being teleported to the far side of it and asked afterwards where it is.
+   *
+   * @param travel length of this step's motion, m — already computed by the
+   *   caller for the broadphase.
+   */
+  private sweepIntoObstacles(car: CarEntry, dt: number, travel: number): void {
+    const p = car.physics;
+    // Below a few centimetres the endpoint test cannot miss anything, and above
+    // a few metres this is not a step of motion at all — it is a car being
+    // placed on the grid, recovered by the marshals or reset by a probe, and
+    // sweeping the line to wherever it came from would collide it with every
+    // wall in between.
+    if (travel < 0.02 || travel > 8) return;
+
+    // Captured before anything below moves the car.
+    const moveX = p.position.x - car.prevX;
+    const moveZ = p.position.y - car.prevZ;
+
+    const sin1 = Math.sin(p.heading);
+    const cos1 = Math.cos(p.heading);
+    const sin0 = Math.sin(car.prevHeading);
+    const cos0 = Math.cos(car.prevHeading);
+
+    let bestT = Infinity;
+    let bnx = 0;
+    let bnz = 0;
+    let bestIndex = 0;
+
+    const all = this.world.obstacles.obstacles;
+    for (const oi of this.obstacleHits) {
+      const o: Obstacle = all[oi];
+      // The box grown by the disc radius, so the disc becomes a point.
+      const ex = o.halfX + DISC_RADIUS_M;
+      const ez = o.halfZ + DISC_RADIUS_M;
+
+      for (const off of DISC_OFFSETS_M) {
+        // The disc's path, taken relative to the box centre and rotated into
+        // the box's frame — the same frame convention as the discrete pass.
+        const ax = car.prevX + sin0 * off - o.x;
+        const az = car.prevZ + cos0 * off - o.z;
+        const bx = p.position.x + sin1 * off - o.x;
+        const bz = p.position.y + cos1 * off - o.z;
+
+        const lax = ax * o.cos - az * o.sin;
+        const laz = ax * o.sin + az * o.cos;
+        const lbx = bx * o.cos - bz * o.sin;
+        const lbz = bx * o.sin + bz * o.cos;
+
+        // Already overlapping at the top of the step: not a tunnel, and the
+        // discrete pass owns it.
+        if (Math.abs(lax) < ex && Math.abs(laz) < ez) continue;
+
+        const dx = lbx - lax;
+        const dz = lbz - laz;
+
+        // Slab method. `tIn` climbs to the last entry, `tOut` falls to the
+        // first exit; they cross over when the ray misses the box entirely.
+        let tIn = 0;
+        let tOut = 1;
+        // Which face the ray enters through, as a local-frame unit normal.
+        let nlx = 0;
+        let nlz = 0;
+
+        let miss = false;
+        for (let axis = 0; axis < 2 && !miss; axis++) {
+          const a = axis === 0 ? lax : laz;
+          const d = axis === 0 ? dx : dz;
+          const e = axis === 0 ? ex : ez;
+          if (Math.abs(d) < 1e-9) {
+            // Parallel to this pair of faces: either inside the slab for the
+            // whole sweep, or outside it for the whole sweep.
+            if (Math.abs(a) > e) miss = true;
+            continue;
+          }
+          let t1 = (-e - a) / d;
+          let t2 = (e - a) / d;
+          if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+          // Whichever of the two faces is entered, it is always the one facing
+          // INTO the oncoming ray, so its outward normal is simply -sign(d).
+          // This does not depend on which of t1/t2 turned out to be the smaller
+          // and must not be flipped along with them: doing so hands back an
+          // inward normal for every approach from the box's positive side,
+          // which pushes the car through the wall instead of stopping it at it.
+          const sign = d > 0 ? -1 : 1;
+          if (t1 > tIn) {
+            tIn = t1;
+            nlx = axis === 0 ? sign : 0;
+            nlz = axis === 0 ? 0 : sign;
+          }
+          if (t2 < tOut) tOut = t2;
+          if (tIn > tOut) miss = true;
+        }
+        // `nlx === 0 && nlz === 0` means the entry time never moved off zero,
+        // i.e. the start point was already inside the grown box on both axes.
+        if (miss || tIn > tOut || tIn >= bestT || (nlx === 0 && nlz === 0)) continue;
+
+        bestT = tIn;
+        bnx = nlx * o.cos + nlz * o.sin;
+        bnz = -nlx * o.sin + nlz * o.cos;
+        bestIndex = oi;
+      }
+    }
+
+    if (bestT === Infinity) return;
+
+    // Stop the car at the contact point, held a hair off the surface so the
+    // discrete pass finds no penetration and does not book the same impact a
+    // second time.
+    const skin = 1e-3;
+    p.position.x = car.prevX + moveX * bestT + bnx * skin;
+    p.position.y = car.prevZ + moveZ * bestT + bnz * skin;
+
+    const severity = p.collideWithBarrier(-bnx, -bnz, dt);
+    this.onSolidImpact(car, severity, -bnx, -bnz, OBSTACLE_NAMES[all[bestIndex].kind]);
   }
 
   /** Determines what surface the car is on from its lateral offset. */
@@ -1369,7 +1548,30 @@ export class RaceEngine {
       }
       if (!wantsPit) car.pitEntryRefused = false;
 
-      if (wantsPit && allowed && geometricallyInLane && fromEntry < 40) {
+      // You get into the pit lane from the PIT SIDE of the road, by crossing the
+      // line into the entry road — not from wherever you happen to be.
+      //
+      // Without this the entry was purely a distance test, so a car on the far
+      // edge of the track when it reached the entry line was simply dragged the
+      // full width of the circuit into the lane, at whatever speed it was doing.
+      // At Monza that produced a car crossing the entry at 179 km/h on the wrong
+      // side, collecting a drive-through it had earned, scraping the length of
+      // the pit wall — front wing 0.84 down to 0.10 — and missing its box. A car
+      // that is not on the pit side at the entry has missed the pit entry, which
+      // is what happens in a race, and it comes round again.
+      const pitSide = Math.sign(pit.lateralOffsetM) || -1;
+      const onPitSide = car.lateral * pitSide > -this.track.halfWidthAt(car.s) * 0.5;
+      if (wantsPit && allowed && !onPitSide && geometricallyInLane && fromEntry < 40
+          && !car.pitEntryMissed) {
+        car.pitEntryMissed = true;
+        this.raceControl.log(
+          car.driver.code + ' missed the pit entry — round again',
+          'warning', this.time, car.index,
+        );
+      }
+      if (!geometricallyInLane) car.pitEntryMissed = false;
+
+      if (wantsPit && allowed && onPitSide && geometricallyInLane && fromEntry < 40) {
         car.inPitLane = true;
         car.lastPitLap = car.lap;
         // Every per-visit flag is cleared HERE, on the way in, not on the way

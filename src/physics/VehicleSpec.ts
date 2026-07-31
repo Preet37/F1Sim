@@ -148,7 +148,19 @@ export const BASE_F1_SPEC: VehicleSpec = {
   // every single lap regardless of how slowly it approached.
   maxSteerRad: 0.42,
   brakeBalanceFront: 0.58,
-  maxBrakeForceN: 38_000,
+  // Sized so the calipers can lock the wheels at ANY speed, which is what a real
+  // F1 brake system does and what this one used to get backwards.
+  //
+  // At 38kN the car was brake-limited when fast and grip-limited when slow: the
+  // tires can take 53.5kN at 300 km/h, so full pedal there reached only 71% of
+  // the available grip and the pedal simply ran out of authority. Below about
+  // 150 km/h the same 38kN was already well over the grip limit. The result was
+  // a car whose hardest braking happened in the slow corners — exactly inverted
+  // from a downforce car, and the reason the initial bite from a straight felt
+  // soft. 52kN covers the tire's peak longitudinal capacity at 300 km/h, so the
+  // limit is now the tire everywhere and the driver, not the caliper, decides
+  // how much retardation is on offer. Overdoing it still locks and flat-spots.
+  maxBrakeForceN: 52_000,
 
   peakFuelBurnLps: 0.048,
 

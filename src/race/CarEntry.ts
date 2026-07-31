@@ -49,6 +49,21 @@ export class CarEntry {
   totalDistance = 0;
   private lastS = 0;
 
+  /**
+   * Where the car was at the top of this physics step, in world space.
+   *
+   * Written by the race engine immediately before `physics.step`, so together
+   * with the position afterwards it describes the segment the car actually
+   * travelled this step. Collision against the static world is a SWEPT test
+   * over that segment: at 72 m/s a 120Hz step is 0.6m, which is wider than a
+   * barrier is thick, so a test that only looks at where the car ended up can
+   * find it clear on both sides of a wall it went straight through.
+   */
+  prevX = 0;
+  prevZ = 0;
+  /** Heading at the top of the step, so the swept footprint rotates with it. */
+  prevHeading = 0;
+
   // --- Timing --------------------------------------------------------------
   /** Completed laps. */
   lap = 0;
@@ -144,6 +159,8 @@ export class CarEntry {
   pitRequested = false;
   /** True while a pit request is being refused because the entry is closed. */
   pitEntryRefused = false;
+  /** True once this pass at the pit entry has been missed, so it is said once. */
+  pitEntryMissed = false;
   /**
    * This visit is a drive-through, so the car does NOT stop.
    *
