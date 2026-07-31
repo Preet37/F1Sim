@@ -155,7 +155,7 @@ const V_MAX_WIDTH = 0.10;
  * width, with half as many again closing the bead tuck.
  */
 export function tyreProfile(
-  width: number, tyreR: number, rimR: number, crownRings = 3,
+  width: number, tyreR: number, rimR: number, crownRings: number,
 ): TyreProfilePoint[] {
   const half = width * 0.5;
   const rMaxW = tyreR * 0.80;
@@ -560,7 +560,7 @@ function profileNormalAt(
  * inner edge to its outer one, so the strip texture below lands upright.
  */
 export function buildSidewallBands(
-  width: number, tyreR: number, rimR: number, radial: number, crownRings = 3,
+  width: number, tyreR: number, rimR: number, radial: number, crownRings: number,
 ): THREE.BufferGeometry {
   // Sampled by v, so the same `crownRings` the carcass was built with is passed
   // in and the band's rows land on the surface the carcass actually has. Build
