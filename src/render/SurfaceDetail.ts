@@ -100,7 +100,14 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     strengthA: 0.3, strengthB: 0.22,
     normalStrength: 0.55,
     roughnessVariation: 0.3,
-    roughness: 0.62, metalness: 0.05,
+    // 0.58 rather than 0.62. Asphalt is rough, but it is not chalk: a wide,
+    // low-frequency sheen sweeps across it wherever a light source is roughly
+    // mirrored, and under floodlights that sheen is most of what the surface
+    // IS. At 0.62 the specular lobe was wide enough to be indistinguishable
+    // from the diffuse term and the road went dead flat at night. Below about
+    // 0.55 it goes the other way and the lobe tightens into a single glaring
+    // hotspot that fills the onboard camera.
+    roughness: 0.58, metalness: 0.05,
     aggregate: 0.55, aggregateScale: 5.5,
     seams: 0.55, seamScale: 0.045,
     patches: 0.85, patchScale: 0.02,

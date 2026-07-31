@@ -5,6 +5,7 @@ import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
+import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
 import { RacingLine } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
@@ -27,6 +28,27 @@ import type { CarEntry } from '../race/CarEntry';
  *     render loop runs at display rate on top of a 120Hz physics loop, and garbage
  *     collection pauses show up as stutter exactly when the car is at the limit.
  */
+
+/**
+ * Tone-mapping exposure, by time of day.
+ *
+ * These are well above 1, and that is a correction rather than a taste
+ * decision. Work the numbers through for a piece of dry asphalt: albedo about
+ * 0.07 in linear light, total irradiance from the rig about 3, and the Lambert
+ * BRDF divides by pi — so the surface leaves the shader at roughly 0.07 linear,
+ * ACES pulls that to about 0.08, and sRGB encoding lands it near 0.3 of full
+ * scale. Reference footage of a real circuit, day or night, has its road
+ * sitting closer to 0.45. Every surface in the scene was therefore arriving
+ * about a stop and a half dark, which reads as a dull, muddy image that no
+ * amount of material work fixes — the materials were right and the print was
+ * under-exposed.
+ *
+ * Raising exposure rather than every light's intensity is deliberate: ACES
+ * compresses the top end, so the highlights that were already correct roll off
+ * instead of clipping, and the correction lands where it is needed, in the
+ * midtones.
+ */
+const EXPOSURE = { day: 1.35, dusk: 1.4, night: 1.7 };
 
 /** Target frame rate. Below this, resolution scales down. */
 const TARGET_FPS = 60;
@@ -66,8 +88,27 @@ export class Renderer {
 
   private sun: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
+  /**
+   * A dim, cool light from behind and opposite the sun.
+   *
+   * A single key light leaves every surface facing away from it at exactly the
+   * ambient term, which is a flat colour — so half of every curved panel on the
+   * car is a dead area with no shading information in it at all. A fill at a
+   * fifth of the key's intensity from the opposite quarter gives that half a
+   * gradient, and a gradient is what the eye reads as form. It costs nothing:
+   * it casts no shadow.
+   */
+  private fill: THREE.DirectionalLight;
+  /**
+   * A rim light, low and behind the camera's usual position, that separates the
+   * car's upper edges from the background. This is the light that draws the
+   * bright line along the top of the halo and the roll hoop in the reference
+   * footage, and without it a dark car at night is a silhouette.
+   */
+  private rim: THREE.DirectionalLight;
   private sky: THREE.Mesh | null = null;
-  private envTarget: THREE.WebGLRenderTarget | null = null;
+  private envProbe: EnvProbe;
+  private ambience: 'day' | 'dusk' | 'night' = 'day';
 
   // Frame-time tracking for the resolution scaler.
   private frameAccum = 0;
@@ -105,12 +146,17 @@ export class Renderer {
     // just goes to pure white.
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    // See `applyAmbience` for why this is not 1.
+    this.renderer.toneMappingExposure = EXPOSURE.day;
 
     // Real shadows on capable hardware; the cars also carry a cheap contact
     // shadow so they stay grounded when this is off.
     this.renderer.shadowMap.enabled = this.quality === 'high';
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // PCF, not PCFSoft: three deprecated the latter and silently substitutes
+    // this one anyway, which meant the `shadow.radius` set below was being
+    // applied to a mode that had already been swapped out from under it. Asking
+    // for what actually runs makes the penumbra width mean something.
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     this.scene = new THREE.Scene();
     this.director = new CameraDirector(this.aspect);
@@ -125,22 +171,40 @@ export class Renderer {
       // A tight shadow frustum that follows the car. Trying to cover a whole 7km
       // circuit with one shadow map gives about one texel per metre, which is
       // worse than no shadow at all.
-      this.sun.shadow.mapSize.set(1024, 1024);
+      //
+      // 2048 over a 44m box is roughly 21 texels per metre, which is what it
+      // takes for a wishbone — a 22mm tube — to cast anything other than a
+      // dotted line. At the old 1024 over 68m the entire suspension, the halo
+      // and the wing elements were below the sampling limit and simply did not
+      // cast, which is a large part of why the car did not sit on the road.
+      this.sun.shadow.mapSize.set(2048, 2048);
       const c = this.sun.shadow.camera;
       c.near = 1;
-      c.far = 220;
-      c.left = -34;
-      c.right = 34;
-      c.top = 34;
-      c.bottom = -34;
-      this.sun.shadow.bias = -0.0012;
-      this.sun.shadow.normalBias = 0.03;
+      c.far = 200;
+      c.left = -22;
+      c.right = 22;
+      c.top = 22;
+      c.bottom = -22;
+      this.sun.shadow.bias = -0.0006;
+      this.sun.shadow.normalBias = 0.018;
+      // PCF samples a fixed kernel; the radius widens it into a penumbra rather
+      // than a hard stencil edge.
+      this.sun.shadow.radius = 2.6;
       this.scene.add(this.sun.target);
     }
     this.scene.add(this.sun);
 
+    this.fill = new THREE.DirectionalLight(0xbcd2f2, 0.55);
+    this.fill.position.set(240, 160, -220);
+    this.scene.add(this.fill);
+
+    this.rim = new THREE.DirectionalLight(0xdfe8ff, 0.9);
+    this.rim.position.set(60, 40, -320);
+    this.scene.add(this.rim);
+
     this.buildSky();
-    this.buildEnvironment();
+    this.envProbe = new EnvProbe(this.renderer);
+    this.envProbe.apply(this.scene, 'day', 0);
 
     this.effects = new EffectsDirector(this.quality);
     this.scene.add(this.effects.root);
@@ -322,51 +386,6 @@ export class Renderer {
     this.scene.add(this.sky);
   }
 
-  /**
-   * Builds the environment map that the car's paint reflects.
-   *
-   * This is the single highest-impact visual addition: a MeshStandardMaterial with
-   * no environment map has nothing to reflect, so bodywork renders as flat shaded
-   * colour and looks like plastic. A generated room probe gives the sharp
-   * highlights that run along a curved flank as the car turns, which is most of
-   * what makes a car look like painted metal.
-   */
-  private buildEnvironment(): void {
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    pmrem.compileEquirectangularShader();
-
-    // A simple procedural probe: bright above, dark below, warm on one side. Far
-    // cheaper than loading an HDR and enough to read as a real reflection.
-    const size = 64;
-    const data = new Uint8Array(size * size * 4);
-    for (let y = 0; y < size; y++) {
-      const v = y / (size - 1);
-      for (let x = 0; x < size; x++) {
-        const u = x / (size - 1);
-        const sky = Math.pow(1 - v, 0.7);
-        const warm = 0.5 + 0.5 * Math.cos((u - 0.25) * Math.PI * 2);
-        const r = 40 + sky * 190 + warm * 26;
-        const g = 52 + sky * 190 + warm * 14;
-        const b = 66 + sky * 200;
-        const i = (y * size + x) * 4;
-        data[i] = Math.min(255, r);
-        data[i + 1] = Math.min(255, g);
-        data[i + 2] = Math.min(255, b);
-        data[i + 3] = 255;
-      }
-    }
-    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-    tex.mapping = THREE.EquirectangularReflectionMapping;
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.needsUpdate = true;
-
-    const target = pmrem.fromEquirectangular(tex);
-    this.scene.environment = target.texture;
-    this.envTarget = target;
-    tex.dispose();
-    pmrem.dispose();
-  }
-
   private get aspect(): number {
     return this.canvas.clientWidth / Math.max(this.canvas.clientHeight, 1);
   }
@@ -404,6 +423,7 @@ export class Renderer {
         code: car.driver.code,
         quality: this.quality,
         withCockpit: car.isPlayer,
+        compound: car.compound,
       });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
@@ -468,13 +488,41 @@ export class Renderer {
       setSky(0x02040a, 0x0a1020, 0x1a2233);
       setClouds(0x2a3348, 0x0b1018, 0x9fb4d8, overcast * 0.8);
       fogColour = 0x0d1420;
-      this.hemi.color.setHex(0x2c3a58);
-      this.hemi.groundColor.setHex(0x080a10);
-      this.hemi.intensity = 0.35;
-      this.sun.color.setHex(0xdce6ff);
-      this.sun.intensity = 1.1;
+      // Floodlights, not moonlight. A circuit under lights is genuinely BRIGHT
+      // at track level — the reference footage has asphalt sitting at a solid
+      // mid grey — and it is the sky that is black, not the road. The previous
+      // settings lit the whole scene at a third of daylight and produced a
+      // uniformly murky image in which nothing had a highlight.
+      // The dominant term at night, by a long way.
+      //
+      // A floodlit circuit is not a dark place. Every reference frame has the
+      // asphalt sitting at a comfortable mid grey with plenty of legible detail
+      // in it, and only the SKY is black — which is the opposite of the
+      // intuition that "night" means "turn everything down". Two hundred lamps
+      // on masts produce a large, nearly uniform irradiance from above, and
+      // that is a hemisphere light, not a key. The ground colour is lifted well
+      // off black too, because the road bounces a great deal of that light back
+      // up into the underside of the cars.
+      this.hemi.color.setHex(0x6d7c96);
+      this.hemi.groundColor.setHex(0x2a2b30);
+      this.hemi.intensity = 1.85;
+      // A floodlit circuit is lit by two hundred lamps from every direction at
+      // once, so the DIRECTIONAL component of it is weak. It is the ambient
+      // and the probe that carry the night, not a key light — and the probe is
+      // the right place for it, because a ring of fourteen sources puts a
+      // string of small highlights along a flank where a single directional
+      // light can only put one. Left at daylight intensity this light mirrored
+      // off the asphalt into one enormous glint that the bloom pass then
+      // spread over the whole frame; the onboard shot went white from the road
+      // alone. Kept low, it survives only as the shadow caster.
+      this.sun.color.setHex(0xfff4de);
+      this.sun.intensity = 0.75;
       this.sun.position.set(60, 300, 40);
-      this.renderer.toneMappingExposure = 1.25;
+      this.fill.color.setHex(0xa8bcdc);
+      this.fill.intensity = 0.55;
+      this.rim.color.setHex(0xfff0d4);
+      this.rim.intensity = 0.85;
+      this.renderer.toneMappingExposure = EXPOSURE.night;
     } else if (dusk) {
       setSky(0x1e2a55, 0x9a5c72, 0xf0a070);
       // The reference look: a low sun under-lighting a heavy deck, so the cloud
@@ -487,7 +535,11 @@ export class Renderer {
       this.sun.color.setHex(0xffa04c);
       this.sun.intensity = 2.0;
       this.sun.position.set(-500, 70, 120);
-      this.renderer.toneMappingExposure = 1.1;
+      this.fill.color.setHex(0x7c92d0);
+      this.fill.intensity = 0.42;
+      this.rim.color.setHex(0xffd0a0);
+      this.rim.intensity = 1.1;
+      this.renderer.toneMappingExposure = EXPOSURE.dusk;
     } else {
       setSky(0x1f5cbe, 0x6fa8e2, 0xc0d6ea);
       // Cloud white is deliberately below pure: at 1.0 it clears the bloom
@@ -501,8 +553,18 @@ export class Renderer {
       this.sun.color.setHex(0xfff4e2);
       this.sun.intensity = 2.6;
       this.sun.position.set(-220, 400, 180);
-      this.renderer.toneMappingExposure = 1.05;
+      this.fill.color.setHex(0xbcd2f2);
+      this.fill.intensity = 0.55;
+      this.rim.color.setHex(0xdfe8ff);
+      this.rim.intensity = 0.9;
+      this.renderer.toneMappingExposure = EXPOSURE.day;
     }
+
+    // The probe has to agree with the light rig, or the reflection on a flank
+    // says "midday" while the shading on it says "dusk" and the car reads as a
+    // cut-out. Rebuilt only when the ambience or the weather actually changes.
+    this.ambience = night ? 'night' : dusk ? 'dusk' : 'day';
+    this.envProbe.apply(this.scene, this.ambience, engine.weather.wetness);
     // Point the shader's sun at the same place as the light, so the halo, the
     // silver lining on the cloud edges and the shadows on the track all agree.
     if (skyMat) {
@@ -514,9 +576,20 @@ export class Renderer {
 
     // Fog matched to the horizon colour so distance fades into the sky rather
     // than into a differently-coloured haze.
+    //
+    // EXPONENTIAL, not linear. Linear fog is zero everywhere nearer than its
+    // near plane and then ramps, and on a flat road that discontinuity is a
+    // perfectly straight horizontal line drawn across the image at whatever
+    // depth the near plane sits — which is exactly what it was doing, a hard
+    // tonal step across the track a few hundred metres ahead of the car in
+    // every chase and onboard shot. Exponential-squared fog has no onset at
+    // all: it is smooth from the camera outwards, which is also how air
+    // actually behaves.
     const wet = engine.weather.wetness;
     const far = 1700 - wet * 900;
-    this.scene.fog = new THREE.Fog(fogColour, far * 0.3, far);
+    // Chosen so the fog is most of the way to opaque at `far`, matching what
+    // the linear version's far plane used to mean.
+    this.scene.fog = new THREE.FogExp2(fogColour, 1.9 / far);
   }
 
   /** Player preference, kept across sessions. */
@@ -663,7 +736,9 @@ export class Renderer {
     // anchoring the streaks to it is the difference between the blur feeling
     // like motion and feeling like a filter.
     this.projectFocus(focusCar, cam);
-    this.post.update(dt, focusCar.physics.speedMs, this.focusUv.x, this.focusUv.y, this.nightBias);
+    this.post.update(
+      dt, focusCar.physics.speedMs, this.focusUv.x, this.focusUv.y, this.nightBias, cam,
+    );
     // Keep the sky centred on the camera so it never clips or parallaxes.
     if (this.sky) this.sky.position.copy(cam.position);
 
@@ -787,6 +862,11 @@ export class Renderer {
         }
       }
 
+      // Tyres. Cheap to check every frame — `setCompound` returns immediately
+      // when the material is already the right one — and it means a pit stop
+      // changes the sidewall colour the instant the sim says it has.
+      v.setCompound(car.compound);
+
       // DRS flap: open is roughly 50 degrees.
       const flapTarget = p.drsOpen ? -0.85 : 0;
       v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, 14, dt);
@@ -812,7 +892,7 @@ export class Renderer {
       (this.sky.material as THREE.Material).dispose();
       this.sky = null;
     }
-    this.envTarget?.dispose();
+    this.envProbe.dispose();
     this.renderer.dispose();
   }
 

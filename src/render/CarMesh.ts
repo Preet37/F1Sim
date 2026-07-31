@@ -7,6 +7,11 @@ import {
 } from './Livery';
 import { buildDriverParts } from './DriverMesh';
 import {
+  wheelMaterial, wheelSwatchUV, disposeTyreCache, PROFILE_V, TYRE_BAND,
+  type WheelSwatch,
+} from './TyreTexture';
+import type { CompoundId } from '../data/tires';
+import {
   buildCockpit, MIRROR_X, MIRROR_Y, MIRROR_Z, MIRROR_GLASS_Z,
   type CockpitVisual,
 } from './CockpitMesh';
@@ -97,6 +102,14 @@ export interface CarVisual {
    * is actually inside. The renderer owns that, via `driverHead`.
    */
   setCockpitVisible(v: boolean): void;
+  /**
+   * Swaps the tyres to a compound.
+   *
+   * The compound band on the sidewall is painted into the tyre texture, not
+   * tinted at draw time, so a pit stop is a material swap. Materials are shared
+   * across the field by compound, so the whole grid on softs costs one.
+   */
+  setCompound(id: CompoundId): void;
   dispose(): void;
 }
 
@@ -116,6 +129,8 @@ export interface CarOptions {
    * dash is a live canvas texture per car.
    */
   withCockpit?: boolean;
+  /** Compound to fit at build time. Changed later via `setCompound`. */
+  compound?: CompoundId;
 }
 
 // --- Principal dimensions, in metres, from the current technical regulations --
@@ -151,7 +166,14 @@ interface Tiers {
 }
 
 const TIERS: Record<'low' | 'high', Tiers> = {
-  high: { body: 20, detail: 10, wheel: 16, halo: 22, texture: 512 },
+  // 1024 rather than 512 on the high tier. The atlas carries the whole car —
+  // three unwrapped panels and twelve swatches — so 512 left the sidepod's
+  // painted flank about 190 pixels long, which is why sponsor type came out as
+  // grey mush and the panel seams as staircases. At 1024 the flank gets 380
+  // and the type is legible from a chase camera. Twenty unique liveries at
+  // 1024 RGBA with mipmaps is around 100MB of texture, which a desktop GPU
+  // does not notice and a phone must never be asked for; hence the tier split.
+  high: { body: 20, detail: 10, wheel: 16, halo: 22, texture: 1024 },
   low: { body: 14, detail: 8, wheel: 12, halo: 14, texture: 256 },
 };
 
@@ -545,101 +567,186 @@ function buildShellParts(
 // ===========================================================================
 
 /**
- * One wheel: a crowned tyre with bulging sidewalls, and a six-spoke rim inside
- * it.
+ * One wheel: a crowned tyre with a real sidewall, and a rim with a brake disc
+ * and caliper visible behind it.
  *
- * The rim is not decoration. An open-wheel car shows more wheel than bodywork
- * from most angles, and a plain black disc where the rim should be is the second
- * most obvious tell of a procedural car after boxy wings.
+ * This is the most-looked-at object on an open-wheel car. From almost every
+ * camera angle the four tyres cover more of the frame than the bodywork does,
+ * and until they carry a sidewall, a compound stripe and something behind the
+ * spokes they are four black holes that no amount of work elsewhere makes up
+ * for.
+ *
+ * The tyre carries a real parameterisation rather than a flat swatch UV: u runs
+ * once around the circumference, v across the profile from the inboard bead to
+ * the outboard one. That is what lets `TyreTexture` paint the compound band,
+ * the repeating sidewall lettering and the tread striation, and it is why the
+ * wheel is on its own material instead of sharing the livery atlas — the
+ * compound changes at a pit stop, and the livery does not.
  *
  * The detailed face is on +X, and the left-hand wheels carry a half-turn about Y
  * on the mesh itself so that both sides of the car show their outboard face. The
  * rotation goes on the mesh rather than on the spin group, because the group's X
  * axis is the axis the renderer spins about.
  */
-function buildWheel(width: number, radial: number): THREE.BufferGeometry {
+function buildWheel(width: number, radial: number, quality: 'low' | 'high'): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const push = (geo: THREE.BufferGeometry, swatch: SwatchName) => {
-    const [u, v] = swatchUV(swatch);
+  const push = (geo: THREE.BufferGeometry, swatch: WheelSwatch) => {
+    const [u, v] = wheelSwatchUV(swatch);
     parts.push(setFlatUV(geo, u, v));
   };
 
-  // Tyre as a surface of revolution: crowned tread, bulging shoulders, sidewalls
-  // that pull back in to the bead. A plain cylinder reads as a hockey puck.
   const half = width * 0.5;
+
+  // --- Tyre ---------------------------------------------------------------
+  // A surface of revolution: bead, sidewall bulge, shoulder, crowned tread, and
+  // back again. The stations line up one-for-one with PROFILE_V, which is what
+  // puts the compound stripe on the sidewall and not across the tread.
   const profile: { r: number; x: number }[] = [
-    { r: RIM_R + 0.004, x: -half },
-    { r: TYRE_R * 0.895, x: -half * 1.015 },
-    { r: TYRE_R * 0.995, x: -half * 0.74 },
-    { r: TYRE_R * 1.002, x: 0 },
-    { r: TYRE_R * 0.995, x: half * 0.74 },
-    { r: TYRE_R * 0.895, x: half * 1.015 },
-    { r: RIM_R + 0.004, x: half },
+    { r: RIM_R + 0.004, x: -half * 0.98 },      // inboard bead
+    { r: TYRE_R * 0.855, x: -half * 1.045 },    // sidewall bulge
+    { r: TYRE_R * 0.965, x: -half * 0.95 },     // shoulder
+    { r: TYRE_R * 1.002, x: 0 },                // tread crown
+    { r: TYRE_R * 0.965, x: half * 0.95 },      // shoulder
+    { r: TYRE_R * 0.855, x: half * 1.045 },     // sidewall bulge
+    { r: RIM_R + 0.004, x: half * 0.98 },       // outboard bead
   ];
 
   const rings = profile.length;
-  const positions = new Float32Array(rings * radial * 3);
+  // One extra column duplicating the seam, so u can reach 1.0 instead of
+  // wrapping back to 0 across the last quad and smearing the whole texture
+  // backwards along one strip.
+  const cols = radial + 1;
+  const positions = new Float32Array(rings * cols * 3);
+  const uvs = new Float32Array(rings * cols * 2);
   for (let pi = 0; pi < rings; pi++) {
-    for (let i = 0; i < radial; i++) {
+    const v = TYRE_BAND.v0 + PROFILE_V[pi] * (TYRE_BAND.v1 - TYRE_BAND.v0);
+    for (let i = 0; i < cols; i++) {
       const a = (i / radial) * Math.PI * 2;
-      const o = (pi * radial + i) * 3;
+      const o = (pi * cols + i) * 3;
       // Wheel axis along X so a rotation about X spins it.
       positions[o] = profile[pi].x;
       positions[o + 1] = Math.sin(a) * profile[pi].r;
       positions[o + 2] = Math.cos(a) * profile[pi].r;
+      const uo = (pi * cols + i) * 2;
+      uvs[uo] = i / radial;
+      uvs[uo + 1] = v;
     }
   }
   const idx: number[] = [];
   for (let pi = 0; pi < rings - 1; pi++) {
-    const a = pi * radial;
-    const b = (pi + 1) * radial;
+    const a = pi * cols;
+    const b = (pi + 1) * cols;
     for (let i = 0; i < radial; i++) {
-      const j = (i + 1) % radial;
-      idx.push(a + i, b + i, b + j);
-      idx.push(a + i, b + j, a + j);
+      idx.push(a + i, b + i, b + i + 1);
+      idx.push(a + i, b + i + 1, a + i + 1);
     }
   }
   const tyre = new THREE.BufferGeometry();
   tyre.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  tyre.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   tyre.setIndex(idx);
   tyre.computeVertexNormals();
-  push(tyre, 'tyre');
+  // The seam column duplicates a position, so its averaged normal only saw half
+  // the surface and draws a visible crease down the tyre.
+  {
+    const n = tyre.attributes.normal as THREE.BufferAttribute;
+    for (let pi = 0; pi < rings; pi++) {
+      const a = pi * cols;
+      const b = a + radial;
+      const nx = n.getX(a) + n.getX(b);
+      const ny = n.getY(a) + n.getY(b);
+      const nz = n.getZ(a) + n.getZ(b);
+      const len = Math.hypot(nx, ny, nz) || 1;
+      n.setXYZ(a, nx / len, ny / len, nz / len);
+      n.setXYZ(b, nx / len, ny / len, nz / len);
+    }
+    n.needsUpdate = true;
+  }
+  parts.push(tyre);
 
-  // Rim barrel.
-  const barrel = new THREE.CylinderGeometry(RIM_R, RIM_R, width * 0.94, radial, 1, true);
+  // --- Rim ----------------------------------------------------------------
+  // Barrel, plus a machined lip at each end. The lip is what gives the wheel a
+  // bright ring against the tyre's black — the one genuinely metallic highlight
+  // on the whole corner.
+  const barrel = new THREE.CylinderGeometry(RIM_R * 0.96, RIM_R * 0.96, width * 0.92, radial, 1, true);
   barrel.rotateZ(Math.PI / 2);
-  push(barrel, 'trim');
+  push(barrel, 'rimFace');
 
-  // Outboard face: dark backing, six spokes, an outer ring and a centre nut.
-  const faceX = half * 0.86;
-  const backing = new THREE.CircleGeometry(RIM_R * 0.97, radial);
-  backing.rotateY(Math.PI / 2);
-  backing.translate(faceX - 0.030, 0, 0);
-  push(backing, 'dark');
-
-  const ring = new THREE.RingGeometry(RIM_R * 0.84, RIM_R * 0.995, radial);
-  ring.rotateY(Math.PI / 2);
-  ring.translate(faceX + 0.004, 0, 0);
-  push(ring, 'rim');
-
-  for (let k = 0; k < 6; k++) {
-    const spoke = new THREE.BoxGeometry(0.020, RIM_R * 0.62, 0.052);
-    spoke.translate(0, RIM_R * 0.57, 0);
-    spoke.rotateX((k * Math.PI) / 3);
-    spoke.translate(faceX, 0, 0);
-    push(spoke, 'rim');
+  const faceX = half * 0.90;
+  for (const [x, r0, r1] of [[faceX, RIM_R * 0.955, RIM_R * 1.0]] as const) {
+    const lip = new THREE.CylinderGeometry(r1, r0, 0.026, radial, 1, true);
+    lip.rotateZ(Math.PI / 2);
+    lip.translate(x - 0.013, 0, 0);
+    push(lip, 'rimLip');
   }
 
-  const hub = new THREE.CylinderGeometry(RIM_R * 0.26, RIM_R * 0.30, 0.030, 6);
+  // --- Brake disc and caliper ---------------------------------------------
+  // Set inboard of the wheel face so it is genuinely seen THROUGH the spokes,
+  // which is the whole point of it. A disc drawn flush with the face just looks
+  // like a differently-coloured hubcap.
+  const discX = -half * 0.10;
+  const discR = RIM_R * 0.80;
+  const discSeg = quality === 'high' ? radial : Math.max(8, radial - 2);
+  const discBody = new THREE.CylinderGeometry(discR, discR, 0.030, discSeg, 1, true);
+  discBody.rotateZ(Math.PI / 2);
+  discBody.translate(discX, 0, 0);
+  push(discBody, 'disc');
+
+  for (const sx of [-1, 1] as const) {
+    const face = new THREE.RingGeometry(RIM_R * 0.30, discR, discSeg);
+    face.rotateY(sx > 0 ? Math.PI / 2 : -Math.PI / 2);
+    face.translate(discX + sx * 0.016, 0, 0);
+    push(face, 'discFace');
+  }
+
+  // Caliper: a block straddling the disc at the top rear of the wheel. Small,
+  // but it is the difference between a disc floating in a void and a brake.
+  const caliper = new THREE.BoxGeometry(0.062, 0.115, 0.052);
+  caliper.translate(discX, discR * 0.86, -0.030);
+  push(caliper, 'caliper');
+
+  // --- Wheel face ----------------------------------------------------------
+  // A dark cover with radial slots cut through it, rather than a solid disc
+  // with spokes bolted on the front. The slots are what let the disc behind
+  // show, and the alternating light/dark as the wheel turns is what makes it
+  // read as an open wheel face.
+  const spokes = quality === 'high' ? 10 : 7;
+  const rInner = RIM_R * 0.30;
+  const rOuter = RIM_R * 0.93;
+  for (let k = 0; k < spokes; k++) {
+    const a = (k / spokes) * Math.PI * 2;
+    // A tapered blade, wider at the rim than at the hub, which is how a real
+    // wheel's cover is shaped and what stops the face reading as a pinwheel.
+    const blade = new THREE.BufferGeometry();
+    const wIn = 0.030, wOut = 0.062;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const pt = (r: number, w: number, side: number) => {
+      const px = r * sa + side * w * ca;
+      const py = r * ca - side * w * sa;
+      return [faceX, px, py];
+    };
+    const v0 = pt(rInner, wIn, -1), v1 = pt(rInner, wIn, 1);
+    const v2 = pt(rOuter, wOut, 1), v3 = pt(rOuter, wOut, -1);
+    blade.setAttribute('position', new THREE.Float32BufferAttribute([
+      ...v0, ...v1, ...v2,
+      ...v0, ...v2, ...v3,
+    ], 3));
+    blade.computeVertexNormals();
+    push(blade, k % 2 === 0 ? 'rimSpoke' : 'rimFace');
+  }
+
+  // Centre lock nut.
+  const hub = new THREE.CylinderGeometry(rInner * 1.05, rInner * 1.15, 0.034, 6);
   hub.rotateZ(Math.PI / 2);
   hub.translate(faceX + 0.014, 0, 0);
-  push(hub, 'carbon');
+  push(hub, 'hub');
 
-  // Inboard face: a plain disc. It faces the car and is never really seen.
-  const inner = new THREE.CircleGeometry(RIM_R * 0.99, radial);
+  // Inboard face: a plain disc closing the barrel. It faces the car and is
+  // never really seen, but without it the wheel is visibly hollow from below.
+  const inner = new THREE.CircleGeometry(RIM_R * 0.95, radial);
   inner.rotateY(-Math.PI / 2);
   inner.translate(-half * 0.90, 0, 0);
-  push(inner, 'trim');
+  push(inner, 'inner');
 
   return mergeParts(parts);
 }
@@ -716,10 +823,12 @@ function geometryFor(quality: 'low' | 'high'): CachedGeometry {
   const built: CachedGeometry = {
     shell: mergeParts(buildShellParts(quality, driver.body)),
     head: mergeParts([...driver.head, ...driver.grip]),
-    frontWheel: buildWheel(FRONT_TYRE_W, t.wheel),
-    rearWheel: buildWheel(REAR_TYRE_W, t.wheel),
+    frontWheel: buildWheel(FRONT_TYRE_W, t.wheel, quality),
+    rearWheel: buildWheel(REAR_TYRE_W, t.wheel, quality),
     disc: (() => {
-      const d = new THREE.CylinderGeometry(0.165, 0.165, 0.028, quality === 'high' ? 12 : 8);
+      // The glow ring. Sits just outboard of the real disc so it reads as heat
+      // coming off it rather than as a separate object.
+      const d = new THREE.CylinderGeometry(0.168, 0.168, 0.020, quality === 'high' ? 14 : 8, 1, true);
       d.rotateZ(Math.PI / 2);
       return d;
     })(),
@@ -728,6 +837,58 @@ function geometryFor(quality: 'low' | 'high'): CachedGeometry {
   };
   geometryCache.set(quality, built);
   return built;
+}
+
+let shadowTexture: THREE.CanvasTexture | null = null;
+
+/**
+ * The soft blob under the car.
+ *
+ * The shadow map handles the sharp, sun-cast shadow. What it cannot do at any
+ * affordable resolution is the CONTACT shadow — the near-black band in the few
+ * centimetres between the floor and the road, where almost no ambient light
+ * reaches. That band is what tells the eye the car is resting on the ground
+ * rather than hovering a hand's width above it, and it is the single cue whose
+ * absence makes a rendered vehicle look pasted onto a photograph.
+ *
+ * Painted as a squared-off radial falloff rather than a plain ellipse: a car's
+ * floor is a rectangle, so its contact shadow is a rectangle with soft edges,
+ * and a pure ellipse leaves the corners of the floor visibly unsupported.
+ */
+function contactShadowTexture(): THREE.CanvasTexture {
+  if (shadowTexture) return shadowTexture;
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    const v = (y / (size - 1)) * 2 - 1;
+    for (let x = 0; x < size; x++) {
+      const u = (x / (size - 1)) * 2 - 1;
+      // A superellipse distance: |u|^4 + |v|^4 gives a rounded rectangle,
+      // which is the shape of the shadow a floor actually casts.
+      const d = Math.pow(Math.abs(u), 4) + Math.pow(Math.abs(v), 4);
+      // Opaque and tight in the middle, feathering to nothing at the boundary.
+      const k = Math.max(0, 1 - Math.pow(Math.min(1, d), 0.55));
+      const c = Math.round(Math.max(0, Math.min(1, k)) * 255);
+      const o = (y * size + x) * 4;
+      img.data[o] = c;
+      img.data[o + 1] = c;
+      img.data[o + 2] = c;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  // An alpha mask is a coverage value, not a colour: no sRGB decode.
+  tex.colorSpace = THREE.NoColorSpace;
+  // Clamped: a repeating shadow would tile a grid of dark patches across the
+  // circuit anywhere the UVs stray outside the quad.
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  shadowTexture = tex;
+  return tex;
 }
 
 const sharedMaterials: Record<string, THREE.Material> = {};
@@ -784,8 +945,17 @@ export function buildCar(
   );
   const shadowMat = material('shadow', () => new THREE.MeshBasicMaterial({
     color: 0x000000,
+    // Black at full strength in the middle, feathering to nothing at the edge.
+    //
+    // Carried on the ALPHA rather than as a multiply blend. Multiplying is the
+    // physically apt operation, but this frame buffer is linear half-float and
+    // is still carrying values well above 1.0 from the floodlights; multiplying
+    // into it lands the result in territory the bloom threshold reads as an
+    // emitter, and the shadow comes out as a bright quadrilateral on the road.
+    // Alpha towards black is well behaved at any exposure.
+    alphaMap: contactShadowTexture(),
     transparent: true,
-    opacity: 0.34,
+    opacity: 0.62,
     depthWrite: false,
   }));
 
@@ -805,8 +975,13 @@ export function buildCar(
   // Contact shadow: a cheap dark ellipse that grounds the car even with real
   // shadows disabled on low-power devices.
   const shadow = new THREE.Mesh(geo.shadow, shadowMat);
-  shadow.scale.set(2.1, 1, 5.0);
-  shadow.position.y = 0.012;
+  // Slightly wider than the floor and a little longer, because the penumbra
+  // spreads past the object casting it.
+  shadow.scale.set(2.5, 1, 5.6);
+  // Above the road surface, not below it. Y_ROAD is 0.02 in TrackMesh, so the
+  // old 0.012 put the whole thing inside the tarmac and left it to z-fighting
+  // to decide whether any of it was visible.
+  shadow.position.y = 0.026;
   shadow.renderOrder = -1;
   root.add(shadow);
 
@@ -819,6 +994,8 @@ export function buildCar(
   root.add(flapPivot);
 
   const brakeGlow: THREE.Mesh[] = [];
+  const wheels: THREE.Mesh[] = [];
+  let wheelMat = wheelMaterial(opts.compound ?? 'medium', t.texture);
 
   /**
    * Builds a wheel as steer group -> spin group -> meshes.
@@ -831,16 +1008,23 @@ export function buildCar(
     const spin = new THREE.Group();
     steer.add(spin);
 
-    const wheel = new THREE.Mesh(rear ? geo.rearWheel : geo.frontWheel, shellMat);
+    const wheel = new THREE.Mesh(rear ? geo.rearWheel : geo.frontWheel, wheelMat);
     wheel.castShadow = true;
     // Turn the left-hand wheels around so their spoked face points outboard.
     if (x < 0) wheel.rotation.y = Math.PI;
     spin.add(wheel);
+    wheels.push(wheel);
 
     // Brake disc glows under load. Unlit so it reads at night.
-    const discMat = new THREE.MeshBasicMaterial({ color: 0x1a1210 });
+    const discMat = new THREE.MeshBasicMaterial({
+      color: 0x1a1210,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
     const disc = new THREE.Mesh(geo.disc, discMat);
-    disc.position.x = x > 0 ? -0.055 : 0.055;
+    disc.position.x = x > 0 ? -0.036 : 0.036;
     // On the steer group, not the spin group: a brake disc does rotate with the
     // wheel, but the glow is what matters and a static disc avoids strobing.
     steer.add(disc);
@@ -871,6 +1055,12 @@ export function buildCar(
     setCockpitVisible(v: boolean): void {
       cockpit?.setVisible(v);
     },
+    setCompound(id: CompoundId): void {
+      const next = wheelMaterial(id, t.texture);
+      if (next === wheelMat) return;
+      wheelMat = next;
+      for (const w of wheels) w.material = next;
+    },
     dispose(): void {
       cockpit?.dispose();
       for (const d of brakeGlow) (d.material as THREE.Material).dispose();
@@ -894,4 +1084,7 @@ export function disposeCarGeometryCache(): void {
     delete sharedMaterials[key];
   }
   disposeLiveryCache();
+  disposeTyreCache();
+  shadowTexture?.dispose();
+  shadowTexture = null;
 }
