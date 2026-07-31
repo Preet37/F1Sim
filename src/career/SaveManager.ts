@@ -2,6 +2,9 @@ import type { CareerState } from './CareerEngine';
 import {
   DEFAULT_AI_DIFFICULTY, toDifficultyId, type AIDifficultyId,
 } from '../ai/AIVehicleController';
+import {
+  DEFAULT_GAMEPAD_SETTINGS, normaliseGamepadSettings, type GamepadSettings,
+} from '../input/GamepadProfile';
 
 /**
  * Local persistence.
@@ -54,6 +57,15 @@ export interface GameSettings {
    * being played against.
    */
   aiDifficulty: AIDifficultyId;
+  /**
+   * Controller bindings, calibration and tuning, keyed by device.
+   *
+   * Per-device rather than global because a calibration is a property of the
+   * hardware, not of the player: the wheel's throttle rests at +1 and the pad's
+   * rests at 0, and a single shared profile would mean plugging one in silently
+   * destroyed the other's setup.
+   */
+  gamepad: GamepadSettings;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -66,6 +78,10 @@ export const DEFAULT_SETTINGS: GameSettings = {
   quality: 'auto',
   racingLine: true,
   aiDifficulty: DEFAULT_AI_DIFFICULTY,
+  // Copied rather than shared: DEFAULT_SETTINGS is spread into a live settings
+  // object, and a shared `profiles` map would let one career's controller
+  // configuration leak into the defaults every other one starts from.
+  gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} },
 };
 
 /** True when localStorage is usable. Probed once. */
@@ -206,7 +222,7 @@ export class SaveManager {
 
   loadSettings(): GameSettings {
     const raw = readRaw(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS };
+    if (!raw) return { ...DEFAULT_SETTINGS, gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} } };
     try {
       const parsed = JSON.parse(raw) as Partial<GameSettings>;
       // Merged over the defaults so a setting added in a later build gets a
@@ -216,9 +232,15 @@ export class SaveManager {
       // on disk to a valid level rather than letting a stale 0.85 reach the AI
       // and index the difficulty table with a miss.
       merged.aiDifficulty = toDifficultyId(parsed.aiDifficulty as unknown);
+      // The controller configuration is nested, so the shallow merge above
+      // would hand back whatever shape happened to be on disk — including a
+      // profile from an older build with a missing field, or a hand-edited one
+      // with a NaN deadzone. A NaN reaching the steering maths produces a car
+      // that will not turn and gives the player no way to find out why.
+      merged.gamepad = normaliseGamepadSettings(parsed.gamepad);
       return merged;
     } catch {
-      return { ...DEFAULT_SETTINGS };
+      return { ...DEFAULT_SETTINGS, gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} } };
     }
   }
 

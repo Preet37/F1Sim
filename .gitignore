@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Screenshots written by scripts/gamepadHarness.mjs
+artifacts/
 .DS_Store
 *.local
 .vite/

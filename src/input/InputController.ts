@@ -1,5 +1,11 @@
 import { clamp, clamp01, damp, moveToward } from '../core/MathUtils';
 import type { ErsMode, VehicleControls } from '../physics/VehiclePhysics';
+import { GamepadManager } from './GamepadManager';
+import {
+  applySteerCurve, buttonPressed, pedalValue, steerValue,
+  BUTTON_ACTIONS, DEFAULT_GAMEPAD_SETTINGS,
+  type ButtonAction, type GamepadSettings,
+} from './GamepadProfile';
 
 /**
  * Unified input.
@@ -28,7 +34,13 @@ export interface InputConfig {
   /** Pedal ramp rates for digital input. */
   keyboardThrottleRate: number;
   keyboardBrakeRate: number;
-  /** Deadzone applied to analogue sticks. */
+  /**
+   * Deadzone applied to analogue sticks.
+   *
+   * Now only a documented default: the live value is per-device and lives in
+   * the controller profile, because one number cannot be right for a thumbstick
+   * that rattles and a wheel with a hall sensor that does not.
+   */
   gamepadDeadzone: number;
   /** Tilt angle in degrees mapped to full lock. */
   tiltFullLockDeg: number;
@@ -131,6 +143,17 @@ export class InputController {
   gearRequest = 0;
   /** Set for one frame when the player asks to pit. */
   pitRequestToggled = false;
+  /**
+   * Set for one frame on a paddle shift.
+   *
+   * Deliberately NOT turned into a `gearRequest` here. A paddle asks for "one
+   * gear up from whatever I am in", and this class does not know what gear the
+   * car is in — only the caller holding the physics does. Guessing here would
+   * mean tracking a shadow gear that drifts out of step with the gearbox the
+   * moment it shifts on its own.
+   */
+  shiftUpPressed = false;
+  shiftDownPressed = false;
 
   /** Which source produced the most recent meaningful input. */
   lastSource: InputSource = 'keyboard';
@@ -150,12 +173,33 @@ export class InputController {
   throttleHeld = false;
   brakeHeld = false;
 
+  /** Device enumeration, profiles and rumble. */
+  readonly gamepads = new GamepadManager();
+  /**
+   * The persisted controller configuration.
+   *
+   * Replaced wholesale by the shell once settings have been loaded. It starts
+   * as a copy of the defaults so that an InputController used without a shell —
+   * in a test, or before settings arrive — still has somewhere to put the
+   * profile it auto-detects rather than throwing on first poll.
+   */
+  gamepadSettings: GamepadSettings = { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} };
+  /**
+   * Suspends gamepad reading.
+   *
+   * Set while the controller screen is binding or calibrating, so pressing the
+   * button you are trying to bind does not also cycle the camera, and so a
+   * throttle held to its stop during calibration is not fed to a car.
+   */
+  gamepadSuspended = false;
+
   private readonly keys = new Set<string>();
   private readonly touches = new Map<number, ActiveTouch>();
   private element: HTMLElement | null = null;
   private tiltGamma = 0;
   private tiltCalibrated = false;
-  private cameraLatch = false;
+  /** Previous frame's held state per action, for edge detection. */
+  private readonly padHeld = new Map<ButtonAction, boolean>();
 
   /** Joystick travel, in pixels, that corresponds to full lock. */
   private joystickRadiusPx = 90;
@@ -178,6 +222,7 @@ export class InputController {
     window.addEventListener('keyup', this.boundKeyUp);
     window.addEventListener('blur', this.boundBlur);
     window.addEventListener('gamepadconnected', this.boundGamepadConnected);
+    this.gamepads.attach();
 
     element.addEventListener('touchstart', this.boundTouchStart, { passive: false });
     element.addEventListener('touchmove', this.boundTouchMove, { passive: false });
@@ -195,6 +240,7 @@ export class InputController {
     window.removeEventListener('blur', this.boundBlur);
     window.removeEventListener('gamepadconnected', this.boundGamepadConnected);
     window.removeEventListener('deviceorientation', this.boundOrientation);
+    this.gamepads.detach();
     if (this.element) {
       this.element.removeEventListener('touchstart', this.boundTouchStart);
       this.element.removeEventListener('touchmove', this.boundTouchMove);
@@ -380,39 +426,57 @@ export class InputController {
     tractionLimit: number,
   ): void {
     // --- Gamepad, polled rather than event-driven ---------------------------
+    //
+    // Everything here now goes through the device's PROFILE rather than through
+    // a fixed mapping. That is the whole difference between supporting "a
+    // gamepad" and supporting the player's gamepad: the profile knows that this
+    // device's throttle is button 7 resting at 0 or axis 2 resting at +1, and
+    // the code below does not have to.
     let gamepadSteer = 0;
     let gamepadThrottle = 0;
     let gamepadBrake = 0;
     let gamepadActive = false;
+    let padDrs = false;
+    let padReverse = false;
 
-    const pads = navigator.getGamepads?.() ?? [];
-    for (const pad of pads) {
-      if (!pad || !pad.connected) continue;
-      const dz = this.config.gamepadDeadzone;
-      const lx = applyDeadzone(pad.axes[0] ?? 0, dz);
-      // Triggers are buttons 6 and 7 on the standard mapping, with analogue
-      // values; the axes fallback covers pads that report them as axes instead.
-      const rt = pad.buttons[7]?.value ?? Math.max(0, pad.axes[5] ?? 0);
-      const lt = pad.buttons[6]?.value ?? Math.max(0, pad.axes[4] ?? 0);
+    const pad = this.gamepadSuspended ? null : this.gamepads.activePad();
+    const profile = pad ? this.gamepads.profileFor(this.gamepadSettings) : null;
 
-      if (Math.abs(lx) > 0.001 || rt > 0.01 || lt > 0.01) {
+    if (pad && profile) {
+      gamepadSteer = applySteerCurve(steerValue(pad, profile.axes.steer), profile.steer);
+      gamepadThrottle = pedalValue(pad, profile.axes.throttle);
+      gamepadBrake = pedalValue(pad, profile.axes.brake);
+
+      if (Math.abs(gamepadSteer) > 0.001 || gamepadThrottle > 0.01 || gamepadBrake > 0.01) {
         gamepadActive = true;
-        gamepadSteer = lx;
-        gamepadThrottle = rt;
-        gamepadBrake = lt;
         this.lastSource = 'gamepad';
       }
-      // Face buttons: A/cross for DRS, B/circle for reverse, Y for camera.
-      if (pad.buttons[0]?.pressed) this.drsHeld = true;
-      else if (this.lastSource === 'gamepad') this.drsHeld = false;
-      if (pad.buttons[1]?.pressed && speedMs < 1.6) this.reverseHeld = true;
-      if (pad.buttons[3]?.pressed && !this.cameraLatch) {
-        this.cameraCyclePressed = true;
-        this.cameraLatch = true;
-      } else if (!pad.buttons[3]?.pressed) {
-        this.cameraLatch = false;
+
+      // Every action's held state is sampled once, so the edge map stays in
+      // step even for actions nothing is bound to. Sampling only the ones being
+      // acted on would leave a stale `true` behind and swallow the next press.
+      for (const action of BUTTON_ACTIONS) {
+        const now = buttonPressed(pad, profile.buttons[action]);
+        const was = this.padHeld.get(action) ?? false;
+        this.padHeld.set(action, now);
+        const pressed = now && !was;
+        if (pressed) this.lastSource = 'gamepad';
+
+        switch (action) {
+          case 'drs': padDrs = now; break;
+          // Reverse, like the keyboard's Down, only once the car is genuinely
+          // stopped — selecting reverse at speed is not a thing a car does.
+          case 'reverse': padReverse = now && speedMs < 1.6; break;
+          case 'camera': if (pressed) this.cameraCyclePressed = true; break;
+          case 'ers': if (pressed) this.cycleErsMode(); break;
+          case 'pit': if (pressed) this.pitRequestToggled = true; break;
+          case 'pause': if (pressed) this.pausePressed = true; break;
+          case 'shiftUp': if (pressed) this.shiftUpPressed = true; break;
+          case 'shiftDown': if (pressed) this.shiftDownPressed = true; break;
+        }
       }
-      break;
+    } else {
+      this.padHeld.clear();
     }
 
     // --- Keyboard -----------------------------------------------------------
@@ -435,12 +499,20 @@ export class InputController {
     const kbDrs = kb.has('shift');
 
     // Reverse only once genuinely stopped, and only while Down is held.
+    //
+    // The pad's reverse is OR-ed in rather than overwritten. It used to be
+    // assigned here unconditionally, a line after the gamepad block had just
+    // set it — so the controller's reverse button was erased on every single
+    // frame and had never once worked.
     const nearlyStopped = speedMs < 1.6;
-    this.reverseHeld = kbDownArrow && nearlyStopped;
+    this.reverseHeld = (kbDownArrow && nearlyStopped) || padReverse;
     // Down brakes whenever the car is still rolling.
     const kbDown = kbBrake || (kbDownArrow && !nearlyStopped);
-    if (kbDrs) this.drsHeld = true;
-    else if (this.lastSource === 'keyboard') this.drsHeld = false;
+    // DRS is a held control on three different devices. Touch owns the flag
+    // directly through its own handlers, so only clear it when the last input
+    // actually came from a device represented here.
+    if (kbDrs || padDrs) this.drsHeld = true;
+    else if (this.lastSource === 'keyboard' || this.lastSource === 'gamepad') this.drsHeld = false;
 
     // --- Touch --------------------------------------------------------------
     let touchSteer = 0;
@@ -479,7 +551,14 @@ export class InputController {
     // --- Resolve into the unified targets ----------------------------------
     // Analogue sources are authoritative when present; digital sources ramp.
     if (gamepadActive) {
-      this.targetSteer = gamepadSteer;
+      // The rate limit is the one piece of shaping that cannot live in the
+      // profile maths, because it is a limit on how fast the value may CHANGE
+      // and so needs the previous frame and the frame time. Zero means off,
+      // which is the default and reproduces the old direct assignment exactly.
+      const rate = profile?.steer.rateLimit ?? 0;
+      this.targetSteer = rate > 0
+        ? moveToward(this.targetSteer, gamepadSteer, rate * dt)
+        : gamepadSteer;
       this.targetThrottle = gamepadThrottle;
       this.targetBrake = gamepadBrake;
     } else if (this.tiltEnabled || this.touches.size > 0) {
@@ -541,6 +620,54 @@ export class InputController {
     this.racingLineToggled = false;
     this.pausePressed = false;
     this.pitRequestToggled = false;
+    this.shiftUpPressed = false;
+    this.shiftDownPressed = false;
+  }
+
+  /**
+   * Drives the controller's rumble from what the car is doing.
+   *
+   * The inputs are the physics' own outputs, not invented effects, so what the
+   * hands feel and what the camera shakes to are the same signal:
+   *
+   *  - `vibration` is the high-frequency term the tyre model produces on kerbs,
+   *    grass and gravel. It goes to the STRONG (low-frequency) motor, because a
+   *    kerb strike is a thump.
+   *  - a lock-up is a distinct, sharper buzz on the weak motor. A driver feels
+   *    a locked front through the wheel long before the tyre smoke appears, and
+   *    it is the single most useful thing haptics can tell you in a braking zone.
+   *  - wheelspin gets a lighter version of the same on corner exit.
+   *
+   * Everything degrades silently: a device with no actuator, or a browser that
+   * has not implemented one, simply produces no calls. Nothing above this line
+   * checks whether it worked.
+   */
+  updateForceFeedback(
+    vibration: number,
+    wheelsLocked: boolean,
+    wheelSpin: number,
+    speedMs: number,
+  ): void {
+    const settings = this.gamepadSettings;
+    if (!settings.forceFeedback || settings.ffbStrength <= 0) return;
+    if (this.gamepadSuspended || this.lastSource !== 'gamepad') return;
+    if (!this.gamepads.hasRumble) return;
+
+    // Below walking pace there is nothing to feel, and a stationary car buzzing
+    // in the garage is just noise.
+    const moving = clamp01(speedMs / 6);
+    const strong = clamp01(Math.abs(vibration)) * 0.85 * moving;
+    const lock = wheelsLocked ? 0.7 : 0;
+    const spin = clamp01(wheelSpin) * 0.45;
+    const weak = clamp01(Math.max(lock, spin)) * moving;
+
+    const g = settings.ffbStrength;
+    this.gamepads.rumble(strong * g, weak * g);
+  }
+
+  /** Stops any rumble in progress. Called when a session ends. */
+  stopForceFeedback(): void {
+    this.gamepads.stopRumble();
   }
 
   /** Normalised joystick displacement, for the overlay. */
@@ -556,13 +683,6 @@ export class InputController {
   get showTouchOverlay(): boolean {
     return this.touchAvailable && (this.lastSource === 'touch' || this.lastSource === 'tilt');
   }
-}
-
-function applyDeadzone(v: number, dz: number): number {
-  const a = Math.abs(v);
-  if (a < dz) return 0;
-  // Rescale so the usable range still reaches 1.0 rather than 1-dz.
-  return Math.sign(v) * ((a - dz) / (1 - dz));
 }
 
 /** Keys the game consumes, so everything else reaches the browser. */

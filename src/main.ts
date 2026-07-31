@@ -16,6 +16,7 @@ import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock } from './ui/Paddock';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
+import { buildControllerScreen, type ControllerScreenHandle } from './ui/ControllerScreen';
 import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
 import type { CompoundId } from './data/tires';
 import { PRACTICE_SEGMENTS, QUALIFYING_SEGMENTS } from './race/WeekendFormat';
@@ -43,7 +44,8 @@ type Screen =
   | 'results'
   | 'event'
   | 'standings'
-  | 'settings';
+  | 'settings'
+  | 'controller';
 
 class Game {
   private readonly canvas: HTMLCanvasElement;
@@ -86,6 +88,16 @@ class Game {
   /** Controls card starts visible each session, then fades out. */
   private helpVisible = false;
   private helpShownAt = 0;
+
+  /**
+   * The controller page, while it is open.
+   *
+   * It has to be driven from the game loop rather than from a timer of its own:
+   * its bars show what the device is reporting, and a second clock would drift
+   * against the one the input layer samples on, so the bars would visibly lag
+   * the hands moving the control.
+   */
+  private controllerScreen: ControllerScreenHandle | null = null;
 
   constructor() {
     this.canvas = document.getElementById('view') as HTMLCanvasElement;
@@ -148,6 +160,17 @@ class Game {
     this.input.config.speedSensitiveSteering = this.settings.speedSensitiveSteering;
     this.input.config.tractionAssist = this.settings.tractionAssist;
     this.input.config.brakingAssist = this.settings.brakingAssist;
+
+    // Shared by reference on purpose: the controller screen edits this object
+    // and the input layer reads it every frame, so a change on the screen is
+    // live on the next poll with no apply step in between.
+    this.input.gamepadSettings = this.settings.gamepad;
+    this.input.gamepads.preferredSignature = this.settings.gamepad.activeSignature;
+    // A device appearing or disappearing changes what Settings should say about
+    // it, so redraw if the player happens to be looking at that page.
+    this.input.gamepads.onDevicesChanged = () => {
+      if (this.screen === 'settings') this.showSettings();
+    };
 
     window.addEventListener('resize', () => this.renderer.resize());
     // iOS fires orientationchange before the viewport has settled.
@@ -227,13 +250,25 @@ class Game {
   // =======================================================================
 
   private setScreen(s: Screen): void {
+    // Leaving the controller page releases the input layer, which that page
+    // holds suspended while a binding or calibration is in progress. Without
+    // this, walking away mid-bind would leave the gamepad dead until reload.
+    if (this.screen === 'controller' && s !== 'controller') {
+      this.controllerScreen?.dispose();
+      this.controllerScreen = null;
+    }
     this.screen = s;
     const inSession = s === 'racing';
     this.screenRoot.classList.toggle('hidden', inSession);
     this.hud.setVisible(inSession);
     // Leaving the track cuts the car but keeps the context alive, so returning
     // to a session does not have to rebuild the whole graph.
-    if (!inSession) this.audio.silenceCar();
+    if (!inSession) {
+      this.audio.silenceCar();
+      // A rumble effect outlives the frame that started it, so a controller
+      // left buzzing on the results screen is a real possibility.
+      this.input.stopForceFeedback();
+    }
   }
 
   private el(tag: string, cls: string, parent: HTMLElement, text = ''): HTMLElement {
@@ -685,6 +720,30 @@ class Game {
       });
     }
 
+    // --- Controller -------------------------------------------------------
+    // Second, and as a full-width banner rather than one card among eight,
+    // because "how do I play with a controller" is a question the player asks
+    // before they ask anything else on this page, and an answer buried in a
+    // grid is an answer nobody finds.
+    this.el('div', 'section-title', inner, 'Controller');
+    const pads = this.input.gamepads.list();
+    const padCard = this.el('div', 'garage-card', inner);
+    const padText = this.el('div', 'garage-text', padCard);
+    const padHead = this.el('div', 'garage-head', padText);
+    this.el('span', '', padHead, 'Gamepad and wheel');
+    this.el('span', 'garage-tag' + (pads.length > 0 ? ' modified' : ''), padHead,
+      pads.length === 0 ? 'none connected'
+        : pads.length === 1 ? '1 device' : pads.length + ' devices');
+    this.el('div', 'garage-headline', padText,
+      pads.length > 0 ? pads[0].id : 'No controller detected');
+    this.el('div', 'garage-detail', padText,
+      pads.length > 0
+        ? 'Bind every control, calibrate the axes and pedals, shape the steering curve, and set up rumble.'
+        : 'Connect a gamepad or wheel and press a button on it — browsers hide a controller from a page ' +
+          'until it has been used. Keyboard and touch keep working either way.');
+    this.button('Controller Setup', this.el('div', 'garage-action', padCard),
+      () => this.showControllerSetup());
+
     this.el('div', 'section-title', inner, 'Driving');
     const grid = this.el('div', 'card-grid', inner);
     toggle('Speed-sensitive steering', 'Reduces lock at speed, as a real rack does',
@@ -755,6 +814,34 @@ class Game {
 
     const row = this.el('div', 'btn-row', inner);
     this.button('Back', row, () => (this.career ? this.showCareerHub() : this.showMenu()), 'btn secondary');
+  }
+
+  /**
+   * The controller setup and calibration page.
+   *
+   * Everything on it writes straight into `this.settings.gamepad`, which is the
+   * same object `InputController` reads its profile out of every frame — so a
+   * deadzone moved here changes the steering on the very next poll, with no
+   * apply step and nothing to forget to press. The screen is persisted on every
+   * change rather than on exit, because a controller configuration that is lost
+   * when the tab is closed is worse than no configuration at all.
+   */
+  private showControllerSetup(): void {
+    this.setScreen('controller');
+    this.screenRoot.innerHTML = '';
+    const inner = this.el('div', 'screen-inner', this.screenRoot);
+    this.el('div', 'title', inner, 'Controller');
+    this.el('div', 'subtitle', inner,
+      'Bindings, calibration and steering feel — for a gamepad or a wheel. Every bar on this page is live.');
+
+    this.controllerScreen = buildControllerScreen(inner, {
+      input: this.input,
+      settings: this.settings.gamepad,
+      onChange: () => this.saves.saveSettings(this.settings),
+    });
+
+    const row = this.el('div', 'btn-row', inner);
+    this.button('Done', row, () => this.showSettings());
   }
 
   // =======================================================================
@@ -1186,6 +1273,11 @@ class Game {
     const steps = this.clock.advance(now);
     const engine = this.engine;
 
+    // The controller page reads the device every frame. It is the only screen
+    // outside a session that needs the loop, and it needs it for the same
+    // reason the session does: it is displaying live hardware.
+    if (this.screen === 'controller') this.controllerScreen?.tick();
+
     if (engine && this.screen === 'racing') {
       const player = engine.playerCar;
 
@@ -1223,6 +1315,28 @@ class Game {
           this.audio.setSuspended(this.clock.paused);
         }
         if (this.input.pitRequestToggled) this.togglePitRequest();
+
+        // Paddle shifts. Resolved here rather than in the input layer because
+        // "one gear up" only means something against the gear the gearbox is
+        // actually in, and this is the only place that knows it. Selecting 1st
+        // clears the manual request the same way the 0 key does, so a player
+        // who wants the automatic back does not have to find another control.
+        if (this.input.shiftUpPressed || this.input.shiftDownPressed) {
+          const dir = this.input.shiftUpPressed ? 1 : -1;
+          const from = this.input.gearRequest > 0
+            ? this.input.gearRequest
+            : Math.max(1, player.physics.gear);
+          this.input.gearRequest = clamp(from + dir, 1, 8);
+          engine.playerControls.gearRequest = this.input.gearRequest;
+        }
+
+        // Rumble, driven from the physics rather than from canned effects.
+        this.input.updateForceFeedback(
+          player.physics.vibration,
+          player.physics.wheelsLocked,
+          player.physics.wheelSpin,
+          player.physics.speedMs,
+        );
       }
 
       for (let i = 0; i < steps; i++) {
