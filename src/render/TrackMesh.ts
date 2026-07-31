@@ -47,8 +47,14 @@ const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 
 const COLOUR = {
-  asphalt: new THREE.Color(0x1d1e20),
-  asphaltDark: new THREE.Color(0x181a1c),
+  // Asphalt's real albedo is around 0.10, which is sRGB 0x58 — not the near
+  // black it is usually guessed at. The previous 0x1d survived daylight only
+  // because a 2.6-intensity sun was compensating for it; under floodlights it
+  // collapsed to a void with a car floating over it, while the reference
+  // footage has night asphalt sitting at a comfortable mid grey. Dry road that
+  // has been rubbered in is darker than fresh, hence still under 0x40.
+  asphalt: new THREE.Color(0x34363a),
+  asphaltDark: new THREE.Color(0x2b2d31),
   runoff: new THREE.Color(0x4f4034),
   whiteLine: new THREE.Color(0xd8dade),
   kerbA: new THREE.Color(0xc8353c),

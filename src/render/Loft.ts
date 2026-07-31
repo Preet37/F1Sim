@@ -330,9 +330,28 @@ export function wingElement(
   for (let i = lower.length - 1; i >= 0; i--) shape.lineTo(lower[i][0], lower[i][1]);
   shape.closePath();
 
+  // A bevel on the extrusion ends, which are the wing's TIPS.
+  //
+  // An unbevelled extrusion meets its end cap at exactly ninety degrees, and a
+  // ninety-degree edge is the one thing that never occurs on a moulded
+  // composite part — a real wing tip is laid up over a radius because the cloth
+  // cannot turn a sharp corner. Visually the difference is out of all
+  // proportion to the four triangles it costs: the radius catches a thin line
+  // of specular along the whole tip, and that line is what tells the eye how
+  // thick the wing is and which way the light is coming from. Without it the
+  // tip is a silhouette boundary and reads as cut from card.
+  //
+  // The bevel is kept to a genuine radius — under two millimetres — rather than
+  // three.js's default, which would eat a fifth of the chord on a 175mm
+  // element and visibly round the whole aerofoil.
+  const r = Math.min(0.0018, thickness * 0.28, chord * 0.02);
   const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: span,
-    bevelEnabled: false,
+    depth: span - 2 * r,
+    bevelEnabled: true,
+    bevelThickness: r,
+    bevelSize: r,
+    bevelOffset: 0,
+    bevelSegments: 1,
     curveSegments: 4,
   });
   // Extruded along +Z by default; orient across the car and centre it.

@@ -394,6 +394,7 @@ export class Renderer {
         code: car.driver.code,
         quality: this.quality,
         withCockpit: car.isPlayer,
+        compound: car.compound,
       });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
@@ -777,6 +778,11 @@ export class Renderer {
           });
         }
       }
+
+      // Tyres. Cheap to check every frame — `setCompound` returns immediately
+      // when the material is already the right one — and it means a pit stop
+      // changes the sidewall colour the instant the sim says it has.
+      v.setCompound(car.compound);
 
       // DRS flap: open is roughly 50 degrees.
       const flapTarget = p.drsOpen ? -0.85 : 0;

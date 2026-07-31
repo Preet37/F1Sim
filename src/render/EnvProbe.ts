@@ -77,7 +77,10 @@ const PALETTES: Record<Ambience, Palette> = {
     sunElevation: 52,
     sunAzimuth: 205,
     hazeBoost: 1.5,
-    banding: 0.42,
+    // Enough to draw a moving highlight down a flank, not enough to read as
+    // wood grain. Above about 0.3 the bands stop looking like reflected cloud
+    // and start looking like a texture painted on the paint.
+    banding: 0.26,
     floodlights: 0,
     floodPower: 0,
     floodColour: [1, 1, 1],
@@ -114,7 +117,10 @@ const PALETTES: Record<Ambience, Palette> = {
     hazeBoost: 1.9,
     banding: 0.20,
     floodlights: 14,
-    floodPower: 34,
+    // Hot enough that a gloss panel returns a clipped white streak, which is
+    // what a floodlit car actually does, but not so hot that the streak spreads
+    // across the whole flank and erases the livery under it.
+    floodPower: 20,
     floodColour: [1.0, 0.97, 0.88],
   },
 };
