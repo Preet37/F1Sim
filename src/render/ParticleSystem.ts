@@ -129,7 +129,12 @@ const FRAG_BRIGHT = /* glsl */`
     if (r > 1.0) discard;
     float core = pow(1.0 - r, 3.0);
     float halo = pow(1.0 - r, 1.2) * 0.35;
-    gl_FragColor = vec4(vColor * (core * 2.2 + halo), (core + halo) * vAlpha);
+    // The core multiplier is what decides whether a spark blooms. It has to
+    // clear the bloom threshold, which sits above white paint at 1.55 — titanium
+    // coming off the plank at 300 km/h is one of the few things in the scene
+    // that is genuinely incandescent, and it should be one of the few things
+    // that glows.
+    gl_FragColor = vec4(vColor * (core * 3.4 + halo), (core + halo) * vAlpha);
   }
 `;
 

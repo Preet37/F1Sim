@@ -872,8 +872,15 @@ export class Renderer {
       v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, 14, dt);
 
       // Brake glow from braking effort. Cheap and reads brilliantly at night.
+      //
+      // A disc under load has to end up above the bloom threshold or it is just
+      // a red circle: bloom is what makes it read as something hot rather than
+      // something painted, and the threshold now sits above white paint at 1.55.
+      // 2.7 at full effort clears it with room to spare, and the pedal has to be
+      // hard on at speed to get there, so it stays an event rather than a
+      // permanent glow.
       const heat = clamp01(car.appliedControls.brake * clamp01(p.speedMs / 45));
-      this.tmpColour.setRGB(0.10 + heat * 1.5, 0.055 + heat * 0.22, 0.045);
+      this.tmpColour.setRGB(0.10 + heat * 2.6, 0.055 + heat * 0.30, 0.045);
       for (const disc of v.brakeGlow) {
         (disc.material as THREE.MeshBasicMaterial).color.copy(this.tmpColour);
       }
