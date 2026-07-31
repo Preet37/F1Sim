@@ -526,9 +526,24 @@ export class Renderer {
     const overcast = clamp01(0.35 + engine.weather.wetness * 0.6);
 
     if (night) {
-      setSky(0x02040a, 0x0a1020, 0x1a2233);
-      setClouds(0x2a3348, 0x0b1018, 0x9fb4d8, overcast * 0.8);
-      fogColour = 0x0d1420;
+      // A floodlit circuit's sky is CLEAN and it is not uniform.
+      //
+      // Side by side with the reference the old night sky was the single
+      // biggest difference, and it was not brightness — it was cloud. An
+      // overcast term of 0.8 laid a grey deck across the whole upper half of
+      // every frame, and a grey deck lit from below by a city is the exact
+      // recipe for the muddiness in the report: no black anywhere to anchor
+      // the image, and no clean gradient either. The reference frames are shot
+      // at desert circuits under a clear sky. The top of frame is genuinely
+      // near-black, the horizon carries a warm sodium glow from the city and
+      // the light towers, and what little cloud there is reads as thin.
+      //
+      // So: darker and cooler at the zenith, warmer and lighter at the horizon
+      // — a wider range across the same frame, which is what stops it reading
+      // as a flat wash — and a third of the cloud.
+      setSky(0x01030a, 0x081020, 0x243149);
+      setClouds(0x1c2537, 0x070b12, 0x9fb4d8, overcast * 0.3);
+      fogColour = 0x141d2e;
       // Floodlights, not moonlight. A circuit under lights is genuinely BRIGHT
       // at track level — the reference footage has asphalt sitting at a solid
       // mid grey — and it is the sky that is black, not the road. The previous
@@ -545,7 +560,16 @@ export class Renderer {
       // off black too, because the road bounces a great deal of that light back
       // up into the underside of the cars.
       this.hemi.color.setHex(0x6d7c96);
-      this.hemi.groundColor.setHex(0x2a2b30);
+      // Lifted, because the complaint about the night is specifically about the
+      // SHADOWS: ours go flat and dead where the reference keeps detail in
+      // them. A floodlit circuit's shadows are filled by two hundred lamps
+      // arriving from every other direction and by a very large area of lit
+      // asphalt bouncing back up, and the ground term of a hemisphere light is
+      // exactly the knob for that bounce. Raising it is not "turning night
+      // up" — the sky term above it is unchanged and the sky itself went
+      // darker; it narrows the range at the bottom end only, which is where
+      // legibility lives.
+      this.hemi.groundColor.setHex(0x3a3c45);
       this.hemi.intensity = 1.85;
       // A floodlit circuit is lit by two hundred lamps from every direction at
       // once, so the DIRECTIONAL component of it is weak. It is the ambient
@@ -559,10 +583,14 @@ export class Renderer {
       this.sun.color.setHex(0xfff4de);
       this.sun.intensity = 0.75;
       this.sun.position.set(60, 300, 40);
+      // The fill is the other half of the shadow-detail problem: it is the only
+      // light that reaches the side of a car the key is not on, and at 0.55 that
+      // side was reading as a silhouette. The rim goes up with it so the top
+      // edges still separate from the sky, which is now darker than it was.
       this.fill.color.setHex(0xa8bcdc);
-      this.fill.intensity = 0.55;
+      this.fill.intensity = 0.78;
       this.rim.color.setHex(0xfff0d4);
-      this.rim.intensity = 0.85;
+      this.rim.intensity = 1.0;
       this.renderer.toneMappingExposure = EXPOSURE.night;
     } else if (dusk) {
       setSky(0x1e2a55, 0x9a5c72, 0xf0a070);

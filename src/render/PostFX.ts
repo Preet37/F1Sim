@@ -252,15 +252,29 @@ const GRADE_SHADER = {
 
         float d = linearDepth(uv + o);
         float diff = predicted - d;
-        // Ramp in from 15mm, so shading noise and depth precision do not
+        // Ramp in from 30mm, so shading noise and depth precision do not
         // register, and out again past 0.9m, beyond which it is another object.
-        occ += smoothstep(0.015, 0.13, diff) * (1.0 - smoothstep(0.35, 0.9, diff));
+        //
+        // 30mm rather than 15mm, and this is a measured change. Twelve taps is
+        // a coarse estimator: the per-pixel variance in the result is large, and
+        // the 2x2 rotation below turns that variance into a fixed fine pattern
+        // rather than removing it. On a surface that should report exactly zero
+        // — a flat road — the estimate still wanders, because the road is a
+        // tessellated sweep and the plane fit is only exact WITHIN a triangle,
+        // not across an edge. With the ramp opening at 15mm those sub-centimetre
+        // facet steps cleared it, and the asphalt picked up a fine crawling
+        // texture worth about 0.7 of a display level. Nothing that is genuinely
+        // a crevice is under 30mm deep.
+        occ += smoothstep(0.030, 0.15, diff) * (1.0 - smoothstep(0.35, 0.9, diff));
       }
 
       occ /= float(TAPS);
-      // Fade the whole effect out with distance: at 90m a half-metre radius is
-      // a couple of pixels and all it contributes is noise.
-      occ *= 1.0 - smoothstep(45.0, 90.0, centre);
+      // Fade the whole effect out with distance: at 65m a half-metre radius is
+      // a couple of pixels and all it contributes is noise. It used to run to
+      // 90m, which is well past the range at which the footprint stops
+      // resolving, so the last forty metres of every straight was paying for
+      // noise and getting no occlusion.
+      occ *= 1.0 - smoothstep(30.0, 65.0, centre);
       return clamp(occ, 0.0, 1.0);
     }
 
@@ -298,7 +312,13 @@ const GRADE_SHADER = {
       // and it is part of what made the picture look like old footage. What is
       // left is a speed cue: at rest there is none, and at 300 km/h it is a
       // fraction of a pixel at the very edge of the frame.
-      float ca = uSpeed * falloff * 0.0016;
+      // 0.0009, not 0.0016. Fringing is only invisible on a smooth image: split
+      // the channels of a surface that already has per-pixel variation in it
+      // and the variation acquires colour, which reads as much worse noise than
+      // the same amplitude in luminance would. The road it runs over is far
+      // cleaner than it was, but the very near field still has real texture in
+      // it and this was tinting it green and magenta.
+      float ca = uSpeed * falloff * 0.0009;
       if (ca > 0.00005) {
         colour.r = texture2D(tDiffuse, vUv - dir * ca).r;
         colour.b = texture2D(tDiffuse, vUv + dir * ca).b;
@@ -422,7 +442,13 @@ export class PostFX {
 
     this.grade = new ShaderPass(GRADE_SHADER);
     this.grade.uniforms.tDepth.value = depth;
-    this.aoStrength = 0.85;
+    // 0.6, down from 0.85. The occlusion this pass produces is a twelve-tap
+    // estimate with no blur after it, so its noise scales with its strength;
+    // measured against a frame with the pass disabled it was contributing
+    // around forty per cent of all the high-frequency variance on the road.
+    // What it is FOR — stopping objects floating — is carried by the strong
+    // contacts, and those survive at 0.6 with the noise cut by a third.
+    this.aoStrength = 0.6;
     this.grade.uniforms.uAO.value = this.aoStrength;
     composer.addPass(this.grade);
 

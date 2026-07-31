@@ -581,6 +581,17 @@ export function strut(
   // a chase camera, and a pentagon that size shows every one of its five flats.
   radialSegments = 8,
   capped = false,
+  /**
+   * Squashes the section across x, turning the round bar into a blade.
+   *
+   * A halo's forward pillar is not a pipe. It is a narrow vertical aerofoil —
+   * roughly 20mm across and three times that front to back — and the entire
+   * point of that section is that the one person who has to look straight down
+   * it sees only the thin edge. Modelled round at the depth it structurally
+   * needs, it comes out three times too wide in the single view where its
+   * width is the thing that matters.
+   */
+  xScale = 1,
 ): THREE.BufferGeometry {
   const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
   const len = Math.hypot(dx, dy, dz) || 1e-4;
@@ -593,6 +604,19 @@ export function strut(
     new THREE.Vector3(dx / len, dy / len, dz / len),
   );
   g.applyQuaternion(q);
+  if (xScale !== 1) {
+    // Squashed BEFORE the translate, so the section is flattened about its own
+    // axis rather than about the car's centreline. Normals take the INVERSE
+    // scale, or the blade lights like the round bar it was cut from.
+    g.scale(xScale, 1, 1);
+    const n = g.attributes.normal as THREE.BufferAttribute;
+    for (let i = 0; i < n.count; i++) {
+      const nx = n.getX(i) / xScale, ny = n.getY(i), nz = n.getZ(i);
+      const l = Math.hypot(nx, ny, nz) || 1;
+      n.setXYZ(i, nx / l, ny / l, nz / l);
+    }
+    n.needsUpdate = true;
+  }
   g.translate((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
   return g;
 }
@@ -606,6 +630,22 @@ export function tube(
   radius: number,
   tubularSegments = 24,
   radialSegments = 10,
+  /**
+   * Optional radius multiplier along the sweep, 0..1 from the first point to
+   * the last.
+   *
+   * `TubeGeometry` sweeps one constant section, and a halo is not one constant
+   * section: it is thickest at the two rear mounts, where the whole load of the
+   * structure goes into the survival cell, and slimmest over the crown. That
+   * taper is not decoration — the crown is the part that crosses the driver's
+   * sightline, so it is the part whose diameter decides whether the hoop reads
+   * as a thin line or as a bar across the sky.
+   *
+   * Applied by pushing each ring's vertices toward or away from the centreline
+   * point they were generated around, which is what `TubeGeometry` would do
+   * itself if it took a profile.
+   */
+  taper?: (t: number) => number,
 ): THREE.BufferGeometry {
   const curve = new THREE.CatmullRomCurve3(
     points.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
@@ -613,5 +653,31 @@ export function tube(
     'catmullrom',
     0.5,
   );
-  return new THREE.TubeGeometry(curve, tubularSegments, radius, radialSegments, false);
+  const geo = new THREE.TubeGeometry(curve, tubularSegments, radius, radialSegments, false);
+  if (!taper) return geo;
+
+  // TubeGeometry lays out (tubularSegments + 1) rings of (radialSegments + 1)
+  // vertices, ring i generated about curve.getPointAt(i / tubularSegments).
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const ring = radialSegments + 1;
+  const centre = new THREE.Vector3();
+  for (let i = 0; i <= tubularSegments; i++) {
+    const t = i / tubularSegments;
+    const k = taper(t);
+    curve.getPointAt(t, centre);
+    for (let j = 0; j < ring; j++) {
+      const v = i * ring + j;
+      pos.setXYZ(
+        v,
+        centre.x + (pos.getX(v) - centre.x) * k,
+        centre.y + (pos.getY(v) - centre.y) * k,
+        centre.z + (pos.getZ(v) - centre.z) * k,
+      );
+    }
+  }
+  pos.needsUpdate = true;
+  // The rings only changed radius, so the outward normals are still outward;
+  // recomputing keeps the shading right where the taper rate is steep.
+  geo.computeVertexNormals();
+  return geo;
 }

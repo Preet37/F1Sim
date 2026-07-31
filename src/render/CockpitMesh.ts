@@ -40,9 +40,29 @@ import { creased, loft, section } from './Loft';
  * (apex y = 0.820) rather than through it — which is exactly what happened when
  * this was left at the old car's 0.86 after the body was rebuilt.
  */
+/**
+ * Up 40mm and back 25mm.
+ *
+ * Both directions buy road, and the order they were done in matters. Raising
+ * the eye pushes everything below it — tub, mirrors, rim, front tyres — down
+ * the frame, which is exactly what the "barely a third of the frame is road"
+ * report is asking for. But it also brings the halo DOWN toward the horizon,
+ * because the hoop passes above the sightline, and a hoop laid across the road
+ * is worse than one in the sky. So the halo had to be raised and slimmed first
+ * (see CarMesh); with its arc sitting at fifteen degrees instead of six there
+ * is finally headroom to lift the eye without the hoop landing on the track.
+ *
+ * Moving back is free by comparison: it lengthens the distance to everything in
+ * front — rim, dash, mirrors, halo — and angular size is what framing is made
+ * of.
+ *
+ * Both stay well inside the modelled helmet shell, which runs 0.516..0.828 in
+ * y and -0.145..0.185 in z, and the halo's crown at 0.882 is still above the
+ * eye, so the view is still THROUGH the hoop rather than over the top of it.
+ */
 export const EYE_X = 0;
-export const EYE_Y = 0.705;
-export const EYE_Z = 0.100;
+export const EYE_Y = 0.745;
+export const EYE_Z = 0.075;
 
 /**
  * Centre of the steering wheel, car-local, and its rake.
@@ -61,19 +81,25 @@ export const EYE_Z = 0.100;
  * picture instead of just the top edge.
  *
  * Reach matters too: at 0.44m from the eye the rim filled two thirds of the
- * frame. 0.54m is both an arm's length and a sane framing.
+ * frame. Half a metre is both an arm's length and a sane framing, and with the
+ * eye 25mm further back the rim now sits a full 0.50m away.
+ *
+ * Down 17mm as well. The reference onboard frames carry the wheel low enough
+ * that the road behind it is continuous from the nose to the horizon; anything
+ * higher and the rim cuts the road in half, which is half of why the bottom of
+ * the frame read as a wall.
  */
 export const WHEEL_X = 0;
-export const WHEEL_Y = 0.565;
-export const WHEEL_Z = 0.540;
+export const WHEEL_Y = 0.548;
+export const WHEEL_Z = 0.575;
 /** Rake of the wheel: the top is tipped back toward the driver. */
 export const WHEEL_TILT = -0.45;
 
 /** Where the hands grip the rim, in wheel-local x. */
-export const GRIP_X = 0.128;
+export const GRIP_X = 0.122;
 
-const WHEEL_HALF_W = 0.145;
-const WHEEL_HALF_H = 0.105;
+const WHEEL_HALF_W = 0.138;
+const WHEEL_HALF_H = 0.100;
 
 /**
  * Mirror mounts, car-local (right-hand side; the left is mirrored in x).
@@ -82,11 +108,20 @@ const WHEEL_HALF_H = 0.105;
  * that all twenty cars have mirrors, and leaves the reflective pane to this
  * module because only one car is ever looked out of.
  */
-export const MIRROR_X = 0.478;
-export const MIRROR_Y = 0.618;
-export const MIRROR_Z = 0.735;
+/**
+ * Further out and further forward than they were, and lower.
+ *
+ * A mirror 0.79m from the eye at 37 degrees off axis lands exactly on the edge
+ * of the frame, where a 105mm pod subtends nearly eight degrees and reads as a
+ * slab pushing into the picture. Carried forward to 0.79 in z and out to 0.505
+ * it sits at 33 degrees and 0.87m — still comfortably inside a driver's useful
+ * field, still where a real car mounts them, and a fifth smaller on screen.
+ */
+export const MIRROR_X = 0.505;
+export const MIRROR_Y = 0.604;
+export const MIRROR_Z = 0.790;
 /** Front face of the housing, where the glass sits. */
-export const MIRROR_GLASS_Z = 0.714;
+export const MIRROR_GLASS_Z = 0.769;
 
 export interface CockpitState {
   /** Road-wheel angle in radians. The rim turns by RACK_RATIO times this. */
@@ -425,14 +460,19 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // Dash bulkhead ahead of the driver, where the column comes through. The tub
   // has necked down to a rim height of about 0.556 by here.
   {
+    // Twelve millimetres lower at the lip than it was. The tub has necked down
+    // to a rim height of about 0.556 here, so a bulkhead topping out at 0.574
+    // still stands proud of it the way a real dash lip does — and every
+    // millimetre taken off the top of it is a millimetre of road handed back at
+    // the bottom of the frame, which is the whole exercise.
     const dash = loft([
-      section(0.650, 0.250, 0.526, 0.586, 0.45),
-      section(0.700, 0.250, 0.526, 0.586, 0.42),
-      section(0.750, 0.238, 0.529, 0.583, 0.55),
+      section(0.650, 0.250, 0.522, 0.574, 0.45),
+      section(0.700, 0.250, 0.522, 0.574, 0.42),
+      section(0.750, 0.238, 0.525, 0.571, 0.55),
     ], SEG.loftRing, true, SEG.loftStep);
     add(dash, carbon);
     // Steering column, running forward and down from the back of the wheel.
-    add(strut(0, 0.565, 0.572, 0, 0.556, 0.68, 0.030), carbon);
+    add(strut(0, 0.548, 0.607, 0, 0.552, 0.70, 0.026), carbon);
   }
 
   // --- Mirrors ------------------------------------------------------------
@@ -446,7 +486,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // The glass faces back and inward, at the driver's eye. The plane's own
     // normal is +z, so the mesh rotation alone turns it round — rotating the
     // geometry as well would flip it back and cull it.
-    const glass = new THREE.PlaneGeometry(0.092, 0.050);
+    const glass = new THREE.PlaneGeometry(0.100, 0.038);
     const g = add(glass, mirrorGlass);
     g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
     g.rotation.y = Math.PI + side * 0.30;
@@ -471,11 +511,11 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // bottom bars. Two rounded-rect holes cut in a rounded-rect outline give
     // exactly that silhouette in one extrusion.
     const shape = new THREE.Shape();
-    roundedRect(shape, -WHEEL_HALF_W, -WHEEL_HALF_H, WHEEL_HALF_W * 2, WHEEL_HALF_H * 2, 0.044);
+    roundedRect(shape, -WHEEL_HALF_W, -WHEEL_HALF_H, WHEEL_HALF_W * 2, WHEEL_HALF_H * 2, 0.042);
     const holeL = new THREE.Path();
-    roundedRect(holeL, -0.113, -0.058, 0.070, 0.116, 0.026);
+    roundedRect(holeL, -0.107, -0.055, 0.067, 0.110, 0.025);
     const holeR = new THREE.Path();
-    roundedRect(holeR, 0.043, -0.058, 0.070, 0.116, 0.026);
+    roundedRect(holeR, 0.040, -0.055, 0.067, 0.110, 0.025);
     shape.holes.push(holeL, holeR);
 
     const rim = new THREE.ExtrudeGeometry(shape, {
@@ -499,33 +539,33 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // Rubber grips over the two uprights, with an accent flash at the top of
     // each — the same trick a real team uses to mark the straight-ahead point.
     for (const side of [-1, 1] as const) {
-      const grip = new THREE.CylinderGeometry(0.023, 0.023, 0.118, SEG.round);
+      const grip = new THREE.CylinderGeometry(0.022, 0.022, 0.112, SEG.round);
       grip.translate(side * GRIP_X, -0.004, 0);
       add(grip, rubberGrip, wheelSpin);
-      const flash = roundedBlock(0.048, 0.014, 0.048, 0.005);
-      flash.translate(side * GRIP_X, 0.062, 0);
+      const flash = roundedBlock(0.046, 0.013, 0.046, 0.005);
+      flash.translate(side * GRIP_X, 0.059, 0);
       add(flash, accent, wheelSpin);
     }
     // Straight-ahead marker at 12 o'clock.
     {
-      const mark = roundedBlock(0.022, 0.013, 0.034, 0.004);
-      mark.translate(0, 0.098, -0.012);
+      const mark = roundedBlock(0.021, 0.012, 0.032, 0.004);
+      mark.translate(0, 0.093, -0.012);
       add(mark, accent, wheelSpin);
     }
 
     // Shift paddles, on the far side of the rim from the driver.
     for (const side of [-1, 1] as const) {
-      const paddle = roundedBlock(0.016, 0.078, 0.055, 0.006);
-      paddle.translate(side * 0.094, -0.005, 0.042);
+      const paddle = roundedBlock(0.015, 0.074, 0.052, 0.006);
+      paddle.translate(side * 0.089, -0.005, 0.042);
       const p = add(paddle, carbon, wheelSpin);
       p.rotation.y = side * 0.22;
     }
 
     // The display, facing the driver (-z in wheel space).
     // Sits proud of the rim's bevelled face, or the extrusion swallows it.
-    const dashPlane = new THREE.PlaneGeometry(0.082, 0.046);
+    const dashPlane = new THREE.PlaneGeometry(0.078, 0.044);
     dashPlane.rotateY(Math.PI);
-    dashPlane.translate(0, 0.020, -0.026);
+    dashPlane.translate(0, 0.019, -0.026);
     const dashMat = mat(new THREE.MeshBasicMaterial({ map: dash.texture, toneMapped: false }));
     add(dashPlane, dashMat, wheelSpin);
 
@@ -534,7 +574,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     for (let i = 0; i < 3; i++) {
       const knob = new THREE.CylinderGeometry(0.011, 0.013, 0.014, SEG.round);
       knob.rotateX(Math.PI / 2);
-      knob.translate(-0.03 + i * 0.03, -0.056, -0.021);
+      knob.translate(-0.029 + i * 0.029, -0.053, -0.021);
       add(knob, rubberGrip, wheelSpin);
     }
   }
