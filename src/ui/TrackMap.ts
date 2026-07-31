@@ -1,25 +1,51 @@
 import type { CarEntry } from '../race/CarEntry';
+import type { FlagSignal, RaceControlManager } from '../race/RaceControlManager';
+import { worseSignal } from '../race/RaceControlManager';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
- * Broadcast-style circuit map.
+ * Broadcast-style circuit map, coloured by flag.
  *
- * The outline is drawn ONCE, as an SVG path built from the spline's own sampled
- * points, and thereafter only the `cx`/`cy` of one circle per car is written.
- * That distinction is the whole design: redrawing a 250-point path sixty times a
- * second to move twenty dots would cost more than the rest of the HUD put
- * together, and the circuit does not move.
+ * The outline is drawn ONCE, as a set of SVG paths built from the spline's own
+ * sampled points, and thereafter only the `cx`/`cy` of one circle per car and a
+ * class name per sector are written. That distinction is the whole design:
+ * redrawing a 250-point path sixty times a second to move twenty dots would cost
+ * more than the rest of the HUD put together, and the circuit does not move.
  *
  * World coordinates are normalised into a fixed 0..100 viewBox so the SVG scales
  * to whatever box the layout gives it, and so stroke widths and dot radii can be
  * chosen once instead of per circuit — a 5.8km Monza and a 3.3km Monaco end up
  * the same size on screen, which is what a real trackside graphic does.
+ *
+ * ---------------------------------------------------------------------------
+ * Why the outline is cut into pieces
+ *
+ * "What sector has the yellow flag?" is not a question a single-coloured outline
+ * can answer, and it is the question a driver most needs answered — a yellow at
+ * turn 4 is a completely different instruction to a yellow in the last sector,
+ * and the whole reason race control keeps twenty separate marshalling sectors is
+ * that they are not the same event.
+ *
+ * So the road is drawn as one path per marshalling sector, each coloured
+ * independently from `RaceControlManager.signalForSector`. That is the finest
+ * resolution the simulation actually has, and it is what puts the colour on the
+ * corner where the car is stopped rather than smeared across a third of the lap.
+ *
+ * On top of that, the three TIMING sectors are outlined and labelled, because
+ * those are the divisions the player already knows by name from the timing
+ * panel, and "sector 2 is yellow" is how the situation gets described out loud.
+ * Each label chip takes the worst signal anywhere inside its timing sector, so
+ * the two readings are consistent by construction: the chip cannot say green
+ * while a piece of road inside it is yellow.
  */
 
 const NS = 'http://www.w3.org/2000/svg';
 
 /** Every Nth spline node is enough for an outline at this size. */
 const NODE_STRIDE = 3;
+
+/** Timing sector labels, in order. */
+const SECTOR_LABELS = ['S1', 'S2', 'S3'];
 
 export class TrackMap {
   readonly root: SVGSVGElement;
@@ -31,6 +57,16 @@ export class TrackMap {
   private readonly lastY: number[] = [];
   private readonly lastHidden: boolean[] = [];
 
+  /** One path per marshalling sector, and the signal each is currently showing. */
+  private readonly marshalPaths: SVGPathElement[] = [];
+  private readonly marshalSignal: FlagSignal[] = [];
+
+  /** The three timing-sector chips. */
+  private readonly sectorChips: SVGGElement[] = [];
+  private readonly sectorChipSignal: FlagSignal[] = ['green', 'green', 'green'];
+  /** Start and end distance of each timing sector, metres. */
+  private readonly sectorBounds: { from: number; to: number }[] = [];
+
   /** Cars in the order their dots were appended. */
   private readonly order: readonly CarEntry[];
 
@@ -38,7 +74,7 @@ export class TrackMap {
   private readonly cz: number;
   private readonly span: number;
 
-  constructor(track: TrackSpline, cars: readonly CarEntry[]) {
+  constructor(track: TrackSpline, cars: readonly CarEntry[], marshalSectors: number) {
     this.track = track;
 
     const b = track.bounds();
@@ -51,15 +87,65 @@ export class TrackMap {
     this.root.setAttribute('viewBox', '0 0 100 100');
     this.root.setAttribute('class', 'map-svg');
 
-    // --- Outline ----------------------------------------------------------
-    // Two strokes over the same path: a wide dark casing and a lighter ribbon
-    // on top. That is what makes it read as a road rather than a wire.
-    const d = this.pathData();
-    for (const cls of ['map-road', 'map-line']) {
+    // --- Casing -----------------------------------------------------------
+    // One dark stroke around the whole lap, under everything. It gives the road
+    // its thickness and hides the hairline seams where two coloured sector
+    // paths meet.
+    {
       const p = document.createElementNS(NS, 'path');
-      p.setAttribute('d', d);
-      p.setAttribute('class', cls);
+      p.setAttribute('d', this.pathBetween(0, track.length, true));
+      p.setAttribute('class', 'map-road');
       this.root.appendChild(p);
+    }
+
+    // --- One coloured ribbon per marshalling sector ------------------------
+    for (let i = 0; i < marshalSectors; i++) {
+      const from = (i / marshalSectors) * track.length;
+      const to = ((i + 1) / marshalSectors) * track.length;
+      const p = document.createElementNS(NS, 'path');
+      // Each sector runs a touch past its own end so consecutive ribbons
+      // overlap by a node. Butt-jointed strokes leave a visible gap on every
+      // boundary at this scale, which reads as twenty holes in the circuit.
+      p.setAttribute('d', this.pathBetween(from, to + track.length / marshalSectors * 0.06, false));
+      p.setAttribute('class', 'map-line flag-green');
+      this.root.appendChild(p);
+      this.marshalPaths.push(p);
+      this.marshalSignal.push('green');
+    }
+
+    // --- Timing sector boundaries and labels ------------------------------
+    const s1 = track.def.sector1EndS;
+    const s2 = track.def.sector2EndS;
+    this.sectorBounds.push({ from: 0, to: s1 }, { from: s1, to: s2 }, { from: s2, to: track.length });
+
+    for (const s of [s1, s2]) this.root.appendChild(this.boundaryTick(s));
+
+    for (let i = 0; i < 3; i++) {
+      const { from, to } = this.sectorBounds[i];
+      const mid = (from + to) * 0.5;
+      const idx = track.indexAt(mid);
+      // Pushed OUTWARD from the racing surface along the track normal, so a
+      // chip never sits on top of the road it is labelling.
+      const off = track.width[idx] * 1.9 + 14;
+      const x = this.sx(track.px[idx] + track.nx[idx] * off);
+      const y = this.sy(track.pz[idx] + track.nz[idx] * off);
+
+      const g = document.createElementNS(NS, 'g');
+      g.setAttribute('class', 'map-chip flag-green');
+      const rect = document.createElementNS(NS, 'rect');
+      rect.setAttribute('x', (clamp(x, 6, 94) - 6).toFixed(2));
+      rect.setAttribute('y', (clamp(y, 5, 95) - 4).toFixed(2));
+      rect.setAttribute('width', '12');
+      rect.setAttribute('height', '8');
+      rect.setAttribute('rx', '2');
+      g.appendChild(rect);
+      const text = document.createElementNS(NS, 'text');
+      text.setAttribute('x', clamp(x, 6, 94).toFixed(2));
+      text.setAttribute('y', (clamp(y, 5, 95) + 2.2).toFixed(2));
+      text.textContent = SECTOR_LABELS[i];
+      g.appendChild(text);
+      this.root.appendChild(g);
+      this.sectorChips.push(g);
     }
 
     // --- Start/finish -----------------------------------------------------
@@ -104,24 +190,44 @@ export class TrackMap {
     return ((z - this.cz) / this.span) * 100 + 50;
   }
 
-  private pathData(): string {
+  /** A tick across the road marking a timing sector boundary. */
+  private boundaryTick(s: number): SVGLineElement {
     const t = this.track;
+    const i = t.indexAt(s);
+    const hw = t.width[i] * 0.85;
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', this.sx(t.px[i] + t.nx[i] * hw).toFixed(2));
+    line.setAttribute('y1', this.sy(t.pz[i] + t.nz[i] * hw).toFixed(2));
+    line.setAttribute('x2', this.sx(t.px[i] - t.nx[i] * hw).toFixed(2));
+    line.setAttribute('y2', this.sy(t.pz[i] - t.nz[i] * hw).toFixed(2));
+    line.setAttribute('class', 'map-sector-tick');
+    return line;
+  }
+
+  /** Path data along the spline between two distances. */
+  private pathBetween(fromS: number, toS: number, close: boolean): string {
+    const t = this.track;
+    const first = t.indexAt(fromS);
+    const nodes = Math.max(2, Math.round(((toS - fromS) / t.length) * t.count / NODE_STRIDE));
     let d = '';
-    for (let i = 0; i < t.count; i += NODE_STRIDE) {
-      d += (i === 0 ? 'M' : 'L') + this.sx(t.px[i]).toFixed(2) + ',' + this.sy(t.pz[i]).toFixed(2);
+    for (let n = 0; n <= nodes; n++) {
+      const i = (first + n * NODE_STRIDE) % t.count;
+      d += (n === 0 ? 'M' : 'L') + this.sx(t.px[i]).toFixed(2) + ',' + this.sy(t.pz[i]).toFixed(2);
     }
-    return d + 'Z';
+    return close ? d + 'Z' : d;
   }
 
   /**
-   * Moves the dots. Called once per rendered frame.
+   * Repaints the sectors from race control, and moves the dots.
    *
-   * Positions come from the physics rather than from `s`/`lateral` so a car
-   * that has spun off into the gravel shows where it actually is. Writes are
-   * skipped when a dot has not moved by a visible amount, which at a steady
-   * speed is most of the field most of the time.
+   * Called once per rendered frame. Positions come from the physics rather than
+   * from `s`/`lateral` so a car that has spun off into the gravel shows where it
+   * actually is. Writes are skipped when nothing changed, which for the flags is
+   * almost every frame of almost every session.
    */
-  update(): void {
+  update(rc?: RaceControlManager): void {
+    if (rc) this.updateFlags(rc);
+
     for (let i = 0; i < this.order.length; i++) {
       const car = this.order[i];
       const dot = this.dots[i];
@@ -143,4 +249,34 @@ export class TrackMap {
       }
     }
   }
+
+  private updateFlags(rc: RaceControlManager): void {
+    for (let i = 0; i < this.marshalPaths.length; i++) {
+      const sig = rc.signalForSector(i);
+      if (sig !== this.marshalSignal[i]) {
+        this.marshalSignal[i] = sig;
+        this.marshalPaths[i].setAttribute('class', 'map-line flag-' + sig);
+      }
+    }
+
+    for (let i = 0; i < 3; i++) {
+      const { from, to } = this.sectorBounds[i];
+      // The chip takes the worst signal anywhere inside its timing sector, so
+      // it can never read greener than the road it labels.
+      let worst = rc.signalBetween(from, to);
+      // signalBetween walks marshalling sectors, which do not line up with
+      // timing sector boundaries; fold the boundary sectors in explicitly so a
+      // flag raised right on a boundary is attributed to both.
+      worst = worseSignal(worst, rc.signalAt(from));
+      worst = worseSignal(worst, rc.signalAt(Math.max(0, to - 1)));
+      if (worst !== this.sectorChipSignal[i]) {
+        this.sectorChipSignal[i] = worst;
+        this.sectorChips[i].setAttribute('class', 'map-chip flag-' + worst);
+      }
+    }
+  }
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }

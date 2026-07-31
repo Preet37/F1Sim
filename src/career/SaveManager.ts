@@ -5,6 +5,7 @@ import {
 import {
   DEFAULT_GAMEPAD_SETTINGS, normaliseGamepadSettings, type GamepadSettings,
 } from '../input/GamepadProfile';
+import { DEFAULT_WEEKEND_OPTIONS, type WeekendOptions } from '../race/WeekendFormat';
 
 /**
  * Local persistence.
@@ -66,6 +67,16 @@ export interface GameSettings {
    * destroyed the other's setup.
    */
   gamepad: GamepadSettings;
+  /**
+   * How long a race weekend runs.
+   *
+   * Kept in settings rather than in the career save because it is a preference
+   * about the player's evening, not a fact about their championship — someone
+   * who has half an hour tonight and three hours on Sunday wants the same career
+   * at two different lengths, and re-picking it at every round would be the
+   * thing they complain about next.
+   */
+  weekend: WeekendOptions;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -82,6 +93,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   // object, and a shared `profiles` map would let one career's controller
   // configuration leak into the defaults every other one starts from.
   gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} },
+  weekend: { ...DEFAULT_WEEKEND_OPTIONS },
 };
 
 /** True when localStorage is usable. Probed once. */
@@ -238,9 +250,18 @@ export class SaveManager {
       // with a NaN deadzone. A NaN reaching the steering maths produces a car
       // that will not turn and gives the player no way to find out why.
       merged.gamepad = normaliseGamepadSettings(parsed.gamepad);
+      // Same reasoning for the weekend options: a save written before they
+      // existed has no `weekend` key at all, and one written by a build with
+      // fewer fields in it would leave the new ones undefined — which reaches
+      // `raceLapsFor` as NaN and produces a race of NaN laps.
+      merged.weekend = { ...DEFAULT_WEEKEND_OPTIONS, ...(parsed.weekend ?? {}) };
       return merged;
     } catch {
-      return { ...DEFAULT_SETTINGS, gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} } };
+      return {
+        ...DEFAULT_SETTINGS,
+        gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} },
+        weekend: { ...DEFAULT_WEEKEND_OPTIONS },
+      };
     }
   }
 

@@ -9,6 +9,7 @@ import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
 import { RacingLine } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
+import { MarshalPosts } from './MarshalPost';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 
@@ -83,6 +84,7 @@ export class Renderer {
   private paddock: PaddockScene | null = null;
   /** The player's own pit box, highlighted so they can find it. */
   private pitBox: PitBoxMarker | null = null;
+  private marshalPosts: MarshalPosts | null = null;
   private carVisuals: CarVisual[] = [];
   private readonly canvas: HTMLCanvasElement;
 
@@ -433,6 +435,12 @@ export class Renderer {
     this.racingLine.setVisible(this.racingLineVisible);
     this.scene.add(this.racingLine.mesh);
 
+    // The flag panels, one per marshalling sector. Built from race control's own
+    // sector count rather than a constant of the renderer's, so the panel a
+    // driver sees and the sector the simulation is flagging are the same object.
+    this.marshalPosts = new MarshalPosts(engine.track, engine.raceControl.marshalSectorCount);
+    this.scene.add(this.marshalPosts.root);
+
     // The player's pit box. Built for the player's car only — there is nothing
     // to highlight in a fully simulated session, and the twenty boxes the
     // circuit paints are identical, so without this the player has no way of
@@ -622,6 +630,11 @@ export class Renderer {
       this.pitBox.dispose();
       this.pitBox = null;
     }
+    if (this.marshalPosts) {
+      this.scene.remove(this.marshalPosts.root);
+      this.marshalPosts.dispose();
+      this.marshalPosts = null;
+    }
     for (const v of this.carVisuals) {
       this.scene.remove(v.root);
       v.dispose();
@@ -730,6 +743,10 @@ export class Renderer {
       const p = engine.playerCar;
       this.pitBox.setVisible(!!p && (p.inPitLane || p.pitRequested));
     }
+
+    // The marshal panels. Cheap: the colour buffer is only touched on the frame
+    // a sector's flag actually changes.
+    this.marshalPosts?.update(engine.raceControl);
 
     // The radial blur converges on the point the car is heading for, not the
     // centre of the screen. In a corner the vanishing point swings wide, and

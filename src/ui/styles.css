@@ -2227,3 +2227,276 @@ table.standings tr.me td.pos { color: var(--amber); }
   .pad-rank { font-size: 21px; min-width: 26px; }
   .pad-nat { display: none; }
 }
+
+/* ======================================================================
+   Flag colours
+   ----------------------------------------------------------------------
+   One palette, used by the circuit map's sector ribbons, the sector chips
+   on it, and the pills under it. They read from the same
+   `RaceControlManager.signalForSector`, so they must also look the same:
+   a map that calls a sector amber while the pill under it calls it orange
+   is two answers to one question.
+
+   Green is deliberately quiet. Ninety-nine per cent of a session is green
+   and a HUD that shouts the normal case teaches the driver to stop
+   looking at it — which is exactly when the yellow appears.
+   ====================================================================== */
+:root {
+  --flag-green: #2fbf5a;
+  --flag-yellow: #ffd21f;
+  --flag-red: #ff3b46;
+  --flag-vsc: #cfe0ff;
+  --flag-sc: #ff8c1a;
+}
+
+.map-line.flag-green { stroke: rgba(226, 234, 246, 0.75); }
+.map-line.flag-chequered { stroke: rgba(226, 234, 246, 0.9); }
+.map-line.flag-yellow { stroke: var(--flag-yellow); stroke-width: 2.1; }
+.map-line.flag-double-yellow {
+  stroke: var(--flag-yellow);
+  stroke-width: 2.8;
+  filter: drop-shadow(0 0 1.6px rgba(255, 210, 31, 0.9));
+}
+.map-line.flag-red { stroke: var(--flag-red); stroke-width: 2.8; }
+.map-line.flag-vsc { stroke: var(--flag-vsc); stroke-width: 1.8; }
+.map-line.flag-safety-car { stroke: var(--flag-sc); stroke-width: 2.1; }
+
+.map-sector-tick { stroke: rgba(255, 255, 255, 0.45); stroke-width: 0.8; stroke-dasharray: 1.2 1.2; }
+
+/* Sector chips on the map itself: S1/S2/S3, placed off the racing surface. */
+.map-chip rect { fill: rgba(8, 11, 16, 0.85); stroke: rgba(255, 255, 255, 0.28); stroke-width: 0.5; }
+.map-chip text {
+  fill: var(--hud-dim);
+  font-size: 5.4px;
+  font-weight: 800;
+  text-anchor: middle;
+  letter-spacing: 0.06em;
+}
+.map-chip.flag-yellow rect,
+.map-chip.flag-double-yellow rect { fill: var(--flag-yellow); stroke: #7a6200; }
+.map-chip.flag-yellow text,
+.map-chip.flag-double-yellow text { fill: #201a00; }
+.map-chip.flag-red rect { fill: var(--flag-red); stroke: #6d0009; }
+.map-chip.flag-red text { fill: #fff; }
+.map-chip.flag-vsc rect { fill: var(--flag-vsc); stroke: #4b6ea8; }
+.map-chip.flag-vsc text { fill: #101a2a; }
+.map-chip.flag-safety-car rect { fill: var(--flag-sc); stroke: #7a3d00; }
+.map-chip.flag-safety-car text { fill: #2a1300; }
+
+/* The three pills under the map — the same state, legible at a glance. */
+.map-flags { display: flex; gap: 4px; margin-top: 5px; }
+.map-flagpill {
+  flex: 1;
+  text-align: center;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 3px 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--hud-border);
+  color: var(--hud-dim);
+  white-space: nowrap;
+}
+.map-flagpill.flag-yellow,
+.map-flagpill.flag-double-yellow {
+  background: var(--flag-yellow); color: #201a00; border-color: #7a6200;
+}
+.map-flagpill.flag-double-yellow { box-shadow: 0 0 8px rgba(255, 210, 31, 0.55); }
+.map-flagpill.flag-red { background: var(--flag-red); color: #fff; border-color: #6d0009; }
+.map-flagpill.flag-vsc { background: var(--flag-vsc); color: #101a2a; border-color: #4b6ea8; }
+.map-flagpill.flag-safety-car { background: var(--flag-sc); color: #2a1300; border-color: #7a3d00; }
+
+/* ======================================================================
+   Pause menu
+   ====================================================================== */
+.pause-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  /* Barely tinted: the point of a pause menu over a race is that you can
+     still see the race. A solid backdrop makes it a different screen. */
+  background: rgba(4, 6, 10, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.pause-overlay.hidden { display: none; }
+.pause-card {
+  width: min(420px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--hud-bg-solid);
+  border: 1px solid var(--hud-border);
+  border-radius: 14px;
+  padding: 24px 22px 20px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+.pause-title {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.pause-subtitle { font-size: 12px; color: var(--accent); font-weight: 700; letter-spacing: 0.06em; margin-top: 4px; }
+.pause-status { font-size: 11px; color: var(--hud-dim); font-weight: 600; margin-top: 8px; letter-spacing: 0.04em; }
+.pause-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+.pause-buttons .btn {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 11px 15px;
+  text-align: left;
+}
+.pause-btn-label { font-size: 14px; font-weight: 800; letter-spacing: 0.05em; }
+.pause-btn-meta { font-size: 10px; font-weight: 600; opacity: 0.72; letter-spacing: 0.04em; }
+.btn.danger { background: rgba(255, 77, 79, 0.16); color: #ffb9ba; }
+.btn.danger:hover { background: rgba(255, 77, 79, 0.26); }
+
+/* ======================================================================
+   Pit stop sheet
+   ----------------------------------------------------------------------
+   Lives inside the HUD, on the left, above the tyre and fuel panel. The
+   race keeps running behind it: see PitStopPrompt for why it must.
+   ====================================================================== */
+.pitprompt {
+  position: absolute;
+  left: calc(10px + var(--safe-l));
+  bottom: calc(150px + var(--safe-b));
+  width: 250px;
+  background: var(--hud-bg);
+  border: 1px solid rgba(255, 176, 46, 0.5);
+  border-radius: 10px;
+  padding: 9px 10px 10px;
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+  z-index: 20;
+}
+.pitprompt.hidden { display: none; }
+.pitprompt-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: var(--warn);
+}
+.pitprompt-note {
+  font-size: 9.5px;
+  color: var(--hud-dim);
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 4px 0 7px;
+}
+.pitprompt-tyres { display: flex; gap: 4px; }
+.pitchip {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--hud-border);
+  border-radius: 7px;
+  padding: 6px 2px 5px;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--hud-text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  /* Big enough to hit with a thumb at 300 km/h. */
+  min-height: 46px;
+}
+.pitchip.selected { border-color: var(--chip); background: color-mix(in srgb, var(--chip) 22%, transparent); }
+.pitchip-code {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--chip);
+  line-height: 1;
+}
+.pitchip-name { font-size: 7.5px; font-weight: 700; letter-spacing: 0.05em; color: var(--hud-dim); }
+.pitchip-used { font-size: 7px; font-weight: 700; color: var(--warn); letter-spacing: 0.06em; }
+
+.pitprompt-nose { display: flex; gap: 4px; align-items: center; margin-top: 7px; flex-wrap: wrap; }
+.pitprompt-noselabel {
+  width: 100%;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--hud-dim);
+}
+.pitnose {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--hud-border);
+  border-radius: 6px;
+  color: var(--hud-text);
+  font-family: inherit;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 7px 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pitnose.selected { border-color: var(--accent); background: rgba(53, 208, 224, 0.18); }
+.pitprompt-status {
+  margin-top: 8px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+}
+
+/* ======================================================================
+   Pre-session briefing and weekend length
+   ====================================================================== */
+.weekend-strip { display: flex; gap: 5px; flex-wrap: wrap; margin: -12px 0 20px; }
+.weekend-step {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding: 4px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--hud-border);
+  color: var(--hud-dim);
+  background: rgba(255, 255, 255, 0.04);
+}
+.weekend-step.done { opacity: 0.45; text-decoration: line-through; }
+.weekend-step.current { border-color: var(--accent); color: #04161a; background: var(--accent); }
+
+.tyre-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.tyre-chip {
+  flex: 1 1 118px;
+  min-width: 118px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--hud-border);
+  border-radius: 9px;
+  padding: 11px 12px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+}
+.tyre-chip:hover { background: rgba(255, 255, 255, 0.085); }
+.tyre-chip:active { transform: scale(0.985); }
+.tyre-chip.selected { border-color: var(--chip); background: color-mix(in srgb, var(--chip) 16%, transparent); }
+.tyre-chip-code { font-size: 22px; font-weight: 800; color: var(--chip); line-height: 1; }
+.tyre-chip-name { font-size: 13px; font-weight: 700; margin-top: 3px; }
+.tyre-chip-meta { font-size: 10px; color: var(--hud-dim); font-weight: 600; margin-top: 3px; letter-spacing: 0.04em; }
+
+/* Skip progress */
+.sim-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+  margin-top: 10px;
+}
+.sim-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.12s linear; }
+.sim-label { font-size: 34px; font-weight: 800; margin-top: 12px; letter-spacing: -0.02em; }
+.sim-detail { font-size: 11px; color: var(--hud-dim); font-weight: 600; letter-spacing: 0.04em; margin-top: 3px; }
+
+@media (max-width: 820px) {
+  .pitprompt { width: 200px; bottom: calc(120px + var(--safe-b)); }
+  .pitchip { min-height: 42px; }
+}

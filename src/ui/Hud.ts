@@ -4,6 +4,7 @@ import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
 import { bandOf, COMPONENT_NAMES, type ComponentId } from '../race/DamageModel';
+import type { FlagSignal } from '../race/RaceControlManager';
 import { TrackMap } from './TrackMap';
 
 /**
@@ -72,6 +73,9 @@ export class Hud {
   private mapHolder!: HTMLElement;
   private mapTitle!: HTMLElement;
   private map: TrackMap | null = null;
+  /** One pill per timing sector, under the map, showing that sector's flag. */
+  private sectorFlagPills: HTMLElement[] = [];
+  private readonly sectorFlagShown: FlagSignal[] = ['green', 'green', 'green'];
 
   private fuel!: HTMLElement;
   private fuelDelta!: HTMLElement;
@@ -114,6 +118,7 @@ export class Hud {
   private buttonBar!: HTMLElement;
   private cameraButton!: HTMLElement;
   private pitButton!: HTMLElement;
+  private menuButton!: HTMLElement;
 
   private touchOverlay!: HTMLElement;
   private joystick!: HTMLElement;
@@ -130,6 +135,8 @@ export class Hud {
   onCameraPressed: (() => void) | null = null;
   /** Called when the on-screen pit button is used. */
   onPitPressed: (() => void) | null = null;
+  /** Called when the on-screen menu button is used. */
+  onMenuPressed: (() => void) | null = null;
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -147,6 +154,7 @@ export class Hud {
     };
     wire(this.cameraButton, () => this.onCameraPressed?.());
     wire(this.pitButton, () => this.onPitPressed?.());
+    wire(this.menuButton, () => this.onMenuPressed?.());
   }
 
   private el(cls: string, parent: HTMLElement, text = ''): HTMLElement {
@@ -193,6 +201,17 @@ export class Hud {
     this.mapPanel = this.el('hud-panel hud-map', this.root);
     this.mapTitle = this.el('map-title', this.mapPanel, '');
     this.mapHolder = this.el('map-holder', this.mapPanel);
+
+    // A pill per timing sector under the map. The map itself is the precise
+    // answer — it colours the actual corner — but at the size a HUD map runs on
+    // a phone the difference between "sector 2 is yellow" and "sector 3 is
+    // yellow" is a few pixels of hue on a thin line. These three pills are the
+    // same information in the form the driver says it out loud, and they are
+    // legible in peripheral vision, which the map is not.
+    const flagRow = this.el('map-flags', this.mapPanel);
+    for (let i = 0; i < 3; i++) {
+      this.sectorFlagPills.push(this.el('map-flagpill flag-green', flagRow, 'S' + (i + 1)));
+    }
 
     // --- Bottom centre: the wheel display ---------------------------------
     //
@@ -299,6 +318,10 @@ export class Hud {
     this.buttonBar = this.el('hud-buttons', this.root);
     this.cameraButton = this.el('hud-btn', this.buttonBar, 'CAM');
     this.pitButton = this.el('hud-btn', this.buttonBar, 'PIT');
+    // The way out. `P`/`Escape` already paused the simulation, but on a phone
+    // there is no Escape key, and a pause with nothing on screen is
+    // indistinguishable from the game having frozen.
+    this.menuButton = this.el('hud-btn', this.buttonBar, 'MENU');
     this.cameraLabel = this.el('hud-camera', this.root, 'Chase');
     this.diagnostics = this.el('hud-diag', this.root, '');
 
@@ -535,13 +558,28 @@ export class Hud {
    * set of cars. Rebuilding costs one pass over the spline, once per session.
    */
   private updateMap(engine: RaceEngine): void {
+    const rc = engine.raceControl;
     if (!this.map) {
       this.mapHolder.textContent = '';
-      this.map = new TrackMap(engine.track, engine.cars);
+      this.map = new TrackMap(engine.track, engine.cars, rc.marshalSectorCount);
       this.mapHolder.appendChild(this.map.root);
       setText(this.mapTitle, engine.track.def.name.toUpperCase());
     }
-    this.map.update();
+    this.map.update(rc);
+
+    // The three pills. Read from the same `signalBetween` the map's own sector
+    // chips use, so the pill and the chip cannot disagree.
+    const s1 = engine.track.def.sector1EndS;
+    const s2 = engine.track.def.sector2EndS;
+    const bounds: [number, number][] = [[0, s1], [s1, s2], [s2, engine.track.length]];
+    for (let i = 0; i < 3; i++) {
+      const sig = rc.signalBetween(bounds[i][0], bounds[i][1]);
+      if (sig !== this.sectorFlagShown[i]) {
+        this.sectorFlagShown[i] = sig;
+        setClass(this.sectorFlagPills[i], 'map-flagpill flag-' + sig);
+        setText(this.sectorFlagPills[i], SECTOR_PILL_TEXT[sig].replace('#', String(i + 1)));
+      }
+    }
   }
 
   /**
@@ -1021,6 +1059,23 @@ function setStyle(el: HTMLElement, prop: string, value: string): void {
   const style = el.style as unknown as Record<string, string>;
   if (style[prop] !== value) style[prop] = value;
 }
+
+/**
+ * What each sector pill says. `#` is replaced with the sector number.
+ *
+ * A green sector says only its own name — a HUD that shouts "S1 GREEN" three
+ * times a lap at a driver trains them to stop reading it. A sector with
+ * something in it says what.
+ */
+const SECTOR_PILL_TEXT: Record<FlagSignal, string> = {
+  green: 'S#',
+  yellow: 'S# YEL',
+  'double-yellow': 'S# 2YEL',
+  red: 'S# RED',
+  vsc: 'S# VSC',
+  'safety-car': 'S# SC',
+  chequered: 'S#',
+};
 
 function wearClass(wear: number): string {
   return wear < 0.25 ? 'critical' : wear < 0.42 ? 'warn' : 'ok';

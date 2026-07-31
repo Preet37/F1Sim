@@ -167,6 +167,32 @@ export class CarEntry {
    * player could never pit at all.
    */
   pitRequested = false;
+  /**
+   * The compound the DRIVER has asked for at the next stop, or null to take
+   * whatever the engineers were going to fit.
+   *
+   * A pit stop used to be a black box for the player: press the button, drive
+   * down the lane, and find out afterwards what was bolted on — chosen by
+   * `chooseCompoundForStint`, which is the AI strategist's function and has no
+   * concept of what the player wanted. Tyre choice is the single biggest
+   * strategic decision in a Grand Prix, and the one car in the field that could
+   * not make it was the player's.
+   *
+   * Null rather than a default compound, so "I did not choose" and "I chose the
+   * same thing the engineers would have" stay distinguishable — the pit screen
+   * shows the engineers' recommendation as such until it is overridden.
+   */
+  pitCompoundRequest: CompoundId | null = null;
+  /**
+   * Whether to change the nose at the next stop, or null to let the crew decide.
+   *
+   * A new front wing costs the better part of ten seconds stationary, so with a
+   * lightly damaged one it is a genuine choice rather than an obvious yes. The
+   * crew's own rule — change it below 70% — is what null means.
+   */
+  pitNoseChangeRequest: boolean | null = null;
+  /** Decision taken when this stop began, so the service matches its own timer. */
+  pitNoseChanging = false;
   /** True while a pit request is being refused because the entry is closed. */
   pitEntryRefused = false;
   /** True once this pass at the pit entry has been missed, so it is said once. */
