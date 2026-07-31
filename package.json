@@ -22,6 +22,7 @@
     "probe:handling": "tsx scripts/probeHandling.ts",
     "validate:world": "tsx scripts/probeWorld.ts",
     "probe:racingline": "tsx scripts/probeRacingLine.ts",
+    "probe:attrition": "tsx scripts/probeAttrition.ts",
     "regress:laps": "tsx scripts/regressLapCounting.ts",
     "regress:results": "tsx scripts/regressClassification.ts",
     "regress:exit": "node scripts/regressSessionExit.mjs",
