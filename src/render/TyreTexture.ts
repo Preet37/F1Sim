@@ -124,8 +124,13 @@ export function buildSidewallBands(
         : (profile.length - 1) - (BAND_FROM + (BAND_TO - BAND_FROM) * f);
       const p = sample(profile, t);
       const n = normalAt(profile, t);
-      // Mirroring flips the axial component of both the point and its normal.
-      const px = side > 0 ? p.x + n.nx * BAND_LIFT : p.x - n.nx * BAND_LIFT;
+      // The normal is already outward on BOTH sides — the profile is traversed
+      // inboard-to-outboard, so its perpendicular flips sign along with the
+      // sidewall it belongs to. Negating the axial term for the inboard ring
+      // (which looks like the obvious mirror) pushes that ring 4mm INTO the
+      // carcass, and the compound colour half-disappears on exactly the face the
+      // driver looks at from the cockpit.
+      const px = p.x + n.nx * BAND_LIFT;
       const pr = p.r + n.nr * BAND_LIFT;
       for (let i = 0; i <= radial; i++) {
         const a = (i / radial) * Math.PI * 2;

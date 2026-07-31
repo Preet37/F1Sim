@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, wrapAngle } from '../core/MathUtils';
 import { EYE_X, EYE_Y, EYE_Z } from './CockpitMesh';
+import { nominalBarrierOffset } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
 
@@ -359,7 +360,16 @@ export class CameraDirector {
         // The hand-over point is chosen so a camera is picked up while the car
         // is still approaching it and dropped once the car is past, rather than
         // cutting to a camera the car has already gone by.
-        const spacing = 340;
+        // Cameras every 220m rather than every 340m.
+        //
+        // Spacing sets how far the car can get from whichever camera has it: at
+        // 340 it was up to 190m away, and at that range on a circuit that turns,
+        // the sightline leaves the road and crosses the debris fence further
+        // round the lap — so the shot was through a fence even with the camera
+        // itself standing inside the barrier. Halving the reach mostly removes
+        // the geometry that causes it, and cutting every three seconds or so is
+        // what a broadcast director does anyway.
+        const spacing = 220;
         const nextAnchor = Math.floor(car.s / spacing) * spacing;
         if (nextAnchor !== this.tracksideAnchorS) {
           this.tracksideAnchorS = nextAnchor;
@@ -367,7 +377,7 @@ export class CameraDirector {
           this.tracksideSide = (Math.floor(nextAnchor / spacing) & 1) === 0 ? 1 : -1;
           this.initialised = false;
         }
-        const i = track.indexAt(this.tracksideAnchorS + spacing * 0.55);
+        const i = track.indexAt(this.tracksideAnchorS + spacing * 0.5);
 
         // INSIDE the barrier line, not outside it.
         //
@@ -379,12 +389,11 @@ export class CameraDirector {
         // the camera twelve metres in the air. The answer is to stand in front
         // of the fence, where a real trackside operator stands.
         //
-        // The armco sits at a nominal 14m off the edge at a permanent circuit
-        // and 2.5m at a street track, so the offset is taken as a fraction of
-        // that rather than as a constant: a Monaco camera is tucked into the
-        // barrier a metre off the road, and a Silverstone one is well back.
-        const nominalBarrier = track.def.scenery === 'street' ? 2.5 : 14;
-        const standoff = Math.min(7.0, nominalBarrier * 0.55);
+        // The offset is a fraction of wherever the armco actually is — read from
+        // the same function that places it — rather than a constant, so a Monaco
+        // camera is tucked into the barrier a metre off the road and a
+        // Silverstone one stands well back. A constant cannot be both.
+        const standoff = Math.min(7.0, nominalBarrierOffset(track) * 0.55);
         const off = (track.width[i] * 0.5 + standoff) * this.tracksideSide;
         this.desired.set(
           track.px[i] + track.nx[i] * off,
@@ -415,7 +424,10 @@ export class CameraDirector {
       const dx = this.camera.position.x - p.position.x;
       const dz = this.camera.position.z - p.position.y;
       const dist = Math.max(10, Math.hypot(dx, dz));
-      targetFov = clamp((Math.atan(TRACKSIDE_FRAMED_M / dist) * 2 * 180) / Math.PI, 8, 32);
+      // The long end has to be genuinely long. An 8-degree floor was already
+      // biting at ninety metres, which is well inside the range this camera
+      // covers, so the car stopped growing and simply shrank away up the road.
+      targetFov = clamp((Math.atan(TRACKSIDE_FRAMED_M / dist) * 2 * 180) / Math.PI, 5.5, 32);
       // A car covers ground far faster than a rate of 4 can follow, and the zoom
       // arriving a second late is worse than no zoom at all.
       fovRate = 9;
@@ -499,9 +511,18 @@ export class CameraDirector {
 
     // Drivers look at the apex, not at the nose. Take the heading of the track
     // a second or so ahead and turn part of the way toward it.
+    //
+    // A SMALL part of the way. Half the heading error, capped at 24 degrees, put
+    // the view a quarter turn off the car's axis at the apex — and because the
+    // cockpit is bolted to the car and the head is not, the halo, the wheel and
+    // the mirrors all slid bodily across the frame while the tub stayed put. The
+    // reference onboard footage does not do this at all: through every corner in
+    // it the cockpit sits dead centre and symmetric. Eleven degrees is enough to
+    // feel like a driver leaning into a corner and little enough that the car
+    // still frames the shot.
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
     const aheadHeading = track.headingAt(car.s + lookAheadM);
-    const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.5, -0.42, 0.42);
+    const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.30, -0.20, 0.20);
     this.headYaw = damp(this.headYaw, target, 2.6, dt);
 
     // A three-degree nose-down bias: a driver's eyeline is on the road a hundred
