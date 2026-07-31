@@ -10,7 +10,7 @@
  *   0-300 km/h        ~8.6 s
  *   top speed         330-360 km/h depending on trim
  *   300-0 km/h        ~4.0 s in roughly 120 m
- *   peak braking      ~5.5 g
+ *   peak braking      ~6-7 g of specific force (tire plus ~1g of drag at 300)
  *   peak lateral      ~2.0 g at 100 km/h, 4.5-6.0 g at 250+ km/h
  *
  * Run: npm run validate:physics
@@ -162,7 +162,18 @@ console.log('\nBRAKING FROM 300 km/h');
   // stop includes a pedal ramp and a driver who is not at the limit immediately.
   check('300-50, modulated, time', good.t, 1.8, 4.6, 's');
   check('300-50, modulated, dist', good.dist, 75, 175, 'm');
-  check('peak braking', good.peakG, 4.0, 6.8, 'g');
+  // The ceiling here is NOT the same quantity as the lateral ceiling below,
+  // and it used to be set as though it were.
+  //
+  // `longitudinalG` is specific force — what an accelerometer in the car reads —
+  // so under braking it is tire force PLUS aerodynamic drag, and at 300 km/h
+  // this car's drag alone is worth about 1.05g. The skidpad checks measure tire
+  // force on its own. A shared 6.8g bound therefore asked the braking case to
+  // fit a whole g of drag inside a tire-only budget, which no grip-limited stop
+  // from 300 km/h can do. It only ever passed because the calipers ran out of
+  // authority first and hid the tire limit. With brakes that can reach the tire
+  // limit the bound has to be the tire ceiling plus the drag that rides on top.
+  check('peak braking', good.peakG, 4.0, 7.5, 'g');
   check('lock-up time, modulated', good.locked, 0, 0.35, 's');
   check('lock-up penalty, distance', clumsy.dist - good.dist, 1, 400, 'm');
   check('flat-spot from locking', 1 - clumsy.surface, 0.02, 0.35, '');
