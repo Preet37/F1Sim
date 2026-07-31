@@ -13,7 +13,7 @@
     "calibrate": "tsx scripts/calibrateSolver.ts",
     "validate:physics": "tsx scripts/validatePhysics.ts",
     "validate:race": "tsx scripts/validateRace.ts",
-    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying && npm run validate:integrity && npm run validate:world && npm run validate:difficulty && npm run validate:gamepad",
+    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying && npm run validate:integrity && npm run validate:world && npm run validate:difficulty && npm run validate:gamepad && npm run validate:flags",
     "validate:gamepad": "tsx scripts/probeGamepad.ts",
     "validate:difficulty": "tsx scripts/probeDifficulty.ts",
     "validate:qualifying": "tsx scripts/probeQualifying.ts",
@@ -25,10 +25,12 @@
     "probe:racingline": "tsx scripts/probeRacingLine.ts",
     "probe:attrition": "tsx scripts/probeAttrition.ts",
     "probe:damage": "tsx scripts/probeDamage.ts",
+    "probe:racesweep": "tsx scripts/raceSweep.ts",
     "regress:laps": "tsx scripts/regressLapCounting.ts",
     "regress:results": "tsx scripts/regressClassification.ts",
     "regress:exit": "node scripts/regressSessionExit.mjs",
-    "regress": "npm run regress:laps && npm run regress:results && npm run regress:exit"
+    "regress": "npm run regress:laps && npm run regress:results && npm run regress:exit",
+    "validate:flags": "tsx scripts/probeFlags.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

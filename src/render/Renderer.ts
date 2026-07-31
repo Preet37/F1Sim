@@ -10,6 +10,7 @@ import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
 import { RacingLine } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
+import { MarshalPosts } from './MarshalPost';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 
@@ -111,6 +112,7 @@ export class Renderer {
   private paddock: PaddockScene | null = null;
   /** The player's own pit box, highlighted so they can find it. */
   private pitBox: PitBoxMarker | null = null;
+  private marshalPosts: MarshalPosts | null = null;
   private carVisuals: CarVisual[] = [];
   /** Bodywork lying on the circuit. One draw call, session-lifetime. */
   private wreckage: Wreckage | null = null;
@@ -463,6 +465,12 @@ export class Renderer {
     this.racingLine.setVisible(this.racingLineVisible);
     this.scene.add(this.racingLine.mesh);
 
+    // The flag panels, one per marshalling sector. Built from race control's own
+    // sector count rather than a constant of the renderer's, so the panel a
+    // driver sees and the sector the simulation is flagging are the same object.
+    this.marshalPosts = new MarshalPosts(engine.track, engine.raceControl.marshalSectorCount);
+    this.scene.add(this.marshalPosts.root);
+
     // The player's pit box. Built for the player's car only — there is nothing
     // to highlight in a fully simulated session, and the twenty boxes the
     // circuit paints are identical, so without this the player has no way of
@@ -660,6 +668,11 @@ export class Renderer {
       this.pitBox.dispose();
       this.pitBox = null;
     }
+    if (this.marshalPosts) {
+      this.scene.remove(this.marshalPosts.root);
+      this.marshalPosts.dispose();
+      this.marshalPosts = null;
+    }
     for (const v of this.carVisuals) {
       this.scene.remove(v.root);
       v.dispose();
@@ -770,6 +783,10 @@ export class Renderer {
       const p = engine.playerCar;
       this.pitBox.setVisible(!!p && (p.inPitLane || p.pitRequested));
     }
+
+    // The marshal panels. Cheap: the colour buffer is only touched on the frame
+    // a sector's flag actually changes.
+    this.marshalPosts?.update(engine.raceControl);
 
     // The radial blur converges on the point the car is heading for, not the
     // centre of the screen. In a corner the vanishing point swings wide, and
@@ -1016,6 +1033,13 @@ export class Renderer {
       v.root.position.set(p.position.x, y, p.position.y);
       v.root.rotation.y = p.heading;
 
+      // Geometry LOD, from the camera's position at the END of the previous
+      // frame — the director has not moved it yet this frame. A frame of lag on
+      // a sixty-metre threshold is not something anybody can see, and reading it
+      // here rather than after the director runs keeps all the per-car work in
+      // one loop.
+      v.updateDetail(this.director.camera.position.distanceTo(v.root.position));
+
       // Body roll and pitch from the actual accelerations, which is what makes
       // the car look loaded up rather than sliding around on rails.
       //
@@ -1069,9 +1093,15 @@ export class Renderer {
         }
       }
 
-      // Tyres. Cheap to check every frame — `setCompound` returns immediately
-      // when the material is already the right one — and it means a pit stop
-      // changes the sidewall colour the instant the sim says it has.
+      // Tyres.
+      //
+      // POLLED, not pushed. A pit stop changes `car.compound` deep inside the
+      // race engine's service path (`serviceInBox`), which knows nothing about
+      // the renderer and should not have to. `setCompound` returns immediately
+      // when the compound is already the right one, so asking every car every
+      // frame costs one comparison — and it cannot go stale the way a missed
+      // notification would. The sidewall changes colour the instant the sim says
+      // the new set is on.
       v.setCompound(car.compound);
 
       // DRS flap: open is roughly 50 degrees.

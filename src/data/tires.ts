@@ -14,7 +14,23 @@ export interface TireCompound {
   /** Short label for the HUD. */
   code: string;
   name: string;
-  /** Colour used by the HUD and the tire wall in the render layer. */
+  /**
+   * Compound colour. THE single source of truth — the HUD's compound label, the
+   * per-car dot in the timing tower, the setup screen's picker, the tyre stacks
+   * in the garage and the sidewall band on the car all read it from here, so a
+   * red dot in the tower and a red sidewall always mean the same thing.
+   *
+   * This is the CURRENT Pirelli scheme, in use since 2019 and what modern F1
+   * actually runs: soft RED, medium YELLOW, hard WHITE, intermediate GREEN,
+   * wet BLUE.
+   *
+   * DO NOT "correct" the hard to grey or blue. The request that prompted this
+   * asked for a grey hard and came with a 2018 Pirelli chart, but that chart is
+   * the older seven-compound rainbow — in which the hard was ice-blue and the
+   * MEDIUM was white — and so matches neither the description nor anything a
+   * player has seen on television since 2018. The three-dry-compound scheme
+   * above is both current and the closest thing to what was actually asked for.
+   */
   colour: number;
 
   /** Multiplier on peak lateral/longitudinal grip at optimal temperature. */

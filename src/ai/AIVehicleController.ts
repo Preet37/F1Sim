@@ -97,8 +97,18 @@ export interface AIPerception {
   blueFlag: boolean;
   /** Safety car or VSC in force — hold position and respect the delta. */
   neutralised: boolean;
-  /** Speed the VSC delta requires, m/s. 0 when not applicable. */
+  /** Speed cap the neutralisation imposes, m/s. 0 when not applicable. */
   neutralisedTargetMs: number;
+  /**
+   * Fraction of the racing-line speed to run at under a neutralisation.
+   *
+   * The cap alone only bites on the straights, which is why a safety car built
+   * from a cap alone produced a lap barely slower than a racing one at a circuit
+   * whose corners were already under it. See `SC_PACE_SCALE`.
+   */
+  neutralisedScale: number;
+  /** Multiplier a car over the queue gap limit may use to close it. */
+  neutralisedCatchUpMult: number;
   /**
    * Maximum gap to the car ahead under a safety car, metres. 0 when free.
    * Ten car lengths — Art. 55.7 / B5.13.2b.
@@ -140,7 +150,8 @@ export function createPerception(): AIPerception {
     blendRemainingM: 0,
     ahead: null, behind: null, alongsideLeft: null, alongsideRight: null,
     localYellow: false, yellowLevel: 0, blueFlag: false, neutralised: false,
-    neutralisedTargetMs: 0, queueGapM: 0, mustUnlap: false,
+    neutralisedTargetMs: 0, neutralisedScale: 0, neutralisedCatchUpMult: 1,
+    queueGapM: 0, mustUnlap: false,
     holdRacingLine: false, holdUntilLine: false,
     pitThisLap: false, pitBoxAheadM: -1, wetness: 0,
   };
@@ -436,12 +447,26 @@ const YELLOW_LIFT_DOUBLE = 0.62;
 const UNLAP_PACE_MULT = 1.75;
 
 /**
- * How much speed a car gives up when it is inside the minimum gap to the car
- * ahead under a safety car, m/s.
+ * How close a car may get to the one in front while overtaking is forbidden,
+ * metres.
  *
- * An absolute figure, so that easing off cannot compound along a queue.
+ * Three car lengths. Under a neutralisation the overtaking ban is absolute
+ * (Art. 55.8 / B5.13.2c, Art. 56.5 / B5.12.2b), and the only thing that makes a
+ * ban real in a simulation is a following car that will not close the gap far
+ * enough to get alongside. Comfortably inside the ten-car-length queue limit, so
+ * a queue that holds this distance is also a queue that satisfies Art. 55.7.
  */
-const QUEUE_EASE_MS = 5;
+const NO_PASS_HOLD_M = 17;
+
+/**
+ * Below this speed the car ahead is treated as an obstacle rather than a rival,
+ * m/s.
+ *
+ * About 50 km/h — slower than any corner on the calendar is taken, so a car
+ * under it has spun, is limping, or has stopped. The overtaking ban is not a
+ * requirement to crash into it.
+ */
+const NO_PASS_MIN_AHEAD_MS = 14;
 
 /** How often the FSM re-evaluates its state, in seconds. */
 const DECISION_INTERVAL = 0.1;
@@ -1239,9 +1264,10 @@ export class AIVehicleController {
     // satisfies that by simply running at the delta pace, which is what a real
     // driver does because it is the easy way to stay legal.
     if (p.neutralised && p.neutralisedTargetMs > 0) {
-      // The neutralisation is a CAP, and it is only ever applied as one.
+      // The neutralisation is applied as a CAP and a SCALE, and never as a
+      // target the car is asked to reach.
       //
-      // Catching the queue up is expressed by raising the cap, never by raising
+      // Catching the queue up is expressed by relaxing both, never by raising
       // the target speed itself. Raising the target directly looks equivalent
       // and is catastrophic: it overrides the cornering limit computed from the
       // car's own grip, so a car told to close a ten-car-length gap tried to
@@ -1249,40 +1275,68 @@ export class AIVehicleController {
       // off-track count doubled and the field spread went from 89 seconds to
       // 268 the moment this was a max() instead of a min().
       let cap = p.neutralisedTargetMs;
+      let scale = p.neutralisedScale > 0 ? p.neutralisedScale : 1;
 
       // A car that has been waved past is allowed to get on with it: it has a
       // lap to make up on the whole queue and the safety car, and it cannot do
       // that at the delta. Art. 55.14 / B5.13.4c requires it to pass.
       if (p.mustUnlap) {
         cap *= UNLAP_PACE_MULT;
+        scale = 1;
       } else if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM > p.queueGapM) {
         // "All F1 Cars must reduce speed and form up behind the Safety Car no
         // more than ten (10) car lengths apart" — Art. 55.7 / B5.13.2b. When
         // the gap is over the limit, close it; the concertina that produces is
         // the single most consequential thing a safety car does to a race.
-        const urgency = clamp01((p.ahead.gapM - p.queueGapM) / (p.queueGapM * 3));
-        cap *= 1 + urgency * 0.32;
+        //
+        // The urgency ramp is over five gap-limits rather than three, and it
+        // relaxes the corner scale as well as the straight-line cap, because a
+        // car that only gets a higher cap can close a gap on the straights and
+        // nowhere else — which at a circuit that is mostly corners is not
+        // closing it at all. Measured, the field was still 590 metres a car
+        // apart when the safety car came in.
+        const urgency = clamp01((p.ahead.gapM - p.queueGapM) / (p.queueGapM * 5));
+        cap *= 1 + urgency * (p.neutralisedCatchUpMult - 1);
+        // Capped at twice the neutralised scale rather than at racing pace: a
+        // car closing the queue is quicker than the queue, not as quick as it
+        // was under green, and letting it back to green pace turned catching up
+        // into racing.
+        scale = lerp(scale, Math.min(1, scale * 2), urgency);
       }
 
-      targetSpeed = Math.min(targetSpeed, cap);
+      targetSpeed = Math.min(targetSpeed * scale, cap);
 
-      // Too close to the car ahead: ease off rather than run into the back of
-      // the queue.
-      //
-      // Subtractive and floored, NOT a multiplier. "Target 92% of the car
-      // ahead" reads as a mild correction and is not one — it compounds down
-      // the queue, because the car behind then targets 92% of THAT. Over
-      // nineteen cars it is a factor of five, so the front of the safety car
-      // train ran at the delta while the back crawled at 65 km/h, lost a lap
-      // an hour, and could not even get itself into the pit lane.
-      const tooClose = p.queueGapM * 0.45;
-      if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM < tooClose) {
-        const ease = clamp01(1 - p.ahead.gapM / Math.max(tooClose, 1));
-        targetSpeed = Math.min(
-          targetSpeed,
-          Math.max(p.ahead.speedMs - ease * QUEUE_EASE_MS, cap * 0.6),
-        );
-      }
+    }
+
+    // NOBODY PASSES.
+    //
+    // "no driver may overtake another F1 Car on the track" from the moment the
+    // safety car is deployed until they pass the Line after it has come in
+    // (Art. 55.8 / B5.13.2c), identically under the VSC (Art. 56.5 / B5.12.2b),
+    // and under a waved yellow (ISC Appendix H Art. 2.5.5b). `localYellow` is
+    // exactly that set of conditions.
+    //
+    // The state machine already refuses to enter OVERTAKE under any of them,
+    // and that turned out to be worth very little: measured over a staged
+    // deployment, 140 passes were completed under the VSC and 55 under the
+    // safety car, because a car that is simply quicker than the one in front
+    // does not need an overtaking STATE to drive past it. What stops it is not
+    // being allowed to close the last few metres.
+    //
+    // The taper reaches 1 at the hold distance, which is what stops it
+    // compounding down the queue — a car sitting at the hold distance targets
+    // exactly the speed of the car in front, not a fraction of it. An earlier
+    // version targeted 92% of the car ahead unconditionally; over nineteen cars
+    // that is a factor of five, and the back of the train crawled at 65 km/h.
+    if (p.localYellow && !p.mustUnlap && p.ahead !== null &&
+        p.ahead.gapM < NO_PASS_HOLD_M &&
+        // You do not queue behind a car that has stopped racing. A driver going
+        // round a spun or crawling car is not overtaking it in any sense a
+        // steward recognises, and refusing to would park the entire field
+        // behind the incident the flag is there to warn about.
+        p.ahead.speedMs > NO_PASS_MIN_AHEAD_MS) {
+      const t = clamp01(p.ahead.gapM / NO_PASS_HOLD_M);
+      targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * lerp(0.55, 1, t));
     }
 
     // Pit lane speed limit, and the stop in the box.

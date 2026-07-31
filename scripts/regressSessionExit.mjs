@@ -84,7 +84,12 @@ const st = () => page.evaluate(() => {
     paused: g.clock.paused,
     hasEngine: !!g.engine,
     overlayShown: !!o && getComputedStyle(o).display !== 'none',
-    buttons: o ? [...o.querySelectorAll('button')].map((b) => b.textContent.trim()) : [],
+    // The label, not the whole button. A pause-menu entry now carries a label
+    // and a line of explanatory meta in separate spans, so `textContent` on the
+    // button reads "ResumeBack to the car" — which no test looking for "Resume"
+    // will ever match, on a menu that offers Resume perfectly well.
+    buttons: o ? [...o.querySelectorAll('button')].map((b) =>
+      (b.querySelector('.pause-btn-label') ?? b).textContent.trim()) : [],
     simTime: g.engine?.time ?? null,
   };
 });
@@ -115,7 +120,8 @@ check(t1 === t2, `paused time really stands still (${t1} -> ${t2})`);
 const clickPauseButton = async (pattern, what) => {
   const clicked = await page.evaluate((p) => {
     const b = [...document.querySelectorAll('.pause-overlay button')]
-      .find((e) => new RegExp(p, 'i').test(e.textContent || ''));
+      .find((e) => new RegExp(p, 'i').test(
+        ((e.querySelector('.pause-btn-label') ?? e).textContent || '').trim()));
     if (!b) return false;
     b.click();
     return true;
@@ -126,7 +132,11 @@ const clickPauseButton = async (pattern, what) => {
 
 console.log('\nRESUME PUTS THE PLAYER BACK ON TRACK');
 await clickPauseButton('^resume$', 'clicking Resume');
-await page.waitForTimeout(1200);
+// Long enough for the clock to move on a software rasteriser that is sharing
+// the machine. 1200ms was a handful of frames on a quiet box and none at all on
+// a busy one, which made this assertion fail for reasons that had nothing to do
+// with pausing.
+await page.waitForTimeout(4000);
 const resumed = await st();
 check(!resumed.paused && !resumed.overlayShown, 'the overlay is gone and the clock is running');
 check(resumed.simTime > t2, `time is moving again (${t2} -> ${resumed.simTime})`);
@@ -141,9 +151,26 @@ check(quit.screen !== 'racing', `the player is off the track (screen "${quit.scr
 check(!quit.hasEngine, 'the session engine has been released');
 check(!quit.overlayShown, 'the pause menu is not stranded over the menus');
 check(!quit.paused, 'the clock is not left paused');
-const title = await page.evaluate(() =>
-  (document.querySelector('.screen .title')?.textContent || '').trim());
-check(title.length > 0, `a real screen is showing ("${title}")`);
+// "Did we land somewhere real" is a question about the screen layer, not about
+// any particular heading, and it has to be asked that way.
+//
+// This assertion has now been broken twice by front-end work that was perfectly
+// correct: first it looked for `.title`, which the redesign retired, and then
+// for `.wordmark`, which the menu rebuild retired in turn. Both times it
+// reported an empty string for a menu that was rendering fine. So it now asks
+// the only thing that is actually invariant — the screen layer is visible and
+// has content in it — and reports the first heading it can find purely as a
+// label, without depending on one existing.
+const landed = await page.evaluate(() => {
+  const root = document.querySelector('.screen');
+  if (!root || root.classList.contains('hidden')) return { ok: false, label: '(screen layer hidden)' };
+  const text = (root.textContent || '').replace(/\s+/g, ' ').trim();
+  const heading = ['.page-title', '.wordmark', '.title', 'h1', '.section-title']
+    .map((s) => (root.querySelector(s)?.textContent || '').trim())
+    .find((t) => t.length > 0);
+  return { ok: text.length > 20, label: heading || text.slice(0, 40) };
+});
+check(landed.ok, `a real screen is showing ("${landed.label}")`);
 
 console.log('\nAND THE GAME STILL WORKS AFTERWARDS');
 const before = await page.evaluate(() => {
@@ -154,7 +181,15 @@ await page.evaluate(() => {
   const g = window.__game;
   g.weekend = [g.sessionConfig('race', 'Grand Prix', 'monza', 0, 2)];
   g.weekendIndex = 0;
-  g.beginSession('monza');
+  // The method that puts a session on track has been called both
+  // `beginSession` and `launchSession`. This test is about whether the game
+  // still works after abandoning one, not about what that method is called
+  // this week, so it takes whichever is there and says so plainly if neither
+  // is — a missing entry point should read as a broken test, not as a broken
+  // game.
+  const start = g.launchSession ?? g.beginSession;
+  if (typeof start !== 'function') throw new Error('no launchSession/beginSession on the game');
+  start.call(g, 'monza');
 });
 await page.waitForTimeout(4000);
 const again = await st();

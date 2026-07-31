@@ -1188,6 +1188,8 @@ export class RaceEngine {
     p.blueFlag = car.blueFlag;
     p.neutralised = rc.neutralisation !== 'none';
     p.neutralisedTargetMs = rc.vscTargetMs;
+    p.neutralisedScale = rc.neutralisedScale;
+    p.neutralisedCatchUpMult = rc.catchUpMult;
     p.queueGapM = rc.queueGapLimitM(car, car.position === 1);
     p.mustUnlap = car.mustUnlap;
     p.holdRacingLine = car.holdRacingLine;
@@ -1470,6 +1472,52 @@ export class RaceEngine {
     }
     if (wear < 0.45) return 'TYRES WORN — PIT WINDOW OPEN';
     return null;
+  }
+
+  /**
+   * What the crew would do at this car's next stop, and why — the briefing the
+   * pit screen shows before the driver chooses.
+   *
+   * Everything here is read from the same functions that run the stop, so the
+   * screen cannot describe a stop the engine would not perform. `compound` is
+   * literally `chooseCompoundForStint`'s answer with the driver's own override
+   * removed, which is what makes it honest to label it "the engineers' call".
+   */
+  pitBriefing(car: CarEntry): {
+    compound: CompoundId;
+    /** Dry compounds already used, for the mandatory-two rule. */
+    dryUsed: CompoundId[];
+    /** True when reaching the flag without another dry compound is a DSQ. */
+    secondCompoundRequired: boolean;
+    /** Front wing condition, 0..1, and whether the crew would change it. */
+    frontWing: number;
+    noseChangeAdvised: boolean;
+    /** Seconds the stationary time would cost a nose change. */
+    noseChangeCostS: number;
+    /** Estimated stationary time without a nose change. */
+    baseStopS: number;
+    lapsRemaining: number;
+  } {
+    const held = car.pitCompoundRequest;
+    car.pitCompoundRequest = null;
+    const compound = this.chooseCompoundForStint(car);
+    car.pitCompoundRequest = held;
+
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const dryUsed = [...new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather))];
+    const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
+
+    return {
+      compound,
+      dryUsed,
+      secondCompoundRequired:
+        this.config.kind === 'race' && !this.weather.hasRained && dryUsed.length < 2,
+      frontWing,
+      noseChangeAdvised: frontWing < 0.7,
+      noseChangeCostS: frontWing < 0.999 ? 9 + (1 - frontWing) * 5 : 0,
+      baseStopS: car.team.performance.pitCrewTimeS,
+      lapsRemaining: Math.max(0, totalLaps - car.lap),
+    };
   }
 
   private shouldPit(car: CarEntry): boolean {
@@ -1758,8 +1806,18 @@ export class RaceEngine {
       // A damaged nose costs real time to change: the crew has to remove the
       // old assembly and fit a new one, and that is why a driver with a broken
       // wing weighs limping to the end against losing a dozen seconds now.
+      //
+      // The crew's own rule is "change it below 70%". A driver who has been
+      // asked can overrule it in either direction, and the decision is latched
+      // HERE rather than read again on release: the timer charged for the stop
+      // and the work actually done have to be the same decision, or a player
+      // who changed their mind mid-stop would be billed for a wing they did not
+      // get, or get one they did not pay for.
       const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
-      if (frontWing < 0.7) car.pitBoxTimer += 9 + (1 - frontWing) * 5;
+      car.pitNoseChanging = car.pitNoseChangeRequest ?? (frontWing < 0.7);
+      if (car.pitNoseChanging && frontWing < 0.999) {
+        car.pitBoxTimer += 9 + (1 - frontWing) * 5;
+      }
 
       // Serve a drive-through by simply passing through without stopping; a
       // stop-go adds its time to the stationary period.
@@ -1786,8 +1844,18 @@ export class RaceEngine {
         // The crew replaces the nose and the bodywork they can reach. Floor,
         // suspension and power unit damage stays with the car for the rest of
         // the race — those are not parts anyone changes in three seconds.
-        car.damage.repair('frontWingL', 'frontWingR', 'sidepodL', 'sidepodR');
+        //
+        // The nose is separable from the bodywork because it is the expensive
+        // half of the job: the sidepod panels come off and on inside the tyre
+        // stop, the front wing assembly does not. A driver who declined the
+        // wing keeps the damage and keeps the nine seconds.
+        if (car.pitNoseChanging) car.damage.repair('frontWingL', 'frontWingR');
+        car.damage.repair('sidepodL', 'sidepodR');
         car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
+        // The driver's instructions were for THIS stop. Leaving them latched
+        // would silently apply a Monaco tyre call to a stop twenty laps later.
+        car.pitCompoundRequest = null;
+        car.pitNoseChangeRequest = null;
         // Advance the plan.
         const next = car.plan[Math.min(car.pitStops, car.plan.length - 1)];
         car.targetPitLap = next ? next.pitOnLap : -1;
@@ -1802,6 +1870,12 @@ export class RaceEngine {
 
   /** Picks the compound for the next stint, honouring the two-compound rule. */
   private chooseCompoundForStint(car: CarEntry): CompoundId {
+    // A driver who has told the crew what to fit gets what they asked for,
+    // including when it is a mistake. The pit screen states the mandatory
+    // second-compound position and the weather in plain terms before the choice
+    // is made; overriding it here would make the screen a suggestion box.
+    if (car.pitCompoundRequest) return car.pitCompoundRequest;
+
     // Weather first: the right tyre for the conditions beats any plan.
     if (this.weather.wetness > 0.6) return 'wet';
     if (this.weather.wetness > 0.3) return 'intermediate';
