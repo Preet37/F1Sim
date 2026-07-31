@@ -233,8 +233,8 @@ export class CameraDirector {
         //    rear wing, the road runs away underneath rather than out in front,
         //    and the car sits ON the picture instead of in the middle of it.
         const fast = clamp01(this.smoothSpeed / 90);
-        let dist = lerp(6.1, 7.3, fast);
-        const height = lerp(1.64, 1.90, fast);
+        let dist = lerp(5.2, 6.4, fast);
+        const height = lerp(1.50, 1.76, fast);
 
         // Longitudinal g closes and opens the gap.
         //
@@ -261,9 +261,9 @@ export class CameraDirector {
         // the horizon. This pair puts the car around two thirds down and the
         // horizon around a third from the top, which is the broadcast framing.
         this.lookTarget.set(
-          p.position.x + sinH * 6.4,
-          carY + 0.74,
-          p.position.y + cosH * 6.4,
+          p.position.x + sinH * 5.6,
+          carY + 0.80,
+          p.position.y + cosH * 5.6,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
         // Bank into the corner.

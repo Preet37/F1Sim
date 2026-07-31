@@ -125,14 +125,18 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     // 0.55 it goes the other way and the lobe tightens into a single glaring
     // hotspot that fills the onboard camera.
     roughness: 0.58, metalness: 0.05,
-    // Half the strength at just over half the frequency. Doubling the stone
-    // size takes the finest octave from a fifth of a pixel to nearly half of
-    // one at the range that was boiling, which is the side of the sampling
-    // limit it has to be on; halving the strength deals with what is left.
-    // The road still reads as a surface with stones in it — that is what the
-    // term is for, and every reference frame of real asphalt has one — it just
-    // stops sparkling.
-    aggregate: 0.34, aggregateScale: 3.0,
+    // Just over half the frequency, and most of the strength kept.
+    //
+    // Doubling the stone size takes the finest octave from a fifth of a pixel
+    // to nearly half of one at the range that was boiling, which is the side of
+    // the sampling limit it has to be on. The strength stays high because this
+    // term does two different jobs and only one of them was the problem: it
+    // TINTS, which a mip chain filters correctly and which is what stops the
+    // road reading as a grey plane, and it BUMPS, which a mip chain cannot
+    // filter correctly and which is where the sparkle came from. So the tint
+    // keeps its strength and the bump below is cut to a third of it and faded
+    // on its own footprint.
+    aggregate: 0.45, aggregateScale: 3.0,
     seams: 0.55, seamScale: 0.045,
     patches: 0.85, patchScale: 0.02,
     rubber: 1,
