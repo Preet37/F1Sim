@@ -4,6 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { clamp01 } from '../core/MathUtils';
 
 /**
@@ -22,10 +23,19 @@ import { clamp01 } from '../core/MathUtils';
  * genuinely hot things bloom, which is why the sparks and brake discs read as
  * emissive and the white bodywork does not.
  *
- * The grade pass then does three things in one fragment shader, because each is
- * a couple of instructions and three separate full-screen passes would cost
- * three round trips through memory for no benefit:
+ * The grade pass then does everything else in one fragment shader, because each
+ * piece is a handful of instructions and separate full-screen passes would cost
+ * a round trip through memory apiece for no benefit:
  *
+ *  - AMBIENT OCCLUSION from the depth buffer. This is the pass that stops
+ *    objects floating. Direct light and an environment probe both arrive from
+ *    everywhere, so a crevice — the gap between two wing elements, the undercut
+ *    of a sidepod, the strip of road under a floor — receives exactly as much
+ *    light as an exposed surface does, and renders exactly as bright. Real
+ *    crevices are dark, and the eye uses that darkening to work out what is
+ *    touching what. Reconstructing it in screen space from depth alone costs
+ *    twelve texture fetches and needs no extra geometry pass, which matters
+ *    when there are twenty cars to draw.
  *  - RADIAL BLUR that strengthens with speed. This is the single most effective
  *    speed cue there is. A car at 320 km/h and a car at 120 km/h fill the same
  *    fraction of the screen and the road ahead looks identical; smearing the
@@ -43,6 +53,8 @@ import { clamp01 } from '../core/MathUtils';
 const GRADE_SHADER = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
+    /** Scene depth, shared by both composer buffers. */
+    tDepth: { value: null as THREE.Texture | null },
     /** 0..1 blur strength, driven by speed. */
     uSpeed: { value: 0 },
     /** Vanishing point in UV space — where the blur streaks converge. */
@@ -54,6 +66,23 @@ const GRADE_SHADER = {
     /** Full-screen flash, 0..1: used for the start lights and impacts. */
     uFlash: { value: 0 },
     uFlashColor: { value: new THREE.Color(1, 1, 1) },
+    /** Camera clip planes, for linearising the depth buffer. */
+    uNear: { value: 0.1 },
+    uFar: { value: 2000 },
+    /**
+     * 0.5 / tan(fovY / 2). Converts a world radius at a given view depth into a
+     * screen-space radius, which is what keeps the AO's footprint a fixed size
+     * in METRES rather than in pixels — without it the occlusion around a car
+     * grows as the camera approaches and the whole effect swims.
+     */
+    uProjScale: { value: 1.0 },
+    uAspect: { value: 1.6 },
+    /** Overall AO strength; 0 disables the taps entirely. */
+    uAO: { value: 0.0 },
+    /** AO sampling radius in metres. */
+    uAORadius: { value: 0.5 },
+    /** One over the render target size, in pixels. */
+    uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -65,6 +94,7 @@ const GRADE_SHADER = {
   fragmentShader: /* glsl */`
     precision highp float;
     uniform sampler2D tDiffuse;
+    uniform sampler2D tDepth;
     uniform float uSpeed;
     uniform vec2 uFocus;
     uniform float uVignette;
@@ -72,12 +102,106 @@ const GRADE_SHADER = {
     uniform float uTime;
     uniform float uFlash;
     uniform vec3 uFlashColor;
+    uniform float uNear;
+    uniform float uFar;
+    uniform float uProjScale;
+    uniform float uAspect;
+    uniform float uAO;
+    uniform float uAORadius;
+    uniform vec2 uTexel;
     varying vec2 vUv;
 
     // Interleaved gradient noise: one line, well distributed, and stable enough
     // between frames that it does not crawl the way a hash of uv+time does.
     float dither(vec2 p) {
       return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+    }
+
+    /** Depth buffer value to distance from the eye, in metres. */
+    float linearDepth(vec2 uv) {
+      float d = texture2D(tDepth, uv).x;
+      // Perspective depth is stored non-linearly; this is the standard inverse.
+      // Clamped just short of 1.0 so the sky returns a large finite number
+      // instead of a division by zero.
+      d = min(d, 0.9999999);
+      return (uNear * uFar) / (uFar - d * (uFar - uNear));
+    }
+
+    /**
+     * Screen-space ambient occlusion from depth alone.
+     *
+     * The naive version of this — "count how many neighbours are nearer than I
+     * am" — does not work, and it is worth saying why, because it is the
+     * version everybody writes first and it is what the first attempt here did.
+     * A flat panel seen at a grazing angle has an enormous depth gradient
+     * across it: at 30 degrees, neighbours half a metre away in screen space
+     * are a quarter of a metre nearer the camera. The naive test calls that
+     * occlusion, so every flank of the car acquires a grey wash that swims
+     * about as the camera moves, and the actual creases are lost inside it.
+     *
+     * The fix is to measure depth against the LOCAL SURFACE PLANE rather than
+     * against the centre depth. Two derivatives give the plane's slope in
+     * screen space for free — no normal buffer, no second geometry pass — and
+     * the test becomes "is this neighbour in front of the plane I am lying on?"
+     * A flat panel then reports exactly zero occlusion at any angle, and only
+     * genuine geometry sticking out above the surface darkens anything.
+     *
+     * The far rejection is the other essential term: a neighbour several metres
+     * nearer is a different object, not a crease, and counting it draws a dark
+     * halo around every car against the sky.
+     */
+    float ambientOcclusion(vec2 uv, float centre, vec2 texel) {
+      // Slope of the depth field, in metres per pixel. Sampled from the
+      // hardware derivatives of the already-linearised centre depth.
+      float dzdx = dFdx(centre);
+      float dzdy = dFdy(centre);
+      // Derivatives explode across a silhouette. Clamp them to a slope no real
+      // surface plausibly has at this scale, so a pixel on the edge of the car
+      // predicts a sane plane instead of a wall.
+      float lim = 0.25 * max(centre, 1.0);
+      dzdx = clamp(dzdx, -lim, lim);
+      dzdy = clamp(dzdy, -lim, lim);
+
+      // Twelve taps on a spiral. The rotation comes from a 2x2 ordered pattern
+      // rather than a hash: it decorrelates neighbouring pixels enough to break
+      // the twelve-spoke banding, but repeats every two pixels, so what is left
+      // reads as a fine even texture instead of the salt-and-pepper noise a
+      // per-pixel random rotation leaves behind.
+      const int TAPS = 12;
+      vec2 pix = floor(gl_FragCoord.xy);
+      float ord = mod(pix.x, 2.0) + 2.0 * mod(pix.y, 2.0);
+      float rot = ord * 1.5707963;
+      float ca = cos(rot), sa = sin(rot);
+
+      // World radius to screen radius. Beyond this depth the footprint is
+      // sub-pixel and the taps just read the centre back, so it is faded out.
+      float rUv = uAORadius * uProjScale / max(centre, 0.35);
+      float occ = 0.0;
+
+      for (int i = 0; i < TAPS; i++) {
+        float fi = float(i);
+        float a = fi * 2.399963;                 // golden angle
+        float r = sqrt((fi + 0.5) / float(TAPS)); // uniform disc coverage
+        vec2 o = vec2(cos(a), sin(a)) * r;
+        o = vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca) * rUv;
+        o.x /= uAspect;
+
+        // Where the local plane says this neighbour should be.
+        vec2 dp = o / texel;
+        float predicted = centre + dzdx * dp.x + dzdy * dp.y;
+
+        float d = linearDepth(uv + o);
+        float diff = predicted - d;
+        // Ramp in from 15mm, so shading noise and depth precision do not
+        // register, and out again past 0.9m, beyond which it is another object.
+        occ += smoothstep(0.015, 0.13, diff) * (1.0 - smoothstep(0.35, 0.9, diff));
+      }
+
+      occ /= float(TAPS);
+      // Fade the whole effect out with distance: at 60m a 0.55m radius is a
+      // couple of pixels and all it contributes is noise.
+      occ *= 1.0 - smoothstep(35.0, 70.0, centre);
+      return clamp(occ, 0.0, 1.0);
     }
 
     void main() {
@@ -113,6 +237,23 @@ const GRADE_SHADER = {
         colour.b = texture2D(tDiffuse, vUv + dir * ca).b;
       }
 
+      // Ambient occlusion. Applied before the vignette and after the blur, so
+      // that at speed the periphery smears an already-occluded image rather
+      // than acquiring crisp AO on top of a smeared one.
+      if (uAO > 0.001) {
+        float centre = linearDepth(vUv);
+        float ao = ambientOcclusion(vUv, centre, uTexel);
+        // Occlusion attenuates ambient light, which is roughly proportional to
+        // how little of the pixel's brightness came from the key light. Rather
+        // than track that, this leans on luminance: a blown highlight is
+        // key-lit and should barely darken, a mid tone is mostly ambient and
+        // should darken fully. It is an approximation, but it is the one that
+        // keeps specular highlights from being eaten by their own crevice.
+        float lum = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+        float protect = 1.0 - smoothstep(0.55, 2.0, lum);
+        colour *= 1.0 - ao * uAO * protect;
+      }
+
       // Vignette. Squared so it stays clear of the centre and rolls in fast at
       // the corners rather than dimming the whole frame.
       float v = 1.0 - uVignette * dist * dist * 2.2;
@@ -135,10 +276,14 @@ export class PostFX {
   private composer: EffectComposer | null = null;
   private bloom: UnrealBloomPass | null = null;
   private grade: ShaderPass | null = null;
+  private fxaa: ShaderPass | null = null;
+  private depth: THREE.DepthTexture | null = null;
   private readonly renderer: THREE.WebGLRenderer;
   private flash = 0;
   private flashDecay = 4;
   private time = 0;
+  /** AO strength for the current tier; 0 on low. */
+  private aoStrength = 0;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -152,16 +297,34 @@ export class PostFX {
 
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
+    // A depth attachment the grade pass can read. Both of the composer's
+    // ping-pong buffers point at this same texture, so it does not matter which
+    // one is being read when the AO runs — and nothing downstream of the scene
+    // render writes depth, so it stays valid all the way to the end of the
+    // chain.
+    const depth = new THREE.DepthTexture(size.x, size.y);
+    depth.format = THREE.DepthFormat;
+    depth.type = THREE.UnsignedIntType;
+    this.depth = depth;
+
     // Half-float target. An 8-bit intermediate would clip every value above 1.0
     // before the bloom pass ever sees it, which defeats the point of running
     // bloom on linear radiance in the first place.
+    //
+    // MSAA is kept on: it resolves geometric edges properly, which no
+    // post-process filter can, and the FXAA at the end of the chain is there to
+    // catch the shading and texture aliasing MSAA cannot see.
     const target = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
       samples: 4,
       stencilBuffer: false,
+      depthTexture: depth,
     });
 
     const composer = new EffectComposer(renderer, target);
+    // The second buffer is cloned from the first and must share the depth
+    // attachment, or the AO reads an empty texture on every other frame.
+    composer.renderTarget2.depthTexture = depth;
     composer.addPass(new RenderPass(scene, camera));
 
     // strength / radius / threshold. The threshold is the important number: at
@@ -171,10 +334,26 @@ export class PostFX {
     composer.addPass(this.bloom);
 
     this.grade = new ShaderPass(GRADE_SHADER);
+    this.grade.uniforms.tDepth.value = depth;
+    this.aoStrength = 0.85;
+    this.grade.uniforms.uAO.value = this.aoStrength;
     composer.addPass(this.grade);
 
-    // Applies the renderer's tone mapping and converts to sRGB. Must be last.
+    // Applies the renderer's tone mapping and converts to sRGB.
     composer.addPass(new OutputPass());
+
+    // FXAA goes AFTER the tone mapper, not before it.
+    //
+    // FXAA decides where an edge is by looking at perceived luminance
+    // differences between neighbouring pixels. Run on linear radiance, a step
+    // from 8.0 to 9.0 — invisible once tone-mapped — reads as a huge edge and
+    // gets blended, while the step from 0.02 to 0.05 that is genuinely visible
+    // reads as nothing and is left jagged. Running it on the display-referred
+    // image is the whole reason it works.
+    const fxaa = new ShaderPass(FXAAShader);
+    fxaa.material.uniforms.resolution.value.set(1 / size.x, 1 / size.y);
+    this.fxaa = fxaa;
+    composer.addPass(fxaa);
 
     this.composer = composer;
   }
@@ -190,6 +369,10 @@ export class PostFX {
   setSize(width: number, height: number): void {
     this.composer?.setSize(width, height);
     this.bloom?.setSize(width, height);
+    this.fxaa?.material.uniforms.resolution.value.set(1 / width, 1 / height);
+    if (this.grade) {
+      (this.grade.uniforms.uTexel.value as THREE.Vector2).set(1 / width, 1 / height);
+    }
   }
 
   /**
@@ -197,11 +380,29 @@ export class PostFX {
    * @param focus     vanishing point in normalised screen space
    * @param nightBias more bloom at night, where the lights are the subject
    */
-  update(dt: number, speedMs: number, focusX: number, focusY: number, nightBias: number): void {
+  update(
+    dt: number,
+    speedMs: number,
+    focusX: number,
+    focusY: number,
+    nightBias: number,
+    camera?: THREE.PerspectiveCamera,
+  ): void {
     this.time += dt;
     if (!this.grade) return;
 
     const u = this.grade.uniforms;
+
+    // The AO's world-space radius depends on the projection, and the camera
+    // director changes the field of view continuously with speed. Reading it
+    // every frame is what keeps the occlusion the same physical size at 60 and
+    // at 320 km/h.
+    if (camera) {
+      u.uNear.value = camera.near;
+      u.uFar.value = camera.far;
+      u.uProjScale.value = 0.5 / Math.tan((camera.fov * Math.PI) / 360);
+      u.uAspect.value = camera.aspect;
+    }
     // Blur starts around 130 km/h and is at full strength near 320. Below that
     // there is nothing to sell — a slow car should look calm.
     const t = clamp01((speedMs - 36) / 54);
@@ -232,5 +433,7 @@ export class PostFX {
   dispose(): void {
     this.composer?.dispose();
     this.composer = null;
+    this.depth?.dispose();
+    this.depth = null;
   }
 }
