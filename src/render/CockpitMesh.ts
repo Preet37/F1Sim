@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { creased, loft, section } from './Loft';
 
 /**
  * Everything a driver actually sees from inside the car.
@@ -117,6 +118,55 @@ export interface CockpitVisual {
 // Small geometry helpers
 // ===========================================================================
 
+/**
+ * Segment counts for everything in here.
+ *
+ * NOTHING else in the scene is viewed from this range. The wheel rim sits
+ * 540mm from the eye and fills a third of the frame, so a 23mm grip at ten
+ * segments is a visible decagon and an eight-sided steering column is a
+ * visible octagon — counts that are entirely reasonable on a wishbone two
+ * metres away are not reasonable here. These are deliberately the largest
+ * numbers in the project, and they are affordable because exactly one car in
+ * the field is ever built with a cockpit.
+ */
+const SEG = {
+  /** Round sections: grips, the column, knobs, the wrist cuff. */
+  round: 24,
+  /** Curve resolution on the extruded wheel rim outline. */
+  rimCurve: 20,
+  /** Rings around a lofted bolster or dash. */
+  loftRing: 24,
+  /** Ring spacing along a lofted bolster, metres. */
+  loftStep: 0.04,
+  /** Sphere segments on the palm. */
+  palmW: 24,
+  palmH: 16,
+  /** Capsule cap segments and radial segments on a finger. */
+  fingerCap: 5,
+  fingerRadial: 14,
+};
+
+/**
+ * Scales a geometry and corrects its normals for the scale.
+ *
+ * `scale` moves the positions and leaves the normals, so a squashed sphere
+ * lights as if it were still round. A normal transforms by the INVERSE scale.
+ */
+function scaledNormals(
+  geo: THREE.BufferGeometry, sx: number, sy: number, sz: number,
+): THREE.BufferGeometry {
+  geo.scale(sx, sy, sz);
+  const n = geo.attributes.normal as THREE.BufferAttribute | undefined;
+  if (!n) return geo;
+  for (let i = 0; i < n.count; i++) {
+    const x = n.getX(i) / sx, y = n.getY(i) / sy, z = n.getZ(i) / sz;
+    const len = Math.hypot(x, y, z) || 1;
+    n.setXYZ(i, x / len, y / len, z / len);
+  }
+  n.needsUpdate = true;
+  return geo;
+}
+
 /** A capsule-ish strut between two car-local points. */
 function strut(
   x0: number, y0: number, z0: number,
@@ -125,7 +175,7 @@ function strut(
 ): THREE.BufferGeometry {
   const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
   const len = Math.hypot(dx, dy, dz) || 1e-4;
-  const g = new THREE.CylinderGeometry(r1, r0, len, 8, 1);
+  const g = new THREE.CylinderGeometry(r1, r0, len, SEG.round, 1);
   const q = new THREE.Quaternion().setFromUnitVectors(
     new THREE.Vector3(0, 1, 0),
     new THREE.Vector3(dx / len, dy / len, dz / len),
@@ -133,6 +183,27 @@ function strut(
   g.applyQuaternion(q);
   g.translate((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
   return g;
+}
+
+/**
+ * A block with every edge rounded — a grip flash, a shift paddle, a switch cap.
+ *
+ * These were `BoxGeometry`. A box has infinitely sharp edges and nothing at
+ * this range does; the corner radius is what puts a curved highlight on the
+ * part and tells the eye it is a moulded object of a particular size. `w` runs
+ * x, `h` runs y, `d` runs z, and `r` is the corner radius.
+ */
+function roundedBlock(w: number, h: number, d: number, r: number): THREE.BufferGeometry {
+  const round = Math.max(0.1, Math.min(0.9, (r * 2) / Math.max(1e-4, Math.min(w, h))));
+  // The two end caps are inset by the radius and blended in, so the ends are
+  // rounded too rather than being flat discs on a rounded bar.
+  const inset = Math.min(r, d * 0.4);
+  return loft([
+    section(-d / 2, w / 2 - inset * 0.7, -h / 2 + inset * 0.7, h / 2 - inset * 0.7, Math.min(1, round + 0.25)),
+    section(-d / 2 + inset, w / 2, -h / 2, h / 2, round),
+    section(d / 2 - inset, w / 2, -h / 2, h / 2, round),
+    section(d / 2, w / 2 - inset * 0.7, -h / 2 + inset * 0.7, h / 2 - inset * 0.7, Math.min(1, round + 0.25)),
+  ], SEG.loftRing);
 }
 
 function roundedRect(
@@ -310,16 +381,29 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // Heights here follow the monocoque in CarMesh, whose cockpit opening has its
   // rim at y = 0.572..0.596 over this stretch. The pads stand a couple of
   // centimetres proud of it, as padding does.
+  // Padding is padding: it is upholstery over foam and it has no sharp edge
+  // anywhere on it. As a box it occupied the bottom corners of the frame with
+  // two dead-straight highlights, which is the first thing the eye reads in an
+  // onboard shot. Lofted with a strongly rounded section, tapering forward, as
+  // the coaming does.
   for (const side of [-1, 1] as const) {
-    const pad = new THREE.BoxGeometry(0.075, 0.055, 0.62);
-    pad.translate(side * 0.30, 0.580, 0.13);
+    const pad = loft([
+      section(0.440, 0.0330, 0.5525, 0.6045, 0.80),
+      section(0.240, 0.0375, 0.5525, 0.6075, 0.80),
+      section(-0.020, 0.0375, 0.5525, 0.6075, 0.78),
+      section(-0.180, 0.0300, 0.5550, 0.6000, 0.85),
+    ], SEG.loftRing, true, SEG.loftStep);
+    pad.translate(side * 0.30, 0, 0);
     add(pad, carbon);
   }
   // Dash bulkhead ahead of the driver, where the column comes through. The tub
   // has necked down to a rim height of about 0.556 by here.
   {
-    const dash = new THREE.BoxGeometry(0.50, 0.06, 0.10);
-    dash.translate(0, 0.556, 0.70);
+    const dash = loft([
+      section(0.650, 0.250, 0.526, 0.586, 0.45),
+      section(0.700, 0.250, 0.526, 0.586, 0.42),
+      section(0.750, 0.238, 0.529, 0.583, 0.55),
+    ], SEG.loftRing, true, SEG.loftStep);
     add(dash, carbon);
     // Steering column, running forward and down from the back of the wheel.
     add(strut(0, 0.565, 0.572, 0, 0.556, 0.68, 0.030), carbon);
@@ -373,32 +457,39 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       bevelEnabled: true,
       bevelSize: 0.006,
       bevelThickness: 0.006,
-      bevelSegments: 2,
-      curveSegments: 8,
+      bevelSegments: 4,
+      curveSegments: SEG.rimCurve,
     });
     rim.translate(0, 0, -0.015);
-    add(rim, carbon, wheelSpin);
+    // ExtrudeGeometry is non-indexed and normals it. Every rounded corner of
+    // the outline and of the two cut-outs therefore came out as a fan of flat
+    // facets: the wheel had a visibly polygonal edge from twenty inches away,
+    // and adding curve segments alone would only have made it a finer polygon.
+    // Angle-based smoothing averages across the corner radii and leaves the
+    // 90-degree meeting of the face and the edge hard, which is exactly what a
+    // smoothing group is for.
+    add(creased(rim, 32), carbon, wheelSpin);
 
     // Rubber grips over the two uprights, with an accent flash at the top of
     // each — the same trick a real team uses to mark the straight-ahead point.
     for (const side of [-1, 1] as const) {
-      const grip = new THREE.CylinderGeometry(0.023, 0.023, 0.118, 10);
+      const grip = new THREE.CylinderGeometry(0.023, 0.023, 0.118, SEG.round);
       grip.translate(side * GRIP_X, -0.004, 0);
       add(grip, rubberGrip, wheelSpin);
-      const flash = new THREE.BoxGeometry(0.048, 0.014, 0.048);
+      const flash = roundedBlock(0.048, 0.014, 0.048, 0.005);
       flash.translate(side * GRIP_X, 0.062, 0);
       add(flash, accent, wheelSpin);
     }
     // Straight-ahead marker at 12 o'clock.
     {
-      const mark = new THREE.BoxGeometry(0.022, 0.013, 0.034);
+      const mark = roundedBlock(0.022, 0.013, 0.034, 0.004);
       mark.translate(0, 0.098, -0.012);
       add(mark, accent, wheelSpin);
     }
 
     // Shift paddles, on the far side of the rim from the driver.
     for (const side of [-1, 1] as const) {
-      const paddle = new THREE.BoxGeometry(0.016, 0.078, 0.055);
+      const paddle = roundedBlock(0.016, 0.078, 0.055, 0.006);
       paddle.translate(side * 0.094, -0.005, 0.042);
       const p = add(paddle, carbon, wheelSpin);
       p.rotation.y = side * 0.22;
@@ -415,7 +506,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // A row of rotary switches under the screen, because a bare panel looks
     // like a placeholder and these cost four triangles each.
     for (let i = 0; i < 3; i++) {
-      const knob = new THREE.CylinderGeometry(0.011, 0.013, 0.014, 8);
+      const knob = new THREE.CylinderGeometry(0.011, 0.013, 0.014, SEG.round);
       knob.rotateX(Math.PI / 2);
       knob.translate(-0.03 + i * 0.03, -0.056, -0.021);
       add(knob, rubberGrip, wheelSpin);
@@ -433,14 +524,15 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // Palm, wrapped around the back of the grip rather than stuck to the side
     // of it — a hand on a wheel is mostly behind the rim, with only the
     // knuckles showing in front.
-    const palm = new THREE.SphereGeometry(0.037, 12, 10);
-    palm.scale(0.80, 1.30, 1.05);
+    const palm = scaledNormals(
+      new THREE.SphereGeometry(0.037, SEG.palmW, SEG.palmH), 0.80, 1.30, 1.05,
+    );
     palm.translate(side * 0.014, 0.002, -0.020);
     add(palm, glove, hand);
 
     // Fingers curling over the front of the rim.
     for (let i = 0; i < 4; i++) {
-      const f = new THREE.CapsuleGeometry(0.0085, 0.028, 3, 6);
+      const f = new THREE.CapsuleGeometry(0.0085, 0.028, SEG.fingerCap, SEG.fingerRadial);
       f.rotateZ(Math.PI / 2);
       f.rotateY(side * 0.30);
       f.translate(side * -0.008, 0.031 - i * 0.021, 0.016);
@@ -448,7 +540,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     }
     // Thumb, hooked over the inside face.
     {
-      const t = new THREE.CapsuleGeometry(0.0095, 0.024, 3, 6);
+      const t = new THREE.CapsuleGeometry(0.0095, 0.024, SEG.fingerCap, SEG.fingerRadial);
       t.rotateX(Math.PI / 2);
       t.rotateY(side * -0.55);
       t.translate(side * -0.014, 0.036, -0.010);
@@ -459,7 +551,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // car on the grid, and a second one starting at the wrist reads as a third
     // limb.
     {
-      const cuff = new THREE.CylinderGeometry(0.031, 0.033, 0.028, 10);
+      const cuff = new THREE.CylinderGeometry(0.031, 0.033, 0.028, SEG.round);
       cuff.rotateX(Math.PI / 2);
       cuff.rotateZ(side * 0.34);
       cuff.translate(side * 0.034, -0.038, -0.042);

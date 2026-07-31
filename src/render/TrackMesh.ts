@@ -114,6 +114,35 @@ class StripBuilder {
     this.tri(ax, ay, az, cx, cy, cz, dx, dy, dz, colour);
   }
 
+  /**
+   * Adds a quad with an explicit normal at each corner.
+   *
+   * The face-normal path below is right for flat road surfaces and wrong for
+   * anything with curvature in its cross-section: a kerb whose crown and outer
+   * roll are genuinely curved gets a hard shading step at every facet if each
+   * triangle carries its own normal, which is exactly what made the old
+   * three-quad kerb read as a folded strip of card. Supplying the analytic
+   * normal of the swept profile instead is the same trick as a smoothing group,
+   * and the profile marks its own creases so the inner lip stays sharp.
+   */
+  quadSmooth(
+    ax: number, ay: number, az: number, an: readonly number[],
+    bx: number, by: number, bz: number, bn: readonly number[],
+    cx: number, cy: number, cz: number, cn: readonly number[],
+    dx: number, dy: number, dz: number, dn: readonly number[],
+    colour: THREE.Color,
+  ): void {
+    const push = (
+      x: number, y: number, z: number, n: readonly number[],
+    ) => {
+      this.positions.push(x, y, z);
+      this.normals.push(n[0], n[1], n[2]);
+      this.colours.push(colour.r, colour.g, colour.b);
+    };
+    push(ax, ay, az, an); push(bx, by, bz, bn); push(cx, cy, cz, cn);
+    push(ax, ay, az, an); push(cx, cy, cz, cn); push(dx, dy, dz, dn);
+  }
+
   tri(
     ax: number, ay: number, az: number,
     bx: number, by: number, bz: number,
@@ -209,6 +238,145 @@ export function buildTrackMeshes(
     return track.elevation[i] + (bank !== 0 ? -lat * Math.tan(bank) : 0);
   };
 
+  // =========================================================================
+  // Kerbs
+  // =========================================================================
+  //
+  // A kerb was three flat quads: a ramp, a flat top, a fall. That is a folded
+  // strip of card, and it read as one — the two folds are the only lines on it,
+  // both dead straight, and the "crown" is a painted stripe lying at a constant
+  // 55mm. A real kerb is an extruded concrete section: a chamfer where it meets
+  // the asphalt so a car can ride it, a domed crown, and a rolled outer edge
+  // falling away to the run-off. That section is the entire reason a kerb reads
+  // as a solid object — the highlight travelling along the roll is what gives
+  // it thickness, and it is the same highlight on every kerb at every circuit.
+  //
+  // Offsets are metres outboard of the white line; heights are metres above the
+  // run-off plane. `hard` splits the normal so a crease stays a crease.
+  const KERB_PROFILE: readonly { off: number; y: number; hard?: boolean }[] = [
+    { off: 0.000, y: Y_ROAD, hard: true },
+    { off: 0.055, y: Y_ROAD + 0.008 },
+    { off: 0.155, y: Y_KERB * 0.50 },
+    { off: 0.275, y: Y_KERB * 0.89 },
+    { off: 0.410, y: Y_KERB * 1.00 },
+    { off: 0.620, y: Y_KERB * 1.07 },
+    { off: 0.830, y: Y_KERB * 0.99 },
+    { off: 0.945, y: Y_KERB * 0.77 },
+    { off: 1.045, y: Y_KERB * 0.37 },
+    { off: 1.115, y: Y_RUNOFF + 0.007 },
+    // A whisker above the run-off plane rather than exactly on it, so the two
+    // surfaces meet without sharing a coplanar edge to fight over.
+    { off: 1.185, y: Y_RUNOFF + 0.0015, hard: true },
+  ];
+
+  /**
+   * Per-segment cross-section normals, in (outboard, up).
+   *
+   * Averaged across a joint unless one of its ends is marked hard, which is
+   * what makes the crown and the outer roll shade as curves and leaves the lip
+   * against the asphalt as an edge.
+   */
+  const KERB_SEG = (() => {
+    const n = KERB_PROFILE.length - 1;
+    const face: [number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const doff = KERB_PROFILE[i + 1].off - KERB_PROFILE[i].off;
+      const dy = KERB_PROFILE[i + 1].y - KERB_PROFILE[i].y;
+      const len = Math.hypot(doff, dy) || 1;
+      face.push([-dy / len, doff / len]);
+    }
+    const blend = (u: [number, number], v: [number, number]): [number, number] => {
+      const x = u[0] + v[0], y = u[1] + v[1];
+      const len = Math.hypot(x, y) || 1;
+      return [x / len, y / len];
+    };
+    return face.map((f, i) => ({
+      face: f,
+      n0: i > 0 && !KERB_PROFILE[i].hard ? blend(f, face[i - 1]) : f,
+      n1: i < n - 1 && !KERB_PROFILE[i + 1].hard ? blend(f, face[i + 1]) : f,
+    }));
+  })();
+
+  /**
+   * Longitudinal stations per node step.
+   *
+   * The old kerb inherited the road's 6m quads, so its red and white bands were
+   * six metres long — three times a real one, which is why they read as painted
+   * blocks rather than as kerbing. Subdivided to about a metre, which is both
+   * the right band length and enough resolution for the section to follow a
+   * corner instead of chording across it.
+   */
+  const KERB_SUB = quality === 'low' ? 2 : Math.max(2, Math.round((step * (track.length / count)) / 1.0));
+
+  /** Interpolated track frame between two nodes. */
+  const frameLerp = (a: number, b: number, f: number) => {
+    const g = 1 - f;
+    let nx = track.nx[a] * g + track.nx[b] * f;
+    let nz = track.nz[a] * g + track.nz[b] * f;
+    const len = Math.hypot(nx, nz) || 1;
+    nx /= len; nz /= len;
+    return {
+      x: track.px[a] * g + track.px[b] * f,
+      z: track.pz[a] * g + track.pz[b] * f,
+      nx, nz,
+      elev: track.elevation[a] * g + track.elevation[b] * f,
+      bank: track.banking[a] * g + track.banking[b] * f,
+      hw: (track.width[a] * g + track.width[b] * f) * 0.5,
+    };
+  };
+
+  /** Sweeps the kerb section from node `a` to node `b` on one side. */
+  const sweepKerb = (a: number, b: number, sign: 1 | -1): void => {
+    const colourA = ((a / step) & 1) === 0 ? 0 : 1;
+    for (let k = 0; k < KERB_SUB; k++) {
+      const f0 = k / KERB_SUB;
+      const f1 = (k + 1) / KERB_SUB;
+      const s0 = frameLerp(a, b, f0);
+      const s1 = frameLerp(a, b, f1);
+      // Bands alternate along the kerb, continuing the parity of the node step
+      // so two adjacent steps never put two reds side by side.
+      const band = (colourA * KERB_SUB + k) & 1;
+      const colour = band === 0 ? COLOUR.kerbA : COLOUR.kerbB;
+
+      // World position and outboard/up basis at one station and one offset.
+      const at = (s: ReturnType<typeof frameLerp>, off: number, y: number) => {
+        const lat = sign * (s.hw + off);
+        return [
+          s.x + s.nx * lat,
+          s.elev + (s.bank !== 0 ? -lat * Math.tan(s.bank) : 0) + y,
+          s.z + s.nz * lat,
+        ] as const;
+      };
+      // Outboard direction in world, for turning the 2D section normal into 3D.
+      const outX = s0.nx * sign, outZ = s0.nz * sign;
+      const nrm = (n: readonly [number, number]) =>
+        [outX * n[0], n[1], outZ * n[0]] as const;
+
+      for (let i = 0; i < KERB_SEG.length; i++) {
+        const p0 = KERB_PROFILE[i];
+        const p1 = KERB_PROFILE[i + 1];
+        const n0 = nrm(KERB_SEG[i].n0);
+        const n1 = nrm(KERB_SEG[i].n1);
+        const a0 = at(s0, p0.off, p0.y);
+        const b0 = at(s1, p0.off, p0.y);
+        const b1 = at(s1, p1.off, p1.y);
+        const a1 = at(s0, p1.off, p1.y);
+        // Wound so the outward face is front-facing on either side of the car.
+        if (sign > 0) {
+          kerbs.quadSmooth(
+            a0[0], a0[1], a0[2], n0, b0[0], b0[1], b0[2], n0,
+            b1[0], b1[1], b1[2], n1, a1[0], a1[1], a1[2], n1, colour,
+          );
+        } else {
+          kerbs.quadSmooth(
+            a1[0], a1[1], a1[2], n1, b1[0], b1[1], b1[2], n1,
+            b0[0], b0[1], b0[2], n0, a0[0], a0[1], a0[2], n0, colour,
+          );
+        }
+      }
+    }
+  };
+
   for (let a = 0; a < count; a += step) {
     const b = (a + step) % count;
 
@@ -243,54 +411,9 @@ export function buildTrackMeshes(
     }
 
     // --- Kerbs -------------------------------------------------------------
-    // Three surfaces per kerb rather than one flat strip: an inner ramp up from
-    // the asphalt, a flat crown, and an outer fall to the run-off. A single flat
-    // quad reads as a painted stripe; the raised crown reads as a real kerb and
-    // catches the light differently as the car passes, which is a large part of
-    // what makes an apex legible.
-    const kerbColour = ((a / step) & 1) === 0 ? COLOUR.kerbA : COLOUR.kerbB;
-    const buildKerb = (sign: number) => {
-      const inner = sign * hwA;
-      const innerB = sign * hwB;
-      const crownIn = sign * (hwA + KERB_W * 0.3);
-      const crownInB = sign * (hwB + KERB_W * 0.3);
-      const crownOut = sign * (hwA + KERB_W * 0.85);
-      const crownOutB = sign * (hwB + KERB_W * 0.85);
-      const outer = sign * (hwA + KERB_W * 1.25);
-      const outerB = sign * (hwB + KERB_W * 1.25);
-
-      const wind = sign > 0;
-      const q = (
-        l0: number, y0: number, l1: number, y1: number,
-      ) => {
-        // Consistent winding per side so faces point upward.
-        if (wind) {
-          kerbs.quad(
-            px(a, l0), py(a, l0) + y0, pz(a, l0),
-            px(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB), py(b, l0) + y0, pz(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB),
-            px(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB), py(b, l1) + y1, pz(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB),
-            px(a, l1), py(a, l1) + y1, pz(a, l1),
-            kerbColour,
-          );
-        } else {
-          kerbs.quad(
-            px(a, l1), py(a, l1) + y1, pz(a, l1),
-            px(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB), py(b, l1) + y1, pz(b, l1 === inner ? innerB : l1 === crownIn ? crownInB : l1 === crownOut ? crownOutB : outerB),
-            px(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB), py(b, l0) + y0, pz(b, l0 === inner ? innerB : l0 === crownIn ? crownInB : l0 === crownOut ? crownOutB : outerB),
-            px(a, l0), py(a, l0) + y0, pz(a, l0),
-            kerbColour,
-          );
-        }
-      };
-
-      q(inner, Y_ROAD, crownIn, Y_KERB);          // ramp up
-      q(crownIn, Y_KERB, crownOut, Y_KERB);       // flat crown
-      q(crownOut, Y_KERB, outer, Y_RUNOFF);       // fall away
-    };
-
     // Lateral is positive to the driver's LEFT.
-    if (track.isCurbLeft[a] && track.isCurbLeft[b]) buildKerb(1);
-    if (track.isCurbRight[a] && track.isCurbRight[b]) buildKerb(-1);
+    if (track.isCurbLeft[a] && track.isCurbLeft[b]) sweepKerb(a, b, 1);
+    if (track.isCurbRight[a] && track.isCurbRight[b]) sweepKerb(a, b, -1);
 
     // --- Run-off ----------------------------------------------------------
     const isStreet = track.def.scenery === 'street';
