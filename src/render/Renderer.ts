@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp } from '../core/MathUtils';
-import { buildCar, disposeCarGeometryCache, type CarVisual } from './CarMesh';
+import { buildCar, disposeCarGeometryCache, BODY_PART_IDS, type BodyPartId, type CarVisual } from './CarMesh';
+import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector } from './CameraDirector';
@@ -29,6 +30,33 @@ import type { CarEntry } from '../race/CarEntry';
  *     render loop runs at display rate on top of a 120Hz physics loop, and garbage
  *     collection pauses show up as stutter exactly when the car is at the limit.
  */
+
+/**
+ * How long a wrecked car stays on the circuit before the marshals take it away.
+ *
+ * Two and a half minutes is longer than a lap of every circuit in the game, and
+ * that is the number it is chosen against rather than any real recovery time.
+ * The point of leaving a wreck on the road is that the player comes back round
+ * and finds it — their own accident, still there, at the corner where it
+ * happened. A wreck that is cleared in twenty seconds is one the player never
+ * sees again, which is barely different from not drawing it at all.
+ */
+const WRECK_LIFETIME_S = 150;
+
+/**
+ * Component health at which a piece of bodywork falls off.
+ *
+ * The bottom of the 'critical' band in the damage model, so the car loses the
+ * part at exactly the point the HUD has been calling it critical and the physics
+ * has been charging for it. One threshold, three consumers.
+ */
+const PART_DETACH_HEALTH = 0.3;
+
+/** Health a part must be restored above for the visual to be put back. */
+const PART_REPAIR_HEALTH = 0.85;
+
+/** Suspension health below which a corner starts visibly folding up. */
+const SUSPENSION_BEND_HEALTH = 0.62;
 
 /**
  * Tone-mapping exposure, by time of day.
@@ -86,6 +114,8 @@ export class Renderer {
   private pitBox: PitBoxMarker | null = null;
   private marshalPosts: MarshalPosts | null = null;
   private carVisuals: CarVisual[] = [];
+  /** Bodywork lying on the circuit. One draw call, session-lifetime. */
+  private wreckage: Wreckage | null = null;
   private readonly canvas: HTMLCanvasElement;
 
   private sun: THREE.DirectionalLight;
@@ -451,6 +481,9 @@ export class Renderer {
       this.scene.add(this.pitBox.root);
     }
 
+    this.wreckage = new Wreckage();
+    this.scene.add(this.wreckage.mesh);
+
     this.effects.loadSession(engine);
     this.applyAmbience(engine);
     this.director.setMode(this.director.mode);
@@ -615,6 +648,11 @@ export class Renderer {
       this.racingLine = null;
     }
     this.effects?.unload();
+    if (this.wreckage) {
+      this.scene.remove(this.wreckage.mesh);
+      this.wreckage.dispose();
+      this.wreckage = null;
+    }
     if (this.trackMeshes) {
       this.scene.remove(this.trackMeshes.root);
       this.trackMeshes.dispose();
@@ -713,7 +751,9 @@ export class Renderer {
    */
   render(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     this.updateResolutionScale(dt);
+    this.drainImpacts(engine);
     this.syncCars(dt, engine, focusCar);
+    this.wreckage?.advance(dt);
     this.director.update(dt, focusCar, engine.track);
 
     const cam = this.director.camera;
@@ -807,6 +847,145 @@ export class Renderer {
     this.post.triggerFlash(strength, decayPerSecond, colour);
   }
 
+  /**
+   * Takes this frame's collisions off the engine and turns them into effects.
+   *
+   * The physics runs at 120Hz and the display at 60, so a contact can begin and
+   * end entirely between two drawn frames. The engine queues them; this drains
+   * the queue. Without it there is no visible consequence to a collision at all,
+   * which is exactly the state the code was in — `EffectsDirector.reportImpact`
+   * existed, was correct, and had no caller anywhere in the project.
+   */
+  private drainImpacts(engine: RaceEngine): void {
+    const list = engine.impacts;
+    for (let i = 0; i < list.length; i++) {
+      const ev = list[i];
+      const car = engine.cars[ev.carIndex];
+      if (!car) continue;
+      const y = engine.track.elevationAt(car.s);
+      this.effects.reportImpact(car.physics.position.x, y, car.physics.position.y, ev.severity);
+
+      // A hard hit sheds bodywork whether or not a whole component was written
+      // off by it. Carbon is brittle: it does not dent, it breaks, and the
+      // pieces go on the road.
+      if (ev.severity > 0.45) {
+        this.wreckage?.spawn(
+          car.physics.position.x, y + 0.35, car.physics.position.y,
+          car.physics.velocity.x, car.physics.velocity.y,
+          0.7, 0.2, 0.7,
+          car.team.colour,
+          y,
+          Math.min(6, 1 + Math.round(ev.severity * 5)),
+        );
+      }
+
+      // Only the player's own accident shakes the camera. A shunt happening to
+      // somebody else on the other side of the circuit should not.
+      if (car === engine.playerCar && ev.severity > 0.4) {
+        this.flash(Math.min(0.35, ev.severity * 0.3), 4.5, 0xffd9c0);
+      }
+    }
+    list.length = 0;
+  }
+
+  /**
+   * Turns the simulation's per-component damage into a car that looks damaged.
+   *
+   * Runs for every car every frame, and is cheap enough to: it is four
+   * comparisons and four wheel transforms, and it does the work of REMEMBERING
+   * nothing — the state of the car is read from the health numbers each frame
+   * rather than accumulated here. That matters because damage can go back up: a
+   * pit stop fits a new wing, and a visual model that only ever subtracted would
+   * leave the repaired car still missing it.
+   *
+   * The only thing that IS remembered is which parts have already been thrown on
+   * the ground, because debris is spawned once, on the transition.
+   */
+  private syncDamage(car: CarEntry, v: CarVisual, engine: RaceEngine): void {
+    const h = car.damage.health;
+
+    // --- Bodywork -----------------------------------------------------------
+    // A part is gone when its component is in the 'critical' band. The front
+    // wing takes the worse of its two halves: an F1 wing is one assembly on two
+    // mounts, and losing either side takes the whole thing off.
+    const condition: Record<BodyPartId, number> = {
+      frontWing: Math.min(h.frontWingL, h.frontWingR),
+      rearWing: h.rearWing,
+      sidepodL: h.sidepodL,
+      sidepodR: h.sidepodR,
+    };
+
+    for (const id of BODY_PART_IDS) {
+      const part = v.bodyParts[id];
+      const lost = condition[id] <= PART_DETACH_HEALTH;
+      if (lost === !part.attached) continue;
+
+      if (lost) {
+        // Throw the part on the road at the point it was bolted to, carrying
+        // the car's velocity — which is what puts a wing that came off at speed
+        // down the road rather than under the car that lost it.
+        this.spawnPartDebris(car, v, id, engine);
+        v.setPartAttached(id, false);
+      } else if (condition[id] > PART_REPAIR_HEALTH) {
+        // Repaired in the pits.
+        v.setPartAttached(id, true);
+      }
+    }
+
+    // --- Suspension ---------------------------------------------------------
+    // A broken corner does not vanish, it COLLAPSES: the wheel drops onto its
+    // bump stop, falls into negative camber and points somewhere the driver did
+    // not ask for. That silhouette — one wheel folded under the car — is what
+    // reads as a broken car from a hundred metres away, and it is the single
+    // most recognisable damage state in the sport.
+    const corners: [number, THREE.Object3D, number][] = [
+      [h.suspFL, v.frontLeftSteer, -1],
+      [h.suspFR, v.frontRightSteer, 1],
+      [h.suspRL, v.rearLeftSteer, -1],
+      [h.suspRR, v.rearRightSteer, 1],
+    ];
+    for (const [health, hub, side] of corners) {
+      // Nothing until the corner is genuinely hurt, then it runs to fully
+      // collapsed at the component's floor.
+      const collapse = clamp01((SUSPENSION_BEND_HEALTH - health) / (SUSPENSION_BEND_HEALTH - 0.25));
+      if (collapse <= 0 && hub.position.y === v.tyreRadiusM) continue;
+      hub.position.y = v.tyreRadiusM - collapse * 0.085;
+      // Camber pulls the top of the wheel inboard, which is the way a failed
+      // upper wishbone lets it fall.
+      hub.rotation.z = -side * collapse * 0.42;
+      hub.rotation.x = collapse * 0.10;
+    }
+  }
+
+  /** Sheds a part onto the road, with sparks and a scatter of carbon. */
+  private spawnPartDebris(
+    car: CarEntry, v: CarVisual, id: BodyPartId, engine: RaceEngine,
+  ): void {
+    const part = v.bodyParts[id];
+    const p = car.physics;
+    const sin = Math.sin(p.heading);
+    const cos = Math.cos(p.heading);
+
+    // The part's mounting point, rotated out of the car's frame into the world.
+    const o = part.origin;
+    const wx = p.position.x + o.x * cos + o.z * sin;
+    const wz = p.position.y - o.x * sin + o.z * cos;
+    const groundY = engine.track.elevationAt(car.s);
+    const wy = groundY + o.y;
+
+    this.wreckage?.spawn(
+      wx, wy, wz,
+      p.velocity.x, p.velocity.y,
+      part.size.x, part.size.y, part.size.z,
+      car.team.colour,
+      groundY,
+      id === 'frontWing' ? 5 : 4,
+    );
+    // Carbon shattering is bright. The burst is the moment; the shards are what
+    // is left of it.
+    this.effects.reportImpact(wx, wy, wz, 0.75);
+  }
+
   /** Copies simulation state onto the visuals. */
   private syncCars(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     const track = engine.track;
@@ -820,12 +999,27 @@ export class Renderer {
       const v = this.carVisuals[i];
       if (!v) continue;
 
-      // A retired car stays where it stopped; hide it once recovered.
-      if (car.retired && car.recovered) {
+      // A retired car is a WRECK, and a wreck stays where it stopped.
+      //
+      // This used to read `car.retired && car.recovered`, and because the race
+      // engine marks a car written off in a heavy impact as recovered on the
+      // very frame it retires, the practical effect was that a car that hit a
+      // wall hard ceased to exist between one frame and the next — the crash
+      // the player had just had was erased before they could look at it. That
+      // is the whole of the "it just poof gone" report.
+      //
+      // The clock used here is deliberately NOT `recovered`. That flag answers
+      // a different question — when the yellow flags can come down — and it has
+      // to be short. How long a wrecked car sits by the barrier before a crane
+      // reaches it is much longer than that, long enough that the player comes
+      // back past their own accident on the following lap and sees it there.
+      if (car.retired && car.recoveryTimer > WRECK_LIFETIME_S) {
         v.root.visible = false;
         continue;
       }
       v.root.visible = true;
+
+      this.syncDamage(car, v, engine);
 
       // The cockpit camera sits inside the driver's helmet, and the detailed
       // cockpit wheel is drawn on top of the coarse one. Both live in the same
@@ -848,8 +1042,21 @@ export class Renderer {
 
       // Body roll and pitch from the actual accelerations, which is what makes
       // the car look loaded up rather than sliding around on rails.
-      const roll = clamp(-p.lateralG * 0.016, -0.06, 0.06);
-      const pitch = clamp(p.longitudinalG * 0.012, -0.05, 0.05);
+      //
+      // A wreck has no accelerations, so both terms fall to zero and it would
+      // sit dead level and square to the road — which is the one attitude a
+      // car that has just been in an accident is never in. It gets a settled
+      // lean instead, picked from its own index so it is stable for the session
+      // rather than jittering, and eased into over about a second so the car
+      // slumps as it comes to rest instead of snapping into the pose.
+      let roll = clamp(-p.lateralG * 0.016, -0.06, 0.06);
+      let pitch = clamp(p.longitudinalG * 0.012, -0.05, 0.05);
+      if (car.retired) {
+        // Deterministic, from the car's index: a stable number per car with no
+        // state to store and nothing to reset between sessions.
+        roll = Math.sin(car.index * 12.9898) * 0.075;
+        pitch = Math.cos(car.index * 4.1414) * 0.045;
+      }
       v.root.rotation.z = damp(v.root.rotation.z, roll, 8, dt);
       v.root.rotation.x = damp(v.root.rotation.x, pitch, 8, dt);
 

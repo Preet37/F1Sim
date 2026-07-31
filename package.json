@@ -25,6 +25,7 @@
     "probe:racingline": "tsx scripts/probeRacingLine.ts",
     "probe:attrition": "tsx scripts/probeAttrition.ts",
     "probe:neutral": "tsx scripts/probeNeutralisation.ts",
+    "probe:damage": "tsx scripts/probeDamage.ts",
     "probe:racesweep": "tsx scripts/raceSweep.ts",
     "regress:laps": "tsx scripts/regressLapCounting.ts",
     "regress:results": "tsx scripts/regressClassification.ts",
