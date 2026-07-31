@@ -297,7 +297,13 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     map: carbonWeave.map,
     roughnessMap: carbonWeave.surface,
     metalnessMap: carbonWeave.surface,
-    metalness: 1, roughness: 1, envMapIntensity: 1.2,
+    // Well under 1, because the cockpit is a hole. The environment probe is a
+    // full sphere of unoccluded sky and floodlight, and a tub whose opening is
+    // a slot between the halo and the rim sees almost none of it — applying the
+    // probe at full strength put a blown white highlight across the dash and
+    // the wheel that no real onboard shot has. Screen-space AO cannot correct
+    // this: it darkens the diffuse result, not the specular lobe.
+    metalness: 1, roughness: 1, envMapIntensity: 0.45,
   }));
   const rubberGrip = mat(new THREE.MeshStandardMaterial({
     color: 0x0a0b0e, metalness: 0.0, roughness: 0.88, envMapIntensity: 0.4,

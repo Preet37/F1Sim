@@ -47,7 +47,7 @@ import type { CarEntry } from '../race/CarEntry';
  * instead of clipping, and the correction lands where it is needed, in the
  * midtones.
  */
-const EXPOSURE = { day: 1.55, dusk: 1.5, night: 1.7 };
+const EXPOSURE = { day: 1.35, dusk: 1.4, night: 1.7 };
 
 /** Target frame rate. Below this, resolution scales down. */
 const TARGET_FPS = 60;

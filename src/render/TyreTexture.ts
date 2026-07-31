@@ -233,6 +233,12 @@ function paint(compound: CompoundId, size: number): TyreLook {
     const h = bandY(b, size) - y;
     c.fillStyle = stripe;
     c.fillRect(0, y, size, h);
+    // Knocked back toward the rubber under it. The compound colours are chosen
+    // to be legible as HUD swatches, and used at full strength on a sidewall
+    // they are brighter than any paint on the car — the band stops reading as
+    // a marking on a tyre and starts reading as a glowing hoop.
+    c.fillStyle = 'rgba(24,26,30,0.30)';
+    c.fillRect(0, y, size, h);
     // Painted-on rubber: brighter than the wall, and glossier.
     s.fillStyle = set(0.38, 0.02);
     s.fillRect(0, y, size, h);
