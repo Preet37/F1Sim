@@ -42,13 +42,46 @@ import { clamp01 } from '../core/MathUtils';
  *    periphery towards a vanishing point is what the eye actually uses to judge
  *    velocity, and it is why 200 km/h feels dangerous rather than brisk.
  *  - CHROMATIC ABERRATION on the same radial axis, scaled by the same term.
- *    Kept subtle. It sells the periphery as a lens rather than a viewport.
+ *    Kept subtle, and gated entirely behind speed.
  *  - VIGNETTE, which darkens the corners and pushes attention to the apex.
+ *  - DITHER, sub-perceptual, purely to break 8-bit banding.
+ *
+ * The last three are all capable of turning a clean picture into what looks like
+ * archive footage, and had between them done exactly that: a heavy vignette, a
+ * lens fringe present at a standstill, and a linear-space grain that the output
+ * transform amplified into visible striping across every shadow. The rule they
+ * are now tuned to is that none of them should be identifiable as an effect. If
+ * you can point at the vignette, it is too strong.
  *
  * On the low quality tier the whole composer is skipped and the scene renders
  * straight to the canvas. Bloom on a phone GPU is five extra full-screen passes
  * at half resolution, and holding 60fps matters more than glow.
  */
+
+/**
+ * Bloom threshold, in linear scene radiance, before any night bias.
+ *
+ * This number is not a taste setting, it is a measurement of what the lighting
+ * puts on screen. Under three's lighting a white surface returns roughly
+ * `albedo * sum(intensities) / PI`; with the day rig that is about 1.3, and with
+ * the night rig about 1.1. Both are comfortably ABOVE 1.0, so the old 0.85 was
+ * below plain white paint — every line on the circuit, every kerb and every pale
+ * livery panel cleared it and bloomed, which is precisely the "glare and old
+ * raspy lines" complaint. Sitting above both figures means paint stays paint.
+ *
+ * What is left above the threshold is what should be: brake discs at 2.7 under
+ * load, sparks at 3.4, and the specular hits where a floodlight lands on gloss.
+ */
+const BLOOM_THRESHOLD = 1.55;
+
+/**
+ * How much of that gets scattered back into the frame.
+ *
+ * Dropped from 0.42. With the threshold where it now is, bloom only ever
+ * catches genuinely hot things, and a hot thing wants a tight halo rather than
+ * a wash — which is what the reference footage shows around a floodlight.
+ */
+const BLOOM_STRENGTH = 0.3;
 
 const GRADE_SHADER = {
   uniforms: {
@@ -59,9 +92,12 @@ const GRADE_SHADER = {
     uSpeed: { value: 0 },
     /** Vanishing point in UV space — where the blur streaks converge. */
     uFocus: { value: new THREE.Vector2(0.5, 0.5) },
-    uVignette: { value: 0.34 },
-    /** Rises when the car is off track or damaged, for a dirt/heat feel. */
-    uGrain: { value: 0.03 },
+    uVignette: { value: 0.14 },
+    /**
+     * Dither amplitude, as a FRACTION of the pixel. See the shader for why it
+     * is relative rather than absolute, and why it is this small.
+     */
+    uGrain: { value: 0.012 },
     uTime: { value: 0 },
     /** Full-screen flash, 0..1: used for the start lights and impacts. */
     uFlash: { value: 0 },
@@ -255,7 +291,14 @@ const GRADE_SHADER = {
 
       // Chromatic aberration along the same radial axis. Red and blue are
       // displaced in opposite directions, which is how a real lens fails.
-      float ca = uSpeed * falloff * 0.0035 + falloff * 0.0006;
+      //
+      // Gated entirely behind speed. The constant term that used to sit
+      // alongside it fringed the edge of every frame including a stationary
+      // one, which is a description of a cheap lens rather than of going fast,
+      // and it is part of what made the picture look like old footage. What is
+      // left is a speed cue: at rest there is none, and at 300 km/h it is a
+      // fraction of a pixel at the very edge of the frame.
+      float ca = uSpeed * falloff * 0.0016;
       if (ca > 0.00005) {
         colour.r = texture2D(tDiffuse, vUv - dir * ca).r;
         colour.b = texture2D(tDiffuse, vUv + dir * ca).b;
@@ -283,9 +326,29 @@ const GRADE_SHADER = {
       float v = 1.0 - uVignette * dist * dist * 2.2;
       colour *= clamp(v, 0.0, 1.0);
 
-      // A little grain keeps flat sky and asphalt from banding on 8-bit output.
+      // Dither, not grain.
+      //
+      // The only job here is to break 8-bit banding in the sky and across the
+      // asphalt. A modern camera has no film grain, and the reference footage
+      // has none; anything visible is a defect.
+      //
+      // It is applied as a FRACTION of the pixel rather than as a fixed step,
+      // and that is the whole fix. This pass is linear and the output transform
+      // is not: the tone mapper and the sRGB encode together stretch the bottom
+      // of the range by roughly a factor of twelve. A flat +/-0.015 in linear
+      // sits invisibly under a mid tone and comes out of that transform as
+      // several display levels of noise everywhere the image is dark — which at
+      // a floodlit circuit is most of the frame, and which read as the texture
+      // of old film stock. Because the pattern here is interleaved gradient
+      // noise, which is deliberately structured rather than random, what
+      // actually appeared was fine diagonal striping across the road.
+      //
+      // Relative, the perturbation that survives the transform is a roughly
+      // constant fraction of the output instead — about a third of an 8-bit
+      // level at 0.012, which dissolves a banding edge and is below the
+      // threshold of visibility anywhere else.
       float g = dither(gl_FragCoord.xy + fract(uTime) * 512.0) - 0.5;
-      colour += g * uGrain;
+      colour *= 1.0 + g * uGrain;
 
       colour = mix(colour, uFlashColor, uFlash);
 
@@ -351,10 +414,10 @@ export class PostFX {
     composer.renderTarget2.depthTexture = depth;
     composer.addPass(new RenderPass(scene, camera));
 
-    // strength / radius / threshold. The threshold is the important number: at
-    // 0.85 only things meaningfully brighter than white bloom, which is the
-    // sparks, the brake discs, the sun on chrome and the start lights.
-    this.bloom = new UnrealBloomPass(size, 0.42, 0.62, 0.85);
+    // strength / radius / threshold. See `update` for how the threshold was
+    // arrived at; the short version is that it has to sit above what a white
+    // painted line reaches, and a painted line is brighter than 1.0.
+    this.bloom = new UnrealBloomPass(size, BLOOM_STRENGTH, 0.62, BLOOM_THRESHOLD);
     composer.addPass(this.bloom);
 
     this.grade = new ShaderPass(GRADE_SHADER);
@@ -438,17 +501,22 @@ export class PostFX {
     u.uFlash.value = this.flash;
 
     if (this.bloom) {
-      // At night the bright things in frame are lights rather than lit
-      // surfaces, so bloom is doing the atmospheric work and is worth pushing.
-      // But the THRESHOLD has to rise with it, and by more than the strength
-      // does. Night lighting deliberately carries a much wider radiance range
-      // than daylight — a floodlight reflected in gloss paint is thirty times
-      // the road beside it — and holding the daytime threshold means most of
-      // the frame clears it and the glow stops being a highlight and becomes a
-      // fog. That is exactly what happened to the onboard shot: it was not the
-      // lights blooming, it was the asphalt.
-      this.bloom.strength = 0.42 + nightBias * 0.3;
-      this.bloom.threshold = 0.85 + nightBias * 0.55;
+      // Strength does not move with the time of day, and that is the correction.
+      //
+      // The old model treated a night circuit as a dim scene that needed more
+      // glow, and pushed strength up by half at night. A floodlit circuit is not
+      // dim — it is lit by two hundred lamps from every direction, which is why
+      // the night light rig carries a hemisphere of 1.85 against daylight's 0.75
+      // — so the extra glow was not compensating for anything. It was doubling
+      // the bloom on a scene that already had the brightest painted lines in the
+      // game, and it is what turned every white line and kerb into a horizontal
+      // smear across the road.
+      //
+      // What DOES change at night is the width of the range: a lamp reflected in
+      // gloss paint is many times the road beside it, and the exposure the night
+      // grade runs at is higher. So the threshold rises, and only the threshold.
+      this.bloom.strength = BLOOM_STRENGTH;
+      this.bloom.threshold = BLOOM_THRESHOLD + nightBias * 0.35;
     }
   }
 
