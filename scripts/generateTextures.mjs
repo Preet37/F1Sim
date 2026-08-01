@@ -309,11 +309,150 @@ function tyreSurface(size) {
 }
 
 // ---------------------------------------------------------------------------
+// 3. Driver's glove
+// ---------------------------------------------------------------------------
+
+/**
+ * A Nomex racing glove, as relief.
+ *
+ * WHY THIS ONE EARNS A FILE. The driver's hands sit about 500mm from the
+ * cockpit camera — closer than anything else in the scene except the wheel rim
+ * they are wrapped around — and they are made of cloth, which is the one
+ * material that cannot be faked with a roughness value. A flat dark surface at
+ * that range reads as moulded rubber however well the fingers are shaped, and
+ * the complaint that produced this file was about the hands specifically. Every
+ * other argument for committing a texture applies too: it is identical for all
+ * twenty cars, it never changes, and the knit is a hundred thousand shaded
+ * texels that no 2D canvas primitive is going to draw cheaply.
+ *
+ * THE LAYOUT IS A CONTRACT. `GLOVE_PANEL` in src/render/CockpitMesh.ts holds
+ * the same three bands and maps each part of the hand into one of them. If
+ * either moves, both move.
+ *
+ *   v 0.00 - 0.46   FIELD   plain knit, tileable in u. Fingers, thumb, wrist.
+ *   v 0.46 - 0.78   PALM    knit plus padded pads with stitched borders.
+ *   v 0.78 - 1.00   CUFF    knit plus elastic ribbing and a double-stitched hem.
+ *
+ * WHAT IS IN THE KNIT. Nomex glove backs are a fine jersey: courses of
+ * interlocking loops, roughly a millimetre across, leaning alternately left and
+ * right row by row. That alternation is the whole recognisable signature — a
+ * grid of identical bumps reads as golf-ball dimpling, and a single diagonal
+ * reads as the carbon twill already on the car. The yarn is given a small
+ * deterministic irregularity per loop so a light sweeping across it breaks up
+ * rather than travelling as one clean band.
+ *
+ * No lettering, no logo, no maker's mark: a knit, a pad and a row of stitches
+ * are generic objects. See public/textures/LICENSES.md.
+ */
+function gloveNomex(size) {
+  const PALM_V0 = 0.46, CUFF_V0 = 0.78;
+  const LOOPS = 30;              // knit loops across the tile
+  const h = new Float32Array(size * size);
+  const hash = (a, b) => {
+    const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  // A rounded rectangle's coverage, 1 inside, falling to 0 over `soft`.
+  const pad = (u, v, cu, cv, w, hh, r, soft) => {
+    const dx = Math.max(Math.abs(u - cu) - (w * 0.5 - r), 0);
+    const dy = Math.max(Math.abs(v - cv) - (hh * 0.5 - r), 0);
+    const d = Math.hypot(dx, dy) - r;
+    return Math.max(0, Math.min(1, -d / soft));
+  };
+
+  for (let y = 0; y < size; y++) {
+    // Canvas y runs down; atlas v runs up.
+    const v = 1 - y / (size - 1);
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+
+      // --- The knit, everywhere ------------------------------------------
+      const cu = u * LOOPS, cv = v * LOOPS;
+      const i = Math.floor(cu), j = Math.floor(cv);
+      const fu = cu - i, fv = cv - j;
+      // Courses lean alternately, which is what makes it a knit rather than a
+      // weave. The lean shears the loop within its own cell.
+      const lean = j % 2 === 0 ? 0.28 : -0.28;
+      const su = fu + (fv - 0.5) * lean;
+      const arc = Math.cos((su - 0.5) * Math.PI) * Math.cos((fv - 0.5) * Math.PI);
+      let z = Math.pow(Math.max(0, arc), 0.65) * 0.42;
+      // The interlock: a shallow groove where one course passes through the next.
+      z -= Math.max(0, Math.cos((fv - 0.5) * Math.PI * 2)) * 0.10;
+      // Yarn irregularity, deterministic per loop.
+      z += (hash(i, j) - 0.5) * 0.06;
+
+      if (v >= PALM_V0 && v < CUFF_V0) {
+        // --- Palm: padding and stitching ---------------------------------
+        // t runs 0..1 across the band, u along the part.
+        const t = (v - PALM_V0) / (CUFF_V0 - PALM_V0);
+        // Three pads: the heel of the hand, the base of the fingers, and a
+        // narrow strip between them. Raised well proud of the knit, because a
+        // pad is a separate layer of leather sewn on top of one.
+        const pads =
+          Math.max(
+            pad(u, t, 0.22, 0.50, 0.28, 0.60, 0.10, 0.035),
+            pad(u, t, 0.62, 0.52, 0.34, 0.52, 0.09, 0.035),
+            pad(u, t, 0.90, 0.50, 0.14, 0.40, 0.07, 0.035),
+          );
+        z += pads * 0.85;
+        // Stitching: a groove just outside each pad's edge with the thread
+        // sitting in it. `pads` at a slightly larger radius minus `pads` is the
+        // border ring, which is where the needle goes.
+        const ring =
+          Math.max(
+            pad(u, t, 0.22, 0.50, 0.30, 0.62, 0.10, 0.020),
+            pad(u, t, 0.62, 0.52, 0.36, 0.54, 0.09, 0.020),
+            pad(u, t, 0.90, 0.50, 0.16, 0.42, 0.07, 0.020),
+          ) - pads;
+        if (ring > 0.35) {
+          // Dashed, at roughly two stitches per millimetre of part.
+          const dash = Math.sin(u * Math.PI * 2 * 46) * Math.sin(t * Math.PI * 2 * 22);
+          z += 0.30 * ring * (dash > 0 ? 1 : -0.7);
+        }
+      } else if (v >= CUFF_V0) {
+        // --- Cuff: elastic ribbing and a hem ------------------------------
+        const t = (v - CUFF_V0) / (1 - CUFF_V0);
+        // Ribs run AROUND the cuff, so they vary with t and not with u.
+        z += Math.sin(t * Math.PI * 2 * 13) * 0.34;
+        // Double row of stitches where the cuff is bound to the glove body.
+        for (const at of [0.14, 0.22]) {
+          const d = Math.abs(t - at);
+          if (d < 0.012) z += 0.55 * (Math.sin(u * Math.PI * 2 * 58) > 0 ? 1 : -0.5);
+        }
+        // The bound edge itself: a raised hem.
+        if (t < 0.06) z += 0.6;
+      }
+
+      h[y * size + x] = z;
+    }
+  }
+  // Wraps in u — every part is lofted, so u goes once round a section and has
+  // to close — but NOT in v, where the three bands meet and wrapping would
+  // bleed cuff ribbing into the fingers.
+  const rgb = Buffer.alloc(size * size * 3);
+  const at = (x, yy) => h[Math.max(0, Math.min(size - 1, yy)) * size + (((x % size) + size) % size)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (at(x + 1, y) - at(x - 1, y)) * 3.4;
+      const dy = (at(x, y + 1) - at(x, y - 1)) * 3.4;
+      let nx = -dx, ny = dy, nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      const o = (y * size + x) * 3;
+      rgb[o] = Math.round((nx / len * 0.5 + 0.5) * 255);
+      rgb[o + 1] = Math.round((ny / len * 0.5 + 0.5) * 255);
+      rgb[o + 2] = Math.round((nz / len * 0.5 + 0.5) * 255);
+    }
+  }
+  return rgb;
+}
+
+// ---------------------------------------------------------------------------
 
 mkdirSync(OUT, { recursive: true });
 const jobs = [
   ['carbon_weave_normal.png', 512, carbonWeave(512)],
   ['tyre_surface_normal.png', 512, tyreSurface(512)],
+  ['glove_nomex_normal.png', 256, gloveNomex(256)],
 ];
 for (const [name, size, rgb] of jobs) {
   writePng(join(OUT, name), size, rgb);

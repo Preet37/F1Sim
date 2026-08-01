@@ -67,6 +67,20 @@ export interface Section {
   flatTop?: number;
   /** Scales the lower half only — an undercut, as under a sidepod. */
   undercut?: number;
+  /**
+   * Depth of the cockpit trough below the coaming line, in metres. Zero — the
+   * default — leaves the section closed.
+   *
+   * This is the aperture. See `OpenTop` for what it does and why the depth is
+   * a per-section scalar rather than a flag.
+   */
+  openDepth?: number;
+  /**
+   * How far inboard of the coaming the interior wall starts, in metres. This
+   * is the thickness of the bodywork at the rim, and it is what makes the
+   * aperture edge read as a rolled lip rather than as a cut in paper.
+   */
+  openWall?: number;
 }
 
 /**
@@ -84,7 +98,10 @@ export function section(
   bottom: number,
   top: number,
   round: number,
-  extra?: { flatTop?: number; undercut?: number; xc?: number },
+  extra?: {
+    flatTop?: number; undercut?: number; xc?: number;
+    openDepth?: number; openWall?: number;
+  },
 ): Section {
   return {
     z,
@@ -95,6 +112,8 @@ export function section(
     round,
     flatTop: extra?.flatTop,
     undercut: extra?.undercut,
+    openDepth: extra?.openDepth,
+    openWall: extra?.openWall,
   };
 }
 
@@ -132,6 +151,181 @@ function profilePoint(s: Section, t01: number): { x: number; y: number } {
   const xScale = py < 0 ? 1 - (1 - undercut) * (-py / halfHeight) : 1;
 
   return { x: (s.xc ?? 0) + px * xScale, y: s.y + py };
+}
+
+// ---------------------------------------------------------------------------
+// Open-top lofts: a real cockpit aperture
+// ---------------------------------------------------------------------------
+
+/**
+ * Cuts a genuine opening along the top of a loft.
+ *
+ * A closed loft can only ever describe a lid. The monocoque's cockpit region
+ * was authored with a `flatTop` schedule and a comment reading "cockpit
+ * opening", and that is all it was: the deck ran unbroken across the car at
+ * y 0.562-0.594 for the whole length of the survival cell, sealing the driver,
+ * the tub interior and the headrest inside it and leaving the helmet sitting on
+ * the bodywork like a ball on a table. From the driver's own camera the same
+ * deck was the "yellow blob" filling the bottom half of the frame. No amount of
+ * re-profiling fixes that, because the surface being profiled is the wrong
+ * surface: what is needed is a hole.
+ *
+ * WHAT THIS DOES. Over a band of the ring parameter centred on the top
+ * centreline, the profile stops following the outer superellipse and instead
+ * rolls over an inner lip and descends into a squared-off trough — the survival
+ * cell. The ring stays a single closed loop, so the surface is still watertight,
+ * still skins with the same quad strip, still caps at the ends and still takes
+ * averaged normals. Nothing downstream of `profilePoint` had to learn about it.
+ *
+ * WHY THE DEPTH LIVES ON THE SECTION AND THE SPAN LIVES HERE. The aperture has
+ * to open and close along the car — there is bodywork ahead of the driver's
+ * knees and behind his headrest — so its DEPTH is a per-section scalar that
+ * `resample` interpolates like any other, and a section with `openDepth` of
+ * zero is simply closed. Its ANGULAR SPAN, though, is fixed for the whole loft,
+ * and it has to be: the skin connects vertex i of one ring to vertex i of the
+ * next, so if two neighbouring rings disagreed about which part of the ring is
+ * aperture, the surface between them would twist.
+ *
+ * THE POINT BUDGET. A squared-off section spends most of its ring parameter on
+ * the corners — at `round` 0.2 the whole deck between the shoulders is barely a
+ * tenth of the ring, which is three vertices out of thirty-two. That is plenty
+ * for a flat lid and nowhere near enough for a lip, two walls and a floor. So
+ * the ring is REPARAMETERISED: `share` of the vertices are given to the
+ * aperture band regardless of how little of the profile it spans.
+ *
+ * That warp is deliberately kept out of the UVs. `loft` derives u from the
+ * warped parameter rather than from the vertex index, so a point on the flank
+ * carries exactly the u it carried before — the livery does not move by a
+ * pixel, and the texture that used to paint the deck now paints the coaming and
+ * the interior, which is where it belongs.
+ */
+export interface OpenTop {
+  /**
+   * Ring parameter of the coaming on the +x side. The aperture spans
+   * `[edge, 1 - edge]`; 0.25 is the flank and 0.5 the top centreline, so a
+   * larger number is a narrower opening. Use `apertureEdge` to get this from a
+   * width instead of guessing.
+   */
+  edge: number;
+  /** Share of each ring's vertices given to the aperture, 0..1. */
+  share: number;
+  /**
+   * Fraction of the aperture span spent rolling over the lip at each side.
+   *
+   * This is the radius on the coaming. At zero the deck meets the inner wall in
+   * a knife edge that catches no light and reads as a cut in paper; a real
+   * cockpit surround is laid up over a radius and that radius is the bright
+   * line the eye follows all the way round the opening.
+   */
+  roll?: number;
+  /**
+   * Squareness of the trough, the same convention as `Section.round` inverted:
+   * 2 is a half-ellipse, higher gives the near-vertical walls and flat floor a
+   * survival cell actually has.
+   */
+  wallExp?: number;
+  /**
+   * Texture coordinate for every vertex inside the opening — a swatch, not a
+   * point on the body panel.
+   *
+   * Without this the aperture is the right shape and still reads as a dished
+   * PANEL rather than as a hole, because it is painted in the team's colour all
+   * the way to the floor. A survival cell is bare carbon inside; that contrast
+   * between a lit painted coaming and a dark interior is most of what tells the
+   * eye there is a hole there at all, and it does more work than the geometry.
+   *
+   * The lip therefore has to be a hard UV seam, and this is what makes it one:
+   * the two coaming columns are DUPLICATED, one carrying the panel's u and one
+   * carrying the swatch, so nothing interpolates between them. Left as a single
+   * column the quad either side of the lip would have run its u from the middle
+   * of the body panel to a swatch on the far side of the atlas, dragging a band
+   * of whatever lies between them round the entire opening. The positions of
+   * the two columns are identical and their normals are averaged back together
+   * afterwards, so the seam is invisible except in the paint — which is exactly
+   * where a real coaming's is.
+   */
+  interiorUV?: readonly [number, number];
+}
+
+/**
+ * The ring parameter at which a section of the given roundness reaches `frac`
+ * of its half-width.
+ *
+ * The superellipse's x is `|cos t|^(2/n)` of the half-width, so this inverts
+ * exactly rather than searching. Lets the cockpit opening be specified as "72%
+ * of the tub's width", which is a number that can be checked against a
+ * photograph, instead of as a raw ring parameter, which cannot.
+ */
+export function apertureEdge(round: number, frac: number): number {
+  const n = 2 + (1 - round) * 6;
+  const c = Math.pow(Math.max(1e-6, Math.min(1, frac)), n / 2);
+  return (Math.acos(Math.min(1, c)) + Math.PI / 2) / (Math.PI * 2);
+}
+
+/** An `OpenTop` with its optional shape parameters filled in. */
+type ResolvedOpen =
+  Required<Omit<OpenTop, 'interiorUV'>> & Pick<OpenTop, 'interiorUV'>;
+
+/** Smoothstep, for the lip roll. */
+function smoothstep(u: number): number {
+  const x = Math.max(0, Math.min(1, u));
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * One point on a section's outline, with the cockpit aperture applied.
+ *
+ * Outside the aperture band, and on any section whose `openDepth` is zero, this
+ * is `profilePoint` unchanged — which is what keeps the nose, the engine cover
+ * and every other loft in the project byte-identical.
+ */
+function openProfilePoint(
+  s: Section, t01: number, o: ResolvedOpen,
+): { x: number; y: number } {
+  const outer = profilePoint(s, t01);
+  const depth = s.openDepth ?? 0;
+  if (depth <= 1e-6 || t01 <= o.edge || t01 >= 1 - o.edge) return outer;
+
+  // q runs 0 at the +x coaming to 1 at the -x one.
+  const q = (t01 - o.edge) / (1 - 2 * o.edge);
+  // The lip roll: 0 on the coaming itself, so the aperture surface leaves the
+  // outer skin at exactly the point the outer skin ends at, and 1 once we are
+  // fully inside.
+  const b = smoothstep(Math.min(q, 1 - q) / o.roll);
+  if (b <= 0) return outer;
+
+  const xc = s.xc ?? 0;
+  // The coaming, taken from the section's own profile: the opening therefore
+  // follows the tub's shoulder line up and down the car for free.
+  const rim = profilePoint(s, o.edge);
+  const inner = Math.max(1e-4, rim.x - xc - (s.openWall ?? 0.024));
+
+  const th = Math.PI * q;
+  const p = 2 / o.wallExp;
+  const c = Math.cos(th), sn = Math.sin(th);
+  const bx = xc + Math.sign(c) * Math.pow(Math.abs(c), p) * inner;
+  const by = rim.y - depth * Math.pow(Math.abs(sn), p);
+
+  return { x: outer.x + (bx - outer.x) * b, y: outer.y + (by - outer.y) * b };
+}
+
+/**
+ * Builds the index-to-ring-parameter warp that gives the aperture its share of
+ * the vertices.
+ *
+ * Piecewise linear in three pieces, so the density is constant within the
+ * flanks, within the aperture, and within the flanks again. The two breaks land
+ * exactly on the coaming, which is a crease anyway.
+ */
+function apertureWarp(
+  o: ResolvedOpen, a0: number, a1: number,
+): (x: number) => number {
+  const e0 = o.edge, e1 = 1 - o.edge;
+  return (x: number): number => {
+    if (x <= a0) return a0 > 0 ? (x / a0) * e0 : e0;
+    if (x >= a1) return a1 < 1 ? e1 + ((x - a1) / (1 - a1)) * (1 - e1) : e1;
+    return e0 + ((x - a0) / (a1 - a0)) * (e1 - e0);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +431,13 @@ export function resample(sections: readonly Section[], maxStep: number): Section
     round: sections.map((s) => s.round),
     flatTop: sections.map((s) => s.flatTop ?? 0),
     undercut: sections.map((s) => s.undercut ?? 1),
+    // The aperture opens and closes along the car, and monotone Hermite is
+    // exactly the right interpolant for it: the depth schedule is a ramp with
+    // flat ends, and a Catmull-Rom through that would overshoot and drive the
+    // trough BELOW the floor of the tub at the two stations either side of the
+    // ramp — a hole in the underside of the car, in other words.
+    openDepth: sections.map((s) => s.openDepth ?? 0),
+    openWall: sections.map((s) => s.openWall ?? 0),
   };
   const slopes = {
     z: monotoneSlopes(t, fields.z),
@@ -247,6 +448,8 @@ export function resample(sections: readonly Section[], maxStep: number): Section
     round: monotoneSlopes(t, fields.round),
     flatTop: monotoneSlopes(t, fields.flatTop),
     undercut: monotoneSlopes(t, fields.undercut),
+    openDepth: monotoneSlopes(t, fields.openDepth),
+    openWall: monotoneSlopes(t, fields.openWall),
   };
 
   const out: Section[] = [];
@@ -265,6 +468,8 @@ export function resample(sections: readonly Section[], maxStep: number): Section
         round: hermiteAt(t, fields.round, slopes.round, x),
         flatTop: hermiteAt(t, fields.flatTop, slopes.flatTop, x),
         undercut: hermiteAt(t, fields.undercut, slopes.undercut, x),
+        openDepth: hermiteAt(t, fields.openDepth, slopes.openDepth, x),
+        openWall: hermiteAt(t, fields.openWall, slopes.openWall, x),
       });
     }
   }
@@ -279,25 +484,74 @@ export function resample(sections: readonly Section[], maxStep: number): Section
  * @param segments    vertices per ring; 20 is smooth enough at racing distance
  * @param capEnds     closes the first and last ring with a fan
  * @param lengthStep  resample the sections to this spacing first; 0 to skip
+ * @param open        cuts a cockpit aperture along the top; see `OpenTop`
  */
 export function loft(
   sections: readonly Section[],
   segments = 20,
   capEnds = true,
   lengthStep = 0,
+  open?: OpenTop,
 ): THREE.BufferGeometry {
   if (lengthStep > 0) sections = resample(sections, lengthStep);
   const rings = sections.length;
-  // One extra column duplicating the seam. Without it the last quad has to run
-  // its u from (segments-1)/segments back to 0, so the whole texture is smeared
-  // backwards across a single strip on the underside.
-  const cols = segments + 1;
+
+  // The aperture, if there is one. Resolved once for the whole loft: the warp
+  // and the span have to be identical on every ring or the skin twists between
+  // them — see the note on `OpenTop`.
+  const op: ResolvedOpen | null = open ? { roll: 0.16, wallExp: 4.5, ...open } : null;
+  const point = (s: Section, t01: number): { x: number; y: number } =>
+    op ? openProfilePoint(s, t01, op) : profilePoint(s, t01);
+
+  // COLUMN SCHEDULE. One entry per vertex of a ring: the ring parameter it is
+  // built at, and the texture u it carries. Every ring walks the same list, so
+  // the skin between two rings always joins like to like.
+  //
+  // The list is what the aperture needs to be expressed at all. Two columns
+  // land exactly ON the coaming rather than straddling it, so the lip is a real
+  // edge rather than something the tessellation happens to cross; and when the
+  // interior is being painted from a swatch those two are duplicated, giving a
+  // hard UV seam at the lip. See `OpenTop.interiorUV`.
+  const colT: number[] = [];
+  const colU: number[] = [];
+  {
+    // Snap the aperture's vertex budget to whole columns, so its edges land on
+    // vertices. Rounding here rather than in the warp is what guarantees it.
+    const i0 = op
+      ? Math.min(Math.max(1, Math.round(segments * (0.5 - op.share * 0.5))), Math.floor(segments / 2) - 1)
+      : 0;
+    const i1 = segments - i0;
+    const warp = op ? apertureWarp(op, i0 / segments, i1 / segments) : null;
+    const inner = op?.interiorUV;
+    for (let i = 0; i <= segments; i++) {
+      const raw = i === segments ? 1 : i / segments;
+      // The warp only redistributes vertices; the ring parameter it produces is
+      // what BOTH the profile and the UV are taken from, so the livery stays
+      // exactly where it was however the points are shuffled. See `OpenTop`.
+      const t = warp ? warp(raw) : raw;
+      // u runs the opposite way round the section to the vertex order. That is
+      // not arbitrary: it makes the (u, v) frame right-handed against the
+      // outward normal, and without it every graphic on the car — numbers
+      // especially — comes out mirrored.
+      const outerU = 1 - t;
+      if (inner && i === i0) { colT.push(t); colU.push(outerU); colT.push(t); colU.push(-1); }
+      else if (inner && i === i1) { colT.push(t); colU.push(-1); colT.push(t); colU.push(outerU); }
+      else { colT.push(t); colU.push(inner && i > i0 && i < i1 ? -1 : outerU); }
+    }
+  }
+  const cols = colT.length;
   const ringVerts = rings * cols;
-  const capVerts = capEnds ? 2 * (segments + 1) : 0;
+  // A centre point plus every column except the last, which is the seam's
+  // positional duplicate of the first and would give the fan a zero-width slice.
+  const capRing = cols - 1;
+  const capVerts = capEnds ? 2 * (capRing + 1) : 0;
   const total = ringVerts + capVerts;
 
   const positions = new Float32Array(total * 3);
   const uvs = new Float32Array(total * 2);
+  // Which vertices carry a swatch coordinate rather than a point on the body
+  // panel. `setPanelUV` has to leave these alone — see `uvPinned` there.
+  const pinned = op?.interiorUV ? new Uint8Array(total) : null;
 
   // v by arc length along the loft axis, so a long slow taper does not get the
   // same slice of the texture as a short abrupt one.
@@ -310,22 +564,24 @@ export function loft(
   if (run > 1e-6) for (let r = 0; r < rings; r++) vs[r] /= run;
   else for (let r = 0; r < rings; r++) vs[r] = r / Math.max(1, rings - 1);
 
+  const interiorUV = op?.interiorUV;
   for (let r = 0; r < rings; r++) {
     const s = sections[r];
     for (let i = 0; i < cols; i++) {
-      const t = (i % segments) / segments;
-      const p = profilePoint(s, i === segments ? 1 : t);
+      const p = point(s, colT[i]);
       const o = (r * cols + i) * 3;
       positions[o] = p.x;
       positions[o + 1] = p.y;
       positions[o + 2] = s.z;
       const uo = (r * cols + i) * 2;
-      // u runs the opposite way round the section to the vertex order. That is
-      // not arbitrary: it makes the (u, v) frame right-handed against the
-      // outward normal, and without it every graphic on the car — numbers
-      // especially — comes out mirrored.
-      uvs[uo] = 1 - i / segments;
-      uvs[uo + 1] = vs[r];
+      if (colU[i] < 0 && interiorUV) {
+        uvs[uo] = interiorUV[0];
+        uvs[uo + 1] = interiorUV[1];
+        if (pinned) pinned[r * cols + i] = 1;
+      } else {
+        uvs[uo] = colU[i];
+        uvs[uo + 1] = vs[r];
+      }
     }
   }
 
@@ -333,7 +589,10 @@ export function loft(
   for (let r = 0; r < rings - 1; r++) {
     const a = r * cols;
     const b = (r + 1) * cols;
-    for (let i = 0; i < segments; i++) {
+    for (let i = 0; i < cols - 1; i++) {
+      // The duplicated coaming columns are positionally identical, so the quad
+      // between them has no area. Skipping it keeps the index buffer honest.
+      if (colT[i] === colT[i + 1]) continue;
       // Two triangles per quad, wound so the outward face is front-facing.
       indices.push(a + i, b + i, b + i + 1);
       indices.push(a + i, b + i + 1, a + i + 1);
@@ -352,22 +611,28 @@ export function loft(
       positions[base * 3 + 2] = s.z;
       uvs[base * 2] = 0.5;
       uvs[base * 2 + 1] = v;
-      for (let i = 0; i < segments; i++) {
-        const p = profilePoint(s, i / segments);
+      for (let i = 0; i < capRing; i++) {
+        // Same ring parameters as the skin, or the cap fan would not land on
+        // the ring it is closing and the end of the part would show a ring of
+        // cracks. Taken straight off the column schedule, duplicates and all —
+        // a duplicated column just contributes a degenerate fan triangle.
+        const p = point(s, colT[i]);
         const idx = base + 1 + i;
         positions[idx * 3] = p.x;
         positions[idx * 3 + 1] = p.y;
         positions[idx * 3 + 2] = s.z;
-        uvs[idx * 2] = 1 - i / segments;
-        uvs[idx * 2 + 1] = v;
+        const isInner = colU[i] < 0 && interiorUV;
+        uvs[idx * 2] = isInner ? interiorUV[0] : colU[i];
+        uvs[idx * 2 + 1] = isInner ? interiorUV[1] : v;
+        if (pinned && isInner) pinned[idx] = 1;
       }
-      for (let i = 0; i < segments; i++) {
+      for (let i = 0; i < capRing; i++) {
         const a = base + 1 + i;
-        const b = base + 1 + ((i + 1) % segments);
+        const b = base + 1 + ((i + 1) % capRing);
         if (front) indices.push(base, b, a);
         else indices.push(base, a, b);
       }
-      base += segments + 1;
+      base += capRing + 1;
     }
   }
 
@@ -375,23 +640,32 @@ export function loft(
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(indices);
+  if (pinned) geo.userData.uvPinned = pinned;
 
   // Averaged normals across shared vertices: this is what turns a faceted hull
   // into a smoothly-shaded surface.
   geo.computeVertexNormals();
 
-  // The seam column is a positional duplicate, so its averaged normal only saw
-  // half the surface. Left alone it draws a visible crease down the car.
+  // Any pair of columns at the same ring parameter is a positional duplicate
+  // that exists only to carry two different UVs, so each of the pair saw half
+  // the surface when the normals were averaged. That is the underside seam, and
+  // now also the two coaming columns: left alone the first draws a crease down
+  // the belly of the car and the second draws a hard black line round the
+  // cockpit opening. Welding their normals back together gives the lip the
+  // continuous highlight a rolled edge has while keeping the paint seam hard.
   const nrm = geo.attributes.normal as THREE.BufferAttribute;
+  const pairs: [number, number][] = [[0, cols - 1]];
+  for (let i = 0; i < cols - 1; i++) if (colT[i] === colT[i + 1]) pairs.push([i, i + 1]);
   for (let r = 0; r < rings; r++) {
-    const a = r * cols;
-    const b = a + segments;
-    const nx = nrm.getX(a) + nrm.getX(b);
-    const ny = nrm.getY(a) + nrm.getY(b);
-    const nz = nrm.getZ(a) + nrm.getZ(b);
-    const len = Math.hypot(nx, ny, nz) || 1;
-    nrm.setXYZ(a, nx / len, ny / len, nz / len);
-    nrm.setXYZ(b, nx / len, ny / len, nz / len);
+    for (const [i, j] of pairs) {
+      const a = r * cols + i, b = r * cols + j;
+      const nx = nrm.getX(a) + nrm.getX(b);
+      const ny = nrm.getY(a) + nrm.getY(b);
+      const nz = nrm.getZ(a) + nrm.getZ(b);
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nrm.setXYZ(a, nx / len, ny / len, nz / len);
+      nrm.setXYZ(b, nx / len, ny / len, nz / len);
+    }
   }
   nrm.needsUpdate = true;
 
@@ -420,7 +694,15 @@ export function setPanelUV(
 ): THREE.BufferGeometry {
   const uv = geo.attributes.uv as THREE.BufferAttribute | undefined;
   if (!uv) return geo;
+  // Vertices already pinned to a swatch are NOT points on the panel and must
+  // not be folded into it. The cockpit aperture's interior is the case: `loft`
+  // pins it to bare carbon, and remapping that coordinate through the panel
+  // transform lands it back in the middle of the team's paint — which is
+  // exactly what happened the first time, and the opening went on reading as a
+  // dished panel because it was still being painted like one.
+  const pinned = geo.userData.uvPinned as Uint8Array | undefined;
   for (let i = 0; i < uv.count; i++) {
+    if (pinned?.[i]) continue;
     const around = uv.getX(i);
     const along = uv.getY(i);
     uv.setXY(i, u0 + along * (u1 - u0), v0 + (1 - around) * (v1 - v0));

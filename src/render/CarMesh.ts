@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  loft, section, setFlatUV, setPanelUV, strut, tube, wingElement, riseSpanwise,
-  type Section,
+  apertureEdge, loft, section, setFlatUV, setPanelUV, strut, tube, wingElement,
+  riseSpanwise, type OpenTop, type Section,
 } from './Loft';
 import {
   buildLivery, disposeLiveryCache, swatchUV, PANEL,
@@ -360,6 +360,16 @@ const DRS_PIVOT_Z = -2.022;
 interface Tiers {
   /** Vertices around a ring on the main body lofts. */
   body: number;
+  /**
+   * Vertices around a ring on the MONOCOQUE specifically.
+   *
+   * The tub is the one body loft that carries a hole. Forty-four per cent of
+   * its ring goes to the cockpit aperture (see `COCKPIT_APERTURE`), so at the
+   * ordinary body count the flanks would come out a third coarser than every
+   * other panel and the join to the sidepod shoulder would show it. This buys
+   * the aperture its vertices without taking them off the bodywork.
+   */
+  tub: number;
   /** Vertices around a ring on small lofts: endplates, fins, ducts. */
   detail: number;
   /**
@@ -399,7 +409,7 @@ interface Tiers {
  */
 const TIERS: Record<CarTier, Tiers> = {
   high: {
-    body: 32, detail: 20, bodyStep: 0.11, detailStep: 0.055,
+    body: 32, tub: 46, detail: 20, bodyStep: 0.11, detailStep: 0.055,
     wheel: 32, tyreRings: 6, spoke: 6, halo: 44, haloRadial: 12,
     // 1024, not 512. This is the one non-geometric number in the table and it
     // belongs with them: the atlas carries the whole car — three unwrapped
@@ -414,7 +424,7 @@ const TIERS: Record<CarTier, Tiers> = {
     strut: 9, wing: 14, texture: 1024,
   },
   low: {
-    body: 14, detail: 8, bodyStep: 0, detailStep: 0,
+    body: 14, tub: 22, detail: 8, bodyStep: 0, detailStep: 0,
     wheel: 12, tyreRings: 3, spoke: 4, halo: 14, haloRadial: 4,
     strut: 5, wing: 6, texture: 256,
   },
@@ -506,12 +516,62 @@ export interface BodyPart {
 }
 
 /**
+ * The cockpit aperture: where the deck stops and the survival cell opens.
+ *
+ * `edge` is quoted through `apertureEdge` rather than as a raw ring parameter
+ * so the number in the source is one that can be held against a photograph: the
+ * opening runs to 68% of the tub's half-width, which on a 680mm survival cell
+ * is a 460mm hole — the width a driver's shoulders actually pass through, and
+ * within a few millimetres of what the reference frames measure. Because the
+ * fraction is applied to each station's OWN profile, the opening tapers with
+ * the tub: 187mm half-width at the front bulkhead, 234mm at the shoulders.
+ *
+ * `share` is a vertex budget, not a shape. A tub section at `round` 0.18 spends
+ * nine tenths of its ring on the flanks and corners, so the aperture band would
+ * otherwise get three vertices out of thirty-two to build a lip, two walls and
+ * a floor from. Forty-four per cent of the ring goes to the twelve per cent of
+ * the profile that is now the most-looked-at part of the car — it is 500mm from
+ * the cockpit camera and the driver sits in it.
+ */
+const COCKPIT_APERTURE: OpenTop = {
+  edge: apertureEdge(0.22, 0.68),
+  share: 0.44,
+  roll: 0.15,
+  wallExp: 4.6,
+  // Bare carbon inside, painted outside. The first version of the aperture was
+  // the right hole in the right place and still did not read as one, because
+  // the trough was in the team's colour to the floor and a body-coloured dish
+  // is a dished PANEL — which is the same complaint the solid deck drew, in a
+  // new shape. The dark interior under a lit coaming is what makes it a hole.
+  interiorUV: swatchUV('carbon'),
+};
+
+/**
  * The monocoque, from the nose tip to the rear crash structure.
  *
  * These numbers are the shape of the car. A narrow tip barely wider than a
- * forearm; a fast rise and spread into the survival cell; the flat-topped
- * cockpit opening at the widest point; a shoulder over the fuel cell; then a
- * long, hard taper to a rear end narrow enough to see daylight around.
+ * forearm; a fast rise and spread into the survival cell; the cockpit opening
+ * at the widest point; a shoulder over the fuel cell; then a long, hard taper
+ * to a rear end narrow enough to see daylight around.
+ *
+ * THE COCKPIT OPENING IS NOW A HOLE. It used to be a comment. The stations
+ * through the survival cell carried a `flatTop` schedule and nothing else, so
+ * the deck ran unbroken at y 0.562-0.594 from the driver's knees to the roll
+ * hoop: the tub interior and the headrest were sealed underneath it, the helmet
+ * sat on top of it like a ball on a table, and from the driver's own camera it
+ * was the flat expanse of paint filling the bottom half of the frame. What
+ * makes it an opening is `openDepth` — see `OpenTop` in Loft.ts — and the
+ * schedule below is the shape of the hole seen in side view: closed ahead of
+ * the dash, dishing down through the scuttle, full depth from the driver's
+ * knees to behind his shoulders, and closing again into the rear bulkhead
+ * before the airbox picks the line up.
+ *
+ * THE FLANKS ARE RE-PROPORTIONED FOR IT. With the deck gone the tub is read
+ * from its shoulder line rather than from its roof, and the old stations were
+ * a touch narrow and a touch flat-sided for that: the survival cell now grows
+ * to 680mm at the shoulders and carries a continuous crown from 0.540 at the
+ * bulkhead to 0.608 over the fuel cell, so the coaming rises gently toward the
+ * back the way the reference car's does instead of stepping.
  */
 function monocoque(): Section[] {
   return [
@@ -529,11 +589,29 @@ function monocoque(): Section[] {
     section(2.30, 0.112, 0.242, 0.480, 0.52),
     section(1.98, 0.150, 0.200, 0.494, 0.44),
     section(1.50, 0.208, 0.150, 0.514, 0.37),
-    section(1.00, 0.280, 0.108, 0.540, 0.30, { flatTop: 0.20 }),
-    // Cockpit opening: the flat-topped, widest part of the survival cell.
-    section(0.52, 0.320, 0.086, 0.562, 0.20, { flatTop: 0.55 }),
-    section(0.10, 0.334, 0.080, 0.576, 0.18, { flatTop: 0.74 }),
-    section(-0.32, 0.326, 0.082, 0.594, 0.22, { flatTop: 0.50 }),
+    // Front bulkhead. The last closed station: the deck runs across here, which
+    // is what the driver's feet are under and what the dash is bolted to.
+    section(1.06, 0.282, 0.106, 0.540, 0.29, { flatTop: 0.22 }),
+    // The scuttle. A shallow dish rather than a step — the deck ahead of a
+    // driver's hands falls away into the tub over about 300mm, and cutting it
+    // as a cliff is what would make the opening look punched rather than
+    // moulded.
+    section(0.90, 0.300, 0.102, 0.550, 0.26,
+      { flatTop: 0.34, openDepth: 0.060, openWall: 0.020 }),
+    section(0.66, 0.322, 0.094, 0.562, 0.22,
+      { flatTop: 0.55, openDepth: 0.158, openWall: 0.020 }),
+    // Full depth: the survival cell proper, floor at y 0.35, which is under the
+    // driver's seat and 270mm below the coaming.
+    section(0.34, 0.336, 0.086, 0.570, 0.19,
+      { flatTop: 0.68, openDepth: 0.208, openWall: 0.020 }),
+    section(0.10, 0.340, 0.080, 0.576, 0.18,
+      { flatTop: 0.74, openDepth: 0.222, openWall: 0.020 }),
+    section(-0.24, 0.336, 0.082, 0.590, 0.20,
+      { flatTop: 0.66, openDepth: 0.214, openWall: 0.022 }),
+    // Rear bulkhead, behind the headrest and ahead of the airbox throat.
+    section(-0.44, 0.324, 0.086, 0.598, 0.24,
+      { flatTop: 0.48, openDepth: 0.048, openWall: 0.024 }),
+    section(-0.60, 0.308, 0.088, 0.604, 0.32, { flatTop: 0.22 }),
     // Over the fuel cell and the power unit, then a long hard taper. The tail
     // has to get genuinely thin — the reference car shows daylight between the
     // engine cover and both rear tyres — and it also has to be inboard of
@@ -857,7 +935,12 @@ function buildShellParts(
   const small = (s: readonly Section[], cols = t.detail) => loft(s, cols, true, t.detailStep);
 
   // --- Monocoque ---------------------------------------------------------
-  p.painted(big(monocoque()), 'body');
+  // The one loft in the project with an open top. Everything else here is a
+  // closed body; this one has a cockpit in it.
+  p.painted(
+    loft(monocoque(), t.tub, true, t.bodyStep, COCKPIT_APERTURE),
+    'body',
+  );
 
   // --- Nose-to-wing transition -------------------------------------------
   // The nose does not stop in mid-air; it drops onto the second wing element.

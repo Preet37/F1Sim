@@ -65,6 +65,22 @@ export function tyreSurfaceMap(): THREE.Texture | null {
   return load('tyre_surface_normal.png', true);
 }
 
+/**
+ * Nomex knit, palm padding and cuff ribbing, laid out to match `GLOVE_PANEL`.
+ *
+ * The driver's hands are the closest thing in the scene to the cockpit camera
+ * after the wheel rim they are holding, and they are made of CLOTH — the one
+ * material a roughness value cannot stand in for. Sampled through the first uv
+ * set, which every part of the hand is given a real parameterisation in: u runs
+ * along the finger or the hand, v around its section.
+ *
+ * NOT repeat-wrapped. The map is three stacked bands and wrapping v would bleed
+ * cuff ribbing onto the fingertips.
+ */
+export function gloveNomexMap(): THREE.Texture | null {
+  return load('glove_nomex_normal.png', false);
+}
+
 export function disposeDetailMaps(): void {
   for (const t of cache.values()) t.dispose();
   cache.clear();

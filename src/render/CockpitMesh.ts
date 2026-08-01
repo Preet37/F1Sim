@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { buildCarbonTexture } from './Livery';
-import { creased, loft, section } from './Loft';
+import { creased, loft, section, setPanelUV, tube } from './Loft';
+import { gloveNomexMap } from './DetailMaps';
 
 /**
  * Everything a driver actually sees from inside the car.
@@ -265,34 +266,22 @@ const SEG = {
   loftRing: 24,
   /** Ring spacing along a lofted bolster, metres. */
   loftStep: 0.04,
-  /** Sphere segments on the palm. */
-  palmW: 24,
-  palmH: 16,
-  /** Capsule cap segments and radial segments on a finger. */
-  fingerCap: 5,
-  fingerRadial: 14,
+  /** Rings around the hand's own loft. */
+  handRing: 26,
+  /**
+   * Segments along a finger's sweep, and around its section.
+   *
+   * The largest numbers here, and deliberately so. A finger is 10mm across and
+   * 500mm from the eye — about the same angular size as a wing endplate at two
+   * metres, which gets fourteen — and it is curved along its whole length, so
+   * the count along the sweep matters as much as the count around it. At twelve
+   * radial the section is a visible dodecagon in a specular highlight; at
+   * twenty it is round. Ten fingers and two thumbs on ONE car in the field is
+   * about twelve thousand triangles, which is a third of a single tyre's.
+   */
+  fingerAlong: 20,
+  fingerRadial: 20,
 };
-
-/**
- * Scales a geometry and corrects its normals for the scale.
- *
- * `scale` moves the positions and leaves the normals, so a squashed sphere
- * lights as if it were still round. A normal transforms by the INVERSE scale.
- */
-function scaledNormals(
-  geo: THREE.BufferGeometry, sx: number, sy: number, sz: number,
-): THREE.BufferGeometry {
-  geo.scale(sx, sy, sz);
-  const n = geo.attributes.normal as THREE.BufferAttribute | undefined;
-  if (!n) return geo;
-  for (let i = 0; i < n.count; i++) {
-    const x = n.getX(i) / sx, y = n.getY(i) / sy, z = n.getZ(i) / sz;
-    const len = Math.hypot(x, y, z) || 1;
-    n.setXYZ(i, x / len, y / len, z / len);
-  }
-  n.needsUpdate = true;
-  return geo;
-}
 
 /** A capsule-ish strut between two car-local points. */
 function strut(
@@ -346,6 +335,272 @@ function roundedRect(
   path.quadraticCurveTo(x, y + h, x, y + h - r);
   path.lineTo(x, y + r);
   path.quadraticCurveTo(x, y, x + r, y);
+}
+
+// ===========================================================================
+// The driver's hands
+// ===========================================================================
+
+/**
+ * "The hand still looks like a lego piece — what happened to actual fingers."
+ *
+ * The old hand was a squashed sphere with four identical straight capsules
+ * poking out of it at a fixed angle, a fifth for a thumb, and a cylinder for a
+ * cuff. Every one of those is a defensible primitive somewhere on this car and
+ * not one of them is defensible HERE, because the hands sit about 500mm from
+ * the cockpit camera and a human hand is — with the driver's helmet — one of
+ * the two objects in the scene every viewer has a complete internal model of.
+ * The specific tells were: fingers of constant diameter (a real one tapers by a
+ * third from knuckle to tip), no joints (three of them, each a visible swelling),
+ * no curl (a hand on a rim is wrapped nearly the whole way round it, not laid
+ * against it), a thumb that was just a fifth finger, and hard-edged primitives
+ * meeting at intersections instead of a continuous surface.
+ *
+ * WHAT IT IS NOW. Every finger is a single swept tube through an arc that wraps
+ * the grip, so it is one continuous smoothly-shaded surface from knuckle to
+ * fingertip rather than a stack of parts. The sweep's radius profile does three
+ * jobs at once: it tapers the finger toward the tip, it swells at the three
+ * joints, and it closes the tip over a radius. Segment counts are the highest
+ * in the project, because so is the magnification.
+ *
+ * HANDEDNESS. One hand is built and the other is its MIRROR — not a copy, not a
+ * rotation. A right hand rotated about the grip is still a right hand and reads
+ * instantly as wrong, and this is the only place in the project where that
+ * distinction exists.
+ */
+
+/** Radius of the rim upright the hands are wrapped around. */
+const GRIP_R = 0.022;
+
+/**
+ * Bands of the glove map. Contract with `gloveNomex` in
+ * scripts/generateTextures.mjs — if one moves, both move.
+ */
+const GLOVE_PANEL = {
+  /** Plain knit. Fingers, thumb, wrist. */
+  field: [0.02, 0.44] as const,
+  /** Knit plus padded pads with stitched borders. The hand itself. */
+  palm: [0.48, 0.76] as const,
+  /** Knit plus elastic ribbing and a double-stitched hem. */
+  cuff: [0.80, 0.99] as const,
+};
+
+/**
+ * A parabolic bump, 1 at `c` and 0 outside `c ± w`. Used for knuckles.
+ *
+ * Parabolic rather than Gaussian because it reaches zero at a known place: a
+ * joint swelling has to stop, or the taper it is added to stops being a taper.
+ */
+function bump(t: number, c: number, w: number): number {
+  const d = (t - c) / w;
+  return Math.max(0, 1 - d * d);
+}
+
+/**
+ * Maps a swept tube's UVs into a band of the glove map.
+ *
+ * `TubeGeometry` gives u along the sweep and v around the section, which is
+ * already the right parameterisation — this only rescales it into the band and
+ * repeats it along the part so the knit lands at a constant physical size
+ * whether the part is a 20mm cuff or an 80mm finger.
+ */
+function setTubeUV(
+  geo: THREE.BufferGeometry, band: readonly [number, number], repeat: number,
+): THREE.BufferGeometry {
+  const uv = geo.attributes.uv as THREE.BufferAttribute | undefined;
+  if (!uv) return geo;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, uv.getX(i) * repeat, band[0] + uv.getY(i) * (band[1] - band[0]));
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
+/**
+ * The mirror image of a geometry across the car's centreline.
+ *
+ * `scale` runs the positions through `applyMatrix4`, which also transforms the
+ * normals by the inverse transpose — so those come out right on their own. The
+ * winding does NOT: a reflection reverses it, and left alone the entire left
+ * hand renders inside out. Swapping two indices of every triangle is the whole
+ * fix and it is easy to forget, which is why it is here rather than inline.
+ */
+function mirroredX(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = geo.clone();
+  g.scale(-1, 1, 1);
+  const idx = g.index;
+  if (idx) {
+    for (let i = 0; i < idx.count; i += 3) {
+      const a = idx.getX(i + 1);
+      idx.setX(i + 1, idx.getX(i + 2));
+      idx.setX(i + 2, a);
+    }
+    idx.needsUpdate = true;
+  }
+  return g;
+}
+
+/**
+ * One finger, swept through an arc around the grip.
+ *
+ * ANGLE CONVENTION, in hand-local space with the grip's axis on y:
+ * a = 0 is the far side of the rim, a = pi/2 outboard, a = pi the near side —
+ * the side the driver looks at. A right hand's knuckles therefore sit at about
+ * 2.3 radians, out where the back of the hand is, and the finger sweeps DOWN in
+ * a, round the far side, until the tip comes back inboard.
+ *
+ * @param y0     height of the knuckle on the grip
+ * @param a0     knuckle angle
+ * @param length arc length of the finger, metres
+ * @param r0     radius at the knuckle
+ * @param drift  how far the tip drifts in y, so the fingers converge as a real
+ *               hand's do rather than staying in four parallel planes
+ */
+function finger(
+  y0: number, a0: number, length: number, r0: number, drift: number,
+): THREE.BufferGeometry {
+  // Centreline radius: the grip plus the finger's own thickness, so the finger
+  // rests ON the rim instead of inside it. It creeps outward toward the tip
+  // because the tip does not close all the way onto the rim.
+  const rc = (t: number): number => GRIP_R + r0 * (1.0 + 0.35 * t * t);
+  const sweep = length / (GRIP_R + r0);
+  const N = 9;
+  const pts: [number, number, number][] = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const a = a0 - sweep * t;
+    const r = rc(t);
+    pts.push([Math.sin(a) * r, y0 + drift * t * t, Math.cos(a) * r]);
+  }
+  // The radius profile: taper toward the tip, three joint swellings on the way,
+  // and a closing radius at the very end so the finger has a fingertip rather
+  // than a sawn-off cylinder.
+  const taper = (t: number): number => {
+    const shape = 1 - 0.34 * t;
+    const joints = 0.11 * bump(t, 0.05, 0.11)
+      + 0.14 * bump(t, 0.40, 0.13)
+      + 0.11 * bump(t, 0.72, 0.11);
+    // Quarter-circle close over the last 8 per cent.
+    const close = t > 0.92 ? Math.sqrt(Math.max(0, 1 - ((t - 0.92) / 0.08) ** 2)) : 1;
+    return (shape + joints) * close;
+  };
+  return setTubeUV(
+    tube(pts, r0, SEG.fingerAlong, SEG.fingerRadial, taper),
+    GLOVE_PANEL.field, 2,
+  );
+}
+
+/**
+ * Everything of one hand, built for the RIGHT-hand grip. The left is this
+ * mirrored; see `mirroredX`.
+ *
+ * Returns geometry tagged with which material it wants, because the cuff is the
+ * team's accent and the rest is glove.
+ */
+function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
+  const out: { geo: THREE.BufferGeometry; accent: boolean }[] = [];
+
+  // --- The hand itself ----------------------------------------------------
+  // A flattened slab wrapping the outboard-and-near quadrant of the grip, so
+  // the driver sees the BACK of his hand and the fingers disappearing round the
+  // far side of the rim. Lofted along z with the section's lateral and vertical
+  // centres drifting, which is what carries it outward and downward toward the
+  // wrist without it having to be a separate part.
+  //
+  // halfWidth is the hand's THICKNESS — 30mm through the knuckles — and height
+  // is its BREADTH across the four fingers. Getting those two the wrong way
+  // round is what makes a modelled hand look like a paddle.
+  out.push({
+    geo: setPanelUV(loft([
+      section(-0.004, 0.0140, -0.038, 0.040, 0.62, { xc: 0.0225 }),
+      section(-0.020, 0.0160, -0.040, 0.042, 0.52, { xc: 0.0270 }),
+      section(-0.040, 0.0158, -0.046, 0.034, 0.55, { xc: 0.0315 }),
+      section(-0.058, 0.0142, -0.050, 0.022, 0.70, { xc: 0.0340 }),
+      section(-0.070, 0.0120, -0.048, 0.010, 0.85, { xc: 0.0350 }),
+    ], SEG.handRing, true, 0.008), 0, GLOVE_PANEL.palm[0], 1, GLOVE_PANEL.palm[1]),
+    accent: false,
+  });
+
+  // --- Fingers ------------------------------------------------------------
+  // Index at the top down to the little finger, each shorter and thinner than
+  // the last but the middle finger longest, which is the proportion the eye
+  // checks. They converge downward toward the middle of the grip as a closed
+  // hand's do.
+  const FINGERS: [number, number, number, number, number][] = [
+    // y0,     a0,   length, r0,     drift
+    [0.0325, 2.36, 0.077, 0.0104, -0.0055],
+    [0.0115, 2.30, 0.083, 0.0107, -0.0020],
+    [-0.0095, 2.28, 0.077, 0.0100, 0.0022],
+    [-0.0290, 2.32, 0.062, 0.0088, 0.0058],
+  ];
+  for (const [y0, a0, len, r0, drift] of FINGERS) {
+    out.push({ geo: finger(y0, a0, len, r0, drift), accent: false });
+  }
+
+  // --- Thumb --------------------------------------------------------------
+  // A thumb is not a fifth finger and modelling it as one is half of why the
+  // old hand read as a mitten. It comes off the SIDE of the hand at the base of
+  // the index finger, has two phalanges rather than three, is appreciably
+  // thicker, and on a wheel it lies UP the near face of the grip toward the
+  // rim's centre rather than wrapping it.
+  {
+    const pts: [number, number, number][] = [
+      [0.0300, 0.0180, -0.0250],
+      [0.0268, 0.0292, -0.0298],
+      [0.0192, 0.0400, -0.0316],
+      [0.0090, 0.0476, -0.0300],
+      [-0.0010, 0.0516, -0.0268],
+    ];
+    const taper = (t: number): number => {
+      const shape = 1 - 0.30 * t;
+      const joints = 0.12 * bump(t, 0.08, 0.14) + 0.13 * bump(t, 0.52, 0.16);
+      const close = t > 0.90 ? Math.sqrt(Math.max(0, 1 - ((t - 0.90) / 0.10) ** 2)) : 1;
+      return (shape + joints) * close;
+    };
+    out.push({
+      geo: setTubeUV(
+        tube(pts, 0.0128, SEG.fingerAlong, SEG.fingerRadial, taper),
+        GLOVE_PANEL.field, 2,
+      ),
+      accent: false,
+    });
+  }
+
+  // --- Wrist and cuff -----------------------------------------------------
+  // The forearm behind this is NOT built here: DriverMesh already runs a real
+  // arm from the shoulder to this exact point for every car on the grid, and a
+  // second one starting at the wrist reads as a third limb. What is here is the
+  // last 40mm of it, so the hand does not end in a hole.
+  {
+    const pts: [number, number, number][] = [
+      [0.0335, -0.0300, -0.0620],
+      [0.0370, -0.0390, -0.0790],
+      [0.0405, -0.0470, -0.0960],
+      [0.0435, -0.0540, -0.1120],
+    ];
+    out.push({
+      geo: setTubeUV(
+        tube(pts, 0.0270, 8, SEG.round, (t) => 1 - 0.06 * t),
+        GLOVE_PANEL.field, 1,
+      ),
+      accent: false,
+    });
+    // The cuff proper: a ribbed elastic band bound over the end of the sleeve,
+    // in the team's accent. Slightly proud of the wrist it sits on.
+    out.push({
+      geo: setTubeUV(
+        tube([
+          [0.0385, -0.0420, -0.0850],
+          [0.0410, -0.0475, -0.0970],
+          [0.0432, -0.0530, -0.1090],
+        ], 0.0300, 8, SEG.round, (t) => 1 + 0.05 * Math.sin(t * Math.PI)),
+        GLOVE_PANEL.cuff, 1,
+      ),
+      accent: true,
+    });
+  }
+
+  return out;
 }
 
 // ===========================================================================
@@ -505,11 +760,26 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   const rubberGrip = mat(new THREE.MeshStandardMaterial({
     color: 0x0a0b0e, metalness: 0.0, roughness: 0.88, envMapIntensity: 0.4,
   }));
+  // Nomex. The map is the whole reason this is a separate material from the
+  // rest of the dark furniture: at 500mm a flat surface at roughness 0.72 is
+  // moulded rubber whatever colour it is, and cloth is the one thing the eye
+  // identifies by its fine relief rather than by its shade. `normalScale` is
+  // well under one because the map was authored with the pads and the ribbing
+  // at full strength and the knit is a tenth of their depth.
+  const gloveNormal = gloveNomexMap();
   const glove = mat(new THREE.MeshStandardMaterial({
-    color: 0x1b1e26, metalness: 0.0, roughness: 0.72, envMapIntensity: 0.6,
+    color: 0x1b1e26, metalness: 0.0, roughness: 0.82, envMapIntensity: 0.55,
+    normalMap: gloveNormal,
+    normalScale: new THREE.Vector2(0.85, 0.85),
   }));
   const accent = mat(new THREE.MeshStandardMaterial({
     color: accentColour, metalness: 0.2, roughness: 0.5, envMapIntensity: 0.9,
+  }));
+  // The cuff is the same cloth in the team's colour, so it takes the same map.
+  const cuffAccent = mat(new THREE.MeshStandardMaterial({
+    color: accentColour, metalness: 0.0, roughness: 0.78, envMapIntensity: 0.6,
+    normalMap: gloveNormal,
+    normalScale: new THREE.Vector2(0.9, 0.9),
   }));
   // A mirror is a mirror because it reflects: a fully metallic, near-zero
   // roughness surface picks up the environment map and reads instantly as glass,
@@ -690,46 +960,17 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // --- Hands --------------------------------------------------------------
   // Parented to the spin group: a driver's hands do not slide around the rim in
   // the ninety degrees of lock an F1 car has, so they turn with it.
-  for (const side of [-1, 1] as const) {
-    const hand = new THREE.Group();
-    hand.position.set(side * GRIP_X, -0.005, 0);
-    wheelSpin.add(hand);
-
-    // Palm, wrapped around the back of the grip rather than stuck to the side
-    // of it — a hand on a wheel is mostly behind the rim, with only the
-    // knuckles showing in front.
-    const palm = scaledNormals(
-      new THREE.SphereGeometry(0.037, SEG.palmW, SEG.palmH), 0.80, 1.30, 1.05,
-    );
-    palm.translate(side * 0.014, 0.002, -0.020);
-    add(palm, glove, hand);
-
-    // Fingers curling over the front of the rim.
-    for (let i = 0; i < 4; i++) {
-      const f = new THREE.CapsuleGeometry(0.0085, 0.028, SEG.fingerCap, SEG.fingerRadial);
-      f.rotateZ(Math.PI / 2);
-      f.rotateY(side * 0.30);
-      f.translate(side * -0.008, 0.031 - i * 0.021, 0.016);
-      add(f, glove, hand);
-    }
-    // Thumb, hooked over the inside face.
-    {
-      const t = new THREE.CapsuleGeometry(0.0095, 0.024, SEG.fingerCap, SEG.fingerRadial);
-      t.rotateX(Math.PI / 2);
-      t.rotateY(side * -0.55);
-      t.translate(side * -0.014, 0.036, -0.010);
-      add(t, glove, hand);
-    }
-    // Cuff at the wrist. The forearm behind it is NOT built here: DriverMesh
-    // already runs a real arm from the shoulder to this exact point for every
-    // car on the grid, and a second one starting at the wrist reads as a third
-    // limb.
-    {
-      const cuff = new THREE.CylinderGeometry(0.031, 0.033, 0.028, SEG.round);
-      cuff.rotateX(Math.PI / 2);
-      cuff.rotateZ(side * 0.34);
-      cuff.translate(side * 0.034, -0.038, -0.042);
-      add(cuff, accent, hand);
+  //
+  // Built once for the right and MIRRORED for the left. See `handParts`.
+  {
+    const right = handParts();
+    for (const side of [-1, 1] as const) {
+      const hand = new THREE.Group();
+      hand.position.set(side * GRIP_X, -0.005, 0);
+      wheelSpin.add(hand);
+      for (const part of right) {
+        add(side > 0 ? part.geo : mirroredX(part.geo), part.accent ? cuffAccent : glove, hand);
+      }
     }
   }
 

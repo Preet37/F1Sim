@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { loft, section, setFlatUV, strut } from './Loft';
+import { apertureEdge, loft, section, setFlatUV, strut, type OpenTop } from './Loft';
 import { swatchUV, type SwatchName } from './Livery';
 import { GRIP_X, WHEEL_TILT, WHEEL_Y, WHEEL_Z } from './CockpitMesh';
 
@@ -123,32 +123,53 @@ function scaled(
 }
 
 /**
- * Cockpit interior: the dark tub the driver sits in, and the padded headrest
- * around his shoulders.
+ * The seat liner, and the padded headrest around the driver's shoulders.
  *
- * Without this the cockpit opening is a hole straight through to the underside of
- * the far bodywork, which is worse than a solid lid.
+ * WHAT CHANGED AND WHY. The monocoque now carries a real cockpit aperture — the
+ * deck stops at the coaming and the bodywork itself descends into a trough that
+ * IS the survival cell (see `COCKPIT_APERTURE` in CarMesh). So the tub no longer
+ * needs a floor: it has one. What it needs instead is to be DARK, because the
+ * trough is part of the painted shell and would otherwise be the team's colour
+ * all the way down.
+ *
+ * This is therefore a liner rather than a tub — a thin dark bowl set a couple of
+ * centimetres inside the monocoque's own interior, with its rim about 30mm below
+ * the coaming. Looking into the opening you get the painted lip, a band of
+ * painted inner wall, and then black, which is exactly the order the reference
+ * photographs show.
+ *
+ * IT IS OPEN-TOPPED FOR THE SAME REASON THE TUB IS. The old version was a closed
+ * loft with its roof at y 0.560, which is above the driver's 0.530 chest: it was
+ * a lid over him. That did not matter while the deck sealed the cockpit anyway.
+ * It matters now.
  */
+const LINER_APERTURE: OpenTop = { edge: apertureEdge(0.40, 0.86), share: 0.46, roll: 0.20 };
+const HEADREST_APERTURE: OpenTop = { edge: apertureEdge(0.45, 0.80), share: 0.42, roll: 0.22 };
+
 function cockpitInterior(d: DriverTier): THREE.BufferGeometry[] {
   const parts: THREE.BufferGeometry[] = [];
 
-  // Tub floor and walls, sunk below the chassis rim.
+  // Seat liner. Widths are set from the monocoque's interior wall, which at the
+  // shoulders sits at x 0.214: 0.206 buries the liner's rim in the painted wall
+  // rather than leaving a slot down the side of it.
   parts.push(tag(loft([
-    section(0.66, 0.150, 0.400, 0.560, 0.55),
-    section(0.42, 0.200, 0.375, 0.560, 0.45),
-    section(0.10, 0.225, 0.370, 0.560, 0.40),
-    section(-0.16, 0.215, 0.375, 0.560, 0.45),
-    section(-0.34, 0.170, 0.395, 0.545, 0.60),
-  ], d.seg, true, d.step), 'dark'));
+    section(0.72, 0.148, 0.398, 0.524, 0.55, { openDepth: 0.010, openWall: 0.008 }),
+    section(0.44, 0.190, 0.380, 0.536, 0.45, { openDepth: 0.104, openWall: 0.010 }),
+    section(0.10, 0.206, 0.374, 0.546, 0.40, { openDepth: 0.150, openWall: 0.010 }),
+    section(-0.16, 0.202, 0.378, 0.550, 0.44, { openDepth: 0.148, openWall: 0.010 }),
+    section(-0.34, 0.162, 0.394, 0.538, 0.60, { openDepth: 0.060, openWall: 0.010 }),
+  ], Math.round(d.seg * 1.4), true, d.step, LINER_APERTURE), 'dark'));
 
-  // Headrest: the thick padded horseshoe behind and beside the helmet. On a real
-  // car it is the most visible thing in the cockpit after the driver.
+  // Headrest: the thick padded horseshoe behind and beside the helmet, and the
+  // one piece of the cockpit that stands PROUD of the coaming on a real car —
+  // 0.626 against a rim at 0.590. It is open-topped too, so it is a horseshoe
+  // rather than a bolster the driver is buried under.
   parts.push(tag(loft([
-    section(0.04, 0.215, 0.470, 0.585, 0.45),
-    section(-0.14, 0.230, 0.470, 0.625, 0.4),
-    section(-0.30, 0.215, 0.470, 0.615, 0.5),
-    section(-0.40, 0.170, 0.470, 0.575, 0.7),
-  ], d.seg, true, d.step), 'trim'));
+    section(0.04, 0.196, 0.470, 0.582, 0.45, { openDepth: 0.020, openWall: 0.026 }),
+    section(-0.14, 0.206, 0.470, 0.626, 0.40, { openDepth: 0.110, openWall: 0.028 }),
+    section(-0.30, 0.198, 0.470, 0.616, 0.50, { openDepth: 0.100, openWall: 0.028 }),
+    section(-0.40, 0.160, 0.470, 0.576, 0.70, { openDepth: 0.024, openWall: 0.024 }),
+  ], Math.round(d.seg * 1.3), true, d.step, HEADREST_APERTURE), 'trim'));
 
   return parts;
 }
@@ -208,13 +229,21 @@ function figure(d: DriverTier): THREE.BufferGeometry[] {
 
   // Torso. Reclined: the chest is buried in the tub and only the shoulder line
   // and the top of the chest clear the cockpit rim.
+  //
+  // NARROWER THAN IT WAS, by about 20mm a side. The figure used to be sealed
+  // under a solid deck, so nothing it did could collide with anything; now the
+  // survival cell has real walls at x 0.214 and a torso at 0.205 was fouling
+  // them at the shoulders. 0.196 leaves a genuine gap, and 392mm across the
+  // shoulders is still a person — a driver's shoulders fill the opening in the
+  // reference frames, which is what this is now doing rather than passing
+  // through it.
   parts.push(tag(loft([
-    section(0.34, 0.115, 0.395, 0.470, 0.8),
-    section(0.18, 0.150, 0.390, 0.500, 0.75),
-    section(0.02, 0.185, 0.390, 0.522, 0.7),
-    section(-0.10, 0.205, 0.390, 0.530, 0.6),
-    section(-0.22, 0.180, 0.395, 0.512, 0.7),
-    section(-0.32, 0.130, 0.400, 0.478, 0.85),
+    section(0.34, 0.112, 0.395, 0.470, 0.8),
+    section(0.18, 0.146, 0.390, 0.500, 0.75),
+    section(0.02, 0.178, 0.390, 0.522, 0.7),
+    section(-0.10, 0.196, 0.390, 0.530, 0.6),
+    section(-0.22, 0.174, 0.395, 0.512, 0.7),
+    section(-0.32, 0.126, 0.400, 0.478, 0.85),
   ], d.seg, true, d.step), 'suit'));
 
   // Neck.
@@ -231,9 +260,14 @@ function figure(d: DriverTier): THREE.BufferGeometry[] {
 
   // Arms: shoulder to elbow to hand. Two tapered members each, which is enough
   // for the eye to read a bent arm reaching to a wheel.
+  // The elbow used to swing out to x 0.196 with a 44mm arm on it — 240mm from
+  // the centreline, through a survival cell wall that is at 214mm. Under a
+  // closed deck nobody could see it happen. Pulled in to 0.158 the forearm runs
+  // INSIDE the tub, which is both correct and the only way the arms read as
+  // going down into the car rather than over the side of it.
   for (const side of [-1, 1] as const) {
-    const sx = side * 0.163, sy = SHOULDER_Y - 0.005, sz = -0.045;
-    const ex = side * 0.196, ey = SHOULDER_Y - 0.055, ez = 0.195;
+    const sx = side * 0.150, sy = SHOULDER_Y - 0.005, sz = -0.045;
+    const ex = side * 0.158, ey = SHOULDER_Y - 0.055, ez = 0.195;
     // The hand end is the grip point, so the arm still lands on the wheel when
     // the coarse glove is swapped for the detailed cockpit hand.
     const hx = side * GRIP_X, hy = WHEEL_Y - 0.008, hz = WHEEL_Z - 0.035;
@@ -244,7 +278,7 @@ function figure(d: DriverTier): THREE.BufferGeometry[] {
     parts.push(tag(fore, 'suit'));
 
     // Shoulder cap, so the arm does not meet the torso in a visible stump.
-    const cap = new THREE.SphereGeometry(0.062, d.limb, Math.round(d.limb * 0.7));
+    const cap = new THREE.SphereGeometry(0.056, d.limb, Math.round(d.limb * 0.7));
     cap.translate(sx, sy, sz);
     parts.push(tag(cap, 'suit'));
   }
