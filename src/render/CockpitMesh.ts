@@ -41,28 +41,52 @@ import { creased, loft, section } from './Loft';
  * this was left at the old car's 0.86 after the body was rebuilt.
  */
 /**
- * Up 40mm and back 25mm.
+ * Onto the roll hoop, and this is a change of KIND rather than of degree.
  *
- * Both directions buy road, and the order they were done in matters. Raising
- * the eye pushes everything below it — tub, mirrors, rim, front tyres — down
- * the frame, which is exactly what the "barely a third of the frame is road"
- * report is asking for. But it also brings the halo DOWN toward the horizon,
- * because the hoop passes above the sightline, and a hoop laid across the road
- * is worse than one in the sky. So the halo had to be raised and slimmed first
- * (see CarMesh); with its arc sitting at fifteen degrees instead of six there
- * is finally headroom to lift the eye without the hoop landing on the track.
+ * Three passes tried to fix "the halo splits the view in two" by thinning the
+ * halo, raising it, and lifting the eye a few centimetres at a time. None of
+ * them worked, and the measurements say why. The halo's forward pillar is
+ * already a 20mm blade — the real article — and at the 0.69m it passes an eye
+ * at y = 0.745 that is still 1.7 degrees of solid black, which is fifty-five
+ * pixels of bar down the middle of a 1280-wide frame. Measured against the
+ * Monoposto reference frames, whose pillar is two to three pixels over about
+ * thirty rows, the geometry cannot get there: no honest pillar is thin enough
+ * to be invisible from thirty inches away.
  *
- * Moving back is free by comparison: it lengthens the distance to everything in
- * front — rim, dash, mirrors, halo — and angular size is what framing is made
- * of.
+ * What makes the reference work is not a thinner pillar, it is a camera on the
+ * other side of it. Sitting up on the roll hoop, the airbox crown at y = 0.905
+ * stands between the lens and the base of the pillar and simply occludes it,
+ * the halo hoop is seen from above so its arc hugs the bottom of the frame
+ * instead of lying across the middle, and the front tyres drop away to the
+ * corners. Measured on the same frame and the same piece of road:
  *
- * Both stay well inside the modelled helmet shell, which runs 0.516..0.828 in
- * y and -0.145..0.185 in z, and the halo's crown at 0.882 is still above the
- * eye, so the view is still THROUGH the hoop rather than over the top of it.
+ *                       before        after      reference
+ *   pillar width         55 px         0 px       2-3 px
+ *   pillar rows          66            0          ~30
+ *   own car               60%          31%        ~45%
+ *   top half of frame     28%           2%        ~1%
+ *
+ * The cost is honest and worth stating: the steering wheel, the driver's hands
+ * and the tub are all below the airbox and therefore below the frame. Nothing
+ * can be done about that from here — a lens wide enough to reach the rim also
+ * reaches back up over the halo, which was measured too — and the wheel's
+ * readouts are duplicated on the HUD anyway. The mirrors, which are the one
+ * piece of cockpit furniture that carries information nothing else does, are
+ * still in shot, out at the edges where a driver's are.
  */
 export const EYE_X = 0;
-export const EYE_Y = 0.745;
-export const EYE_Z = 0.075;
+export const EYE_Y = 1.02;
+export const EYE_Z = -0.58;
+
+/**
+ * Downward tilt of the cockpit camera, radians.
+ *
+ * Four degrees. Enough that the horizon sits a little above the middle of the
+ * frame and the road runs away underneath rather than out in front; more than
+ * about six and the halo arc climbs back up into the picture, which is the
+ * thing this whole rig exists to avoid.
+ */
+export const EYE_PITCH = 0.070;
 
 /**
  * Centre of the steering wheel, car-local, and its rake.
@@ -483,13 +507,25 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // It is laid a couple of millimetres proud of the shell's pane so it wins the
   // depth test without z-fighting.
   for (const side of [-1, 1] as const) {
-    // The glass faces back and inward, at the driver's eye. The plane's own
-    // normal is +z, so the mesh rotation alone turns it round — rotating the
-    // geometry as well would flip it back and cull it.
+    // The glass is aimed AT THE CAMERA, computed rather than dialled in.
+    //
+    // A hand-set yaw was right for an eye point inside the helmet and is wrong
+    // for one up on the roll hoop, which is 0.42m higher and 0.65m further
+    // back: the pane ended up looking at the driver's chest. Pointing the
+    // plane's own +z normal straight down the line from the glass to the eye
+    // gets it right for whatever the eye point happens to be, and will keep
+    // getting it right if that ever moves again.
     const glass = new THREE.PlaneGeometry(0.100, 0.038);
     const g = add(glass, mirrorGlass);
     g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
-    g.rotation.y = Math.PI + side * 0.30;
+    g.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(
+        EYE_X - side * MIRROR_X,
+        EYE_Y - MIRROR_Y,
+        EYE_Z - MIRROR_GLASS_Z,
+      ).normalize(),
+    );
   }
 
   // --- Steering wheel -----------------------------------------------------

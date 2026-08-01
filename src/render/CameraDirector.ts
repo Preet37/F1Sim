@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, wrapAngle } from '../core/MathUtils';
-import { EYE_X, EYE_Y, EYE_Z } from './CockpitMesh';
+import { EYE_PITCH, EYE_X, EYE_Y, EYE_Z } from './CockpitMesh';
 import { nominalBarrierOffset } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
@@ -38,13 +38,13 @@ const MIN_CAMERA_HEIGHT_M = 0.35;
 /**
  * Near plane, per mode.
  *
- * The cockpit needs a much closer near plane than anything else: the steering
- * wheel sits about 400mm from the driver's eyes and the halo pillar about 600mm,
- * and the default 0.35m plane slices straight through both. Nothing else in the
- * game has geometry that close, so every other mode keeps the wider plane and
- * its better depth precision.
+ * The cockpit still needs a closer plane than anything else — the airbox crown
+ * passes about 300mm under the lens — but not the 0.08 it needed when the eye
+ * was down in the tub with the steering wheel 400mm away. 0.12 clears the
+ * nearest thing on the car by a factor of two and buys back the depth precision
+ * a near plane that close spends.
  */
-const NEAR_COCKPIT = 0.08;
+const NEAR_COCKPIT = 0.12;
 const NEAR_DEFAULT = 0.35;
 
 /**
@@ -67,10 +67,15 @@ const FOV: Record<CameraMode, { base: number; gain: number }> = {
   // ~63 degrees across at 16:9, opening to ~71. A normal lens: the car keeps a
   // believable size and straight things stay straight.
   chase: { base: 39, gain: 6 },
-  // The one view that wants to be wide. A driver's useful field is far wider
-  // than a screen, and a narrow cockpit loses the mirrors and the front tyres —
-  // which are most of what tells you the car is a car.
-  cockpit: { base: 44, gain: 6 },
+  // Narrower than it was, and deliberately.
+  //
+  // A wide lens used to be the way to get road into the cockpit shot. From the
+  // roll hoop it is the opposite: widening reaches back up over the halo and
+  // pulls the arc into the middle of the frame, which was measured across six
+  // candidate lenses. 40 to 45 degrees vertical — 66 to 73 across at 16:9 — is
+  // where the horizon sits above centre, the halo hugs the bottom, and straight
+  // things stay straight.
+  cockpit: { base: 40, gain: 5 },
   'onboard-t': { base: 43, gain: 6 },
   // Lowest camera, so the widest: at 0.44m the ground shear does the work and a
   // wide lens amplifies it.
@@ -138,6 +143,12 @@ export class CameraDirector {
   private rigPitch = 0;
   /** Chase camera bank, radians. See the chase case in `update`. */
   private bank = 0;
+  /**
+   * How far round the reverse view is, 0 (following) to 1 (facing back).
+   * See `reverseTarget`.
+   */
+  private reverse = 0;
+  private reverseLatch = false;
   /** Trackside camera state: which anchor it is currently using. */
   private tracksideAnchorS = 0;
   private tracksideSide = 1;
@@ -196,8 +207,36 @@ export class CameraDirector {
     // Direction the car is actually travelling, which differs from where it is
     // pointing when it slides. Looking along the velocity rather than the nose is
     // what makes a slide legible.
+    //
+    // CLAMPED, and that clamp is a bug fix rather than a refinement. The bias is
+    // `heading - slip * 0.55`, so a slip angle of 180 degrees — which is exactly
+    // what reversing is, the car travelling the way it is not pointing — swings
+    // the camera 99 degrees round to the side of the car. That is the "when the
+    // car is reversing the camera goes sideways and you can't see anything"
+    // report, and a spin produces the same thing for the same reason. Past about
+    // sixty degrees of slip there is no more information in the angle anyway:
+    // the car is going somewhere other than where it points and the camera has
+    // already said so.
     const travelHeading = speed > 3 ? Math.atan2(p.velocity.x, p.velocity.y) : heading;
-    const slip = wrapAngle(travelHeading - heading);
+    const slip = clamp(wrapAngle(travelHeading - heading), -1.05, 1.05);
+
+    // Reversing: the useful view is the one the car is going towards.
+    //
+    // Hysteresis on the forward speed component rather than on a control input,
+    // because what matters is which way the car is actually moving. It latches
+    // on below -1.2 m/s and off above -0.2, so nothing flickers as the car rocks
+    // through a standstill, and the swing round the car is damped rather than
+    // cut so it reads as the camera moving rather than as an edit.
+    const forwardMs = p.velocity.x * sinH + p.velocity.y * cosH;
+    if (forwardMs < -1.2) this.reverseLatch = true;
+    else if (forwardMs > -0.2) this.reverseLatch = false;
+    this.reverse = damp(this.reverse, this.reverseLatch ? 1 : 0, 6, dt);
+    // Half a turn when fully engaged. Applied to the camera's azimuth AND to
+    // the aim, so the pair stays a follow shot with the car between the lens
+    // and where it is going — just facing the other way.
+    const reverseYaw = this.reverse * Math.PI;
+    const sinR = Math.sin(heading + reverseYaw);
+    const cosR = Math.cos(heading + reverseYaw);
 
     // The point every following camera is anchored to.
     this.anchor.set(p.position.x, carY, p.position.y);
@@ -246,7 +285,7 @@ export class CameraDirector {
         dist += clamp(p.longitudinalG * 0.20, -1.0, 0.7);
 
         // Bias the camera toward the outside of a slide so the car's angle shows.
-        const yaw = heading - slip * 0.55;
+        const yaw = heading - slip * 0.55 + reverseYaw;
         this.desired.set(
           p.position.x - Math.sin(yaw) * dist,
           carY + height,
@@ -261,9 +300,9 @@ export class CameraDirector {
         // the horizon. This pair puts the car around two thirds down and the
         // horizon around a third from the top, which is the broadcast framing.
         this.lookTarget.set(
-          p.position.x + sinH * 5.6,
+          p.position.x + sinR * 5.6,
           carY + 0.80,
-          p.position.y + cosH * 5.6,
+          p.position.y + cosR * 5.6,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
         // Bank into the corner.
@@ -347,16 +386,16 @@ export class CameraDirector {
         // invisible at the old 87-degree spread and would now put it out of
         // frame entirely.
         const dist = lerp(12, 15, clamp01(this.smoothSpeed / 90));
-        const yaw = heading - slip * 0.3;
+        const yaw = heading - slip * 0.3 + reverseYaw;
         this.desired.set(
           p.position.x - Math.sin(yaw) * dist,
           carY + 3.4,
           p.position.y - Math.cos(yaw) * dist,
         );
         this.lookTarget.set(
-          p.position.x + sinH * 2.5,
+          p.position.x + sinR * 2.5,
           carY + 1.00,
-          p.position.y + cosH * 2.5,
+          p.position.y + cosR * 2.5,
         );
         this.applySmoothed(dt, 4.5, 9, this.anchor);
         break;
@@ -558,10 +597,10 @@ export class CameraDirector {
     const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.30, -0.20, 0.20);
     this.headYaw = damp(this.headYaw, target, 2.6, dt);
 
-    // A three-degree nose-down bias: a driver's eyeline is on the road a hundred
-    // metres away, not on the horizon.
+    // Nose-down bias. See EYE_PITCH: it is the other half of the roll-hoop
+    // framing and belongs beside the eye point it goes with, not here.
     this.camera.rotation.set(
-      this.rigPitch - 0.045,
+      this.rigPitch - EYE_PITCH,
       p.heading + this.headYaw + Math.PI,
       this.rigRoll,
       'YXZ',
