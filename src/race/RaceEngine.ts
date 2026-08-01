@@ -8,7 +8,7 @@ import { DRIVERS, getTeam, type Driver } from '../data/teams';
 import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
 import type { Neighbour, AIDifficultyId } from '../ai/AIVehicleController';
-import { createNeighbour } from '../ai/AIVehicleController';
+import { corneringSpeedLimitMs, createNeighbour } from '../ai/AIVehicleController';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
@@ -17,6 +17,9 @@ import {
   PIT_LIMITER_ARM_M, brakeFor, pitEntryCeilingMs, pitEntryRoomNeededM,
   pitEntryTargetMs, pitLimiterShedDistanceM,
 } from '../physics/PitLimiter';
+import {
+  NEUTRAL_COMMITMENT, UNLAP_PACE_MULT, neutralisedLimit, neutralisedPlan, queueHoldMs,
+} from '../physics/NeutralisedLimiter';
 
 /**
  * The simulation. Owns the track, the cars, race control, timing and the
@@ -236,6 +239,18 @@ export class RaceEngine {
    */
   readonly pitGeom: PitLaneGeometry;
 
+  /**
+   * Whether the player's neutralised speed limit is applied for them.
+   *
+   * On, always, in the game. It exists as a switch for one reason: an assist is
+   * worth whatever the difference is between having it and not, and that is a
+   * measurement rather than an argument. `probe:neutralplayer` runs each
+   * scenario twice — the same seed, the same driver, the same staged safety car
+   * — and reports both, which is how the size of the defect this fixes is
+   * known rather than asserted.
+   */
+  neutralisationAssist = true;
+
   /** Session elapsed time, seconds. */
   time = 0;
   /** True once the session has finished. */
@@ -274,7 +289,7 @@ export class RaceEngine {
   /** Player control input, written by the input layer each frame. */
   readonly playerControls: VehicleControls = {
     throttle: 0, brake: 0, steer: 0,
-    drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false,
+    drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0,
     reverse: false,
   };
 
@@ -599,7 +614,10 @@ export class RaceEngine {
       // frame, while this runs once per physics step; writing the assist back
       // into it would leave a stale brake application behind whenever the assist
       // stopped applying between two input frames.
-      if (car.isPlayer) this.applyPitLaneAssist(car, car.appliedControls);
+      if (car.isPlayer) {
+        this.applyNeutralisationAssist(car, car.appliedControls);
+        this.applyPitLaneAssist(car, car.appliedControls);
+      }
       car.physics.drsAvailable = this.isDrsAllowed(car);
       // Where the car is BEFORE it moves, for the swept test against the solid
       // world below. Recorded here rather than at the end of the previous step
@@ -1163,6 +1181,21 @@ export class RaceEngine {
 
     for (const other of this.cars) {
       if (other === car || other.retired) continue;
+      // The pit lane is a different road. It shares this spline — it is modelled
+      // as a lateral offset on it — so a car in the lane has an `s` that reads
+      // as "just ahead" to a car on the circuit passing the pits, and it was
+      // being followed as if it were.
+      //
+      // That is most of what was left of the form-up defect. Under a safety car
+      // half the field stops, every one of them transits the lane at the pit
+      // limit, and every car on the circuit that came past a car in the lane
+      // treated it as the car in front — under a yellow, which means the
+      // no-pass hold applied, which means it slowed to a little over half the
+      // speed of a car doing 80 km/h in a different piece of road behind a wall.
+      // Measured, one car sat two kilometres behind the queue for three
+      // minutes, oscillating between 11 and 58 m/s, unable to close a gap it was
+      // being braked for by a car it could not have hit.
+      if (other.inPitLane !== car.inPitLane) continue;
       const gap = loopDelta(car.s, other.s, len);
 
       if (gap > 0 && gap < bestAhead) { bestAhead = gap; aheadCar = other; }
@@ -1194,6 +1227,41 @@ export class RaceEngine {
     p.neutralisedScale = rc.neutralisedScale;
     p.neutralisedCatchUpMult = rc.catchUpMult;
     p.queueGapM = rc.queueGapLimitM(car, car.position === 1);
+
+    // The safety car, as something on the road in front of this car.
+    //
+    // It is not one of `this.cars` — it is a position on the lap owned by race
+    // control — so the sweep above cannot see it, and for the LEADER it is the
+    // only thing in front. That omission is the form-up defect: the leader had
+    // no gap to close, so it never closed one, so the nineteen cars behind it
+    // held station on a leader that was itself hundreds of metres adrift of the
+    // car they were all supposed to be queueing behind.
+    if (rc.scOnTrack) {
+      const toSc = loopDelta(car.s, rc.scS, len);
+      // Ahead of us, and on this lap rather than most of the way round.
+      p.safetyCarAheadM = toSc > 0 && toSc < len * 0.5 ? toSc : -1;
+      p.safetyCarSpeedMs = rc.scSpeedMs;
+    } else {
+      p.safetyCarAheadM = -1;
+      p.safetyCarSpeedMs = 0;
+    }
+    // Whatever is nearest in front IN THE QUEUE — which for the leader is the
+    // safety car and nothing else.
+    //
+    // The exclusion is not a detail. `ahead` is the nearest car on the ROAD, and
+    // the nearest car on the road in front of the leader is the last car in the
+    // field, most of a lap away. Feeding that gap to the catch-up rule told the
+    // leader it was hundreds of metres adrift of a queue it was in fact leading,
+    // so it was granted the full catch-up relaxation and drove away from the
+    // whole field at 210 km/h under a safety car — measured, the gap from the
+    // leader to second was still opening at 1900 metres. Everything behind it
+    // then held station on nothing.
+    const carAhead = car.position === 1 || !p.ahead ? -1 : p.ahead.gapM;
+    const scNearer = p.safetyCarAheadM >= 0 && (carAhead < 0 || p.safetyCarAheadM < carAhead);
+    p.queueAheadM = scNearer ? p.safetyCarAheadM
+      : p.safetyCarAheadM < 0 ? carAhead
+      : Math.min(carAhead, p.safetyCarAheadM);
+    p.queueAheadSpeedMs = scNearer ? rc.scSpeedMs : (p.ahead ? p.ahead.speedMs : 0);
     p.mustUnlap = car.mustUnlap;
     p.holdRacingLine = car.holdRacingLine;
     p.holdUntilLine = car.holdUntilLine;
@@ -1366,7 +1434,21 @@ export class RaceEngine {
         }
       }
       // The leader finishing waves the chequered flag.
-      if (!this.raceControl.raceFinished && car.lap > laps && car.position === 1) {
+      //
+      // "The leader" is the FIRST car to complete the distance, which is what
+      // this tests, and not `car.position === 1`, which is what it used to.
+      // Position is recomputed at 20Hz and a line crossing happens on a 120Hz
+      // step in between, so a leader that crossed the Line during a flicker in
+      // the classification — two cars a few metres apart, `totalDistance`
+      // accumulating at slightly different rates — was reading a stale 2 and no
+      // flag came out. Measured at Spa: the winner crossed to finish, was
+      // recorded as P2 for that one step, and the race simply ran on until
+      // every car had finished with no chequered flag at all.
+      //
+      // The test is exact rather than approximate: this is latched, a lapped
+      // car by definition has fewer laps than the leader, and a lap can only be
+      // earned by distance, so the first car here IS the leader.
+      if (!this.raceControl.raceFinished && car.lap > laps) {
         this.raceControl.chequeredFlag(this.time);
       }
     }
@@ -1603,6 +1685,88 @@ export class RaceEngine {
       if (worthIt) return true;
     }
     return false;
+  }
+
+  /**
+   * The player's neutralised speed limit, applied for them.
+   *
+   * The pit lane's assist, pointed at the other limit the driver is required to
+   * obey. Everything about the shape of it is deliberately the same, because the
+   * two are the same problem: the limit is armed BEFORE the car needs it, the
+   * car is braked into it on a planning profile rather than dropped onto it, and
+   * the HUD says the limiter is on. `applyPitLaneAssist` below is the original
+   * and its comment explains why an automatic limiter obliges the game to
+   * provide the arrival; this owes the driver exactly the same thing.
+   *
+   * WHY IT HAS TO EXIST AT ALL. The player's report is one sentence covering
+   * both halves — "under safetycar and flags and everything every car has to
+   * follow the speedlimit, it should auto put the speed up." The nineteen AI
+   * cars were fixed and the twentieth was not, which makes the rule a handicap
+   * rather than a rule. And a neutralised limit is much harder to judge by eye
+   * than a pit entry: what the regulations actually require is a minimum TIME
+   * through each marshalling sector, set by the FIA ECU (2025 Sporting Regs
+   * Art. 55.7 and 56.5 / 2026 Section B Art. B5.13.2b and B5.12.2b), which is
+   * not a number a driver can read off a speedometer. The penalty for getting
+   * it wrong is five seconds.
+   *
+   * WHAT IT DOES NOT DO. Steering is the driver's, everywhere. The throttle is
+   * the driver's everywhere the limit is not binding. And the limit relaxes
+   * exactly as it does for the AI when the player is entitled to run quicker —
+   * closing a gap to the queue (Art. 55.7 / B5.13.2b requires them to close it)
+   * or unlapping themselves (Art. 55.14 / B5.13.4c requires them to pass) — via
+   * the same shared `neutralisedLimit`, so the player is never braked for
+   * obeying the other article.
+   */
+  private applyNeutralisationAssist(car: CarEntry, c: VehicleControls): void {
+    const rc = this.raceControl;
+    if (!this.neutralisationAssist ||
+        rc.neutralisation === 'none' || car.inPitLane || car.retired || !this.started) {
+      c.speedLimitMs = 0;
+      car.neutralLimitMs = 0;
+      return;
+    }
+
+    const p = car.perception;
+    const limit = neutralisedLimit(
+      rc.vscTargetMs, rc.neutralisedScale, rc.catchUpMult,
+      p.queueGapM, p.queueAheadM, car.mustUnlap, UNLAP_PACE_MULT,
+    );
+
+    // The limit `d` metres up the road. The lookahead is what stops the limiter
+    // being a thing that cuts in at every corner instead of a thing the car
+    // arrives at — the racing line's own speed falls away before a corner and
+    // the neutralised limit falls with it.
+    // Station-keeping, from the same shared rule the AI drives to. Without it
+    // the player's cap comes only from the racing line, and the racing line is
+    // not what the queue in front of them is doing: measured at Monaco, where
+    // the field runs a long way under the line speed even before a
+    // neutralisation, the player was held to 37% of the line while the cars
+    // ahead were doing 26% of it. A limit that lets one car run 44% quicker
+    // than the queue it is in is not the same limit.
+    const hold = queueHoldMs(
+      p.queueAheadM, p.queueAheadSpeedMs, p.queueGapM, rc.vscTargetMs * 0.25,
+    );
+
+    const len = this.track.length;
+    const plan = neutralisedPlan(car.physics.speedMs, (d) => {
+      const sAt = (car.s + d) % len;
+      // The speed the car "would otherwise carry" — the same reference the AI
+      // scales down, which is the racing line capped by what this car's own
+      // grip and downforce can actually do through the corner. See
+      // `NEUTRAL_COMMITMENT` for what taking the raw line speed instead cost.
+      // `neutralisedPlan` then runs a braking pass over it, which is the other
+      // half of the same idea.
+      const line = this.track.targetSpeed[this.track.indexAt(sAt)];
+      const grip = corneringSpeedLimitMs(this.track, car.physics, sAt) * NEUTRAL_COMMITMENT;
+      return Math.min(line, grip);
+    }, limit);
+
+    c.speedLimitMs = Math.min(plan.ceilingMs, hold);
+    car.neutralLimitMs = c.speedLimitMs;
+    if (plan.brake > c.brake) {
+      c.brake = plan.brake;
+      c.throttle = 0;
+    }
   }
 
   /**
@@ -2458,6 +2622,7 @@ function copyControls(from: VehicleControls, to: VehicleControls): void {
   to.ersMode = from.ersMode;
   to.gearRequest = from.gearRequest;
   to.pitLimiter = from.pitLimiter;
+  to.speedLimitMs = from.speedLimitMs;
   to.reverse = from.reverse;
 }
 

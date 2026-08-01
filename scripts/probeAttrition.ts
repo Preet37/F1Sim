@@ -161,7 +161,7 @@ console.log('\nCOMBINED LOAD — braking INTO a corner');
   };
   const controls = (over: Partial<VehicleControls> = {}): VehicleControls => ({
     throttle: 0, brake: 0, steer: 0, drsRequested: false,
-    ersMode: 'balanced', gearRequest: 0, pitLimiter: false, ...over,
+    ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0, ...over,
   });
 
   function turnIn(speedKph: number, radiusM: number, brake: number) {

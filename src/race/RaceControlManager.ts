@@ -232,6 +232,29 @@ const SC_PACE_SCALE = 0.42;
 const VSC_PACE_SCALE = 0.5;
 
 /**
+ * How much of its pace the safety car keeps while it is still picking the
+ * leader up.
+ *
+ * Art. 55.10 / B5.13.5a asks for the leader to end up behind the safety car,
+ * and the leader is held to the same speed the safety car is — so unless the
+ * safety car gives some of that back the two never meet. Just over a third is
+ * what a real safety car does on the lap it is deployed: it is barely moving
+ * until the leader arrives, and everyone watching says so.
+ */
+const SC_BUNCHING_PACE_SHARE = 0.38;
+
+/**
+ * How far ahead of the leader the safety car joins the circuit, metres.
+ *
+ * Enough road that a leader arriving at racing speed cannot get past it while
+ * it slows down. A car doing 85 m/s braking to a 35 m/s safety car pace covers
+ * about 130m more than the safety car does over the same period; 250 gives that
+ * a wide margin at every circuit and is still close enough that the pick-up
+ * happens within a few seconds rather than over a lap.
+ */
+const SC_PICKUP_LEAD_M = 250;
+
+/**
  * How much quicker than the neutralised pace a car catching the queue may run.
  *
  * Deliberately just under `DELTA_REFERENCE_MARGIN`: a car closing a gap must be
@@ -342,6 +365,8 @@ export class RaceControlManager {
    */
   scS = 0;
   scLap = 0;
+  /** How fast it is going, m/s. See `safetyCarPaceMs`. */
+  scSpeedMs = 0;
   /** True while the safety car is physically on the circuit. */
   scOnTrack = false;
   /**
@@ -374,6 +399,8 @@ export class RaceControlManager {
   /** Leader's lap when lapped cars were waved past. */
   private scWaveLap = -1;
   private scTimer = 0;
+  /** Road left before the safety car reaches the pit entry, metres. */
+  private scToEntryM = 0;
   /** Seconds until the VSC panels go green. Negative when not ending. */
   private vscGreenIn = -1;
   /** Track wetness, supplied by the engine. Drives the low-visibility call. */
@@ -405,6 +432,7 @@ export class RaceControlManager {
     this.messages.length = 0;
     this.scPhase = 'none';
     this.scOnTrack = false;
+    this.scSpeedMs = 0;
     this.lappedCarsWaved = false;
     this.pitExitClosed = false;
     this.pitEntryClosed = false;
@@ -802,9 +830,18 @@ export class RaceControlManager {
     // (Art. 55.4 / B5.13.1). Modelled as joining just ahead of the leader,
     // which is where it ends up once it has picked the leader up and is the
     // only part of that the field can observe.
+    //
+    // AHEAD, with room. It used to join exactly ON the leader, and a leader
+    // arriving at 300 km/h needs a couple of hundred metres to come down to
+    // safety car pace — so it was past the safety car before it had slowed, and
+    // the "queue" then formed up behind a car that was itself in front of the
+    // thing it was supposed to be queueing behind. `SC_PICKUP_LEAD_M` is more
+    // road than that deceleration can eat.
     const leader = standings.length > 0 ? standings[0] : null;
-    this.scS = leader ? leader.s : 0;
+    this.scS = leader ? (leader.s + SC_PICKUP_LEAD_M) % this.track.length : 0;
     this.scLap = leader ? leader.lap : 0;
+    this.scSpeedMs = SC_PACE_MS;
+    this.scToEntryM = Infinity;
 
     this.log('SAFETY CAR DEPLOYED', 'critical', sessionTime);
 
@@ -838,18 +875,21 @@ export class RaceControlManager {
   ): void {
     this.scTimer -= dt;
 
+    const leader = standings.length > 0 ? standings[0] : null;
+
     // The safety car itself circulates at the neutralised pace.
     if (this.scOnTrack) {
-      const before = this.scS;
-      this.scS += SC_PACE_MS * dt;
+      this.scSpeedMs = this.safetyCarPaceMs(leader);
+      const travelled = this.scSpeedMs * dt;
+      this.scS += travelled;
+      this.scToEntryM -= travelled;
       if (this.scS >= this.track.length) {
         this.scS -= this.track.length;
         this.scLap++;
       }
-      void before;
+    } else {
+      this.scSpeedMs = 0;
     }
-
-    const leader = standings.length > 0 ? standings[0] : null;
 
     switch (this.scPhase) {
       case 'bunching': {
@@ -909,7 +949,7 @@ export class RaceControlManager {
         // From the moment the orange lights go out the leader dictates the pace
         // (Art. 55.15 / B5.13.6) — modelled by taking the car off the circuit,
         // which releases the queue's speed cap and hands the pace to the leader.
-        if (this.scTimer <= 0) {
+        if (this.scToEntryM <= 0) {
           this.scOnTrack = false;
           this.scPhase = 'restart';
           this.neutralisation = 'none';
@@ -928,6 +968,51 @@ export class RaceControlManager {
       default:
         return;
     }
+  }
+
+  /**
+   * How fast the safety car is going, m/s.
+   *
+   * TWO BUGS IN ONE CONSTANT. It used to be `SC_PACE_MS` — a flat 40 m/s — and
+   * the field it was leading was held to `min(racingLineSpeed * 0.42, 40)`,
+   * which at Monza is around 30. The safety car was therefore a third quicker
+   * than the cars it was supposed to be bunching, and it drove away from them:
+   * measured, the median form-up gap was 62m against a 56m limit at one seed
+   * and 293m at the next, with 72-99% of samples over the ten-car-length limit
+   * of Art. 55.7 / B5.13.2b. The queue could not form up because the front of
+   * it was chasing something it could not catch.
+   *
+   * So the safety car runs the same profile the field runs — the same cap and
+   * the same fraction of the racing line, so it slows for the same corners at
+   * the same points, which is the whole reason a real safety car lap is 1.6 to
+   * 2 times a racing one everywhere rather than only on the straights.
+   *
+   * And it waits. "The Safety Car ... shall be used at least until the leader
+   * is behind it and all remaining cars are lined up behind them"
+   * (Art. 55.10 / B5.13.5a) is a condition that cannot be satisfied by a car
+   * driving away from the leader at the leader's own maximum speed, so while
+   * the field is still bunching it backs off toward a crawl until the leader
+   * has closed onto it. That is exactly what the real car does, and it is why
+   * the first lap behind a safety car is the slowest one.
+   */
+  private safetyCarPaceMs(leader: CarEntry | null): number {
+    const line = this.track.targetSpeed[this.track.indexAt(this.scS)];
+    const pace = Math.min(line * SC_PACE_SCALE, SC_PACE_MS);
+
+    // Only while the queue is still forming. Once it has, the safety car sets
+    // the pace and the field holds station on it.
+    if (this.scPhase !== 'bunching' || !leader) return pace;
+    const behind = loopDelta(leader.s, this.scS, this.track.length);
+    // Leader ahead of the safety car, or far enough back that slowing down
+    // would take a whole extra lap to help — neither is a gap to close this
+    // way. A quarter of a lap rather than a half, because at a half the test
+    // cannot tell "the leader is a long way behind" from "the leader is a long
+    // way in front", and it answered the wrong one.
+    if (behind < 0 || behind > this.track.length * 0.25) return pace;
+    // Full pace once the leader is within a few car lengths; a slow cruise
+    // while it is a long way off, so the gap actually closes.
+    const t = clamp01((behind - this.maxQueueGapM) / (this.maxQueueGapM * 4));
+    return pace * (1 - t * (1 - SC_BUNCHING_PACE_SHARE));
   }
 
   /**
@@ -970,18 +1055,38 @@ export class RaceControlManager {
 
     const tolerance = this.maxQueueGapM * 2.5;
     for (let i = 1; i < running.length; i++) {
-      if (running[i].lap < leader.lap) continue;
+      if (this.isLapped(running[i], leader)) continue;
       const gap = loopDelta(running[i].s, running[i - 1].s, this.track.length);
       if (gap < 0 || gap > tolerance) return false;
     }
     return true;
   }
 
+  /**
+   * Is this car a full lap or more behind the leader?
+   *
+   * ON DISTANCE, not on the lap counter, and that distinction is most of why a
+   * safety car queue never formed up. `car.lap < leader.lap` is true of every
+   * car that has not yet crossed the Line on the lap the leader is currently
+   * on — which, a metre after the leader takes the flag, is the entire rest of
+   * the field. Measured at Monza, eighteen of the twenty cars were classified
+   * as lapped at every deployment, all eighteen were told to unlap themselves
+   * under Art. 55.14 / B5.13.4c, and all eighteen were then entitled to run at
+   * 1.75x the queue pace past everybody. There was no queue left to form.
+   *
+   * A lap of distance is a lap of distance: where the two cars happen to be
+   * relative to the start/finish line has nothing to do with it.
+   */
+  private isLapped(car: CarEntry, leader: CarEntry): boolean {
+    const len = this.track.length;
+    return (leader.lap * len + leader.s) - (car.lap * len + car.s) >= len;
+  }
+
   private countLappedCars(cars: CarEntry[], leader: CarEntry): number {
     let n = 0;
     for (const car of cars) {
       if (car.retired || car.inPitLane) continue;
-      if (car.lap < leader.lap) n++;
+      if (this.isLapped(car, leader)) n++;
     }
     return n;
   }
@@ -997,7 +1102,7 @@ export class RaceControlManager {
     for (const car of cars) {
       // Note the wording: lapped cars are REQUIRED to pass, not permitted to.
       // The 2021 partial-unlap has no basis in the text — it is all of them.
-      car.mustUnlap = !car.retired && !car.inPitLane && car.lap < leader.lap;
+      car.mustUnlap = !car.retired && !car.inPitLane && this.isLapped(car, leader);
     }
     this.log('LAPPED CARS MAY NOW OVERTAKE', 'warning', sessionTime);
   }
@@ -1025,7 +1130,14 @@ export class RaceControlManager {
     // neutralised for nearly half the race.
     const toEntry = loopDelta(this.scS, this.track.def.pitLane.entryS, this.track.length);
     const remaining = toEntry >= 0 ? toEntry : toEntry + this.track.length;
-    this.scTimer = Math.max(remaining, 60) / SC_PACE_MS;
+    // Held as a DISTANCE rather than as a time. It used to be
+    // `max(remaining, 60) / SC_PACE_MS`, which converts a distance to a time
+    // using the speed CAP rather than the speed — and now that the safety car
+    // slows for the corners like everything else, the cap is not the speed
+    // anywhere. A phase whose length is an estimate of a distance the same
+    // object is simultaneously covering exactly is an estimate that does not
+    // need to exist.
+    this.scToEntryM = Math.max(remaining, 60);
     this.log('SAFETY CAR IN THIS LAP', 'warning', sessionTime);
   }
 
@@ -1078,8 +1190,7 @@ export class RaceControlManager {
       // sector's minimum makes every car in the field look like it was doing
       // ten times the delta, and the first thing a VSC did was hand out five
       // second penalties to whoever was unlucky enough to be near a boundary.
-      const minimum = (this.track.length / MARSHAL_SECTORS) /
-        (this.vscTargetMs * DELTA_REFERENCE_MARGIN);
+      const minimum = this.minimumSectorTimeS;
       if (!car.deltaSectorPartial && car.deltaSectorTime > 0.5 &&
           car.deltaSectorTime < minimum) {
         car.deltaBreaches++;
@@ -1390,6 +1501,26 @@ export class RaceControlManager {
     if (car.inPitLane || car.retired) return 0;
     if (isLeader && this.scPhase === 'in-this-lap') return 0;
     return this.maxQueueGapM;
+  }
+
+  /**
+   * The minimum time a marshalling sector may be crossed in, seconds.
+   *
+   * The quantity the regulations actually impose under both neutralisations —
+   * "drivers must stay above the minimum time set by the FIA ECU at least once
+   * in each marshalling sector" (Art. 55.7 and 56.5 / B5.13.2b and B5.12.2b) —
+   * and therefore the number the HUD has to be able to show. A driver cannot
+   * read this off a speedometer, which is the whole reason the limit is applied
+   * for the player rather than left to them to judge.
+   *
+   * Public because three things need the same number: race control judging the
+   * sector, the HUD reporting it, and the probe asserting that they agree.
+   * Zero when the race is green.
+   */
+  get minimumSectorTimeS(): number {
+    if (this.vscTargetMs <= 0) return 0;
+    return (this.track.length / MARSHAL_SECTORS) /
+      (this.vscTargetMs * DELTA_REFERENCE_MARGIN);
   }
 
   /** 0..1 severity used to tint the HUD flag banner. */

@@ -655,6 +655,35 @@ canvas#view {
   font-size: 28px;
 }
 
+/* --- Neutralisation line ---------------------------------------------
+   Directly under the flag banner, because it is the second half of the same
+   sentence: the banner says SAFETY CAR, this says what is being enforced and
+   what the target is. Narrower type than the pit cue and allowed to wrap on a
+   phone, because it carries two numbers rather than one instruction. */
+.hud-neutral-cue {
+  position: absolute;
+  top: 15%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 5px 16px;
+  border-radius: 4px;
+  text-align: center;
+  white-space: nowrap;
+  background: rgba(9, 12, 18, 0.9);
+  border: 1px solid var(--data);
+  color: #eef3ff;
+}
+.hud-neutral-cue.cue-live { border-color: var(--good); color: #d6ffe6; }
+.hud-neutral-cue.cue-warn { border-color: #ffd21f; color: #ffeaa0; }
+.hud-neutral-cue.cue-go {
+  border-color: #7fd0ff;
+  color: #d8f1ff;
+}
+
 /* --- Team radio ------------------------------------------------------ */
 .hud-radio {
   position: absolute;
@@ -1169,6 +1198,14 @@ canvas#view {
     max-width: calc(100vw - 24px);
   }
   .hud-pit-cue.cue-box { font-size: 18px; }
+  /* Same bound and the same reason: this line carries two numbers and is the
+     longest thing on the HUD. It sits above the flag banner on a phone so the
+     banner keeps the middle of the screen. */
+  .hud-neutral-cue {
+    top: calc(26% - 34px); font-size: 12px; padding: 4px 10px;
+    white-space: normal;
+    max-width: calc(100vw - 24px);
+  }
 
   .hud-startlights { gap: 6px; padding: 8px 9px; top: calc(7vh + var(--safe-t)); }
   .hud-bulb { width: 17px; height: 17px; }
@@ -1274,6 +1311,11 @@ canvas#view {
     max-width: calc(100vw - 24px);
   }
   .hud-pit-cue.cue-box { font-size: 18px; }
+  .hud-neutral-cue {
+    top: calc(30% - 28px); font-size: 12px; padding: 3px 10px;
+    white-space: normal;
+    max-width: calc(100vw - 24px);
+  }
 
   .hud-startlights { gap: 5px; padding: 6px 8px; top: calc(4px + var(--safe-t)); }
   .hud-bulb { width: 15px; height: 15px; }

@@ -58,6 +58,21 @@ export interface VehicleControls {
   /** Pit limiter, engaged in the pit lane. */
   pitLimiter: boolean;
   /**
+   * A speed cap from somewhere other than the pit lane, m/s. 0 for none.
+   *
+   * The same limiter, pointed at a different number. A neutralisation is a speed
+   * limit the driver is required to obey exactly as the pit lane's is — "stay
+   * above the minimum time set by the FIA ECU" (2025 Art. 55.7 and 56.5 / 2026
+   * Art. B5.13.2b and B5.12.2b) — and the player's is applied for them for the
+   * same reason the pit one is: a limit the game presses the button for is a
+   * limit the game owes the driver an arrival at.
+   *
+   * Kept separate from `pitLimiter` rather than folded into it because the two
+   * can be in force at once — a car serving a stop under a safety car is under
+   * both — and the lower of them has to win. See `NeutralisedLimiter.ts`.
+   */
+  speedLimitMs: number;
+  /**
    * Requests reverse. Only engages once the car is nearly stopped, exactly like
    * a real gearbox — you cannot select reverse at 200 km/h.
    */
@@ -969,11 +984,18 @@ export class VehiclePhysics {
       }
     }
 
-    // Pit limiter: a hard speed cap, enforced as braking rather than as a
+    // The limiter: a hard speed cap, enforced as braking rather than as a
     // teleport, so overshooting the limit still triggers a penalty.
-    if (c.pitLimiter) {
+    //
+    // TWO SOURCES, ONE MECHANISM. The pit lane is one (`pitLimiter`, holding
+    // the circuit's own posted limit) and a neutralisation is the other
+    // (`speedLimitMs`, holding the safety car or VSC pace). A car serving a
+    // stop under a safety car is under both at once and the lower wins, which
+    // is what makes that case work without a second copy of everything below.
+    if (c.pitLimiter || c.speedLimitMs > 0) {
       // The circuit's own limit, not a constant. See `pitSpeedLimitKph`.
-      const limitMs = this.pitSpeedLimitKph / 3.6;
+      let limitMs = c.pitLimiter ? this.pitSpeedLimitKph / 3.6 : Infinity;
+      if (c.speedLimitMs > 0 && c.speedLimitMs < limitMs) limitMs = c.speedLimitMs;
       if (vx > limitMs) {
         driveForce = 0;
         // What a real pit limiter does is cut the engine. It has no brakes.

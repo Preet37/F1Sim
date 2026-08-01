@@ -32,7 +32,7 @@ const ENV: EnvironmentState = {
 function controls(over: Partial<VehicleControls> = {}): VehicleControls {
   return {
     throttle: 0, brake: 0, steer: 0,
-    drsRequested: false, ersMode: 'push', gearRequest: 0, pitLimiter: false,
+    drsRequested: false, ersMode: 'push', gearRequest: 0, pitLimiter: false, speedLimitMs: 0,
     ...over,
   };
 }

@@ -357,6 +357,14 @@ export class CarEntry {
 
   // --- Neutralisation delta ------------------------------------------------
   /** Seconds spent in the marshalling sector currently being timed. */
+  /**
+   * The neutralised speed the limiter is holding this car to, m/s. 0 when free.
+   *
+   * Written by `RaceEngine.applyNeutralisationAssist` for the player, so the HUD
+   * can report the number the car is actually being held at rather than an
+   * independently derived one that could disagree with it.
+   */
+  neutralLimitMs = 0;
   deltaSectorTime = 0;
   /** Marshalling sector being timed, or -1 when not under a neutralisation. */
   deltaSectorIndex = -1;
@@ -374,7 +382,7 @@ export class CarEntry {
   /** Controls actually applied this step, whether from AI or player input. */
   readonly appliedControls: VehicleControls = {
     throttle: 0, brake: 0, steer: 0,
-    drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false,
+    drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0,
     reverse: false,
   };
 

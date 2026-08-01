@@ -3,6 +3,9 @@ import type { TrackSpline } from '../track/TrackSpline';
 import type { VehiclePhysics, VehicleControls, ErsMode } from '../physics/VehiclePhysics';
 import { steerRackLimit } from '../physics/VehiclePhysics';
 import {
+  UNLAP_PACE_MULT, applyNeutralisedLimit, neutralisedLimit, queueHoldMs,
+} from '../physics/NeutralisedLimiter';
+import {
   PIT_ENTRY_DECEL_MS2, PIT_ENTRY_SCAN_M, PIT_ENTRY_SETTLE_M, PIT_ENTRY_TARGET_SHARE,
   PIT_LIMITER_ARM_M, brakeFor, pitEntryTargetMs, pitLimiterSetpointMs,
 } from '../physics/PitLimiter';
@@ -119,6 +122,28 @@ export interface AIPerception {
    */
   queueGapM: number;
   /**
+   * Metres to whatever is in front of this car in the queue, or -1 for nothing.
+   *
+   * Not the same as `ahead.gapM`, and the difference is the whole of the
+   * form-up defect. The queue forms up behind the SAFETY CAR (Art. 55.7 /
+   * B5.13.2b), so for the leader the thing in front is the safety car and not
+   * a racing car at all. With only `ahead` to read, the leader had no gap to
+   * close, never closed one, and the nineteen cars behind it dutifully held
+   * station on a leader that was itself hundreds of metres adrift.
+   */
+  queueAheadM: number;
+  /**
+   * Metres to the safety car ahead on the road, or -1 when it is not there.
+   *
+   * Separate from `queueAheadM` because it answers a different question: how
+   * close this car may get before it would be driving past the safety car.
+   */
+  safetyCarAheadM: number;
+  /** Speed of the safety car, m/s. */
+  safetyCarSpeedMs: number;
+  /** Speed of whatever `queueAheadM` measures to, m/s. */
+  queueAheadSpeedMs: number;
+  /**
    * This car has been waved past and must unlap itself past the lead-lap cars
    * and the safety car. Art. 55.14 / B5.13.4c.
    */
@@ -155,10 +180,61 @@ export function createPerception(): AIPerception {
     ahead: null, behind: null, alongsideLeft: null, alongsideRight: null,
     localYellow: false, yellowLevel: 0, blueFlag: false, neutralised: false,
     neutralisedTargetMs: 0, neutralisedScale: 0, neutralisedCatchUpMult: 1,
-    queueGapM: 0, mustUnlap: false,
+    queueGapM: 0, queueAheadM: -1, safetyCarAheadM: -1, safetyCarSpeedMs: 0,
+    queueAheadSpeedMs: 0, mustUnlap: false,
     holdRacingLine: false, holdUntilLine: false,
     pitThisLap: false, pitBoxAheadM: -1, wetness: 0,
   };
+}
+
+/**
+ * The fastest this car can get through the corner at `sAt`, from the lateral
+ * force balance:
+ *
+ *     m v^2 / R = mu (m g + cl v^2)
+ *  => v^2 = mu m g / (m/R - mu cl)
+ *
+ * When the denominator goes non-positive the corner is aero-limited — grip
+ * grows with speed faster than the demand does — so it is flat out. That single
+ * term is why an F1 car takes a 500m-radius kink without lifting.
+ *
+ * Uses the LIMITING axle's grip, not the average: the car lets go when the
+ * first end runs out, not when the mean does.
+ *
+ * Module-level and exported because the PLAYER needs it too and has no AI to
+ * ask. The neutralised limiter applied to the player's car has to be computed
+ * against the same reference the nineteen cars around them are driving to, or
+ * it is a different limit with the same name: measured at Monaco, a limit
+ * derived from the raw racing-line speed instead let the player run 47% quicker
+ * than the queue they were in, while every individual number in it looked
+ * right.
+ */
+export function corneringSpeedLimitMs(
+  track: TrackSpline, car: VehiclePhysics, sAt: number,
+): number {
+  // The worst curvature over the next stretch, so the limit is set by the
+  // tightest part of the corner rather than by wherever the sample landed.
+  // A short window only. Twenty-four metres is eight nodes, which flattens a
+  // whole corner down to its single tightest point and holds the car at that
+  // speed through the entry and the exit as well as the apex. The braking
+  // scan already looks ahead properly, so this only needs to cover the
+  // sampling grid.
+  let k = 0;
+  for (let d = 0; d <= 9; d += 3) {
+    const a = Math.abs(track.lineCurvature[track.indexAt(sAt + d)]);
+    if (a > k) k = a;
+  }
+  if (k < 1e-5) return Infinity;
+
+  const radius = 1 / k;
+  const m = car.totalMassKg;
+  const grip = Math.min(car.frontTires.grip, car.rearTires.grip);
+  const mu = car.spec.baseMu * grip;
+  const cl = car.spec.clBase * car.dirtyAirDownforceMult;
+
+  const denom = m / radius - mu * cl;
+  if (denom <= 1e-6) return Infinity;
+  return Math.sqrt((mu * m * 9.81) / denom);
 }
 
 export function createNeighbour(): Neighbour {
@@ -378,15 +454,6 @@ const YELLOW_LIFT_SINGLE = 0.88;
 const YELLOW_LIFT_DOUBLE = 0.62;
 
 /**
- * How much above the delta a car waved past may run while unlapping itself.
- *
- * It has a lap to make up on the entire queue and on the safety car, and
- * Art. 55.14 / B5.13.4c requires it to complete the manoeuvre, so it cannot do
- * it at the delta. Real unlapping runs are visibly quicker than the queue.
- */
-const UNLAP_PACE_MULT = 1.75;
-
-/**
  * How close a car may get to the one in front while overtaking is forbidden,
  * metres.
  *
@@ -397,6 +464,21 @@ const UNLAP_PACE_MULT = 1.75;
  * a queue that holds this distance is also a queue that satisfies Art. 55.7.
  */
 const NO_PASS_HOLD_M = 17;
+
+/**
+ * How far behind the safety car a driver starts giving way to it, metres.
+ *
+ * More than twice `NO_PASS_HOLD_M`, and the floor it tapers to is much lower,
+ * because the two are not the same instruction. A car ahead is something you
+ * may end up alongside and must then not complete a pass on; the safety car is
+ * something no F1 car may be in front of at all while it is deployed — the
+ * queue forms up BEHIND it (Art. 55.7 / B5.13.2b) and overtaking is forbidden
+ * from deployment until the Line (Art. 55.8 / B5.13.2c). A soft hold measured
+ * at the car-to-car distance was not enough: the leader arrived, sat at fifteen
+ * metres targeting 95% of the safety car's speed, overshot on a corner exit,
+ * and was a hundred and forty metres in front of it a lap later.
+ */
+const SC_HOLD_M = 40;
 
 /**
  * Below this speed the car ahead is treated as an obstacle rather than a rival,
@@ -433,7 +515,7 @@ export class AIVehicleController {
   /** The controls this AI produced last tick. */
   readonly controls: VehicleControls = {
     throttle: 0, brake: 0, steer: 0,
-    drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false,
+    drsRequested: false, ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0,
     reverse: false,
   };
 
@@ -1204,48 +1286,59 @@ export class AIVehicleController {
     // satisfies that by simply running at the delta pace, which is what a real
     // driver does because it is the easy way to stay legal.
     if (p.neutralised && p.neutralisedTargetMs > 0) {
-      // The neutralisation is applied as a CAP and a SCALE, and never as a
-      // target the car is asked to reach.
+      // The cap and the scale come from `NeutralisedLimiter`, which is the same
+      // function `RaceEngine` runs for the PLAYER. That sharing is the point:
+      // "under safetycar and flags and everything every car has to follow the
+      // speedlimit" is one rule, and nineteen cars obeying a rule the twentieth
+      // is not held to is not that rule.
       //
-      // Catching the queue up is expressed by relaxing both, never by raising
-      // the target speed itself. Raising the target directly looks equivalent
-      // and is catastrophic: it overrides the cornering limit computed from the
-      // car's own grip, so a car told to close a ten-car-length gap tried to
-      // take Monaco's hairpin at safety car pace and went straight on. Monaco's
+      // The limit is applied as a CAP and a SCALE, never as a target the car is
+      // asked to reach. Raising the target directly looks equivalent and is
+      // catastrophic: it overrides the cornering limit computed from the car's
+      // own grip, so a car told to close a ten-car-length gap tried to take
+      // Monaco's hairpin at safety car pace and went straight on. Monaco's
       // off-track count doubled and the field spread went from 89 seconds to
       // 268 the moment this was a max() instead of a min().
-      let cap = p.neutralisedTargetMs;
-      let scale = p.neutralisedScale > 0 ? p.neutralisedScale : 1;
+      //
+      // The gap that decides whether this car is catching up is the gap to
+      // whatever is in front of it IN THE QUEUE, which for the leader is the
+      // safety car itself. Reading only `ahead` left the leader with no reason
+      // to close on a car it could not see: it cruised at the queue pace while
+      // the safety car ran away from it, and the whole train behind stayed
+      // strung out because the front of it never arrived.
+      const limit = neutralisedLimit(
+        p.neutralisedTargetMs,
+        p.neutralisedScale,
+        p.neutralisedCatchUpMult,
+        p.queueGapM,
+        p.queueAheadM,
+        p.mustUnlap,
+        UNLAP_PACE_MULT,
+      );
+      targetSpeed = applyNeutralisedLimit(targetSpeed, limit);
 
-      // A car that has been waved past is allowed to get on with it: it has a
-      // lap to make up on the whole queue and the safety car, and it cannot do
-      // that at the delta. Art. 55.14 / B5.13.4c requires it to pass.
-      if (p.mustUnlap) {
-        cap *= UNLAP_PACE_MULT;
-        scale = 1;
-      } else if (p.queueGapM > 0 && p.ahead !== null && p.ahead.gapM > p.queueGapM) {
-        // "All F1 Cars must reduce speed and form up behind the Safety Car no
-        // more than ten (10) car lengths apart" — Art. 55.7 / B5.13.2b. When
-        // the gap is over the limit, close it; the concertina that produces is
-        // the single most consequential thing a safety car does to a race.
-        //
-        // The urgency ramp is over five gap-limits rather than three, and it
-        // relaxes the corner scale as well as the straight-line cap, because a
-        // car that only gets a higher cap can close a gap on the straights and
-        // nowhere else — which at a circuit that is mostly corners is not
-        // closing it at all. Measured, the field was still 590 metres a car
-        // apart when the safety car came in.
-        const urgency = clamp01((p.ahead.gapM - p.queueGapM) / (p.queueGapM * 5));
-        cap *= 1 + urgency * (p.neutralisedCatchUpMult - 1);
-        // Capped at twice the neutralised scale rather than at racing pace: a
-        // car closing the queue is quicker than the queue, not as quick as it
-        // was under green, and letting it back to green pace turned catching up
-        // into racing.
-        scale = lerp(scale, Math.min(1, scale * 2), urgency);
+      // STATION-KEEPING, from the same shared rule the player's assist uses.
+      // Measured at a wet Monza before it existed, the leader's gap to the
+      // safety car swung between 48 and 630 metres for two full safety car
+      // laps: everybody was obeying a pace and nobody was driving to a queue.
+      //
+      // The floor for "the thing in front has stopped racing" has to scale with
+      // the neutralised pace: a queue genuinely does crawl through a chicane,
+      // and the racing-speed threshold would switch station-keeping off exactly
+      // where it is needed most.
+      targetSpeed = Math.min(targetSpeed, queueHoldMs(
+        p.queueAheadM, p.queueAheadSpeedMs, p.queueGapM,
+        Math.min(NO_PASS_MIN_AHEAD_MS, p.neutralisedTargetMs * 0.25),
+      ));
+
+      // And nobody drives past the safety car. The overtaking ban runs from the
+      // moment it is deployed (Art. 55.8 / B5.13.2c) and it is not limited to
+      // the other F1 cars — the queue forms up BEHIND the safety car, which is
+      // the whole of Art. 55.7 / B5.13.2b.
+      if (p.safetyCarAheadM >= 0 && p.safetyCarAheadM < SC_HOLD_M) {
+        const t = clamp01(p.safetyCarAheadM / SC_HOLD_M);
+        targetSpeed = Math.min(targetSpeed, p.safetyCarSpeedMs * lerp(0.2, 1, t));
       }
-
-      targetSpeed = Math.min(targetSpeed * scale, cap);
-
     }
 
     // NOBODY PASSES.
@@ -1564,46 +1657,8 @@ export class AIVehicleController {
   }
 
 
-  /**
-   * The fastest this car can get through the corner at `sAt`, from the lateral
-   * force balance:
-   *
-   *     m v^2 / R = mu (m g + cl v^2)
-   *  => v^2 = mu m g / (m/R - mu cl)
-   *
-   * When the denominator goes non-positive the corner is aero-limited — grip
-   * grows with speed faster than the demand does — so it is flat out. That single
-   * term is why an F1 car takes a 500m-radius kink without lifting.
-   *
-   * Uses the LIMITING axle's grip, not the average: the car lets go when the
-   * first end runs out, not when the mean does.
-   */
   private corneringSpeedLimit(car: VehiclePhysics, sAt: number): number {
-    const track = this.track;
-
-    // The worst curvature over the next stretch, so the limit is set by the
-    // tightest part of the corner rather than by wherever the sample landed.
-    // A short window only. Twenty-four metres is eight nodes, which flattens a
-    // whole corner down to its single tightest point and holds the car at that
-    // speed through the entry and the exit as well as the apex. The braking
-    // scan already looks ahead properly, so this only needs to cover the
-    // sampling grid.
-    let k = 0;
-    for (let d = 0; d <= 9; d += 3) {
-      const a = Math.abs(track.lineCurvature[track.indexAt(sAt + d)]);
-      if (a > k) k = a;
-    }
-    if (k < 1e-5) return Infinity;
-
-    const radius = 1 / k;
-    const m = car.totalMassKg;
-    const grip = Math.min(car.frontTires.grip, car.rearTires.grip);
-    const mu = car.spec.baseMu * grip;
-    const cl = car.spec.clBase * car.dirtyAirDownforceMult;
-
-    const denom = m / radius - mu * cl;
-    if (denom <= 1e-6) return Infinity;
-    return Math.sqrt((mu * m * 9.81) / denom);
+    return corneringSpeedLimitMs(this.track, car, sAt);
   }
 
 

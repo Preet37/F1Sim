@@ -241,6 +241,18 @@ function stagePoint(engine: RaceEngine, dangerous: boolean): number {
   return best;
 }
 
+/**
+ * Is this car a lap or more behind, measured in DISTANCE?
+ *
+ * The lap counter cannot answer this. A car ten metres behind the leader has a
+ * lap counter one lower than the leader's for the ten metres either side of the
+ * Line, and is not lapped by anybody.
+ */
+function isLapped(engine: RaceEngine, car: CarEntry, leader: CarEntry): boolean {
+  const len = engine.track.length;
+  return (leader.lap * len + leader.s) - (car.lap * len + car.s) >= len;
+}
+
 function bucketFor(engine: RaceEngine, car: CarEntry): Bucket {
   const rc = engine.raceControl;
   if (rc.neutralisation === 'safety-car') return 'SC';
@@ -398,7 +410,8 @@ function runScenario(
           car.perception.ahead && car.perception.ahead.gapM > 10 * 5.6) {
         lapCatchingUp[car.index] = true;
       }
-      if (car.lap < (engine.standings[0]?.lap ?? 0)) lapCatchingUp[car.index] = true;
+      const leaderNow = engine.standings[0];
+      if (leaderNow && isLapped(engine, car, leaderNow)) lapCatchingUp[car.index] = true;
 
       if (car.lap !== lapCount[car.index]) {
         // A lap the car spent entirely under one flag regime, that was not an
@@ -423,7 +436,8 @@ function runScenario(
       m.wavedCars = engine.cars.filter((c) => c.mustUnlap).length;
       const leader = engine.standings[0];
       m.lappedAtWave = leader
-        ? engine.cars.filter((c) => !c.retired && !c.inPitLane && c.lap < leader.lap).length
+        ? engine.cars.filter(
+            (c) => !c.retired && !c.inPitLane && isLapped(engine, c, leader)).length
         : 0;
       for (const c of engine.cars) if (c.mustUnlap) wasLapped.add(c.index);
     }
@@ -545,14 +559,36 @@ function runScenario(
     // --- Safety car queue -------------------------------------------------
     if (rc.neutralisation === 'safety-car' &&
         (rc.scPhase === 'bunching' || rc.scPhase === 'waving-lapped')) {
-      const leadLap = engine.standings[0]?.lap ?? 0;
-      const queue = engine.standings.filter(
-        (c) => !c.retired && !c.inPitLane && c.lap >= leadLap,
-      );
-      m.queueSize = Math.max(m.queueSize, queue.length);
-      for (let i = 1; i < queue.length; i++) {
-        const gap = loopDelta(queue[i].s, queue[i - 1].s, engine.track.length);
-        if (gap > 0 && gap < engine.track.length * 0.5) m.scFormUpGaps.push(gap);
+      // THE TRAIN, ordered by where the cars are on the ROAD.
+      //
+      // Not by the classification, which is a different order and was giving a
+      // different answer. Art. 55.7 / B5.13.2b says "All F1 Cars must reduce
+      // speed and form up behind the Safety Car no more than ten (10) car
+      // lengths apart" — all of them, in one physical line, with the lapped
+      // cars still in it because the unlapping procedure has not happened yet.
+      // Walking the standings instead skips over every lapped car, so the pair
+      // either side of one reads as a single gap spanning a piece of road that
+      // has a car sitting in it: measured, a car whose real gap to the car in
+      // front was 99m was recorded at 863m.
+      //
+      // The first gap is to the safety car itself, which is what the field is
+      // forming up behind.
+      const L = engine.track.length;
+      const train: { behind: number }[] = [];
+      for (const c of engine.cars) {
+        if (c.retired || c.inPitLane) continue;
+        // A car released from the pit lane rejoins into whatever gap happens to
+        // be passing the exit. It is physically not in the queue yet and no
+        // ten-car-length rule can apply to it until it has caught the train —
+        // the same blackout, for the same reason, as the overtaking check.
+        if (engine.time - lastPitTime[c.index] < PIT_BLACKOUT_S) continue;
+        train.push({ behind: (((rc.scS - c.s) % L) + L) % L });
+      }
+      train.sort((a, b) => a.behind - b.behind);
+      m.queueSize = Math.max(m.queueSize, train.length);
+      for (let i = 1; i < train.length; i++) {
+        const gap = train[i].behind - train[i - 1].behind;
+        if (gap > 0) m.scFormUpGaps.push(gap);
       }
     }
   }
