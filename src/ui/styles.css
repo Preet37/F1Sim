@@ -1,7 +1,60 @@
 /*
  * F1SIM — HUD and menu styling.
  *
- * Visual direction: THE MONITOR.
+ * Visual direction: THE REVEAL HALL, with THE MONITOR inside it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT CHANGED, AND WHY
+ *
+ * The monitor direction below is intact and is still the information language
+ * of this game: mono figures, ranked rows, five signal colours with fixed
+ * meanings, nothing coloured for decoration. What it never had was a PLACE. It
+ * was a set of true statements printed on a black rectangle at z=0, and the
+ * verdict on it — "coherent, and still flat" — was correct, because value
+ * contrast and depth are what separate a menu that looks expensive from one
+ * that looks like a spreadsheet with racing colours.
+ *
+ * So the monitor now hangs in a room. The room is a car launch: a dark hall,
+ * a polished floor, and one hot tungsten key light with a pool under it. That
+ * is a real event in this sport — every team reveals a car in exactly this
+ * lighting — so it earns its way in rather than being "dark theme with a glow".
+ * Three consequences run through everything below:
+ *
+ *   1. WARM KEY, COOL SHADOW. The palette was religiously cool and therefore
+ *      had no temperature contrast to model anything with. There is now one
+ *      warm — `--key`, a tungsten cream — and it is only ever LIGHT: a
+ *      one-pixel catch on the top edge of a panel, a glow, a gradient stop. It
+ *      is never a fill and never a text colour, so it takes no meaning away
+ *      from the five signals. Metal photographs well for exactly this reason.
+ *
+ *   2. PANELS ARE MACHINED, NOT DRAWN. Every board, card and rail is lit from
+ *      above-left: a hairline highlight along its top edge, a soft shadow
+ *      beneath it. One pixel of each. That is the entire skeuomorphic budget;
+ *      there are no bevels, no glass and no gradient fills on panel faces.
+ *
+ *   3. THE STAGE IS GRADED. Screens that are a moment — the front page, the
+ *      paddock, the hub — get the full pool of light and a real car standing
+ *      in it. Screens that are work — standings, settings, the setup sheet —
+ *      get a fraction of it. If every screen shouted, none of them would.
+ *
+ * TYPE now has three registers instead of one, which is the other half of why
+ * the old screens read flat: when titles, labels and figures are all the same
+ * monospace at the same weight, nothing is louder than anything else.
+ *
+ *   display   Archivo, at the WIDE end of its width axis, heavy, uppercase.
+ *             Names of things: screens, teams, drivers, circuits, buttons.
+ *             Wide-and-heavy is the register of broadcast title cards.
+ *   data      the system monospace, unchanged. Every figure in the game: lap
+ *             times, deltas, percentages, race numbers, codes, gaps.
+ *   prose     Archivo at normal width and weight. Sentences.
+ *
+ * The one borrowed gesture is the SHEAR: nameplates lean 8 degrees, the way
+ * every motorsport wordmark and every pit-lane garage sign leans. It appears
+ * once per screen, on the nameplate, and nowhere else — not on buttons, not
+ * on cards. Spend the boldness in one place.
+ * ---------------------------------------------------------------------------
+ *
+ * The original monitor direction, still in force:
  *
  * The identity comes from the pit wall's screens rather than from the trackside
  * furniture. A kerb stripe is the first thing anyone reaches for when they are
@@ -46,16 +99,60 @@
  * either orientation needs no second layout.
  */
 
+/* --- Display face -------------------------------------------------------
+   Archivo, variable on both the width and weight axes, self-hosted. It is
+   here for the width axis: at wdth 118-125 and wght 750-850 it is the type of
+   a broadcast title card, and that is a register the monospace simply cannot
+   reach. Figures are NOT set in it — every number in this game stays in the
+   system monospace, which is downloaded from nowhere.
+   SIL OFL 1.1, Omnibus-Type. Provenance in LICENSES.md. */
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url('./fonts/archivo-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url('./fonts/archivo-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
   /* --- Surfaces ---------------------------------------------------------
-     Flat, cool and unlit. No gradients and no glass: a monitor is an emissive
-     panel, and a gradient on every card is the tell of a generic dark theme. */
+     The hall, and the panels standing in it. Panel FACES are still flat —
+     a gradient on every card is the tell of a generic dark theme — but the
+     hall behind them is not, and each panel now catches a hairline of the key
+     light on its top edge. */
   --carbon-0: #06080b;
   --carbon-1: #0d1218;
   --carbon-2: #141b23;
   --carbon-3: #1d252f;
   --line: rgba(150, 180, 214, 0.13);
   --line-2: rgba(150, 180, 214, 0.26);
+
+  /* --- Light -------------------------------------------------------------
+     The one warm in the system. It is a LIGHT, never an ink and never a fill:
+     it appears as a catch on a top edge, as a glow, and as a gradient stop in
+     the floor pool. Because it never carries a meaning, it takes nothing away
+     from the five signals below. */
+  --key: 255, 222, 178;
+  --catch: linear-gradient(180deg, rgba(255, 222, 178, 0.20), rgba(255, 222, 178, 0) 60%);
+  /* A panel: face, top-edge catch light, and the shadow it drops on the
+     floor. One pixel of highlight, one soft shadow. That is the whole budget. */
+  --plate-lift: 0 1px 0 rgba(255, 236, 210, 0.055) inset, 0 10px 26px -14px rgba(0, 0, 0, 0.9);
+  --plate-lift-hi: 0 1px 0 rgba(255, 236, 210, 0.11) inset, 0 16px 34px -16px rgba(0, 0, 0, 0.95);
 
   /* --- Ink -------------------------------------------------------------- */
   --ink: #f2f6fb;
@@ -79,12 +176,17 @@
   --fill-white:  rgba(242, 246, 251, 0.1);
 
   /* --- Type -------------------------------------------------------------
-     One face does the display work. The stack is every monospace already on
-     the machine; nothing is downloaded. */
+     Three registers. The monospace is the FIGURE face and only that; Archivo
+     at the wide end of its axis is the NAME face; Archivo at normal width is
+     prose. Nothing but Archivo is downloaded, and it is two subsets. */
   --font-data: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Cascadia Mono',
     'Roboto Mono', Consolas, monospace;
-  --font-display: var(--font-data);
-  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: 'Archivo', 'Archivo Expanded', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-ui: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  /* The shear. One value, so every leaning thing leans by the same amount. */
+  --lean: -8deg;
 
   /* The chequer, for a session that has finished. The one piece of trackside
      vocabulary kept, because it is literal rather than decorative. */
@@ -1195,6 +1297,18 @@ canvas#view {
  * offer was the one thing you had to go looking for.
  */
 
+/* --- The hall ---------------------------------------------------------
+   The room every menu stands in: a dark floor, a cyclorama behind it, and one
+   pool of tungsten light spilling out from under whatever is being shown.
+   Three gradients and a vignette, all in CSS, so it costs no pixels of canvas
+   and scales to any viewport for nothing.
+
+   `--pool` is how hard the key is running. It is graded per screen rather than
+   being a constant: the front page, the paddock and the hub are moments and
+   get the full light; the standings table and the settings sheet are work and
+   get a tenth of it. That difference IS the hierarchy between the two kinds of
+   screen, and it is the reason this does not simply make everything loud. */
+
 .screen {
   position: fixed;
   inset: 0;
@@ -1204,16 +1318,40 @@ canvas#view {
   pointer-events: auto;
   overflow: hidden;
   color: var(--ink);
-  /* Flat. A monitor is an emissive panel, not a lit surface, and the vignettes
-     and diagonal sheens that used to be here were the only thing on the page
-     not carrying information. */
-  background: var(--carbon-0);
+  --pool: 0.045;
+  background:
+    /* The pool on the floor, thrown from low and centre. */
+    radial-gradient(128% 66% at 50% 106%, rgba(var(--key), var(--pool)) 0%,
+      rgba(var(--key), 0) 64%),
+    /* Cool bounce off the top of the cyclorama, so the two ends of the frame
+       are different temperatures. This is the whole trick. */
+    radial-gradient(86% 48% at 50% -6%, rgba(104, 146, 208, 0.085) 0%,
+      rgba(104, 146, 208, 0) 72%),
+    /* The horizon: where the backdrop meets the floor. */
+    linear-gradient(180deg, #040609 0%, #070a0f 40%, #0a0e15 63%, #06080c 100%),
+    var(--carbon-0);
+}
+/* Screens that are a moment rather than a task. */
+.screen.lit { --pool: 0.13; }
+
+/* The vignette. Painted over the page, under nothing, and inert to the
+   pointer so it never eats a click. */
+.screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Above the stage canvas, below the interface: the vignette is part of the
+     photograph, not something laid over the controls. */
+  z-index: 1;
+  background: radial-gradient(112% 78% at 50% 44%, rgba(0, 0, 0, 0) 42%,
+    rgba(0, 0, 0, 0.36) 82%, rgba(0, 0, 0, 0.62) 100%);
 }
 .screen.hidden { display: none; }
 
 .page {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -1335,16 +1473,24 @@ canvas#view {
 /* The title, set in the monospace. Long circuit names naturally set narrower
    as they lengthen, which is a discipline a proportional face would not
    impose and which keeps every title inside a phone. */
+/* The name of the screen, in the display register: wide, heavy, uppercase and
+   tight. This is the one place on a work screen where the type is allowed to
+   be loud, which is why the tab above it and the prose below it are both set
+   as small as they can legibly go. */
 .page-title {
-  font-family: var(--font-data);
-  font-size: clamp(26px, 4.6vw, 46px);
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.02em;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 5vw, 52px);
+  font-weight: 820;
+  font-stretch: 122%;
+  line-height: 0.94;
+  letter-spacing: -0.018em;
   text-transform: uppercase;
-  margin: 8px 0 0;
+  margin: 7px 0 0;
   overflow-wrap: anywhere;
   color: var(--ink);
+  /* A hairline of the key light along the top of the letterforms, the way a
+     raised sign catches a lamp above it. One pixel, one time. */
+  text-shadow: 0 -1px 0 rgba(var(--key), 0.16), 0 12px 30px rgba(0, 0, 0, 0.55);
 }
 .page-title .acc { color: var(--sig-green); }
 
@@ -1486,15 +1632,25 @@ canvas#view {
   flex-wrap: wrap;
   padding: 11px calc(18px + var(--safe-r)) calc(13px + var(--safe-b)) calc(18px + var(--safe-l));
   border-top: 1px solid var(--line);
-  background: var(--carbon-1);
+  /* Translucent, so the pool of light on the floor of the hall carries on
+     behind the bar instead of being cut off by a solid strip. */
+  background: linear-gradient(180deg, rgba(9, 13, 18, 0.72), rgba(6, 9, 13, 0.93));
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: 0 -1px 0 rgba(var(--key), 0.05) inset, 0 -18px 40px -20px rgba(0, 0, 0, 0.9);
 }
 .actionbar-spacer { flex: 1 1 auto; }
 .actionbar:empty { display: none; }
 
 /* --- Buttons ---------------------------------------------------------
-   Square, hairline, monospaced. The primary action is GREEN: in this colour
-   system red means a session has been stopped, so it cannot also mean go.
-   A grid is released on green, and that is what this button does. */
+   Square, hairline, and named in the display face rather than the figure
+   face — a button is a verb, not a number.
+
+   The primary action is GREEN: in this colour system red means a session has
+   been stopped, so it cannot also mean go. A grid is released on green, and
+   that is what this button does. What has changed is COMMITMENT — the primary
+   is now filled, larger than its neighbours and lit from above, because the
+   old outlined-green-among-outlined-greys read as one option among four. */
 
 .btn {
   position: relative;
@@ -1505,12 +1661,13 @@ canvas#view {
   border: 1px solid var(--line-2);
   border-radius: 0;
   padding: 11px 20px;
-  background: transparent;
+  background: rgba(18, 24, 32, 0.5);
   color: var(--ink-2);
-  font-family: var(--font-data);
+  font-family: var(--font-display);
   font-size: 12.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+  font-weight: 780;
+  font-stretch: 112%;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
   transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
@@ -1519,14 +1676,36 @@ canvas#view {
 .btn:active { background: rgba(242, 246, 251, 0.2); }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
+/* The committed action. Bigger than everything beside it, filled, and lit
+   from above by the same key as the rest of the hall — the highlight along
+   its top edge and the glow it throws on the bar beneath are what make it
+   read as a physical control rather than a coloured rectangle. There is only
+   ever one of these on a screen. */
 .btn.primary {
-  padding: 12px 26px;
+  padding: 14px 30px;
+  font-size: 13.5px;
+  letter-spacing: 0.14em;
   border-color: var(--sig-green);
-  background: var(--sig-green);
+  background: linear-gradient(180deg, #2bf485, var(--sig-green) 46%, #00b64f);
   color: #04180c;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.25) inset,
+    0 8px 26px -10px rgba(0, 217, 95, 0.7);
 }
-.btn.primary:hover { background: #24f27c; border-color: #24f27c; color: #04180c; }
-.btn.primary:active { background: var(--sig-green); }
+.btn.primary:hover {
+  background: linear-gradient(180deg, #4dff9c, #16e772 46%, #04c85a);
+  border-color: #4dff9c;
+  color: #04180c;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.25) inset,
+    0 10px 32px -8px rgba(0, 217, 95, 0.85);
+}
+.btn.primary:active {
+  background: linear-gradient(180deg, #00b64f, #00d95f);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4) inset;
+}
 
 /* `secondary` and `ghost` are the historical names for a quieter button. */
 .btn.secondary, .btn.ghost {
@@ -1559,7 +1738,10 @@ canvas#view {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  background: var(--carbon-1);
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.84), rgba(10, 14, 19, 0.84));
+  backdrop-filter: blur(16px) saturate(115%);
+  -webkit-backdrop-filter: blur(16px) saturate(115%);
+  box-shadow: var(--plate-lift);
 }
 
 /* The column header. Same grid as the rows beneath it, so the labels sit
@@ -1748,8 +1930,11 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 
 .board-hero {
   border: 1px solid var(--line);
-  background: var(--carbon-1);
-  padding: 14px 18px 16px;
+  background: linear-gradient(180deg, rgba(21, 28, 37, 0.9), rgba(12, 17, 23, 0.88));
+  backdrop-filter: blur(18px) saturate(115%);
+  -webkit-backdrop-filter: blur(18px) saturate(115%);
+  box-shadow: var(--plate-lift-hi);
+  padding: 15px 18px 17px;
 }
 .board-hero-label {
   font-family: var(--font-data);
@@ -1793,11 +1978,14 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
   flex-direction: column;
   border: 1px solid var(--line);
   border-top: 0;
-  background: var(--carbon-1);
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.86), rgba(11, 15, 21, 0.86));
+  backdrop-filter: blur(18px) saturate(115%);
+  -webkit-backdrop-filter: blur(18px) saturate(115%);
+  box-shadow: var(--plate-lift-hi);
 }
 .menu-item {
   display: grid;
-  grid-template-columns: 172px minmax(0, 1fr) 104px;
+  grid-template-columns: 208px minmax(0, 1fr) 104px;
   align-items: center;
   gap: 0 20px;
   padding: 13px 16px;
@@ -1813,12 +2001,13 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 .menu-item:last-child { border-bottom: 0; }
 .menu-item:hover { background: var(--fill-white); box-shadow: inset 3px 0 0 var(--sig-white); }
 .menu-name {
-  font-family: var(--font-data);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 800;
+  font-stretch: 118%;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
-  line-height: 1.1;
+  line-height: 1.05;
 }
 .menu-desc {
   grid-row: 1;
@@ -1882,8 +2071,8 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
   position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--carbon-1);
-  box-shadow: 0 0 0 1px var(--line);
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.82), rgba(10, 14, 19, 0.82));
+  box-shadow: 0 0 0 1px var(--line), var(--plate-lift);
   border: 0;
   border-radius: 0;
   padding: 0;
@@ -1954,12 +2143,13 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 
 .cc-body { padding: 2px 12px 12px; }
 .cc-name {
-  font-family: var(--font-data);
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 800;
+  font-stretch: 118%;
+  letter-spacing: -0.012em;
   text-transform: uppercase;
-  line-height: 1.05;
+  line-height: 1.02;
   color: var(--ink);
 }
 .cc-where {
@@ -2026,12 +2216,13 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 .round-text, .circuit-hero-facts { flex: 1 1 280px; min-width: 0; }
 
 .round-name {
-  font-family: var(--font-data);
-  font-size: clamp(22px, 3.2vw, 32px);
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: clamp(23px, 3.4vw, 34px);
+  font-weight: 820;
+  font-stretch: 120%;
   text-transform: uppercase;
-  letter-spacing: -0.02em;
-  line-height: 1;
+  letter-spacing: -0.018em;
+  line-height: 0.98;
   color: var(--ink);
 }
 .round-official {
@@ -2062,8 +2253,8 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
   gap: 0;
 }
 .stat {
-  background: var(--carbon-1);
-  box-shadow: 0 0 0 1px var(--line);
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.82), rgba(10, 14, 19, 0.82));
+  box-shadow: 0 0 0 1px var(--line), var(--plate-lift);
   border: 0;
   border-radius: 0;
   padding: 11px 13px 12px;
@@ -2130,8 +2321,8 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 
 .card {
   position: relative;
-  background: var(--carbon-1);
-  box-shadow: 0 0 0 1px var(--line);
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.82), rgba(10, 14, 19, 0.82));
+  box-shadow: 0 0 0 1px var(--line), var(--plate-lift);
   border: 0;
   border-radius: 0;
   padding: 12px 13px 13px;
@@ -2146,10 +2337,11 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 .card.selected { background: var(--carbon-2); box-shadow: 0 0 0 1px var(--line), inset 3px 0 0 var(--sig-white); }
 
 .card-name {
-  font-family: var(--font-data);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: 0.015em;
   text-transform: uppercase;
   color: var(--ink);
 }
@@ -3035,6 +3227,7 @@ table.standings tr.me td.who { font-weight: 700; }
 @media (max-width: 820px) {
   .pitprompt { width: 200px; bottom: calc(120px + var(--safe-b)); }
   .pitchip { min-height: 42px; }
+}
 
 /* === Retirement ========================================================
    Shown over the track when the player's own race ends in an accident.
@@ -3211,4 +3404,453 @@ table.standings tr.me td.who { font-weight: 700; }
   .retire-body { padding: 14px 18px 16px; }
   .retire-sub, .retire-parts, .retire-hint { display: none; }
   .retire-fact { padding: 6px 0; }
+}
+
+/* ======================================================================
+   THE STAGE
+   A real car, on its own canvas, standing in the hall.
+
+   This is the single largest thing that was missing. Every menu that talked
+   about a car used to show a flat silhouette; the game has been building a
+   proper lofted mesh with a per-team livery all along, and it only needed
+   somewhere to stand. `CarStage` owns the GL side; everything here is the
+   room it stands in and the furniture around it.
+
+   The stage element is a BOX, not a backdrop: the canvas fills it exactly and
+   the camera frames the car to its width, so moving and resizing this box is
+   how the car is placed. On a wide screen the box is the right-hand two
+   thirds and the interface sits to its left; on a portrait phone the box is a
+   band across the top and the interface flows underneath. Same canvas, same
+   camera, no second layout in TypeScript.
+   ====================================================================== */
+
+.stage {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* The cyclorama: the graded wall the car is photographed against.
+   In CSS rather than in the scene because it is a backdrop, not an object —
+   it never has to be lit, reflected or occluded, and painting it here keeps
+   it resolution-independent and costs the GL side nothing. Three layers: a
+   soft key spilling down the wall behind the car, the warm pool it stands in,
+   and the fall-off into the floor. */
+.stage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(56% 46% at 50% 52%, rgba(154, 180, 216, 0.19) 0%,
+      rgba(154, 180, 216, 0.055) 48%, rgba(154, 180, 216, 0) 74%),
+    radial-gradient(44% 19% at 50% 76%, rgba(var(--key), 0.15) 0%, rgba(var(--key), 0) 72%),
+    linear-gradient(180deg, rgba(6, 9, 13, 0) 0%, rgba(21, 27, 36, 0.5) 50%,
+      rgba(10, 14, 19, 0.86) 79%, rgba(4, 6, 9, 1) 100%);
+}
+.stage-canvas {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The car is the hero and sits to the right, weighted so it overlaps the
+   interface column's dead space rather than fighting it. */
+/* The car keeps the right-hand side and the top three quarters. It stops
+   short of the bottom because the page scrolls UNDER it — the calendar comes
+   up past the car, and a reflection lying across a row of circuit maps is a
+   collision, not a composition. */
+.stage.stage-right { inset: 0 -4% 18% 30%; }
+/* Full bleed: the interface floats over the car. Used where the car IS the
+   screen — the paddock. The box runs off the top and stops short of the
+   bottom, which lifts the car clear of the panels standing in front of it
+   without the camera having to know anything about them. */
+.stage.stage-full { inset: -10% -2% 10% 0; }
+
+/* One soft veil between the car and the interface, so text laid over the
+   backdrop keeps its contrast without the whole picture being dimmed. It is a
+   horizontal ramp on wide screens, because that is the direction the
+   interface sits in. */
+.stage-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    /* The floor dissolving into the page below it, so the reflection ends in
+       darkness rather than being cut off by whatever scrolls up past it. */
+    linear-gradient(180deg, rgba(4, 6, 9, 0) 62%, rgba(4, 6, 9, 0.55) 86%,
+      rgba(4, 6, 9, 0.95) 100%),
+    linear-gradient(90deg,
+      rgba(4, 6, 9, 0.9) 0%, rgba(4, 6, 9, 0.66) 24%,
+      rgba(4, 6, 9, 0.08) 50%, rgba(4, 6, 9, 0) 72%);
+}
+
+/* ======================================================================
+   THE NAMEPLATE
+   The one leaning object on a screen.
+
+   A garage sign: a slab of the team's own colour, sheared eight degrees, with
+   the name set upright inside it so only the slab leans. It fades out to the
+   left rather than ending, the way a painted sign runs off the edge of a pit
+   wall. The rank sits at its trailing edge, in the figure face, because a
+   rank is a figure.
+
+   It appears once per screen. Nothing else in this interface leans.
+   ====================================================================== */
+
+.nameplate {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 30px 10px 22px;
+  transform: skewX(var(--lean));
+  background: linear-gradient(90deg,
+    rgba(5, 7, 10, 0) 0%,
+    color-mix(in srgb, var(--team, #f2f6fb) 55%, #05070a) 24%,
+    var(--team, #f2f6fb) 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.22) inset,
+    0 14px 34px -14px rgba(0, 0, 0, 0.95);
+  max-width: 100%;
+}
+/* The leading edge, cut square against the shear so the plate reads as a
+   piece of material rather than a rotated rectangle. */
+.nameplate::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -1px;
+  width: 5px;
+  background: rgba(255, 255, 255, 0.72);
+}
+.nameplate > * { transform: skewX(8deg); }
+
+.nameplate-rank {
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.7);
+}
+.nameplate-name {
+  font-family: var(--font-display);
+  font-size: clamp(22px, 3.6vw, 40px);
+  font-weight: 830;
+  font-stretch: 122%;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A team whose livery is nearly white would put white on white. */
+.nameplate.on-light .nameplate-name { color: #080b10; text-shadow: none; }
+.nameplate.on-light .nameplate-rank { color: rgba(0, 0, 0, 0.55); }
+
+/* ======================================================================
+   CHEVRON BLADES
+   Walking the field, left and right.
+
+   Not the circular buttons of the reference. A circle floating in the middle
+   of a screen is a mobile-game bubble: a small target on a phone and a
+   strange one on a desktop. A blade anchored to the edge is the full height
+   of the stage, so the whole side of the screen is the control. The team's
+   colour lights the blade as it takes focus, which is the only place in this
+   interface where a hover changes a hue.
+   ====================================================================== */
+
+.chev {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: clamp(52px, 7vw, 88px);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-2);
+  background: transparent;
+  transition: color 0.16s ease, background 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.chev-prev { left: 0; justify-content: flex-start; padding-left: max(8px, var(--safe-l)); }
+.chev-next { right: 0; justify-content: flex-end; padding-right: max(8px, var(--safe-r)); }
+.chev svg { width: 26px; height: 26px; display: block; }
+.chev-prev:hover, .chev-prev:focus-visible {
+  color: var(--ink);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--team, #f2f6fb) 26%, transparent), transparent 88%);
+}
+.chev-next:hover, .chev-next:focus-visible {
+  color: var(--ink);
+  background: linear-gradient(270deg, color-mix(in srgb, var(--team, #f2f6fb) 26%, transparent), transparent 88%);
+}
+.chev:active { color: #fff; }
+/* The blade's own edge: a hairline that lights up with it. */
+.chev::before {
+  content: '';
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  width: 2px;
+  background: currentColor;
+  opacity: 0.16;
+  transition: opacity 0.16s ease;
+}
+.chev-prev::before { left: 0; }
+.chev-next::before { right: 0; }
+.chev:hover::before, .chev:focus-visible::before { opacity: 0.7; }
+
+/* ======================================================================
+   THE SHOWCASE
+   The paddock, rebuilt as one team at a time with the car in front of you.
+
+   Everything the grid of ten cards said is still here and still reads the
+   same multipliers — nothing was traded away for the picture. What changed is
+   that you now look at one team at a time, which is the only way a car can be
+   big enough to be worth looking at, and the strip along the bottom keeps the
+   whole field one press away and in championship order.
+   ====================================================================== */
+
+.showcase {
+  --blade: clamp(40px, 5.4vw, 72px);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+  justify-content: flex-end;
+  /* Nothing readable sits under a chevron blade. */
+  padding: 0 var(--blade) 2px;
+}
+/* …except the nameplate, which is meant to run off the left edge the way a
+   painted sign runs off a pit wall. Its leading 22% is a fade to nothing, so
+   what the blade covers is not text. */
+.showcase .nameplate {
+  margin-left: calc(-1 * var(--blade));
+  padding-left: calc(20px + var(--blade));
+}
+.showcase-head { display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+.showcase-engine {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.showcase-engine b { color: var(--sig-green); font-weight: 700; }
+
+.showcase-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 350px);
+  gap: 12px;
+  align-items: start;
+}
+.showcase-panel {
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(21, 28, 37, 0.94), rgba(10, 14, 20, 0.94));
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+  box-shadow: var(--plate-lift-hi);
+  padding: 11px 13px 12px;
+}
+.showcase-panel h3 {
+  margin: 0 0 9px;
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* The field, along the bottom. A team is its colour before it is its name,
+   so the strip is read as ten bands and the codes are the annotation. */
+.showcase-strip {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.showcase-strip::-webkit-scrollbar { display: none; }
+.strip-team {
+  flex: 1 1 0;
+  min-width: 58px;
+  border: 0;
+  border-top: 3px solid var(--team, var(--line-2));
+  background: rgba(13, 18, 24, 0.72);
+  padding: 7px 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink-3);
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  transition: background 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+  opacity: 0.55;
+}
+.strip-team:hover { background: rgba(28, 36, 47, 0.85); color: var(--ink-2); opacity: 0.85; }
+.strip-team.is-current {
+  opacity: 1;
+  color: var(--ink);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--team, #f2f6fb) 26%, transparent), rgba(13, 18, 24, 0.8) 70%);
+}
+.strip-rank { display: block; color: var(--ink-3); font-size: 9px; letter-spacing: 0.14em; }
+.strip-code { display: block; margin-top: 2px; font-size: 12px; }
+.strip-team.is-current .strip-rank { color: var(--ink-2); }
+
+/* A performance line: label, bar, figure. The bar reads a multiplier the
+   physics applies directly, which is why it is drawn against the grid's own
+   spread rather than as a 0-100 rating out of nowhere. */
+.perf-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 9px;
+  padding: 3.5px 0;
+}
+.perf-label {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.perf-track {
+  position: relative;
+  height: 5px;
+  background: rgba(150, 180, 214, 0.11);
+  overflow: hidden;
+}
+.perf-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--team, var(--ink-2));
+  box-shadow: 0 0 12px -2px var(--team, transparent);
+}
+.perf-value {
+  font-family: var(--font-data);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: right;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.perf-value.gain { color: var(--sig-green); }
+.perf-value.loss { color: var(--sig-yellow); }
+
+/* A driver, as the paddock lists one: number, code, name, nationality, rating. */
+.sc-driver {
+  display: grid;
+  grid-template-columns: 30px 44px minmax(0, 1fr) auto 30px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(150, 180, 214, 0.07);
+}
+.sc-driver:last-child { border-bottom: 0; }
+.sc-num {
+  font-family: var(--font-data);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-align: right;
+}
+.sc-code {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-align: center;
+  padding: 2px 0 3px;
+  color: #fff;
+  background: var(--team, var(--carbon-3));
+}
+.sc-dname {
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 700;
+  font-stretch: 108%;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sc-nat { font-family: var(--font-ui); font-size: 10.5px; color: var(--ink-3); }
+.sc-skill {
+  font-family: var(--font-data);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: right;
+  color: var(--ink);
+}
+
+/* The front page's own column: everything readable is held to the left of
+   the car rather than spread across the whole width. */
+.menu-column { max-width: 620px; }
+
+/* ======================================================================
+   Responsive floor for the stage
+   ====================================================================== */
+
+/* Portrait phone: the car becomes a band across the top and the interface
+   flows underneath it. The veil turns vertical to match. */
+@media (max-width: 760px) {
+  .stage.stage-right,
+  .stage.stage-full { inset: 0 0 auto 0; height: 40%; }
+  .stage-veil {
+    background: linear-gradient(180deg,
+      rgba(4, 6, 9, 0) 0%, rgba(4, 6, 9, 0) 44%,
+      rgba(4, 6, 9, 0.7) 80%, rgba(4, 6, 9, 0.96) 100%);
+  }
+  .showcase { justify-content: flex-start; min-height: 0; }
+  .showcase-panels { grid-template-columns: minmax(0, 1fr); }
+  .chev { width: 46px; }
+  .menu-column { max-width: none; }
+}
+
+/* Landscape phone: vertical room is the scarce thing, so the car keeps the
+   right-hand side and the panels collapse to one column beside it. */
+@media (max-height: 470px) and (orientation: landscape) {
+  .stage.stage-right { inset: 0 -6% 0 40%; }
+  .stage.stage-full { inset: 0 -6% 0 0; height: auto; }
+  .showcase { gap: 8px; justify-content: flex-end; min-height: 100%; }
+  .showcase-panels { grid-template-columns: minmax(0, 1fr); max-width: 350px; }
+  .showcase-panel { padding: 8px 11px 9px; }
+  .perf-row { padding: 2px 0; }
+  .sc-driver { padding: 4px 0; }
+  .nameplate { padding: 6px 24px 7px 16px; }
+  .chev { width: 44px; }
+  .stage-veil {
+    background: linear-gradient(90deg,
+      rgba(4, 6, 9, 0.94) 0%, rgba(4, 6, 9, 0.76) 28%,
+      rgba(4, 6, 9, 0.16) 54%, rgba(4, 6, 9, 0) 74%);
+  }
+}
+
+/* A very wide desktop: hold the interface column against the left edge of the
+   page rather than letting it drift into the middle of the picture. */
+@media (min-width: 1500px) {
+  .stage.stage-right { inset: 0 0 0 34%; }
+}
+
+/* Reduced motion. The turntable is stopped in `CarStage` — a rotating car is
+   exactly the kind of continuous movement this setting exists to switch off —
+   and the transitions go with it. */
+@media (prefers-reduced-motion: reduce) {
+  .chev, .btn, .strip-team { transition: none; }
 }

@@ -9,6 +9,7 @@ import { resultGapCell } from './race/Classification';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
+import { CarStage } from './render/CarStage';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDirector';
 import { setRubberLine } from './render/SurfaceDetail';
 import { InputController } from './input/InputController';
@@ -19,7 +20,7 @@ import {
 } from './career/CareerEngine';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
-import { buildPaddock } from './ui/Paddock';
+import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
 import { circuitSvg, circuitLoadingArt } from './ui/CircuitArt';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
 import { buildControllerScreen, type ControllerScreenHandle } from './ui/ControllerScreen';
@@ -81,6 +82,21 @@ class Game {
 
   private screen: Screen = 'menu';
   private screenRoot!: HTMLElement;
+
+  /**
+   * The car standing on the reveal stage behind a menu, or null.
+   *
+   * Owned here rather than by the screens that show it, because this is the
+   * only object that knows when a screen is being torn down, and a second
+   * WebGL context is the one resource in this application that absolutely
+   * must not be leaked. Browsers cap live contexts — Chrome at sixteen — and
+   * silently kill the OLDEST when the cap is passed, which would take out the
+   * one running the race rather than the one that leaked. So there is exactly
+   * one choke point: `page()` disposes any stage before it rebuilds a screen,
+   * and `setScreen` disposes it again on the way into a session. Both are
+   * idempotent, and every screen in the game passes through both.
+   */
+  private stage: CarStage | null = null;
 
   /** Session queue for a race weekend. */
   private weekend: SessionConfig[] = [];
@@ -340,12 +356,67 @@ class Game {
     if (!inSession && this.retireOverlay) this.dismissRetirement();
     // Leaving the track cuts the car but keeps the context alive, so returning
     // to a session does not have to rebuild the whole graph.
+    // A stage rendering behind a hidden menu is a GL context and a render loop
+    // burning frames the player cannot see, while the race needs every one.
+    if (inSession) this.disposeStage();
     if (!inSession) {
       this.audio.silenceCar();
       // A rumble effect outlives the frame that started it, so a controller
       // left buzzing on the results screen is a real possibility.
       this.input.stopForceFeedback();
     }
+  }
+
+  /**
+   * Stands a car on the reveal stage behind the current screen.
+   *
+   * `mode` is where the car goes, not how it is drawn: `right` puts it in the
+   * right-hand two thirds with the interface beside it, `full` gives it the
+   * whole frame with the interface floating over it. The box is a CSS one and
+   * the camera frames the car to whatever box it is given, so a phone in
+   * portrait — where the same class resolves to a band across the top — needs
+   * no second code path here.
+   *
+   * Returns the stage so a screen can re-fit a different livery on it, which
+   * is what walking the paddock does: rebuilding the whole stage per press
+   * would take and drop a GL context ten times while somebody browses.
+   */
+  private mountStage(
+    mode: 'right' | 'full',
+    livery: { colour: number; accent: number; number?: number; code?: string },
+  ): CarStage | null {
+    this.disposeStage();
+    // The stage is a luxury, not a feature: if anything about it fails —
+    // a refused context, a driver that will not allocate the shadow map — the
+    // menus have to carry on exactly as they did without it.
+    try {
+      const stage = new CarStage({
+        ...livery,
+        quality: this.renderer.quality,
+        // A car turning on the spot forever is precisely the continuous
+        // motion this setting exists to switch off. Parked at the three-
+        // quarter angle instead, and the render loop never starts.
+        still: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      });
+      const host = this.el('div', 'stage stage-' + mode, this.screenRoot);
+      // Placed behind the page, which `page()` has already appended.
+      this.screenRoot.insertBefore(host, this.screenRoot.firstChild);
+      stage.mount(host);
+      this.el('div', 'stage-veil', host);
+      this.screenRoot.classList.add('lit');
+      this.stage = stage;
+      return stage;
+    } catch (err) {
+      console.warn('Car stage unavailable; menus continue without it.', err);
+      this.stage = null;
+      return null;
+    }
+  }
+
+  /** Releases the stage's context, loop and observer. Safe to call any time. */
+  private disposeStage(): void {
+    this.stage?.dispose();
+    this.stage = null;
   }
 
   private el(tag: string, cls: string, parent: HTMLElement, text = ''): HTMLElement {
@@ -399,7 +470,13 @@ class Game {
      */
     rule?: { parts: number[]; at?: number; best?: boolean };
   }): { body: HTMLElement; actions: HTMLElement } {
+    // Clearing `innerHTML` would orphan the stage's canvas while its GL
+    // context, its render loop and its resize observer all carried on. This is
+    // the choke point every screen build passes through, so it is where the
+    // stage is released.
+    this.disposeStage();
     this.screenRoot.innerHTML = '';
+    this.screenRoot.classList.remove('lit');
     const page = this.el('div', 'page', this.screenRoot);
 
     this.statusRail(page, opts.where ?? opts.tab ?? '');
@@ -648,7 +725,23 @@ class Game {
       rule: { parts: [1, 1, 1], at: 0 },
     });
 
-    const hero = this.el('div', 'board-hero', body);
+    // The front page opens on a car, because the front page of a racing game
+    // should. Which car is not arbitrary: with a career running it is the one
+    // in your garage, and without one it is the machine at the front of the
+    // grid — the thing you are about to go and try to beat.
+    const showTeam = this.career ? getTeam(this.career.state.teamId) : PADDOCK_ORDER[0];
+    const showDriver = DRIVERS.find((d) => d.teamId === showTeam.id);
+    this.mountStage('right', {
+      colour: showTeam.colour,
+      accent: showTeam.accent,
+      number: showDriver?.raceNumber,
+      code: showDriver?.code,
+    });
+
+    // Everything readable is held to the left of the car rather than being
+    // spread across the picture.
+    const column = this.el('div', 'menu-column', body);
+    const hero = this.el('div', 'board-hero', column);
     this.el('div', 'board-hero-label', hero, recent ? 'Career in progress' : 'No career loaded');
     const line = this.el('div', 'board-hero-line', hero);
     if (recent) {
@@ -666,7 +759,7 @@ class Game {
       'A full physics simulation, eleven surveyed circuits and a career that starts in ' +
       'Formula 3. Every number on every screen is one the car actually uses.');
 
-    const actions = this.el('div', 'menu-actions', body);
+    const actions = this.el('div', 'menu-actions', column);
 
     const entry = (name: string, desc: string, fig: string, onClick: () => void, lead = false) => {
       const b = document.createElement('button');
@@ -708,7 +801,7 @@ class Game {
       '', () => this.showSettings());
 
     if (this.saves.isEphemeral) {
-      this.el('div', 'notice', body,
+      this.el('div', 'notice', column,
         'This browser is blocking storage, so a career will not survive a reload. ' +
         'Everything else works normally.');
     }
@@ -812,6 +905,16 @@ class Game {
         ],
         at: 1,
       },
+    });
+
+    // Your own car, in your own garage. The hub is where a career is read, and
+    // the machine it is being driven in is the one fact the page never stated.
+    const myDriver = DRIVERS.find((d) => d.teamId === team.id);
+    this.mountStage('right', {
+      colour: team.colour,
+      accent: team.accent,
+      number: myDriver?.raceNumber,
+      code: myDriver?.code,
     });
 
     // --- Driver and team state -------------------------------------------
@@ -1263,20 +1366,67 @@ class Game {
    */
   private showPaddock(): void {
     this.setScreen('paddock');
-    const { body } = this.page({
+    // No title and no prose: the car IS the title, and a paragraph laid over
+    // a photograph of it would be the one thing on the screen asking to be
+    // read instead of looked at. What the screen means is said by the
+    // nameplate and by the bars, both of which are shorter than a sentence.
+    const { body, actions } = this.page({
       tab: 'Main Menu',
       where: 'Paddock',
-      rule: { parts: [1, 1, 1], at: 0 },
-      title: 'The Paddock',
-      sub: 'Every bar reads a multiplier the physics applies directly. These cars really ' +
-        'are different, and the order below is the order they should finish in.',
       back: () => this.showMenu(),
-      meta: [['Teams', String(TEAMS.length)], ['Drivers', String(DRIVERS.length)]],
+    });
+    body.classList.add('showcase-body');
+
+    const stage = this.mountStage('full', {
+      colour: PADDOCK_ORDER[0].colour,
+      accent: PADDOCK_ORDER[0].accent,
     });
 
-    buildPaddock(body, {
+    const handle: PaddockHandle = buildPaddock(body, {
       currentTeamId: this.career?.state.teamId,
+      // Every change of team refits the livery on the car already standing
+      // there. `buildCar` shares geometry and materials through its own cache,
+      // so this is one livery canvas and nothing else.
+      onShow: (team) => {
+        const drivers = DRIVERS.filter((d) => d.teamId === team.id)
+          .sort((a, b) => a.raceNumber - b.raceNumber);
+        stage?.setLivery({
+          colour: team.colour,
+          accent: team.accent,
+          number: drivers[0]?.raceNumber,
+          code: drivers[0]?.code,
+        });
+      },
     });
+
+    // Walking the field. The blades are anchored to the page rather than to
+    // the scrolling body, so they stay under the thumb wherever the panels
+    // have been scrolled to.
+    const page = this.screenRoot.querySelector('.page') as HTMLElement;
+    const blade = (dir: -1 | 1, label: string, d: string) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chev chev-' + (dir < 0 ? 'prev' : 'next');
+      b.setAttribute('aria-label', label);
+      b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="2.4" stroke-linecap="square"><path d="' + d + '"/></svg>';
+      b.addEventListener('click', () => handle.step(dir));
+      page.appendChild(b);
+    };
+    blade(-1, 'Previous team', 'M15 4 L7 12 L15 20');
+    blade(1, 'Next team', 'M9 4 L17 12 L9 20');
+
+    // The arrow keys walk the grid too. On a screen whose whole job is left
+    // and right, the keyboard should not have to hunt for the blades. The
+    // listener hangs off the page, which is thrown away on navigation — on
+    // `screenRoot`, which is not, it would accumulate one per visit.
+    page.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); handle.step(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); handle.step(1); }
+    });
+
+    this.spacer(actions);
+    this.button('Quick Race', actions, () => this.showSessionSelect(true), 'btn primary');
   }
 
   /**
