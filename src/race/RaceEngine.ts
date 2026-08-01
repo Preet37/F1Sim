@@ -1224,7 +1224,25 @@ export class RaceEngine {
       : null;
 
     const rc = this.raceControl;
-    p.localYellow = rc.overtakingBannedAt(car.s) || car.holdUntilLine;
+    // The ban starts at the BOARD, not at the sector line.
+    //
+    // A marshalling sector is a couple of hundred metres of road and the flag
+    // is shown at the start of it, so a driver has seen the yellow before he is
+    // in the zone it covers and has already backed off. Reading the ban at the
+    // car's own position instead means a car arrives at the sector boundary at
+    // full speed, a car length off the one in front, and is only then told not
+    // to pass — by which point it is alongside and the manoeuvre completes
+    // inside the yellow. `validate:flags` caught exactly one of those in
+    // qualifying at Silverstone and it is the only illegal pass left on the
+    // calendar: two cars at 25 m/s, both lifting, one crossing the boundary
+    // already committed.
+    //
+    // A second of travel is roughly the sight line to the post, and it costs
+    // nothing where there is no flag out.
+    const lookAheadM = Math.max(20, car.physics.speedMs);
+    p.localYellow = rc.overtakingBannedAt(car.s) ||
+      rc.overtakingBannedAt(car.s + lookAheadM) ||
+      car.holdUntilLine;
     p.yellowLevel = rc.yellowLevelAt(car.s);
     p.blueFlag = car.blueFlag;
     p.neutralised = rc.neutralisation !== 'none';
