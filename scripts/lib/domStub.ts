@@ -40,9 +40,56 @@ function createElement(tag: string): StubElement {
 
 /** Installs the stub as the global `document`. Safe to call more than once. */
 export function installDomStub(): void {
-  const g = globalThis as unknown as { document?: unknown };
+  const g = globalThis as unknown as { document?: { createElement?: unknown } };
   if (g.document) return;
   g.document = { createElementNS: (_ns: string, tag: string) => createElement(tag) };
+}
+
+/**
+ * A `<canvas>` that answers the 2D API without drawing anything.
+ *
+ * `buildTrackMeshes` paints its signage, hoardings and fence textures into
+ * canvases at load. A probe that wants the circuit's GEOMETRY has no interest
+ * in any of them, but it cannot get the geometry without the call succeeding —
+ * so the calls succeed and produce a blank texture. Nothing here is measured;
+ * the moment a probe wants to assert something about a texture's CONTENT it
+ * needs a real headless browser, not this.
+ */
+export function installCanvasStub(): void {
+  const ctx2d = new Proxy({}, {
+    get(_t, prop) {
+      if (prop === 'measureText') return () => ({ width: 10 });
+      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') {
+        return () => ({ addColorStop: () => {} });
+      }
+      if (prop === 'getImageData') {
+        return (_x: number, _y: number, w: number, h: number) =>
+          ({ data: new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h });
+      }
+      if (prop === 'canvas') return { width: 1, height: 1 };
+      return () => {};
+    },
+    set() { return true; },
+  });
+  const makeCanvas = () => ({
+    width: 1, height: 1,
+    getContext: () => ctx2d,
+    toDataURL: () => '',
+  });
+
+  const g = globalThis as unknown as {
+    document?: { createElement?: (tag: string) => unknown };
+    OffscreenCanvas?: unknown;
+  };
+  installDomStub();
+  const doc = g.document!;
+  if (!doc.createElement) {
+    doc.createElement = (tag: string) =>
+      (tag === 'canvas' ? makeCanvas() : createElement(tag));
+  }
+  if (!g.OffscreenCanvas) {
+    g.OffscreenCanvas = class { constructor() { return makeCanvas(); } };
+  }
 }
 
 /**
