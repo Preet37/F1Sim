@@ -118,6 +118,8 @@ export class CarStage {
    * every angle of the turntable.
    */
   private halfSpan = 3.0;
+  /** The car's height. With the reflection, the subject is twice this. */
+  private halfHeight = 1.05;
 
   private raf = 0;
   private lastT = 0;
@@ -245,6 +247,7 @@ export class CarStage {
     const box = new THREE.Box3().setFromObject(this.car.root);
     const size = box.getSize(new THREE.Vector3());
     this.halfSpan = 0.5 * Math.hypot(size.x, size.z);
+    this.halfHeight = Math.max(0.4, size.y);
     this.resize();
 
     this.applyAngle();
@@ -301,14 +304,25 @@ export class CarStage {
 
     const aspect = w / h;
     this.camera.aspect = aspect;
-    // Distance that keeps the car about seven tenths of the frame width at any
-    // aspect. Seven tenths rather than filling it: a car photographed against
-    // a seamless backdrop needs the backdrop to be visible around it, or the
-    // shot reads as a crop rather than as a car standing in a room.
+    // Framed against BOTH axes, and pulled back to whichever binds.
+    //
+    // Fitting the width alone was wrong in the two places it matters most: a
+    // portrait phone, where a tall narrow box makes the car a matchstick, and
+    // the garage bay on the career hub, which is a letterbox six times wider
+    // than it is tall — there the width constraint asks the camera to stand
+    // two and a half metres from the car, which is inside the front wing.
+    //
+    // The vertical extent is the car AND its reflection, which are symmetric
+    // about the floor, so the subject is twice the car's height however tall
+    // the car happens to be.
     const halfFovY = THREE.MathUtils.degToRad(this.camera.fov) / 2;
-    const halfWidthNeeded = this.halfSpan / 0.70;
-    const dist = halfWidthNeeded / (Math.tan(halfFovY) * Math.max(aspect, 0.42));
-    const d = THREE.MathUtils.clamp(dist, 8, 34);
+    const tanY = Math.tan(halfFovY);
+    // Roughly four fifths of the width rather than all of it: a car photographed
+    // against a seamless backdrop needs the backdrop visible around it, or the
+    // shot reads as a crop rather than as a car standing in a room.
+    const distW = (this.halfSpan / 0.78) / (tanY * Math.max(aspect, 0.35));
+    const distH = (this.halfHeight / 0.62) / tanY;
+    const d = THREE.MathUtils.clamp(Math.max(distW, distH), 6, 40);
     // A photographer's eye line: low, about level with the top of the tyres,
     // looking very slightly down so the floor and the reflection in it are
     // both in frame. High enough to see over the sidepod, low enough that the

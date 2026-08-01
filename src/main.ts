@@ -382,8 +382,9 @@ class Game {
    * would take and drop a GL context ten times while somebody browses.
    */
   private mountStage(
-    mode: 'right' | 'full',
+    mode: 'right' | 'full' | 'panel',
     livery: { colour: number; accent: number; number?: number; code?: string },
+    into?: HTMLElement,
   ): CarStage | null {
     this.disposeStage();
     // The stage is a luxury, not a feature: if anything about it fails —
@@ -398,12 +399,17 @@ class Game {
         // quarter angle instead, and the render loop never starts.
         still: matchMedia('(prefers-reduced-motion: reduce)').matches,
       });
-      const host = this.el('div', 'stage stage-' + mode, this.screenRoot);
-      // Placed behind the page, which `page()` has already appended.
-      this.screenRoot.insertBefore(host, this.screenRoot.firstChild);
+      // `panel` stands the car inside a box on the page — a garage bay in the
+      // flow of a dense screen. The other two hang it behind the whole screen.
+      // Same canvas and same camera either way; only the box differs.
+      const host = this.el('div', 'stage stage-' + mode, into ?? this.screenRoot);
+      if (!into) {
+        // Placed behind the page, which `page()` has already appended.
+        this.screenRoot.insertBefore(host, this.screenRoot.firstChild);
+        this.screenRoot.classList.add('lit');
+      }
       stage.mount(host);
       this.el('div', 'stage-veil', host);
-      this.screenRoot.classList.add('lit');
       this.stage = stage;
       return stage;
     } catch (err) {
@@ -863,6 +869,27 @@ class Game {
     step('Calendar', TIER_INFO.F3.rounds + ' rounds', 'One season to prove yourself');
     step('Promotion', 'On results', 'Reputation opens the door to F2, then F1');
 
+    // The car you will actually be handed. `CareerEngine.create` starts every
+    // career at the back of the grid in number 47, so this is not an
+    // illustration — it is the machine, in the livery, with the number on it.
+    const startTeam = TEAMS[TEAMS.length - 1];
+    this.el('div', 'section-title', body, 'The seat on offer');
+    const bay = this.el('div', 'garagebay', body);
+    const bayInfo = this.el('div', 'garagebay-info', bay);
+    const plate = this.el('div', 'nameplate', bayInfo);
+    plate.style.setProperty('--team', hexColour(startTeam.colour));
+    plate.innerHTML =
+      '<span class="nameplate-rank">47</span>' +
+      '<span class="nameplate-name">' + escapeHtml(startTeam.name) + '</span>';
+    this.el('div', 'garagebay-line', bayInfo,
+      startTeam.engine + ' · last on the grid, and the only seat you are offered');
+    this.mountStage('panel', {
+      colour: startTeam.colour,
+      accent: startTeam.accent,
+      number: 47,
+      code: startTeam.code,
+    }, bay);
+
     this.spacer(actions);
     this.button('Begin Career', actions, () => {
       const f = first.value.trim() || 'Alex';
@@ -907,15 +934,29 @@ class Game {
       },
     });
 
-    // Your own car, in your own garage. The hub is where a career is read, and
-    // the machine it is being driven in is the one fact the page never stated.
-    const myDriver = DRIVERS.find((d) => d.teamId === team.id);
-    this.mountStage('right', {
+    // Your own car, in your own garage.
+    //
+    // A BAY on the page rather than a backdrop behind the whole screen: the
+    // hub is the densest page in the game — six figures, a form table, the
+    // next round and a setup summary — and a full-height car standing behind
+    // all of that is a collision, not a composition. Bounded, it is the one
+    // picture on a page of numbers.
+    const bay = this.el('div', 'garagebay', body);
+    const bayInfo = this.el('div', 'garagebay-info', bay);
+    const plate = this.el('div', 'nameplate', bayInfo);
+    plate.style.setProperty('--team', hexColour(team.colour));
+    plate.innerHTML =
+      '<span class="nameplate-rank">' + s.player.raceNumber + '</span>' +
+      '<span class="nameplate-name">' + escapeHtml(team.name) + '</span>';
+    this.el('div', 'garagebay-line', bayInfo,
+      team.engine + ' · ' + TIER_INFO[s.tier].name + ' · your car');
+
+    this.mountStage('panel', {
       colour: team.colour,
       accent: team.accent,
-      number: myDriver?.raceNumber,
-      code: myDriver?.code,
-    });
+      number: s.player.raceNumber,
+      code: s.player.code,
+    }, bay);
 
     // --- Driver and team state -------------------------------------------
     const seasonHead = this.el('div', 'section-title', body, 'Season so far');
@@ -1962,6 +2003,36 @@ class Game {
     }
 
     // --- The car ----------------------------------------------------------
+    // The car you are about to be released in, in the garage it is sitting in.
+    // The screen's own first line is "in the garage, waiting to be released" —
+    // this is the only screen in the game where showing the machine is
+    // literally what the copy already says is happening.
+    const bTeam = this.playerTeam();
+    // The career's player, or — outside a career — whoever the team's first
+    // car belongs to, which is the driver the quick-race grid actually seats
+    // the player in.
+    const bSeat = this.career
+      ? this.career.state.player
+      : DRIVERS.find((d) => d.teamId === bTeam.id);
+    const bNumber = bSeat?.raceNumber;
+    const bCode = bSeat?.code;
+    const bay = this.el('div', 'garagebay', body);
+    const bayInfo = this.el('div', 'garagebay-info', bay);
+    const bplate = this.el('div', 'nameplate', bayInfo);
+    bplate.style.setProperty('--team', hexColour(bTeam.colour));
+    bplate.innerHTML =
+      '<span class="nameplate-rank">' + (bNumber ?? '') + '</span>' +
+      '<span class="nameplate-name">' + escapeHtml(bTeam.name) + '</span>';
+    this.el('div', 'garagebay-line', bayInfo,
+      config.name + ' · ' + circuit.name + ' · ' + TIER_INFO[this.career?.state.tier ?? 'F1'].name);
+    this.mountStage('panel', {
+      colour: bTeam.colour,
+      accent: bTeam.accent,
+      number: bNumber,
+      code: bCode,
+    }, bay);
+
+
     this.garageCard(body, circuitId, () => this.showBriefing(circuitId));
 
     // --- The tyre you go out on ------------------------------------------

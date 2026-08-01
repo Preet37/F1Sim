@@ -129,6 +129,16 @@ export function buildPaddock(parent: HTMLElement, opts: PaddockOptions = {}): Pa
   root.className = 'showcase';
   parent.appendChild(root);
 
+  // Reserved room for the car, on the layouts where it is a band across the
+  // top rather than a backdrop behind everything. Empty and hidden on a wide
+  // screen; on a portrait phone it is what stops the panels being laid over
+  // the car instead of under it. A spacer rather than a margin because the
+  // band's height is a viewport unit, and only CSS knows what that resolves to.
+  const spacer = document.createElement('div');
+  spacer.className = 'showcase-spacer';
+  spacer.setAttribute('aria-hidden', 'true');
+  root.appendChild(spacer);
+
   // --- Head: the nameplate, and what the car has in the back of it ---------
   const head = document.createElement('div');
   head.className = 'showcase-head';
