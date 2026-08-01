@@ -143,6 +143,87 @@ const YAW_DAMP_BASE = 1.8;
 const YAW_DAMP_PER_V = 0.032;
 
 /**
+ * Tyre relaxation length, metres, per axle.
+ *
+ * A tyre does not develop a slip angle the instant the wheel is steered. The
+ * carcass has to wind up, and it does so over a DISTANCE rolled rather than a
+ * time elapsed — which is why the lag disappears at speed and dominates when the
+ * car is slow. The standard first-order form is
+ *
+ *     d(alpha)/dt = (v / sigma) * (alpha_steady - alpha)
+ *
+ * with sigma the relaxation length: 0.4-0.8m for a racing tyre.
+ *
+ * This model had NO relaxation at all, and its absence is the single largest
+ * reason the car felt twitchy. Without it every tyre force is an instantaneous
+ * algebraic function of the current state, so a steering input, a kerb strike or
+ * a friction-circle overload changes the lateral force COMPLETELY within one
+ * 8ms step. Nothing on a real car does that. The consequences the probe
+ * measured, all of which are gone with this in:
+ *
+ *   - Turn-in overshot the settled yaw rate by 17-31% and then rang, because
+ *     there was nothing between the driver's hands and the yaw moment.
+ *   - Yaw disturbances with the steering held still decayed at 0.16/s at 300km/h
+ *     — over six seconds to die away — and the car rang the whole time.
+ *   - A departure took 0.12-0.32s from "past the peak slip angle" to "gone",
+ *     which is inside a human reaction time. There was no warning because there
+ *     was no lag: the car arrived at the far side of the tyre curve immediately.
+ *
+ * The rear is given a slightly longer relaxation length than the front, which is
+ * the usual measured ordering (bigger tyre, more carcass to wind up), and has the
+ * side effect the driver wants: the front takes its bite fractionally before the
+ * rear follows, so the car rotates into the corner rather than pushing.
+ */
+const RELAX_LENGTH_FRONT_M = 0.55;
+const RELAX_LENGTH_REAR_M = 0.70;
+/**
+ * Floor on the relaxation RATE, 1/s.
+ *
+ * v/sigma goes to zero at a standstill, which would freeze the slip angle at
+ * whatever it last held and leave a parked car generating cornering force
+ * forever. The slip angles are already blended out below walking pace, so this
+ * only has to stop the state from sticking.
+ */
+const RELAX_RATE_MIN = 3;
+
+/**
+ * How fast the power unit actually delivers what the throttle asked for, 1/s.
+ *
+ * A 1.6-litre turbocharged V6 does not make its boost instantly. Off-boost at
+ * low crank speed the turbine has to be spun up, and even with an electric MGU-H
+ * assisting it that takes a meaningful fraction of a second; near the limiter
+ * the boost is already there and the response is essentially immediate. On top
+ * of that sits driveline wind-up through the gearbox, driveshafts and the tyre's
+ * own longitudinal carcass compliance, none of which are instant either.
+ *
+ * The model had none of this: `driveForce` was an algebraic function of the
+ * throttle in the same step, so the rear axle's entire longitudinal demand
+ * appeared in one 8ms tick. At 90km/h in a corner that is the difference between
+ * a car that lights its rears up progressively and one that snaps into a spin
+ * with no warning at all. Measured: 0.70 throttle at 90km/h at 90% of the
+ * lateral limit took the rear from 4.9 to 8.9 degrees of slip in 100ms and to a
+ * completed spin in under a second, and the catchability sweep recovered ZERO of
+ * thirty-six cases. That is the "randomly starts over steering and makes some
+ * goofy donuts" complaint, and it is not the driver's fault: the car gave him a
+ * hundred milliseconds.
+ *
+ * Rate rather than time constant so it composes with `damp()`. 8/s near the
+ * limiter is a 0.12s rise; 3.2/s off-boost is 0.31s, which is what a turbo
+ * actually does. Steady-state output is unchanged, so top speed, the power
+ * curve and the acceleration figures are all untouched — only the first third of
+ * a second after a throttle movement is different.
+ */
+const BOOST_RATE_OFF = 4.5;
+const BOOST_RATE_ON = 9.0;
+/**
+ * Closing the throttle is much quicker than opening it — there is no boost to
+ * build, just a butterfly shutting. Asymmetric on purpose: a lift has to take
+ * effect promptly or the car ignores the one input the driver reaches for when
+ * it starts to go.
+ */
+const BOOST_RATE_CLOSING = 22.0;
+
+/**
  * How fast the rack gears down with speed, per m/s above walking pace.
  *
  * The number this has to respect is the slip angle at which the front tire
@@ -312,6 +393,8 @@ export class VehiclePhysics {
   rearSlipSpeed = 0;
   /** Rear-axle wheelspin, 0..1: throttle demand beyond the traction limit. */
   wheelSpin = 0;
+  /** Road-wheel steer angle actually applied this step, radians. Telemetry. */
+  steerAngleRad = 0;
 
   /**
    * Throttle fraction at which the rear axle starts to spin up.
@@ -389,6 +472,12 @@ export class VehiclePhysics {
   private readonly frontScale: CircleScale = { lon: 1, lat: 1 };
   private readonly rearScale: CircleScale = { lon: 1, lat: 1 };
 
+  /** Relaxed (lagged) slip angles, radians. See RELAX_LENGTH_*. */
+  private alphaFrontLag = 0;
+  private alphaRearLag = 0;
+  /** Delivered fraction of commanded ICE power. See TURBO_LAG_*. */
+  private boost = 0;
+
   private vibrationPhase = 0;
 
   constructor(spec: VehicleSpec, startCompound: CompoundId = 'medium') {
@@ -460,6 +549,9 @@ export class VehiclePhysics {
     this.yawRate = 0;
     this.gear = speedMs > 5 ? 3 : 1;
     this.shiftTimer = 0;
+    this.alphaFrontLag = 0;
+    this.alphaRearLag = 0;
+    this.boost = 0;
   }
 
   /**
@@ -492,6 +584,9 @@ export class VehiclePhysics {
     this.yawRate = 0;
     this.wheelSpin = 0;
     this.vibration = 0;
+    this.alphaFrontLag = 0;
+    this.alphaRearLag = 0;
+    this.boost = 0;
   }
 
   /**
@@ -679,17 +774,69 @@ export class VehiclePhysics {
     // Negated: see the note on VehicleControls.steer. The internal lateral axis
     // points to the driver's LEFT, so a right-hand steer input must produce a
     // negative steer angle. Without this, the arrow keys are inverted.
-    const steerAngle = -c.steer * spec.maxSteerRad * steerLimit;
+    const tapered = spec.maxSteerRad * steerLimit;
 
-    // --- Slip angles -------------------------------------------------------
     // Below walking pace the atan2 formulation is ill-conditioned, so blend the
     // slip angles out and let the low-speed kinematic path take over.
     const slipBlend = clamp01((absVx - 0.6) / 2.4);
     const vRef = Math.max(absVx, 1.2);
 
-    const alphaFront = (Math.atan2(vy + this.yawRate * spec.cogToFrontM, vRef) - steerAngle) * slipBlend;
+    // --- The rack taper must never limit OPPOSITE LOCK ----------------------
+    //
+    // `steerRackLimit` exists for one reason, stated where it is defined: to
+    // stop the driver pushing the front tyre past its peak slip angle, where
+    // more lock produces less cornering force. That is a good aim and it is
+    // entirely about steering INTO a corner.
+    //
+    // Applied symmetrically it also caps counter-steer, and counter-steer is the
+    // opposite manoeuvre in every sense — it REDUCES the front slip angle. The
+    // consequence was measured and it is severe. At 90km/h the taper allows 15.5
+    // degrees at the road wheels out of a physical 24. A car sliding at 28
+    // degrees of sideslip therefore could not be pointed anywhere near where it
+    // was travelling: the driver had opposite lock against the stop and the
+    // front tyres were still at 12 degrees of slip, generating force in the
+    // direction that continued the spin. Every one of the thirty-six low-speed
+    // power-oversteer cases in the catchability sweep was unrecoverable, and it
+    // was not the tyre model saying no, it was the steering aid.
+    //
+    // So: the rack is geared down as before, but the available lock in ONE
+    // direction is extended to reach the angle that points the front wheels
+    // along the direction the front axle is actually travelling — which is what
+    // opposite lock physically IS — never beyond the car's real mechanical lock.
+    // When the car is going where it is pointed that angle is nearly zero and
+    // this changes nothing whatsoever; it only opens up once the car is
+    // sideways, which is precisely when the driver needs it, and it opens only
+    // on the side that unwinds the slide.
+    //
+    // Note it is the RANGE that is extended, not the mapping that is bypassed.
+    // An earlier attempt applied the taper as a saturation rather than as a
+    // gearing, so every input below the tapered limit arrived UNSCALED — at
+    // 220km/h the same stick position produced twice the road-wheel angle, the
+    // understeer gradient inverted at every speed, and the car got worse. The
+    // input still maps linearly onto whatever lock is available.
+    const frontVelAngle = Math.atan2(vy + this.yawRate * spec.cogToFrontM, vRef);
+    const neutralising = clamp(frontVelAngle * slipBlend, -spec.maxSteerRad, spec.maxSteerRad);
+    const lockPos = Math.max(tapered, neutralising);
+    const lockNeg = Math.max(tapered, -neutralising);
+    const steerAngle = c.steer >= 0 ? -c.steer * lockNeg : -c.steer * lockPos;
+    this.steerAngleRad = steerAngle;
+
+    // --- Slip angles -------------------------------------------------------
+
+    const alphaFrontSS = (frontVelAngle - steerAngle) * slipBlend;
     const rearArm = spec.wheelbaseM - spec.cogToFrontM;
-    const alphaRear = Math.atan2(vy - this.yawRate * rearArm, vRef) * slipBlend;
+    const alphaRearSS = Math.atan2(vy - this.yawRate * rearArm, vRef) * slipBlend;
+
+    // --- Tyre relaxation ---------------------------------------------------
+    // The slip angle the tyre is ACTUALLY carrying lags the slip angle the
+    // kinematics ask for, over a rolled distance rather than an elapsed time.
+    // See RELAX_LENGTH_FRONT_M for why this matters more than its size suggests.
+    const relaxRateFront = Math.max(absVx / RELAX_LENGTH_FRONT_M, RELAX_RATE_MIN);
+    const relaxRateRear = Math.max(absVx / RELAX_LENGTH_REAR_M, RELAX_RATE_MIN);
+    this.alphaFrontLag = damp(this.alphaFrontLag, alphaFrontSS, relaxRateFront, dt);
+    this.alphaRearLag = damp(this.alphaRearLag, alphaRearSS, relaxRateRear, dt);
+    const alphaFront = this.alphaFrontLag;
+    const alphaRear = this.alphaRearLag;
 
     this.frontTires.slipAngle = Math.abs(alphaFront);
     this.rearTires.slipAngle = Math.abs(alphaRear);
@@ -709,7 +856,23 @@ export class VehiclePhysics {
     this.ersHarvestW = 0;
     this.powerOutputW = 0;
 
-    const throttle = clamp01(c.throttle);
+    const throttleDemand = clamp01(c.throttle);
+
+    // --- Boost / driveline lag ---------------------------------------------
+    // What the power unit is DELIVERING, which is not what the pedal is asking
+    // for until the turbo has caught up. See BOOST_RATE_OFF.
+    const boostRate = throttleDemand < this.boost
+      ? BOOST_RATE_CLOSING
+      // Spool is faster the more exhaust the engine is already making, which is
+      // a function of crank speed AND of the boost already built — a turbo that
+      // is half spun up gets to full boost far quicker than one that is cold.
+      // Without the second term a standing start, where the engine sits at idle
+      // rpm on the clock but has in reality been held against the clutch on the
+      // limiter for ten seconds, was penalised half a second to 100km/h for a
+      // spool that had already happened.
+      : BOOST_RATE_OFF + (BOOST_RATE_ON - BOOST_RATE_OFF) * Math.max(this.rpmFraction, this.boost);
+    this.boost = damp(this.boost, throttleDemand, boostRate, dt);
+    const throttle = this.boost;
 
     // --- Reverse ----------------------------------------------------------
     // Engages only below walking pace, as a real gearbox does, and is

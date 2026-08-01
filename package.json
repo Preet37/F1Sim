@@ -32,7 +32,8 @@
     "regress:results": "tsx scripts/regressClassification.ts",
     "regress:exit": "node scripts/regressSessionExit.mjs",
     "regress": "npm run regress:laps && npm run regress:results && npm run regress:exit",
-    "validate:flags": "tsx scripts/probeFlags.ts"
+    "validate:flags": "tsx scripts/probeFlags.ts",
+    "probe:drivability": "tsx scripts/probeDrivability.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
