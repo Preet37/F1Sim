@@ -93,8 +93,15 @@ async function writePng(path: string, dataUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await rm(OUT_DIR, { recursive: true, force: true });
+  // Only the circuits about to be swept are cleared.
+  //
+  // Wiping the whole directory means a one-circuit run with AUDIT_ONLY
+  // destroys the eleven-circuit grid it was meant to spot-check against, which
+  // costs an hour to get back and is discovered immediately afterwards.
   await mkdir(OUT_DIR, { recursive: true });
+  for (const id of CIRCUIT_IDS) {
+    await rm(resolve(OUT_DIR, id), { recursive: true, force: true });
+  }
 
   const server: ViteDevServer = await createServer({
     // Hot reloading and file watching are off, and that is not a performance

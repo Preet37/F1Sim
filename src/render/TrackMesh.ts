@@ -1540,8 +1540,14 @@ export function buildTrackMeshes(
         uv.needsUpdate = true;
 
         const m = new THREE.Matrix4();
+        // Turned to face back DOWN the road, at the cars that are coming.
+        //
+        // A PlaneGeometry's front face is its local +Z, and aligning local +Z
+        // with the track tangent points it the way the cars are going — so
+        // every driver read the board's back face through a double-sided
+        // material, which is the artwork mirrored. "150" arrives as "051".
         const q = new THREE.Quaternion().setFromAxisAngle(
-          new THREE.Vector3(0, 1, 0), Math.atan2(track.tx[i], track.tz[i]),
+          new THREE.Vector3(0, 1, 0), Math.atan2(track.tx[i], track.tz[i]) + Math.PI,
         );
         m.compose(
           new THREE.Vector3(
