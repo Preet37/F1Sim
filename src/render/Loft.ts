@@ -1072,5 +1072,22 @@ export function tube(
   // The rings only changed radius, so the outward normals are still outward;
   // recomputing keeps the shading right where the taper rate is steep.
   geo.computeVertexNormals();
+
+  // `TubeGeometry` lays each ring out with its first and last vertex in the
+  // same place, carrying u = 0 and u = 1, and `computeVertexNormals` therefore
+  // gives each of the pair only half the surface — a hard line straight down
+  // the tube. Invisible on a halo two metres away and not invisible on a
+  // finger 500mm from the cockpit camera, which is what this is for.
+  const nrm = geo.attributes.normal as THREE.BufferAttribute;
+  for (let i = 0; i <= tubularSegments; i++) {
+    const a = i * ring, b = a + radialSegments;
+    const nx = nrm.getX(a) + nrm.getX(b);
+    const ny = nrm.getY(a) + nrm.getY(b);
+    const nz = nrm.getZ(a) + nrm.getZ(b);
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nrm.setXYZ(a, nx / len, ny / len, nz / len);
+    nrm.setXYZ(b, nx / len, ny / len, nz / len);
+  }
+  nrm.needsUpdate = true;
   return geo;
 }

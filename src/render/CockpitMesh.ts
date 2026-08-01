@@ -459,29 +459,42 @@ function mirroredX(geo: THREE.BufferGeometry): THREE.BufferGeometry {
 function finger(
   y0: number, a0: number, length: number, r0: number, drift: number,
 ): THREE.BufferGeometry {
+  // A swept tube is open at both ends. The tip is closed by the radius profile
+  // below; the BASE is closed by burying it — the sweep starts a quarter radian
+  // further round, inside the back of the hand, so the open end is never on the
+  // outside of anything. Without it the knuckle end sits within a millimetre or
+  // two of the hand's own surface and every finger has a hole in the end of it.
+  const BURY = 0.34;
+  const sweep = length / (GRIP_R + r0);
+  const total = sweep + BURY;
+  // Where along the swept curve the finger actually leaves the hand. Everything
+  // shaped below is measured from THERE, so the joints stay put whatever the
+  // burial costs.
+  const v0 = BURY / total;
+  const out = (t: number): number => Math.max(0, (t - v0) / (1 - v0));
+
   // Centreline radius: the grip plus the finger's own thickness, so the finger
   // rests ON the rim instead of inside it. It creeps outward toward the tip
   // because the tip does not close all the way onto the rim.
-  const rc = (t: number): number => GRIP_R + r0 * (1.0 + 0.35 * t * t);
-  const sweep = length / (GRIP_R + r0);
-  const N = 9;
+  const N = 12;
   const pts: [number, number, number][] = [];
   for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const a = a0 - sweep * t;
-    const r = rc(t);
-    pts.push([Math.sin(a) * r, y0 + drift * t * t, Math.cos(a) * r]);
+    const t = i / N, u = out(t);
+    const a = a0 + BURY - total * t;
+    const r = GRIP_R + r0 * (1.0 + 0.35 * u * u);
+    pts.push([Math.sin(a) * r, y0 + drift * u * u, Math.cos(a) * r]);
   }
   // The radius profile: taper toward the tip, three joint swellings on the way,
   // and a closing radius at the very end so the finger has a fingertip rather
   // than a sawn-off cylinder.
   const taper = (t: number): number => {
-    const shape = 1 - 0.34 * t;
-    const joints = 0.11 * bump(t, 0.05, 0.11)
-      + 0.14 * bump(t, 0.40, 0.13)
-      + 0.11 * bump(t, 0.72, 0.11);
+    const u = out(t);
+    const shape = 1 - 0.34 * u;
+    const joints = 0.11 * bump(u, 0.05, 0.11)
+      + 0.14 * bump(u, 0.40, 0.13)
+      + 0.11 * bump(u, 0.72, 0.11);
     // Quarter-circle close over the last 8 per cent.
-    const close = t > 0.92 ? Math.sqrt(Math.max(0, 1 - ((t - 0.92) / 0.08) ** 2)) : 1;
+    const close = u > 0.92 ? Math.sqrt(Math.max(0, 1 - ((u - 0.92) / 0.08) ** 2)) : 1;
     return (shape + joints) * close;
   };
   return setTubeUV(
