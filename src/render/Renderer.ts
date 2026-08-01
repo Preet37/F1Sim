@@ -1064,12 +1064,12 @@ export class Renderer {
 
       this.syncDamage(car, v, engine);
 
-      // The cockpit camera sits inside the driver's helmet, and the detailed
+      // The onboard camera is the pod on the roll hoop, and the detailed
       // cockpit wheel is drawn on top of the coarse one. Both live in the same
       // mesh, so one flag deals with both — for that one car only, because
-      // every other driver on track should still have a head.
+      // every other car on track should still have a camera pod on it.
       const inside = cockpitView && car === focusCar;
-      v.driverHead.visible = !inside;
+      v.onboardHidden.visible = !inside;
 
       const p = car.physics;
       const y = track.elevationAt(car.s);

@@ -109,14 +109,19 @@ export interface CarVisual {
   /** Knocks a piece of bodywork off, or puts it back after a repair. */
   setPartAttached(id: BodyPartId, attached: boolean): void;
   /**
-   * The driver's helmet, and the coarse steering wheel and gloves.
+   * The coarse steering wheel and gloves, and the roll-hoop camera pod.
    *
-   * All of it is hidden for the car the cockpit camera is inside. The helmet
-   * has to go because the camera is inside it and would otherwise render the
-   * inside of a shell; the wheel and gloves go because CockpitMesh draws a
-   * detailed pair in the same place for that one view.
+   * Hidden for the car the cockpit camera is inside, and nothing else is. The
+   * wheel and gloves go because CockpitMesh draws a detailed pair in the same
+   * place for that one view; the pod goes because the pod IS that camera, and
+   * a 68mm housing 300mm in front of the lens is a dark dome across the middle
+   * of the frame.
+   *
+   * The HELMET is deliberately not in here any more. The camera sits behind and
+   * above the crown rather than inside the shell, so the helmet is part of the
+   * shot — see EYE_Y in CockpitMesh.
    */
-  driverHead: THREE.Object3D;
+  onboardHidden: THREE.Object3D;
   /** Contact shadow under the car, scaled with speed for a little squash. */
   shadow: THREE.Mesh;
   /**
@@ -144,10 +149,10 @@ export interface CarVisual {
   /**
    * Shows or hides the cockpit interior.
    *
-   * Hiding the driver's head is NOT done here, because the two are not the same
-   * decision: the cockpit interior belongs to whichever car is being watched
-   * from inside, whereas the head has to disappear only for the car the camera
-   * is actually inside. The renderer owns that, via `driverHead`.
+   * Hiding the pod and the coarse wheel is NOT done here, because the two are
+   * not the same decision: the cockpit interior belongs to whichever car is
+   * being watched from inside, whereas those have to disappear only for the car
+   * the camera is actually inside. The renderer owns that, via `onboardHidden`.
    */
   setCockpitVisible(v: boolean): void;
   /**
@@ -464,6 +469,21 @@ class Parts {
    * authored about that pivot rather than about the car's origin.
    */
   readonly frontFlap: THREE.BufferGeometry[] = [];
+  /**
+   * Bodywork that must not be drawn for the car the onboard camera is inside.
+   *
+   * Exactly one thing qualifies, and it qualifies absolutely: the pod on top of
+   * the roll hoop IS the onboard camera. Rendering it from its own lens is the
+   * same mistake as rendering the inside of the driver's helmet, and it was a
+   * much more expensive one — a 68mm housing 300mm in front of the eye is a
+   * dark dome across the middle of the frame, which is precisely the "large
+   * round mass filling the centre" the onboard view was reported for.
+   *
+   * It shares the mesh with the coarse wheel and gloves, which are hidden on
+   * the same condition for the same reason (CockpitMesh draws better ones), so
+   * the split costs no extra draw call.
+   */
+  readonly onboardHidden: THREE.BufferGeometry[] = [];
 
   private target: THREE.BufferGeometry[] = this.core;
 
@@ -475,6 +495,11 @@ class Parts {
   /** Directs everything added from here on into the movable front flaps. */
   intoFrontFlap(): void {
     this.target = this.frontFlap;
+  }
+
+  /** Directs everything added from here on into the onboard-hidden bucket. */
+  intoOnboardHidden(): void {
+    this.target = this.onboardHidden;
   }
 
   /** Adds a part that samples a single flat colour from the atlas. */
@@ -1008,12 +1033,23 @@ function buildShellParts(
   // daylight either side of the nose and under the wing survives. That gap is
   // the thing the eye reads as "modern F1"; closing it would trade one wrong
   // silhouette for another.
+  //
+  // STATIONS RUN FRONT TO BACK, like every other loft in this file, and that is
+  // not a style point. `loft` winds its quads in a fixed direction around the
+  // ring, so reversing the station order reverses which way the surface faces.
+  // Authored back-to-front, as this one was, the whole wedge comes out inside
+  // out: the outer skin is back-facing and culled by the shell material, the
+  // computed normals point inward, and what actually reaches the screen is the
+  // dark interior of the far side. That is why the nose still ended in mid-air
+  // above the wing from behind and above, long after the geometry above was
+  // written to close exactly that gap — the geometry was there and simply not
+  // being drawn.
   p.into('frontWing');
   p.flat(small([
-    section(2.74, 0.074, 0.288, 0.458, 0.66),
-    section(2.94, 0.062, 0.212, 0.348, 0.62),
-    section(3.08, 0.052, 0.116, 0.238, 0.62),
     section(3.16, 0.046, 0.046, 0.152, 0.68),
+    section(3.08, 0.052, 0.116, 0.238, 0.62),
+    section(2.94, 0.062, 0.212, 0.348, 0.62),
+    section(2.74, 0.074, 0.288, 0.458, 0.66),
   ], t.body - 6), 'carbon');
   p.into('core');
 
@@ -1083,9 +1119,11 @@ function buildShellParts(
   // Diffuser exit and strakes. The exit is a dark volume standing proud of the
   // diffuser's rear face; the strakes are the vertical fins across it.
   {
+    // Front to back, for the same reason the nose-to-wing fairing is: authored
+    // the other way round the surface faces inward and is culled.
     const exit = small([
-      section(-2.355, 0.420, 0.250, 0.320, 0.42),
       section(-2.18, 0.492, 0.192, 0.292, 0.35),
+      section(-2.355, 0.420, 0.250, 0.320, 0.42),
     ], t.body - 8);
     p.flat(exit, 'dark');
     // Strakes sit INSIDE the diffuser throat. Hung off the back they read as a
@@ -1149,9 +1187,26 @@ function buildShellParts(
   // BEHIND the driver's head, not on top of it. Put the front of the airbox at
   // the driver's z and the roll hoop eats him, which is precisely what the first
   // attempt did — the cockpit looked empty because the head was inside a duct.
+  //
+  // The FRONT LIP is not a free parameter either, and this is why it moved 80mm
+  // back and 24mm down. The onboard camera sits above and behind the helmet, and
+  // the only thing between it and the helmet is this lip. Everything below the
+  // ray from the eye across that lip is airbox front face, so the lip alone
+  // decides whether the driver's head is in the shot: with the crown at y=0.828
+  // and z=0, a lip at (-0.22, 0.930) hides the helmet from ANY eye behind it
+  // until the sightline is 24.9 degrees down, which is past the bottom of a
+  // frame whose horizon sits where the reference frames put it. No camera
+  // position fixes that — the lip has to come back and down, which is also where
+  // a real roll hoop is relative to a real driver's head. At (-0.30, 0.906) the
+  // helmet clears by 58mm and the crown reads at four-fifths of frame height,
+  // exactly as it does in the Monoposto onboards.
+  //
+  // The crown of the hump moves back with it, so the silhouette from outside is
+  // the same airbox it was: it now peaks a little behind the mouth, which is
+  // what the photographs show anyway.
   p.painted(big([
-    section(-0.22, 0.120, 0.520, 0.930, 0.36),
-    section(-0.42, 0.146, 0.528, 0.922, 0.44),
+    section(-0.30, 0.120, 0.520, 0.906, 0.36),
+    section(-0.46, 0.146, 0.528, 0.926, 0.44),
     section(-0.78, 0.144, 0.538, 0.842, 0.55),
     section(-1.18, 0.110, 0.546, 0.742, 0.66),
     section(-1.52, 0.070, 0.520, 0.650, 0.82),
@@ -1159,20 +1214,25 @@ function buildShellParts(
 
   // The intake itself. Dark, and proud of the airbox face, so it reads as a duct.
   p.flat(small([
-    section(-0.195, 0.082, 0.672, 0.888, 0.42),
-    section(-0.30, 0.070, 0.688, 0.866, 0.48),
-    section(-0.44, 0.056, 0.702, 0.838, 0.58),
+    section(-0.275, 0.082, 0.672, 0.874, 0.42),
+    section(-0.38, 0.070, 0.688, 0.860, 0.48),
+    section(-0.52, 0.056, 0.702, 0.836, 0.58),
   ], t.body - 8), 'dark');
 
   // Camera pod on top of the roll hoop. Small, and on every current car, and
   // its silhouette against the sky is one of the things the eye checks for.
+  //
+  // Into `onboardHidden`, not `core`: this pod is the onboard camera, and the
+  // onboard camera cannot see itself. See `Parts.onboardHidden`.
   {
+    p.intoOnboardHidden();
     const pod = small([
-      section(-0.10, 0.030, 0.930, 0.982, 0.85),
-      section(-0.26, 0.034, 0.926, 0.986, 0.80),
-      section(-0.40, 0.026, 0.928, 0.968, 0.90),
+      section(-0.32, 0.030, 0.902, 0.954, 0.85),
+      section(-0.46, 0.034, 0.918, 0.978, 0.80),
+      section(-0.60, 0.026, 0.888, 0.930, 0.90),
     ], Math.max(6, t.detail - 4));
     p.flat(pod, 'trim');
+    p.into('core');
   }
 
   // --- Shark fin ----------------------------------------------------------
@@ -1868,8 +1928,11 @@ interface CachedGeometry {
   shell: THREE.BufferGeometry;
   /** The four pieces of bodywork an accident can take off. */
   bodyParts: Record<BodyPartId, THREE.BufferGeometry>;
-  /** Helmet plus the coarse wheel and gloves: everything the onboard view hides. */
-  head: THREE.BufferGeometry;
+  /**
+   * The coarse wheel and gloves plus the roll-hoop camera pod: everything that
+   * must not be drawn for the car the onboard camera is inside.
+   */
+  onboardHidden: THREE.BufferGeometry;
   frontWheel: THREE.BufferGeometry;
   rearWheel: THREE.BufferGeometry;
   /** Upright, steering arm and brake duct — the parts that steer with a wheel. */
@@ -1913,11 +1976,21 @@ function geometryFor(quality: CarTier): CachedGeometry {
   const shadow = new THREE.PlaneGeometry(1, 1);
   shadow.rotateX(-Math.PI / 2);
 
-  // Built once and split three ways: the body goes into the shell, the helmet
-  // and the coarse wheel into the mesh that the onboard view hides.
+  // Built once and split two ways.
+  //
+  // The HELMET goes into the shell with the rest of the driver, and this is the
+  // change that makes the onboard view read as an onboard view. It used to be
+  // hidden along with the coarse wheel, because the camera used to be inside it
+  // and rendering the inside of a shell is a black screen. The camera is not
+  // inside it any more — it is behind and above the crown, where every onboard
+  // reference frame puts it — so the helmet is now the single most recognisable
+  // thing in the shot rather than something to get out of the way.
+  //
+  // Only the coarse wheel and gloves are hidden from the inside now, together
+  // with the roll-hoop camera pod: see `Parts.onboardHidden`.
   const driver = buildDriverParts(quality);
 
-  const parts = buildShellParts(quality, driver.body);
+  const parts = buildShellParts(quality, [...driver.body, ...driver.head]);
 
   const built: CachedGeometry = {
     shell: mergeParts(parts.core),
@@ -1927,7 +2000,7 @@ function geometryFor(quality: CarTier): CachedGeometry {
       sidepodL: mergeParts(parts.sidepodL),
       sidepodR: mergeParts(parts.sidepodR),
     },
-    head: mergeParts([...driver.head, ...driver.grip]),
+    onboardHidden: mergeParts([...driver.grip, ...parts.onboardHidden]),
     frontWheel: buildWheel(FRONT_TYRE_W, t, quality),
     rearWheel: buildWheel(REAR_TYRE_W, t, quality),
     frontUprightL: frontUprightGeometry(t, -1),
@@ -2120,9 +2193,9 @@ export function buildCar(
     };
   }
 
-  const driverHead = new THREE.Mesh(geo.head, shellMat);
-  driverHead.castShadow = true;
-  root.add(driverHead);
+  const onboardHidden = new THREE.Mesh(geo.onboardHidden, shellMat);
+  onboardHidden.castShadow = true;
+  root.add(onboardHidden);
 
   // Meshes whose geometry the distance LOD swaps, paired with the field of
   // CachedGeometry each one reads.
@@ -2136,7 +2209,7 @@ export function buildCar(
   type SwapKey = Exclude<keyof CachedGeometry, 'bodyParts'>;
   const swappable: { mesh: THREE.Mesh; key: SwapKey }[] = [
     { mesh: shell, key: 'shell' },
-    { mesh: driverHead, key: 'head' },
+    { mesh: onboardHidden, key: 'onboardHidden' },
   ];
 
   // Everything only the driver can see. Parented to the car root, so it inherits
@@ -2288,7 +2361,7 @@ export function buildCar(
     drsFlap: flapPivot,
     frontFlaps: frontFlapPivot,
     brakeGlow,
-    driverHead,
+    onboardHidden,
     shadow,
     cockpit,
     bodyParts,
@@ -2329,7 +2402,7 @@ export function disposeCarGeometryCache(): void {
   for (const set of geometryCache.values()) {
     set.shell.dispose();
     for (const id of BODY_PART_IDS) set.bodyParts[id].dispose();
-    set.head.dispose();
+    set.onboardHidden.dispose();
     set.frontWheel.dispose();
     set.rearWheel.dispose();
     set.frontUprightL.dispose();

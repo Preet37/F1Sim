@@ -55,39 +55,42 @@ import { gloveNomexMap } from './DetailMaps';
  * to be invisible from thirty inches away.
  *
  * What makes the reference work is not a thinner pillar, it is a camera on the
- * other side of it. Sitting up on the roll hoop, the airbox crown at y = 0.905
- * stands between the lens and the base of the pillar and simply occludes it,
- * the halo hoop is seen from above so its arc hugs the bottom of the frame
- * instead of lying across the middle, and the front tyres drop away to the
- * corners. Measured on the same frame and the same piece of road:
+ * other side of it — and, once you go looking, a camera behind the DRIVER as
+ * well. The reference frames all show the crown of the driver's own helmet in
+ * the bottom of the picture, which is a thing no eye inside that helmet can
+ * ever see. This is the standard onboard: the pod on the roll hoop.
  *
- *                       before        after      reference
- *   pillar width         55 px         0 px       2-3 px
- *   pillar rows          66            0          ~30
- *   own car               60%          31%        ~45%
- *   top half of frame     28%           2%        ~1%
+ * SOLVED, NOT DIALLED IN. Three features in reference frame f_0100 fix the rig
+ * completely, because all three have known car-local coordinates: the horizon
+ * at 30.6 per cent of frame height, the crown of the halo (y 0.812, z 0.755) at
+ * 56 per cent, and the crown of the helmet (y 0.828, z 0) at 80 per cent. The
+ * horizon gives the pitch directly; the ratio of the other two depressions
+ * gives the eye, because a nearer object at the same height falls faster down
+ * the frame than a far one. Working it through puts the camera 0.62m behind the
+ * helmet crown and 0.22m above it, looking 7.8 degrees down — which is where
+ * these three numbers now are, and they are not to be nudged without redoing
+ * that arithmetic.
  *
- * The cost is honest and worth stating: the steering wheel, the driver's hands
- * and the tub are all below the airbox and therefore below the frame. Nothing
- * can be done about that from here — a lens wide enough to reach the rim also
- * reaches back up over the halo, which was measured too — and the wheel's
- * readouts are duplicated on the HUD anyway. The mirrors, which are the one
- * piece of cockpit furniture that carries information nothing else does, are
- * still in shot, out at the edges where a driver's are.
+ * TWO THINGS HAD TO MOVE OUT OF THE WAY, and neither was reachable from here:
+ * the roll hoop's camera pod, which is this camera and was a dark dome across
+ * the middle of every frame from 300mm away, and the airbox's front lip, which
+ * hid the helmet from any eye behind it. Both are in CarMesh; see
+ * `Parts.onboardHidden` and the airbox comment.
  */
 export const EYE_X = 0;
-export const EYE_Y = 1.02;
-export const EYE_Z = -0.58;
+export const EYE_Y = 1.051;
+export const EYE_Z = -0.62;
 
 /**
  * Downward tilt of the cockpit camera, radians.
  *
- * Four degrees. Enough that the horizon sits a little above the middle of the
- * frame and the road runs away underneath rather than out in front; more than
- * about six and the halo arc climbs back up into the picture, which is the
- * thing this whole rig exists to avoid.
+ * 7.8 degrees, and it is a measurement rather than a preference: it is the
+ * angle that puts the horizon 30.6 per cent of the way down the frame, where
+ * the reference onboards carry it. Flatter and the car fills the bottom half
+ * with the road squeezed into a strip; steeper and the halo climbs back up into
+ * the middle of the picture.
  */
-export const EYE_PITCH = 0.070;
+export const EYE_PITCH = 0.136;
 
 /**
  * Centre of the steering wheel, car-local, and its rake.
@@ -98,24 +101,28 @@ export const EYE_PITCH = 0.070;
  * sees, and the driver's arms reach for empty air.
  */
 /**
- * Height matters more than it looks. The cockpit coaming is at y = 0.578 and
- * the eye barely 0.13m above it, so anything much below the coaming line is
- * hidden behind the top of the tub from the driver's own seat. Sitting the
- * wheel's centre just under that line — which is also where a real car carries
- * it — is what puts the whole rim, and the display in the middle of it, in the
- * picture instead of just the top edge.
+ * Height is set by the DRIVER, not by the framing, and it changed when the
+ * camera moved onto the roll hoop.
  *
- * Reach matters too: at 0.44m from the eye the rim filled two thirds of the
- * frame. Half a metre is both an arm's length and a sane framing, and with the
- * eye 25mm further back the rim now sits a full 0.50m away.
+ * The old height was chosen against an eye inside the helmet, where the rule
+ * was "keep the rim below the sightline so the road stays continuous". From
+ * behind the helmet the rule is the opposite one and it is a measurement: the
+ * reference onboards show the top third of the rim standing ABOVE the crown of
+ * the helmet, about three degrees of it, because a real wheel top is roughly
+ * 130mm below a real helmet crown and 550mm in front of it. Ours was 190mm
+ * below, which put the rim within half a degree of the crown — so the helmet
+ * covered it completely and the shot had no steering wheel in it at all.
  *
- * Down 17mm as well. The reference onboard frames carry the wheel low enough
- * that the road behind it is continuous from the nose to the horizon; anything
- * higher and the rim cuts the road in half, which is half of why the bottom of
- * the frame read as a wall.
+ * At 0.613 the top of the rim is 0.708, the crown is 0.828, and the rim clears
+ * the helmet by the three degrees the reference has. The centre also now sits
+ * just above the coaming at 0.578 and well clear of the dash lip at 0.574,
+ * which is where a real car carries it.
+ *
+ * Reach is unchanged and still an arm's length: 0.575 in z, with the elbow
+ * inside the tub (see DriverMesh, which takes the grip point from here).
  */
 export const WHEEL_X = 0;
-export const WHEEL_Y = 0.548;
+export const WHEEL_Y = 0.613;
 export const WHEEL_Z = 0.575;
 /** Rake of the wheel: the top is tipped back toward the driver. */
 export const WHEEL_TILT = -0.45;
@@ -871,7 +878,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     ], SEG.loftRing, true, SEG.loftStep);
     add(dash, carbon);
     // Steering column, running forward and down from the back of the wheel.
-    add(strut(0, 0.548, 0.607, 0, 0.552, 0.70, 0.026), carbon);
+    add(strut(0, WHEEL_Y - 0.065, 0.607, 0, 0.556, 0.70, 0.026), carbon);
   }
 
   // --- Mirrors ------------------------------------------------------------
