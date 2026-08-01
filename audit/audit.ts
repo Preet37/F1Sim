@@ -232,7 +232,12 @@ async function shootMode(mode: CameraMode): Promise<string> {
   renderer.director.setMode(mode);
   // The rig re-seats on a mode change and then damps into place; a shot taken
   // on the first frame photographs the transition rather than the camera.
-  for (let i = 0; i < 30; i++) { frame(); await present(); }
+  //
+  // Fourteen frames, not thirty. `setMode` clears `initialised`, so the camera
+  // SNAPS to its new anchor on the first frame and only the damping refines it
+  // after that — and this is the dominant cost of the whole sweep, at seven
+  // modes times eleven circuits of full software-rendered frames.
+  for (let i = 0; i < 14; i++) { frame(); await present(); }
   return drawAndShoot(frame);
 }
 
