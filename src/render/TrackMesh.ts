@@ -241,6 +241,52 @@ class StripBuilder {
   }
 
   /**
+   * A ground quad wound to face up, carrying a normal supplied by the caller.
+   *
+   * `quadFlat` derives each triangle's normal from its own corners, which is
+   * right for a quad that is genuinely flat and wrong for one that is not: over
+   * a hairpin the sweep turns fifty degrees in three metres, and the normal that
+   * comes back off the resulting warped quadrilateral can be seventy-six degrees
+   * off vertical. Where the surface's true normal is known — and for a road it
+   * always is — this takes it instead.
+   *
+   * The winding decision is `quadFlat`'s, unchanged and NOT optional. It is what
+   * makes the same loop draw both sides of the road: written in a fixed corner
+   * order, the signed lateral runs upward on the left and downward on the right,
+   * so the code that draws the left-hand white line deletes the right-hand one.
+   * That is a bug this file has already had once.
+   */
+  quadUp(
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    dx: number, dy: number, dz: number,
+    n: readonly number[],
+    colour: THREE.Color,
+  ): void {
+    this.triUpN(ax, ay, az, bx, by, bz, cx, cy, cz, n, colour);
+    this.triUpN(ax, ay, az, cx, cy, cz, dx, dy, dz, n, colour);
+  }
+
+  private triUpN(
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    n: readonly number[],
+    colour: THREE.Color,
+  ): void {
+    const up = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+    const push = (x: number, y: number, z: number) => {
+      this.positions.push(x, y, z);
+      this.normals.push(n[0], n[1], n[2]);
+      this.colours.push(colour.r, colour.g, colour.b);
+    };
+    push(ax, ay, az);
+    if (up >= 0) { push(bx, by, bz); push(cx, cy, cz); }
+    else { push(cx, cy, cz); push(bx, by, bz); }
+  }
+
+  /**
    * Adds a quad with an explicit normal at each corner.
    *
    * The face-normal path below is right for flat road surfaces and wrong for
@@ -614,6 +660,31 @@ export function buildTrackMeshes(
     s.z + s.nz * lat,
   ];
 
+  /**
+   * Unit normal of the road surface over one swept station pair.
+   *
+   * Built from the two directions the surface actually runs in — along the
+   * road, from one station's centre to the next, and across it, which tilts
+   * with the banking — rather than from the corners of the quad that will be
+   * drawn. Those two agree wherever the road is close to planar and disagree
+   * badly where it is not, which is exactly where getting it right matters.
+   */
+  const surfaceNormal = (
+    s0: ReturnType<typeof frameLerp>, s1: ReturnType<typeof frameLerp>,
+  ): readonly [number, number, number] => {
+    // Along the road, including its gradient.
+    const ax = s1.x - s0.x, ay = s1.elev - s0.elev, az = s1.z - s0.z;
+    // Across it: +1m of lateral drops the surface by tan(bank).
+    const bank = s0.bank !== 0 ? Math.tan(s0.bank) : 0;
+    const bx = s0.nx, by = -bank, bz = s0.nz;
+    let nx2 = ay * bz - az * by;
+    let ny2 = az * bx - ax * bz;
+    let nz2 = ax * by - ay * bx;
+    if (ny2 < 0) { nx2 = -nx2; ny2 = -ny2; nz2 = -nz2; }
+    const l = Math.hypot(nx2, ny2, nz2);
+    return l > 1e-9 ? [nx2 / l, ny2 / l, nz2 / l] : [0, 1, 0];
+  };
+
   /** Sweeps the kerb section from node `a` to node `b` on one side. */
   const sweepKerb = (a: number, b: number, sign: 1 | -1): void => {
     const colourA = ((a / step) & 1) === 0 ? 0 : 1;
@@ -708,13 +779,24 @@ export function buildTrackMeshes(
     for (let k = 0; k < step; k++) {
       const s0 = frameLerp(a, b, k / step);
       const s1 = frameLerp(a, b, (k + 1) / step);
+      // The road's normal is KNOWN — it is the normal of the banked road plane
+      // at this station — so it is supplied rather than inferred from the
+      // corners of the quad. A quad is flat and a piece of road that turns
+      // hard is not: at Monaco's hairpin the sweep bends fifty degrees in
+      // three metres, and the face normal that comes back off a quadrilateral
+      // that warped is up to seventy-six degrees away from vertical. The white
+      // line there shaded as a wall and `validate:world` reported it as one,
+      // which for a face pointing that way is a fair description. Every corner
+      // on the calendar shades better for this; the hairpins simply stop being
+      // wrong.
+      const rn = surfaceNormal(s0, s1);
 
       const r00 = framePt(s0, -s0.hw, Y_ROAD), r01 = framePt(s1, -s1.hw, Y_ROAD);
       const r11 = framePt(s1, s1.hw, Y_ROAD), r10 = framePt(s0, s0.hw, Y_ROAD);
-      road.quadFlat(
+      road.quadUp(
         r00[0], r00[1], r00[2], r01[0], r01[1], r01[2],
         r11[0], r11[1], r11[2], r10[0], r10[1], r10[2],
-        shade,
+        rn, shade,
       );
 
       // --- White lines at the track edge ----------------------------------
@@ -734,10 +816,10 @@ export function buildTrackMeshes(
         const o0 = side * s0.hw, o1 = side * s1.hw;
         const a0 = framePt(s0, i0, Y_LINE), a1 = framePt(s1, i1, Y_LINE);
         const b1 = framePt(s1, o1, Y_LINE), b0 = framePt(s0, o0, Y_LINE);
-        lines.quadFlat(
+        lines.quadUp(
           a0[0], a0[1], a0[2], a1[0], a1[1], a1[2],
           b1[0], b1[1], b1[2], b0[0], b0[1], b0[2],
-          COLOUR.whiteLine,
+          rn, COLOUR.whiteLine,
         );
       }
     }

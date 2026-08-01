@@ -883,12 +883,25 @@ export function buildPaddock(
         seg.add(duct, 0xb6bcc2, 3.2, roofY + 0.35, 7.5);
         duct.dispose();
       }
+      // The handrail runs along the BACK EDGE OF THE ROOF DECK, and where that
+      // edge is comes from the deck rather than from a number of its own.
+      //
+      // It used to be at BAY_DEPTH + 4.0, which is 1.9m beyond the deck: the
+      // cornice is `BAY_DEPTH + 5.6` deep centred at `BAY_DEPTH * 0.5 - 0.7`,
+      // so the roof stops at BAY_DEPTH + 2.1 and the railing was hanging in
+      // mid-air behind the building. Invisible from the pit straight, which is
+      // where the pit complex is normally looked at from — and at Zandvoort the
+      // circuit climbs into the dunes behind the paddock and passes the pit
+      // building at roof height, so those floating posts were the 445 vertices
+      // `validate:world` reported standing on the racing surface at s=858m.
+      const roofBackZ = BAY_DEPTH * 0.5 - 0.7 + (BAY_DEPTH + 5.6) * 0.5;
+      const railZ = roofBackZ - 0.25;
       const railTop = chamferBox(segLen, 0.07, 0.07, D.trim);
-      seg.add(railTop, STEEL, 0, roofY + 1.0, BAY_DEPTH + 4.0);
+      seg.add(railTop, STEEL, 0, roofY + 1.0, railZ);
       railTop.dispose();
       const railPost = chamferBox(0.07, 1.0, 0.07, D.trim);
       for (let i = 0; i <= 6; i++) {
-        seg.add(railPost, STEEL, (i / 6 - 0.5) * (segLen - 0.3), roofY + 0.5, BAY_DEPTH + 4.0);
+        seg.add(railPost, STEEL, (i / 6 - 0.5) * (segLen - 0.3), roofY + 0.5, railZ);
       }
       railPost.dispose();
 
