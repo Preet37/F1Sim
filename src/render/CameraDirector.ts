@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, wrapAngle } from '../core/MathUtils';
 import { EYE_PITCH, EYE_X, EYE_Y, EYE_Z } from './CockpitMesh';
-import { nominalBarrierOffset } from '../track/WorldObstacles';
+import { nominalBarrierOffset, OBSTACLE_HEIGHT_M } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
+import type { WorldModel } from '../track/WorldObstacles';
 
 /**
  * Camera work.
@@ -97,6 +98,32 @@ const FOV: Record<CameraMode, { base: number; gain: number }> = {
  */
 const TRACKSIDE_FRAMED_M = 5.0;
 
+/**
+ * How far clear of a solid object a camera is pulled, metres.
+ *
+ * Enough that the near plane never ends up on the wrong side of a face — the
+ * default near plane is 0.35m, and a wall a hand's width in front of the lens
+ * fills the frame with an untextured slab whether or not the lens is technically
+ * outside it.
+ */
+const SOLID_CLEARANCE_M = 0.45;
+/**
+ * How fast the camera is allowed to drift back out once the way is clear, in
+ * exponential-decay units per second.
+ *
+ * The pull-in itself is NOT rate-limited, and that asymmetry is the whole
+ * design. Going in has to be immediate, because the alternative to being
+ * immediate is a frame of being inside a building. Coming out has to be slow,
+ * because that is the half of it the eye can see: a camera that snaps back to
+ * its resting distance the instant the pit wall ends reads as a cut. Going in
+ * is invisible anyway — it happens continuously as the camera approaches, since
+ * the object is treated as inflated by the clearance above and the depth grows
+ * smoothly from zero as the lens crosses that inflated boundary.
+ */
+const SOLID_RELEASE_RATE = 2.2;
+/** Closest to the car the camera may ever be dragged, as a fraction of the way. */
+const SOLID_MAX_PULL = 0.9;
+
 export const CAMERA_MODES: readonly CameraMode[] = [
   'chase', 'cockpit', 'onboard-t', 'bumper', 'tv', 'drone', 'trackside',
 ];
@@ -110,6 +137,41 @@ export const CAMERA_LABELS: Record<CameraMode, string> = {
   drone: 'Drone',
   trackside: 'Trackside',
 };
+
+/**
+ * How far along `(dx, dz)` a point has to travel to leave an obstacle, in plan.
+ *
+ * Zero when the point is already outside it. The box is inflated by `margin`
+ * first, which is what makes the answer a CONTINUOUS function of position — the
+ * distance grows from zero as the point crosses the inflated boundary rather
+ * than jumping to a finite value the moment it touches the real one. A camera
+ * approaching a wall is therefore eased away from it over the last `margin` of
+ * its approach, and nothing pops.
+ *
+ * The obstacle's frame is the one used everywhere else: `(cos, sin)` maps a
+ * world vector into the box's local axes, local X across it and local Z along.
+ */
+function exitDistance(
+  o: { x: number; z: number; cos: number; sin: number; halfX: number; halfZ: number },
+  x: number, z: number, dx: number, dz: number, margin: number,
+): number {
+  const rx = x - o.x;
+  const rz = z - o.z;
+  const pu = rx * o.cos - rz * o.sin;
+  const pv = rx * o.sin + rz * o.cos;
+  const hu = o.halfX + margin;
+  const hv = o.halfZ + margin;
+  if (Math.abs(pu) >= hu || Math.abs(pv) >= hv) return 0;   // already outside
+
+  const du = dx * o.cos - dz * o.sin;
+  const dv = dx * o.sin + dz * o.cos;
+  // Time to the far face on each axis; leaving the box means leaving the
+  // intersection of the two slabs, so the first face reached is the exit.
+  const tu = Math.abs(du) < 1e-6 ? Infinity : ((du > 0 ? hu : -hu) - pu) / du;
+  const tv = Math.abs(dv) < 1e-6 ? Infinity : ((dv > 0 ? hv : -hv) - pv) / dv;
+  const t = Math.min(tu, tv);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
 
 export class CameraDirector {
   readonly camera: THREE.PerspectiveCamera;
@@ -154,6 +216,13 @@ export class CameraDirector {
   private tracksideSide = 1;
   /** Drone orbit angle. Separate from the shake phase, which runs 250x faster. */
   private dronePhase = 0;
+  /**
+   * How far the camera is currently drawn in toward the car to stay out of
+   * solid geometry, as a fraction of the distance between the two.
+   */
+  private solidPull = 0;
+  /** Scratch for the obstacle broadphase, reused so the frame allocates nothing. */
+  private readonly solidHits: number[] = [];
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(FOV.chase.base, aspect, NEAR_DEFAULT, 4000);
@@ -170,6 +239,7 @@ export class CameraDirector {
     this.mode = CAMERA_MODES[next];
     // Force a re-seat so the camera does not sweep across the circuit.
     this.initialised = false;
+    this.solidPull = 0;
     this.applyNearPlane();
     return this.mode;
   }
@@ -178,6 +248,7 @@ export class CameraDirector {
     if (this.mode === mode) return;
     this.mode = mode;
     this.initialised = false;
+    this.solidPull = 0;
     this.applyNearPlane();
   }
 
@@ -193,8 +264,11 @@ export class CameraDirector {
   /**
    * Updates the camera for this frame.
    * @param dt real frame time, seconds
+   * @param world the solid world, so the camera can stay out of it. Optional
+   *              only because a caller without one (the track preview) still has
+   *              a camera; a caller in a session always has one and passes it.
    */
-  update(dt: number, car: CarEntry, track: TrackSpline): void {
+  update(dt: number, car: CarEntry, track: TrackSpline, world?: WorldModel): void {
     const p = car.physics;
     const speed = p.speedMs;
     this.smoothSpeed = damp(this.smoothSpeed, speed, 3, dt);
@@ -534,6 +608,97 @@ export class CameraDirector {
     const roadY = track.elevationAt(car.s);
     const minY = roadY + MIN_CAMERA_HEIGHT_M;
     if (this.camera.position.y < minY) this.camera.position.y = minY;
+
+    if (world) this.keepOutOfSolids(dt, world, p.position.x, p.position.y, roadY);
+  }
+
+  /**
+   * Draws the camera in toward the car until it is out of anything solid.
+   *
+   * The framing code above places every camera by geometry alone — the drone
+   * orbits at a fixed 10.5m radius, the bumper sits 3.2m ahead of the car's
+   * centre, the trackside camera stands beside the road — and none of them ever
+   * asked whether the place it chose is inside something. That was invisible
+   * until the world became solid. Down a pit straight, 10.5m to the side of a
+   * car is inside the pit wall and then inside the garages; 3.2m ahead of a car
+   * clipping the pit-lane entry is inside the wall it is about to pass. The
+   * objects are all exactly where they belong: it is the camera that is wrong.
+   *
+   * So the fix is here rather than in the geometry. `world.obstacles` is the
+   * same broadphase the cars collide against and answers "what is at this
+   * point" in microseconds; the camera asks it, and if the answer is "a
+   * building" it slides along the line toward the car until the answer is
+   * "nothing". Nothing else about the shot changes — the aim, the height, the
+   * lens and the framing are all left alone, and the pull is zero whenever the
+   * way is clear, so a camera with nothing in front of it behaves exactly as it
+   * did before.
+   *
+   * Only the plan position moves. Height is deliberately untouched: lifting a
+   * camera over a wall changes the shot far more than shortening it does, and
+   * for a building there is no height that helps.
+   */
+  private keepOutOfSolids(
+    dt: number, world: WorldModel, carX: number, carZ: number, roadY: number,
+  ): void {
+    const field = world.obstacles;
+    const cam = this.camera.position;
+    // The cockpit is the driver's eye socket. It is inside the car, the car is
+    // never inside anything solid, and moving it "toward the car" is a no-op
+    // that would only risk perturbing a rig which must not be perturbed.
+    const target = this.mode !== 'cockpit' && !field.isEmpty;
+
+    let want = 0;
+    if (target) {
+      let dirX = carX - cam.x;
+      let dirZ = carZ - cam.z;
+      const span = Math.hypot(dirX, dirZ);
+      if (span > 0.05) {
+        dirX /= span;
+        dirZ /= span;
+        // How high the camera is above the road under the car — the same datum
+        // the height table is written against.
+        const above = cam.y - roadY;
+
+        // Up to a few rounds, because coming out of one box can put the camera
+        // into the next: the pit wall and the garage frontage are two rows of
+        // boxes a lane apart, and a lens between them is inside neither until
+        // it is pushed. Converges immediately in the common case of one wall.
+        let px = cam.x;
+        let pz = cam.z;
+        let travelled = 0;
+        for (let round = 0; round < 4; round++) {
+          field.query(px, pz, SOLID_CLEARANCE_M, this.solidHits);
+          let step = 0;
+          for (const i of this.solidHits) {
+            const o = field.obstacles[i];
+            // Over the top of it is not inside it. This is the whole reason
+            // the heights exist: a drone 4.6m up crosses the barrier line
+            // constantly and is looking over it every time.
+            if (above > OBSTACLE_HEIGHT_M[o.kind]) continue;
+            const exit = exitDistance(o, px, pz, dirX, dirZ, SOLID_CLEARANCE_M);
+            if (exit > step) step = exit;
+          }
+          if (step <= 0) break;
+          px += dirX * step;
+          pz += dirZ * step;
+          travelled += step;
+          if (travelled >= span) break;
+        }
+        if (travelled > 0) want = Math.min(SOLID_MAX_PULL, travelled / span);
+      }
+    }
+
+    // Attack instantly, release slowly. See SOLID_RELEASE_RATE.
+    this.solidPull = Math.max(want, damp(this.solidPull, want, SOLID_RELEASE_RATE, dt));
+    if (this.solidPull <= 1e-4) return;
+
+    cam.x += (carX - cam.x) * this.solidPull;
+    cam.z += (carZ - cam.z) * this.solidPull;
+    // The aim has not changed, but the eye has, so it has to be re-resolved.
+    // The cockpit builds its orientation from Euler angles and is excluded
+    // above, so `smoothedLook` is always the right target here.
+    this.camera.lookAt(this.smoothedLook);
+    if (this.mode === 'chase') this.camera.rotateZ(this.bank);
   }
 
   /**

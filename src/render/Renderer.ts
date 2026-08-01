@@ -785,7 +785,7 @@ export class Renderer {
     this.drainImpacts(engine);
     this.syncCars(dt, engine, focusCar);
     this.wreckage?.advance(dt);
-    this.director.update(dt, focusCar, engine.track);
+    this.director.update(dt, focusCar, engine.track, engine.world);
 
     const cam = this.director.camera;
 

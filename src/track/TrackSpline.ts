@@ -348,6 +348,287 @@ export class TrackSpline {
     for (let i = 0; i < count; i++) {
       this.isPassingZone[i] = Math.abs(this.curvature[i]) < 1 / 600 ? 1 : 0;
     }
+
+    // Last, because it needs the finished widths AND the finished elevation.
+    this.narrowWhereTheLapOverlapsItself();
+  }
+
+  /**
+   * Caps the width where the lap runs back alongside itself closer than the
+   * road is wide, so the racing surface never overlaps its own other side.
+   *
+   * The centrelines are surveyed traces; the widths are one number per circuit
+   * with a handful of authored overrides. At a hairpin tight enough that the two
+   * legs pass within a road's width of each other, those two facts contradict
+   * each other and the drawn surface folds over itself.
+   *
+   * `validate:world` found exactly one instance of it on the calendar: Monaco's
+   * Grand Hotel hairpin, where the legs are eight metres apart centre to centre
+   * and the road is ten metres wide. Because the hairpin is also on the climb,
+   * the two legs are drawn 0.7m apart vertically — so it is not a harmless
+   * coplanar overlap that nobody can see, it is a two-metre-wide slab of asphalt
+   * hanging in mid-air across the outside of the corner, at exactly the height a
+   * car's nose occupies. That is the "-2.08m of track-surface on the racing
+   * surface at s=330m" the probe reports.
+   *
+   * The honest fix is the one a real circuit uses: a hairpin that tight is
+   * NARROW. Monaco's is about seven and a half metres across in reality, which
+   * is roughly where this lands it.
+   *
+   * A CROSSOVER IS NOT A SQUEEZE, and that is the exemption that matters.
+   * Suzuka's figure-of-eight overlaps itself by six metres in plan, and no width
+   * separates two roads whose centrelines MEET — the only width that would is
+   * zero. Narrowing the back straight to a footpath to satisfy a rule aimed at
+   * hairpins would be inventing a defect where the world is correct. So the
+   * amount either leg may give is capped at a quarter of its half-width: below
+   * that the legs are running past each other and a real circuit is narrow
+   * there, above it they cross and the geometry is left exactly as surveyed.
+   * Monaco's hairpin asks for 15%; Suzuka's crossover asks for 47%.
+   *
+   * The vertical test is the second exemption: two pieces of road more than
+   * `DECK_GAP_M` apart in height are one passing over the other.
+   */
+  private narrowWhereTheLapOverlapsItself(): void {
+    const { count, px, pz, tx, tz, nx, nz, width, elevation } = this;
+    const nodeM = this.length / count;
+    /**
+     * Half-length of the rectangle one node's road occupies, metres.
+     *
+     * Deliberately longer than the 0.6 node spacings `validate:world` measures
+     * against. The two models of "which piece of road is under this point" agree
+     * to within a centimetre or two, and Monaco's conflict sits exactly on the
+     * boundary of one — so a pass that used the same figure declared the hairpin
+     * clear while the probe, rounding the other way, still called it an
+     * obstruction. Reaching further can only ever narrow slightly more of a
+     * corner that is being narrowed anyway.
+     */
+    const halfSlab = nodeM * 0.9;
+    /**
+     * Nodes either side that are the same piece of road by definition.
+     *
+     * ONE, and the `along` test below is what makes that safe rather than
+     * reckless: a node's edge only lands inside ANOTHER node's slab if the two
+     * are level with each other across the road, and three metres of arc only
+     * projects back to within 1.8m along the tangent once the road is turning
+     * inside about a seven-metre radius. Nothing on the calendar is.
+     *
+     * Anything larger simply hides the case this pass exists for. Monaco's
+     * hairpin turns through 71 degrees in two node spacings, so the conflicting
+     * pairs there are (110, 112) and (110, 113) — a skip of three saw neither,
+     * and a skip of two still saw only the second of them.
+     */
+    const SKIP_NODES = 1;
+    /**
+     * Gap left between the two legs once they have both given ground.
+     *
+     * Comfortably more than the 0.10m of penetration `validate:world` tolerates
+     * as discretisation noise, so a corner that is fixed is fixed with room to
+     * spare rather than sitting on the threshold.
+     */
+    const SEPARATION_M = 0.5;
+    /**
+     * Height difference below which an overlap is invisible, and above which it
+     * is one road passing over another.
+     *
+     * Two pieces of asphalt at the same height that overlap simply merge — there
+     * is nothing to see and nothing to hit, and every tight corner on the
+     * calendar has a little of it where one node's slab reaches across the
+     * next's. What makes an overlap a defect is the STEP: `validate:world` calls
+     * a vertex an obstruction once it is 0.25m above the road beneath it, and
+     * that is exactly the height at which a slab of road hanging over another
+     * one starts being something a car's nose can meet. So the band this pass
+     * acts on is bounded at both ends.
+     */
+    const STEP_M = 0.22;
+    const DECK_GAP_M = 2.5;
+    /**
+     * Most of its half-width one leg may give up before this stops being a
+     * squeeze and starts being a crossing.
+     *
+     * A backstop behind the junction test above, not the primary discriminator —
+     * it is here so that a fold-back the junction test somehow does not see can
+     * still never narrow a circuit past recognition. Monaco's hairpin, the one
+     * real case on the calendar, asks for 32% and lands at a road 6.8m across,
+     * which is close to what Loews actually measures.
+     */
+    const MAX_GIVE_FRACTION = 0.45;
+    /** Nodes either side of a crossing that are part of the same crossing. */
+    const JUNCTION_SPREAD_NODES = 20;
+    /**
+     * No circuit is ever narrowed below this half-width.
+     *
+     * Six metres of road is the tightest thing on the calendar that is still a
+     * road, and only Monaco's hairpin reaches it.
+     */
+    const MIN_HALF_M = 3.0;
+    /** Most the half-width may grow between adjacent nodes, metres. */
+    const WIDTH_SLOPE_M = 0.25;
+
+    // A coarse grid over the nodes, so this stays linear. `TrackSpline` is
+    // constructed once per session but many times over in the probes, and a
+    // brute-force pass over two thousand nodes squared is felt there.
+    const CELL = 16;
+    const bins = new Map<number, number[]>();
+    const key = (gx: number, gz: number): number => (gx * 73856093) ^ (gz * 19349663);
+    let reach = halfSlab;
+    for (let i = 0; i < count; i++) reach = Math.max(reach, width[i] * 0.5 + halfSlab);
+    for (let i = 0; i < count; i++) {
+      const g0x = Math.floor((px[i] - reach) / CELL), g1x = Math.floor((px[i] + reach) / CELL);
+      const g0z = Math.floor((pz[i] - reach) / CELL), g1z = Math.floor((pz[i] + reach) / CELL);
+      for (let gx = g0x; gx <= g1x; gx++) {
+        for (let gz = g0z; gz <= g1z; gz++) {
+          const k = key(gx, gz);
+          const bin = bins.get(k);
+          if (bin) bin.push(i);
+          else bins.set(k, [i]);
+        }
+      }
+    }
+
+    // Where the lap CROSSES itself, and the stretch either side of it.
+    //
+    // A crossing is one centreline running over another, not two roads running
+    // past each other, and the whole approach and exit of it has to be exempt —
+    // not just the node where they meet. At Suzuka the two legs overlap for
+    // twenty-five metres before their centrelines actually touch, and the
+    // shallow overlaps at each end of that are individually small enough to look
+    // like an ordinary squeeze. Narrowing them achieves nothing, because the
+    // metres in the middle are untouchable, and it costs the back straight two
+    // metres of width for it.
+    const junction = new Uint8Array(count);
+    for (let i = 0; i < count; i++) {
+      const bin = bins.get(key(Math.floor(px[i] / CELL), Math.floor(pz[i] / CELL)));
+      if (!bin) continue;
+      for (const j of bin) {
+        let d = Math.abs(i - j);
+        if (d > count / 2) d = count - d;
+        if (d <= SKIP_NODES) continue;
+        if (Math.abs(elevation[i] - elevation[j]) > DECK_GAP_M) continue;
+        const dx = px[i] - px[j];
+        const dz = pz[i] - pz[j];
+        const along = dx * tx[j] + dz * tz[j];
+        if (along < -halfSlab || along > halfSlab) continue;
+        if (Math.abs(dx * nx[j] + dz * nz[j]) > width[j] * 0.5) continue;
+        junction[i] = 1;
+        junction[j] = 1;
+      }
+    }
+    if (junction.some((v) => v === 1)) {
+      const spread = new Uint8Array(junction);
+      for (let i = 0; i < count; i++) {
+        if (!junction[i]) continue;
+        for (let k = -JUNCTION_SPREAD_NODES; k <= JUNCTION_SPREAD_NODES; k++) {
+          spread[(i + k + count) % count] = 1;
+        }
+      }
+      junction.set(spread);
+    }
+
+    // Relaxed to convergence, both legs giving half the overlap at a time.
+    //
+    // Halving and stopping is not enough, and the reason is worth stating: an
+    // edge pulled in along its OWN normal does not necessarily move across the
+    // other leg's road at all. At Monaco's hairpin the two legs meet at right
+    // angles, so node 111's normal points along node 113's tangent — narrowing
+    // 111 slides its edge up and down 113's road without ever leaving it, and
+    // only 113 giving ground actually separates them. One pass of "each gives
+    // half" therefore left three quarters of a metre still overlapping.
+    //
+    // Iterating is safe here because the two exemptions — the junction map and
+    // the floor below — are both fixed before the loop starts, off the widths as
+    // authored. Nothing can be narrowed a slice at a time past a test it would
+    // have failed outright.
+    const origHalf = new Float64Array(count);
+    for (let i = 0; i < count; i++) origHalf[i] = width[i] * 0.5;
+    /** As narrow as each node may ever get. */
+    const floor = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      floor[i] = Math.max(MIN_HALF_M, origHalf[i] * (1 - MAX_GIVE_FRACTION));
+    }
+
+    // The edge is sampled BETWEEN nodes as well as at them, because that is
+    // where it is drawn: the paint and the kerb sections are swept at several
+    // stations per node spacing, off a normal interpolated between two nodes.
+    // Whatever a sample between i and i+1 asks for is charged to both of them.
+    const EDGE_SUB = 4;
+    const distNodes = (a: number, b: number): number => {
+      const d = Math.abs(a - b);
+      return d > count / 2 ? count - d : d;
+    };
+
+    for (let pass = 0; pass < 24; pass++) {
+      const cap = new Float64Array(count);
+      for (let i = 0; i < count; i++) cap[i] = width[i] * 0.5;
+      let worst = 0;
+
+      for (let i = 0; i < count; i++) {
+        const i1 = (i + 1) % count;
+        if (junction[i] || junction[i1]) continue;
+        const hwA = width[i] * 0.5;
+        const hwB = width[i1] * 0.5;
+        for (let k = 0; k < EDGE_SUB; k++) {
+          const f = k / EDGE_SUB;
+          const g = 1 - f;
+          const cx = px[i] * g + px[i1] * f;
+          const cz = pz[i] * g + pz[i1] * f;
+          let enx = nx[i] * g + nx[i1] * f;
+          let enz = nz[i] * g + nz[i1] * f;
+          const len = Math.hypot(enx, enz) || 1;
+          enx /= len; enz /= len;
+          const hw = hwA * g + hwB * f;
+          for (const side of [-1, 1] as const) {
+            const ex = cx + enx * side * hw;
+            const ez = cz + enz * side * hw;
+            const bin = bins.get(key(Math.floor(ex / CELL), Math.floor(ez / CELL)));
+            if (!bin) continue;
+            for (const j of bin) {
+              if (distNodes(i, j) <= SKIP_NODES || distNodes(i1, j) <= SKIP_NODES) continue;
+              if (junction[j]) continue;
+              const step = Math.abs(elevation[i] - elevation[j]);
+              if (step < STEP_M || step > DECK_GAP_M) continue;
+              const dx = ex - px[j];
+              const dz = ez - pz[j];
+              const along = dx * tx[j] + dz * tz[j];
+              if (along < -halfSlab || along > halfSlab) continue;
+              const lat = Math.abs(dx * nx[j] + dz * nz[j]);
+              const hwj = width[j] * 0.5;
+              const pen = hwj - lat;
+              if (pen <= 0) continue;
+              if (pen > worst) worst = pen;
+              const give = (pen + SEPARATION_M) * 0.5;
+              if (hwA - give < cap[i]) cap[i] = hwA - give;
+              if (hwB - give < cap[i1]) cap[i1] = hwB - give;
+              if (hwj - give < cap[j]) cap[j] = hwj - give;
+            }
+          }
+        }
+      }
+
+      if (worst <= 0) break;
+      let moved = false;
+      for (let i = 0; i < count; i++) {
+        const next = Math.max(floor[i], cap[i]) * 2;
+        if (next < width[i] - 1e-4) { width[i] = next; moved = true; }
+      }
+      // Everything left is up against the floor: two roads that genuinely meet.
+      if (!moved) break;
+    }
+
+    // Ease the narrowing in and out. Slope-limited DOWNWARD only and wrapped,
+    // exactly as the barrier line is: a symmetric smoothing pass would put the
+    // width back up on the very nodes that were just moved off the other leg.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let k = 0; k < count; k++) {
+        const i = k % count;
+        const p = (i - 1 + count) % count;
+        if (width[i] > width[p] + WIDTH_SLOPE_M * 2) width[i] = width[p] + WIDTH_SLOPE_M * 2;
+      }
+      for (let k = count - 1; k >= 0; k--) {
+        const i = k % count;
+        const n = (i + 1) % count;
+        if (width[i] > width[n] + WIDTH_SLOPE_M * 2) width[i] = width[n] + WIDTH_SLOPE_M * 2;
+      }
+    }
   }
 
   private buildElevation(points: readonly { s: number; y: number }[]): void {

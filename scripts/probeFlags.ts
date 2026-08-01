@@ -627,6 +627,9 @@ console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists i
     fail(`double yellow lift ${pct(doubles)} is not greater than single yellow ${pct(singles)}`);
   }
   if (m.illegalPasses > 0) {
+    // The other two scenarios print the detail; this one did not, which made
+    // the one failure it can produce impossible to diagnose from the report.
+    for (const d of m.passDetail) console.log('      ' + d);
     fail(`${m.illegalPasses} passes completed under a yellow flag — overtaking is forbidden`);
   }
 }
