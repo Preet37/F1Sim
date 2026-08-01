@@ -35,6 +35,7 @@
     "validate:flags": "tsx scripts/probeFlags.ts",
     "validate:limits": "tsx scripts/probeTrackLimits.ts",
     "probe:drivability": "tsx scripts/probeDrivability.ts",
+    "probe:cameras": "tsx scripts/probeCameras.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts"
   },
   "dependencies": {
