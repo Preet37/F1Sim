@@ -383,6 +383,11 @@ for (const def of CIRCUITS) {
     fail(def.id + ': painted band is ' + r.bandWidth.toFixed(3) + ' m, expected ' +
       EDGE_LINE_WIDTH_M.toFixed(3) + ' m');
   }
+  // A few metres is tolerated, and the `gapAt` column says where: the pit entry
+  // and exit legitimately break the circuit's own edge line, and COTA's turn 11
+  // is a hairpin whose radius is smaller than the road is wide, so the inside
+  // edge of the surface folds through itself for one node. Both are visible in
+  // the column rather than hidden by the threshold.
   if (r.gaps > 25) {
     fail(def.id + ': ' + r.gaps.toFixed(0) + ' m of track edge with no line on it');
   }
