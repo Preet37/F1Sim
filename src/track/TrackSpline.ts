@@ -142,6 +142,32 @@ export class TrackSpline {
   readonly lineCurvature: Float32Array;
   /** Solved reference speed at this node, m/s. */
   readonly targetSpeed: Float32Array;
+  /**
+   * The purely LATERAL limit at this node, m/s: the fastest the reference car
+   * can go round the racing line's radius here before the tyres let go.
+   *
+   * Distinct from `targetSpeed`, and the distinction is the whole point of it
+   * existing. `targetSpeed` is this number after the braking and traction
+   * passes have run over it, so on the approach to a hairpin it is far below
+   * the local grip limit — the road there is straight and would take 300 km/h,
+   * but the profile says 120 because that is what is needed to make the corner.
+   * That makes `targetSpeed` the right answer to "what should I be doing" and
+   * the WRONG answer to "can the tyres hold what I am doing".
+   *
+   * The racing-line overlay needs the second question, because a driver who
+   * follows a green line into a corner and washes straight off has been told
+   * about their braking and never about their grip.
+   */
+  readonly corneringSpeed: Float32Array;
+
+  /**
+   * The aero and grip constants the speed profile was solved with.
+   *
+   * Exposed so that anything asking "could the car do X here" answers it with
+   * the same numbers the line itself was built from, rather than a constant of
+   * its own that drifts out of step.
+   */
+  readonly solverParams: SpeedSolverParams;
 
   // --- Flags ---------------------------------------------------------------
   readonly isCurbLeft: Uint8Array;
@@ -160,6 +186,7 @@ export class TrackSpline {
   constructor(def: TrackDefinition, solver?: SpeedSolverParams) {
     this.def = def;
     const params = solver ?? solverParamsFor(def.downforceDemand);
+    this.solverParams = params;
 
     // 1. Scale the authored control points so the sampled spline length matches
     //    the circuit's official distance. Authoring in approximate metres and
@@ -192,6 +219,7 @@ export class TrackSpline {
     this.lineOffset = new Float32Array(count);
     this.lineCurvature = new Float32Array(count);
     this.targetSpeed = new Float32Array(count);
+    this.corneringSpeed = new Float32Array(count);
     this.isCurbLeft = new Uint8Array(count);
     this.isCurbRight = new Uint8Array(count);
     this.isDrsZone = new Uint8Array(count);
@@ -696,6 +724,11 @@ export class TrackSpline {
         v = Math.sqrt((effMu * m * G) / denom);
       }
       targetSpeed[i] = Math.min(v, p.maxSpeedMs);
+      // Kept before the braking and traction passes overwrite it. This is the
+      // grip limit itself, uncontaminated by what the car has to do to reach
+      // the NEXT corner — see the field's own comment for why the two must not
+      // be confused.
+      this.corneringSpeed[i] = targetSpeed[i];
     }
 
     // Braking and traction passes. Two rounds because the circuit is a closed
@@ -767,6 +800,27 @@ export class TrackSpline {
   // =========================================================================
   // Queries
   // =========================================================================
+
+  /**
+   * Deceleration the reference car can actually produce at this speed, m/s².
+   *
+   * The same expression the solver's backward pass uses, lifted out so that
+   * anything reasoning about braking distance uses the car's real capability
+   * rather than a constant.
+   *
+   * It is strongly speed-dependent, and that is the point. At 320 km/h the
+   * wings are worth about four tonnes of extra load and the car will stop at
+   * something like 5g; at 100 km/h there is almost no downforce left and the
+   * limit is the tyre on the car's own weight, a little over 1.8g. A single
+   * averaged figure is therefore wrong at both ends — and wrong in the
+   * dangerous direction at the bottom, where it promises braking the car cannot
+   * deliver.
+   */
+  brakingDecel(v: number): number {
+    const p = this.solverParams;
+    const gripLimit = p.mu * (p.massKg * G + p.cl * v * v);
+    return (Math.min(p.maxBrakeForceN, gripLimit) + p.cd * v * v) / p.massKg;
+  }
 
   /** Node index for a distance-along-lap value. */
   indexAt(s: number): number {
