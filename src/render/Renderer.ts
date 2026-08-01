@@ -839,6 +839,18 @@ export class Renderer {
       );
     }
 
+    // Mirror feeds, immediately before the frame that samples them.
+    //
+    // Here rather than inside `syncCars` because it is a RENDER, not a state
+    // update: it needs the camera in its final position for this frame, or the
+    // reflected sightline is a frame stale and the mirrors swim in a corner.
+    // Skipped entirely on the low tier — a second pass over the scene is the
+    // one thing a phone GPU cannot absorb — and only ever for the one car that
+    // has a cockpit, which is only built for the player.
+    if (this.quality === 'high' && this.director.mode === 'cockpit') {
+      for (const v of this.carVisuals) v.cockpit?.renderMirrors(this.renderer, this.scene, cam);
+    }
+
     this.post.render(this.scene, cam);
 
   }

@@ -147,6 +147,24 @@ export const MIRROR_Z = 0.790;
 /** Front face of the housing, where the glass sits. */
 export const MIRROR_GLASS_Z = 0.769;
 
+/**
+ * The point on the road each mirror is aimed at, car-local.
+ *
+ * A mirror is not aimed at your eye — a pane facing the driver square on is a
+ * retroreflector and shows him himself, which is exactly what the first version
+ * of the live feed did: the reflected sightline came straight back down the
+ * line it arrived on and the mirror rendered the roll hoop.
+ *
+ * What sets a mirror's angle is the pair of directions it has to join. The
+ * normal BISECTS the line to the eye and the line to whatever the mirror is
+ * supposed to show, and that is the whole of mirror aiming. Twenty-five metres
+ * back and three metres out is the piece of road a car appears from when it is
+ * setting up a move, which is the question the mirrors exist to answer.
+ */
+const MIRROR_TARGET_X = 3.0;
+const MIRROR_TARGET_Y = 0.85;
+const MIRROR_TARGET_Z = -25;
+
 export interface CockpitState {
   /** Road-wheel angle in radians. The rim turns by RACK_RATIO times this. */
   steerRad: number;
@@ -171,8 +189,57 @@ export interface CockpitVisual {
   root: THREE.Group;
   setVisible(v: boolean): void;
   update(state: CockpitState): void;
+  /**
+   * Draws what is actually behind the car into the mirror panes.
+   *
+   * Called by the renderer, once per frame, BEFORE the main scene render and
+   * only while the cockpit is on screen. Everything it needs — the renderer,
+   * the scene and the eye it is being looked at from — is passed in rather than
+   * held, because this module has no business owning any of them.
+   *
+   * Not calling it is a complete opt-out: the render targets are allocated on
+   * the first call, so a session that never selects the cockpit, and the whole
+   * low quality tier, pay nothing at all.
+   */
+  renderMirrors(
+    renderer: THREE.WebGLRenderer, scene: THREE.Scene, eye: THREE.Camera,
+  ): void;
   dispose(): void;
 }
+
+/**
+ * Mirror feed resolution.
+ *
+ * The panes are 100mm by 38mm and sit 1.5m from the eye, which is about
+ * twenty-five pixels across on a 1280-wide frame. 256 by 96 is already four
+ * times more than that resolves; the point of the extra is that the mirror is
+ * minified rather than magnified, so a car in it is filtered instead of
+ * blocky. Two of them in half-float come to 384KB.
+ */
+const MIRROR_W = 256;
+const MIRROR_H = 96;
+
+/**
+ * Vertical field of view of a mirror, degrees.
+ *
+ * A real F1 mirror is narrow and a driver aims it at the piece of road a
+ * passing car appears from. This is deliberately wider than the real article —
+ * 42 vertical is about 78 across — because the pane on screen is small and a
+ * narrow lens would show a passing car for a fraction of a second. The
+ * question being answered is "is anybody there", and a wide answer is more
+ * useful than a precise one.
+ */
+const MIRROR_FOV = 42;
+
+/**
+ * How far a mirror can see, metres.
+ *
+ * Short on purpose. This is a second view frustum over the whole scene and the
+ * only thing that keeps it cheap is how little of the world falls inside it;
+ * at 200m a car is a pixel in a 256-wide feed and nothing behind that is worth
+ * a draw call.
+ */
+const MIRROR_FAR = 200;
 
 // ===========================================================================
 // Small geometry helpers
@@ -506,26 +573,31 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // instantly as glass, where the shell's flat dark swatch reads as a sticker.
   // It is laid a couple of millimetres proud of the shell's pane so it wins the
   // depth test without z-fighting.
+  const mirrorPanes: THREE.Mesh[] = [];
   for (const side of [-1, 1] as const) {
-    // The glass is aimed AT THE CAMERA, computed rather than dialled in.
-    //
-    // A hand-set yaw was right for an eye point inside the helmet and is wrong
-    // for one up on the roll hoop, which is 0.42m higher and 0.65m further
-    // back: the pane ended up looking at the driver's chest. Pointing the
-    // plane's own +z normal straight down the line from the glass to the eye
-    // gets it right for whatever the eye point happens to be, and will keep
-    // getting it right if that ever moves again.
+    // The glass angle is SOLVED, not dialled in: see MIRROR_TARGET_*. A
+    // hand-set yaw was right for an eye point inside the helmet and is wrong
+    // for one up on the roll hoop 0.42m higher and 0.65m further back, and
+    // pointing the pane at the eye instead — the obvious repair — makes it a
+    // retroreflector. Bisecting keeps working wherever the eye goes next.
     const glass = new THREE.PlaneGeometry(0.100, 0.038);
     const g = add(glass, mirrorGlass);
     g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
+    const toEye = new THREE.Vector3(
+      EYE_X - side * MIRROR_X,
+      EYE_Y - MIRROR_Y,
+      EYE_Z - MIRROR_GLASS_Z,
+    ).normalize();
+    const toRoad = new THREE.Vector3(
+      side * MIRROR_TARGET_X - side * MIRROR_X,
+      MIRROR_TARGET_Y - MIRROR_Y,
+      MIRROR_TARGET_Z - MIRROR_GLASS_Z,
+    ).normalize();
     g.quaternion.setFromUnitVectors(
       new THREE.Vector3(0, 0, 1),
-      new THREE.Vector3(
-        EYE_X - side * MIRROR_X,
-        EYE_Y - MIRROR_Y,
-        EYE_Z - MIRROR_GLASS_Z,
-      ).normalize(),
+      toEye.add(toRoad).normalize(),
     );
+    mirrorPanes.push(g);
   }
 
   // --- Steering wheel -----------------------------------------------------
@@ -670,8 +742,108 @@ export function buildCockpit(accentColour: number): CockpitVisual {
 
   const dashRef = dash;
 
+  // --- Live mirror feeds ---------------------------------------------------
+  //
+  // "The mirrors on the cars should actually be doing something. If a car is
+  // behind you and is trying to pass you should be able to see it." An
+  // environment-mapped pane cannot do that: the probe is a sky and a ground and
+  // it has never heard of the other nineteen cars. The only thing that shows
+  // traffic is a second render of the actual scene.
+  //
+  // Three things keep that affordable:
+  //
+  //  - ONE mirror per frame. They alternate, so each pane refreshes at half the
+  //    frame rate. At 60fps that is 30Hz into a pane twenty-five pixels wide,
+  //    which nobody can tell from 60, and the cost is one extra scene render
+  //    per frame rather than two.
+  //  - A SMALL, SHORT frustum. 256x96 is a thirty-seventh of the pixels of a
+  //    1280x720 frame, and a 200m far plane frustum-culls most of the circuit
+  //    before a draw call is issued.
+  //  - NO SHADOW PASS. Shadow map regeneration is disabled around the mirror
+  //    render, so it reuses the map the previous frame built. A shadow drawn
+  //    one frame late, in a mirror, is not observable.
+  //
+  // Allocation is lazy, so the low tier and every session that never selects
+  // the cockpit pay nothing.
+  const mirrorTargets: THREE.WebGLRenderTarget[] = [];
+  const mirrorCams: THREE.PerspectiveCamera[] = [];
+  let mirrorFrame = 0;
+  const mDir = new THREE.Vector3();
+  const mNormal = new THREE.Vector3();
+  const mPos = new THREE.Vector3();
+  const mLook = new THREE.Vector3();
+
+  const initMirrors = (): void => {
+    for (let i = 0; i < mirrorPanes.length; i++) {
+      const target = new THREE.WebGLRenderTarget(MIRROR_W, MIRROR_H, {
+        // Half float, so a floodlight or a brake disc in the mirror carries the
+        // same radiance it does everywhere else and reaches the bloom pass as
+        // something above white rather than clipped to it.
+        type: THREE.HalfFloatType,
+        depthBuffer: true,
+        stencilBuffer: false,
+      });
+      // A mirror reverses handedness, and a camera pointed backwards does not.
+      // Flipping u is the whole of the difference between a mirror and a
+      // reversing camera, and getting it wrong sends a car that is passing on
+      // the left to the right of the pane.
+      target.texture.wrapS = THREE.ClampToEdgeWrapping;
+      target.texture.repeat.x = -1;
+      target.texture.offset.x = 1;
+      mirrorTargets.push(target);
+
+      const cam = new THREE.PerspectiveCamera(MIRROR_FOV, MIRROR_W / MIRROR_H, 0.3, MIRROR_FAR);
+      mirrorCams.push(cam);
+
+      // The pane stops being a reflective swatch and becomes a screen. Basic,
+      // not standard: the feed is already a fully lit render of the world and
+      // lighting it a second time would be wrong twice over.
+      const m = mat(new THREE.MeshBasicMaterial({ map: target.texture }));
+      mirrorPanes[i].material = m;
+    }
+  };
+
   return {
     root,
+    renderMirrors(renderer, scene, eye): void {
+      if (!root.visible) return;
+      if (mirrorTargets.length === 0) initMirrors();
+
+      const i = mirrorFrame++ % mirrorPanes.length;
+      const pane = mirrorPanes[i];
+      pane.updateWorldMatrix(true, false);
+      pane.getWorldPosition(mPos);
+      // The pane's local +z was aimed at the eye when it was built, so its world
+      // +z axis IS the mirror's normal — no separate bookkeeping to drift.
+      pane.getWorldDirection(mNormal);
+
+      // Reflect the eye's line of sight about the mirror plane. A car mirror is
+      // not a portal: what it shows is where a ray from your eye goes after it
+      // bounces, and that is a different direction from "backwards" by however
+      // much the pane is toed in.
+      mDir.copy(mPos).sub(eye.position).normalize();
+      mDir.addScaledVector(mNormal, -2 * mDir.dot(mNormal));
+      mLook.copy(mPos).add(mDir);
+
+      const cam = mirrorCams[i];
+      cam.position.copy(mPos);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(mLook);
+      cam.updateMatrixWorld();
+
+      // Both panes come out, not just this one: the other is textured with a
+      // render target of its own and sampling one while writing the other is
+      // fine, but sampling THIS one while writing it is undefined.
+      for (const p of mirrorPanes) p.visible = false;
+      const prevTarget = renderer.getRenderTarget();
+      const prevShadowAuto = renderer.shadowMap.autoUpdate;
+      renderer.shadowMap.autoUpdate = false;
+      renderer.setRenderTarget(mirrorTargets[i]);
+      renderer.render(scene, cam);
+      renderer.setRenderTarget(prevTarget);
+      renderer.shadowMap.autoUpdate = prevShadowAuto;
+      for (const p of mirrorPanes) p.visible = true;
+    },
     setVisible(v: boolean): void {
       if (root.visible !== v) root.visible = v;
     },
@@ -691,6 +863,8 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     dispose(): void {
       for (const g of owned) g.dispose();
       for (const m of materials) m.dispose();
+      for (const t of mirrorTargets) t.dispose();
+      mirrorTargets.length = 0;
       dashRef.dispose();
     },
   };
