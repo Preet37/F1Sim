@@ -1,0 +1,264 @@
+/**
+ * Generates the car's image textures into public/textures/.
+ *
+ * WHY THESE ARE FILES AND NOT CANVASES. Everything else this renderer draws is
+ * painted into a canvas at startup, and for the livery — which is different for
+ * every team and changes when a car is renumbered — that is the right answer.
+ * These two are not like that. They are fine, high-frequency surface detail:
+ * the carbon weave that every dark panel on the car is made of, and the moulded
+ * relief of a tyre. Both are the SAME for all twenty cars for the whole life of
+ * the program, both want to be sampled thousands of times across a frame, and
+ * both are far too fine to draw with 2D canvas primitives at any sane cost —
+ * the weave alone is a couple of hundred thousand shaded texels.
+ *
+ * Committing them as PNGs means they are built once, here, and thereafter cost
+ * the GPU one upload and the download one file each.
+ *
+ * PROVENANCE. Every pixel below is computed from the code in this file. There
+ * is no traced photograph, no scanned sample, no third-party asset and no mark
+ * of any kind in either image. See public/textures/LICENSES.md.
+ *
+ * Run with: node scripts/generateTextures.mjs
+ */
+import { deflateSync } from 'node:zlib';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'textures');
+
+// ---------------------------------------------------------------------------
+// A minimal PNG writer
+// ---------------------------------------------------------------------------
+
+function crc32(buf) {
+  let c;
+  const table = crc32.table ?? (crc32.table = (() => {
+    const t = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c;
+    }
+    return t;
+  })());
+  let crc = -1;
+  for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ table[(crc ^ buf[i]) & 0xff];
+  return (crc ^ -1) >>> 0;
+}
+
+function chunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+}
+
+/** Writes an 8-bit RGB PNG. `rgb` is size*size*3 bytes. */
+function writePng(path, size, rgb) {
+  const stride = size * 3;
+  // One filter byte per scanline. Filter 1 (Sub) predicts each pixel from the
+  // one to its left, which compresses a smooth gradient far better than none.
+  const raw = Buffer.alloc((stride + 1) * size);
+  for (let y = 0; y < size; y++) {
+    const o = y * (stride + 1);
+    raw[o] = 1;
+    for (let x = 0; x < stride; x++) {
+      const v = rgb[y * stride + x];
+      const left = x >= 3 ? rgb[y * stride + x - 3] : 0;
+      raw[o + 1 + x] = (v - left) & 0xff;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 2;   // colour type: truecolour
+  writeFileSync(path, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]));
+  return raw.length;
+}
+
+// ---------------------------------------------------------------------------
+// Height field -> tangent-space normal map
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a tileable height field to a normal map by central differences.
+ *
+ * Wrapping the sample indices is what keeps the result seamless: a normal map
+ * whose edge gradients were computed against a clamped neighbour shows a hard
+ * line down every tile boundary, which on a car covered in the same weave is a
+ * grid of creases.
+ */
+function heightToNormal(size, height, strength, wrap = true) {
+  const rgb = Buffer.alloc(size * size * 3);
+  const at = (x, y) => {
+    const xi = wrap ? ((x % size) + size) % size : Math.max(0, Math.min(size - 1, x));
+    const yi = wrap ? ((y % size) + size) % size : Math.max(0, Math.min(size - 1, y));
+    return height[yi * size + xi];
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (at(x + 1, y) - at(x - 1, y)) * strength;
+      const dy = (at(x, y + 1) - at(x, y - 1)) * strength;
+      // Tangent space: +x right, +y up in texture space, +z out of the surface.
+      // Texture v runs downward, hence the sign on dy.
+      let nx = -dx, ny = dy, nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len; ny /= len; nz /= len;
+      const o = (y * size + x) * 3;
+      rgb[o] = Math.round((nx * 0.5 + 0.5) * 255);
+      rgb[o + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      rgb[o + 2] = Math.round((nz * 0.5 + 0.5) * 255);
+    }
+  }
+  return rgb;
+}
+
+// ---------------------------------------------------------------------------
+// 1. Carbon fibre, 2x2 twill
+// ---------------------------------------------------------------------------
+
+/**
+ * The weave every dark part of the car is made of.
+ *
+ * A 2/2 twill is the cloth used for almost all visible structural carbon: each
+ * tow passes over two and under two, and the crossing point shifts by one tow
+ * per row, which is what produces the diagonal the eye actually recognises. Get
+ * the diagonal wrong and it reads as a chequerboard, which is a plain weave and
+ * looks like basketwork.
+ *
+ * Two frequencies of relief are in here and both matter. The tow itself is a
+ * rounded ridge a few millimetres across — that is what catches the broad
+ * highlight. Along each tow runs a much finer striation from the individual
+ * filaments, and that is what stops the surface reading as moulded plastic when
+ * a light source sweeps across it.
+ */
+function carbonWeave(size) {
+  const TOWS = 16;              // tows across the tile: ~6mm each at a 0.10m tile
+  const h = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = (x / size) * TOWS;
+      const v = (y / size) * TOWS;
+      const i = Math.floor(u), j = Math.floor(v);
+      const fu = u - i, fv = v - j;
+      // 2/2 twill: the warp is on top where (i - j) mod 4 is 0 or 1.
+      const warpOnTop = ((((i - j) % 4) + 4) % 4) < 2;
+      // Across-tow profile: a cosine hump, so the tow is a rounded ridge.
+      const across = warpOnTop ? fu : fv;
+      const along = warpOnTop ? fv : fu;
+      let z = Math.cos((across - 0.5) * Math.PI) * 0.5 + 0.5;
+      z = Math.pow(z, 0.55);
+      // The tow that is underneath still shows in the gap, a little lower.
+      const base = warpOnTop ? 1.0 : 0.62;
+      // Filament striation along the tow: fine, low amplitude, and phase-locked
+      // to the tow so it travels with it rather than across it.
+      const filaments = Math.sin(across * Math.PI * 2 * 4 + (warpOnTop ? 0 : 1.7)) * 0.035;
+      // A slight dip where the tow dives under its neighbour.
+      const crossfade = Math.sin(along * Math.PI) * 0.16 + 0.84;
+      h[y * size + x] = (z * base + filaments) * crossfade;
+    }
+  }
+  return heightToNormal(size, h, 4.2);
+}
+
+// ---------------------------------------------------------------------------
+// 2. Tyre surface relief
+// ---------------------------------------------------------------------------
+
+/**
+ * The moulded relief of a slick, laid out to match the tyre's own atlas.
+ *
+ * The wheel material samples ONE texture with u running once around the
+ * circumference and v across the profile, and the bottom 46 per cent of that
+ * atlas is taken up by flat swatches for the rim, disc and caliper. So the map
+ * has to be flat there — a normal map that perturbed those would light the
+ * brake disc with tyre tread — and carry relief only in the band above.
+ *
+ * What is in the band, from the crown outward: the fine circumferential
+ * striation a slick picks up from the mould and from being dragged over
+ * asphalt; a broader, irregular graining across the working part of the tread;
+ * the shoulder turn; and on the sidewall the shallow radial ribs that every
+ * moulded sidewall carries.
+ *
+ * TYRE_BAND in TyreTexture.ts is the contract. If it moves, this moves.
+ */
+function tyreSurface(size) {
+  const BAND_V0 = 0.46;
+  const h = new Float32Array(size * size);
+  // Deterministic value noise, so the graining is identical on every build.
+  const hash = (a, b) => {
+    const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  for (let y = 0; y < size; y++) {
+    // Canvas y runs down; atlas v runs up.
+    const v = 1 - y / (size - 1);
+    if (v < BAND_V0) continue;                    // swatch region: dead flat
+    // t: 0 at the inboard bead, 1 at the outboard bead.
+    const t = (v - BAND_V0) / (1 - BAND_V0);
+    const fromCrown = Math.abs(t - 0.5) * 2;      // 0 at the crown, 1 at a bead
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      let z = 0;
+      if (fromCrown < 0.48) {
+        // Tread: fine circumferential striation. The lines run around the tyre,
+        // so they vary with t and hardly at all with u.
+        z += Math.sin(t * Math.PI * 2 * 110) * 0.30;
+        // Graining, in broad patches across the contact patch.
+        const gx = Math.floor(u * 26), gy = Math.floor(t * 30);
+        const g = hash(gx, gy) * hash(gy * 3 + 1, gx * 7 + 2);
+        z += (g - 0.5) * 0.55 * (1 - fromCrown / 0.48);
+      } else if (fromCrown < 0.62) {
+        // Shoulder: still striated, fading out over the turn.
+        z += Math.sin(t * Math.PI * 2 * 110) * 0.30 * (0.62 - fromCrown) / 0.14;
+      } else {
+        // Sidewall: shallow radial ribs, and a moulded step at the bead.
+        z += Math.sin(u * Math.PI * 2 * 96) * 0.22;
+        if (fromCrown > 0.92) z += 0.9;
+      }
+      h[y * size + x] = z;
+    }
+  }
+  // Wraps around u (the circumference) but NOT across v, where the band meets
+  // the swatch region and wrapping would bleed tread relief onto the rim.
+  const rgb = Buffer.alloc(size * size * 3);
+  const at = (x, y) => {
+    const xi = ((x % size) + size) % size;
+    const yi = Math.max(0, Math.min(size - 1, y));
+    return h[yi * size + xi];
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (at(x + 1, y) - at(x - 1, y)) * 1.1;
+      const dy = (at(x, y + 1) - at(x, y - 1)) * 1.1;
+      let nx = -dx, ny = dy, nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      const o = (y * size + x) * 3;
+      rgb[o] = Math.round((nx / len * 0.5 + 0.5) * 255);
+      rgb[o + 1] = Math.round((ny / len * 0.5 + 0.5) * 255);
+      rgb[o + 2] = Math.round((nz / len * 0.5 + 0.5) * 255);
+    }
+  }
+  return rgb;
+}
+
+// ---------------------------------------------------------------------------
+
+mkdirSync(OUT, { recursive: true });
+const jobs = [
+  ['carbon_weave_normal.png', 512, carbonWeave(512)],
+  ['tyre_surface_normal.png', 512, tyreSurface(512)],
+];
+for (const [name, size, rgb] of jobs) {
+  writePng(join(OUT, name), size, rgb);
+  console.log(name, 'written');
+}

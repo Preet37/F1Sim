@@ -16,6 +16,7 @@ import {
   buildCockpit, MIRROR_X, MIRROR_Y, MIRROR_Z, MIRROR_GLASS_Z,
   type CockpitVisual,
 } from './CockpitMesh';
+import { carbonWeaveMap, disposeDetailMaps } from './DetailMaps';
 
 /**
  * A current-generation Formula 1 car, built procedurally.
@@ -291,9 +292,9 @@ function checkWheelClearance(geo: THREE.BufferGeometry, label: string): THREE.Bu
 }
 
 /** Rear wing plane, and the pivot the DRS flap hinges about. */
-const REAR_WING_Z = -2.46;
-const DRS_PIVOT_Y = 0.918;
-const DRS_PIVOT_Z = -2.382;
+const REAR_WING_Z = -2.10;
+const DRS_PIVOT_Y = 0.988;
+const DRS_PIVOT_Z = -2.022;
 
 interface Tiers {
   /** Vertices around a ring on the main body lofts. */
@@ -447,25 +448,25 @@ function monocoque(): Section[] {
     // between it and the mainplane — that gap is what the eye reads as "modern
     // F1", and it is why the nose has to drop onto the SECOND element on two
     // pillars rather than merging into the wing.
-    section(2.42, 0.094, 0.236, 0.348, 0.60),
-    section(2.24, 0.110, 0.222, 0.370, 0.54),
-    section(2.02, 0.134, 0.200, 0.398, 0.47),
-    section(1.74, 0.170, 0.168, 0.438, 0.40),
-    section(1.36, 0.226, 0.128, 0.490, 0.34),
-    section(0.94, 0.284, 0.100, 0.534, 0.30, { flatTop: 0.20 }),
+    section(2.72, 0.098, 0.292, 0.462, 0.62),
+    section(2.54, 0.110, 0.272, 0.470, 0.56),
+    section(2.30, 0.130, 0.242, 0.480, 0.48),
+    section(1.98, 0.164, 0.200, 0.494, 0.41),
+    section(1.50, 0.218, 0.150, 0.514, 0.35),
+    section(1.00, 0.280, 0.108, 0.540, 0.30, { flatTop: 0.20 }),
     // Cockpit opening: the flat-topped, widest part of the survival cell.
-    section(0.52, 0.320, 0.086, 0.558, 0.26, { flatTop: 0.50 }),
-    section(0.10, 0.334, 0.080, 0.572, 0.24, { flatTop: 0.70 }),
-    section(-0.32, 0.328, 0.082, 0.590, 0.28, { flatTop: 0.45 }),
+    section(0.52, 0.320, 0.086, 0.562, 0.20, { flatTop: 0.55 }),
+    section(0.10, 0.334, 0.080, 0.576, 0.18, { flatTop: 0.74 }),
+    section(-0.32, 0.326, 0.082, 0.594, 0.22, { flatTop: 0.50 }),
     // Over the fuel cell and the power unit, then a long hard taper. The tail
     // has to get genuinely thin — the reference car shows daylight between the
     // engine cover and both rear tyres — and it also has to be inboard of
     // REAR_TYRE_INNER_X (0.570) everywhere aft of z = -1.44.
     section(-0.80, 0.290, 0.090, 0.608, 0.42),
-    section(-1.30, 0.218, 0.104, 0.578, 0.56),
-    section(-1.82, 0.144, 0.124, 0.492, 0.72),
-    section(-2.30, 0.082, 0.156, 0.390, 0.90),
-    section(-2.64, 0.044, 0.196, 0.314, 1.00),
+    section(-1.26, 0.216, 0.104, 0.578, 0.56),
+    section(-1.70, 0.142, 0.124, 0.492, 0.72),
+    section(-2.06, 0.080, 0.156, 0.390, 0.90),
+    section(-2.28, 0.042, 0.196, 0.314, 1.00),
   ];
 }
 
@@ -505,14 +506,14 @@ function sidepod(side: 1 | -1): Section[] {
     // The top surface also drops BELOW the cockpit rim (0.558 on the tub), which
     // it did not before — the two were within 2mm of each other, so there was no
     // shoulder line either.
-    section(0.96, 0.190, 0.300, 0.510, 0.13, { undercut: 0.70, xc: s * 0.512 }),
-    section(0.74, 0.218, 0.286, 0.526, 0.18, { undercut: 0.44, xc: s * 0.518 }),
-    section(0.38, 0.232, 0.272, 0.528, 0.24, { undercut: 0.34, xc: s * 0.516 }),
-    section(-0.08, 0.226, 0.258, 0.502, 0.30, { undercut: 0.30, xc: s * 0.502 }),
-    section(-0.58, 0.200, 0.244, 0.442, 0.38, { undercut: 0.30, xc: s * 0.468 }),
-    section(-1.08, 0.154, 0.230, 0.366, 0.48, { undercut: 0.36, xc: s * 0.400 }),
-    section(-1.54, 0.092, 0.216, 0.288, 0.62, { undercut: 0.50, xc: s * 0.300 }),
-    section(-1.92, 0.036, 0.204, 0.236, 0.86, { undercut: 0.70, xc: s * 0.196 }),
+    section(0.96, 0.190, 0.300, 0.472, 0.13, { undercut: 0.70, xc: s * 0.512 }),
+    section(0.74, 0.218, 0.286, 0.486, 0.18, { undercut: 0.44, xc: s * 0.518 }),
+    section(0.38, 0.232, 0.272, 0.488, 0.22, { undercut: 0.34, xc: s * 0.516 }),
+    section(-0.08, 0.226, 0.258, 0.464, 0.26, { undercut: 0.30, xc: s * 0.502 }),
+    section(-0.58, 0.200, 0.244, 0.414, 0.34, { undercut: 0.30, xc: s * 0.468 }),
+    section(-1.08, 0.154, 0.230, 0.348, 0.46, { undercut: 0.36, xc: s * 0.400 }),
+    section(-1.54, 0.092, 0.216, 0.280, 0.60, { undercut: 0.50, xc: s * 0.300 }),
+    section(-1.92, 0.036, 0.204, 0.232, 0.86, { undercut: 0.70, xc: s * 0.196 }),
   ];
 }
 
@@ -562,9 +563,9 @@ function buildShellParts(
   // as the blunt stub a real car is left with.
   p.into('frontWing');
   p.flat(small([
-    section(2.44, 0.092, 0.234, 0.344, 0.60),
-    section(2.62, 0.078, 0.214, 0.292, 0.55),
-    section(2.78, 0.062, 0.186, 0.236, 0.55),
+    section(2.74, 0.096, 0.288, 0.458, 0.62),
+    section(2.92, 0.082, 0.240, 0.368, 0.58),
+    section(3.07, 0.066, 0.172, 0.258, 0.58),
   ], t.body - 6), 'carbon');
   p.into('core');
 
@@ -577,9 +578,9 @@ function buildShellParts(
     // hole in bodywork rather than as a painted-on rectangle. Nearly square
     // corners, because the current generation's inlets are letterboxes.
     const mouth = small([
-      section(0.985, 0.148, 0.334, 0.478, 0.10),
-      section(0.84, 0.124, 0.348, 0.456, 0.20),
-      section(0.66, 0.090, 0.368, 0.428, 0.35),
+      section(0.985, 0.148, 0.324, 0.444, 0.10),
+      section(0.84, 0.124, 0.336, 0.426, 0.20),
+      section(0.66, 0.090, 0.352, 0.404, 0.35),
     ]);
     mouth.translate(side * POD_X, 0, 0);
     p.flat(mouth, 'dark');
@@ -587,7 +588,7 @@ function buildShellParts(
     // Splitter across the inlet. One bar is the difference between a duct and a
     // black rectangle.
     const splitter = roundedBar(0.284, 0.022, 0.050, 0.008, t);
-    splitter.translate(side * POD_X, 0.406, 0.982);
+    splitter.translate(side * POD_X, 0.384, 0.982);
     p.flat(splitter, 'body');
 
     // Side impact structure: the horizontal blade that stands out of the pod
@@ -611,8 +612,8 @@ function buildShellParts(
   // two 405mm rear tyres whose inner walls are 1140mm apart, and the old floor
   // held 0.740 all the way to z = -1.45 and simply intersected them.
   p.flat(checkWheelClearance(big([
-    section(2.02, 0.175, 0.048, 0.098, 0.30, { flatTop: 0.80 }),
-    section(1.50, 0.288, 0.046, 0.102, 0.25, { flatTop: 0.85 }),
+    section(2.20, 0.150, 0.048, 0.096, 0.32, { flatTop: 0.78 }),
+    section(1.56, 0.278, 0.046, 0.102, 0.25, { flatTop: 0.85 }),
     section(1.00, 0.556, 0.044, 0.106, 0.18, { flatTop: 0.90 }),
     section(0.40, 0.792, 0.042, 0.112, 0.14, { flatTop: 0.92 }),
     section(-0.60, 0.800, 0.044, 0.118, 0.14, { flatTop: 0.92 }),
@@ -625,25 +626,25 @@ function buildShellParts(
   // the 1050mm the rear tyres leave for it.
   p.flat(checkWheelClearance(big([
     section(-1.70, 0.522, 0.056, 0.156, 0.22, { flatTop: 0.85 }),
-    section(-2.04, 0.522, 0.096, 0.198, 0.26, { flatTop: 0.80 }),
-    section(-2.32, 0.514, 0.152, 0.254, 0.30, { flatTop: 0.76 }),
-    section(-2.56, 0.480, 0.218, 0.308, 0.36, { flatTop: 0.70 }),
-    section(-2.72, 0.432, 0.250, 0.326, 0.42),
+    section(-1.96, 0.522, 0.096, 0.198, 0.26, { flatTop: 0.80 }),
+    section(-2.16, 0.514, 0.152, 0.254, 0.30, { flatTop: 0.76 }),
+    section(-2.32, 0.480, 0.218, 0.308, 0.36, { flatTop: 0.70 }),
+    section(-2.36, 0.432, 0.250, 0.326, 0.42),
   ], t.body - 6), 'diffuser'), 'carbon');
 
   // Diffuser exit and strakes. The exit is a dark volume standing proud of the
   // diffuser's rear face; the strakes are the vertical fins across it.
   {
     const exit = small([
-      section(-2.715, 0.420, 0.250, 0.320, 0.42),
-      section(-2.42, 0.492, 0.192, 0.292, 0.35),
+      section(-2.355, 0.420, 0.250, 0.320, 0.42),
+      section(-2.18, 0.492, 0.192, 0.292, 0.35),
     ], t.body - 8);
     p.flat(exit, 'dark');
     // Strakes sit INSIDE the diffuser throat. Hung off the back they read as a
     // comb bolted to the tail, which is what the first attempt looked like.
     for (const x of [-0.33, -0.12, 0.12, 0.33]) {
       const fin = roundedBar(0.013, 0.082, 0.30, 0.004, t);
-      fin.translate(x, 0.272, -2.55);
+      fin.translate(x, 0.272, -2.26);
       p.flat(fin, 'carbon');
     }
   }
@@ -699,10 +700,10 @@ function buildShellParts(
     // them read as gaps; four brightly-lit slabs fuse into one object.
     const elements: [number, number, number, number, number, SwatchName][] = [
       // chord, thickness, y, z, incidence, colour
-      [0.310, 0.034, 0.052, 2.918, 0.10, 'carbon'],
-      [0.240, 0.029, 0.116, 2.800, 0.26, 'carbon'],
-      [0.198, 0.025, 0.180, 2.714, 0.42, 'dark'],
-      [0.168, 0.021, 0.244, 2.648, 0.58, 'accent'],
+      [0.300, 0.032, 0.046, 3.190, 0.10, 'carbon'],
+      [0.232, 0.027, 0.098, 3.082, 0.26, 'carbon'],
+      [0.190, 0.023, 0.150, 3.002, 0.42, 'dark'],
+      [0.162, 0.020, 0.202, 2.940, 0.58, 'accent'],
     ];
     for (const [chord, thick, y, z, angle, swatch] of elements) {
       const g = wingElement(1.90, chord, thick, -0.028, t.wing);
@@ -723,11 +724,11 @@ function buildShellParts(
     for (const side of [-1, 1] as const) {
       const s = side;
       const ep = small([
-        section(3.03, 0.014, 0.026, 0.176, 0.30, { xc: s * 0.944 }),
-        section(2.88, 0.017, 0.022, 0.262, 0.25, { xc: s * 0.948 }),
-        section(2.70, 0.018, 0.028, 0.328, 0.22, { xc: s * 0.950 }),
-        section(2.54, 0.017, 0.050, 0.350, 0.25, { xc: s * 0.944 }),
-        section(2.42, 0.013, 0.096, 0.326, 0.35, { xc: s * 0.930 }),
+        section(3.30, 0.013, 0.024, 0.144, 0.30, { xc: s * 0.944 }),
+        section(3.16, 0.016, 0.020, 0.214, 0.25, { xc: s * 0.948 }),
+        section(2.98, 0.017, 0.024, 0.266, 0.22, { xc: s * 0.950 }),
+        section(2.84, 0.016, 0.044, 0.278, 0.25, { xc: s * 0.944 }),
+        section(2.72, 0.012, 0.082, 0.258, 0.35, { xc: s * 0.930 }),
       ], t.body - 8);
       p.flat(ep, 'carbon');
 
@@ -735,9 +736,9 @@ function buildShellParts(
       // the front tyre's wake outboard. It is the widest thing on the car at
       // ground level and it is in every head-on photograph.
       const foot = small([
-        section(2.98, 0.030, 0.020, 0.048, 0.60, { xc: s * 0.962 }),
-        section(2.78, 0.038, 0.016, 0.046, 0.55, { xc: s * 0.972 }),
-        section(2.56, 0.036, 0.018, 0.048, 0.55, { xc: s * 0.968 }),
+        section(3.25, 0.030, 0.020, 0.048, 0.60, { xc: s * 0.962 }),
+        section(3.06, 0.038, 0.016, 0.046, 0.55, { xc: s * 0.972 }),
+        section(2.86, 0.036, 0.018, 0.048, 0.55, { xc: s * 0.968 }),
       ], Math.max(6, t.detail - 4));
       p.flat(foot, 'carbon');
 
@@ -746,7 +747,7 @@ function buildShellParts(
       const canard = wingElement(0.150, 0.110, 0.014, -0.014, Math.max(4, t.wing - 6));
       canard.rotateX(0.20);
       canard.rotateZ(s * 0.22);
-      canard.translate(s * 0.985, 0.262, 2.640);
+      canard.translate(s * 0.985, 0.216, 2.930);
       p.flat(canard, 'accent');
     }
     p.into('core');
@@ -775,7 +776,7 @@ function buildShellParts(
     section(-0.42, 0.146, 0.528, 0.922, 0.44),
     section(-0.78, 0.144, 0.538, 0.842, 0.55),
     section(-1.18, 0.110, 0.546, 0.742, 0.66),
-    section(-1.60, 0.070, 0.520, 0.650, 0.82),
+    section(-1.52, 0.070, 0.520, 0.650, 0.82),
   ], t.body - 6), 'airbox');
 
   // The intake itself. Dark, and proud of the airbox face, so it reads as a duct.
@@ -802,10 +803,10 @@ function buildShellParts(
   // reference shows: the fin there is the same near-black as the engine cover
   // with the livery running over it.
   p.flat(small([
-    section(-1.52, 0.013, 0.512, 0.650, 0.30),
-    section(-1.92, 0.012, 0.450, 0.664, 0.30),
-    section(-2.26, 0.011, 0.388, 0.656, 0.30),
-    section(-2.50, 0.010, 0.328, 0.624, 0.30),
+    section(-1.44, 0.013, 0.516, 0.652, 0.30),
+    section(-1.74, 0.012, 0.456, 0.666, 0.30),
+    section(-2.00, 0.011, 0.396, 0.658, 0.30),
+    section(-2.20, 0.010, 0.336, 0.626, 0.30),
   ], t.detail), 'carbon');
 
   // --- Rear wing ----------------------------------------------------------
@@ -818,7 +819,7 @@ function buildShellParts(
     // is where a real car carries its sponsor panel.
     const main = wingElement(1.05, 0.250, 0.042, -0.048, t.wing);
     main.rotateX(0.19);
-    main.translate(0, 0.802, REAR_WING_Z);
+    main.translate(0, 0.872, REAR_WING_Z);
     p.flat(main, 'carbon');
 
     // Endplates: tall, slim, and rolled INWARD along the top edge, which is the
@@ -826,10 +827,10 @@ function buildShellParts(
     for (const side of [-1, 1] as const) {
       const s = side;
       const ep = small([
-        section(-2.22, 0.016, 0.628, 0.876, 0.24, { xc: s * 0.526 }),
-        section(-2.40, 0.019, 0.600, 0.938, 0.20, { xc: s * 0.528 }),
-        section(-2.56, 0.018, 0.592, 0.952, 0.20, { xc: s * 0.522 }),
-        section(-2.70, 0.014, 0.634, 0.926, 0.28, { xc: s * 0.502 }),
+        section(-1.90, 0.016, 0.664, 0.940, 0.24, { xc: s * 0.526 }),
+        section(-2.06, 0.019, 0.636, 1.008, 0.20, { xc: s * 0.528 }),
+        section(-2.22, 0.018, 0.628, 1.022, 0.20, { xc: s * 0.522 }),
+        section(-2.34, 0.014, 0.672, 0.996, 0.28, { xc: s * 0.502 }),
       ], t.body - 8);
       // Carbon, like the plane it holds. In the accent colour these were two
       // half-metre coloured boards standing above the rear tyres, and from
@@ -843,18 +844,18 @@ function buildShellParts(
     // as a single stalk holding a shelf.
     for (const side of [-1, 1] as const) {
       p.flat(small([
-        section(-2.14, 0.026, 0.402, 0.478, 0.35, { xc: side * 0.150 }),
-        section(-2.32, 0.023, 0.570, 0.652, 0.35, { xc: side * 0.150 }),
-        section(-2.43, 0.020, 0.748, 0.828, 0.35, { xc: side * 0.150 }),
+        section(-1.82, 0.026, 0.400, 0.476, 0.35, { xc: side * 0.150 }),
+        section(-1.98, 0.023, 0.606, 0.690, 0.35, { xc: side * 0.150 }),
+        section(-2.08, 0.020, 0.818, 0.898, 0.35, { xc: side * 0.150 }),
       ], t.detail), 'carbon');
     }
 
     // Beam wing, two elements, bridging the crash structure to the endplates.
     const beamA = wingElement(0.94, 0.148, 0.028, -0.026, Math.max(5, t.wing - 3));
-    beamA.translate(0, 0.356, -2.50);
+    beamA.translate(0, 0.356, -2.14);
     p.flat(beamA, 'carbon');
     const beamB = wingElement(0.92, 0.122, 0.024, -0.022, Math.max(5, t.wing - 3));
-    beamB.translate(0, 0.444, -2.53);
+    beamB.translate(0, 0.444, -2.17);
     p.flat(beamB, 'carbon');
 
     // Rain light. Mounted on the crash structure rather than on the wing, so it
@@ -862,7 +863,7 @@ function buildShellParts(
     // means a wrecked car still shows a light in the spray.
     p.into('core');
     const light = roundedBar(0.072, 0.100, 0.030, 0.012, t);
-    light.translate(0, 0.298, -2.645);
+    light.translate(0, 0.298, -2.300);
     p.flat(light, 'light');
   }
 
@@ -930,14 +931,14 @@ function buildShellParts(
     p.into(side < 0 ? 'sidepodL' : 'sidepodR');
     const winglet = wingElement(0.230, 0.155, 0.018, -0.016, Math.max(4, t.wing - 5));
     winglet.rotateX(0.14);
-    winglet.translate(side * 0.618, 0.556, 0.600);
+    winglet.translate(side * 0.618, 0.520, 0.600);
     p.flat(winglet, 'carbon');
 
     // Cooling louvres over the radiator exit. Their x now follows the pod's own
     // centreline as it necks in, so they stay ON the ramp instead of hanging in
     // the air beside it.
     for (const [z, x, y] of [
-      [-0.55, 0.464, 0.428], [-0.74, 0.440, 0.396], [-0.93, 0.416, 0.362],
+      [-0.55, 0.464, 0.402], [-0.74, 0.440, 0.374], [-0.93, 0.416, 0.344],
     ] as const) {
       const slat = roundedBar(0.200, 0.009, 0.032, 0.004, t);
       slat.rotateX(0.30);
@@ -1319,9 +1320,65 @@ function mergeParts(parts: readonly THREE.BufferGeometry[]): THREE.BufferGeometr
   const merged = mergeGeometries(prepared, false);
   for (const g of prepared) g.dispose();
   const result = merged ?? new THREE.BoxGeometry(0.1, 0.1, 0.1);
+  addDetailUV(result);
   result.computeBoundingSphere();
   return result;
 }
+
+/**
+ * Edge of one tile of the shared surface-detail map, in metres.
+ *
+ * The map is sixteen carbon tows across, so a 100mm tile makes each tow about
+ * six millimetres — which is the real thing, and small enough that at any
+ * distance past a few metres it stops being a pattern and starts being the
+ * slightly broken specular that separates a moulded composite part from a
+ * smooth one.
+ */
+const DETAIL_TILE_M = 0.10;
+
+/**
+ * Gives a geometry a SECOND UV set, box-projected from object space.
+ *
+ * The car's first UV set is an atlas: every painted panel occupies a rectangle
+ * of it and every flat-coloured part is pinned to a single texel of it. That is
+ * exactly what a livery needs and exactly what surface detail cannot use — a
+ * wishbone whose entire UV is one point has nowhere to put a weave, and the
+ * atlas panels are stretched to fit their rectangles rather than to any
+ * consistent physical scale.
+ *
+ * So detail gets its own parameterisation, derived from the position and the
+ * normal: project each vertex onto whichever of the three axis planes its
+ * normal faces most directly, and divide by a tile size in METRES. Two
+ * consequences, both of them the point:
+ *
+ *  - the weave is the same physical size everywhere on the car, on a wishbone
+ *    and on a floor alike;
+ *  - it costs nothing per frame. This runs once, on the shared geometry, for
+ *    the whole field.
+ *
+ * The seams where the dominant axis changes are invisible for a fine, roughly
+ * isotropic pattern, which is what this map is and the only kind of map this
+ * projection is suitable for.
+ */
+function addDetailUV(geo: THREE.BufferGeometry): void {
+  const pos = geo.attributes.position as THREE.BufferAttribute | undefined;
+  const nrm = geo.attributes.normal as THREE.BufferAttribute | undefined;
+  if (!pos || !nrm) return;
+  const uv = new Float32Array(pos.count * 2);
+  const k = 1 / DETAIL_TILE_M;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const ax = Math.abs(nrm.getX(i)), ay = Math.abs(nrm.getY(i)), az = Math.abs(nrm.getZ(i));
+    let u: number, v: number;
+    if (ax >= ay && ax >= az) { u = z; v = y; }
+    else if (ay >= az) { u = x; v = z; }
+    else { u = x; v = y; }
+    uv[i * 2] = u * k;
+    uv[i * 2 + 1] = v * k;
+  }
+  geo.setAttribute('uv1', new THREE.Float32BufferAttribute(uv, 2));
+}
+
 
 interface CachedGeometry {
   /** Everything that stays bolted to the car whatever happens to it. */
@@ -1360,8 +1417,13 @@ function geometryFor(quality: CarTier): CachedGeometry {
   // renderer rotates its pivot toward flat when the system is open.
   const flapGeo = wingElement(0.95, 0.185, 0.034, -0.030, t.wing);
   flapGeo.rotateX(0.62);
-  const [fu, fv] = swatchUV('accent');
+  const [fu, fv] = swatchUV('carbon');
   setFlatUV(flapGeo, fu, fv);
+  // The flap is drawn with the shell material, so it needs the second uv set
+  // that material's normal map samples through. Without it three.js compiles a
+  // program expecting an attribute the geometry does not have.
+  flapGeo.computeVertexNormals();
+  addDetailUV(flapGeo);
 
   const shadow = new THREE.PlaneGeometry(1, 1);
   shadow.rotateX(-Math.PI / 2);
@@ -1475,11 +1537,12 @@ function material(key: string, make: () => THREE.Material): THREE.Material {
  */
 function shellMaterial(
   colour: number, accent: number, number: number, code: string, size: number,
+  detail: boolean,
 ): THREE.Material {
-  const key = `shell:${colour}:${accent}:${number}:${code}:${size}`;
+  const key = `shell:${colour}:${accent}:${number}:${code}:${size}:${detail ? 'd' : ''}`;
   return material(key, () => {
     const livery = buildLivery({ colour, accent, number, code }, size);
-    return new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       map: livery.map,
       roughnessMap: livery.surface,
       metalnessMap: livery.surface,
@@ -1487,6 +1550,27 @@ function shellMaterial(
       metalness: 1,
       envMapIntensity: 1.15,
     });
+    // The carbon weave, through the box-projected second uv set.
+    //
+    // It is applied to the WHOLE car, painted panels included, and that is not
+    // a shortcut. Formula 1 bodywork is paint over laid-up cloth, and in raking
+    // light the weave reads straight through the lacquer — it is one of the
+    // things that makes a photograph of a real car look like a photograph
+    // rather than like a render. What it is really buying is that the specular
+    // highlight stops being a clean geometric sweep across a mathematically
+    // perfect surface, which is the single strongest tell of a procedural
+    // model, and starts breaking up the way a real one does.
+    //
+    // The amplitude is small on purpose. Cranked up it becomes a pattern, and a
+    // visible weave across a whole car is a diorama, not a race car.
+    const weave = detail ? carbonWeaveMap() : null;
+    if (weave) {
+      mat.normalMap = weave;
+      // uv1, not uv. See `addDetailUV`.
+      mat.normalMap.channel = 1;
+      mat.normalScale = new THREE.Vector2(0.30, 0.30);
+    }
+    return mat;
   });
 }
 
@@ -1504,8 +1588,12 @@ export function buildCar(
   const geo = geometryFor(quality);
   const root = new THREE.Group();
 
+  // The low tier skips the detail normal map entirely: it is an extra sampler
+  // and an extra texture fetch per fragment, on the devices that can least
+  // afford either, for a surface break-up nobody sees on a phone screen.
   const shellMat = shellMaterial(
     bodyColour, accentColour, opts.number ?? 0, opts.code ?? '', t.texture,
+    quality === 'high',
   );
   const shadowMat = material('shadow', () => new THREE.MeshBasicMaterial({
     color: 0x000000,
@@ -1758,6 +1846,7 @@ export function disposeCarGeometryCache(): void {
   }
   disposeLiveryCache();
   disposeTyreCache();
+  disposeDetailMaps();
   shadowTexture?.dispose();
   shadowTexture = null;
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TIRE_COMPOUNDS, type CompoundId } from '../data/tires';
+import { tyreSurfaceMap } from './DetailMaps';
 
 /**
  * Tyres.
@@ -462,6 +463,25 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
     metalness: 1,
     envMapIntensity: 1.0,
   });
+  // Moulded relief: circumferential striation across the tread, graining over
+  // the working part of it, radial ribs on the sidewall.
+  //
+  // This is the one place on the car where a normal map is doing something a
+  // colour map genuinely cannot. A tyre is a very large, very dark, almost
+  // perfectly smooth object, so essentially everything the eye gets from it is
+  // in the specular — and painting striation into the albedo of a black object
+  // changes almost nothing, which is why the painted version of these lines
+  // has never read at any distance. Perturbing the normal makes the highlight
+  // itself break into fine circumferential lines that travel as the wheel
+  // turns, and that is what rubber looks like.
+  //
+  // Sampled through uv, not uv1: the wheel already has a real parameterisation
+  // and the map is laid out to match it exactly. Only the high tier gets it.
+  const relief = size > 256 ? tyreSurfaceMap() : null;
+  if (relief) {
+    mat.normalMap = relief;
+    mat.normalScale = new THREE.Vector2(0.55, 0.55);
+  }
   materials.set(key, mat);
   return mat;
 }
