@@ -1216,11 +1216,29 @@ function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeom
   push(barrel, 'rimFace');
 
   const faceX = half * 0.86;
-  for (const [x, r0, r1] of [[faceX, RIM_R * 0.955, RIM_R * 1.0]] as const) {
-    const lip = new THREE.CylinderGeometry(r1, r0, 0.026, radial, 1, true);
-    lip.rotateZ(Math.PI / 2);
-    lip.translate(x - 0.013, 0, 0);
-    push(lip, 'rimLip');
+
+  // FLANGE. The wheel cover sits 14 per cent of the tyre's width inboard of the
+  // bead, and between the two there was nothing at all: an open cylinder of
+  // annulus that the camera could see straight through into the inside of the
+  // tyre. On the high tier the wheel's thirty-two segments hid most of it; on
+  // the low tier's twelve the front wheels were visibly HOLLOW, which is what a
+  // close-up of the cheap geometry showed.
+  //
+  // Closing it with a truncated cone from the cover's edge out to the bead is
+  // both the fix and the detail: the reference car has exactly this — a bright
+  // machined ring between the dark cover and the black rubber — and it is the
+  // one genuinely metallic highlight left on the corner now that the six silver
+  // spokes are gone.
+  {
+    const beadX = half * 0.985;
+    const beadR = RIM_R + 0.008;
+    const coverEdge = Math.min(FACE_R, RIM_R + 0.003);
+    // rotateZ(+90) maps the cylinder's +Y end onto -X, so the radius given
+    // FIRST lands on the inboard side. The cover edge is the inboard end.
+    const flange = new THREE.CylinderGeometry(coverEdge, beadR, beadX - faceX, radial, 1, true);
+    flange.rotateZ(Math.PI / 2);
+    flange.translate((faceX + beadX) * 0.5, 0, 0);
+    push(flange, 'rimLip');
   }
 
   // --- Brake disc and caliper ---------------------------------------------
@@ -1292,9 +1310,13 @@ function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeom
 
   // Inboard face: a plain disc closing the barrel. It faces the car and is
   // never really seen, but without it the wheel is visibly hollow from below.
-  const inner = new THREE.CircleGeometry(RIM_R * 0.95, radial);
+  // Sized to the BEAD, not to 95 per cent of the rim, and pushed right out to
+  // the inboard sidewall. At the low tier's twelve segments an inscribed disc
+  // 20mm shy of the bead leaves a ring of daylight into the barrel, and the
+  // inboard face of a front wheel is exactly what the chase camera looks at.
+  const inner = new THREE.CircleGeometry(RIM_R + 0.010, radial);
   inner.rotateY(-Math.PI / 2);
-  inner.translate(-half * 0.90, 0, 0);
+  inner.translate(-half * 0.965, 0, 0);
   push(inner, 'inner');
 
   return mergeParts(parts);
@@ -1335,13 +1357,14 @@ function mergeParts(parts: readonly THREE.BufferGeometry[]): THREE.BufferGeometr
 /**
  * Edge of one tile of the shared surface-detail map, in metres.
  *
- * The map is sixteen carbon tows across, so a 100mm tile makes each tow about
- * six millimetres — which is the real thing, and small enough that at any
- * distance past a few metres it stops being a pattern and starts being the
- * slightly broken specular that separates a moulded composite part from a
- * smooth one.
+ * The map is sixteen carbon tows across, so a 75mm tile makes each tow a little
+ * under five millimetres — which is the real thing, and small enough that at any
+ * distance past a metre or two it stops being a pattern and becomes the slightly
+ * broken specular that separates a moulded composite part from a smooth one.
+ * At 100mm the crosshatch was still legible as a crosshatch in a close-up of a
+ * painted flank, which is a diorama rather than a car.
  */
-const DETAIL_TILE_M = 0.10;
+const DETAIL_TILE_M = 0.075;
 
 /**
  * Gives a geometry a SECOND UV set, box-projected from object space.
@@ -1575,7 +1598,7 @@ function shellMaterial(
       mat.normalMap = weave;
       // uv1, not uv. See `addDetailUV`.
       mat.normalMap.channel = 1;
-      mat.normalScale = new THREE.Vector2(0.30, 0.30);
+      mat.normalScale = new THREE.Vector2(0.24, 0.24);
     }
     return mat;
   });

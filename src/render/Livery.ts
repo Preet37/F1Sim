@@ -661,11 +661,17 @@ function buildSurfaceMap(size: number): THREE.Texture {
   ctx.fillRect(0, 0, size, size);
 
   // Painted panels are genuinely wet-looking. A clear-coated race car is one of
-  // the glossiest large objects most people ever see, and the previous 0.28 was
-  // closer to a satin household appliance. Dropping it to 0.16 is what lets the
-  // probe's horizon draw a hard-edged reflection down a flank instead of a
-  // soft grey smear.
-  const PAINT = set(0.16, 0.28);
+  // the glossiest large objects most people ever see, and 0.28 was closer to a
+  // satin household appliance: dropping it is what lets the probe's horizon
+  // draw a hard-edged reflection down a flank instead of a soft grey smear.
+  //
+  // 0.21 rather than the 0.16 it went to, though. At 0.16 the sun's specular
+  // lobe on the sidepod's long, gently curved flank came out narrow enough to
+  // exceed the bloom threshold along its whole length, so a close pass showed a
+  // white bar a metre long lying across the car with the livery unreadable
+  // underneath it. The reference car has a hard, thin highlight, not a blown
+  // one, and a few points of roughness is the difference.
+  const PAINT = set(0.21, 0.26);
   // Structural carbon on a race car is CLEAR-COATED, and that is most of the
   // difference between the wings on the reference car and the wings that were
   // here. 0.62 is bare laminate straight out of the autoclave: matte, dusty,
