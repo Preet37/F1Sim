@@ -443,7 +443,7 @@ export class Renderer {
     // separately from the circuit because it is architecture rather than track
     // surface, and because every session that is not a race start opens looking
     // straight at it.
-    this.paddock = buildPaddock(engine.track, this.quality);
+    this.paddock = buildPaddock(engine.track, this.quality, engine.world);
     this.scene.add(this.paddock.root);
 
     for (const car of engine.cars) {

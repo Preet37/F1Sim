@@ -12,7 +12,8 @@ import {
   PIT_BAY_PITCH_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
-import { buildKeepOutField, MAIN_STAND_DEPTH_M, MAIN_STAND_WIDTH_M } from '../track/WorldObstacles';
+import { buildKeepOutField, CAR_REACH_M } from '../track/WorldObstacles';
+import type { WorldModel } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
 /**
@@ -479,7 +480,9 @@ function tyreStack(bin: PartsBin, x: number, y: number, z: number, n: number, ba
  * transporters, because on a phone the paddock is 30% of the frame for the
  * first ten seconds of a session and nothing after that.
  */
-export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): PaddockScene {
+export function buildPaddock(
+  track: TrackSpline, quality: 'low' | 'high', world: WorldModel,
+): PaddockScene {
   const root = new THREE.Group();
   root.name = 'paddock';
   const geometries: THREE.BufferGeometry[] = [];
@@ -929,10 +932,62 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
     const centreS = pit.rowAnchorS - ((bayCount - 1) * BAY_PITCH) / 2;
     const m = frameAt(centreS, frontLat);
 
+    // -----------------------------------------------------------------------
+    // Everything from here back has to be checked against the circuit.
+    //
+    // The paddock is laid out in one rigid frame taken at the middle of the pit
+    // straight, and it reaches eighty metres behind the garage face. That is
+    // fine on a permanent circuit built round a paddock. It is not fine on a
+    // lap that folds back on itself: at Monaco the road behind the pits is
+    // inside that eighty metres, so the yard, the hospitality units and the
+    // transporters were laid straight across it — five metres of them on the
+    // racing surface, between ground level and nine metres up, which is exactly
+    // the height a car occupies. Nothing tested it and nothing collided with
+    // it, so cars drove through the back of the paddock every lap.
+    //
+    // Interlagos and Zandvoort had the same defect in less obvious forms: at
+    // Interlagos the transporters hang eleven to sixteen metres ABOVE a piece
+    // of road, which cannot be hit but reads as a row of articulated lorries
+    // parked in the sky over the circuit.
+    //
+    // So each structure back here is now tested where it will actually stand
+    // and dropped if it stands on the road — the same rule `buildSceneryLayout`
+    // applies to a grandstand, applied to the largest structures in the game.
+    // -----------------------------------------------------------------------
+    const backKeepOut = buildKeepOutField(track);
+    const backMargin = (track.def.scenery === 'street' ? 2.5 : 14) + CAR_REACH_M;
+    const centreIdx = track.indexAt(centreS);
+    // The paddock frame's axes as `clearOfBox` wants them: its local +X runs
+    // along the pit lane, which is the box's "along track" axis, and its local
+    // +Z runs away from the circuit, which is the box's "across" axis.
+    const backCos = -dir * track.tz[centreIdx];
+    const backSin = -dir * track.tx[centreIdx];
+
+    /** True when a box in paddock-local plan coordinates is clear of the lap. */
+    const backClear = (
+      localX: number, localZ: number, halfAlong: number, halfDeep: number,
+    ): boolean => {
+      const v = new THREE.Vector3(localX, 0, localZ).applyMatrix4(m);
+      return backKeepOut.clearOfBox(
+        v.x, v.z, backCos, backSin, halfDeep, halfAlong, backMargin,
+      );
+    };
+
     // The paddock apron itself: tarmac, with a painted edge line.
-    const yard = chamferBox(rowLen + 40, 0.1, 62, 0.05);
-    back.add(yard, TARMAC, 0, 0.03, BAY_DEPTH + 38);
-    yard.dispose();
+    //
+    // Shortened rather than dropped where it will not fit. A paddock with no
+    // ground under it is a worse artefact than a shallow one, and the apron is
+    // the only piece back here whose size is free to give.
+    const YARD_DEEP_M = 62;
+    let yardDepth = YARD_DEEP_M;
+    while (yardDepth > 8 && !backClear(0, BAY_DEPTH + 7 + yardDepth * 0.5, (rowLen + 40) * 0.5, yardDepth * 0.5)) {
+      yardDepth -= 4;
+    }
+    if (yardDepth > 8) {
+      const yard = chamferBox(rowLen + 40, 0.1, yardDepth, 0.05);
+      back.add(yard, TARMAC, 0, 0.03, BAY_DEPTH + 7 + yardDepth * 0.5);
+      yard.dispose();
+    }
 
     // Hospitality units, one per team: a two-storey motorhome with a glazed
     // ground floor and an awning over a terrace.
@@ -941,6 +996,10 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
       const colour = new THREE.Color(team.colour);
       const x = (k - (bayCount - 1) / 2) * BAY_PITCH;
       const z = BAY_DEPTH + 22;
+      // The unit is 17.2m along the lane and reaches from its terrace awning at
+      // z-9.9 to its glazing at z+4.85 — so it is centred 2.5m short of `z` and
+      // is 14.75m deep. Tested as it is built, not as a nominal block.
+      if (!backClear(x, z - 2.5, 8.6, 7.4)) continue;
       const unit = new PartsBin();
 
       const body = chamferBox(16.5, 7.2, 9.5, 0.14);
@@ -1017,6 +1076,9 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
         const team = teams[k];
         const x = (k - (bayCount - 1) / 2) * BAY_PITCH + 4;
         const z = BAY_DEPTH + 46;
+        // Rotated a quarter turn, so the 13.6m trailer plus its cab lies ALONG
+        // the lane and the 2.6m width runs back from it.
+        if (!backClear(x, z, 8.8, 1.6)) continue;
         const truck = new PartsBin();
         const trailer = chamferBox(2.6, 3.4, 13.6, 0.1);
         truck.add(trailer, 0xe8ebee, 0, 2.4, 0);
@@ -1080,50 +1142,32 @@ export function buildPaddock(track: TrackSpline, quality: 'low' | 'high'): Paddo
   // Main grandstands, facing the pits across the track
   // ---------------------------------------------------------------------------
   {
+    // WHERE they stand is not decided here any more.
+    //
+    // It used to be, and that was the bug: the paddock placed three
+    // seventy-four-metre grandstands, tested them against the circuit, drew
+    // them, and told nothing else in the game they existed. They were the
+    // largest structures on every circuit and not one of them was solid, so a
+    // car that ran wide opposite the pits went through the main grandstand and
+    // out the other side. The layout lives in `buildMainStands` now, in the
+    // world model both the renderer and the race engine read.
+    const items = world.scenery.filter((it) => it.kind === 'mainstand');
     const opts = grandstandPreset('main', quality, 3);
     const geo = buildGrandstandGeometry(opts);
-    const stands = 3;
     const mat = structureMaterial({ roughness: 0.8, metalness: 0.06 });
-    const mesh = new THREE.InstancedMesh(geo, mat, stands);
-    const rowCentre = pit.rowAnchorS - ((bayCount - 1) * BAY_PITCH) / 2;
+    const mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, items.length));
     const m = new THREE.Matrix4();
-    // The pit straight is not the only piece of circuit near the pit straight.
-    // On a street circuit the lap folds back on itself within a few dozen
-    // metres, so a 74m stand placed blindly opposite the pits can land across
-    // another part of the road. Same test as the set dressing uses.
-    const keepOut = buildKeepOutField(track);
-    const margin = (track.def.scenery === 'street' ? 2.5 : 14) + 2;
     let placed = 0;
-    for (let i = 0; i < stands; i++) {
-      const s = rowCentre + (i - (stands - 1) / 2) * (opts.width + 6);
-      const idx = track.indexAt(s);
-      const hw = track.width[idx] * 0.5;
-      // Opposite side of the circuit from the pit lane.
-      const side = -dir;
-      const tx = track.tx[idx], tz = track.tz[idx];
-      const nx = track.nx[idx], nz = track.nz[idx];
-      // The stand is anchored at its front barrier and built backwards, so the
-      // box that describes it sits half a depth further out.
-      const cos = side * nx;
-      const sin = -side * nz;
-      let lateral = 0;
-      let clear = false;
-      for (let attempt = 0; attempt < 8 && !clear; attempt++) {
-        lateral = side * (hw + 17 + attempt * 8);
-        const cxw = track.px[idx] + nx * lateral + cos * MAIN_STAND_DEPTH_M * 0.5;
-        const czw = track.pz[idx] + nz * lateral - sin * MAIN_STAND_DEPTH_M * 0.5;
-        clear = keepOut.clearOfBox(
-          cxw, czw, cos, sin,
-          MAIN_STAND_DEPTH_M * 0.5, MAIN_STAND_WIDTH_M * 0.5, margin,
-        );
-      }
-      if (!clear) continue;
-      // Local +X away from the track, +Z along it; `side` on both keeps the
-      // basis right-handed on either side of the circuit.
+    for (const item of items) {
+      // The item's yaw is the stand's own heading; rebuild the basis from it so
+      // the drawn stand sits exactly on the box that was tested and is collided.
+      // Local +X away from the track, +Z along it.
+      const c = Math.cos(item.yaw);
+      const sn = Math.sin(item.yaw);
       m.set(
-        side * nx, 0, side * tx, track.px[idx] + nx * lateral,
-        0, 1, 0, track.elevation[idx],
-        side * nz, 0, side * tz, track.pz[idx] + nz * lateral,
+        c, 0, sn, item.x,
+        0, 1, 0, item.y,
+        -sn, 0, c, item.z,
         0, 0, 0, 1,
       );
       mesh.setMatrixAt(placed++, m);

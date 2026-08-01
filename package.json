@@ -34,13 +34,16 @@
     "regress": "npm run regress:laps && npm run regress:results && npm run regress:exit",
     "validate:flags": "tsx scripts/probeFlags.ts",
     "validate:limits": "tsx scripts/probeTrackLimits.ts",
-    "probe:drivability": "tsx scripts/probeDrivability.ts"
+    "probe:drivability": "tsx scripts/probeDrivability.ts",
+    "probe:cameras": "tsx scripts/probeCameras.ts",
+    "audit:circuits": "tsx scripts/auditCircuits.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",
+    "puppeteer-core": "^24.43.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.5"

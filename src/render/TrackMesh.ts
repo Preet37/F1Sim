@@ -19,6 +19,7 @@ import {
   PIT_GARAGE_SPACING_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
+import { KeepOutField } from '../track/WorldObstacles';
 import type { SceneryItem, WorldModel } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
@@ -45,6 +46,35 @@ export interface TrackMeshes {
 
 /** Vertical offsets, in metres, to avoid z-fighting between coplanar surfaces. */
 const Y_GROUND = -0.02;
+/**
+ * Height of the flat ground plane that fills the world beyond the circuit.
+ *
+ * Named, because the circuit's outer edge now drops a skirt down to exactly
+ * this. Two numbers that had to agree and did not is how the void under an
+ * elevated circuit went unnoticed for as long as it did.
+ */
+const GROUND_Y = Y_GROUND - 0.6;
+/**
+ * Verge width used where the barrier is suppressed, metres.
+ *
+ * Down the pit lane and across the paddock there is no wall to reach out to,
+ * but there is still ground to draw — the garages and the paddock stand on it.
+ */
+const VERGE_FALLBACK_M = 16;
+/** Most the ground beside the road may step in or out between nodes, metres. */
+const SHOULDER_SLOPE_M = 0.6;
+/**
+ * Clearance the ground beside the road keeps from every other part of the
+ * circuit, metres.
+ *
+ * Not zero, because the shoulder is tested against a disc-per-node model of the
+ * road and drawn as a swept strip between nodes. The two disagree by a few
+ * centimetres wherever the road curves, and at a crossover a few centimetres is
+ * the difference between a clean edge and two vertices of grass in the road.
+ */
+const SHOULDER_CLEARANCE_M = 0.4;
+/** How far the kerb section reaches outboard of the white line, metres. */
+const KERB_OUTER_M = 1.185;
 const Y_RUNOFF = 0.0;
 const Y_ROAD = 0.02;
 const Y_LINE = 0.035;
@@ -69,6 +99,25 @@ export const PAINT_HEIGHT_M = Y_LINE;
  * directly with no offset of its own.
  */
 export const EDGE_LINE_WIDTH_M = 0.14;
+
+/**
+ * Width of the start/finish line, measured along the track, metres.
+ *
+ * A real one is painted about half a metre wide. It is a LINE.
+ */
+const START_LINE_W_M = 0.5;
+/** Width of a DRS detection or activation mark, along the track, metres. */
+const DRS_MARK_W_M = 0.4;
+
+/**
+ * Clearance small trackside furniture keeps from every part of the circuit.
+ *
+ * Deliberately tight. A gantry post and a braking board are meant to be beside
+ * the road — pushing them behind the run-off would make the boards unreadable
+ * and put the start/finish gantry in a field. This is enough that a car pinned
+ * against the barrier cannot reach them, and no more.
+ */
+const FURNITURE_CLEARANCE_M = 1.2;
 
 const COLOUR = {
   // Asphalt's real albedo is around 0.10, which is sRGB 0x58 — not the near
@@ -281,10 +330,11 @@ export function buildTrackMeshes(
   const kerbs = new StripBuilder();
   const lines = new StripBuilder();
   const runoff = new StripBuilder();
+  /** Grass verge out to the barrier, and the skirt down to the ground plane. */
+  const verge = new StripBuilder();
   const walls = new StripBuilder();
   const pit = new StripBuilder();
 
-  const KERB_W = 0.9;
   const LINE_W = EDGE_LINE_WIDTH_M;
   const RUNOFF_W = 9;
   const WALL_H = 1.5;
@@ -305,6 +355,137 @@ export function buildTrackMeshes(
    */
   const barrierAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
+
+  /**
+   * Pushes a piece of trackside furniture out until it is off the circuit.
+   *
+   * The gantry and the braking boards were placed at a fixed offset from the
+   * local node — the same mistake the set dressing was fixed for, left in two
+   * places because they are small. Small does not help: a 7.2m gantry post
+   * 1.6m off the edge of a street circuit, or a marker board 1.4m off it, sits
+   * inside the run-off, and wherever the lap folds back that run-off is another
+   * piece of road.
+   *
+   * @param i     node the object is anchored at
+   * @param side  which side of the road, +1 left
+   * @param from  starting distance beyond the track edge
+   * @param halfX half extent across the road
+   * @param halfZ half extent along it
+   * @returns the signed lateral offset to use
+   */
+  const clearLateral = (
+    i: number, side: -1 | 1, from: number, halfX: number, halfZ: number,
+  ): number => {
+    const hw = track.width[i] * 0.5;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const lat = side * (hw + from + attempt * 2);
+      const x = track.px[i] + track.nx[i] * lat;
+      const z = track.pz[i] + track.nz[i] * lat;
+      if (world.keepOut.clearOfBox(
+        x, z, track.tz[i], track.tx[i], halfX, halfZ, FURNITURE_CLEARANCE_M,
+      )) return lat;
+    }
+    return side * (hw + from);
+  };
+
+  const isStreet = track.def.scenery === 'street';
+  const runoffW = isStreet ? 2.2 : RUNOFF_W;
+  const runoffColour = isStreet ? COLOUR.pit : COLOUR.runoff;
+  const vergeColour = groundColour(track.def.scenery);
+
+  /**
+   * How far the ground beside the road extends, per node, per side — run-off,
+   * verge and the skirt that drops off the end of it.
+   *
+   * This has to be capped by the circuit itself, for the same reason the
+   * barrier line does. Where a lap runs back close to itself, a nine-metre
+   * run-off and the five metres of verge behind it are laid straight over the
+   * OTHER section's racing surface, and the skirt at the end of them is a
+   * vertical wall of grass dropping through the middle of the road. Suzuka's
+   * crossover is the worst case on the calendar — the two sections pass within
+   * a quarter of a metre of each other vertically — and COTA's turn 11 hairpin
+   * and Monaco's climb out of Sainte Dévote do the same thing less violently.
+   *
+   * The first version of this shipped without the cap and put 6.35m of verge
+   * across Suzuka's road, which is a worse artefact than the black line it was
+   * added to fix.
+   *
+   * Same test as the barrier's: the outer edge must not be inside any node's
+   * road disc, with no lap-distance exclusion, which is sound because the
+   * shoulder is always at least half a metre outboard of its own road edge and
+   * therefore never inside its own disc.
+   */
+  const shoulderAt = ((): (node: number, side: -1 | 1) => number => {
+    const road = new KeepOutField();
+    for (let i = 0; i < count; i++) {
+      road.add(track.px[i], track.pz[i], track.width[i] * 0.5);
+    }
+    const MIN_M = 0.5;
+    const out = { left: new Float64Array(count), right: new Float64Array(count) };
+
+    for (const side of [-1, 1] as const) {
+      const arr = side > 0 ? out.left : out.right;
+      for (let i = 0; i < count; i++) {
+        const hw = track.width[i] * 0.5;
+        // Reach out to the wall, plus a metre so the verge passes behind it
+        // rather than stopping exactly on it and showing a seam.
+        const bar = barrierAt(i, side);
+        const want = Math.max(runoffW, (bar > 0 ? bar : VERGE_FALLBACK_M) + 1);
+        // Scanned OUTWARD from the road edge and stopped at the first blocked
+        // width, rather than inward from the widest and stopped at the first
+        // clear one.
+        //
+        // The difference matters because the slope limiter below is allowed to
+        // reduce a node's shoulder to match its neighbours. Taking the largest
+        // clear width says nothing about the widths inside it, and where
+        // another section of circuit passes between them — which is precisely
+        // the case this exists for — a node with five metres clear can have one
+        // metre blocked. The limiter would then quietly move the shoulder onto
+        // the other road. Scanning outward makes the answer monotone: every
+        // width from the road edge up to `w` is clear, so any reduction is
+        // still clear.
+        //
+        // 0 means "no shoulder here at all", and it is the right answer at a
+        // crossover. Suzuka's two sections pass within a quarter of a metre of
+        // each other vertically, so there is no width — not even half a metre —
+        // at which the ground beside one of them is clear of the other. Drawing
+        // the narrowest thing that fits is exactly wrong there: it puts a
+        // vertical skirt of grass through the middle of the road. A short gap
+        // where the ground plane shows is the lesser artefact, and it is what
+        // was there before this strip existed.
+        let w = 0;
+        for (let d = MIN_M; d <= want; d += 0.5) {
+          const lat = side * (hw + d);
+          if (!road.clearOfBox(
+            track.px[i] + track.nx[i] * lat, track.pz[i] + track.nz[i] * lat,
+            track.tz[i], track.tx[i], 0.25, (track.length / count) * 0.5,
+            SHOULDER_CLEARANCE_M,
+          )) break;
+          w = d;
+        }
+        arr[i] = w;
+      }
+
+      // Slope-limited both ways, wrapped, downward only, so the shoulder eases
+      // in and out instead of stepping — and so smoothing can never push it
+      // back over a piece of road the search just moved it off.
+      for (let pass = 0; pass < 2; pass++) {
+        for (let k = 0; k < count; k++) {
+          const i = k % count;
+          const p = (i - 1 + count) % count;
+          if (arr[i] > arr[p] + SHOULDER_SLOPE_M) arr[i] = arr[p] + SHOULDER_SLOPE_M;
+        }
+        for (let k = count - 1; k >= 0; k--) {
+          const i = k % count;
+          const n = (i + 1) % count;
+          if (arr[i] > arr[n] + SHOULDER_SLOPE_M) arr[i] = arr[n] + SHOULDER_SLOPE_M;
+        }
+      }
+    }
+
+    return (node: number, side: -1 | 1): number =>
+      (side > 0 ? out.left : out.right)[node];
+  })();
 
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
@@ -563,34 +744,95 @@ export function buildTrackMeshes(
 
     // --- Kerbs -------------------------------------------------------------
     // Lateral is positive to the driver's LEFT.
-    if (track.isCurbLeft[a] && track.isCurbLeft[b]) sweepKerb(a, b, 1);
-    if (track.isCurbRight[a] && track.isCurbRight[b]) sweepKerb(a, b, -1);
+    //
+    // Suppressed wherever the ground beside the road is too narrow to hold one.
+    // A kerb reaches 1.185m outboard of the white line, and where the lap folds
+    // back on itself that is far enough to lay red-and-white kerbing across the
+    // other section's racing surface — which is exactly what it was doing at
+    // Monaco's climb out of Sainte Dévote.
+    const kerbRoom = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
+    if (track.isCurbLeft[a] && track.isCurbLeft[b]
+      && shoulderAt(a, 1) >= kerbRoom && shoulderAt(b, 1) >= kerbRoom) sweepKerb(a, b, 1);
+    if (track.isCurbRight[a] && track.isCurbRight[b]
+      && shoulderAt(a, -1) >= kerbRoom && shoulderAt(b, -1) >= kerbRoom) sweepKerb(a, b, -1);
 
-    // --- Run-off ----------------------------------------------------------
-    const isStreet = track.def.scenery === 'street';
-    const runoffW = isStreet ? 2.2 : RUNOFF_W;
-    const runoffColour = isStreet ? COLOUR.pit : COLOUR.runoff;
-    for (const side of [-1, 1] as const) {
-      const iA = side * (hwA + KERB_W * 0.5);
-      const iB = side * (hwB + KERB_W * 0.5);
-      const oA = side * (hwA + runoffW);
-      const oB = side * (hwB + runoffW);
-      if (side < 0) {
-        runoff.quad(
-          px(a, oA), py(a, oA) + Y_RUNOFF, pz(a, oA),
-          px(b, oB), py(b, oB) + Y_RUNOFF, pz(b, oB),
-          px(b, iB), py(b, iB) + Y_RUNOFF, pz(b, iB),
-          px(a, iA), py(a, iA) + Y_RUNOFF, pz(a, iA),
-          runoffColour,
-        );
-      } else {
-        runoff.quad(
-          px(a, iA), py(a, iA) + Y_RUNOFF, pz(a, iA),
-          px(b, iB), py(b, iB) + Y_RUNOFF, pz(b, iB),
-          px(b, oB), py(b, oB) + Y_RUNOFF, pz(b, oB),
-          px(a, oA), py(a, oA) + Y_RUNOFF, pz(a, oA),
-          runoffColour,
-        );
+    // --- Run-off, verge and skirt ------------------------------------------
+    //
+    // Three strips outboard of the road, and each of them is closing a hole
+    // that was reading as a black line or a black void.
+    //
+    //  1. RUN-OFF, from the edge of the road outward. It used to start at
+    //     half a kerb width — 0.45m outboard of the road edge — because that
+    //     is where a kerb ends. But a kerb is only emitted where the corner is
+    //     tighter than a 400m radius, which is 13% of the lap at Monza and 29%
+    //     at Monaco. Over the other 70-87% nothing at all was drawn in that
+    //     0.45m, and what showed through the slot was the ground plane, two
+    //     thirds of a metre below and (on every circuit but Bahrain) dark
+    //     green. That is a black line down both sides of the road, for the
+    //     whole lap, on ten of eleven circuits. It starts at the road edge now
+    //     and passes underneath the kerb where there is one.
+    //
+    //  2. VERGE, from the outer edge of the run-off to the barrier line. There
+    //     was nothing here either — about five metres of it — and it worked
+    //     only as long as the circuit was flat, because what filled it was
+    //     again the ground plane. At Spa the road is up to 58m above that
+    //     plane.
+    //
+    //  3. SKIRT, a vertical face from the outer edge of the verge down to the
+    //     ground plane. This is what actually fixes the elevation problem: the
+    //     circuit is a ribbon floating over a flat plane, and without a skirt
+    //     you can see under it — from the plan views, from the drone camera,
+    //     and over the barrier at Eau Rouge.
+    //
+    // Swept per node like the road, not per step. A six-metre chord across the
+    // nodes leaves the run-off's inner edge up to 0.15m inside the road's outer
+    // edge at a hairpin, which is a sliver of ground plane between two surfaces
+    // that are supposed to meet — the same black line again, in the places the
+    // eye is most drawn to.
+    for (let k = 0; k < step; k++) {
+      const s0 = frameLerp(a, b, k / step);
+      const s1 = frameLerp(a, b, (k + 1) / step);
+
+      for (const side of [-1, 1] as const) {
+        // The narrower of the two ends of the span. The width is a per-node
+        // quantity and the strip is swept between nodes, so using the near end
+        // alone lets the far end overhang by up to one slope step.
+        const outW = Math.min(shoulderAt(a, side), shoulderAt(b, side));
+        if (outW <= 0) continue;
+        const inner = Math.min(runoffW, outW);
+
+        const strip = (
+          builder: StripBuilder, inW: number, outWidth: number, colour: THREE.Color,
+        ): void => {
+          const i0 = framePt(s0, side * (s0.hw + inW), Y_RUNOFF);
+          const i1 = framePt(s1, side * (s1.hw + inW), Y_RUNOFF);
+          const o1 = framePt(s1, side * (s1.hw + outWidth), Y_RUNOFF);
+          const o0 = framePt(s0, side * (s0.hw + outWidth), Y_RUNOFF);
+          builder.quadFlat(
+            i0[0], i0[1], i0[2], i1[0], i1[1], i1[2],
+            o1[0], o1[1], o1[2], o0[0], o0[1], o0[2],
+            colour,
+          );
+        };
+
+        strip(runoff, 0, inner, runoffColour);
+        if (outW > inner) strip(verge, inner, outW, vergeColour);
+
+        // The skirt down to the ground plane. Into `verge`, which is drawn
+        // double-sided: this is a vertical face, `quadFlat`'s upward-winding
+        // rule says nothing useful about one, and a skirt that is culled from
+        // the side you happen to be looking at is the hole it exists to fill.
+        const e0 = framePt(s0, side * (s0.hw + outW), Y_RUNOFF);
+        const e1 = framePt(s1, side * (s1.hw + outW), Y_RUNOFF);
+        if (e0[1] > GROUND_Y + 0.05 || e1[1] > GROUND_Y + 0.05) {
+          verge.quad(
+            e0[0], e0[1], e0[2],
+            e1[0], e1[1], e1[2],
+            e1[0], GROUND_Y, e1[2],
+            e0[0], GROUND_Y, e0[2],
+            vergeColour,
+          );
+        }
       }
     }
 
@@ -941,53 +1183,72 @@ export function buildTrackMeshes(
     outerWall(g.workingEndU, g.exitU + PIT_EXIT_MERGE_M);
   }
 
-  // --- Start/finish line ---------------------------------------------------
-  // Markers must span at least a couple of nodes. Asking for a 1.2m-long quad
-  // when nodes are 3m apart resolves both ends to the SAME node index, so the
-  // quad is degenerate and nothing renders — the start line and every DRS marker
-  // were silently invisible.
+  // --- Transverse road markings --------------------------------------------
+  //
+  // The start/finish line and the DRS boards, painted across the road.
+  //
+  // These were solid slabs SEVEN AND A HALF METRES long, spanning the full
+  // width of the circuit — a white one at the start/finish line and a bright
+  // teal one at every DRS detection and activation point. A real start line is
+  // about half a metre of paint. Standing on the old one at eye level, half the
+  // frame is a featureless white plane; from a plan view they are cyan blocks
+  // laid across the racing surface. They are a large part of what the eye reads
+  // as "blocks on the track".
+  //
+  // The length was not arbitrary. A previous pass found the markings invisible
+  // and diagnosed it correctly — `indexAt` snaps to a node, nodes are about
+  // 3m apart, and both ends of a half-metre quad resolve to the same node, so
+  // the quad is degenerate — but fixed it by making the marking longer than a
+  // node instead of by asking for a position between nodes. `station` does that,
+  // interpolating the frame at an arbitrary lap distance exactly as the road's
+  // own sweep does.
   const NODE_M = track.length / track.count;
-  const markerLen = NODE_M * 2;
-  {
-    const grid = new StripBuilder();
-    const i0 = track.indexAt(0);
-    const i1 = track.indexAt(markerLen);
-    const hw = track.width[i0] * 0.5;
-    grid.quad(
-      px(i0, -hw), py(i0, -hw) + Y_LINE, pz(i0, -hw),
-      px(i1, -hw), py(i1, -hw) + Y_LINE, pz(i1, -hw),
-      px(i1, hw), py(i1, hw) + Y_LINE, pz(i1, hw),
-      px(i0, hw), py(i0, hw) + Y_LINE, pz(i0, hw),
-      COLOUR.startLine,
+  /** Track frame at an arbitrary lap distance, not snapped to a node. */
+  const station = (s: number) => {
+    const w = ((s % track.length) + track.length) % track.length;
+    const f = w / NODE_M;
+    const i = Math.floor(f) % count;
+    return frameLerp(i, (i + 1) % count, f - Math.floor(f));
+  };
+  /** Paints a band of the given width across the full road at lap distance `s`. */
+  const crossBand = (
+    builder: StripBuilder, s: number, widthM: number, colour: THREE.Color,
+  ): void => {
+    const s0 = station(s - widthM * 0.5);
+    const s1 = station(s + widthM * 0.5);
+    const a0 = framePt(s0, -s0.hw, Y_LINE), a1 = framePt(s1, -s1.hw, Y_LINE);
+    const b1 = framePt(s1, s1.hw, Y_LINE), b0 = framePt(s0, s0.hw, Y_LINE);
+    builder.quadFlat(
+      a0[0], a0[1], a0[2], a1[0], a1[1], a1[2],
+      b1[0], b1[1], b1[2], b0[0], b0[1], b0[2],
+      colour,
     );
-    addMesh(root, grid, false, geometries, materials, detail, SURFACES.paint);
-  }
+  };
 
-  // --- DRS zone markers ----------------------------------------------------
   {
     const marks = new StripBuilder();
+    crossBand(marks, 0, START_LINE_W_M, COLOUR.startLine);
     const teal = new THREE.Color(0x1fb6c9);
     for (const zone of track.def.drsZones) {
       for (const s of [zone.detectionS, zone.startS]) {
-        const i0 = track.indexAt(s);
-        const i1 = track.indexAt(s + markerLen);
-        const hw = track.width[i0] * 0.5;
-        marks.quad(
-          px(i0, -hw), py(i0, -hw) + Y_LINE, pz(i0, -hw),
-          px(i1, -hw), py(i1, -hw) + Y_LINE, pz(i1, -hw),
-          px(i1, hw), py(i1, hw) + Y_LINE, pz(i1, hw),
-          px(i0, hw), py(i0, hw) + Y_LINE, pz(i0, hw),
-          teal,
-        );
+        crossBand(marks, s, DRS_MARK_W_M, teal);
       }
     }
-    addMesh(root, marks, false, geometries, materials, detail, SURFACES.paint);
+    addMesh(root, marks, false, geometries, materials, detail, SURFACES.paint, 2);
   }
 
   addMesh(root, road, false, geometries, materials, detail, SURFACES.asphalt);
-  addMesh(root, lines, false, geometries, materials, detail, SURFACES.paint);
-  addMesh(root, kerbs, false, geometries, materials, detail, SURFACES.kerb);
+  // Biased in the order they are stacked: kerbs over paint over road over
+  // run-off, so a depth tie anywhere in that stack resolves the way the
+  // millimetres say it should.
+  addMesh(root, lines, false, geometries, materials, detail, SURFACES.paint, 2);
+  addMesh(root, kerbs, false, geometries, materials, detail, SURFACES.kerb, 4);
   addMesh(root, runoff, false, geometries, materials, detail, SURFACES.runoff);
+  // Double-sided: the skirt is a vertical face and is seen from both sides —
+  // from outside the circuit at ground level, and from above where the ground
+  // falls away underneath a banked or elevated section.
+  addMesh(root, verge, true, geometries, materials, detail,
+    track.def.scenery === 'desert' ? SURFACES.runoff : SURFACES.grass);
   addMesh(root, pit, false, geometries, materials, detail, SURFACES.asphalt);
   addMesh(root, walls, true, geometries, materials, detail, SURFACES.wall);
 
@@ -1201,20 +1462,26 @@ export function buildTrackMeshes(
   // a lap begins and ends, and a circuit without one looks like a closed road.
   {
     const i0 = track.indexAt(0);
-    const hw = track.width[i0] * 0.5;
     const y = track.elevation[i0];
     const heading = Math.atan2(track.tx[i0], track.tz[i0]);
 
     const group = new THREE.Group();
     const postGeo = chamferBox(0.55, 7.2, 0.55, 0.05);
     const postMat = new THREE.MeshStandardMaterial({ color: 0x1b1e24, roughness: 0.6, metalness: 0.35 });
+    // Each post pushed out independently until it is off the circuit, then the
+    // beam spanned across whichever pair that produced. The beam itself is
+    // seven metres up and cannot be hit; the posts are the part a car reaches.
+    const postLat = {
+      left: clearLateral(i0, 1, 1.6, 0.28, 0.28),
+      right: clearLateral(i0, -1, 1.6, 0.28, 0.28),
+    };
     for (const side of [-1, 1] as const) {
       const post = new THREE.Mesh(postGeo, postMat);
-      post.position.set(side * (hw + 1.6), 3.6, 0);
+      post.position.set(side > 0 ? postLat.left : postLat.right, 3.6, 0);
       group.add(post);
     }
 
-    const beamGeo = new THREE.BoxGeometry((hw + 1.6) * 2, 1.5, 0.5);
+    const beamGeo = new THREE.BoxGeometry(postLat.left - postLat.right, 1.5, 0.5);
     const gantryTex = makeGantryTexture(track.def.name);
     const beamMat = new THREE.MeshStandardMaterial({
       map: gantryTex, roughness: 0.5, metalness: 0.2,
@@ -1237,6 +1504,12 @@ export function buildTrackMeshes(
   // decoration.
   if (track.def.corners && track.def.corners.length > 0) {
     const markerTex = makeMarkerTexture();
+    // The hoardings were measured at 2.8 display levels of shimmer and fixed by
+    // raising anisotropy to 16. These are the same thing — a high-contrast
+    // board seen almost edge-on down a straight — and were left at the default
+    // of 1, which is the state the hoardings were in when they were the second
+    // worst source of shimmer in the frame.
+    markerTex.anisotropy = 16;
     const markerMat = new THREE.MeshStandardMaterial({
       map: markerTex, roughness: 0.6, metalness: 0.05, side: THREE.DoubleSide,
     });
@@ -1251,9 +1524,12 @@ export function buildTrackMeshes(
       for (let d = 0; d < distances.length; d++) {
         const s = corner.s - distances[d];
         const i = track.indexAt(s);
-        const hw = track.width[i] * 0.5;
         const isStreetM = track.def.scenery === 'street';
-        const lat = -(hw + (isStreetM ? 1.4 : 4.2));
+        // Outside of the corner, which is where a real board goes: the inside
+        // is where the cars are. Positive curvature is a right turn, whose
+        // outside is the track's left — positive lateral.
+        const side: -1 | 1 = track.curvature[ci] > 0 ? 1 : -1;
+        const lat = clearLateral(i, side, isStreetM ? 1.4 : 4.2, 0.15, 0.5);
 
         const g = new THREE.PlaneGeometry(1.0, 1.0);
         // Each board uses the matching third of the stacked texture.
@@ -1313,7 +1589,7 @@ export function buildTrackMeshes(
     // one where a flat colour is most obvious.
     detail.apply(mat, track.def.scenery === 'desert' ? SURFACES.runoff : SURFACES.grass);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set((b.minX + b.maxX) * 0.5, Y_GROUND - 0.6, (b.minZ + b.maxZ) * 0.5);
+    mesh.position.set((b.minX + b.maxX) * 0.5, GROUND_Y, (b.minZ + b.maxZ) * 0.5);
     mesh.receiveShadow = false;
     root.add(mesh);
     geometries.push(geo);
@@ -1353,6 +1629,23 @@ function addMesh(
   materials: THREE.Material[],
   detail: SurfaceDetail,
   profile: SurfaceProfile,
+  /**
+   * Depth bias toward the camera, for a surface that lies on top of another.
+   *
+   * The circuit's surfaces are stacked in a few centimetres — run-off at 0,
+   * road at 0.02, paint at 0.035, kerb crown at 0.055 — and separation in
+   * metres is not what decides a depth test. With a 0.35m near plane and a
+   * 4000m far plane the depth buffer resolves about z^2 * 8.5e-8 metres, so
+   * 15mm of paint over asphalt starts fighting at 420m and the kerb's outer
+   * skirt, which clears the run-off by 1.5mm, fights from 130m — and from 78m
+   * in the cockpit, whose near plane is closer still. What that looks like is a
+   * dark line crawling along the outside of every kerb and a break-up of the
+   * white line at distance, which is exactly the reported "black lines".
+   *
+   * A polygon offset is the right fix rather than more separation: raising the
+   * kerb skirt far enough to win on depth would lift it visibly off the ground.
+   */
+  depthBias = 0,
 ): void {
   const geo = builder.build();
   if (!geo) return;
@@ -1361,6 +1654,9 @@ function addMesh(
   const mat = new THREE.MeshStandardMaterial({
     vertexColors: true,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    polygonOffset: depthBias !== 0,
+    polygonOffsetFactor: -depthBias,
+    polygonOffsetUnits: -depthBias,
   });
   // Projected grain, roughness break-up and a bump. Without this every surface
   // is a single flat colour over hundreds of square metres, which no amount of
@@ -1454,9 +1750,29 @@ function buildSceneryInstances(
   for (const item of items) {
     if (item.kind === 'tree') treeSlots++;
     else if (item.kind === 'grandstand') standSlots++;
+    // The main stands are in the same list — they have to be, so that the
+    // simulation collides with them — but the paddock draws them, from a much
+    // larger preset. Skipped here rather than filtered out of the list, because
+    // the list is the world and this is only one of the two things that read it.
+    else if (item.kind === 'mainstand') continue;
     else buildingSlots++;
   }
 
+  // `Math.max(1, n)` here and on `count` below is how a grandstand ended up
+  // standing in the middle of the road at Jeddah.
+  //
+  // Jeddah is a street circuit: 206 buildings, no trees, and no trackside
+  // grandstands. Allocating a minimum of one slot and then setting the draw
+  // count to that same minimum means an InstancedMesh with nothing to draw
+  // draws ONE instance anyway — at the identity matrix, because nothing ever
+  // wrote to it. The identity matrix is the world origin, and the world origin
+  // at Jeddah is on the racing surface at s=939m. Monaco has the same empty
+  // counts and got away with it only because its origin happens to fall off
+  // the road.
+  //
+  // The floor is kept on the allocation, because InstancedMesh rejects a
+  // capacity of zero, and removed from the count, which is what actually gets
+  // drawn.
   const trees = new THREE.InstancedMesh(treeGeo, treeMat, Math.max(1, treeSlots));
   const stands = new THREE.InstancedMesh(standGeo, standMat, Math.max(1, standSlots));
   const buildings = new THREE.InstancedMesh(buildingGeo, buildingMat, Math.max(1, buildingSlots));
@@ -1474,6 +1790,7 @@ function buildSceneryInstances(
   let buildingN = 0;
 
   for (const item of items) {
+    if (item.kind === 'mainstand') continue;
     quat.setFromAxisAngle(up, item.yaw);
 
     if (item.kind === 'building') {
@@ -1517,15 +1834,17 @@ function buildSceneryInstances(
     treeN++;
   }
 
-  trees.count = Math.max(1, treeN);
-  stands.count = Math.max(1, standN);
-  buildings.count = Math.max(1, buildingN);
+  trees.count = treeN;
+  stands.count = standN;
+  buildings.count = buildingN;
   for (const m of [trees, stands, buildings]) {
     m.instanceMatrix.needsUpdate = true;
     if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }
 
-  const meshes: THREE.InstancedMesh[] = [trees, stands];
+  const meshes: THREE.InstancedMesh[] = [];
+  if (treeN > 0) meshes.push(trees);
+  if (standN > 0) meshes.push(stands);
   if (isStreet && buildingN > 0) meshes.push(buildings);
 
   return {

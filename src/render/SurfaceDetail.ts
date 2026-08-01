@@ -390,15 +390,54 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
  * pixels change under a texture object the programs already hold.
  */
 
-const RUBBER_RES = 2048;
-const RUBBER_DATA = new Uint8Array(RUBBER_RES * RUBBER_RES);
+/**
+ * Coarsest the rubber map is allowed to be, metres per pixel.
+ *
+ * The map was a fixed 2048 square stretched over whatever the circuit's
+ * bounding box happened to be, so its resolution was a function of circuit
+ * SIZE — 0.53 m/px at Monaco, 0.64 at Bahrain, and 1.39 at Jeddah. The rubbered
+ * band is 1.4 to 2.85m of half-width, so at Jeddah, Monza and Spa the racing
+ * line was one to two pixels wide in the map, magnified back up with bilinear
+ * filtering, and drawn as a 31% darkening with a large drop in roughness. A
+ * dark, glossy ribbon reconstructed from a two-pixel stamp chain is a blocky,
+ * aliased dark line down the middle of the road — and it appeared on the long
+ * circuits and not on the short one that every fix was checked against.
+ *
+ * Sizing the map from the circuit instead of from a constant costs memory only
+ * where it is needed: seven circuits stay at 2048.
+ */
+const RUBBER_MAX_M_PER_PX = 0.7;
+/** Smallest and largest map, in pixels. */
+const RUBBER_MIN_RES = 1024;
+const RUBBER_MAX_RES = 4096;
+
+let RUBBER_RES = 2048;
+let RUBBER_DATA = new Uint8Array(RUBBER_RES * RUBBER_RES);
 const RUBBER_TEX = new THREE.DataTexture(RUBBER_DATA, RUBBER_RES, RUBBER_RES, THREE.RedFormat);
 RUBBER_TEX.wrapS = RUBBER_TEX.wrapT = THREE.ClampToEdgeWrapping;
 RUBBER_TEX.magFilter = THREE.LinearFilter;
 RUBBER_TEX.minFilter = THREE.LinearMipmapLinearFilter;
 RUBBER_TEX.generateMipmaps = true;
-RUBBER_TEX.anisotropy = 4;
+// 16, not 4. This is the one texture in the scene viewed at the most grazing
+// angle there is — it lies on the road and the camera looks along it — which is
+// the argument the grain maps below already make for themselves.
+RUBBER_TEX.anisotropy = 16;
 RUBBER_TEX.needsUpdate = true;
+
+/**
+ * Resizes the shared map, keeping the same texture object.
+ *
+ * The object identity matters: uniform values are captured by reference when a
+ * shader compiles, so every program already holding this texture has to keep
+ * holding it. Only the image behind it is replaced.
+ */
+function resizeRubberMap(res: number): void {
+  if (res === RUBBER_RES) return;
+  RUBBER_RES = res;
+  RUBBER_DATA = new Uint8Array(res * res);
+  RUBBER_TEX.image = { data: RUBBER_DATA, width: res, height: res };
+  RUBBER_TEX.needsUpdate = true;
+}
 
 /** World-to-map transform: (originX, originZ, 1/span, 1/span). */
 const RUBBER_XF = new THREE.Vector4(0, 0, 0, 0);
@@ -414,9 +453,8 @@ const RUBBER_XF = new THREE.Vector4(0, 0, 0, 0);
  * rubber down: the state a brand new resurfacing is in.
  */
 export function setRubberLine(track: TrackSpline | null): void {
-  RUBBER_DATA.fill(0);
-
   if (!track) {
+    RUBBER_DATA.fill(0);
     RUBBER_XF.set(0, 0, 0, 0);
     RUBBER_TEX.needsUpdate = true;
     return;
@@ -437,6 +475,15 @@ export function setRubberLine(track: TrackSpline | null): void {
   }
   const margin = 40;
   const span = Math.max(maxX - minX, maxZ - minZ) + margin * 2;
+
+  // Size the map to the circuit, then clear it — in that order, because
+  // resizing allocates a fresh buffer and clearing the old one first would be
+  // clearing the wrong array.
+  let res = RUBBER_MIN_RES;
+  while (res < RUBBER_MAX_RES && span / res > RUBBER_MAX_M_PER_PX) res *= 2;
+  resizeRubberMap(res);
+  RUBBER_DATA.fill(0);
+
   // Centre the circuit in the square rather than pinning it to a corner.
   const originX = (minX + maxX) * 0.5 - span * 0.5;
   const originZ = (minZ + maxZ) * 0.5 - span * 0.5;
