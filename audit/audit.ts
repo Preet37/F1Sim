@@ -110,6 +110,12 @@ function findSky(): THREE.Object3D | null {
 
 function renderFree(): void {
   if (!engine) return;
+  // The racing-line ribbon is drawn around the CAR, not around whatever camera
+  // is looking. A free camera standing on the racing line therefore has a 1.4m
+  // green ribbon a few centimetres under its eye, filling half the frame — and
+  // these shots exist to photograph the road surface. It is a driving aid, not
+  // part of the world, and the camera-mode shots put it back.
+  renderer.racingLine?.setVisible(false);
   const sky = findSky();
   if (sky) sky.position.copy(freeCam.position);
   freeCam.updateMatrixWorld(true);
@@ -174,7 +180,14 @@ async function load(circuitId: string): Promise<CircuitInfo> {
     name: 'audit',
     durationS: 0,
     laps: 5,
-    playerIndex: 0,
+    // Fully simulated: every car has a driver.
+    //
+    // With a player car in the field, nobody is driving it — there is no input
+    // in a headless sweep — so twelve seconds after the rolling start it is
+    // parked against the barrier, and all seven camera-mode shots are seven
+    // views of a wrecked car against a wall. Useless for judging a camera, and
+    // worse, plausible enough to be mistaken for a camera bug.
+    playerIndex: -1,
     standingStart: false,
     pitLaneStart: false,
     seed: 11,
@@ -184,8 +197,9 @@ async function load(circuitId: string): Promise<CircuitInfo> {
   focus = engine.playerCar ?? engine.cars[0];
 
   // Roll the field away from the grid and out onto the circuit, so the shots
-  // show cars on the racing line rather than twenty cars stacked on the grid.
-  for (let i = 0; i < Math.round(12 / PHYSICS_DT); i++) engine.step();
+  // show cars at racing speed on the racing line rather than twenty cars
+  // stacked on the grid. Long enough to be well clear of the start.
+  for (let i = 0; i < Math.round(45 / PHYSICS_DT); i++) engine.step();
 
   // A few frames so the camera rig, the environment probe and the post chain
   // settle before anything is photographed.
@@ -204,6 +218,17 @@ async function load(circuitId: string): Promise<CircuitInfo> {
 
 async function shootMode(mode: CameraMode): Promise<string> {
   if (!engine || !focus) throw new Error('no session');
+  // Hand the post chain back to the game's own camera.
+  //
+  // `PostFX.render(scene, camera)` ignores its camera argument whenever the
+  // composer exists — the render pass uses whatever `setCamera` last gave it —
+  // which is invisible in the game, because the game only ever has one camera.
+  // Here it meant every plan and eye-level shot left the composer pointed at
+  // the free camera, so all seven camera modes came back as seven identical
+  // copies of the last eye-level view, with no car in any of them. They looked
+  // plausible, which is why it took a contact sheet to notice.
+  renderer.post.setCamera(renderer.director.camera, renderer.scene);
+  renderer.racingLine?.setVisible(true);
   renderer.director.setMode(mode);
   // The rig re-seats on a mode change and then damps into place; a shot taken
   // on the first frame photographs the transition rather than the camera.
