@@ -4,18 +4,26 @@ import { TEAMS, DRIVERS, type Team, type Driver } from '../data/teams';
  * The paddock: every team, their car, their drivers and what the car is
  * actually good at.
  *
- * The performance bars are not decoration. Each one reads a multiplier that the
- * physics applies directly through `specForTeam` — power scales the engine's
- * peak watts, downforce scales the lift coefficient, drag scales the drag
- * coefficient. So a team shown as strong on power and heavy on drag really will
- * out-drag the field down the Monza straights and really will lose that time
- * again through the Suzuka esses, with no per-circuit special-casing anywhere.
- * The paddock is a readout of the simulation, not a brochure.
+ * WHAT THIS USED TO BE, AND WHY IT CHANGED
  *
- * The car is drawn as an SVG top-down silhouette in the team's own livery
- * rather than as a 3D preview. A second WebGL context competing with the one
- * running the race is a real cost on a phone for a picture that sits still, and
- * an SVG scales perfectly at any density for nothing.
+ * A grid of ten cards, each with a flat top-down SVG in the team's colours and
+ * seven bars beside it. Everything on it was true and none of it was a car.
+ * The old file's own comment defended the SVG on the grounds that "a second
+ * WebGL context competing with the one running the race is a real cost on a
+ * phone for a picture that sits still" — but the picture does not have to sit
+ * still, the game has been building a proper lofted car mesh with a per-team
+ * livery this whole time, and a screen whose entire subject is the machinery
+ * ought to show the machinery.
+ *
+ * So: one team at a time, its real car turning slowly on a lit stage, and the
+ * whole field one press away along the bottom. Nothing was traded for the
+ * picture — every multiplier the card grid printed is still printed, against
+ * the same scale, and the driver list is unchanged.
+ *
+ * The 3D is NOT owned here. This module builds the interface and reports which
+ * team is showing; `main.ts` owns the `CarStage`, because it is the thing that
+ * knows when a screen is being torn down and is therefore the only place a GL
+ * context can be released reliably.
  */
 
 /** The multipliers worth showing, and how to read them. */
@@ -48,64 +56,18 @@ function pct(v: number): string {
   return (d >= 0 ? '+' : '') + d.toFixed(1) + '%';
 }
 
-function hex(colour: number): string {
+export function hexColour(colour: number): string {
   return '#' + colour.toString(16).padStart(6, '0');
 }
 
 /**
- * A top-down F1 car in a team's livery.
- *
- * One path per major body area so the accent colour lands where a real livery
- * puts it — nose flash, engine cover spine, wing endplates — instead of tinting
- * the whole car and making every team look identical but differently coloured.
+ * Rough relative luminance, for deciding whether a nameplate's text goes white
+ * or black. A team running a near-white livery would otherwise put white type
+ * on a white slab.
  */
-function carSvg(team: Team): string {
-  const base = hex(team.colour);
-  const accent = hex(team.accent);
-  // Several teams run a near-black accent, which vanishes against a dark card.
-  // Wheels and outlines therefore use fixed neutrals, and the accent is only
-  // ever painted on top of the livery colour where it is guaranteed to read.
-  return `
-<svg viewBox="0 0 104 250" class="pad-car" aria-hidden="true">
-  <!-- Rear wing: widest element on the car, and the first thing that reads. -->
-  <rect x="6" y="222" width="92" height="17" rx="3" fill="${base}"/>
-  <rect x="6" y="222" width="92" height="6" rx="3" fill="${accent}"/>
-  <rect x="6" y="214" width="8" height="30" rx="2" fill="${base}"/>
-  <rect x="90" y="214" width="8" height="30" rx="2" fill="${base}"/>
-
-  <!-- Rear wheels -->
-  <rect x="2" y="168" width="26" height="46" rx="6" fill="#16181d" stroke="#3a3f49" stroke-width="1.5"/>
-  <rect x="76" y="168" width="26" height="46" rx="6" fill="#16181d" stroke="#3a3f49" stroke-width="1.5"/>
-
-  <!-- Floor and sidepods: the big body masses. -->
-  <path d="M28 104 L46 96 L46 204 L28 196 Z" fill="${base}"/>
-  <path d="M76 104 L58 96 L58 204 L76 196 Z" fill="${base}"/>
-  <rect x="40" y="150" width="24" height="58" rx="6" fill="${base}"/>
-
-  <!-- Engine cover spine, in the accent. -->
-  <rect x="42" y="86" width="20" height="122" rx="9" fill="${base}"/>
-  <rect x="48" y="92" width="8" height="110" rx="4" fill="${accent}"/>
-
-  <!-- Halo and cockpit -->
-  <ellipse cx="52" cy="112" rx="12" ry="10" fill="none" stroke="#22262e" stroke-width="4"/>
-  <circle cx="52" cy="112" r="5" fill="#101318"/>
-
-  <!-- Front wheels -->
-  <rect x="4" y="52" width="24" height="42" rx="6" fill="#16181d" stroke="#3a3f49" stroke-width="1.5"/>
-  <rect x="76" y="52" width="24" height="42" rx="6" fill="#16181d" stroke="#3a3f49" stroke-width="1.5"/>
-  <rect x="27" y="70" width="16" height="3" fill="#39404b"/>
-  <rect x="61" y="70" width="16" height="3" fill="#39404b"/>
-
-  <!-- Nose, tapering to the front wing. -->
-  <path d="M44 30 L60 30 L58 96 L46 96 Z" fill="${base}"/>
-  <path d="M47 34 L57 34 L56 70 L48 70 Z" fill="${accent}"/>
-
-  <!-- Front wing -->
-  <rect x="4" y="10" width="96" height="18" rx="3" fill="${base}"/>
-  <rect x="4" y="22" width="96" height="6" rx="3" fill="${accent}"/>
-  <rect x="4" y="6" width="7" height="26" rx="2" fill="${base}"/>
-  <rect x="93" y="6" width="7" height="26" rx="2" fill="${base}"/>
-</svg>`;
+function isLight(colour: number): boolean {
+  const r = (colour >> 16) & 255, g = (colour >> 8) & 255, b = colour & 255;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.55;
 }
 
 /** Drivers for a team, in race-number order. */
@@ -116,101 +78,211 @@ function driversFor(teamId: string): Driver[] {
 
 /**
  * Rough championship-order ranking, so the paddock lists the front of the grid
- * first the way a real standings page would.
- *
- * Weighted toward the terms that dominate lap time. This is a presentation
- * ordering only — nothing in the simulation reads it.
+ * first the way a real standings page would. Every term is a multiplier the
+ * physics actually applies, weighted by how much lap time it is worth.
  */
 function strengthOf(t: Team): number {
   const p = t.performance;
-  return p.powerMult * 1.0
-    + p.downforceMult * 1.0
-    + p.mechanicalGripMult * 0.8
-    - p.dragMult * 0.5
-    - p.tireWearMult * 0.25
-    - p.failureRate * 1.5;
+  return p.powerMult * 1.0 + p.downforceMult * 0.9 + p.mechanicalGripMult * 0.7
+    - p.dragMult * 0.45 - p.tireWearMult * 0.3 - p.failureRate * 1.2;
 }
 
+/** Teams in championship order — the order the paddock walks in. */
+export const PADDOCK_ORDER: Team[] = [...TEAMS].sort((a, b) => strengthOf(b) - strengthOf(a));
+
 export interface PaddockOptions {
-  /** Called when the player picks a team, if the screen is being used to choose. */
-  onSelect?: (teamId: string) => void;
-  /** Highlights the player's current team. */
+  /** Marks the player's own team, when there is a career running. */
   currentTeamId?: string;
-  /** Label for the action button on each card. */
+  /** Team to open on. Defaults to the player's team, then to the front row. */
+  initialTeamId?: string;
+  /**
+   * Called whenever the shown team changes, including once on build.
+   *
+   * This is how the 3D stage learns which livery to fit. The paddock does not
+   * hold the renderer itself — see the file header.
+   */
+  onShow?: (team: Team) => void;
+  /** Adds a commit button under the panels. Used if a career ever picks teams. */
+  onSelect?: (teamId: string) => void;
   selectLabel?: string;
 }
 
+export interface PaddockHandle {
+  /** Steps the shown team by `delta` places, wrapping at both ends. */
+  step(delta: number): void;
+  /** The team currently on the stage. */
+  current(): Team;
+}
+
 /**
- * Builds the paddock into `parent`.
+ * Builds the showcase into `parent` and returns a handle for driving it.
  *
- * Pure DOM construction with no per-frame work: the paddock is a static screen,
- * so it is built once on navigation and then simply sits there.
+ * The DOM is built ONCE. Walking the field rewrites text and class names on
+ * the nodes already there and never reconstructs them, which matters because
+ * a chevron held down is a navigation every 120ms and rebuilding four panels
+ * that often is exactly the pattern that has cost this project frames before.
  */
-export function buildPaddock(parent: HTMLElement, opts: PaddockOptions = {}): void {
-  const grid = document.createElement('div');
-  grid.className = 'paddock-grid';
-  parent.appendChild(grid);
+export function buildPaddock(parent: HTMLElement, opts: PaddockOptions = {}): PaddockHandle {
+  const order = PADDOCK_ORDER;
 
-  const ordered = [...TEAMS].sort((a, b) => strengthOf(b) - strengthOf(a));
+  const root = document.createElement('div');
+  root.className = 'showcase';
+  parent.appendChild(root);
 
-  ordered.forEach((team, rank) => {
-    const card = document.createElement('div');
-    card.className = 'paddock-card' + (team.id === opts.currentTeamId ? ' current' : '');
-    // The livery colour drives the card's own accents, so each team's panel is
-    // recognisable before any text is read.
-    card.style.setProperty('--team', hex(team.colour));
-    card.style.setProperty('--team-accent', hex(team.accent));
-    grid.appendChild(card);
+  // Reserved room for the car, on the layouts where it is a band across the
+  // top rather than a backdrop behind everything. Empty and hidden on a wide
+  // screen; on a portrait phone it is what stops the panels being laid over
+  // the car instead of under it. A spacer rather than a margin because the
+  // band's height is a viewport unit, and only CSS knows what that resolves to.
+  const spacer = document.createElement('div');
+  spacer.className = 'showcase-spacer';
+  spacer.setAttribute('aria-hidden', 'true');
+  root.appendChild(spacer);
 
-    const drivers = driversFor(team.id);
+  // --- Head: the nameplate, and what the car has in the back of it ---------
+  const head = document.createElement('div');
+  head.className = 'showcase-head';
+  root.appendChild(head);
 
-    const metricRows = METRICS.map((m) => {
+  const plate = document.createElement('div');
+  plate.className = 'nameplate';
+  plate.innerHTML =
+    '<span class="nameplate-rank"></span><span class="nameplate-name"></span>';
+  head.appendChild(plate);
+  const plateRank = plate.querySelector('.nameplate-rank') as HTMLElement;
+  const plateName = plate.querySelector('.nameplate-name') as HTMLElement;
+
+  const engine = document.createElement('div');
+  engine.className = 'showcase-engine';
+  head.appendChild(engine);
+
+  // --- Panels: the car's numbers, and the two people who drive it ---------
+  const panels = document.createElement('div');
+  panels.className = 'showcase-panels';
+  root.appendChild(panels);
+
+  const perfPanel = document.createElement('div');
+  perfPanel.className = 'showcase-panel';
+  perfPanel.innerHTML = '<h3>Car</h3>' + METRICS.map(() => `
+    <div class="perf-row">
+      <span class="perf-label"></span>
+      <span class="perf-track"><span class="perf-fill"></span></span>
+      <span class="perf-value"></span>
+    </div>`).join('');
+  panels.appendChild(perfPanel);
+  const perfRows = [...perfPanel.querySelectorAll('.perf-row')] as HTMLElement[];
+  // Labels never change, so they are written once here rather than on show.
+  perfRows.forEach((row, i) => {
+    (row.querySelector('.perf-label') as HTMLElement).textContent = METRICS[i].label;
+  });
+
+  const driverPanel = document.createElement('div');
+  driverPanel.className = 'showcase-panel';
+  driverPanel.innerHTML = '<h3>Drivers</h3>';
+  panels.appendChild(driverPanel);
+  // Two rows: every team on this grid runs two cars, and a row that is empty
+  // is hidden rather than removed so the DOM stays fixed.
+  const driverRows = [0, 1].map(() => {
+    const d = document.createElement('div');
+    d.className = 'sc-driver';
+    d.innerHTML =
+      '<span class="sc-num"></span><span class="sc-code"></span>' +
+      '<span class="sc-dname"></span><span class="sc-nat"></span>' +
+      '<span class="sc-skill"></span>';
+    driverPanel.appendChild(d);
+    return d;
+  });
+
+  let commit: HTMLButtonElement | null = null;
+  if (opts.onSelect) {
+    commit = document.createElement('button');
+    commit.type = 'button';
+    commit.className = 'btn primary';
+    commit.textContent = opts.selectLabel ?? 'Select';
+    commit.addEventListener('click', () => opts.onSelect?.(order[index].id));
+    root.appendChild(commit);
+  }
+
+  // --- The field, along the bottom ----------------------------------------
+  const strip = document.createElement('div');
+  strip.className = 'showcase-strip';
+  root.appendChild(strip);
+  const stripButtons = order.map((team, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'strip-team';
+    b.style.setProperty('--team', hexColour(team.colour));
+    b.setAttribute('aria-label', team.name);
+    b.innerHTML =
+      '<span class="strip-rank">' + String(i + 1).padStart(2, '0') + '</span>' +
+      '<span class="strip-code">' + team.code + '</span>';
+    b.addEventListener('click', () => show(i));
+    strip.appendChild(b);
+    return b;
+  });
+
+  // --- Showing a team ------------------------------------------------------
+  let index = Math.max(0, order.findIndex(
+    (t) => t.id === (opts.initialTeamId ?? opts.currentTeamId)));
+
+  function show(next: number): void {
+    index = ((next % order.length) + order.length) % order.length;
+    const team = order[index];
+    const colour = hexColour(team.colour);
+
+    // The team's colour drives the whole screen's chroma for as long as it is
+    // the team on the stage: the nameplate, the bars, the driver codes and the
+    // glow on the chevron blades all read it from here.
+    root.style.setProperty('--team', colour);
+    parent.style.setProperty('--team', colour);
+
+    plate.classList.toggle('on-light', isLight(team.colour));
+    plateRank.textContent = String(index + 1).padStart(2, '0');
+    plateName.textContent = team.name;
+    engine.innerHTML = team.engine.toUpperCase() +
+      (team.id === opts.currentTeamId ? ' &middot; <b>YOUR TEAM</b>' : '');
+
+    perfRows.forEach((row, i) => {
+      const m = METRICS[i];
       const raw = m.get(team);
-      // Normalise into 0..1 where 1 is always "good", whichever way the
-      // underlying multiplier runs.
       const t = (raw - m.min) / (m.max - m.min);
       const norm = Math.max(0, Math.min(1, m.inverted ? 1 - t : t));
-      return `
-        <div class="pad-metric">
-          <span class="pad-metric-label">${m.label}</span>
-          <span class="pad-bar"><span class="pad-bar-fill" style="width:${(norm * 100).toFixed(1)}%"></span></span>
-          <span class="pad-metric-value">${m.format(raw)}</span>
-        </div>`;
-    }).join('');
+      (row.querySelector('.perf-fill') as HTMLElement).style.width = (norm * 100).toFixed(1) + '%';
+      const value = row.querySelector('.perf-value') as HTMLElement;
+      value.textContent = m.format(raw);
+      // Green where the car is better than the baseline, yellow where it is
+      // worse: the same two signals these colours carry everywhere else.
+      value.className = 'perf-value ' + (norm >= 0.62 ? 'gain' : norm <= 0.3 ? 'loss' : '');
+    });
 
-    const driverRows = drivers.map((d) => `
-      <div class="pad-driver">
-        <span class="pad-num">${d.raceNumber}</span>
-        <span class="pad-dcode">${d.code}</span>
-        <span class="pad-dname">${d.firstName} ${d.lastName}</span>
-        <span class="pad-nat">${d.nationality}</span>
-        <span class="pad-skill">${Math.round(d.skill * 100)}</span>
-      </div>`).join('');
+    const drivers = driversFor(team.id);
+    driverRows.forEach((row, i) => {
+      const d = drivers[i];
+      row.style.display = d ? '' : 'none';
+      if (!d) return;
+      (row.querySelector('.sc-num') as HTMLElement).textContent = String(d.raceNumber);
+      const code = row.querySelector('.sc-code') as HTMLElement;
+      code.textContent = d.code;
+      code.style.color = isLight(team.colour) ? '#080b10' : '#fff';
+      (row.querySelector('.sc-dname') as HTMLElement).textContent = d.firstName + ' ' + d.lastName;
+      (row.querySelector('.sc-nat') as HTMLElement).textContent = d.nationality;
+      (row.querySelector('.sc-skill') as HTMLElement).textContent = String(Math.round(d.skill * 100));
+    });
 
-    // The header is the garage nameplate: the constructors' position, the team,
-    // its engine and its three-letter code, over a band of the livery colour.
-    // A team should be identifiable from the band alone, before any text.
-    card.innerHTML = `
-      <div class="pad-plate">
-        <span class="pad-rank">${String(rank + 1).padStart(2, '0')}</span>
-        <div class="pad-titles">
-          <div class="pad-team">${team.name}</div>
-          <div class="pad-engine">${team.engine}${team.id === opts.currentTeamId ? ' · your team' : ''}</div>
-        </div>
-        <span class="pad-code">${team.code}</span>
-      </div>
-      <div class="pad-body">
-        <div class="pad-bay">${carSvg(team)}</div>
-        <div class="pad-metrics">${metricRows}</div>
-      </div>
-      <div class="pad-drivers">${driverRows}</div>`;
+    stripButtons.forEach((b, i) => {
+      b.classList.toggle('is-current', i === index);
+      b.setAttribute('aria-current', i === index ? 'true' : 'false');
+    });
+    // Keep the selected band in view when the strip has to scroll.
+    stripButtons[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
 
-    if (opts.onSelect) {
-      const btn = document.createElement('button');
-      btn.className = 'btn pad-select';
-      btn.textContent = opts.selectLabel ?? 'Select';
-      btn.addEventListener('click', () => opts.onSelect?.(team.id));
-      card.appendChild(btn);
-    }
-  });
+    opts.onShow?.(team);
+  }
+
+  show(index);
+
+  return {
+    step: (delta: number) => show(index + delta),
+    current: () => order[index],
+  };
 }

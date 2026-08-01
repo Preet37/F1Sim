@@ -14,8 +14,11 @@
 }
 
 .setup-item {
-  background: var(--carbon-1);
+  /* Lit from above like every other panel in the hall: one pixel of catch
+     light on the top edge and a soft shadow underneath. */
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.9), rgba(10, 14, 19, 0.9));
   border: 1px solid var(--line);
+  box-shadow: var(--plate-lift);
   padding: 12px 14px 13px;
 }
 
@@ -175,8 +178,8 @@
 }
 
 .setup-derived-cell {
-  background: var(--carbon-1);
-  box-shadow: 0 0 0 1px var(--line);
+  background: linear-gradient(180deg, rgba(19, 25, 33, 0.9), rgba(10, 14, 19, 0.9));
+  box-shadow: 0 0 0 1px var(--line), var(--plate-lift);
   border: 0;
   padding: 7px 9px 8px;
   min-width: 0;
