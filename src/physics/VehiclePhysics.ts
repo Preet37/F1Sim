@@ -272,17 +272,29 @@ const BOOST_RATE_CLOSING = 22.0;
  * when the user turns" — not a lack of grip, a third of the steering range that
  * is inert.
  *
- * 0.072 puts peak g at 0.82 of the rack at 90km/h and at 0.95-1.00 from 150 to
- * 300, so every millimetre of stick travel changes the car and the last of it
- * puts the front tyre at its peak rather than half again past it. It costs 1.4%
- * of peak lateral at 250-300km/h (4.89 -> 4.84g, 5.61 -> 5.57g), which is inside
- * the noise of the validator and nothing a driver can feel.
+ * 0.062 puts peak g at 0.74 of the rack at 90km/h and 0.82-0.89 from 150 to 300,
+ * so nearly all of the stick travel changes the car and the last of it puts the
+ * front tyre at its peak rather than half again past it. Peak lateral g is
+ * unchanged to within 0.5%.
  *
- * The ceiling is set by high speed, not low. At 0.080 the rack runs out at
- * exactly full lock at 150 and 220km/h with no margin at all, which leaves the
- * AI nothing to steer with when it needs to correct.
+ * The ceiling is set by the AI, not by the tyre, and this is the honest limit of
+ * how far this can go without touching a controller this session does not own.
+ * `AIVehicleController` converts its demanded road-wheel angle back to input
+ * with `steerRad / (maxSteerRad * steerRackLimit(speed))` and then clamps to
+ * +-1, so a tighter rack means it saturates sooner and runs wide. Measured over
+ * `probe:racesweep`, 55 races across five seeds, changing ONLY this number:
+ *
+ *     0.050   mean lap 1.5127 of reference   16.00 finishers
+ *     0.062   (chosen)
+ *     0.072   mean lap 1.5377 of reference   15.60 finishers
+ *
+ * so the last third of that range costs the AI 1.7% of lap time for very little
+ * extra rack. 0.062 takes the part of the win that is nearly free. Going further
+ * wants the AI's guardrail and wander terms — which are written as fractions of
+ * the UNTAPERED `maxSteerRad` and then divided by the tapered ratio — expressed
+ * in road-wheel angles like the rest of that controller already is.
  */
-const RACK_TAPER_PER_MS = 0.072;
+const RACK_TAPER_PER_MS = 0.062;
 
 /**
  * Fraction of full steering lock the rack allows at a given speed, as a real
