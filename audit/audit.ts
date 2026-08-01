@@ -203,7 +203,7 @@ async function load(circuitId: string): Promise<CircuitInfo> {
 
   // A few frames so the camera rig, the environment probe and the post chain
   // settle before anything is photographed.
-  for (let i = 0; i < 8; i++) { frame(); await present(); }
+  for (let i = 0; i < 4; i++) { frame(); await present(); }
 
   return {
     id: def.id,
@@ -233,11 +233,12 @@ async function shootMode(mode: CameraMode): Promise<string> {
   // The rig re-seats on a mode change and then damps into place; a shot taken
   // on the first frame photographs the transition rather than the camera.
   //
-  // Fourteen frames, not thirty. `setMode` clears `initialised`, so the camera
-  // SNAPS to its new anchor on the first frame and only the damping refines it
-  // after that — and this is the dominant cost of the whole sweep, at seven
-  // modes times eleven circuits of full software-rendered frames.
-  for (let i = 0; i < 14; i++) { frame(); await present(); }
+  // Six frames, not thirty. `setMode` clears `initialised`, so the camera SNAPS
+  // to its new anchor on the first frame and only the damping refines it after
+  // that. This loop is the dominant cost of the entire sweep — seven modes
+  // times eleven circuits of full frames, software-rendered — and at thirty it
+  // put a sweep at three hours, which is long enough that nobody runs it.
+  for (let i = 0; i < 6; i++) { frame(); await present(); }
   return drawAndShoot(frame);
 }
 
