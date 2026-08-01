@@ -168,7 +168,48 @@ export const BASE_F1_SPEC: VehicleSpec = {
   // narrower rack cannot physically make the corner — the AI ran wide there on
   // every single lap regardless of how slowly it approached.
   maxSteerRad: 0.42,
-  brakeBalanceFront: 0.58,
+  /**
+   * Front share of the mechanical brake force.
+   *
+   * This is the single most effective stability control the model has, and it
+   * was set 6 points too far rearward. `probe:drivability` measures what a yaw
+   * disturbance does when the driver holds the wheel still, differenced against
+   * an undisturbed run of the same manoeuvre, and at 0.58 the answer under
+   * braking was that it NEVER decayed — at 150, 220 and 300 km/h alike, a bump
+   * taken with a quarter of brake pedal grew monotonically for the whole
+   * measurement window. Coasting and on power the same disturbance died away at
+   * 2.5-6 per second. The car was directionally unstable whenever the brake was
+   * touched, and that is precisely the "randomly starts over steering" report.
+   *
+   * The mechanism is the friction circle, not the tyre curve. Braking transfers
+   * load forward, so the front axle's grip budget grows and the rear's shrinks;
+   * for the car to stay understeering, the front has to be spending that extra
+   * budget on stopping rather than banking it as extra cornering force. Brake
+   * bias is exactly the lever that decides how much it spends. At 150 km/h with
+   * a quarter of pedal the rear was at 100.6% of its circle and the front at
+   * 91%: the rear was the limiting axle under braking, which is the definition
+   * of a car that snaps.
+   *
+   * Measured across the bias sweep, holding everything else fixed:
+   *
+   *     bias   hands-still divergences   brake pedal accepted   300-50 distance
+   *     0.58            6 of 12                  0.37                84 m
+   *     0.64            1 of 12                  0.65                94 m
+   *     0.70            0 of 12                  1.00                98 m
+   *
+   * 0.64 takes 12% more distance to stop from 300, which is real and is the
+   * price, and it is still 94m against a 75-175m expectation with peak braking
+   * at 6.35g. That is a trade worth making: the stopping distance is a number
+   * nobody feels and the spin is the entire complaint.
+   *
+   * It is also more defensible than it first looks. Published F1 bias figures of
+   * 54-58% are the split between the front and rear BRAKING SYSTEMS, and this
+   * car recovers up to 200kW through the MGU-K on the rear axle under braking —
+   * worth another 3.6kN of rear retardation at 200km/h — which this model banks
+   * as charge without applying as force. A mechanical split of 0.64 against a
+   * rear axle that is also harvesting is not an unusual car.
+   */
+  brakeBalanceFront: 0.64,
   // Sized so the calipers can lock the wheels at ANY speed, which is what a real
   // F1 brake system does and what this one used to get backwards.
   //
@@ -256,7 +297,7 @@ export const DEFAULT_SETUP: CarSetup = {
   downforceLevel: 0.5,
   aeroBalance: 0,
   suspensionBalance: 0,
-  brakeBias: 0.58,
+  brakeBias: 0.64,
   diffLock: 0.5,
   fuelLoadL: 100,
   gearing: 0.5,
@@ -268,7 +309,7 @@ export function baselineSetupFor(downforceDemand: number, fuelL: number): CarSet
     downforceLevel: downforceDemand,
     aeroBalance: 0,
     suspensionBalance: 0,
-    brakeBias: 0.58,
+    brakeBias: 0.64,
     diffLock: 0.5,
     fuelLoadL: fuelL,
     // Long gearing where there are long straights.

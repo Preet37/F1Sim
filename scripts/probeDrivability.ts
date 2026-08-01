@@ -92,6 +92,23 @@ const BRAKE_LEVEL = 0.25;
 const POWER_LEVEL = 0.70;
 
 /**
+ * Chassis sideslip above the settled value, degrees, that counts as the moment
+ * the car told the driver something was happening.
+ *
+ * The first version of this file used "the rear tyre is past its peak slip
+ * angle", 8.85 degrees, as the cue. That is far too late and it made every
+ * warning time look catastrophic. A driver does not wait for the tyre to reach
+ * its peak: two degrees of the car pointing somewhere other than where it is
+ * going is plainly visible out of the windscreen, plainly felt through the seat,
+ * and is the point at which a real driver's hands start to move. Measured on the
+ * low-speed power-oversteer case, the rear crosses its peak slip angle at 480ms
+ * and the car is gone at 590 — a "110ms warning" — but the chassis had already
+ * been visibly rotating since 350ms. The cue is now whichever of the two comes
+ * first, which is nearly always this one.
+ */
+const CUE_BETA_DEG = 2.0;
+
+/**
  * Speeds below which a braking transient cannot be measured, km/h.
  *
  * At 1.5g a car sheds 15m/s a second. Below this, a braking window long enough
@@ -160,6 +177,34 @@ function slew(cur: number, want: number, dt: number): number {
 
 type LoadCase = 'coast' | 'brake' | 'power';
 const LOAD_CASES: LoadCase[] = ['coast', 'brake', 'power'];
+
+/**
+ * Fraction of the steady-state LATERAL G to settle at before a combined-load
+ * test — not a fraction of the steering input, which is a different and much
+ * less meaningful number.
+ *
+ * This distinction wrecked two iterations of the probe. The g-against-lock curve
+ * is strongly nonlinear: at 90km/h half of full lock already produces 98% of the
+ * peak lateral g, because the last half of the rack is spent pushing the front
+ * tyre past its peak slip angle for no gain. So "settle at 72% of the limit
+ * steering" put the car at 98% of the limit CORNERING, the pedal then took it
+ * straight over the friction circle, and the probe reported a car that departs
+ * on the throttle at three quarters of its grip when in fact it departs at the
+ * edge of it, like every car.
+ *
+ * Coasting, 90% of the limit is a fair place to ask "does a bump spin it". With
+ * a pedal down it is not, and getting this wrong made the probe useless for two
+ * iterations. A car cornering at 90% of its lateral limit has 44% of its grip
+ * budget left for anything longitudinal; a quarter of the brake pedal is worth
+ * more than that. So the car departed, correctly, with NO disturbance at all —
+ * and the probe reported the disturbance test as a divergence at every speed,
+ * which told us only that the friction circle works.
+ *
+ * The informative question is whether the car is stable when the driver is
+ * INSIDE the circle, because that is where he spends the lap. 72% lateral with a
+ * quarter of brake pedal is a real, comfortably-inside-the-circle trail-brake.
+ */
+const CORNER_FRACTION: Record<LoadCase, number> = { coast: 0.90, brake: 0.72, power: 0.72 };
 
 /**
  * A car sitting in a settled corner at `speedMs`, holding `steer`, with the
@@ -266,19 +311,24 @@ interface LimitInfo {
   rearAtFullLockDeg: number;
   /** Extra steering input available beyond the peak before full lock. */
   plateauWidth: number;
+  /** The whole sweep, so a test can ask for a given fraction of the limit g. */
+  sweep: SteadyPoint[];
 }
 
 function findLimit(speedMs: number): LimitInfo {
   let peak = 0;
   let best: SteadyPoint | null = null;
   let full: SteadyPoint | null = null;
+  const sweep: SteadyPoint[] = [];
   for (let steer = 0.1; steer <= 1.0001; steer += 0.05) {
     const p = steadyState(speedMs, Math.round(steer * 100) / 100);
     if (p.spun) break;
+    sweep.push(p);
     if (p.latG > peak) { peak = p.latG; best = p; }
     full = p;
   }
   return {
+    sweep,
     steerAtPeak: best?.steer ?? 1,
     peakLatG: peak,
     rearAtPeakDeg: best?.rearSlipDeg ?? 0,
@@ -288,6 +338,24 @@ function findLimit(speedMs: number): LimitInfo {
     rearAtFullLockDeg: full?.rearSlipDeg ?? 0,
     plateauWidth: 1 - (best?.steer ?? 1),
   };
+}
+
+/**
+ * The steering input that produces `frac` of the peak steady-state lateral g,
+ * on the RISING side of the curve. Linear interpolation between sweep points.
+ */
+function steerForLatG(limit: LimitInfo, frac: number): number {
+  const want = limit.peakLatG * frac;
+  const s = limit.sweep;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i].latG >= want) {
+      if (i === 0) return s[0].steer;
+      const a = s[i - 1], b = s[i];
+      const t = (want - a.latG) / Math.max(b.latG - a.latG, 1e-6);
+      return a.steer + (b.steer - a.steer) * t;
+    }
+  }
+  return limit.steerAtPeak;
 }
 
 // ===========================================================================
@@ -301,6 +369,7 @@ interface TurnIn {
   zeta: number;
   oscillations: number;
   divergent: boolean;
+  /** Settled path curvature, 1/m. */
   settledYaw: number;
   settledLatG: number;
   meanKph: number;
@@ -320,6 +389,15 @@ interface TurnIn {
  * applied for 0.35s before the steering moves, so the load transfer is real and
  * established; the measurement window is then short, and `meanKph` says what
  * speed it actually happened at.
+ *
+ * The trace measured is PATH CURVATURE, yaw rate over speed, not yaw rate. They
+ * are the same thing at constant speed and completely different under a pedal:
+ * a car braking from 220km/h holding a fixed steering angle has a yaw rate that
+ * RISES as it slows even though nothing about its cornering has changed, because
+ * yaw rate is curvature times speed. Measured on raw yaw rate the braking rows
+ * reported overshoots of 300-400% and negative damping ratios, which described
+ * the deceleration and not the car. Curvature is what the driver is actually
+ * commanding with the steering wheel and it settles.
  */
 function turnInResponse(speedMs: number, steer: number, load: LoadCase): TurnIn | null {
   const bad: TurnIn = {
@@ -339,9 +417,15 @@ function turnInResponse(speedMs: number, steer: number, load: LoadCase): TurnIn 
     car.step(PHYSICS_DT, c, ENV);
   }
 
-  const dur = load === 'coast' ? 3.0 : 1.4;
+  // Turn-in is a short-timescale property by definition. Under a pedal the
+  // window has to be short too: a car braking for 1.4s has lost a third of its
+  // speed, the speed-sensitive rack has quietly fed in more lock, and the
+  // curvature is still climbing at the end — so the "settled" value read off the
+  // tail was the largest in the trace and t90 came out at 1.05 seconds for a car
+  // that had actually responded in a tenth of one.
+  const dur = load === 'coast' ? 3.0 : 0.8;
   const steps = Math.round(dur / PHYSICS_DT);
-  const tail = Math.round((load === 'coast' ? 0.6 : 0.3) / PHYSICS_DT);
+  const tail = Math.round((load === 'coast' ? 0.6 : 0.15) / PHYSICS_DT);
   const yaw = new Float64Array(steps);
   let s = 0;
   let latSum = 0, latN = 0, kphSum = 0;
@@ -353,7 +437,8 @@ function turnInResponse(speedMs: number, steer: number, load: LoadCase): TurnIn 
     else if (load === 'brake') { c.throttle = 0; c.brake = BRAKE_LEVEL; }
     else { c.throttle = POWER_LEVEL; c.brake = 0; }
     car.step(PHYSICS_DT, c, ENV);
-    yaw[i] = Math.abs(car.yawRate);
+    // Path curvature, 1/m — speed-invariant, unlike yaw rate. See the note above.
+    yaw[i] = Math.abs(car.yawRate) / Math.max(car.speedMs, 1);
     kphSum += car.speedKph;
     if (i > steps - tail) { latSum += Math.abs(car.lateralG); latN++; }
     if (isGone(car)) return bad;
@@ -421,76 +506,155 @@ interface YawStability {
   peakRearDeg: number;
   endDeg: number;
   decayRate: number;
-  outcome: 'settles' | 'rings' | 'diverges';
+  outcome: 'settles' | 'rings' | 'diverges' | 'baseline gone';
 }
 
 /**
- * Settles the car in a corner near the limit, hits it with a yaw impulse — a
- * kerb, a bump, a gust, another car's wake — and then HOLDS THE STEERING STILL.
+ * Runs the SAME manoeuvre twice, once with a yaw impulse and once without, and
+ * measures whether the difference between them grows or dies. The steering is
+ * held still in both.
  *
- * This is the most diagnostic test in the file. A car with an open-loop stable
- * yaw mode absorbs the disturbance with the driver doing nothing. A car whose
- * yaw mode is lightly damped needs the driver to be correcting continuously just
- * to hold a line, and any lapse — a distraction, a bump at the wrong moment —
- * becomes a spin that appears to come from nowhere. That is exactly what
- * "it randomly starts over steering" is.
+ * This is the most diagnostic test in the file, and the differential form is
+ * what makes it mean anything. Measuring the disturbed run on its own confuses
+ * two completely different things: the car's response to the bump, and the drift
+ * of the manoeuvre itself. Braking in a corner is inherently transient — the car
+ * sheds 40km/h in a second, downforce falls with the square of speed, and the
+ * speed-sensitive rack quietly feeds in more lock as it slows — so a "hands
+ * still" braking run runs out of grip on its own with no disturbance at all.
+ * Measured absolutely, every braking case at every speed read as a divergence,
+ * which told us only that the car cannot brake at 1.7g while cornering forever.
+ * Differencing against the undisturbed reference cancels all of that and leaves
+ * exactly the question worth asking: does a bump grow into a spin, or wash out?
+ *
+ * A car with an open-loop stable yaw mode absorbs the disturbance with the
+ * driver doing nothing. A car whose yaw mode is lightly damped needs the driver
+ * correcting continuously just to hold a line, and any lapse — a distraction, a
+ * bump at the wrong moment — becomes a spin that appears to come from nowhere.
+ * That is exactly what "it randomly starts over steering" is.
  */
 function yawStability(speedMs: number, steer: number, load: LoadCase, impulse: number): YawStability | null {
-  const gone: YawStability = { peakRearDeg: 99, endDeg: 99, decayRate: -99, outcome: 'diverges' };
-  const { car, hold } = settleCorner(speedMs, steer);
-  if (isGone(car)) return gone;
+  // How long the manoeuvre can be held before it stops being the manoeuvre.
+  //
+  // Under braking the window has to be bounded by SPEED, not by the clock. A car
+  // braking at 1.7g from 150km/h is doing 90km/h a second and a half later, and
+  // at 90km/h the peak lateral is 1.96g where at 150 it was 2.93 — so 72% of the
+  // ENTRY limit is 108% of the limit it now has, and the car leaves the road
+  // having done nothing wrong. That is not instability, it is arithmetic, and
+  // measuring it as instability is how a perfectly stable car reads as
+  // divergent at every speed under braking.
+  //
+  // It must still be long enough to contain the whole transient. At a modest
+  // cornering level the sideslip excursion after a bump peaks around 0.6s, so a
+  // 0.45s window truncated it before its peak and every case read as monotonic
+  // growth — the opposite error, and just as wrong. The differencing is what
+  // makes the longer window safe: the common-mode loss of speed and downforce
+  // appears in both runs and cancels, and a manoeuvre that is genuinely
+  // unsustainable is reported separately as `baseline gone` rather than being
+  // mistaken for instability.
+  const decelG = load === 'brake' ? 1.7 : 0;
+  const dur = load === 'coast'
+    ? 2.5
+    : decelG > 0
+      ? clamp((0.35 * speedMs) / (decelG * 9.81), 0.8, 1.5)
+      : 1.5;
+  const steps = Math.round(dur / PHYSICS_DT);
 
-  const c = controls({ steer });
-  // Apply the pedal and let the load transfer establish before the disturbance.
-  const preSteps = Math.round(0.35 / PHYSICS_DT);
-  for (let i = 0; i < preSteps; i++) {
-    c.steer = steer;
-    if (load === 'coast') { c.throttle = clamp(hold + (speedMs - car.speedMs) * 0.03, 0, 1); c.brake = 0; }
-    else if (load === 'brake') { c.throttle = 0; c.brake = BRAKE_LEVEL; }
-    else { c.throttle = POWER_LEVEL; c.brake = 0; }
-    car.step(PHYSICS_DT, c, ENV);
-    if (isGone(car)) return gone;
+  /** One run of the manoeuvre; returns the rear-slip trace, or null if it left. */
+  const run = (imp: number): { trace: Float64Array; gone: boolean; short: boolean } | null => {
+    const { car, hold } = settleCorner(speedMs, steer);
+    if (isGone(car)) return null;
+    const c = controls({ steer });
+    const pedals = () => {
+      c.steer = steer; // hands still
+      if (load === 'coast') { c.throttle = clamp(hold + (speedMs - car.speedMs) * 0.03, 0, 1); c.brake = 0; }
+      else if (load === 'brake') { c.throttle = 0; c.brake = BRAKE_LEVEL; }
+      else { c.throttle = POWER_LEVEL; c.brake = 0; }
+    };
+    // Let the load transfer establish before the disturbance arrives.
+    for (let i = 0; i < Math.round(0.35 / PHYSICS_DT); i++) {
+      pedals();
+      car.step(PHYSICS_DT, c, ENV);
+      if (isGone(car)) return null;
+    }
+    car.yawRate += Math.sign(car.yawRate || 1) * imp;
+
+    const trace = new Float64Array(steps);
+    for (let i = 0; i < steps; i++) {
+      pedals();
+      car.step(PHYSICS_DT, c, ENV);
+      trace[i] = rearSlipDeg(car);
+      if (isGone(car)) {
+        for (let j = i; j < steps; j++) trace[j] = SPIN_SLIP_DEG;
+        return { trace, gone: true, short: false };
+      }
+      if (car.speedKph < 25) {
+        for (let j = i; j < steps; j++) trace[j] = trace[i];
+        return { trace, gone: false, short: true };
+      }
+    }
+    return { trace, gone: false, short: false };
+  };
+
+  const ref = run(0);
+  if (!ref) return null;
+  // If the undisturbed manoeuvre itself leaves the road, the disturbance test
+  // has nothing to say — that is a pedal-margin result, and 3b reports it.
+  if (ref.gone) {
+    return { peakRearDeg: SPIN_SLIP_DEG, endDeg: SPIN_SLIP_DEG, decayRate: -99, outcome: 'baseline gone' };
+  }
+  const dis = run(impulse);
+  if (!dis) return null;
+  if (dis.gone) {
+    return { peakRearDeg: SPIN_SLIP_DEG, endDeg: SPIN_SLIP_DEG, decayRate: -99, outcome: 'diverges' };
   }
 
-  const baseRear = rearSlipDeg(car);
-  car.yawRate += Math.sign(car.yawRate || 1) * impulse;
-
-  const dur = load === 'coast' ? 2.5 : 1.5;
-  const steps = Math.round(dur / PHYSICS_DT);
   const dev = new Float64Array(steps);
-  let peak = 0, peakT = 0;
+  for (let i = 0; i < steps; i++) dev[i] = Math.abs(dis.trace[i] - ref.trace[i]);
 
-  for (let i = 0; i < steps; i++) {
-    c.steer = steer; // hands still
-    if (load === 'coast') { c.throttle = clamp(hold + (speedMs - car.speedMs) * 0.03, 0, 1); c.brake = 0; }
-    else if (load === 'brake') { c.throttle = 0; c.brake = BRAKE_LEVEL; }
-    else { c.throttle = POWER_LEVEL; c.brake = 0; }
-    car.step(PHYSICS_DT, c, ENV);
-    const d = Math.abs(rearSlipDeg(car) - baseRear);
-    dev[i] = d;
-    if (d > peak) { peak = d; peakT = i * PHYSICS_DT; }
-    if (isGone(car)) return { peakRearDeg: rearSlipDeg(car), endDeg: 99, decayRate: -99, outcome: 'diverges' };
-    if (car.speedKph < 25) return null;
+  // The peak is searched only in the first 70% of the window, so there is always
+  // a span left to measure the decay over. Searching the whole window let the
+  // peak land two samples from the end, leaving no span, and the guard against
+  // dividing by nothing then reported a decay of exactly zero — i.e. "diverges"
+  // — for traces that had visibly fallen from 3.8 degrees to 1.0.
+  const searchEnd = Math.floor(steps * 0.7);
+  let peak = 0, peakT = 0;
+  for (let i = 0; i < searchEnd; i++) {
+    if (dev[i] > peak) { peak = dev[i]; peakT = i * PHYSICS_DT; }
   }
 
   const end = dev[steps - 1];
   const span = (steps - 1) * PHYSICS_DT - peakT;
-  const decayRate = span > 0.2 && peak > 1e-3
+  // A disturbance too small to move the car cannot be said to decay or grow.
+  if (peak < 0.15) {
+    return {
+      peakRearDeg: dis.trace[steps - 1], endDeg: dis.trace[steps - 1],
+      decayRate: Infinity, outcome: 'settles',
+    };
+  }
+  const decayRate = span > 0.2
     ? -Math.log(Math.max(end, 1e-4) / peak) / span
     : 0;
 
-  let crossings = 0, prev = 0;
+  // Ringing means the disturbance comes BACK, not that the trace wiggles in the
+  // sixth decimal place. Only reversals that recover a tenth of the original
+  // excursion count; without that floor a disturbance that decays cleanly to
+  // zero was still labelled "rings" on numerical noise.
+  let crossings = 0, prev = 0, trough = peak;
   for (let i = 1; i < steps; i++) {
     const slope = dev[i] - dev[i - 1];
     const sg = slope > 1e-6 ? 1 : slope < -1e-6 ? -1 : 0;
-    if (sg !== 0 && prev !== 0 && sg !== prev) crossings++;
+    if (sg === -1) trough = Math.min(trough, dev[i]);
+    if (sg !== 0 && prev !== 0 && sg !== prev) {
+      if (sg === 1 && dev[i] > trough + peak * 0.1) crossings++;
+      else if (sg === -1) crossings++;
+    }
     if (sg !== 0) prev = sg;
   }
 
   const outcome: YawStability['outcome'] =
-    decayRate < 0.4 ? 'diverges' : crossings >= 4 ? 'rings' : 'settles';
+    decayRate < 0.4 ? 'diverges' : crossings >= 3 ? 'rings' : 'settles';
 
-  return { peakRearDeg: baseRear + peak, endDeg: baseRear + end, decayRate, outcome };
+  return { peakRearDeg: peak, endDeg: end, decayRate, outcome };
 }
 
 // ===========================================================================
@@ -538,6 +702,7 @@ function pedalMargin(speedMs: number, steer: number, pedal: 'brake' | 'power'): 
   const rearAtStart = rearSlipDeg(car);
   const gAtStart = Math.abs(car.lateralG);
   const rearPeakSlipDeg = (1.978 / car.spec.corneringStiffnessRear) * RAD;
+  const cueBeta = Math.abs(betaDeg(car)) + CUE_BETA_DEG;
 
   // 0.6 pedal units per second: brisk, but well inside what a foot does.
   const RAMP = 0.6;
@@ -555,7 +720,7 @@ function pedalMargin(speedMs: number, steer: number, pedal: 'brake' | 'power'): 
     t += PHYSICS_DT;
 
     const rear = rearSlipDeg(car);
-    if (tPastPeak < 0 && rear > rearPeakSlipDeg) tPastPeak = t;
+    if (tPastPeak < 0 && (rear > rearPeakSlipDeg || Math.abs(betaDeg(car)) > cueBeta)) tPastPeak = t;
     // Departed: the rear is past anything a driver holds on a race track and
     // still climbing, or the car is simply gone.
     if (rear > 14 || isGone(car)) {
@@ -661,6 +826,16 @@ interface Catch {
  * come off the pedal that caused it. Nothing here can save a car that the tyre
  * model has already decided is unrecoverable.
  *
+ * WHEN the driver starts correcting is the part that has to be right, and the
+ * first version of this got it wrong in a way that made the car look far worse
+ * than it is. It applied the pedal, waited a fixed 350ms, applied the yaw
+ * impulse, waited another 250ms, and only then corrected — so in the cases where
+ * the PEDAL is itself the disturbance, the driver sat still for 600ms while the
+ * car left the road. No human does that. A driver reacts 250ms after the car
+ * gives him a CUE, and the cue is the rear going past its peak slip angle, which
+ * is the point at which the back of the car starts to feel light. The reaction
+ * clock therefore starts there, wherever there happens to fall.
+ *
  * The sweep matters more than any single number. If the car is recoverable at 6
  * degrees and gone at 8, the driver has a two-degree window he cannot see and
  * cannot feel, and every mistake past it is a donut. A real car is recoverable
@@ -672,6 +847,9 @@ function catchability(speedMs: number, steer: number, load: LoadCase, impulse: n
   if (isGone(car)) return { slipAtCorrectionDeg: 99, recovered: false, peakDeg: 99, speedKept: 0 };
 
   const entrySpeed = car.speedMs;
+  // What the driver actually feels first. See CUE_BETA_DEG.
+  const cueRearDeg = (1.978 / car.spec.corneringStiffnessRear) * RAD;
+  const cueBeta = Math.abs(betaDeg(car)) + CUE_BETA_DEG;
   const c = controls({ steer });
   let throttleNow = hold;
   let brakeNow = 0;
@@ -684,20 +862,18 @@ function catchability(speedMs: number, steer: number, load: LoadCase, impulse: n
     c.brake = brakeNow;
   };
 
-  for (let i = 0; i < Math.round(0.35 / PHYSICS_DT); i++) {
-    c.steer = steer;
-    setPedals();
-    car.step(PHYSICS_DT, c, ENV);
-    if (isGone(car)) return { slipAtCorrectionDeg: 99, recovered: false, peakDeg: 99, speedKept: 0 };
-  }
-
+  // The pedal goes on and the disturbance arrives together — a bump taken on
+  // the power, or a kerb clipped under braking.
+  setPedals();
   car.yawRate += Math.sign(car.yawRate || 1) * impulse;
 
   let peak = 0;
   let s = steer;
 
-  // --- Reaction window: hands and feet frozen -----------------------------
-  for (let i = 0; i < Math.round(REACTION_S / PHYSICS_DT); i++) {
+  // --- Wait for the cue, then a human reaction time ------------------------
+  let cued = false;
+  let sinceCue = 0;
+  for (let i = 0; i < Math.round(3.0 / PHYSICS_DT); i++) {
     c.steer = s;
     setPedals();
     car.step(PHYSICS_DT, c, ENV);
@@ -705,6 +881,11 @@ function catchability(speedMs: number, steer: number, load: LoadCase, impulse: n
     if (isGone(car)) {
       return { slipAtCorrectionDeg: rearSlipDeg(car), recovered: false, peakDeg: peak, speedKept: 0 };
     }
+    if (!cued && (rearSlipDeg(car) > cueRearDeg || Math.abs(betaDeg(car)) > cueBeta)) cued = true;
+    if (cued) { sinceCue += PHYSICS_DT; if (sinceCue >= REACTION_S) break; }
+    // Nothing ever went wrong: this disturbance simply did not depart.
+    if (!cued && i * PHYSICS_DT > 1.2) break;
+    if (car.speedKph < 25) return null;
   }
   const slipAtCorrection = rearSlipDeg(car);
 
@@ -830,7 +1011,7 @@ console.log('   over%  yaw overshoot before settling. 5-20% alive, >40% darty.')
 console.log('   zeta   damping ratio implied by that overshoot. <0.35 rings.');
 console.log('   osc    yaw-rate reversals after the first peak. >2 is visible ringing.');
 console.log('');
-console.log('   speed  load    steer    t90   tPeak    over%   zeta  osc  yaw_ss   latG  meanKph');
+console.log('   speed  load    steer    t90   tPeak    over%   zeta  osc  curv_ss   latG  meanKph');
 console.log('   -------------------------------------------------------------------------------');
 const turnInWorst = { t90: 0, over: 0, zeta: 9 };
 for (const kph of SPEEDS) {
@@ -839,7 +1020,7 @@ for (const kph of SPEEDS) {
       console.log(`   ${String(kph).padStart(5)}  ${load.padEnd(6)}  ${skip(46)}  (cannot brake at this speed for a measurable window)`);
       continue;
     }
-    const target = Math.max(0.1, LIMITS.get(kph)!.steerAtPeak * 0.65);
+    const target = Math.max(0.1, steerForLatG(LIMITS.get(kph)!, 0.65));
     const r = turnInResponse(kph / 3.6, target, load);
     if (!r) { console.log(`   ${String(kph).padStart(5)}  ${load.padEnd(6)}  ${skip(46)}`); continue; }
     if (Number.isFinite(r.t90)) turnInWorst.t90 = Math.max(turnInWorst.t90, r.t90);
@@ -848,31 +1029,38 @@ for (const kph of SPEEDS) {
     console.log(
       `   ${String(kph).padStart(5)}  ${load.padEnd(6)}  ${f(target, 2, 5)}  ${f(r.t90, 3)}  ${f(r.tPeak, 3)}` +
       `  ${f(r.overshootPct, 1, 7)}  ${r.zeta > 1 ? '  >1  ' : f(r.zeta, 2)}  ${String(r.oscillations).padStart(3)}` +
-      `  ${f(r.settledYaw, 3)}  ${f(r.settledLatG, 2)}  ${f(r.meanKph, 0, 7)}` +
+      `  ${f(r.settledYaw, 4, 7)}  ${f(r.settledLatG, 2)}  ${f(r.meanKph, 0, 7)}` +
       (r.divergent ? '   DIVERGENT' : ''),
     );
   }
 }
 
 // ===========================================================================
-console.log('\n2. YAW STABILITY  (settled at 90% of the limit, yaw impulse, HANDS STILL)');
-console.log('   decay  1/s at which the disturbance dies away, measured from its peak.');
+console.log('\n2. YAW STABILITY  (yaw impulse, HANDS STILL, differenced against an');
+console.log('   undisturbed reference run of the same manoeuvre)');
+console.log('   Coasting cases sit at 90% of the limit; pedal cases at ' +
+            (CORNER_FRACTION.brake * 100).toFixed(0) + '%, which is');
+console.log('   inside the friction circle once the pedal is added.');
+console.log('   peakDev/endDev  how far the disturbed run diverged from the reference.');
+console.log('   decay  1/s at which that difference dies away, measured from its peak.');
 console.log('          Below 0.4 the car is not recovering on its own and the driver');
 console.log('          has to catch every bump. Above ~1.5 it settles like a real car.');
 console.log('');
-console.log('   speed  load    impulse   peakRear    at end   decay   outcome');
+console.log('   speed  load    impulse    peakDev    endDev   decay   outcome');
 console.log('   ---------------------------------------------------------------');
 let stabWorst = Infinity;
 let stabDiverged = 0;
+let stabBaselineGone = 0;
 for (const kph of SPEEDS) {
   for (const load of LOAD_CASES) {
     if (!usable(kph, load)) continue;
-    const target = Math.max(0.1, LIMITS.get(kph)!.steerAtPeak * 0.9);
+    const target = Math.max(0.1, steerForLatG(LIMITS.get(kph)!, CORNER_FRACTION[load]));
     for (const imp of [0.15, 0.35]) {
       const r = yawStability(kph / 3.6, target, load, imp);
       if (!r) continue;
       if (r.outcome === 'diverges') stabDiverged++;
-      if (r.decayRate > -50) stabWorst = Math.min(stabWorst, r.decayRate);
+      if (r.outcome === 'baseline gone') stabBaselineGone++;
+      if (r.decayRate > -50 && Number.isFinite(r.decayRate)) stabWorst = Math.min(stabWorst, r.decayRate);
       console.log(
         `   ${String(kph).padStart(5)}  ${load.padEnd(6)}  ${f(imp, 2, 7)}  ${f(r.peakRearDeg, 2, 8)}deg` +
         `  ${f(r.endDeg, 2, 6)}deg  ${f(r.decayRate, 2)}   ${r.outcome}`,
@@ -903,8 +1091,9 @@ console.log('\n3b. PEDAL MARGIN  (settled at 85% of the limit, then ramp a pedal
 console.log('    pedal@gone  how much of the pedal the car accepts before the rear goes.');
 console.log('                This is the number that matters: it is "how much brake can');
 console.log('                I carry into this corner", and no skidpad can see it.');
-console.log('    warning     seconds between the rear passing its own peak slip angle');
-console.log('                and the car being gone. Under 0.3s no human can act on it.');
+console.log('    warning     seconds between the car first telling the driver (2 deg of extra');
+console.log('                sideslip, or the rear past its peak slip angle) and being gone.');
+console.log('                Under 0.3s no human can act on it.');
 console.log('');
 console.log('   speed  pedal   pedal@gone  rear@start  rear@gone  warning  g@gone%');
 console.log('   ----------------------------------------------------------------------');
@@ -912,7 +1101,7 @@ let worstBrakeMargin = Infinity;
 let worstWarning = Infinity;
 for (const kph of SPEEDS) {
   for (const pedal of ['brake', 'power'] as const) {
-    const target = Math.max(0.1, LIMITS.get(kph)!.steerAtPeak * 0.85);
+    const target = Math.max(0.1, steerForLatG(LIMITS.get(kph)!, 0.85));
     const r = pedalMargin(kph / 3.6, target, pedal);
     if (!r) { console.log(`   ${String(kph).padStart(5)}  ${pedal.padEnd(6)}  ${skip(10)}`); continue; }
     if (pedal === 'brake') worstBrakeMargin = Math.min(worstBrakeMargin, r.pedalAtDeparture);
@@ -935,13 +1124,20 @@ console.log('              below maxCatch the recovery window has holes in it.')
 console.log('');
 console.log('   speed  load    maxCatch   firstLost   recovered');
 console.log('   ------------------------------------------------------');
-let catchWorst = Infinity;
+let catchWorstLost = Infinity;
+let catchLostCases = 0;
 for (const kph of SPEEDS) {
   for (const load of LOAD_CASES) {
     if (!usable(kph, load)) continue;
-    const target = Math.max(0.1, LIMITS.get(kph)!.steerAtPeak * 0.9);
+    const target = Math.max(0.1, steerForLatG(LIMITS.get(kph)!, CORNER_FRACTION[load]));
     const r = catchSweep(kph / 3.6, target, load);
-    catchWorst = Math.min(catchWorst, r.maxCatchableDeg);
+    // The headline number is the SMALLEST angle from which the car could not be
+    // saved, not the largest from which it could. `maxCatchable` is bounded by
+    // how far the sweep managed to push the car, so a very stable case reports a
+    // small maxCatchable simply because nothing ever got it sideways — reading
+    // that as a failure is backwards.
+    if (r.firstLostDeg < catchWorstLost) catchWorstLost = r.firstLostDeg;
+    if (Number.isFinite(r.firstLostDeg)) catchLostCases++;
     console.log(
       `   ${String(kph).padStart(5)}  ${load.padEnd(6)}  ${f(r.maxCatchableDeg, 2, 8)}deg` +
       `  ${f(r.firstLostDeg, 2, 9)}deg   ${String(r.recovered).padStart(2)}/${r.total}`,
@@ -973,7 +1169,11 @@ console.log('  worst turn-in overshoot           ' + turnInWorst.over.toFixed(1)
 console.log('  worst yaw damping ratio           ' + turnInWorst.zeta.toFixed(2) + '     (want > 0.35)');
 console.log('  worst free-yaw decay rate         ' + stabWorst.toFixed(2) + ' 1/s (want > 0.40)');
 console.log('  hands-still divergences           ' + stabDiverged);
+console.log('  cases where the pedal alone left  ' + stabBaselineGone + '   (see 3b)');
 console.log('  worst brake pedal margin          ' + (Number.isFinite(worstBrakeMargin) ? worstBrakeMargin.toFixed(2) : 'n/a') + '     (want > 0.5)');
 console.log('  shortest departure warning        ' + (Number.isFinite(worstWarning) ? worstWarning.toFixed(2) + ' s' : 'never departed') + '  (want > 0.30)');
-console.log('  worst catchable rear slip         ' + catchWorst.toFixed(2) + ' deg (want > ' + REAR_PEAK_DEG.toFixed(1) + ', the tyre peak)');
+console.log('  smallest UNCATCHABLE rear slip    ' +
+            (Number.isFinite(catchWorstLost) ? catchWorstLost.toFixed(2) + ' deg' : 'nothing was lost') +
+            ' (want > ' + REAR_PEAK_DEG.toFixed(1) + ', the tyre peak)');
+console.log('  load cases with any loss          ' + catchLostCases);
 console.log('');

@@ -261,8 +261,28 @@ const BOOST_RATE_CLOSING = 22.0;
  * minimum radius is unchanged at 8.4m at 30km/h and 8.8m at 40km/h, and between
  * 60 and 100km/h the tighter rack makes the car turn TIGHTER, not wider, because
  * the front tire is no longer being pushed past its peak.
+ *
+ * 0.050 did not finish the job, and `probe:drivability` says where it stopped.
+ * The quasi-static lock ramp reports the steering input at which lateral g
+ * peaks, and at 0.050 that was 0.69 at 90km/h and 0.77 at 150 and 220. So the
+ * last quarter to third of the rack produced NOTHING: the front tyre went from
+ * 9.1 degrees of slip at peak g to 13.9 at full lock, and the car returned
+ * 97-99% of its peak g the whole way. That is a driver hauling on more lock and
+ * feeling the car do nothing, which is the other half of "it's literally gliding
+ * when the user turns" — not a lack of grip, a third of the steering range that
+ * is inert.
+ *
+ * 0.072 puts peak g at 0.82 of the rack at 90km/h and at 0.95-1.00 from 150 to
+ * 300, so every millimetre of stick travel changes the car and the last of it
+ * puts the front tyre at its peak rather than half again past it. It costs 1.4%
+ * of peak lateral at 250-300km/h (4.89 -> 4.84g, 5.61 -> 5.57g), which is inside
+ * the noise of the validator and nothing a driver can feel.
+ *
+ * The ceiling is set by high speed, not low. At 0.080 the rack runs out at
+ * exactly full lock at 150 and 220km/h with no margin at all, which leaves the
+ * AI nothing to steer with when it needs to correct.
  */
-const RACK_TAPER_PER_MS = 0.050;
+const RACK_TAPER_PER_MS = 0.072;
 
 /**
  * Fraction of full steering lock the rack allows at a given speed, as a real
