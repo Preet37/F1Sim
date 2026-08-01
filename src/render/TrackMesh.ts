@@ -50,6 +50,26 @@ const Y_ROAD = 0.02;
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 
+/**
+ * Height of painted markings above the local road surface, in metres.
+ *
+ * Exported so a probe can find the paint in the built geometry without having
+ * to guess at it — the edge line has to be tested for where it actually IS,
+ * not for where the code that draws it says it should be.
+ */
+export const PAINT_HEIGHT_M = Y_LINE;
+
+/**
+ * Width of the white line at the edge of the racing surface, in metres.
+ *
+ * The line is painted INBOARD of `track.width * 0.5`, so its OUTER edge lies
+ * exactly on the half-width the simulation and race control use. That is the
+ * regulation boundary — the line itself is part of the track — and it is why
+ * `RaceControlManager.checkTrackLimits` can compare against `halfWidthAt`
+ * directly with no offset of its own.
+ */
+export const EDGE_LINE_WIDTH_M = 0.14;
+
 const COLOUR = {
   // Asphalt's real albedo is around 0.10, which is sRGB 0x58 — not the near
   // black it is usually guessed at. The previous 0x1d survived daylight only
@@ -124,6 +144,51 @@ class StripBuilder {
     // Triangle winding: (a,b,c) and (a,c,d), counter-clockwise seen from above.
     this.tri(ax, ay, az, bx, by, bz, cx, cy, cz, colour);
     this.tri(ax, ay, az, cx, cy, cz, dx, dy, dz, colour);
+  }
+
+  /**
+   * Adds a ground quad, with each of its two triangles wound to face UP.
+   *
+   * Backface culling reads the WINDING, not the normal: three.js draws these
+   * meshes with `side: FrontSide`, and a front face is one whose vertices run
+   * counter-clockwise as seen from the camera. `tri` below flips the stored
+   * normal so the lighting is right either way, which is exactly what makes a
+   * wrongly wound quad so hard to spot — it is not mis-lit, it is absent.
+   *
+   * Two things produce a wrongly wound ground quad here.
+   *
+   * The first is writing the corners out in a fixed order on both sides of the
+   * car. Inner-then-outer runs the signed lateral coordinate upward on the left
+   * and downward on the right, so the same code that draws the left-hand white
+   * line deletes the right-hand one.
+   *
+   * The second cannot be fixed by ordering at all: where a corner's radius is
+   * smaller than the track's half width — COTA's turn 11 is, at fifteen metres
+   * of road round a hairpin — the inner edge of the road sweeps BACKWARDS, and
+   * the quad folds into a bowtie whose two triangles genuinely face opposite
+   * ways. Deciding per triangle is the only thing that covers both, and the
+   * cost is one cross product on a mesh built once at load.
+   */
+  quadFlat(
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    dx: number, dy: number, dz: number,
+    colour: THREE.Color,
+  ): void {
+    this.triUp(ax, ay, az, bx, by, bz, cx, cy, cz, colour);
+    this.triUp(ax, ay, az, cx, cy, cz, dx, dy, dz, colour);
+  }
+
+  private triUp(
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    colour: THREE.Color,
+  ): void {
+    const up = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+    if (up >= 0) this.tri(ax, ay, az, bx, by, bz, cx, cy, cz, colour);
+    else this.tri(ax, ay, az, cx, cy, cz, bx, by, bz, colour);
   }
 
   /**
@@ -220,7 +285,7 @@ export function buildTrackMeshes(
   const pit = new StripBuilder();
 
   const KERB_W = 0.9;
-  const LINE_W = 0.14;
+  const LINE_W = EDGE_LINE_WIDTH_M;
   const RUNOFF_W = 9;
   const WALL_H = 1.5;
 
@@ -320,22 +385,53 @@ export function buildTrackMeshes(
    */
   const KERB_SUB = quality === 'low' ? 2 : Math.max(2, Math.round((step * (track.length / count)) / 1.0));
 
-  /** Interpolated track frame between two nodes. */
+  /**
+   * Interpolated track frame between two nodes.
+   *
+   * Walks the NODE polyline from `a` to `b` rather than the straight chord
+   * between them, which matters because `b` is `step` nodes further on and the
+   * nodes in between are the circuit. `TrackSpline.project` measures a car's
+   * lateral position against that same polyline, so a surface built on it is
+   * built on exactly the boundary race control judges against; a surface built
+   * on the chord is not. At six metres a chord across a hairpin cuts nearly a
+   * quarter of a metre inside the real edge, and the white line drawn on it
+   * showed the driver a limit a quarter of a metre tighter than the one being
+   * enforced.
+   *
+   * Subdividing alone did not fix that — the old version lerped a to b directly,
+   * so every substep landed on the same chord and the kerb's own claim to
+   * "follow a corner instead of chording across it" was not true either.
+   */
   const frameLerp = (a: number, b: number, f: number) => {
-    const g = 1 - f;
-    let nx = track.nx[a] * g + track.nx[b] * f;
-    let nz = track.nz[a] * g + track.nz[b] * f;
+    const span = ((b - a) % count + count) % count || count;
+    const u = f * span;
+    const k = Math.min(span - 1, Math.floor(u));
+    const t = u - k;
+    const i = (a + k) % count;
+    const j = (i + 1) % count;
+    const g = 1 - t;
+    let nx = track.nx[i] * g + track.nx[j] * t;
+    let nz = track.nz[i] * g + track.nz[j] * t;
     const len = Math.hypot(nx, nz) || 1;
     nx /= len; nz /= len;
     return {
-      x: track.px[a] * g + track.px[b] * f,
-      z: track.pz[a] * g + track.pz[b] * f,
+      x: track.px[i] * g + track.px[j] * t,
+      z: track.pz[i] * g + track.pz[j] * t,
       nx, nz,
-      elev: track.elevation[a] * g + track.elevation[b] * f,
-      bank: track.banking[a] * g + track.banking[b] * f,
-      hw: (track.width[a] * g + track.width[b] * f) * 0.5,
+      elev: track.elevation[i] * g + track.elevation[j] * t,
+      bank: track.banking[i] * g + track.banking[j] * t,
+      hw: (track.width[i] * g + track.width[j] * t) * 0.5,
     };
   };
+
+  /** World position at a frame station and a signed lateral offset. */
+  const framePt = (
+    s: ReturnType<typeof frameLerp>, lat: number, dy: number,
+  ): readonly [number, number, number] => [
+    s.x + s.nx * lat,
+    s.elev + (s.bank !== 0 ? -lat * Math.tan(s.bank) : 0) + dy,
+    s.z + s.nz * lat,
+  ];
 
   /** Sweeps the kerb section from node `a` to node `b` on one side. */
   const sweepKerb = (a: number, b: number, sign: 1 | -1): void => {
@@ -415,27 +511,51 @@ export function buildTrackMeshes(
     // which produces blobs with genuine boundaries in world space.
     const drift = 0.5 + 0.5 * Math.sin(a * 0.0143) * Math.sin(a * 0.0067 + 1.7);
     const shade = COLOUR.asphaltMix.copy(COLOUR.asphaltDark).lerp(COLOUR.asphalt, drift);
-    road.quad(
-      px(a, -hwA), py(a, -hwA) + Y_ROAD, pz(a, -hwA),
-      px(b, -hwB), py(b, -hwB) + Y_ROAD, pz(b, -hwB),
-      px(b, hwB), py(b, hwB) + Y_ROAD, pz(b, hwB),
-      px(a, hwA), py(a, hwA) + Y_ROAD, pz(a, hwA),
-      shade,
-    );
 
-    // --- White lines at the track edge ------------------------------------
-    for (const side of [-1, 1] as const) {
-      const inA = side * (hwA - LINE_W);
-      const inB = side * (hwB - LINE_W);
-      const outA = side * hwA;
-      const outB = side * hwB;
-      lines.quad(
-        px(a, inA), py(a, inA) + Y_LINE, pz(a, inA),
-        px(b, inB), py(b, inB) + Y_LINE, pz(b, inB),
-        px(b, outB), py(b, outB) + Y_LINE, pz(b, outB),
-        px(a, outA), py(a, outA) + Y_LINE, pz(a, outA),
-        COLOUR.whiteLine,
+    // The asphalt and the white lines at its edge are swept together, one
+    // sub-quad per NODE rather than one per step, so both land on the polyline
+    // the simulation measures against. See `frameLerp`: a single six-metre quad
+    // chords across the node in the middle of it, and at a hairpin that put the
+    // painted limit a quarter of a metre inside the enforced one.
+    //
+    // The extra triangles are the cheapest in the scene — two per node for the
+    // road and four for the paint, against eleven profile segments per node,
+    // per side, for the kerb sitting immediately outboard of them.
+    for (let k = 0; k < step; k++) {
+      const s0 = frameLerp(a, b, k / step);
+      const s1 = frameLerp(a, b, (k + 1) / step);
+
+      const r00 = framePt(s0, -s0.hw, Y_ROAD), r01 = framePt(s1, -s1.hw, Y_ROAD);
+      const r11 = framePt(s1, s1.hw, Y_ROAD), r10 = framePt(s0, s0.hw, Y_ROAD);
+      road.quadFlat(
+        r00[0], r00[1], r00[2], r01[0], r01[1], r01[2],
+        r11[0], r11[1], r11[2], r10[0], r10[1], r10[2],
+        shade,
       );
+
+      // --- White lines at the track edge ----------------------------------
+      //
+      // Painted inboard of the half-width, so the OUTER edge of the paint is
+      // exactly `halfWidthAt` — the regulation boundary, and the one
+      // `RaceControlManager.checkTrackLimits` judges against.
+      //
+      // Emitted through `quadFlat`, which decides the winding rather than
+      // trusting this loop to get it right on both sides. That is not caution:
+      // writing the corners inner-then-outer, as the previous version did, is
+      // correct on the left and backwards on the right, and the right-hand line
+      // was consequently generated on all eleven circuits and drawn on none of
+      // them. See `quadFlat`.
+      for (const side of [-1, 1] as const) {
+        const i0 = side * (s0.hw - LINE_W), i1 = side * (s1.hw - LINE_W);
+        const o0 = side * s0.hw, o1 = side * s1.hw;
+        const a0 = framePt(s0, i0, Y_LINE), a1 = framePt(s1, i1, Y_LINE);
+        const b1 = framePt(s1, o1, Y_LINE), b0 = framePt(s0, o0, Y_LINE);
+        lines.quadFlat(
+          a0[0], a0[1], a0[2], a1[0], a1[1], a1[2],
+          b1[0], b1[1], b1[2], b0[0], b0[1], b0[2],
+          COLOUR.whiteLine,
+        );
+      }
     }
 
     // --- Kerbs -------------------------------------------------------------

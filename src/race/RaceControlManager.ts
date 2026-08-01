@@ -20,6 +20,34 @@ export type FlagState = 'green' | 'yellow' | 'double-yellow' | 'red' | 'chequere
 export type NeutralisationState = 'none' | 'vsc' | 'safety-car' | 'sc-ending';
 
 /**
+ * Half the car's OVERALL width, over the tyres, in metres.
+ *
+ * This is the only width track limits may be judged on, and it is not the same
+ * quantity as `VehicleSpec.trackWidthM`. "Track width" in its automotive sense
+ * is the distance between the wheel CENTRES — `EffectsDirector` uses the spec
+ * field that way, to place the contact patches — and the part of the car that
+ * decides whether it is still on the circuit is the outboard face of the tyre,
+ * half a tyre width further out again on each side.
+ *
+ * Taking the axle track for the overall width makes the car narrower than it is
+ * drawn, and a threshold set on a car narrower than the real one fires while the
+ * real one is still overlapping the paint. That is the reported defect: laps
+ * deleted from a car the player can see is still touching the white line.
+ *
+ * The number is the car in `CarMesh`, measured rather than assumed: the hubs sit
+ * at ±(1.0 - tyreWidth/2 - 0.005) and the tyres are 0.325m front and 0.425m
+ * rear, so the outboard face of every tyre lands at ±0.995. The regulations cap
+ * overall width at 2000mm (2026 Technical Regulations Art. 3.2.2) and this car
+ * is built to it, so 0.995 is both what is drawn and what is legal.
+ *
+ * Kept here rather than in `VehicleSpec` deliberately. Adding a second width to
+ * the spec invites the two to be confused again at the next call site; naming
+ * this one for what race control needs, next to the only rule that needs it,
+ * does not.
+ */
+export const CAR_HALF_WIDTH_M = 0.995;
+
+/**
  * What a marshal post is actually displaying at a point on the circuit.
  *
  * A superset of `FlagState`, because a neutralisation is signalled by boards and
@@ -1101,22 +1129,84 @@ export class RaceControlManager {
   }
 
   /**
+   * How far the car's four contact patches reach, either side of the
+   * centreline, in the track's own lateral coordinate.
+   *
+   * Written to `contactSpan`, which is reused every step for every car.
+   *
+   * THE POINTS. The regulation asks whether any part of the car is still in
+   * contact with the track, so the points that matter are the four tyres, and
+   * of each tyre the OUTBOARD face — because the tyre nearest the circuit is
+   * the last thing touching it, and it is that tyre's far edge that has to
+   * clear the line. They sit at ±`CAR_HALF_WIDTH_M` on the front and rear axle
+   * lines.
+   *
+   * THE YAW. This is why the four points are computed rather than assumed. A
+   * car pointing straight down the road spans exactly ±`CAR_HALF_WIDTH_M`
+   * across the track, so the old test — the car's centre, plus or minus half a
+   * width — was right for that one case and wrong for every other. A car with
+   * fifteen degrees of slip angle spans two thirds of a metre wider, and a car
+   * running wide at a corner exit is never pointing straight down the road:
+   * that is the whole reason it is running wide. Ignoring the yaw shrinks the
+   * car to its own centreline projection and deletes the lap of a driver whose
+   * inside rear is still on the paint, which is exactly the reported defect.
+   *
+   * A body point (`bx` outboard, `bz` forward) lands at track lateral
+   * `car.lateral + bx cos psi + bz sin psi`, where `psi` is the car's heading
+   * relative to the track's.
+   */
+  private readonly contactSpan = { min: 0, max: 0 };
+
+  private measureContactSpan(car: CarEntry): void {
+    const spec = car.physics.spec;
+    const psi = car.physics.heading - this.track.headingAt(car.s);
+    const c = Math.cos(psi);
+    const s = Math.sin(psi);
+    const halfW = CAR_HALF_WIDTH_M * c;
+    const front = spec.cogToFrontM * s;
+    const rear = -(spec.wheelbaseM - spec.cogToFrontM) * s;
+
+    let min = Infinity;
+    let max = -Infinity;
+    for (const along of [front, rear]) {
+      for (const across of [halfW, -halfW]) {
+        const lat = car.lateral + across + along;
+        if (lat < min) min = lat;
+        if (lat > max) max = lat;
+      }
+    }
+    this.contactSpan.min = min;
+    this.contactSpan.max = max;
+  }
+
+  /**
    * Track limits.
    *
-   * The regulation is that no part of the car may be entirely beyond the white
-   * line — in practice, all four wheels off. The car's bounding box is checked
-   * against the track edge, and an infraction is counted once per excursion
-   * rather than once per physics step, which would issue 120 penalties a second.
+   * "A driver will be judged to have left the track if no part of the car
+   * remains in contact with it" (2025 Sporting Regulations Art. 33.3), and the
+   * track is bounded by the OUTER edge of the white lines — the line itself is
+   * part of the track, which is why a car with a tyre still on the paint has
+   * not left it.
+   *
+   * That boundary is `halfWidthAt`, exactly and with no margin of its own:
+   * `TrackMesh` paints the edge line INBOARD of the half-width, so the outer
+   * edge of the paint the driver can see and the number tested here are the
+   * same line. Adding a fudge factor to either would separate them again.
+   *
+   * An infraction is counted once per excursion rather than once per physics
+   * step, which would issue 120 penalties a second.
    */
   private checkTrackLimits(car: CarEntry, index: number, sessionTime: number, isRace: boolean): void {
     if (car.inPitLane) return;
 
     const halfWidth = this.track.halfWidthAt(car.s);
-    const spec = car.physics.spec;
-    // All four wheels beyond the line means the inner edge of the car's track
-    // width has crossed it, not merely its centre.
-    const innerEdge = Math.abs(car.lateral) - spec.trackWidthM * 0.5;
-    const allFourOff = innerEdge > halfWidth;
+    this.measureContactSpan(car);
+    // Off only when EVERY contact patch is beyond the SAME edge. Testing the
+    // two edges separately rather than against `Math.abs(lateral)` matters for
+    // a car spun across a narrow circuit, where a bare magnitude test can find
+    // it beyond both edges at once and call that an excursion.
+    const allFourOff =
+      this.contactSpan.min > halfWidth || this.contactSpan.max < -halfWidth;
 
     if (allFourOff) {
       if (!car.offTrackNow) {
