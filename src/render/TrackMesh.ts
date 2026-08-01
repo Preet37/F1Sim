@@ -70,6 +70,16 @@ export const PAINT_HEIGHT_M = Y_LINE;
  */
 export const EDGE_LINE_WIDTH_M = 0.14;
 
+/**
+ * Clearance small trackside furniture keeps from every part of the circuit.
+ *
+ * Deliberately tight. A gantry post and a braking board are meant to be beside
+ * the road — pushing them behind the run-off would make the boards unreadable
+ * and put the start/finish gantry in a field. This is enough that a car pinned
+ * against the barrier cannot reach them, and no more.
+ */
+const FURNITURE_CLEARANCE_M = 1.2;
+
 const COLOUR = {
   // Asphalt's real albedo is around 0.10, which is sRGB 0x58 — not the near
   // black it is usually guessed at. The previous 0x1d survived daylight only
@@ -305,6 +315,38 @@ export function buildTrackMeshes(
    */
   const barrierAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
+
+  /**
+   * Pushes a piece of trackside furniture out until it is off the circuit.
+   *
+   * The gantry and the braking boards were placed at a fixed offset from the
+   * local node — the same mistake the set dressing was fixed for, left in two
+   * places because they are small. Small does not help: a 7.2m gantry post
+   * 1.6m off the edge of a street circuit, or a marker board 1.4m off it, sits
+   * inside the run-off, and wherever the lap folds back that run-off is another
+   * piece of road.
+   *
+   * @param i     node the object is anchored at
+   * @param side  which side of the road, +1 left
+   * @param from  starting distance beyond the track edge
+   * @param halfX half extent across the road
+   * @param halfZ half extent along it
+   * @returns the signed lateral offset to use
+   */
+  const clearLateral = (
+    i: number, side: -1 | 1, from: number, halfX: number, halfZ: number,
+  ): number => {
+    const hw = track.width[i] * 0.5;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const lat = side * (hw + from + attempt * 2);
+      const x = track.px[i] + track.nx[i] * lat;
+      const z = track.pz[i] + track.nz[i] * lat;
+      if (world.keepOut.clearOfBox(
+        x, z, track.tz[i], track.tx[i], halfX, halfZ, FURNITURE_CLEARANCE_M,
+      )) return lat;
+    }
+    return side * (hw + from);
+  };
 
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
@@ -1201,20 +1243,26 @@ export function buildTrackMeshes(
   // a lap begins and ends, and a circuit without one looks like a closed road.
   {
     const i0 = track.indexAt(0);
-    const hw = track.width[i0] * 0.5;
     const y = track.elevation[i0];
     const heading = Math.atan2(track.tx[i0], track.tz[i0]);
 
     const group = new THREE.Group();
     const postGeo = chamferBox(0.55, 7.2, 0.55, 0.05);
     const postMat = new THREE.MeshStandardMaterial({ color: 0x1b1e24, roughness: 0.6, metalness: 0.35 });
+    // Each post pushed out independently until it is off the circuit, then the
+    // beam spanned across whichever pair that produced. The beam itself is
+    // seven metres up and cannot be hit; the posts are the part a car reaches.
+    const postLat = {
+      left: clearLateral(i0, 1, 1.6, 0.28, 0.28),
+      right: clearLateral(i0, -1, 1.6, 0.28, 0.28),
+    };
     for (const side of [-1, 1] as const) {
       const post = new THREE.Mesh(postGeo, postMat);
-      post.position.set(side * (hw + 1.6), 3.6, 0);
+      post.position.set(side > 0 ? postLat.left : postLat.right, 3.6, 0);
       group.add(post);
     }
 
-    const beamGeo = new THREE.BoxGeometry((hw + 1.6) * 2, 1.5, 0.5);
+    const beamGeo = new THREE.BoxGeometry(postLat.left - postLat.right, 1.5, 0.5);
     const gantryTex = makeGantryTexture(track.def.name);
     const beamMat = new THREE.MeshStandardMaterial({
       map: gantryTex, roughness: 0.5, metalness: 0.2,
@@ -1251,9 +1299,12 @@ export function buildTrackMeshes(
       for (let d = 0; d < distances.length; d++) {
         const s = corner.s - distances[d];
         const i = track.indexAt(s);
-        const hw = track.width[i] * 0.5;
         const isStreetM = track.def.scenery === 'street';
-        const lat = -(hw + (isStreetM ? 1.4 : 4.2));
+        // Outside of the corner, which is where a real board goes: the inside
+        // is where the cars are. Positive curvature is a right turn, whose
+        // outside is the track's left — positive lateral.
+        const side: -1 | 1 = track.curvature[ci] > 0 ? 1 : -1;
+        const lat = clearLateral(i, side, isStreetM ? 1.4 : 4.2, 0.15, 0.5);
 
         const g = new THREE.PlaneGeometry(1.0, 1.0);
         // Each board uses the matching third of the stacked texture.
@@ -1454,6 +1505,11 @@ function buildSceneryInstances(
   for (const item of items) {
     if (item.kind === 'tree') treeSlots++;
     else if (item.kind === 'grandstand') standSlots++;
+    // The main stands are in the same list — they have to be, so that the
+    // simulation collides with them — but the paddock draws them, from a much
+    // larger preset. Skipped here rather than filtered out of the list, because
+    // the list is the world and this is only one of the two things that read it.
+    else if (item.kind === 'mainstand') continue;
     else buildingSlots++;
   }
 
@@ -1474,6 +1530,7 @@ function buildSceneryInstances(
   let buildingN = 0;
 
   for (const item of items) {
+    if (item.kind === 'mainstand') continue;
     quat.setFromAxisAngle(up, item.yaw);
 
     if (item.kind === 'building') {

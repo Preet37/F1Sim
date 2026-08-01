@@ -1,6 +1,8 @@
 import {
   pitLaneGeometry,
   isPaddockGround,
+  PIT_BAY_PITCH_M,
+  PIT_GARAGE_COUNT,
   PIT_WALL_HEIGHT_M,
   type PitLaneGeometry,
 } from './PitGeometry';
@@ -231,6 +233,16 @@ export function nominalBarrierOffset(track: TrackSpline): number {
   return track.def.scenery === 'street' ? 2.5 : 14;
 }
 
+/**
+ * How far a car's outermost collision disc reaches beyond the barrier line.
+ *
+ * The number that turns "clear of the road" into "clear of anywhere a car can
+ * get to", which is the clearance that actually matters for set dressing. Lives
+ * here so the renderer, the layout pass and the validation probe all use one
+ * figure rather than three copies of it.
+ */
+export const CAR_REACH_M = 1.0;
+
 /** How close a barrier is ever allowed to come to the track edge. */
 const BARRIER_MIN_OFFSET_M = 2.2;
 /** Clearance a barrier must keep from any OTHER part of the circuit. */
@@ -290,6 +302,35 @@ export function barrierOffsets(
   const nominal = nominalBarrierOffset(track);
   const out = { left: new Float64Array(count), right: new Float64Array(count) };
 
+  // The racing surface alone, with no lap-distance exclusion applied to it —
+  // the backstop for the hole in the clearance test below.
+  //
+  // `clearanceAt` ignores every piece of road within BARRIER_SAME_ROAD_M of the
+  // caller's own lap distance, which is what stops a barrier measuring itself
+  // against the road it is standing beside. The assumption underneath that is
+  // that a piece of road seventy metres away ALONG THE LAP is the same piece of
+  // road. At Monaco it is not: the lap folds back on itself inside seventy
+  // metres, so the road on the other side of the fold was invisible to the test
+  // and the wall went in at its full offset — six nodes of concrete, plus the
+  // hoarding ribbon hanging off them, standing up to 3.1m inside the racing
+  // surface. COTA had four nodes of the same thing.
+  //
+  // The obstacle builder's own backstop then quietly DELETED those boxes for
+  // being on the road, which is why nothing ever failed: the wall was drawn and
+  // was not solid, so the circuit had a wall across it that cars drove through
+  // and a hole in the barrier chain in the same place.
+  //
+  // A barrier is never closer than BARRIER_MIN_OFFSET_M to its own road edge,
+  // so it can never be inside its own node's disc. Testing against every disc
+  // with no exclusion at all is therefore exactly the invariant wanted — a wall
+  // is never on the racing surface — and costs nothing that was legitimate.
+  const road = new KeepOutField();
+  for (let i = 0; i < count; i++) {
+    road.add(track.px[i], track.pz[i], track.width[i] * 0.5);
+  }
+  /** Half-length of one drawn barrier segment, metres. */
+  const segHalf = (track.length / count) * BARRIER_STEP_NODES * 0.5;
+
   for (const side of [-1, 1] as const) {
     const arr = side > 0 ? out.left : out.right;
     for (let i = 0; i < count; i++) {
@@ -339,6 +380,12 @@ export function barrierOffsets(
         const lat = side * (hw + d);
         const x = track.px[i] + track.nx[i] * lat;
         const z = track.pz[i] + track.nz[i] * lat;
+        // The segment the renderer will draw here, as a box: local +Z along the
+        // tangent, +X across it. Tested against the whole lap with no exclusion
+        // — see the note on `road` above.
+        if (!road.clearOfBox(
+          x, z, track.tz[i], track.tx[i], BARRIER_THICKNESS_M * 0.5, segHalf, 0,
+        )) continue;
         const clear = keepOut.clearanceAt(
           x, z, BARRIER_ROAD_CLEARANCE_M + 1, track.dist[i],
           BARRIER_SAME_ROAD_M, track.length,
@@ -497,7 +544,19 @@ export function barrierSegments(
 // Set dressing
 // ===========================================================================
 
-export type SceneryKind = 'tree' | 'grandstand' | 'building';
+/**
+ * `mainstand` is the 74m stand opposite the pits, which the paddock draws.
+ *
+ * It is a separate kind rather than a large `grandstand` because two different
+ * builders draw the two, from two different presets, and the layout has to be
+ * able to hand each of them the right list. It is in this list at all — rather
+ * than being placed by the paddock, as it was — because the paddock placed it,
+ * tested it, drew it, and never told anyone it was there, so three 74-metre
+ * grandstands were the largest objects on several circuits and none of them was
+ * solid. Cars drove through the main grandstand at every circuit on the
+ * calendar.
+ */
+export type SceneryKind = 'tree' | 'grandstand' | 'mainstand' | 'building';
 
 /**
  * One placed piece of set dressing.
@@ -524,18 +583,44 @@ export interface SceneryItem {
 }
 
 /**
- * Footprint of the trackside grandstand geometry, measured from
- * `grandstandPreset('trackside', ...)`.
+ * Footprint of the grandstand geometry, as built.
  *
- * The stand's local frame puts its front barrier at x = 0 and builds backwards
- * away from the track, so the box that describes it is offset half its depth
- * behind the anchor.
+ * These are the bounding box of what `buildGrandstandGeometry` actually
+ * produces, and the previous set were not. Three things were wrong with them,
+ * all in the same direction — the tested rectangle was smaller than the object.
+ *
+ *  1. A stand does NOT begin at its anchor. Its cantilever roof, the fascia
+ *     beam under it and the edge trim on that all reach 2.82m FORWARD of the
+ *     anchor, out over the front barrier — which is the entire visual point of
+ *     a cantilever roof. `footprintOf` assumed the geometry occupied local
+ *     x ∈ [0, depth], so every stand was clearance-tested and collided as a box
+ *     sitting 2.82m further from the track than the thing it describes.
+ *  2. The roof deck, fascia and trim are all `width + 0.8` long, so a stand is
+ *     0.8m wider than its nominal width.
+ *  3. The drawn depth depends on the quality tier, because it is a function of
+ *     the row count and the low tier has fewer rows. The declared depth did
+ *     not. The figures below are therefore the HIGH tier's, which is the deeper
+ *     of the two: the low tier's stand sits inside the same box, and a box
+ *     bigger than its object is the safe direction to be wrong in. What must
+ *     never happen — and did — is the layout differing between tiers.
+ *
+ * `validate:world` measures the built geometry and asserts these match, so the
+ * next change to a stand's proportions cannot silently reintroduce this.
  */
-const STAND_WIDTH_M = 30;
-const STAND_DEPTH_M = 11.4;
+const STAND_WIDTH_M = 30.8;
+const STAND_DEPTH_M = 13.41;
 /** Footprint of `grandstandPreset('main', ...)`, which the paddock places. */
-export const MAIN_STAND_WIDTH_M = 74;
-export const MAIN_STAND_DEPTH_M = 19.4;
+export const MAIN_STAND_WIDTH_M = 74.8;
+export const MAIN_STAND_DEPTH_M = 20.06;
+
+/**
+ * How far a grandstand's roof reaches forward of its anchor, metres.
+ *
+ * The same at both tiers and for both presets: the roof's leading edge is
+ * placed at a fixed offset from the front of the seating deck, not as a
+ * fraction of the stand.
+ */
+export const STAND_FRONT_OVERHANG_M = 2.82;
 
 /** Spacing between set-dressing slots along the lap, metres. */
 const SCENERY_SPACING_M = 55;
@@ -563,7 +648,14 @@ export interface Footprint {
 export function footprintOf(item: SceneryItem): Footprint {
   const cos = Math.cos(item.yaw);
   const sin = Math.sin(item.yaw);
-  const inset = item.kind === 'grandstand' ? item.spanX * 0.5 : 0;
+  // A grandstand is anchored at its front barrier, but its geometry starts
+  // 2.82m in FRONT of that — the cantilever roof overhangs the barrier. So the
+  // centre of the box is half the depth back from the anchor, LESS the
+  // overhang. Getting this wrong is not a rounding error: it moves the tested
+  // rectangle bodily away from the object it is supposed to describe.
+  const inset = item.kind === 'grandstand' || item.kind === 'mainstand'
+    ? item.spanX * 0.5 - STAND_FRONT_OVERHANG_M
+    : 0;
   return {
     // Local +X is (cos, -sin), matching the yaw convention used everywhere.
     x: item.x + cos * inset,
@@ -714,6 +806,64 @@ export function buildSceneryLayout(track: TrackSpline, keepOut: KeepOutField): S
   }
 
   return items;
+}
+
+/**
+ * The main grandstands, facing the pits across the circuit.
+ *
+ * Placed here rather than by the paddock that draws them, for the reason this
+ * whole module exists: an object placed by its renderer is an object the
+ * simulation does not know about. These are three 74-metre stands, the largest
+ * structures in the game, and every car on the calendar drove straight through
+ * them.
+ *
+ * The placement rule is the paddock's own, unchanged — anchored opposite the
+ * middle of the garage row, on the far side of the circuit, walked outward
+ * until clear of the whole lap, and dropped if there is nowhere for it. What is
+ * new is that the answer is now written down where both the renderer and the
+ * collision builder can read it.
+ */
+export function buildMainStands(track: TrackSpline, keepOut: KeepOutField): SceneryItem[] {
+  const out: SceneryItem[] = [];
+  const pit = pitLaneGeometry(track.def, track.length);
+  // One bay per team, and a team runs two cars.
+  const bays = PIT_GARAGE_COUNT / 2;
+  const rowCentre = pit.rowAnchorS - ((bays - 1) * PIT_BAY_PITCH_M) / 2;
+  const margin = sceneryMargin(track);
+  const STANDS = 3;
+
+  for (let k = 0; k < STANDS; k++) {
+    const s = rowCentre + (k - (STANDS - 1) / 2) * (MAIN_STAND_WIDTH_M + 6);
+    const i = track.indexAt(s);
+    const hw = track.width[i] * 0.5;
+    // Opposite side of the circuit from the pit lane.
+    const side = -pit.sign;
+    const heading = Math.atan2(track.tx[i], track.tz[i]);
+    const yaw = heading + (side > 0 ? 0 : Math.PI);
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const lat = side * (hw + 17 + attempt * 8);
+      const item: SceneryItem = {
+        kind: 'mainstand',
+        x: track.px[i] + track.nx[i] * lat,
+        y: track.elevation[i],
+        z: track.pz[i] + track.nz[i] * lat,
+        yaw,
+        spanX: MAIN_STAND_DEPTH_M,
+        spanZ: MAIN_STAND_WIDTH_M,
+        height: 14,
+        h: 0.5,
+        h2: 0.5,
+      };
+      const f = footprintOf(item);
+      if (keepOut.clearOfBox(f.x, f.z, f.cos, f.sin, f.halfX, f.halfZ, margin)) {
+        out.push(item);
+        break;
+      }
+    }
+  }
+
+  return out;
 }
 
 // ===========================================================================
@@ -997,6 +1147,7 @@ export function buildWorldModel(track: TrackSpline): WorldModel {
   const offsets = barrierOffsets(track, keepOut, pit);
   const barrier = barrierSegments(track, offsets, BARRIER_STEP_NODES);
   const scenery = buildSceneryLayout(track, keepOut);
+  scenery.push(...buildMainStands(track, keepOut));
   return {
     keepOut,
     scenery,

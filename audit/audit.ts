@@ -38,8 +38,10 @@ interface AuditApi {
   shootOverview(): Promise<string>;
   /** Eye level beside the racing line, looking down the road. */
   shootEye(fraction: number): Promise<string>;
-  /** Composes captured PNGs into one contact sheet. */
-  contact(images: { label: string; data: string }[], cols: number): Promise<string>;
+  /** Composes the shots taken since the last call into one contact sheet. */
+  contact(cols: number): Promise<string>;
+  /** Captions the shot just taken. */
+  label(text: string): void;
   cameraModes: readonly CameraMode[];
 }
 
@@ -137,7 +139,32 @@ function present(): Promise<void> {
  */
 function drawAndShoot(draw: () => void): string {
   draw();
-  return canvas.toDataURL('image/png');
+  const png = canvas.toDataURL('image/png');
+  thumbs.push(thumbnail());
+  return png;
+}
+
+/**
+ * Contact-sheet cells, accumulated as the sweep runs.
+ *
+ * Kept here rather than assembled in Node from the full-size shots. Eighteen
+ * 1280x720 PNGs is around 25MB of base64 per circuit, and handing that back
+ * across the CDP boundary and then straight back in again to be composited
+ * wedged the browser somewhere around the fourth circuit. A 480x270 JPEG is
+ * about 1% of the size and is all a contact sheet can show anyway.
+ */
+const thumbs: string[] = [];
+const CELL_W = 480;
+const CELL_H = 270;
+
+const thumbCanvas = document.createElement('canvas');
+thumbCanvas.width = CELL_W;
+thumbCanvas.height = CELL_H;
+
+function thumbnail(): string {
+  const g = thumbCanvas.getContext('2d')!;
+  g.drawImage(canvas, 0, 0, CELL_W, CELL_H);
+  return thumbCanvas.toDataURL('image/jpeg', 0.82);
 }
 
 async function load(circuitId: string): Promise<CircuitInfo> {
@@ -262,11 +289,9 @@ async function shootEye(fraction: number): Promise<string> {
  * is not gaining one for this: a canvas is already here, and 2D compositing is
  * exactly what it is for.
  */
-async function contact(images: { label: string; data: string }[], cols: number): Promise<string> {
-  const CELL_W = 480;
-  const CELL_H = 270;
+async function contact(cols: number): Promise<string> {
   const LABEL_H = 22;
-  const rows = Math.ceil(images.length / cols);
+  const rows = Math.ceil(thumbs.length / cols);
   const c = document.createElement('canvas');
   c.width = cols * CELL_W;
   c.height = rows * (CELL_H + LABEL_H);
@@ -274,21 +299,33 @@ async function contact(images: { label: string; data: string }[], cols: number):
   g.fillStyle = '#101215';
   g.fillRect(0, 0, c.width, c.height);
 
-  for (let k = 0; k < images.length; k++) {
+  for (let k = 0; k < thumbs.length; k++) {
     const img = new Image();
     await new Promise<void>((resolve, reject) => {
       img.onload = () => resolve();
       img.onerror = () => reject(new Error('bad shot'));
-      img.src = images[k].data;
+      img.src = thumbs[k];
     });
     const cx = (k % cols) * CELL_W;
     const cy = Math.floor(k / cols) * (CELL_H + LABEL_H);
     g.drawImage(img, cx, cy + LABEL_H, CELL_W, CELL_H);
     g.fillStyle = '#e8eaee';
     g.font = '600 15px ui-monospace, monospace';
-    g.fillText(images[k].label, cx + 8, cy + 16);
+    g.fillText(labels[k] ?? '', cx + 8, cy + 16);
   }
-  return c.toDataURL('image/png');
+  const out = c.toDataURL('image/jpeg', 0.9);
+  c.width = 1;
+  c.height = 1;
+  thumbs.length = 0;
+  labels.length = 0;
+  return out;
 }
 
-window.__audit = { load, shootMode, shootPlan, shootOverview, shootEye, contact, cameraModes: CAMERA_MODES };
+/** Cell captions, pushed by the harness alongside each shot. */
+const labels: string[] = [];
+
+window.__audit = {
+  load, shootMode, shootPlan, shootOverview, shootEye, contact,
+  label: (t: string) => { labels.push(t); },
+  cameraModes: CAMERA_MODES,
+};

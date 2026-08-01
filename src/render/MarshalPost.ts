@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildKeepOutField } from '../track/WorldObstacles';
 import type { FlagSignal, RaceControlManager } from '../race/RaceControlManager';
 import type { TrackSpline } from '../track/TrackSpline';
 
@@ -59,6 +60,16 @@ const PANEL_W = 1.5;
 const PANEL_H = 0.85;
 const POST_H = 3.4;
 
+/**
+ * Clearance a marshal post keeps from every part of the circuit, metres.
+ *
+ * Smaller than the margin a building gets, and deliberately so: a marshal post
+ * is a 160mm pole and its whole purpose is to be read from the car, so pushing
+ * it back behind the run-off would be solving the wrong problem. This is enough
+ * that a car pinned against the barrier cannot reach it.
+ */
+const POST_CLEARANCE_M = 1.5;
+
 export class MarshalPosts {
   readonly root = new THREE.Group();
 
@@ -96,6 +107,10 @@ export class MarshalPosts {
     this.posts.frustumCulled = false;
     this.root.add(this.panels, this.posts);
 
+    // The drivable world, so a post can be checked against the WHOLE lap rather
+    // than against the piece of road it happens to be standing beside.
+    const keepOut = buildKeepOutField(track);
+
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const pos = new THREE.Vector3();
@@ -115,7 +130,32 @@ export class MarshalPosts {
       // normal against the racing line offset gives that for free: the line
       // hugs the inside, so the far side from the line is the outside.
       const side = Math.sign(track.lineOffset[idx]) || 1;
-      const off = (half + 4.2) * side;
+
+      // Walked outward until the post is off the circuit.
+      //
+      // A fixed 4.2m from the track edge is right on a permanent circuit and
+      // wrong wherever the lap comes back on itself: at Monaco the post for
+      // sector 2 stood three metres INSIDE the racing surface, because the
+      // "run-off" it was placed in is the road again a few hundred metres later.
+      // The same walk-out the set dressing uses, against the same field, so a
+      // post and a grandstand cannot disagree about where the circuit is.
+      //
+      // The panels are what a driver reads, so this stays as close in as it
+      // legitimately can rather than starting from a safe distance.
+      let off = (half + 4.2) * side;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const lat = (half + 4.2 + attempt * 3) * side;
+        const cx = track.px[idx] + track.nx[idx] * lat;
+        const cz = track.pz[idx] + track.nz[idx] * lat;
+        // A slab wide enough to cover the post and both panels, oriented with
+        // the road: local +Z along the tangent, +X across it.
+        if (keepOut.clearOfBox(
+          cx, cz, track.tz[idx], track.tx[idx], 0.4, PANEL_W * 0.5, POST_CLEARANCE_M,
+        )) {
+          off = lat;
+          break;
+        }
+      }
 
       const x = track.px[idx] + track.nx[idx] * off;
       const z = track.pz[idx] + track.nz[idx] * off;

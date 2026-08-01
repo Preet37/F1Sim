@@ -97,7 +97,13 @@ async function main(): Promise<void> {
   await mkdir(OUT_DIR, { recursive: true });
 
   const server: ViteDevServer = await createServer({
-    server: { port: 0, host: '127.0.0.1' },
+    // Hot reloading and file watching are off, and that is not a performance
+    // tweak. A sweep takes long enough that it will normally be running while
+    // someone is editing the thing it is photographing, and an HMR update
+    // replaces `window.__audit` underneath an in-flight call — so the sweep does
+    // not fail, it simply stops, forever, part way through a circuit. It did
+    // exactly that twice before the cause was obvious.
+    server: { port: 0, host: '127.0.0.1', hmr: false, watch: null },
     logLevel: 'warn',
   });
   await server.listen();
@@ -125,6 +131,9 @@ async function main(): Promise<void> {
 
   const page: Page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
+  // Software rendering makes a full circuit build genuinely slow, and a silent
+  // hang here is indistinguishable from a slow circuit. Generous, but finite.
+  page.setDefaultTimeout(240_000);
 
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
@@ -151,13 +160,20 @@ async function main(): Promise<void> {
     ) as CircuitInfo;
 
     const shots: Shot[] = [];
-    const sheet: { label: string; data: string }[] = [];
 
+    // The full-size PNG goes straight to disk and is never handed back into the
+    // page; the page keeps its own downscaled thumbnail for the contact sheet.
+    // Shipping eighteen 1280x720 base64 PNGs back across the CDP boundary and
+    // then in again to be composited is about 25MB a circuit, and it wedged the
+    // browser on the fourth one.
     const take = async (label: string, data: string): Promise<void> => {
       const file = `${id}/${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`;
       await writePng(resolve(OUT_DIR, file), data);
       shots.push({ label, file });
-      sheet.push({ label, data });
+      await page.evaluate(
+        (t: string) => (window as never as { __audit: { label(t: string): void } }).__audit.label(t),
+        label,
+      );
     };
 
     await take('overview', await page.evaluate('window.__audit.shootOverview()') as string);
@@ -184,12 +200,8 @@ async function main(): Promise<void> {
       await take(`cam ${m}`, d);
     }
 
-    const sheetData = await page.evaluate(
-      (a: [{ label: string; data: string }[], number]) =>
-        (window as never as { __audit: { contact(i: unknown, c: number): Promise<string> } }).__audit.contact(a[0], a[1]),
-      [sheet, 6] as [{ label: string; data: string }[], number],
-    ) as string;
-    await writePng(resolve(OUT_DIR, `${id}/_contact.png`), sheetData);
+    const sheetData = await page.evaluate('window.__audit.contact(6)') as string;
+    await writePng(resolve(OUT_DIR, `${id}/_contact.jpg`), sheetData);
 
     const mine = errors.slice(before);
     report.push({ info, shots, errors: mine });
@@ -230,7 +242,7 @@ function indexPage(
     <h2>${esc(r.info.name)} <small>${esc(r.info.id)} · ${esc(r.info.scenery)} · ${esc(r.info.ambience)}
       · ${(r.info.lengthM / 1000).toFixed(2)}km · ${r.info.sceneryCount} scenery · ${r.info.obstacleCount} solid</small></h2>
     ${r.errors.length ? `<p class="err">${r.errors.map(esc).join('<br>')}</p>` : ''}
-    <p><a href="${esc(r.info.id)}/_contact.png">contact sheet</a></p>
+    <p><a href="${esc(r.info.id)}/_contact.jpg">contact sheet</a></p>
     <div class="grid">
       ${r.shots.map((s) => `<figure><a href="${esc(s.file)}"><img loading="lazy" src="${esc(s.file)}" alt="${esc(s.label)}"></a><figcaption>${esc(s.label)}</figcaption></figure>`).join('\n      ')}
     </div>
