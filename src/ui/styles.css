@@ -510,7 +510,7 @@ canvas#view {
   margin-bottom: 7px;
 }
 .hud-led {
-  width: 11px;
+  width: 10px;
   height: 5px;
   border-radius: 1px;
   background: rgba(255, 255, 255, 0.09);
@@ -532,8 +532,8 @@ canvas#view {
 .hud-rpmfill.rpm-red { background: var(--bad); }
 
 .hud-drs {
-  font-size: 11px; font-weight: 800; letter-spacing: 0.13em; text-align: center;
-  padding: 2px 0; border-radius: 3px;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-align: center;
+  flex: 0 0 auto; padding: 3px 6px; border-radius: 3px;
   background: rgba(255, 255, 255, 0.07); color: var(--hud-dim);
 }
 .hud-drs.drs-armed { background: rgba(255, 176, 46, 0.22); color: var(--warn); }
@@ -567,21 +567,22 @@ canvas#view {
 .hud-fueldelta.bad { color: var(--bad); }
 
 /* --- Gaps ------------------------------------------------------------ */
+/* Third in the right-hand column. It used to sit in the middle of the bottom
+   edge with a separate, higher position for the cockpit so it cleared the
+   modelled dash; with nothing across the bottom any more it belongs with the
+   rest of the live numbers, and it needs only one position. */
 .hud-gaps {
-  /* Clear of the wheel display, which is ~120px tall. */
-  bottom: calc(152px + var(--safe-b));
-  left: 50%;
-  transform: translateX(-50%);
+  top: calc(300px + var(--safe-t));
+  right: calc(10px + var(--safe-r));
+  width: 244px;
   display: flex;
-  gap: 16px;
+  justify-content: space-between;
+  gap: 12px;
   font-family: var(--font-data);
   font-size: 12px;
   font-weight: 700;
   padding: 4px 12px;
 }
-/* In the cockpit the car has its own dash in roughly this spot, so the pill
-   moves up out of the way rather than sitting on top of the screen. */
-.hud-gaps.cockpit { bottom: calc(258px + var(--safe-b)); }
 .hud-gapahead { color: #ff9f68; }
 .hud-gapbehind { color: #6fb4ff; }
 
@@ -685,10 +686,11 @@ canvas#view {
 /* --- Camera + diagnostics -------------------------------------------- */
 .hud-buttons {
   position: absolute;
-  top: calc(190px + var(--safe-t));
+  top: calc(344px + var(--safe-t));
   right: calc(10px + var(--safe-r));
   display: flex;
   flex-direction: row;
+  justify-content: flex-end;
   gap: 6px;
 }
 .hud-btn {
@@ -880,60 +882,34 @@ canvas#view {
    readouts beside it, shift lights along the top. The pill shape and the
    heavy outer ring are what make it read as hardware rather than as a HUD.
    ========================================================================== */
+/* SECOND IN THE RIGHT-HAND COLUMN, under the timing panel.
+   It was a 470px pill across the bottom centre, which is where the road is in
+   an onboard shot and where the car is in a chase one — "the speedometer is
+   covering everything that's visible in this camera". The reference broadcast
+   HUD puts nothing across the bottom at all: one column down the right edge,
+   the tower down the left, and the middle left alone. Same width as the timing
+   panel above it, so the two read as one column rather than two panels that
+   happen to be near each other. */
 .hud-wheel {
   position: absolute;
-  bottom: calc(12px + var(--safe-b));
-  left: 50%;
-  transform: translateX(-50%);
+  top: calc(148px + var(--safe-t));
+  right: calc(10px + var(--safe-r));
+  width: 244px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 24px 10px;
-  min-width: 470px;
-  max-width: calc(100vw - 20px);
-  border-radius: 44px;
-  background: linear-gradient(180deg, rgba(20, 23, 30, 0.94), rgba(9, 11, 15, 0.96));
-  border: 2px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 8px 9px 9px;
 }
-.hud-wheel .hud-leds { justify-content: center; margin-bottom: 2px; }
+.hud-wheel .hud-leds { justify-content: space-between; margin-bottom: 1px; }
 
-/* Cockpit variant.
-   Speed has to be in the same place in every camera, so the panel never goes
-   away — it loses everything the modelled wheel dash already shows (shift
-   lights, ERS store, DRS, the rpm and ERS traces) and keeps the three numbers
-   that have to be legible without looking for them. Roughly half the height,
-   so it clears the modelled rim below it. */
-.hud-wheel.compact {
-  min-width: 0;
-  gap: 0;
-  padding: 5px 18px 6px;
-  border-radius: 34px;
-}
-.hud-wheel.compact .hud-leds,
-.hud-wheel.compact .hud-wheelbars,
-.hud-wheel.compact .hud-ersbadge,
-.hud-wheel.compact .hud-drs { display: none; }
-.hud-wheel.compact .hud-wheelrow { gap: 12px; }
-.hud-wheel.compact .hud-geardisc {
-  width: 50px;
-  height: 50px;
-  flex-basis: 50px;
-  border-width: 2px;
-}
-.hud-wheel.compact .hud-gear { font-size: 30px; }
-.hud-wheel.compact .hud-wheelstats { gap: 14px; flex: 0 0 auto; }
-.hud-wheel.compact .hud-celllabel { font-size: 10px; }
-.hud-wheel.compact .hud-cellvalue { font-size: 21px; }
-
-.hud-wheelrow { display: flex; align-items: center; gap: 14px; }
+.hud-wheelrow { display: flex; align-items: center; gap: 10px; }
 
 /* The gear disc. Largest, highest-contrast element on the whole HUD, because
    it is the one thing read in peripheral vision mid-corner. */
 .hud-geardisc {
-  width: 74px;
-  height: 74px;
-  flex: 0 0 74px;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 58px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -944,7 +920,7 @@ canvas#view {
 }
 .hud-gear {
   font-family: var(--font-display);
-  font-size: 44px;
+  font-size: 36px;
   font-weight: 800;
   line-height: 1;
   color: #fff;
@@ -952,38 +928,42 @@ canvas#view {
 }
 .hud-gear.reverse { color: var(--warn); }
 
-.hud-wheelstats { display: flex; align-items: center; gap: 20px; flex: 1; min-width: 0; }
-.hud-cell { display: flex; flex-direction: column; align-items: center; min-width: 62px; }
+.hud-wheelstats { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; justify-content: space-around; }
+.hud-cell { display: flex; flex-direction: column; align-items: center; min-width: 0; }
 .hud-celllabel {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
   color: #f2f4f8;
 }
 .hud-cellvalue {
   font-family: var(--font-data);
-  font-size: 25px;
+  font-size: 22px;
   font-weight: 700;
   color: #fff;
   line-height: 1.05;
 }
 
 /* ERS reads as a physical button, because that is what the driver presses. */
+/* A full-width row of its own rather than a third cell beside the speed and
+   the rpm: in a 244px column, three cells and a DRS badge on one line leave
+   each about fifty pixels, and a readout squeezed to fifty pixels is a readout
+   nobody reads. Mode on the left, store on the right, as a wheel carries it. */
 .hud-ersbadge {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 4px 14px;
-  border-radius: 6px;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 3px 9px;
+  border-radius: 5px;
   background: rgba(150, 156, 168, 0.55);
-  min-width: 92px;
 }
 .hud-ersbadge.ers-harvest  { background: rgba(70, 130, 200, 0.55); }
 .hud-ersbadge.ers-balanced { background: rgba(150, 156, 168, 0.55); }
 .hud-ersbadge.ers-push     { background: rgba(200, 140, 50, 0.6); }
 .hud-ersbadge.ers-overtake { background: rgba(190, 60, 70, 0.65); }
-.hud-ersmodetext { font-size: 14px; font-weight: 800; color: #fff; letter-spacing: 0.02em; white-space: nowrap; }
-.hud-erspercent { font-family: var(--font-data); font-size: 12px; color: rgba(255, 255, 255, 0.85); }
+.hud-ersmodetext { font-size: 12px; font-weight: 800; color: #fff; letter-spacing: 0.02em; white-space: nowrap; }
+.hud-erspercent { font-family: var(--font-data); font-size: 11px; color: rgba(255, 255, 255, 0.85); }
 
 .hud-wheelbars { display: flex; flex-direction: column; gap: 5px; }
 .hud-wheel .hud-rpmbar { height: 4px; border-radius: 2px; margin-bottom: 0; }
@@ -1081,7 +1061,7 @@ canvas#view {
   /* Below the two top panels rather than under them. */
   .hud-radio {
     top: auto;
-    bottom: calc(304px + var(--safe-b));
+    bottom: calc(188px + var(--safe-b));
     left: calc(10px + var(--safe-l));
     right: calc(62px + var(--safe-r));
     transform: none;
@@ -1094,16 +1074,23 @@ canvas#view {
      the bottom, immediately above the car state. */
   .hud-conditions {
     top: auto;
-    bottom: calc(268px + var(--safe-b));
+    bottom: calc(152px + var(--safe-b));
     font-size: 9px;
     padding: 4px 10px;
   }
 
-  .hud-gaps { bottom: calc(236px + var(--safe-b)); font-size: 11px; }
-  .hud-gaps.cockpit { bottom: calc(236px + var(--safe-b)); }
+  /* Third in the right-hand column, under the wheel panel. */
+  .hud-gaps {
+    top: calc(244px + var(--safe-t));
+    right: calc(10px + var(--safe-r));
+    width: calc(50% - 14px);
+    max-width: 176px;
+    font-size: 10px;
+    padding: 3px 8px;
+  }
 
   .hud-carstate {
-    bottom: calc(126px + var(--safe-b));
+    bottom: calc(10px + var(--safe-b));
     left: calc(10px + var(--safe-l));
     width: calc(50% - 16px);
     min-width: 0;
@@ -1116,7 +1103,7 @@ canvas#view {
   .hud-damage {
     left: auto;
     right: calc(134px + var(--safe-r));
-    bottom: calc(126px + var(--safe-b));
+    bottom: calc(10px + var(--safe-b));
     width: 60px;
     padding: 5px 5px 6px;
   }
@@ -1124,42 +1111,44 @@ canvas#view {
   .hud-damagesummary { font-size: 7.5px; }
 
   .hud-map {
-    bottom: calc(126px + var(--safe-b));
+    bottom: calc(10px + var(--safe-b));
     right: calc(10px + var(--safe-r));
     width: 116px;
     padding: 5px 6px 6px;
   }
 
-  /* Full width, so nothing is cut off at either edge. */
+  /* Second in the right-hand column, exactly as wide as the timing panel
+     above it. Half a 390px screen is 176px, so everything inside is a size
+     down; nothing is dropped. */
   .hud-wheel {
-    left: calc(8px + var(--safe-l));
-    right: calc(8px + var(--safe-r));
-    transform: none;
-    min-width: 0;
-    max-width: none;
-    padding: 6px 12px 8px;
-    border-radius: 26px;
+    top: calc(126px + var(--safe-t));
+    right: calc(10px + var(--safe-r));
+    left: auto;
+    width: calc(50% - 14px);
+    max-width: 176px;
+    gap: 4px;
+    padding: 5px 6px 6px;
   }
-  .hud-wheelrow { gap: 8px; }
-  .hud-geardisc { width: 48px; height: 48px; flex-basis: 48px; border-width: 2px; }
-  .hud-gear { font-size: 28px; }
-  .hud-wheelstats { gap: 6px; justify-content: space-around; }
+  .hud-wheelrow { gap: 5px; }
+  .hud-geardisc { width: 42px; height: 42px; flex-basis: 42px; border-width: 2px; }
+  .hud-gear { font-size: 25px; }
+  .hud-wheelstats { gap: 5px; }
   .hud-cell { min-width: 0; }
-  .hud-celllabel { font-size: 9px; letter-spacing: 0.04em; }
-  .hud-cellvalue { font-size: 18px; }
-  .hud-ersbadge { min-width: 0; padding: 3px 7px; }
-  .hud-ersmodetext { font-size: 11px; }
-  .hud-erspercent { font-size: 10px; }
-  .hud-drs { font-size: 9px; padding: 2px 5px; letter-spacing: 0.06em; }
+  .hud-celllabel { font-size: 8px; letter-spacing: 0.04em; }
+  .hud-cellvalue { font-size: 16px; }
+  .hud-ersbadge { padding: 2px 6px; }
+  .hud-ersmodetext { font-size: 10px; }
+  .hud-erspercent { font-size: 9px; }
+  .hud-drs { font-size: 8px; padding: 2px 4px; letter-spacing: 0.04em; }
   .hud-erslabel { font-size: 8px; }
-  .hud-leds { gap: 2px; }
+  .hud-leds { gap: 1px; }
   .hud-led { width: 7px; height: 4px; }
 
-  /* Stacked on the right edge, clear of the timing panel above and the map
-     below, which is the only column with room for them. */
+  /* Stacked on the right edge, low enough for a thumb and clear of both the
+     right-hand column above and the map below. */
   .hud-buttons {
     top: auto;
-    bottom: calc(280px + var(--safe-b));
+    bottom: calc(300px + var(--safe-b));
     right: calc(10px + var(--safe-r));
     flex-direction: column;
   }
@@ -1211,28 +1200,34 @@ canvas#view {
     width: min(340px, calc(100vw - 380px));
   }
   .radio-entry { font-size: 9.5px; padding: 3px 7px; }
-  .hud-conditions { top: auto; bottom: calc(150px + var(--safe-b)); font-size: 9px; padding: 3px 9px; }
+  .hud-conditions { top: auto; bottom: calc(182px + var(--safe-b)); font-size: 9px; padding: 3px 9px; }
 
+  /* Second in the right-hand column. 390px of height is the tightest case
+     there is, so the column runs timing / wheel / gaps / buttons and stops
+     well above the map in the bottom corner. */
   .hud-wheel {
-    padding: 4px 14px 6px;
-    min-width: 0;
-    gap: 3px;
-    border-radius: 30px;
-    bottom: calc(6px + var(--safe-b));
+    top: calc(120px + var(--safe-t));
+    right: calc(10px + var(--safe-r));
+    left: auto;
+    width: 180px;
+    gap: 4px;
+    padding: 5px 6px 6px;
   }
-  .hud-wheelrow { gap: 9px; }
-  .hud-geardisc { width: 44px; height: 44px; flex-basis: 44px; border-width: 2px; }
-  .hud-gear { font-size: 26px; }
-  .hud-wheelstats { gap: 10px; }
-  .hud-cell { min-width: 42px; }
-  .hud-celllabel { font-size: 9px; }
-  .hud-cellvalue { font-size: 17px; }
-  .hud-ersbadge { min-width: 62px; padding: 2px 7px; }
-  .hud-ersmodetext { font-size: 11px; }
-  .hud-erspercent { font-size: 10px; }
-  .hud-leds { margin-bottom: 0; gap: 2px; }
-  .hud-led { width: 8px; height: 4px; }
+  .hud-wheelrow { gap: 6px; }
+  .hud-geardisc { width: 42px; height: 42px; flex-basis: 42px; border-width: 2px; }
+  .hud-gear { font-size: 25px; }
+  .hud-wheelstats { gap: 6px; }
+  .hud-cell { min-width: 0; }
+  .hud-celllabel { font-size: 8px; }
+  .hud-cellvalue { font-size: 16px; }
+  .hud-ersbadge { padding: 2px 6px; }
+  .hud-ersmodetext { font-size: 10px; }
+  .hud-erspercent { font-size: 9px; }
+  .hud-drs { font-size: 8px; padding: 2px 4px; letter-spacing: 0.04em; }
+  .hud-leds { margin-bottom: 0; gap: 1px; }
+  .hud-led { width: 7px; height: 4px; }
   .hud-ersrow .hud-ersbar { height: 6px; }
+  .hud-erslabel { font-size: 8px; }
 
   .hud-carstate { bottom: calc(6px + var(--safe-b)); min-width: 0; width: 138px; padding: 5px 7px; }
   .hud-tyrelabel { width: 26px; font-size: 8px; }
@@ -1246,10 +1241,28 @@ canvas#view {
   .hud-map { width: 108px; bottom: calc(6px + var(--safe-b)); padding: 4px 5px 5px; }
   .map-title { font-size: 7.5px; margin-bottom: 2px; }
 
-  .hud-gaps { bottom: calc(122px + var(--safe-b)); font-size: 10.5px; padding: 3px 10px; }
-  .hud-gaps.cockpit { bottom: calc(122px + var(--safe-b)); }
+  /* The right-hand column stops after the wheel panel here. 390px of height
+     carries the timing panel, the wheel panel and the map in that corner and
+     nothing else, so the two items that do not have to be in the column go to
+     the one piece of free floor there is: the strip between the damage panel
+     and the map, which is below the road in every camera. */
+  .hud-gaps {
+    top: auto;
+    bottom: calc(48px + var(--safe-b));
+    left: calc(216px + var(--safe-l));
+    right: auto;
+    width: auto;
+    font-size: 10px;
+    padding: 2px 8px;
+  }
 
-  .hud-buttons { top: calc(100px + var(--safe-t)); right: calc(10px + var(--safe-r)); flex-direction: column; }
+  .hud-buttons {
+    top: auto;
+    bottom: calc(6px + var(--safe-b));
+    left: calc(216px + var(--safe-l));
+    right: auto;
+    flex-direction: row;
+  }
   .hud-btn { width: 42px; height: 30px; font-size: 9px; }
   .hud-camera, .hud-diag { display: none; }
 
@@ -1274,7 +1287,8 @@ canvas#view {
 
 /* Mid-size screens: shrink the largest readouts without relaying anything. */
 @media (min-width: 621px) and (max-width: 900px) and (min-height: 471px) {
-  .hud-wheel { min-width: 0; }
+  .hud-wheel { width: 210px; }
+  .hud-gaps { width: 210px; }
   .hud-tower { width: 190px; }
   .hud-timing { width: 210px; }
   .hud-map { width: 150px; }

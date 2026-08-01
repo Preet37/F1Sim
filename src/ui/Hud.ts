@@ -85,7 +85,6 @@ export class Hud {
   private lastLap!: HTMLElement;
   private bestLap!: HTMLElement;
   private delta!: HTMLElement;
-  private gapsPanel!: HTMLElement;
   private gapAhead!: HTMLElement;
   private gapBehind!: HTMLElement;
   private leds: HTMLElement[] = [];
@@ -107,7 +106,6 @@ export class Hud {
   private cameraLabel!: HTMLElement;
   private diagnostics!: HTMLElement;
 
-  private wheelPanel!: HTMLElement;
   private tower!: HTMLElement;
   private startLights!: HTMLElement;
   private readonly startBulbs: HTMLElement[][] = [];
@@ -213,16 +211,30 @@ export class Hud {
       this.sectorFlagPills.push(this.el('map-flagpill flag-green', flagRow, 'S' + (i + 1)));
     }
 
-    // --- Bottom centre: the wheel display ---------------------------------
+    // --- Right column: the wheel display ----------------------------------
+    //
+    // "The speedometer is covering everything that's visible in this camera."
+    // It was: a 470px pill across the bottom centre, which is exactly where the
+    // road is in an onboard shot and where the car is in a chase one. The
+    // reference broadcast HUD never puts anything there. It runs a single
+    // column down the right edge — timing panel, then speed, gear, ERS and
+    // battery under it — a tower down the left, small widgets in the corners,
+    // and it leaves the whole middle and bottom of the screen alone.
+    //
+    // So this panel is now the second item in that right-hand column, directly
+    // under the timing panel. Nothing was dropped to make it fit: every readout
+    // that was on the pill is still here, re-flowed from one wide row into a
+    // narrow stack. It also means there is no longer a stripped-down cockpit
+    // variant, because a panel in the corner does not need one — see
+    // `setCameraMode`.
     //
     // Laid out like a real steering-wheel dash rather than a games HUD: a big
-    // gear numeral in its own disc on the left, the numeric readouts in a row
-    // beside it, and the shift lights curving across the top. The gear is the
-    // thing a driver checks most often and the only item legible at a glance
-    // in peripheral vision, which is why it gets the largest, highest-contrast
-    // element rather than the speed.
+    // gear numeral in its own disc on the left, the numeric readouts beside it,
+    // and the shift lights across the top. The gear is the thing a driver
+    // checks most often and the only item legible at a glance in peripheral
+    // vision, which is why it gets the largest, highest-contrast element rather
+    // than the speed.
     const bottom = this.el('hud-panel hud-wheel', this.root);
-    this.wheelPanel = bottom;
 
     // Shift lights across the top edge. Green to amber to red, then flashing
     // at the limiter — you learn the position of the light you shift on, which
@@ -245,13 +257,18 @@ export class Hud {
     this.el('hud-celllabel', rpmCell, 'RPM');
     this.rpmValue = this.el('hud-cellvalue', rpmCell, '0');
 
+    this.drsBadge = this.el('hud-drs', wheelRow, 'DRS');
+
     // ERS mode doubles as its own badge: the mode letter is what the driver
     // actually switches, so it reads as a button rather than a caption.
-    this.ersBadge = this.el('hud-ersbadge', stats);
+    //
+    // Its own row rather than a third cell beside the speed and the rpm: in a
+    // 244px column three cells and a DRS badge on one line leaves each of them
+    // about fifty pixels, and a readout squeezed to fifty pixels is a readout
+    // nobody reads.
+    this.ersBadge = this.el('hud-ersbadge', bottom);
     this.ersMode = this.el('hud-ersmodetext', this.ersBadge, 'ERS (B)');
     this.ersPercent = this.el('hud-erspercent', this.ersBadge, '0%');
-
-    this.drsBadge = this.el('hud-drs', wheelRow, 'DRS');
 
     // The rpm bar sits under everything as a thin trace, and the ERS store
     // beside it — both are continuous quantities, so a bar is the right form.
@@ -290,7 +307,6 @@ export class Hud {
 
     // --- Gaps -------------------------------------------------------------
     const gaps = this.el('hud-panel hud-gaps', this.root);
-    this.gapsPanel = gaps;
     this.gapAhead = this.el('hud-gapahead', gaps, '');
     this.gapBehind = this.el('hud-gapbehind', gaps, '');
 
@@ -1012,29 +1028,28 @@ export class Hud {
   /**
    * Tells the HUD which camera is live.
    *
-   * The bottom-centre wheel display SHRINKS in the cockpit. It used to be
-   * hidden outright, on the reasoning that the car has a real wheel with a real
-   * dash on it there and the panel sat on top of it showing the same numbers.
-   * That reasoning is wrong on the only point that matters: the modelled dash
-   * is 40mm of screen at half a metre, angled away from the camera and shared
-   * with the road behind it, so the one number a driver reads constantly —
-   * speed — went from a 25px numeral in a fixed, known place to something you
-   * have to go looking for. A readout you have to hunt for is not a readout.
+   * This used to swap the wheel display for a stripped-down version in the
+   * cockpit — gear, speed and rpm only — because the full panel sat across the
+   * bottom centre of the frame, on top of the road and on top of the modelled
+   * wheel, and something had to give. Halving it was the least bad option
+   * available while it was there at all.
    *
-   * So the panel stays put, in the same place, in every camera mode. What the
-   * cockpit gets is a stripped version of it: gear, speed and rpm only, at
-   * about half the height, with the shift lights, the bars and the ERS badge
-   * dropped — all of which the modelled wheel genuinely does show.
+   * It is not there any more. In the right-hand column the panel is clear of
+   * the road in every camera, so there is nothing to trade away and the cockpit
+   * now gets the SAME readouts as every other view — including the shift
+   * lights, the ERS store and DRS, which the cockpit used to lose. Keeping one
+   * layout for all cameras is also the point of a fixed HUD: a readout that
+   * moves or disappears when the camera changes is a readout you have to go
+   * looking for.
+   *
+   * Kept as a hook — the camera mode is a thing the HUD is entitled to know —
+   * but it no longer changes the layout.
    */
   setCameraMode(mode: string): void {
-    const inCockpit = mode === 'cockpit';
-    if (inCockpit === this.cockpitView) return;
-    this.cockpitView = inCockpit;
-    setStyle(this.wheelPanel, 'display', 'flex');
-    setClass(this.wheelPanel, 'hud-panel hud-wheel' + (inCockpit ? ' compact' : ''));
-    setClass(this.gapsPanel, 'hud-panel hud-gaps' + (inCockpit ? ' cockpit' : ''));
+    this.cockpitView = mode === 'cockpit';
   }
-  private cockpitView = false;
+  /** Which camera is live. Read by nothing yet; see `setCameraMode`. */
+  cockpitView = false;
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? 'block' : 'none';

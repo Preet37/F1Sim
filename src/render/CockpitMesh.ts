@@ -66,10 +66,14 @@ import { gloveNomexMap } from './DetailMaps';
  * 56 per cent, and the crown of the helmet (y 0.828, z 0) at 80 per cent. The
  * horizon gives the pitch directly; the ratio of the other two depressions
  * gives the eye, because a nearer object at the same height falls faster down
- * the frame than a far one. Working it through puts the camera 0.62m behind the
- * helmet crown and 0.22m above it, looking 7.8 degrees down — which is where
- * these three numbers now are, and they are not to be nudged without redoing
- * that arithmetic.
+ * the frame than a far one. The pitch is exact; the eye is then slid back along
+ * the ray that holds the crown at 80 per cent until the helmet subtends what it
+ * subtends in the reference — 0.188m of shell across about a fifth of the frame
+ * width — which lands at 0.78m behind the crown and 0.28m above it. Every other
+ * landmark falls within two per cent of the reference at that point: the halo
+ * crown at 58 per cent, the mirrors at three-quarters height and a quarter of
+ * the way in from each edge, the top of the wheel rim 2.9 degrees clear of the
+ * helmet. They are not to be nudged without redoing that arithmetic.
  *
  * TWO THINGS HAD TO MOVE OUT OF THE WAY, and neither was reachable from here:
  * the roll hoop's camera pod, which is this camera and was a dark dome across
@@ -78,8 +82,8 @@ import { gloveNomexMap } from './DetailMaps';
  * `Parts.onboardHidden` and the airbox comment.
  */
 export const EYE_X = 0;
-export const EYE_Y = 1.051;
-export const EYE_Z = -0.62;
+export const EYE_Y = 1.108;
+export const EYE_Z = -0.78;
 
 /**
  * Downward tilt of the cockpit camera, radians.

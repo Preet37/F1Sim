@@ -1197,15 +1197,18 @@ function buildShellParts(
   // until the sightline is 24.9 degrees down, which is past the bottom of a
   // frame whose horizon sits where the reference frames put it. No camera
   // position fixes that — the lip has to come back and down, which is also where
-  // a real roll hoop is relative to a real driver's head. At (-0.30, 0.906) the
-  // helmet clears by 58mm and the crown reads at four-fifths of frame height,
-  // exactly as it does in the Monoposto onboards.
+  // a real roll hoop is relative to a real driver's head. At (-0.30, 0.880) the
+  // helmet clears the lip by 91mm, the crown reads at four-fifths of frame
+  // height exactly as it does in the Monoposto onboards, and the front face
+  // itself is down to the bottom seven per cent of the frame instead of a slab
+  // across the bottom fifth of it. The mouth sitting a little below the crown
+  // of the hump behind it is what the photographs show anyway.
   //
   // The crown of the hump moves back with it, so the silhouette from outside is
   // the same airbox it was: it now peaks a little behind the mouth, which is
   // what the photographs show anyway.
   p.painted(big([
-    section(-0.30, 0.120, 0.520, 0.906, 0.36),
+    section(-0.30, 0.120, 0.520, 0.880, 0.36),
     section(-0.46, 0.146, 0.528, 0.926, 0.44),
     section(-0.78, 0.144, 0.538, 0.842, 0.55),
     section(-1.18, 0.110, 0.546, 0.742, 0.66),
@@ -1214,8 +1217,8 @@ function buildShellParts(
 
   // The intake itself. Dark, and proud of the airbox face, so it reads as a duct.
   p.flat(small([
-    section(-0.275, 0.082, 0.672, 0.874, 0.42),
-    section(-0.38, 0.070, 0.688, 0.860, 0.48),
+    section(-0.275, 0.082, 0.672, 0.856, 0.42),
+    section(-0.38, 0.070, 0.688, 0.852, 0.48),
     section(-0.52, 0.056, 0.702, 0.836, 0.58),
   ], t.body - 8), 'dark');
 
