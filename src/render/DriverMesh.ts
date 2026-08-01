@@ -58,7 +58,19 @@ export interface DriverParts {
 /** Seated position: eye point is a little forward of the roll hoop, low down. */
 const HEAD_Y = 0.672;
 const HEAD_Z = 0.02;
-const SHOULDER_Y = 0.505;
+/**
+ * The shoulder line, 22mm higher than it was.
+ *
+ * It sat at 0.505 under a coaming at 0.575, which is 70mm of daylight between
+ * the top of the driver and the top of the tub — and it did not matter, because
+ * the deck was closed and none of him was visible anyway. Now that there is a
+ * hole to look through, 70mm down is a figure sunk out of sight in a dark box.
+ * Every reference frame has the shoulders and the HANS collar level with or
+ * barely under the rim: that is the proportion that makes a cockpit look
+ * OCCUPIED rather than empty, and it is why the shoulders are the first thing
+ * this file's own preamble lists.
+ */
+const SHOULDER_Y = 0.527;
 
 /**
  * Tessellation, per tier.
@@ -123,52 +135,54 @@ function scaled(
 }
 
 /**
- * The seat liner, and the padded headrest around the driver's shoulders.
+ * The seat, and the padded headrest around the driver's shoulders.
  *
- * WHAT CHANGED AND WHY. The monocoque now carries a real cockpit aperture — the
- * deck stops at the coaming and the bodywork itself descends into a trough that
- * IS the survival cell (see `COCKPIT_APERTURE` in CarMesh). So the tub no longer
- * needs a floor: it has one. What it needs instead is to be DARK, because the
- * trough is part of the painted shell and would otherwise be the team's colour
- * all the way down.
+ * WHAT CHANGED AND WHY. This used to build a whole tub — a dark closed loft
+ * from y 0.370 up to a roof at 0.560 — because the monocoque's "cockpit
+ * opening" was a comment and the cockpit needed SOMETHING behind it or the
+ * opening looked straight through to the underside of the far bodywork.
  *
- * This is therefore a liner rather than a tub — a thin dark bowl set a couple of
- * centimetres inside the monocoque's own interior, with its rim about 30mm below
- * the coaming. Looking into the opening you get the painted lip, a band of
- * painted inner wall, and then black, which is exactly the order the reference
- * photographs show.
+ * The monocoque now carries a real aperture: the deck stops at the coaming and
+ * the bodywork itself descends into a trough that IS the survival cell, lined
+ * in the dark matte swatch. So the tub is not needed and could not stay anyway
+ * — its walls ran where the trough's walls now run, and its roof at 0.560 was a
+ * lid over a driver whose chest reaches 0.552.
  *
- * IT IS OPEN-TOPPED FOR THE SAME REASON THE TUB IS. The old version was a closed
- * loft with its roof at y 0.560, which is above the driver's 0.530 chest: it was
- * a lid over him. That did not matter while the deck sealed the cockpit anyway.
- * It matters now.
+ * What is left is the two things the shell cannot provide: a seat pan under the
+ * driver, and the headrest, which is the one piece of cockpit furniture that
+ * stands PROUD of the coaming on a real car and is therefore the piece that
+ * says from a hundred metres away that there is somebody in there.
  */
-const LINER_APERTURE: OpenTop = { edge: apertureEdge(0.40, 0.86), share: 0.46, roll: 0.20 };
 const HEADREST_APERTURE: OpenTop = { edge: apertureEdge(0.45, 0.80), share: 0.42, roll: 0.22 };
 
 function cockpitInterior(d: DriverTier): THREE.BufferGeometry[] {
   const parts: THREE.BufferGeometry[] = [];
 
-  // Seat liner. Widths are set from the monocoque's interior wall, which at the
-  // shoulders sits at x 0.214: 0.206 buries the liner's rim in the painted wall
-  // rather than leaving a slot down the side of it.
+  // Seat pan. Narrower than the torso at the shoulders, so it is buried there
+  // and only emerges forward of the chest where it is the seat under the
+  // driver's legs. Its top is below the chest surface deliberately: a seat the
+  // driver sits ON reads as furniture, one he sits IN reads as a seat.
   parts.push(tag(loft([
-    section(0.72, 0.148, 0.398, 0.524, 0.55, { openDepth: 0.010, openWall: 0.008 }),
-    section(0.44, 0.190, 0.380, 0.536, 0.45, { openDepth: 0.104, openWall: 0.010 }),
-    section(0.10, 0.206, 0.374, 0.546, 0.40, { openDepth: 0.150, openWall: 0.010 }),
-    section(-0.16, 0.202, 0.378, 0.550, 0.44, { openDepth: 0.148, openWall: 0.010 }),
-    section(-0.34, 0.162, 0.394, 0.538, 0.60, { openDepth: 0.060, openWall: 0.010 }),
-  ], Math.round(d.seg * 1.4), true, d.step, LINER_APERTURE), 'dark'));
+    section(0.46, 0.146, 0.376, 0.428, 0.60),
+    section(0.08, 0.180, 0.366, 0.450, 0.50),
+    section(-0.24, 0.172, 0.372, 0.444, 0.55),
+    section(-0.36, 0.132, 0.386, 0.424, 0.75),
+  ], d.seg, true, d.step), 'dark'));
 
-  // Headrest: the thick padded horseshoe behind and beside the helmet, and the
-  // one piece of the cockpit that stands PROUD of the coaming on a real car —
-  // 0.626 against a rim at 0.590. It is open-topped too, so it is a horseshoe
-  // rather than a bolster the driver is buried under.
+  // Headrest: the thick padded horseshoe behind and beside the helmet, topping
+  // out at 0.626 against a coaming at 0.590. Open-topped, so it is a horseshoe
+  // around the driver rather than a bolster he is buried under — which is what
+  // a closed loft up here would be now that the deck is gone.
+  //
+  // ITS FLOOR IS AT HEAD HEIGHT, not shoulder height. It used to start at 0.470
+  // — below the shoulder line — so its two walls ran through the widest part of
+  // the driver and buried the shoulders in dark padding at exactly the angle
+  // the cockpit is looked into from. A headrest is beside the HELMET.
   parts.push(tag(loft([
-    section(0.04, 0.196, 0.470, 0.582, 0.45, { openDepth: 0.020, openWall: 0.026 }),
-    section(-0.14, 0.206, 0.470, 0.626, 0.40, { openDepth: 0.110, openWall: 0.028 }),
-    section(-0.30, 0.198, 0.470, 0.616, 0.50, { openDepth: 0.100, openWall: 0.028 }),
-    section(-0.40, 0.160, 0.470, 0.576, 0.70, { openDepth: 0.024, openWall: 0.024 }),
+    section(0.02, 0.192, 0.524, 0.582, 0.45, { openDepth: 0.020, openWall: 0.026 }),
+    section(-0.16, 0.202, 0.522, 0.626, 0.40, { openDepth: 0.110, openWall: 0.028 }),
+    section(-0.31, 0.196, 0.520, 0.616, 0.50, { openDepth: 0.100, openWall: 0.028 }),
+    section(-0.41, 0.158, 0.520, 0.576, 0.70, { openDepth: 0.024, openWall: 0.024 }),
   ], Math.round(d.seg * 1.3), true, d.step, HEADREST_APERTURE), 'trim'));
 
   return parts;
@@ -238,13 +252,42 @@ function figure(d: DriverTier): THREE.BufferGeometry[] {
   // reference frames, which is what this is now doing rather than passing
   // through it.
   parts.push(tag(loft([
-    section(0.34, 0.112, 0.395, 0.470, 0.8),
-    section(0.18, 0.146, 0.390, 0.500, 0.75),
-    section(0.02, 0.178, 0.390, 0.522, 0.7),
-    section(-0.10, 0.196, 0.390, 0.530, 0.6),
-    section(-0.22, 0.174, 0.395, 0.512, 0.7),
-    section(-0.32, 0.126, 0.400, 0.478, 0.85),
+    section(0.34, 0.112, 0.395, 0.492, 0.8),
+    section(0.18, 0.146, 0.390, 0.522, 0.75),
+    section(0.02, 0.178, 0.390, 0.544, 0.7),
+    section(-0.10, 0.196, 0.390, 0.552, 0.6),
+    section(-0.22, 0.174, 0.395, 0.534, 0.7),
+    section(-0.32, 0.126, 0.400, 0.500, 0.85),
   ], d.seg, true, d.step), 'suit'));
+
+  // Harness. Two shoulder belts over the chest, converging on a buckle at the
+  // sternum, in the team's accent so they read at a glance.
+  //
+  // These are new, and they are new because there was nothing to see them
+  // through. A six-point harness over a bright suit is one of the three or four
+  // things a viewer's eye goes looking for in an open cockpit — it is right
+  // there in every reference frame, it is what says "strapped in", and a driver
+  // without one reads as sitting in the car rather than racing it. The belts
+  // ride ON the chest: every station's y is set from the torso's own surface at
+  // that x, plus 7mm for the webbing.
+  for (const side of [-1, 1] as const) {
+    parts.push(tag(loft([
+      section(-0.150, 0.034, 0.548, 0.560, 0.55, { xc: side * 0.098 }),
+      section(-0.060, 0.035, 0.549, 0.562, 0.50, { xc: side * 0.094 }),
+      section(0.020, 0.035, 0.541, 0.554, 0.50, { xc: side * 0.076 }),
+      section(0.085, 0.033, 0.527, 0.540, 0.55, { xc: side * 0.050 }),
+      section(0.140, 0.030, 0.508, 0.521, 0.60, { xc: side * 0.026 }),
+    ], Math.max(8, d.seg - 12), true, d.step), 'accent'));
+  }
+  // The buckle the two belts meet on.
+  {
+    const buckle = loft([
+      section(0.128, 0.036, 0.500, 0.526, 0.35),
+      section(0.152, 0.040, 0.496, 0.524, 0.30),
+      section(0.172, 0.034, 0.494, 0.518, 0.45),
+    ], Math.max(8, d.seg - 12), true, d.step);
+    parts.push(tag(buckle, 'trim'));
+  }
 
   // Neck.
   const neck = new THREE.CylinderGeometry(0.052, 0.062, 0.10, d.limb);

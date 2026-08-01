@@ -538,12 +538,17 @@ const COCKPIT_APERTURE: OpenTop = {
   share: 0.44,
   roll: 0.15,
   wallExp: 4.6,
-  // Bare carbon inside, painted outside. The first version of the aperture was
-  // the right hole in the right place and still did not read as one, because
-  // the trough was in the team's colour to the floor and a body-coloured dish
-  // is a dished PANEL — which is the same complaint the solid deck drew, in a
-  // new shape. The dark interior under a lit coaming is what makes it a hole.
-  interiorUV: swatchUV('carbon'),
+  // Dark inside, painted outside. The first version of the aperture was the
+  // right hole in the right place and still did not read as one, because the
+  // trough was in the team's colour to the floor and a body-coloured dish is a
+  // dished PANEL — which is the same complaint the solid deck drew, in a new
+  // shape. The dark interior under a lit coaming is what makes it a hole.
+  //
+  // `dark` and not `carbon`: the swatches carry roughness as well as colour,
+  // and carbon is CLEAR-COATED laminate at 0.38 rough. A tub lined in it
+  // mirrored the sky and came out glossy blue, which reads as a hole full of
+  // water. `dark` is 0.90 and near black, which is what a survival cell is.
+  interiorUV: swatchUV('dark'),
 };
 
 /**
@@ -941,6 +946,39 @@ function buildShellParts(
     loft(monocoque(), t.tub, true, t.bodyStep, COCKPIT_APERTURE),
     'body',
   );
+
+  // --- Cockpit coaming ----------------------------------------------------
+  // The dark padded rim round the opening, and the last thing the aperture
+  // needed to read as one.
+  //
+  // A hole cut in a curved surface has no edge of its own: what the eye sees is
+  // a gradient from lit paint into shadow, and at any distance that is a dark
+  // PATCH rather than an opening. Every reference frame has a hard black line
+  // all the way round the cockpit — a moulded surround with padding bonded over
+  // it — and that line is what makes the shape legible. It also does the job
+  // the geometry cannot: a 22mm rail catches a specular highlight along its
+  // whole length, so the opening is drawn by a bright line rather than by an
+  // absence.
+  //
+  // The stations follow the aperture's own coaming, which is not a free
+  // parameter: `COCKPIT_APERTURE` puts the lip at 68 per cent of each station's
+  // half-width, and these x and y are that point on the tub's profile, station
+  // by station. Tapered to nothing at both ends so the rail runs out into the
+  // bodywork instead of stopping in a blunt cap.
+  for (const side of [-1, 1] as const) {
+    const rail = (z: number, x: number, y: number, w: number) =>
+      section(z, w, y - 0.009, y + 0.009, 0.85, { xc: side * x });
+    p.flat(small([
+      rail(1.045, 0.186, 0.538, 0.0035),
+      rail(0.960, 0.194, 0.543, 0.0115),
+      rail(0.780, 0.211, 0.554, 0.0130),
+      rail(0.500, 0.227, 0.566, 0.0130),
+      rail(0.180, 0.234, 0.574, 0.0130),
+      rail(-0.120, 0.233, 0.584, 0.0130),
+      rail(-0.340, 0.226, 0.593, 0.0125),
+      rail(-0.440, 0.216, 0.596, 0.0040),
+    ], t.detail), 'carbon');
+  }
 
   // --- Nose-to-wing transition -------------------------------------------
   // The nose does not stop in mid-air; it drops onto the second wing element.

@@ -800,22 +800,25 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // The dark bolsters either side of the driver. They occupy the bottom corners
   // of the frame and are most of what makes the view feel enclosed.
   //
-  // Heights here follow the monocoque in CarMesh, whose cockpit opening has its
-  // rim at y = 0.572..0.596 over this stretch. The pads stand a couple of
-  // centimetres proud of it, as padding does.
   // Padding is padding: it is upholstery over foam and it has no sharp edge
   // anywhere on it. As a box it occupied the bottom corners of the frame with
   // two dead-straight highlights, which is the first thing the eye reads in an
   // onboard shot. Lofted with a strongly rounded section, tapering forward, as
   // the coaming does.
+  //
+  // MOVED INBOARD, from x 0.30 to the real coaming. These were placed against a
+  // monocoque whose "cockpit opening" was a solid deck, so they were free to
+  // sit anywhere on it and were put where they framed the shot. The tub now has
+  // an actual lip — `COCKPIT_APERTURE` in CarMesh puts it at 68 per cent of the
+  // half-width, which is x 0.227..0.234 over this stretch — and padding that
+  // does not sit on it is two bolsters floating out on the bodywork.
   for (const side of [-1, 1] as const) {
     const pad = loft([
-      section(0.440, 0.0330, 0.5525, 0.6045, 0.80),
-      section(0.240, 0.0375, 0.5525, 0.6075, 0.80),
-      section(-0.020, 0.0375, 0.5525, 0.6075, 0.78),
-      section(-0.180, 0.0300, 0.5550, 0.6000, 0.85),
+      section(0.440, 0.0300, 0.5620, 0.6060, 0.80, { xc: side * 0.2245 }),
+      section(0.240, 0.0340, 0.5680, 0.6120, 0.80, { xc: side * 0.2295 }),
+      section(-0.020, 0.0340, 0.5740, 0.6180, 0.78, { xc: side * 0.2325 }),
+      section(-0.180, 0.0275, 0.5820, 0.6230, 0.85, { xc: side * 0.2320 }),
     ], SEG.loftRing, true, SEG.loftStep);
-    pad.translate(side * 0.30, 0, 0);
     add(pad, carbon);
   }
   // Dash bulkhead ahead of the driver, where the column comes through. The tub

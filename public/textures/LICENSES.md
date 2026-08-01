@@ -8,8 +8,11 @@ downloaded, or derived from any other work.
 | --- | --- | --- | --- | --- |
 | `carbon_weave_normal.png` | 44 kB | 512x512 RGB8 | `scripts/generateTextures.mjs`, `carbonWeave()` | CC0 1.0 (public domain dedication) |
 | `tyre_surface_normal.png` | 16 kB | 512x512 RGB8 | `scripts/generateTextures.mjs`, `tyreSurface()` | CC0 1.0 (public domain dedication) |
+| `glove_nomex_normal.png` | 95 kB | 256x256 RGB8 | `scripts/generateTextures.mjs`, `gloveNomex()` | CC0 1.0 (public domain dedication) |
 
-Total shipped: **60 kB**, downloaded once and shared by all twenty cars.
+Total shipped: **155 kB**, downloaded once. The first two are shared by all
+twenty cars; the glove is used only by the one car the cockpit camera can sit
+in, and is never fetched in a session that never selects that view.
 
 ## How to regenerate
 
@@ -47,6 +50,18 @@ level of the map was aliased before any mip was built; measured high-frequency
 energy on the tyre rose from 5.5 at 1.9 m to 20.0 at 14 m, which is aliasing by
 definition. It is 5.9 to 13.4 now. Provenance is unchanged — still every pixel
 computed by `tyreSurface()` in this repository.
+
+**`glove_nomex_normal.png`** — a tangent-space normal map of a driver's Nomex
+glove, laid out in three horizontal bands to match `GLOVE_PANEL` in
+`src/render/CockpitMesh.ts`: plain knit for the fingers and thumb, knit plus
+padded pads with stitched borders for the hand, and knit plus elastic ribbing
+and a double-stitched hem for the cuff. The knit is a fine jersey whose courses
+lean alternately left and right, which is the signature that separates it from
+the carbon twill already on the car. A knit, a pad and a row of stitches are
+generic objects: there is no maker's mark, no lettering and no logo anywhere in
+it. Wraps in u, because every part of the hand is lofted or swept and its u goes
+once round a section; deliberately does not wrap in v, where the three bands
+meet.
 
 ## Licensing boundary
 
