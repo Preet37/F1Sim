@@ -681,7 +681,14 @@ function buildSurfaceMap(size: number): THREE.Texture {
   // those parts came out as a flat dark-grey shape with no highlight along any
   // edge — which is precisely how a plastic model of a car looks, and the
   // front wing is now entirely made of them.
-  const CARBON = set(0.30, 0.06);
+  //
+  // 0.38 rather than 0.30. Lacquered carbon is glossy, but the floor edge and
+  // the sidepod's undercut are long, gently curved, near-horizontal surfaces —
+  // exactly the geometry that turns a tight specular lobe into a metre-long
+  // streak — and at 0.30 they came out as a blown white bar under the car in
+  // every three-quarter shot. Still a world away from the 0.62 that made them
+  // read as grey plastic.
+  const CARBON = set(0.38, 0.06);
 
   const body = new Panel(ctx, PANEL.body, size);
   body.fill(PAINT);
@@ -707,7 +714,7 @@ function buildSurfaceMap(size: number): THREE.Texture {
     body: [0.16, 0.28],
     accent: [0.15, 0.26],
     // Clear-coated laminate. See the CARBON constant above.
-    carbon: [0.30, 0.06],
+    carbon: [0.38, 0.06],
     // Suspension and the halo are anodised or painted metal — genuinely
     // metallic, and glossy enough to hold the rim light along their length.
     trim: [0.34, 0.72],
