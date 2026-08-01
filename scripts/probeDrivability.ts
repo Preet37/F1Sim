@@ -37,6 +37,24 @@
  * sustained at a given speed for long enough to measure anything, it is skipped
  * and says so, rather than reporting a number that means nothing.
  *
+ * WHAT THIS PROBE CANNOT TELL YOU. It drives open-loop manoeuvres. It cannot say
+ * whether a person closing the loop around this car, lap after lap, stays on the
+ * road — for that you have to actually drive it, with a controller handicapped to
+ * human bandwidth, in the real engine. That was done: a scripted driver with a
+ * 250ms reaction delay and hands limited to 4 input units per second, installed
+ * on `RaceEngine.step` at 120Hz rather than on the render loop (under software GL
+ * the page runs at four frames a second and a frame-sampled controller is a 5Hz
+ * bang-bang loop that spins the car by itself and manufactures its own evidence).
+ * Same driver, same circuit, same seed, Red Bull Ring:
+ *
+ *     baseline car   3 spins in 52.9s of running
+ *     this car       1 spin  in 45.3s
+ *
+ * and with the reaction delay set to zero as a control, this car takes 4.2
+ * degrees of peak sideslip and 0.38 mean over a clean run — so what remains is
+ * the phase margin of a pure-delay proportional controller, which is a property
+ * of that harness and not of the chassis.
+ *
  * Run: npm run probe:drivability
  */
 
