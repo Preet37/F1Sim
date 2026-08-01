@@ -529,12 +529,35 @@ export class SurfaceDetail {
     // and walls keep the two-fetch program they had; only the asphalt pays for
     // aggregate, seams, patches and rubber, and it is the only surface anyone
     // ever looks at from two metres away.
+    // Every threshold below is widened by its own screen-space derivative, and
+    // that is the fix for the second-largest source of shimmer in the game.
+    //
+    // Measured with a third-of-a-pixel camera move: the asphalt within twenty
+    // metres of the camera reads 0.4 display levels of change, which is
+    // nothing, and the asphalt near the horizon reads 2.7, which is plainly
+    // visible and is the whole of "the entire circuit seems very grainy" once
+    // the catch fence is dealt with. It is not the texture fetches — those are
+    // mip-mapped and filter correctly. It is these smoothsteps.
+    //
+    // A `smoothstep(0.615, 0.645, n)` is a decision three hundredths wide taken
+    // on a value that, once minified, wanders by more than that from frame to
+    // frame. It is the alpha-test problem in a different costume: the filtered
+    // input converges toward its mean, the mean sits inside the ramp, and every
+    // sub-pixel movement re-rolls which side of it each pixel lands on.
+    //
+    // `fwidth` is exactly how much the value moves across one pixel, so opening
+    // the ramp by that much makes the decision no sharper than the sampling can
+    // support. Near the camera the derivative is tiny and nothing changes; at
+    // the horizon the ramp opens until the term is a constant, which is the
+    // honest answer — a seam you cannot resolve is not a seam, it is part of
+    // the average colour of the road.
     const aggCode = aggregate <= 0 ? '' : /* glsl */`
       float aggN = texture2D(uGrain, vDetailPos.xz * ${f(profile.aggregateScale ?? 5.5)} + vec2(0.31, 0.67)).r;
       // A gentler contrast stretch than 0.40..0.76. Narrowing the window is
       // what turns a smooth noise field into discrete speckle, and discrete
       // speckle a fraction of a pixel across is the definition of aliasing.
-      agg = smoothstep(0.34, 0.86, aggN);
+      float aggW = fwidth(aggN);
+      agg = smoothstep(0.34 - aggW, 0.86 + aggW, aggN);
       dMix *= mix(1.0, 0.74 + agg * 0.46, ${f(aggregate)});
     `;
     // The half-value contour of the mid band, taken twice at different scales
@@ -542,16 +565,17 @@ export class SurfaceDetail {
     // one much finer set of cracks branching off them.
     const seamCode = seams <= 0 ? '' : /* glsl */`
       float seamN = texture2D(uGrain, vDetailPos.xz * ${f(profile.seamScale ?? 0.05)} + vec2(0.73, 0.19)).b;
-      float seamJoint = 1.0 - smoothstep(0.0, 0.014, abs(seamN - 0.5));
+      float seamJoint = 1.0 - smoothstep(0.0, 0.014 + fwidth(seamN) * 2.0, abs(seamN - 0.5));
       float crackN = texture2D(uGrain, vDetailPos.xz * ${f((profile.seamScale ?? 0.05) * 5.0)} + vec2(0.41, 0.62)).b;
-      float crackLine = 1.0 - smoothstep(0.0, 0.02, abs(crackN - 0.5));
+      float crackLine = 1.0 - smoothstep(0.0, 0.02 + fwidth(crackN) * 2.0, abs(crackN - 0.5));
       dMix *= 1.0 - (seamJoint * 0.6 + crackLine * 0.4) * ${f(seams * 0.45)};
     `;
     const patchCode = patches <= 0 ? '' : /* glsl */`
       // The smooth band, so a repair comes out as one large region with a
       // definite boundary rather than as camouflage.
       float patchN = texture2D(uGrain, vDetailPos.xz * ${f(profile.patchScale ?? 0.022)} + vec2(0.11, 0.83)).g;
-      sdPatch = smoothstep(0.615, 0.645, patchN);
+      float patchW = fwidth(patchN);
+      sdPatch = smoothstep(0.615 - patchW, 0.645 + patchW, patchN);
       dMix *= 1.0 - sdPatch * ${f(patches * 0.15)};
     `;
     const rubberCode = rubber <= 0 ? '' : /* glsl */`

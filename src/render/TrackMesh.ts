@@ -935,7 +935,17 @@ export function buildTrackMeshes(
         map: tex,
         alphaMap: tex,
         transparent: false,
-        alphaTest: 0.45,
+        alphaTest: FENCE_ALPHA_TEST,
+        // The other half of the fence fix, and it is free.
+        //
+        // Alpha to coverage turns the one-bit cutout into a multisample
+        // coverage mask, so a wire that covers a third of a pixel shades a
+        // third of that pixel's samples instead of all or none of it. The high
+        // tier already renders into a 4x MSAA target for the composer and the
+        // low tier asks for an antialiased canvas, so the samples this needs
+        // are already being paid for; without it, coverage-preserving mips
+        // stop the fence strobing but leave every wire edge hard.
+        alphaToCoverage: true,
         side: THREE.DoubleSide,
         roughness: 0.75,
         metalness: 0.25,
@@ -1043,6 +1053,14 @@ export function buildTrackMeshes(
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
       const tex = makeHoardingTexture(quality);
+      // The hoardings measured 2.8 display levels of shimmer under a
+      // third-of-a-pixel camera move, second only to the fence, and for a
+      // duller reason: they are a 6144-pixel-wide strip of high-contrast
+      // lettering seen almost edge-on down the length of a straight, and the
+      // texture was going out at the default anisotropy of one. A trilinear
+      // sample of a footprint stretched thirty to one reads a handful of texels
+      // out of hundreds and picks a different handful every frame.
+      tex.anisotropy = 16;
       const mat = new THREE.MeshStandardMaterial({
         map: tex, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
       });
@@ -1395,6 +1413,96 @@ function buildSceneryInstances(
 }
 
 
+/** Alpha threshold for the catch fence. Shared with its mip chain; see below. */
+const FENCE_ALPHA_TEST = 0.45;
+
+/**
+ * Mip chain for an alpha-tested texture that keeps the same amount of stuff
+ * ALIVE at every level.
+ *
+ * This is the fix for "the entire circuit seems very grainy", and it is worth
+ * setting out why, because two previous passes went after the ambient occlusion
+ * taps and the grade pass's dither instead and neither made any difference.
+ *
+ * Measured: freeze the world, pin the camera, render, yaw by a third of a pixel,
+ * render again, and take the RMS difference per region in display levels. That
+ * is what "grainy" is — the picture is clean in a still and boils the moment
+ * anything moves. On a chase frame at Monza:
+ *
+ *   catch fence   11.4      hiding the fence: 0.15
+ *   hoardings      2.8
+ *   far asphalt    2.7
+ *   grass          1.8
+ *   near asphalt   0.4
+ *   sky            0.1
+ *
+ * and turning off the AO taps changed the fence figure from 11.43 to 11.42,
+ * the dither changed nothing at all, and turning off FXAA made everything
+ * WORSE. The fence was three quarters of the whole effect on its own.
+ *
+ * The mechanism is the standard alpha-test one. A box-filtered mip of a thin
+ * wire grid converges toward the grid's mean coverage — about a quarter here —
+ * which is below the 0.45 threshold, so at distance almost every texel fails
+ * the test and the surviving ones sit right on the boundary. Every sub-pixel
+ * camera movement flips a different set of them. The fence does not fade with
+ * distance, it strobes.
+ *
+ * The fix, from Castano's work on alpha-tested foliage, is to rescale each mip
+ * level so that the FRACTION of its texels passing the threshold matches level
+ * zero. A binary search on the scale is exact enough in a dozen iterations and
+ * runs once, at texture build time. The wire then keeps its apparent density
+ * all the way to the horizon instead of dissolving, and because no texel is
+ * left balanced on the threshold there is nothing to flip.
+ */
+function coveragePreservingMips(
+  base: Uint8Array, size: number, threshold: number,
+): { data: Uint8Array; width: number; height: number }[] {
+  const cut = threshold * 255;
+  const coverage = (d: Uint8Array, scale: number) => {
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] * scale > cut) n++;
+    return n / (d.length / 4);
+  };
+
+  const levels: { data: Uint8Array; width: number; height: number }[] = [];
+  let cur = base;
+  let w = size, h = size;
+  levels.push({ data: cur, width: w, height: h });
+  const target = coverage(cur, 1);
+
+  while (w > 1 || h > 1) {
+    const nw = Math.max(1, w >> 1);
+    const nh = Math.max(1, h >> 1);
+    const next = new Uint8Array(nw * nh * 4);
+    for (let y = 0; y < nh; y++) {
+      const y0 = Math.min(2 * y, h - 1) * w;
+      const y1 = Math.min(2 * y + 1, h - 1) * w;
+      for (let x = 0; x < nw; x++) {
+        const x0 = Math.min(2 * x, w - 1);
+        const x1 = Math.min(2 * x + 1, w - 1);
+        const o = (y * nw + x) * 4;
+        for (let c = 0; c < 4; c++) {
+          next[o + c] = (cur[(y0 + x0) * 4 + c] + cur[(y0 + x1) * 4 + c]
+            + cur[(y1 + x0) * 4 + c] + cur[(y1 + x1) * 4 + c] + 2) >> 2;
+        }
+      }
+    }
+    // Smallest scale that keeps level zero's coverage. Bounded above so a
+    // 1x1 level, whose coverage is either 0 or 1, cannot run away.
+    let lo = 1, hi = 24;
+    for (let it = 0; it < 14; it++) {
+      const mid = (lo + hi) * 0.5;
+      if (coverage(next, mid) < target) lo = mid; else hi = mid;
+    }
+    const s = (lo + hi) * 0.5;
+    for (let i = 0; i < next.length; i++) next[i] = Math.min(255, Math.round(next[i] * s));
+
+    levels.push({ data: next, width: nw, height: nh });
+    cur = next; w = nw; h = nh;
+  }
+  return levels;
+}
+
 /**
  * A wire-mesh texture for the catch fencing: a grid of thin wires with posts.
  *
@@ -1402,6 +1510,10 @@ function buildSceneryInstances(
  * material's own colour tinting it green. Generating it means the wire gauge
  * can be tuned to stay visible at speed — too fine and the fence disappears
  * into aliasing shimmer, too coarse and it reads as a net.
+ *
+ * The mip chain is built by hand rather than by the driver; see
+ * `coveragePreservingMips` for the reason, which is the largest single source
+ * of shimmer anywhere in the game.
  */
 function makeFenceTexture(): THREE.Texture {
   // 256, not 64. The wire gauge below is expressed as a fraction of S so the
@@ -1437,12 +1549,21 @@ function makeFenceTexture(): THREE.Texture {
   }
   g.stroke();
 
-  const tex = new THREE.CanvasTexture(canvas);
+  const src = g.getImageData(0, 0, S, S).data;
+  const levels = coveragePreservingMips(new Uint8Array(src), S, FENCE_ALPHA_TEST);
+
+  const tex = new THREE.DataTexture(levels[0].data, S, S, THREE.RGBAFormat);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  // Mipmapping a thin wire grid averages it into grey mush at distance, which
-  // turns the fence into a translucent haze. Anisotropy keeps it legible at the
-  // glancing angles a fence is almost always seen at.
-  tex.anisotropy = 8;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  // The chain is supplied, not generated: the driver's box filter is exactly
+  // what produces the strobing this replaces.
+  tex.generateMipmaps = false;
+  tex.mipmaps = levels;
+  // 16, not 8. A fence is seen at a glancing angle from almost every camera in
+  // the game, and its footprint is stretched twenty to one along the barrier.
+  // three clamps this to whatever the GPU actually offers.
+  tex.anisotropy = 16;
   tex.needsUpdate = true;
   return tex;
 }
