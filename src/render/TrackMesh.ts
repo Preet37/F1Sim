@@ -1622,8 +1622,17 @@ export function buildTrackMeshes(
         uv.needsUpdate = true;
 
         const m = new THREE.Matrix4();
+        // Facing BACK down the road, at the car that is about to read it.
+        //
+        // A `PlaneGeometry` faces local +Z, and yawing it by the track heading
+        // points that at the corner — so every braking board on the calendar
+        // was turned away from the traffic, and what an approaching driver saw
+        // was its back through a double-sided material: the number mirrored.
+        // Half a turn puts it the right way round. No probe can see this; it
+        // took reading a distance board in the audit sweep and finding it said
+        // "0S".
         const q = new THREE.Quaternion().setFromAxisAngle(
-          new THREE.Vector3(0, 1, 0), Math.atan2(track.tx[i], track.tz[i]),
+          new THREE.Vector3(0, 1, 0), Math.atan2(track.tx[i], track.tz[i]) + Math.PI,
         );
         m.compose(
           new THREE.Vector3(
