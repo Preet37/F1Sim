@@ -462,6 +462,22 @@ export function wingElement(
   thickness: number,
   camber: number,
   segments = 12,
+  /**
+   * How far FORWARD the tips sit relative to the root, in metres.
+   *
+   * A front wing is not a straight bar, and building it as one is the reason
+   * the front of the car kept reading as a snowplough however dark it was
+   * painted. Every current front wing sweeps: the endplates sit a good 200mm
+   * ahead of where the elements cross the centreline, so in plan the assembly
+   * is a shallow delta pointing forwards, and the elements' outer thirds are
+   * visibly ahead of their inner thirds from any three-quarter view. That
+   * delta is one of the handful of shapes a viewer checks for without knowing
+   * they are checking.
+   *
+   * Applied quadratically in the span coordinate, which is what an aerofoil
+   * swept about a spar actually does and what keeps the root region straight.
+   */
+  sweep = 0,
 ): THREE.BufferGeometry {
   // Closed aerofoil outline, upper surface forward then lower surface back, with
   // the leading and trailing edge points shared so the ring has no duplicates.
@@ -503,8 +519,16 @@ export function wingElement(
     const f = i / TIP_RINGS;
     stations.push({ z: -half + tuck * f, scale: Math.sqrt(Math.max(0, 1 - (1 - f) * (1 - f))) });
   }
-  stations.push({ z: -half + tuck, scale: 1 });
-  stations.push({ z: half - tuck, scale: 1 });
+  // Interior stations. A straight element needs only its two ends, because the
+  // surface between them is ruled — but a SWEPT one is a curve in plan, and a
+  // curve through two points is a straight line. Six stations is enough that a
+  // 200mm sweep across a 1.9m span shows as a smooth arc rather than as a
+  // shallow chevron.
+  const INTERIOR = sweep !== 0 ? 6 : 2;
+  for (let i = 0; i < INTERIOR; i++) {
+    const f = i / (INTERIOR - 1);
+    stations.push({ z: -half + tuck + f * (span - 2 * tuck), scale: 1 });
+  }
   for (let i = TIP_RINGS - 1; i >= 0; i--) {
     const f = i / TIP_RINGS;
     stations.push({ z: half - tuck * f, scale: Math.sqrt(Math.max(0, 1 - (1 - f) * (1 - f))) });
@@ -524,11 +548,16 @@ export function wingElement(
   const positions = new Float32Array(rings * around * 3);
   for (let r = 0; r < rings; r++) {
     const st = stations[r];
+    // Sweep: the whole section shifts forward with the square of the span
+    // coordinate. Shifting the section rather than shearing it keeps every
+    // rib a true aerofoil, which is how a swept wing is really built.
+    const t = half > 1e-6 ? st.z / half : 0;
+    const fwd = sweep * t * t;
     for (let i = 0; i < around; i++) {
       const o = (r * around + i) * 3;
       positions[o] = st.z;
       positions[o + 1] = ring[i][1] * st.scale;
-      positions[o + 2] = -(cx + (ring[i][0] - cx) * st.scale);
+      positions[o + 2] = fwd - (cx + (ring[i][0] - cx) * st.scale);
     }
   }
   const indices: number[] = [];

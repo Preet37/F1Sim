@@ -448,11 +448,11 @@ function monocoque(): Section[] {
     // between it and the mainplane — that gap is what the eye reads as "modern
     // F1", and it is why the nose has to drop onto the SECOND element on two
     // pillars rather than merging into the wing.
-    section(2.72, 0.098, 0.292, 0.462, 0.62),
-    section(2.54, 0.110, 0.272, 0.470, 0.56),
-    section(2.30, 0.130, 0.242, 0.480, 0.48),
-    section(1.98, 0.164, 0.200, 0.494, 0.41),
-    section(1.50, 0.218, 0.150, 0.514, 0.35),
+    section(2.72, 0.076, 0.292, 0.462, 0.66),
+    section(2.54, 0.090, 0.272, 0.470, 0.60),
+    section(2.30, 0.112, 0.242, 0.480, 0.52),
+    section(1.98, 0.150, 0.200, 0.494, 0.44),
+    section(1.50, 0.208, 0.150, 0.514, 0.37),
     section(1.00, 0.280, 0.108, 0.540, 0.30, { flatTop: 0.20 }),
     // Cockpit opening: the flat-topped, widest part of the survival cell.
     section(0.52, 0.320, 0.086, 0.562, 0.20, { flatTop: 0.55 }),
@@ -563,9 +563,9 @@ function buildShellParts(
   // as the blunt stub a real car is left with.
   p.into('frontWing');
   p.flat(small([
-    section(2.74, 0.096, 0.288, 0.458, 0.62),
-    section(2.92, 0.082, 0.240, 0.368, 0.58),
-    section(3.07, 0.066, 0.172, 0.258, 0.58),
+    section(2.74, 0.074, 0.288, 0.458, 0.66),
+    section(2.92, 0.064, 0.238, 0.362, 0.62),
+    section(3.05, 0.052, 0.168, 0.250, 0.62),
   ], t.body - 6), 'carbon');
   p.into('core');
 
@@ -694,19 +694,26 @@ function buildShellParts(
     // and both endplates were painted in the team's body and accent colours, so
     // the front of the car was a solid slab of saturated paint half a metre
     // tall — which is why the screenshots read as a toy. On the reference car,
-    // and on every real one, the wing is EXPOSED CARBON: near-black, gloss, with
-    // the team's colour appearing only as a flash on the top flap and the outer
-    // face of the endplate. Dark elements are also what makes the gaps between
-    // them read as gaps; four brightly-lit slabs fuse into one object.
+    // and on every real one, the whole assembly is EXPOSED CARBON: near-black,
+    // gloss, with the team's colour appearing only on the small diveplane. Dark
+    // elements are also what makes the gaps between them read as gaps; four
+    // brightly-lit slabs fuse into a single object, which is exactly what the
+    // screenshots showed.
     const elements: [number, number, number, number, number, SwatchName][] = [
       // chord, thickness, y, z, incidence, colour
-      [0.300, 0.032, 0.046, 3.190, 0.10, 'carbon'],
-      [0.232, 0.027, 0.098, 3.082, 0.26, 'carbon'],
-      [0.190, 0.023, 0.150, 3.002, 0.42, 'dark'],
-      [0.162, 0.020, 0.202, 2.940, 0.58, 'accent'],
+      [0.300, 0.032, 0.046, 3.132, 0.10, 'carbon'],
+      [0.232, 0.027, 0.098, 3.030, 0.26, 'carbon'],
+      [0.190, 0.023, 0.150, 2.958, 0.42, 'dark'],
+      [0.162, 0.020, 0.202, 2.902, 0.58, 'carbon'],
     ];
     for (const [chord, thick, y, z, angle, swatch] of elements) {
-      const g = wingElement(1.90, chord, thick, -0.028, t.wing);
+      // 0.085m of forward sweep at the tips. SHALLOW is the whole point: the
+      // element chords are only 160-300mm, so a sweep of the 200mm the
+      // endplates really sit forward turns each one into a visible boomerang
+      // rather than into a wing. What the reference actually shows is a very
+      // slight forward bow in the elements with the ENDPLATES carrying most of
+      // the offset, which is how it is built below.
+      const g = wingElement(1.90, chord, thick, -0.028, t.wing, 0.085);
       // Positive rotation about X drops the leading edge and lifts the trailing
       // edge, which is the way round an inverted wing works.
       g.rotateX(angle);
