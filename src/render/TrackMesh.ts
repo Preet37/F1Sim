@@ -466,7 +466,18 @@ export function buildTrackMeshes(
     for (let i = 0; i < count; i++) {
       road.add(track.px[i], track.pz[i], track.width[i] * 0.5);
     }
-    const MIN_M = 0.5;
+    // The narrowest shoulder the scan can report — and it has to be wide
+    // enough to pass its own first test, which it was not.
+    //
+    // The probe box is 0.5m across, so its inner face sits `d - 0.25` from the
+    // road edge, and the test demands `SHOULDER_CLEARANCE_M` of daylight there.
+    // Starting at 0.5 asked for 0.4m of clearance from something 0.25m away:
+    // the first sample failed on the node's OWN road, every scan broke
+    // immediately, and `shoulderAt` returned zero for every node of every
+    // circuit on the calendar. What that cost is not subtle — the run-off, the
+    // verge, the skirt and the KERBS are all gated on it, so no circuit in the
+    // game had a red-and-white kerb anywhere on it.
+    const MIN_M = SHOULDER_CLEARANCE_M + 0.25 + 0.1;
     const out = { left: new Float64Array(count), right: new Float64Array(count) };
 
     for (const side of [-1, 1] as const) {
