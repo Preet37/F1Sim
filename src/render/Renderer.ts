@@ -35,18 +35,6 @@ import type { CarEntry } from '../race/CarEntry';
  */
 
 /**
- * How long a wrecked car stays on the circuit before the marshals take it away.
- *
- * Two and a half minutes is longer than a lap of every circuit in the game, and
- * that is the number it is chosen against rather than any real recovery time.
- * The point of leaving a wreck on the road is that the player comes back round
- * and finds it — their own accident, still there, at the corner where it
- * happened. A wreck that is cleared in twenty seconds is one the player never
- * sees again, which is barely different from not drawing it at all.
- */
-const WRECK_LIFETIME_S = 150;
-
-/**
  * Component health at which a piece of bodywork falls off.
  *
  * The bottom of the 'critical' band in the damage model, so the car loses the
@@ -919,6 +907,7 @@ export class Renderer {
           car.team.colour,
           y,
           Math.min(6, 1 + Math.round(ev.severity * 5)),
+          ev.carIndex,
         );
       }
 
@@ -1023,6 +1012,7 @@ export class Renderer {
       car.team.colour,
       groundY,
       id === 'frontWing' ? 5 : 4,
+      car.index,
     );
     // Carbon shattering is bright. The burst is the moment; the shards are what
     // is left of it.
@@ -1051,13 +1041,24 @@ export class Renderer {
       // the player had just had was erased before they could look at it. That
       // is the whole of the "it just poof gone" report.
       //
-      // The clock used here is deliberately NOT `recovered`. That flag answers
-      // a different question — when the yellow flags can come down — and it has
-      // to be short. How long a wrecked car sits by the barrier before a crane
-      // reaches it is much longer than that, long enough that the player comes
-      // back past their own accident on the following lap and sees it there.
-      if (car.retired && car.recoveryTimer > WRECK_LIFETIME_S) {
-        v.root.visible = false;
+      // It goes when the MARSHALS have taken it, and not on a clock of the
+      // renderer's own. This used to be a 150-second lifetime here that had to
+      // be kept equal by hand to a matching 150 in the race engine, so that the
+      // yellow came down on the frame the car stopped being drawn; the two
+      // could drift apart at any edit and nothing would have noticed. Now there
+      // is one fact — `RecoveryOperation.done`, reported as `cleared` — and the
+      // flag, the wreck and its debris all answer to it, so they cannot
+      // disagree. See `src/race/Recovery.ts`.
+      //
+      // The debris goes with the car. A crane lifts the wreck and the marshals
+      // sweep up after it, so a corner that has been declared clear does not
+      // still have a scatter of carbon lying on the racing line. `visible` is
+      // the latch: this runs once, on the frame the recovery finished.
+      if (car.retired && car.cleared) {
+        if (v.root.visible) {
+          v.root.visible = false;
+          this.wreckage?.clearOwner(i);
+        }
         continue;
       }
       v.root.visible = true;

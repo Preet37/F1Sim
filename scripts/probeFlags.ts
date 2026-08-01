@@ -23,12 +23,17 @@
  * Where the car is left decides which response the regulations call for, and
  * that is the regulation's own test, not the probe's:
  *
- *   fast section, near the track   immediate physical danger  -> SAFETY CAR
+ *   fast section, beside the road  immediate physical danger  -> SAFETY CAR
  *                                  (Art. 55.3 / B5.13.1)
- *   slow section, well off it      double yellows needed, but -> VSC
+ *   slow section, beside the road  double yellows needed, but -> VSC
  *                                  not safety car circumstances
  *                                  (Art. 56.1a / B5.12)
  *   qualifying                     no neutralisation exists   -> YELLOW ONLY
+ *
+ * Both race cases leave the car within the marshals' working clearance of the
+ * white line, because that is what makes a recovery something the race has to
+ * be slowed down for at all (see `src/race/Recovery.ts`); what separates them
+ * is how fast the cars arrive there, which is the regulations' own distinction.
  *
  * The marshals are held back for the measurement window — a stopped car is
  * craned away after 22 seconds, which is not long enough to gather a
@@ -332,18 +337,30 @@ function runScenario(
         const half = engine.track.halfWidthAt(s);
         victim.retire('Probe: staged incident', engine.time);
         victim.s = s;
-        // Just off the road for a dangerous stop (inside the "near the track"
-        // radius), well into the run-off for a benign one.
-        victim.lateral = staging.dangerous ? half + 1.6 : half + 9;
+        // Just off the road either way — a stopped car the marshals have to
+        // walk out to. What decides the response is where on the lap it is:
+        // the same stop at the end of a straight is the safety car's case and
+        // at a hairpin is the VSC's.
+        victim.lateral = half + 1.6;
         victim.physics.velocity.set(0, 0);
         m.messages.push('t=' + engine.time.toFixed(0) + 's  [probe] staged ' +
           (staging.dangerous ? 'dangerous' : 'benign') + ' incident, ' +
           victim.driver.code + ' stopped at s=' + s.toFixed(0) + 'm');
       }
     }
+    // Hold the marshals back for the measurement window.
+    //
+    // A recovery is now an operation with a duration (see `src/race/Recovery.ts`)
+    // rather than a stopwatch, so holding it open means keeping work
+    // outstanding: the marshals are at the car, the crane is not finished with
+    // it, and the flag therefore stays out. `elapsedS` is pinned too, because
+    // the operation carries a backstop that completes it regardless after three
+    // and a half minutes and some of these windows are longer than that.
+    //
+    // This is the only thing about the simulation the probe touches.
     if (victim && engine.time - stagedAt < staging.holdS) {
-      victim.recovered = false;
-      victim.recoveryTimer = 0;
+      victim.recovery.workRemainingS = Math.max(victim.recovery.workRemainingS, 60);
+      victim.recovery.elapsedS = 0;
     }
 
     // --- Race control messages -------------------------------------------

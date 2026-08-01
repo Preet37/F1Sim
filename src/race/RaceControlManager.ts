@@ -1,6 +1,7 @@
 import { clamp01, loopDelta } from '../core/MathUtils';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from './CarEntry';
+import { RECOVERY_FAST_SECTION_MS, RECOVERY_TRACKSIDE_M } from './Recovery';
 
 /**
  * Race Control: flags, track limits, and penalties.
@@ -148,23 +149,6 @@ const TRACK_LIMIT_PENALTY_AT = 4;
 
 /** A car below this speed off-track is treated as a stopped car. */
 const STOPPED_SPEED_MS = 8;
-
-/**
- * How far beyond the white line a stopped car still counts as a hazard, metres.
- *
- * Applies to the LINGERING yellow — the one a retired car holds while it waits
- * for a crane, after the race has been released. A car left on the road or in
- * the verge is something the field has to be warned about every time it comes
- * past; a car that speared into a gravel trap twenty metres out is behind the
- * barriers with the marshals long before that, and treating the two the same
- * would put a third of the lap under yellow every time somebody had a harmless
- * off.
- *
- * The double yellow that comes first is not subject to this. While the incident
- * is fresh nobody knows where the car will end up or who is standing next to
- * it.
- */
-const WRECK_HAZARD_MARGIN_M = 4;
 
 /** Regulation pit lane limit tolerance, km/h. */
 const PIT_SPEED_TOLERANCE_KPH = 0.5;
@@ -614,23 +598,24 @@ export class RaceControlManager {
 
       // What, if anything, is this car giving the marshals to signal?
       //
-      // A RETIREMENT is judged on two clocks, not one. `recovered` says the
-      // race is safe to release — it is short, and it has to be, or a race with
-      // three retirements never finishes. `cleared` says the car has actually
-      // been taken away, and it is much longer, because it has not been: the
-      // wreck is still sitting where it stopped and is still drawn in the world
-      // when the field comes round again.
+      // A RETIREMENT signals whatever its RECOVERY needs, for exactly as long
+      // as the recovery takes, and the recovery is a real operation rather than
+      // a stopwatch — see `Recovery.ts`. Two consequences, and they are the two
+      // halves of the reported defect:
       //
-      // Running the flag off the SHORT clock is what produced the reported
-      // defect. Twenty-two seconds after a car stopped on the racing line the
-      // sector went green, with the car still on the racing line. So the double
-      // yellow — "a car is stopped and the situation is developing" — lasts as
-      // long as the race is neutralisable, and it then steps DOWN to a single
-      // yellow — "there is a hazard beside the road and marshals are working" —
-      // for as long as the car is still there. That is what a real circuit
-      // shows, and it is also the cheap answer: a double yellow held for two
-      // minutes in every incident sector would cost the field far more time
-      // than the recovery it is warning about.
+      //   The flag comes down when the CAR GOES, not on a timer that runs
+      //   independently of it. Twenty-two seconds after a car stopped on the
+      //   racing line the sector used to go green with the car still on the
+      //   racing line, because the flag was reading a clock that had nothing to
+      //   do with whether a crane had been anywhere near it.
+      //
+      //   A double yellow means people are on or beside the road. That is the
+      //   Appendix H distinction (Art. 2.5.5b) and it is now the literal
+      //   condition: a recovery inside the working clearance shows double
+      //   yellows for its duration, one behind the barriers shows a single. A
+      //   car that speared deep into a gravel trap does not put a third of the
+      //   lap under double yellows for two minutes, and it does not go green
+      //   while a tractor is still hooking it up either.
       //
       // A car that is merely OFF and slow gets a single yellow while it is
       // there and nothing once it has rejoined. It never counts toward a safety
@@ -640,19 +625,8 @@ export class RaceControlManager {
       const halfWidth = this.track.halfWidthAt(car.s);
       let severity: FlagState | null = null;
       if (car.retired) {
-        if (!car.recovered) {
-          severity = 'double-yellow';
-          incidents++;
-        } else if (!car.cleared && Math.abs(car.lateral) < halfWidth + WRECK_HAZARD_MARGIN_M) {
-          // Still there, and still close enough to the road to matter. WHERE it
-          // stopped is the whole of this test: a car abandoned on the racing
-          // line is a hazard until it is lifted off, and one that speared deep
-          // into a gravel trap is behind the barriers within seconds of the
-          // field being released. Flagging both identically for two minutes
-          // would neutralise a third of the lap every time somebody had a
-          // harmless off.
-          severity = 'yellow';
-        }
+        severity = car.recovery.signal;
+        if (car.recovery.warrantsNeutralisation) incidents++;
       } else {
         const offTrack = Math.abs(car.lateral) > halfWidth + 1.0;
         const slow = car.physics.speedMs < STOPPED_SPEED_MS;
@@ -740,9 +714,16 @@ export class RaceControlManager {
     for (const car of cars) {
       if (!car.retired || car.recovered) continue;
       const halfWidth = this.track.halfWidthAt(car.s);
-      const nearTrack = Math.abs(car.lateral) < halfWidth + 4;
-      const fastHere = this.track.targetSpeed[this.track.indexAt(car.s)] > 50;
-      if (nearTrack && fastHere) dangerous = true;
+      const nearTrack = Math.abs(car.lateral) < halfWidth + RECOVERY_TRACKSIDE_M;
+      const fastHere =
+        this.track.targetSpeed[this.track.indexAt(car.s)] > RECOVERY_FAST_SECTION_MS;
+      // A crane counts as being near the track wherever the car is. The jib
+      // swings over the circuit and the tractor is driven in through a gate, so
+      // the working area is the road itself however deep in the gravel the car
+      // ended up — and doing that at the end of a straight is the "immediate
+      // physical danger ... on or near the track" the safety car exists for
+      // (Art. 55.3 / B5.13.1) rather than the lesser case the VSC covers.
+      if (fastHere && (nearTrack || car.recovery.method === 'crane')) dangerous = true;
     }
 
     // The test is DANGER, not a head count. A safety car is for "immediate

@@ -206,27 +206,6 @@ const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
 const GRID_ROW_SPACING_M = 8;
 const GRID_SIDE_OFFSET_M = 3.4;
 
-/**
- * Seconds after a retirement before the incident stops warranting a safety car.
- *
- * Short on purpose. This is not how long recovery takes, it is how long the
- * RACE is neutralised for, and a race with three retirements in it that stayed
- * neutralised for each of them would never reach its distance.
- */
-const SAFE_AGAIN_S = 22;
-
-/**
- * Seconds after a retirement before the wreck has actually been taken away.
- *
- * Until then the car is still where it stopped, still drawn in the world, and
- * the sector it stopped in shows a yellow. Must match `WRECK_LIFETIME_S` in the
- * renderer, which decides when the wreck stops being drawn: a flag that comes
- * down while the car is still on screen is exactly the defect this pair of
- * clocks exists to prevent, and a flag that stays up after the car has gone is
- * the same mistake in the other direction.
- */
-const WRECK_CLEARANCE_S = 150;
-
 /** Distance behind a leader within which its wake is felt. */
 const WAKE_LENGTH_M = 30;
 /** Peak downforce loss in the wake. */
@@ -578,29 +557,10 @@ export class RaceEngine {
     }
 
     // 2. Per-car update.
-    // Marshals clear a stopped car. Without this a retirement holds a local
-    // yellow for the rest of the race, which keeps the safety car deployed
-    // permanently and turns every remaining lap into a safety-car lap.
-    for (const car of this.cars) {
-      if (!car.retired) continue;
-      // The timer keeps running after the marshals have cleared the yellow,
-      // because two different clocks hang off it and they are not the same
-      // length. `recovered` is the RACE's answer — when it is safe again — and
-      // it has to be short or a race with three retirements spends its life
-      // behind a safety car. How long the wreck stays where it stopped is much
-      // longer: a car in a barrier is still in that barrier next time you come
-      // past it, and `cleared` is when it finally is not.
-      //
-      // Both clocks matter to the FLAGS, and running the flags off the short
-      // one alone is the whole of the second reported defect. A car that
-      // stopped on the racing line held a double yellow for twenty-two seconds
-      // and then the sector went green — with the car still sitting on the
-      // racing line, still drawn in the world, for another two minutes. The
-      // long clock is what the marshals' signals answer to.
-      car.recoveryTimer += dt;
-      if (!car.recovered && car.recoveryTimer > SAFE_AGAIN_S) car.recovered = true;
-      if (!car.cleared && car.recoveryTimer > WRECK_CLEARANCE_S) car.cleared = true;
-    }
+    // Marshals recover the stopped cars. Without this a retirement holds a
+    // local yellow for the rest of the race, which keeps the safety car
+    // deployed permanently and turns every remaining lap into a safety-car lap.
+    this.updateRecoveries(dt);
 
     for (let i = 0; i < this.cars.length; i++) {
       const car = this.cars[i];
@@ -876,12 +836,14 @@ export class RaceEngine {
       );
     }
     if (writeOff) {
-      car.retire('Accident', this.time);
+      // The severity goes with the retirement: a car folded into a barrier is a
+      // crane job with a debris sweep after it, not something four marshals
+      // push through a gap. See `Recovery.ts`.
+      car.retire('Accident', this.time, severity);
       // A written-off car is stationary. Retiring without this left the wreck
       // carrying its impact speed, so the HUD kept reading a speed for a car
       // that was out of the race and pinned against a barrier.
       car.physics.stop();
-      car.recovered = true;
       this.raceControl.log(
         car.driver.code + ' is out on the spot — heavy impact',
         'critical', this.time, car.index,
@@ -2124,7 +2086,11 @@ export class RaceEngine {
    * the alternative is a simulation that can deadlock.
    */
   private isSolidWreck(car: CarEntry): boolean {
-    if (car.recovered) return false;
+    // Until the crane has actually taken it away, not until the race has been
+    // released. Those are different moments now, and the honest one is the
+    // first: a car that is still lying in the gravel is still something another
+    // car sliding into the same gravel can hit, and the player can see it there.
+    if (car.cleared) return false;
     return Math.abs(car.lateral) > this.track.halfWidthAt(car.s);
   }
 
@@ -2280,7 +2246,7 @@ export class RaceEngine {
     }
 
     if (severity > 0.85 && this.rng.chance(0.12)) {
-      car.retire('Accident damage', this.time);
+      car.retire('Accident damage', this.time, severity);
       // The same rule as a barrier write-off: the impact that ends a session
       // is the one that takes the bodywork off. Applied here rather than in the
       // call above because whether this contact was terminal is decided by a
@@ -2289,6 +2255,61 @@ export class RaceEngine {
       car.damage.applyImpact(zone, severity, true);
       car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
       this.raceControl.log(car.driver.code + ' is out of the race', 'critical', this.time, car.index);
+    }
+  }
+
+  /**
+   * Runs the marshals' operation on every stopped car.
+   *
+   * The two flags a retirement carries — `recovered` ("the race no longer needs
+   * to be slowed down for this") and `cleared` ("the car has gone") — are
+   * written here and nowhere else, and both come from the same operation. That
+   * is the whole point: before this they were two independent stopwatches, 22
+   * seconds and 150 seconds, and the second one had to be kept equal by hand to
+   * a third constant in the renderer for the flag to come down at the moment
+   * the wreck stopped being drawn. Now the wreck disappears BECAUSE the
+   * recovery finished, and the flag clears on the same step for the same
+   * reason.
+   *
+   * WHEN THE MARSHALS ARE ALLOWED TO WORK. If the operation puts anybody on or
+   * beside the racing surface it needs the race neutralised first (Art. 55.3 /
+   * B5.13.1 and Art. 56.1a / B5.12 — both are about officials in danger), and
+   * the neutralisation in turn only ends when the operation is finished, which
+   * is the loop a real VSC runs in. Outside a race there is no safety car to
+   * deploy, so the session's own yellow and red flags stand in for it: a
+   * practice session is stopped for a recovery, it does not race around one.
+   */
+  private updateRecoveries(dt: number): void {
+    const rc = this.raceControl;
+    // In a race, work on the circuit waits for the neutralisation. In practice
+    // and qualifying no neutralisation exists — the session is red-flagged
+    // instead — so the marshals simply get on with it.
+    const permitted = this.config.kind !== 'race' ||
+      rc.neutralisation !== 'none' || rc.sessionFlag === 'red';
+
+    for (const car of this.cars) {
+      if (!car.retired) continue;
+      const op = car.recovery;
+      if (op.done) continue;
+
+      // Re-read the site until the marshals are actually there. A car is often
+      // still sliding on the step it retires, and planning a crane job from the
+      // point of impact rather than the point it came to rest would be planning
+      // for the wrong corner.
+      const offRoadM = Math.abs(car.lateral) - this.track.halfWidthAt(car.s);
+      op.plan(offRoadM, this.track.targetSpeed[this.track.indexAt(car.s)], car.wreckSeverity);
+
+      if (op.advance(dt, permitted)) {
+        rc.log(
+          car.driver.code + '’s car has been recovered — ' +
+          (this.track.cornerNameAt(car.s) || 'sector ' + (rc.sectorIndexAt(car.s) + 1)) +
+          ' is clear',
+          'info', this.time, car.index,
+        );
+      }
+      car.recoveryTimer = op.elapsedS;
+      car.recovered = !op.warrantsNeutralisation;
+      car.cleared = op.done;
     }
   }
 
@@ -2304,9 +2325,13 @@ export class RaceEngine {
     if (car.physics.speedMs < 2.5 && offRoad && !car.inPitLane) {
       car.stuckTimer += dt;
       if (car.stuckTimer > 9) {
+        // Intact, but deep enough into the run-off that it is a lift rather
+        // than a push. `Recovery` reads that off where the car actually is, so
+        // there is nothing to declare here beyond the retirement itself — and
+        // in particular this no longer claims the car has been recovered on the
+        // step it got stuck, which is what used to make the yellow vanish while
+        // a tractor would still have been on its way.
         car.retire('Beached in the gravel', this.time);
-        // Marked recovered immediately so the yellow clears with it.
-        car.recovered = true;
         this.raceControl.log(
           car.driver.code + ' is out — stranded off track', 'critical', this.time, car.index,
         );

@@ -9,6 +9,7 @@ import type { TrackSpline } from '../track/TrackSpline';
 import type { Driver, Team } from '../data/teams';
 import type { CompoundId } from '../data/tires';
 import { CarDamage } from './DamageModel';
+import { RecoveryOperation } from './Recovery';
 import type { Penalty } from './RaceControlManager';
 
 /**
@@ -223,18 +224,27 @@ export class CarEntry {
   // --- Race state ----------------------------------------------------------
   retired = false;
   retirementReason = '';
+
   /**
-   * True once the immediate danger from a retirement has passed.
+   * The marshals' operation on this car: what it needs, and how far through it
+   * they are.
    *
-   * This is the SAFETY CAR's clock and only that. It is deliberately short —
-   * about twenty seconds — because a race with three retirements in it would
-   * otherwise spend the rest of its distance behind a safety car and never
-   * finish.
+   * This owns both of the flags below. Neither is a timer any more — see
+   * `Recovery.ts` for what replaced them and why.
+   */
+  readonly recovery = new RecoveryOperation();
+
+  /**
+   * True once this incident has stopped being a reason to neutralise the race.
    *
-   * It is emphatically NOT "the car has gone". A stopped car is still exactly
-   * where it stopped long after the field has been released, and the wreck is
-   * still drawn in the world; `cleared` below is the flag for that, and it is
-   * the one the marshals' signals answer to.
+   * Derived, every step, from `recovery`: it is true when the car has actually
+   * been taken away, and true from the start for a car that came to rest
+   * somewhere the marshals can work behind the barriers, because the race never
+   * needed slowing down for that one in the first place.
+   *
+   * It used to be a twenty-two second stopwatch that ran whatever had happened
+   * and wherever the car was, which is how a green flag ended up next to a car
+   * still sitting on the racing line.
    */
   recovered = false;
 
@@ -242,14 +252,24 @@ export class CarEntry {
    * True once the wreck has actually been taken away.
    *
    * Until it is, the car is a hazard beside — or on — the road, and the sector
-   * it stopped in shows a yellow. Conflating this with `recovered` is what put
-   * a green flag next to a car that was still sitting on the racing line:
+   * it stopped in shows a yellow. This is `recovery.done` and nothing else, and
+   * it is the single fact the flag, the wreck in the world and its debris all
+   * answer to, so the sector cannot go green while the player can still see the
+   * car out of the cockpit:
    * "you have the green flag everywhere but if there is a change in flag status
    * like say someone crashed out that sector signals should be yellow flags no?"
-   * — and it was right. The signals said the road was clear while the car was
-   * visibly still on it.
    */
   cleared = false;
+
+  /**
+   * How comprehensively the car was destroyed, 0..1.
+   *
+   * Recorded at the retirement rather than inferred later, because it decides
+   * whether the recovery is four marshals and a push or a crane and a sweep,
+   * and by the time the marshals arrive the damage model has already been
+   * folded into the car's spec.
+   */
+  wreckSeverity = 0;
   finished = false;
   /** Session time at which the car crossed the line for the last time. */
   finishTime = 0;
@@ -565,12 +585,20 @@ export class CarEntry {
     this.pitStops++;
   }
 
-  /** Retires the car. */
-  retire(reason: string, sessionTime: number): void {
+  /**
+   * Retires the car and opens a recovery on it.
+   *
+   * @param wreckSeverity 0..1, how badly the car was destroyed. A reliability
+   *        failure leaves an intact car that can be pushed away; a barrier
+   *        impact leaves one that has to be lifted and swept up after.
+   */
+  retire(reason: string, sessionTime: number, wreckSeverity = 0): void {
     if (this.retired) return;
     this.retired = true;
     this.retirementReason = reason;
     this.finishTime = sessionTime;
+    this.wreckSeverity = wreckSeverity;
+    this.recovery.reset();
   }
 
   /** Race time including penalties, used for final classification. */
