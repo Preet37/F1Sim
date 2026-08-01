@@ -45,15 +45,23 @@
  * on `RaceEngine.step` at 120Hz rather than on the render loop (under software GL
  * the page runs at four frames a second and a frame-sampled controller is a 5Hz
  * bang-bang loop that spins the car by itself and manufactures its own evidence).
- * Same driver, same circuit, same seed, Red Bull Ring:
+ * Same driver, same gains, same circuit, same seed:
  *
- *     baseline car   3 spins in 52.9s of running
- *     this car       1 spin  in 45.3s
+ *     Red Bull Ring   baseline  3 spins in 52.9s     this car  1 spin in 45.3s
+ *     Monaco          baseline  RETIRED into a       this car  still running at
+ *                               barrier at 16.4s               35.3s, no retirement
+ *     Silverstone     this car, reaction delay set to zero as a control:
+ *                     0 spins, 4.2 deg peak sideslip, 0.38 deg mean
  *
- * and with the reaction delay set to zero as a control, this car takes 4.2
- * degrees of peak sideslip and 0.38 mean over a clean run — so what remains is
- * the phase margin of a pure-delay proportional controller, which is a property
- * of that harness and not of the chassis.
+ * Read those honestly. The car is clearly better under the same driver, and the
+ * zero-delay control shows it is composed when the loop is closed promptly. It is
+ * NOT a clean-lap result: the Monaco run still spun eight times, and no run
+ * completed a full timed lap, because under software GL the page renders at a few
+ * frames a second and a Silverstone lap is nearly two minutes of simulated time —
+ * it does not fit in the wall-clock budget. The residual spinning is at least
+ * partly the harness: a proportional controller with a quarter second of pure
+ * dead time and no internal model has poor phase margin on any plant, which is
+ * exactly why the zero-delay control run exists and why it is clean.
  *
  * Run: npm run probe:drivability
  */
