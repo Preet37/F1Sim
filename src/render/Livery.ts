@@ -666,10 +666,16 @@ function buildSurfaceMap(size: number): THREE.Texture {
   // probe's horizon draw a hard-edged reflection down a flank instead of a
   // soft grey smear.
   const PAINT = set(0.16, 0.28);
-  // Bare laminate is matte, unclear-coated, and NOT metallic. Getting the
-  // metalness wrong here is why carbon so often comes out looking like
-  // gunmetal: it is a resin surface with black cloth under it.
-  const CARBON = set(0.62, 0.05);
+  // Structural carbon on a race car is CLEAR-COATED, and that is most of the
+  // difference between the wings on the reference car and the wings that were
+  // here. 0.62 is bare laminate straight out of the autoclave: matte, dusty,
+  // the finish on an underbody panel nobody photographs. What is actually on a
+  // front wing, a floor edge or an endplate is lacquer over the weave, and it
+  // is very nearly as wet-looking as the paint beside it. At 0.62 every one of
+  // those parts came out as a flat dark-grey shape with no highlight along any
+  // edge — which is precisely how a plastic model of a car looks, and the
+  // front wing is now entirely made of them.
+  const CARBON = set(0.30, 0.06);
 
   const body = new Panel(ctx, PANEL.body, size);
   body.fill(PAINT);
@@ -694,8 +700,8 @@ function buildSurfaceMap(size: number): THREE.Texture {
   const surfaceFor: Record<SwatchName, [number, number]> = {
     body: [0.16, 0.28],
     accent: [0.15, 0.26],
-    // Bare laminate: matte resin over black cloth, not gunmetal.
-    carbon: [0.62, 0.05],
+    // Clear-coated laminate. See the CARBON constant above.
+    carbon: [0.30, 0.06],
     // Suspension and the halo are anodised or painted metal — genuinely
     // metallic, and glossy enough to hold the rim light along their length.
     trim: [0.34, 0.72],

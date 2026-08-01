@@ -37,6 +37,19 @@ export interface Section {
   z: number;
   /** Half-width of the section. */
   halfWidth: number;
+  /**
+   * Lateral centre of the section, 0 on the car's centreline.
+   *
+   * Sidepods are the reason this exists. A pod lofted about a fixed centreline
+   * and then translated outboard can only ever be a constant distance from the
+   * car's axis, so its tail stays out at the same x as its inlet — and the tail
+   * is exactly where the rear tyre is. The result is the tyre passing through
+   * the bodywork, which is what the reference car conspicuously does not do:
+   * every current pod pulls hard inboard behind the radiator exit into the
+   * "coke bottle", and the empty channel that leaves between the pod and the
+   * rear wheel is one of the shapes the eye checks for.
+   */
+  xc?: number;
   /** Total height of the section. */
   height: number;
   /** Vertical centre of the section. */
@@ -71,11 +84,12 @@ export function section(
   bottom: number,
   top: number,
   round: number,
-  extra?: { flatTop?: number; undercut?: number },
+  extra?: { flatTop?: number; undercut?: number; xc?: number },
 ): Section {
   return {
     z,
     halfWidth,
+    xc: extra?.xc,
     height: top - bottom,
     y: (top + bottom) * 0.5,
     round,
@@ -117,7 +131,7 @@ function profilePoint(s: Section, t01: number): { x: number; y: number } {
   // Undercut narrows the lower half.
   const xScale = py < 0 ? 1 - (1 - undercut) * (-py / halfHeight) : 1;
 
-  return { x: px * xScale, y: s.y + py };
+  return { x: (s.xc ?? 0) + px * xScale, y: s.y + py };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +231,7 @@ export function resample(sections: readonly Section[], maxStep: number): Section
   const fields = {
     z: sections.map((s) => s.z),
     halfWidth: sections.map((s) => s.halfWidth),
+    xc: sections.map((s) => s.xc ?? 0),
     height: sections.map((s) => s.height),
     y: sections.map((s) => s.y),
     round: sections.map((s) => s.round),
@@ -226,6 +241,7 @@ export function resample(sections: readonly Section[], maxStep: number): Section
   const slopes = {
     z: monotoneSlopes(t, fields.z),
     halfWidth: monotoneSlopes(t, fields.halfWidth),
+    xc: monotoneSlopes(t, fields.xc),
     height: monotoneSlopes(t, fields.height),
     y: monotoneSlopes(t, fields.y),
     round: monotoneSlopes(t, fields.round),
@@ -243,6 +259,7 @@ export function resample(sections: readonly Section[], maxStep: number): Section
       out.push({
         z: hermiteAt(t, fields.z, slopes.z, x),
         halfWidth: hermiteAt(t, fields.halfWidth, slopes.halfWidth, x),
+        xc: hermiteAt(t, fields.xc, slopes.xc, x),
         height: hermiteAt(t, fields.height, slopes.height, x),
         y: hermiteAt(t, fields.y, slopes.y, x),
         round: hermiteAt(t, fields.round, slopes.round, x),
@@ -330,7 +347,7 @@ export function loft(
     for (const front of [true, false]) {
       const s = front ? sections[0] : sections[rings - 1];
       const v = front ? 0 : 1;
-      positions[base * 3] = 0;
+      positions[base * 3] = s.xc ?? 0;
       positions[base * 3 + 1] = s.y;
       positions[base * 3 + 2] = s.z;
       uvs[base * 2] = 0.5;
