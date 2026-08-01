@@ -52,7 +52,7 @@ for (const kph of [80, 140, 200, 260]) {
     const v = kph / 3.6;
     p.placeAt(0, 0, 0, v);
     const c = { throttle: 0.2, brake: 0, steer: 0, drsRequested: false,
-      ersMode: 'balanced' as const, gearRequest: 0, pitLimiter: false, reverse: false };
+      ersMode: 'balanced' as const, gearRequest: 0, pitLimiter: false, speedLimitMs: 0, reverse: false };
 
     for (let i = 0; i < Math.round(4.0 / PHYSICS_DT); i++) {
       c.steer = steer * Math.min(1, (i * PHYSICS_DT) / 0.6);

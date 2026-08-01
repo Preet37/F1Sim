@@ -57,6 +57,15 @@ interface Shard {
   asleep: boolean;
   /** False for a slot that has never been used. */
   live: boolean;
+  /**
+   * Index of the car this came off, so the marshals can sweep up after it.
+   *
+   * A recovery takes the car AND what it left on the road — a corner race
+   * control has declared clear does not still have half a front wing lying on
+   * the racing line. Without an owner there is no way to tell one car's carbon
+   * from another's, and the only options are to clear all of it or none.
+   */
+  owner: number;
 }
 
 export class Wreckage {
@@ -103,7 +112,7 @@ export class Wreckage {
       this.shards.push({
         x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
         groundY: 0, rx: 0, ry: 0, rz: 0, sx: 0.1, sy: 0.02, sz: 0.1,
-        rest: 0.01, asleep: true, live: false,
+        rest: 0.01, asleep: true, live: false, owner: -1,
       });
     }
   }
@@ -116,6 +125,8 @@ export class Wreckage {
    * @param velocity the car's velocity at the moment it let go, which is what
    *        makes debris land AHEAD of a car that was still moving
    * @param count how many pieces the part breaks into
+   * @param owner index of the car it came off, so `clearOwner` can sweep it up
+   *        when that car is recovered
    */
   spawn(
     x: number, y: number, z: number,
@@ -124,6 +135,7 @@ export class Wreckage {
     colour: number,
     groundY: number,
     count: number,
+    owner: number,
   ): void {
     for (let i = 0; i < count; i++) {
       const s = this.shards[this.next];
@@ -160,6 +172,7 @@ export class Wreckage {
 
       s.asleep = false;
       s.live = true;
+      s.owner = owner;
 
       this.mesh.setColorAt(slot, this.colour.setHex(colour));
       this.write(slot, s);
@@ -226,9 +239,35 @@ export class Wreckage {
     this.mesh.setMatrixAt(i, this.m);
   }
 
+  /**
+   * Sweeps up everything one car left on the road.
+   *
+   * Called when that car's recovery finishes, so the wreck and its bodywork go
+   * together. A swept piece is retired to a zero scale rather than compacted
+   * out of the buffer: the instance slots are a ring the spawner already
+   * recycles oldest-first, so a dead slot costs one degenerate box until it is
+   * reused and nothing at all after that — no reallocation, no re-upload of the
+   * whole matrix buffer, and no change to the instance count the integrity
+   * probe counts across load/unload cycles.
+   */
+  clearOwner(owner: number): void {
+    let dirty = false;
+    for (let i = 0; i < this.used; i++) {
+      const s = this.shards[i];
+      if (!s.live || s.owner !== owner) continue;
+      s.live = false;
+      s.asleep = true;
+      s.owner = -1;
+      s.sx = 0; s.sy = 0; s.sz = 0;
+      this.write(i, s);
+      dirty = true;
+    }
+    if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
   /** Empties the field. Called when a session is unloaded. */
   clear(): void {
-    for (const s of this.shards) { s.live = false; s.asleep = true; }
+    for (const s of this.shards) { s.live = false; s.asleep = true; s.owner = -1; }
     this.used = 0;
     this.next = 0;
     this.mesh.count = 0;

@@ -151,7 +151,7 @@ function controls(over: Partial<VehicleControls> = {}): VehicleControls {
     drsRequested: false,
     ersMode: 'balanced',
     gearRequest: 0,
-    pitLimiter: false,
+    pitLimiter: false, speedLimitMs: 0,
     reverse: false,
     ...over,
   };

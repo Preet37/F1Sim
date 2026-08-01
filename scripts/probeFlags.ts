@@ -23,12 +23,17 @@
  * Where the car is left decides which response the regulations call for, and
  * that is the regulation's own test, not the probe's:
  *
- *   fast section, near the track   immediate physical danger  -> SAFETY CAR
+ *   fast section, beside the road  immediate physical danger  -> SAFETY CAR
  *                                  (Art. 55.3 / B5.13.1)
- *   slow section, well off it      double yellows needed, but -> VSC
+ *   slow section, beside the road  double yellows needed, but -> VSC
  *                                  not safety car circumstances
  *                                  (Art. 56.1a / B5.12)
  *   qualifying                     no neutralisation exists   -> YELLOW ONLY
+ *
+ * Both race cases leave the car within the marshals' working clearance of the
+ * white line, because that is what makes a recovery something the race has to
+ * be slowed down for at all (see `src/race/Recovery.ts`); what separates them
+ * is how fast the cars arrive there, which is the regulations' own distinction.
  *
  * The marshals are held back for the measurement window — a stopped car is
  * craned away after 22 seconds, which is not long enough to gather a
@@ -236,6 +241,18 @@ function stagePoint(engine: RaceEngine, dangerous: boolean): number {
   return best;
 }
 
+/**
+ * Is this car a lap or more behind, measured in DISTANCE?
+ *
+ * The lap counter cannot answer this. A car ten metres behind the leader has a
+ * lap counter one lower than the leader's for the ten metres either side of the
+ * Line, and is not lapped by anybody.
+ */
+function isLapped(engine: RaceEngine, car: CarEntry, leader: CarEntry): boolean {
+  const len = engine.track.length;
+  return (leader.lap * len + leader.s) - (car.lap * len + car.s) >= len;
+}
+
 function bucketFor(engine: RaceEngine, car: CarEntry): Bucket {
   const rc = engine.raceControl;
   if (rc.neutralisation === 'safety-car') return 'SC';
@@ -332,18 +349,30 @@ function runScenario(
         const half = engine.track.halfWidthAt(s);
         victim.retire('Probe: staged incident', engine.time);
         victim.s = s;
-        // Just off the road for a dangerous stop (inside the "near the track"
-        // radius), well into the run-off for a benign one.
-        victim.lateral = staging.dangerous ? half + 1.6 : half + 9;
+        // Just off the road either way — a stopped car the marshals have to
+        // walk out to. What decides the response is where on the lap it is:
+        // the same stop at the end of a straight is the safety car's case and
+        // at a hairpin is the VSC's.
+        victim.lateral = half + 1.6;
         victim.physics.velocity.set(0, 0);
         m.messages.push('t=' + engine.time.toFixed(0) + 's  [probe] staged ' +
           (staging.dangerous ? 'dangerous' : 'benign') + ' incident, ' +
           victim.driver.code + ' stopped at s=' + s.toFixed(0) + 'm');
       }
     }
+    // Hold the marshals back for the measurement window.
+    //
+    // A recovery is now an operation with a duration (see `src/race/Recovery.ts`)
+    // rather than a stopwatch, so holding it open means keeping work
+    // outstanding: the marshals are at the car, the crane is not finished with
+    // it, and the flag therefore stays out. `elapsedS` is pinned too, because
+    // the operation carries a backstop that completes it regardless after three
+    // and a half minutes and some of these windows are longer than that.
+    //
+    // This is the only thing about the simulation the probe touches.
     if (victim && engine.time - stagedAt < staging.holdS) {
-      victim.recovered = false;
-      victim.recoveryTimer = 0;
+      victim.recovery.workRemainingS = Math.max(victim.recovery.workRemainingS, 60);
+      victim.recovery.elapsedS = 0;
     }
 
     // --- Race control messages -------------------------------------------
@@ -381,7 +410,8 @@ function runScenario(
           car.perception.ahead && car.perception.ahead.gapM > 10 * 5.6) {
         lapCatchingUp[car.index] = true;
       }
-      if (car.lap < (engine.standings[0]?.lap ?? 0)) lapCatchingUp[car.index] = true;
+      const leaderNow = engine.standings[0];
+      if (leaderNow && isLapped(engine, car, leaderNow)) lapCatchingUp[car.index] = true;
 
       if (car.lap !== lapCount[car.index]) {
         // A lap the car spent entirely under one flag regime, that was not an
@@ -406,7 +436,8 @@ function runScenario(
       m.wavedCars = engine.cars.filter((c) => c.mustUnlap).length;
       const leader = engine.standings[0];
       m.lappedAtWave = leader
-        ? engine.cars.filter((c) => !c.retired && !c.inPitLane && c.lap < leader.lap).length
+        ? engine.cars.filter(
+            (c) => !c.retired && !c.inPitLane && isLapped(engine, c, leader)).length
         : 0;
       for (const c of engine.cars) if (c.mustUnlap) wasLapped.add(c.index);
     }
@@ -528,14 +559,36 @@ function runScenario(
     // --- Safety car queue -------------------------------------------------
     if (rc.neutralisation === 'safety-car' &&
         (rc.scPhase === 'bunching' || rc.scPhase === 'waving-lapped')) {
-      const leadLap = engine.standings[0]?.lap ?? 0;
-      const queue = engine.standings.filter(
-        (c) => !c.retired && !c.inPitLane && c.lap >= leadLap,
-      );
-      m.queueSize = Math.max(m.queueSize, queue.length);
-      for (let i = 1; i < queue.length; i++) {
-        const gap = loopDelta(queue[i].s, queue[i - 1].s, engine.track.length);
-        if (gap > 0 && gap < engine.track.length * 0.5) m.scFormUpGaps.push(gap);
+      // THE TRAIN, ordered by where the cars are on the ROAD.
+      //
+      // Not by the classification, which is a different order and was giving a
+      // different answer. Art. 55.7 / B5.13.2b says "All F1 Cars must reduce
+      // speed and form up behind the Safety Car no more than ten (10) car
+      // lengths apart" — all of them, in one physical line, with the lapped
+      // cars still in it because the unlapping procedure has not happened yet.
+      // Walking the standings instead skips over every lapped car, so the pair
+      // either side of one reads as a single gap spanning a piece of road that
+      // has a car sitting in it: measured, a car whose real gap to the car in
+      // front was 99m was recorded at 863m.
+      //
+      // The first gap is to the safety car itself, which is what the field is
+      // forming up behind.
+      const L = engine.track.length;
+      const train: { behind: number }[] = [];
+      for (const c of engine.cars) {
+        if (c.retired || c.inPitLane) continue;
+        // A car released from the pit lane rejoins into whatever gap happens to
+        // be passing the exit. It is physically not in the queue yet and no
+        // ten-car-length rule can apply to it until it has caught the train —
+        // the same blackout, for the same reason, as the overtaking check.
+        if (engine.time - lastPitTime[c.index] < PIT_BLACKOUT_S) continue;
+        train.push({ behind: (((rc.scS - c.s) % L) + L) % L });
+      }
+      train.sort((a, b) => a.behind - b.behind);
+      m.queueSize = Math.max(m.queueSize, train.length);
+      for (let i = 1; i < train.length; i++) {
+        const gap = train[i].behind - train[i - 1].behind;
+        if (gap > 0) m.scFormUpGaps.push(gap);
       }
     }
   }

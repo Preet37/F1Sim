@@ -102,6 +102,7 @@ export class Hud {
   private conditions!: HTMLElement;
   private flagBanner!: HTMLElement;
   private pitCue!: HTMLElement;
+  private neutralCue!: HTMLElement;
   private radioFeed!: HTMLElement;
   private cameraLabel!: HTMLElement;
   private diagnostics!: HTMLElement;
@@ -324,6 +325,15 @@ export class Hud {
     // line, below the first, and it reports the limiter as well as the box.
     this.pitCue = this.el('hud-pit-cue', this.root, '');
     this.pitCue.style.display = 'none';
+
+    // The neutralisation gets its own line for the same reason the pit lane
+    // does, and it sits directly under the flag banner because it is the second
+    // half of the same sentence: the banner says SAFETY CAR, this says what is
+    // being enforced and what the target is. Under a VSC that target is a
+    // minimum SECTOR TIME and not a speed, which is not something a driver can
+    // read off a speedometer — see `RaceControlManager.minimumSectorTimeS`.
+    this.neutralCue = this.el('hud-neutral-cue', this.root, '');
+    this.neutralCue.style.display = 'none';
 
     // --- Radio ------------------------------------------------------------
     this.radioFeed = this.el('hud-radio', this.root);
@@ -786,6 +796,7 @@ export class Hud {
 
     // --- Radio ------------------------------------------------------------
     this.updatePitCue(engine, player);
+    this.updateNeutralCue(engine, player);
     this.updateRadio(engine);
 
     // --- Camera and diagnostics ------------------------------------------
@@ -892,6 +903,17 @@ export class Hud {
     } else {
       setStyle(this.pitCue, 'display', 'none');
     }
+  }
+
+  private updateNeutralCue(engine: RaceEngine, player: CarEntry): void {
+    const cue = neutralisationCue(engine, player);
+    if (!cue) {
+      setStyle(this.neutralCue, 'display', 'none');
+      return;
+    }
+    setText(this.neutralCue, cue.text);
+    setClass(this.neutralCue, cue.cls);
+    setStyle(this.neutralCue, 'display', 'block');
   }
 
   private updateTower(engine: RaceEngine, player: CarEntry): void {
@@ -1133,3 +1155,66 @@ function fuelPerLap(car: CarEntry, engine: RaceEngine): number {
 
 /** Exposed for the standings screen. */
 export { formatLapTime, formatGap, MS_TO_KPH };
+
+/**
+ * What the HUD tells the driver about a neutralisation.
+ *
+ * THE PROBLEM THIS SOLVES. The banner above already says SAFETY CAR or VIRTUAL
+ * SAFETY CAR. That is the flag, and the flag is not the instruction. The
+ * instruction is a number, and under a VSC it is a number no driver could
+ * possibly infer from a speedometer: "drivers must stay above the minimum time
+ * set by the FIA ECU at least once in each marshalling sector" — 2025 Sporting
+ * Regulations Art. 56.5 / 2026 Section B Art. B5.12.2b, and identically for the
+ * safety car in Art. 55.7 / B5.13.2b. A minimum SECTOR TIME. Under the safety
+ * car there is a second, different number: the queue forms up "no more than ten
+ * (10) car lengths apart" (Art. 55.7 / B5.13.2b), which is a distance to the
+ * car in front. Two regimes, two obligations, and the HUD used to state
+ * neither.
+ *
+ * So this reports, for whichever regime is in force, the obligation and the
+ * driver's current standing against it — and says LIMITER ON while the game is
+ * holding the car to it, exactly as the pit cue does, because a driver whose
+ * throttle stops working is owed an explanation.
+ *
+ * Pure and exported so `probe:neutralplayer` can assert on the real text rather
+ * than on a reimplementation of it.
+ */
+export function neutralisationCue(
+  engine: RaceEngine, player: CarEntry,
+): { text: string; cls: string } | null {
+  const rc = engine.raceControl;
+  if (rc.neutralisation === 'none' || player.retired || player.inPitLane) return null;
+
+  const limiter = player.appliedControls.speedLimitMs > 0
+    ? 'LIMITER ON ' + Math.round(player.appliedControls.speedLimitMs * MS_TO_KPH) + ' KM/H'
+    : 'LIFT';
+
+  // A car told to unlap itself is under the opposite instruction and must not
+  // be shown a delta it is required to ignore. Art. 55.14 / B5.13.4c.
+  if (player.mustUnlap) {
+    return { text: 'LAPPED CARS MAY OVERTAKE — PASS THE QUEUE', cls: 'hud-neutral-cue cue-go' };
+  }
+
+  if (rc.neutralisation === 'safety-car') {
+    // The gap, and the maximum. `queueAheadM` is to whatever is actually in
+    // front in the queue, which for the leader is the safety car itself.
+    const gap = player.perception.queueAheadM;
+    const max = rc.maxQueueGapM;
+    const gapText = gap >= 0 ? Math.round(gap) + 'm' : '—';
+    const over = gap >= 0 && gap > max;
+    return {
+      text: limiter + ' · GAP ' + gapText + ' / MAX ' + Math.round(max) + 'm' +
+        (over ? ' · CLOSE UP' : ''),
+      cls: 'hud-neutral-cue ' + (over ? 'cue-warn' : 'cue-live'),
+    };
+  }
+
+  // VSC: the minimum sector time, and how the sector in progress is going.
+  const minimum = rc.minimumSectorTimeS;
+  const sofar = player.deltaSectorTime;
+  const behind = sofar >= minimum;
+  return {
+    text: limiter + ' · MIN SECTOR ' + minimum.toFixed(2) + 's · YOU ' + sofar.toFixed(2) + 's',
+    cls: 'hud-neutral-cue ' + (behind || sofar < 0.4 ? 'cue-live' : 'cue-warn'),
+  };
+}
