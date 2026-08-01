@@ -2,6 +2,10 @@ import { clamp, clamp01, damp, lerp, loopDelta, Rng, wrapAngle, Vec2 } from '../
 import type { TrackSpline } from '../track/TrackSpline';
 import type { VehiclePhysics, VehicleControls, ErsMode } from '../physics/VehiclePhysics';
 import { steerRackLimit } from '../physics/VehiclePhysics';
+import {
+  PIT_ENTRY_DECEL_MS2, PIT_ENTRY_SCAN_M, PIT_ENTRY_SETTLE_M, PIT_ENTRY_TARGET_SHARE,
+  PIT_LIMITER_ARM_M, brakeFor, pitEntryTargetMs, pitLimiterSetpointMs,
+} from '../physics/PitLimiter';
 
 /**
  * Speed taper on this controller's FEEDBACK gains (not its feedforward).
@@ -353,79 +357,15 @@ const PIT_BOX_COMMIT_M = 12;
 /** How long a committed car keeps the brake on after its box goes behind it. */
 const PIT_BOX_HOLD_S = 3;
 /**
- * Deceleration assumed when planning the approach to the pit entry, m/s².
+ * The pit lane constants and the entry braking profile live in
+ * `physics/PitLimiter` rather than here.
  *
- * Deliberately CONSERVATIVE — well under what the brakes can do. The number is
- * not a claim about the car, it is the rate the approach is planned at, and
- * planning at the limit means arriving at the limit with no margin. At 14 m/s²
- * the cars needed 300 metres from top speed and were given 420, which sounds
- * like plenty and was not: the brakes do not reach that rate instantly, so
- * every car crossed the pit entry line between 80 and 116 km/h against a limit
- * of 80, collected a drive-through for pit lane speeding, came in to serve it,
- * sped again on the way in, and shuttled in and out of the pit lane for the
- * rest of the race. Seven visits and no stops was a normal race.
+ * They used to be local to this file, which was fine while the AI was the only
+ * thing that knew how to arrive at a pit lane. It is not: the player's limiter
+ * is applied automatically by the race engine, the cap itself is enforced in
+ * `VehiclePhysics`, and all three have to agree to the km/h or race control
+ * penalises a car the simulation was itself holding at the wrong speed.
  */
-const PIT_ENTRY_DECEL_MS2 = 7;
-/**
- * How far before the pit entry line the AI starts thinking about it, metres.
- *
- * Has to be comfortably MORE than the distance a car needs to slow from its
- * top speed, or the window in which the car both knows about the pit entry and
- * still has room to make it can be empty. At 620m it was: a car arriving at 340
- * km/h needs about 620m to settle at the pit limit under the conservative
- * planning rate above, so by the time it noticed the pit entry it had already
- * decided it could not make it — and it made that decision on every lap, for
- * ever. Twelve cars in a five-lap race never pitted at all and were
- * disqualified at the flag under the two-compound rule.
- */
-const PIT_ENTRY_SCAN_M = 950;
-/**
- * How far BEFORE the pit entry line the car is asked to already be at the
- * limit, metres.
- *
- * Aiming to reach the limit exactly AT the line is what a driver would call
- * cutting it fine and what race control calls a drive-through. The braking
- * profile is a square root, so a target of "be at 72 km/h at the line" still
- * permits 82 km/h ten metres before it — and ten metres is not enough road to
- * shed the difference once the brakes have any lag at all. Cars arrived at 83
- * km/h against a limit of 80, every time, and it was maddening to watch because
- * the approach otherwise looked perfect.
- *
- * Settling early costs a fraction of a second and removes the whole class of
- * problem.
- */
-const PIT_ENTRY_SETTLE_M = 35;
-/**
- * Share of the pit lane limit the AI aims to cross the entry line at.
- *
- * A driver arrives comfortably UNDER the limit and lets the limiter hold them
- * there, because the penalty for being a single km/h over is a drive-through.
- */
-const PIT_ENTRY_TARGET_SHARE = 0.92;
-/** How far before the entry line the limiter goes on, metres. */
-const PIT_LIMITER_ARM_M = 45;
-
-/**
- * Brake pedal needed to be doing `vTarget` in `distance` metres, 0..1.
- *
- * Compares the car against the constant-deceleration profile
- * v = sqrt(vt² + 2·a·d) and brakes only when it is ABOVE it. The comparison
- * matters: taking the required deceleration on its own and turning it straight
- * into pedal means a car two hundred metres from its box still needs a third of
- * a metre per second squared to stop there, which is a small but permanent
- * brake application. It fought the throttle the whole length of the pit lane
- * and the car crawled to its box at half the speed limit, losing several
- * seconds on every stop for no reason a driver would recognise.
- */
-function brakeFor(speed: number, vTarget: number, distance: number, refDecel: number): number {
-  if (distance <= 0.01) return speed > vTarget ? 1 : 0;
-  const profile = Math.sqrt(vTarget * vTarget + 2 * refDecel * distance);
-  if (speed <= profile) return 0;
-  const needed = (speed * speed - vTarget * vTarget) / (2 * distance);
-  // Slightly over-braking (the 1.15) makes the approach converge instead of
-  // asymptotically never arriving.
-  return clamp01(needed / (refDecel * 1.15));
-}
 
 /**
  * How much of its speed a driver gives up for a yellow flag.
@@ -715,7 +655,7 @@ export class AIVehicleController {
       // A driver in that position stays out and comes in next lap, and so does
       // this. The 1.15 is margin for the brakes not biting instantly.
       const toEntry = loopDelta(s, pit.entryS, track.length);
-      const vAtLine = (pit.speedLimitKph - 2) / 3.6 * PIT_ENTRY_TARGET_SHARE;
+      const vAtLine = pitEntryTargetMs(pit);
       const v = car.speedMs;
       const roomNeeded =
         Math.max(v * v - vAtLine * vAtLine, 0) / (2 * PIT_ENTRY_DECEL_MS2) + PIT_ENTRY_SETTLE_M;
@@ -1343,7 +1283,7 @@ export class AIVehicleController {
     if (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') {
       const pit = track.def.pitLane;
       const inLane = this.isInPitLane(s);
-      const limitMs = (pit.speedLimitKph - 2) / 3.6;
+      const limitMs = pitLimiterSetpointMs(pit);
 
       // Arm the limiter just BEFORE the line, not on it. The button is pressed
       // on the approach in a real car, and engaging it on the same step the car
@@ -1501,7 +1441,7 @@ export class AIVehicleController {
     if (this.state === 'PIT_APPROACH' && !this.isInPitLane(s)) {
       const pit = track.def.pitLane;
       const toEntry = loopDelta(s, pit.entryS, track.length);
-      const vAtLine = (pit.speedLimitKph - 2) / 3.6 * PIT_ENTRY_TARGET_SHARE;
+      const vAtLine = pitEntryTargetMs(pit);
       const settled = Math.max(toEntry - PIT_ENTRY_SETTLE_M, 0.01);
       if (toEntry >= 0 && toEntry < PIT_ENTRY_SCAN_M && speed > vAtLine) {
         // NOT capped at the lock-up limit, unlike every other brake application

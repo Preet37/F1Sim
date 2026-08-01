@@ -11,24 +11,32 @@
  *    the speed of the car isn't actually reduced and thus giving some pit lane
  *    penalty"
  *
- * This probe drives the player's car at the pit entry at racing speed with the
- * throttle pinned — no manual braking whatsoever, because the player is not
- * told where the entry line is and the limiter is sold to them as automatic —
- * and measures three things:
+ * This probe drives the player's car to the pit entry at racing speed and never
+ * brakes for the entry line — because the player is not told where that line is
+ * and the limiter is sold to them as automatic — and measures five things:
  *
  *   1. WHEN the limiter engages, in metres relative to the pit entry line.
  *      Engaging on the line is already too late: race control judges speeding
  *      on the same step that `inPitLane` becomes true, so a limiter armed on
  *      the line loses the race against its own penalty.
  *
- *   2. HOW FAR into the lane the car is still over the limit, and the peak
- *      speed reached inside it. The limiter used to shed the excess at half a
- *      g, which from racing speed needs four hundred metres of pit lane. No
- *      circuit has one.
+ *   2. HOW FAST the car crosses the line, and how far into the lane it is still
+ *      over the limit. The limiter used to shed the excess at half a g, which
+ *      from racing speed needs four hundred metres of pit lane. No circuit has
+ *      one.
  *
  *   3. WHETHER a speeding penalty is issued. With an automatic limiter and an
  *      automatic pit entry, a player who did nothing wrong must not collect
  *      one.
+ *
+ *   4. HOW MUCH the car slides while the limiter is doing it. The version
+ *      before last put 140kN through the rear axle alone and spun the car on
+ *      the spot; a limiter that fixes the speed by spinning the car has not
+ *      fixed anything.
+ *
+ *   5. And, separately, whether a car already IN the lane can exceed the limit
+ *      by flooring it. That case has nothing to do with the entry and is where
+ *      the hard-coded 80 shows up as twenty km/h of illegal speed at Monaco.
  *
  * Monaco is in the list deliberately: its limit is 60 km/h, not 80, and a
  * limiter that hard-codes 80 passes every other circuit on the calendar while
@@ -83,6 +91,8 @@ interface Result {
   armedAtM: number;
   /** The car got through the lane: stopped in its box, or reached the exit. */
   completed: boolean;
+  /** Worst sideslip seen. A limiter that spins the car has not fixed anything. */
+  peakSideslipMs: number;
   penalties: string[];
 }
 
@@ -116,8 +126,9 @@ class ProbeDriver {
   private readonly ai: AIVehicleController;
   /** The perception handed to the AI: the car's own, with the pit call removed. */
   private readonly view: AIPerception;
+  private inLane = false;
 
-  constructor(private readonly car: CarEntry, track: TrackSpline) {
+  constructor(private readonly car: CarEntry, private readonly track: TrackSpline) {
     this.ai = new AIVehicleController(car.driver, track, 991, 'hard');
     // A copy, emphatically not a reference: `car.perception.pitThisLap` is what
     // the race engine itself reads to decide the car is coming in, and writing
@@ -128,16 +139,46 @@ class ProbeDriver {
 
   /** Writes this step's pedals and steering into the player's control block. */
   drive(dt: number, out: VehicleControls): void {
-    const p = this.car.perception;
+    const car = this.car;
+    const p = car.perception;
+
+    // Once the car is IN the lane the measurement of the entry is over, and
+    // holding the racing line down a pit lane just fights the engine's own
+    // lateral guidance into the pit wall. Hand the driver its pit-exit state,
+    // which is the one that drives a lane properly: hold the lane offset, stay
+    // on the limiter, leave at the far end.
+    if (car.inPitLane && !this.inLane) {
+      this.inLane = true;
+      this.ai.onPitStopComplete();
+    }
     // A shallow copy is enough: `pitThisLap` is a boolean on the object the
     // engine rebuilds each step, and everything else is read as-is.
     Object.assign(this.view, p);
     this.view.pitThisLap = false;
 
-    const c = this.ai.update(dt, this.car.physics, this.car.s, this.car.lateral, this.view);
+    const c = this.ai.update(dt, car.physics, car.s, car.lateral, this.view);
     out.throttle = c.throttle;
     out.brake = c.brake;
     out.steer = c.steer;
+
+    // Move over to the pit side on the run to the entry.
+    //
+    // Not an assist and not a cheat: a car has to be on the pit side of the
+    // road to be let in — the race engine refuses an entry taken from the far
+    // edge, for good documented reasons — and moving over before the line is
+    // the one part of a pit entry that is unambiguously the driver's job and
+    // that a player can plainly see themselves doing. The AI declines to do it
+    // (its own comment explains why: the pit side is the outside of some of the
+    // corners leading to the entry), so the probe supplies it.
+    const pit = this.track.def.pitLane;
+    const toEntry = loopDelta(car.s, pit.entryS, this.track.length);
+    if (!this.inLane && toEntry >= 0 && toEntry < 300) {
+      const side = Math.sign(pit.lateralOffsetM) || -1;
+      const want = side * this.track.halfWidthAt(car.s) * 0.5;
+      // Steering is positive-RIGHT while lateral is positive-LEFT, hence the
+      // negation. Gently: this is a lane change, not an avoidance.
+      out.steer = Math.max(-1, Math.min(1, out.steer - (want - car.lateral) * 0.05));
+    }
     out.reverse = c.reverse;
     out.gearRequest = c.gearRequest;
     out.ersMode = c.ersMode;
@@ -198,6 +239,7 @@ function runEntry(circuitId: string): Result {
     settledInM: 0,
     armedAtM: NaN,
     completed: false,
+    peakSideslipMs: 0,
     penalties: [],
   };
 
@@ -211,12 +253,26 @@ function runEntry(circuitId: string): Result {
     engine.step();
     if (player.retired) break;
 
-    // The speed the driver is actually carrying at the entry, recorded 150m
-    // out. Reporting the number the case asked for would be reporting the
-    // probe's intent instead of the car's behaviour.
-    if (r.entrySpeedKph === 0) {
+    // The racing speed the car brought to the pit entry: the fastest it was
+    // going anywhere in the last kilometre before the line. This is the number
+    // the limiter has to deal with, and it is measured rather than asserted —
+    // reporting the speed the probe asked for would be reporting the probe's
+    // intent instead of the car's behaviour.
+    if (!wasInLane) {
       const to = loopDelta(player.s, pit.entryS, track.length);
-      if (to > 0 && to < 150) r.entrySpeedKph = player.physics.speedKph;
+      if (to > 0 && to < 1000) {
+        r.entrySpeedKph = Math.max(r.entrySpeedKph, player.physics.speedKph);
+      }
+    }
+
+    // Sideslip while the LIMITER is the thing braking the car. Its predecessor
+    // put 140kN through the rear axle alone and spun the car on the spot the
+    // instant it crossed the line; a balanced application must not come near
+    // that, and a probe that only measured speed would not notice if it did.
+    // Measured only while the limiter is armed, because a car is entitled to
+    // several metres a second of slip through Parabolica and that is not this.
+    if (player.appliedControls.pitLimiter) {
+      r.peakSideslipMs = Math.max(r.peakSideslipMs, Math.abs(player.physics.localVelY));
     }
 
     // Where the limiter came on, measured against the entry line. Negative is
@@ -278,6 +334,7 @@ function report(r: Result): void {
     '  peak ' + r.peakInLaneKph.toFixed(1).padStart(6) +
     '  legal after ' + (r.settledInM.toFixed(0) + 'm').padStart(6) +
     '  limiter armed ' + (Number.isNaN(r.armedAtM) ? 'never' : r.armedAtM.toFixed(0) + 'm').padStart(6) +
+    '  slip ' + r.peakSideslipMs.toFixed(1).padStart(4) +
     '  lane ' + (r.completed ? 'ok' : 'STUCK'),
   );
   for (const p of r.penalties) console.log('      penalty: ' + p);
@@ -312,7 +369,13 @@ function check(r: Result): void {
       'whose limiter is automatic — ' + speeding[0]);
   }
 
-  // 4. And it must still get where it was going. A limiter that stops the car
+  // 4. And it must not have been rescued by anything violent.
+  if (r.peakSideslipMs > 2.5) {
+    fail(tag + ': ' + r.peakSideslipMs.toFixed(1) + ' m/s of sideslip while the limiter ' +
+      'was armed. It is braking hard enough to step the car sideways.');
+  }
+
+  // 5. And it must still get where it was going. A limiter that stops the car
   //    dead in the entry road has not fixed anything.
   if (!r.completed) {
     fail(tag + ': the car never got through the pit lane.');

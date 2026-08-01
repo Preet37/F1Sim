@@ -2,6 +2,7 @@ import { Vec2, clamp, clamp01, damp, MS_TO_KPH, wrapAngle } from '../core/MathUt
 import { TireState } from './TireModel';
 import type { CompoundId } from '../data/tires';
 import type { VehicleSpec } from './VehicleSpec';
+import { PIT_LIMITER_MAX_DECEL_G } from './PitLimiter';
 
 /**
  * Vehicle dynamics.
@@ -215,6 +216,22 @@ export class VehiclePhysics {
   /** Local-frame velocity: x is longitudinal (forward), y is lateral (left). */
   localVelX = 0;
   localVelY = 0;
+
+  /**
+   * The speed the pit limiter holds this car to, km/h.
+   *
+   * A property and not a constant because it is a property of the CIRCUIT, and
+   * the circuits do not agree: Monaco's pit lane is 60 km/h and every other one
+   * on the calendar is 80. This was hard-coded to 80, so at Monaco the limiter
+   * held the car at 80.2 while race control penalised anything over 60.5 — the
+   * simulation issued a drive-through for obeying itself, and there was nothing
+   * the driver could do about it.
+   *
+   * Set by the race engine from `track.def.pitLane.speedLimitKph`. The default
+   * is the calendar's usual value so a physics-only harness that never sets it
+   * still behaves sensibly.
+   */
+  pitSpeedLimitKph = 80;
 
   // --- Powertrain ----------------------------------------------------------
   gear = 1;
@@ -760,7 +777,8 @@ export class VehiclePhysics {
     // Pit limiter: a hard speed cap, enforced as braking rather than as a
     // teleport, so overshooting the limit still triggers a penalty.
     if (c.pitLimiter) {
-      const limitMs = 80 / 3.6;
+      // The circuit's own limit, not a constant. See `pitSpeedLimitKph`.
+      const limitMs = this.pitSpeedLimitKph / 3.6;
       if (vx > limitMs) {
         driveForce = 0;
         // What a real pit limiter does is cut the engine. It has no brakes.
@@ -773,12 +791,25 @@ export class VehiclePhysics {
         // how" is exactly what that feels like, and it was not the driver.
         //
         // So: cut the drive, then shed the excess BALANCED across the axles on
-        // the car's own brake balance and BOUNDED at half a g. A car that
-        // arrives far too fast still cannot be rescued by the limiter — it
-        // speeds through the lane and collects the penalty, which is the correct
-        // outcome and the reason the limiter is not a teleport.
+        // the car's own brake balance, and let the friction circle below have
+        // the final word — it is the thing that actually knows what the tires
+        // can take, and a demand that passes through it cannot lock a wheel that
+        // has grip to give.
+        //
+        // The bound is a full g rather than the half it was. Half a g needs four
+        // hundred metres to bring a car from racing speed to 80 km/h and no
+        // circuit has a pit lane that long, so the cap was quietly deciding that
+        // a car which arrived hot simply sped the length of the lane. That is
+        // not what the driver sees: they see LIMITER ON and a speedometer that
+        // does not move. A g is still nothing like the 4-5g these brakes can do
+        // — it will not lock a wheel, and it will not spin the car — while being
+        // enough that the limiter visibly IS a limiter.
+        //
+        // It is still not a teleport. A car that arrives far enough over the
+        // limit runs out of pit lane before it runs out of speed, and collects
+        // the penalty it earned.
         const wanted = (vx - limitMs) * mass * 2.2;
-        const applied = Math.min(wanted, mass * G * 0.5);
+        const applied = Math.min(wanted, mass * G * PIT_LIMITER_MAX_DECEL_G);
         brakeForceFront += applied * spec.brakeBalanceFront;
         brakeForceRear += applied * (1 - spec.brakeBalanceFront);
       }

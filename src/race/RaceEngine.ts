@@ -12,6 +12,11 @@ import { createNeighbour } from '../ai/AIVehicleController';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
+import {
+  PIT_ENTRY_DECEL_MS2, PIT_ENTRY_RESCUE_M, PIT_ENTRY_SCAN_M, PIT_ENTRY_SETTLE_M,
+  PIT_LIMITER_ARM_M, brakeFor, pitEntryCeilingMs, pitEntryRoomNeededM,
+  pitEntryTargetMs, pitLimiterShedDistanceM,
+} from '../physics/PitLimiter';
 
 /**
  * The simulation. Owns the track, the cars, race control, timing and the
@@ -201,6 +206,27 @@ const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
 const GRID_ROW_SPACING_M = 8;
 const GRID_SIDE_OFFSET_M = 3.4;
 
+/**
+ * Seconds after a retirement before the incident stops warranting a safety car.
+ *
+ * Short on purpose. This is not how long recovery takes, it is how long the
+ * RACE is neutralised for, and a race with three retirements in it that stayed
+ * neutralised for each of them would never reach its distance.
+ */
+const SAFE_AGAIN_S = 22;
+
+/**
+ * Seconds after a retirement before the wreck has actually been taken away.
+ *
+ * Until then the car is still where it stopped, still drawn in the world, and
+ * the sector it stopped in shows a yellow. Must match `WRECK_LIFETIME_S` in the
+ * renderer, which decides when the wreck stops being drawn: a flag that comes
+ * down while the car is still on screen is exactly the defect this pair of
+ * clocks exists to prevent, and a flag that stays up after the car has gone is
+ * the same mistake in the other direction.
+ */
+const WRECK_CLEARANCE_S = 150;
+
 /** Distance behind a leader within which its wake is felt. */
 const WAKE_LENGTH_M = 30;
 /** Peak downforce loss in the wake. */
@@ -313,6 +339,10 @@ export class RaceEngine {
       // assumes when it puts two boxes in front of every garage.
       car.pitSlot = i;
       car.pitBoxS = this.pitGeom.boxS(i);
+      // The limiter's setpoint is a property of the circuit, not of the car.
+      // Monaco is 60 km/h and everywhere else is 80; the physics used to assume
+      // 80 everywhere and penalise the Monaco cars for obeying it.
+      car.physics.pitSpeedLimitKph = def.pitLane.speedLimitKph;
       this.cars.push(car);
       this.standings.push(car);
       this.neighbourPool.push(createNeighbour(), createNeighbour(), createNeighbour(), createNeighbour());
@@ -557,11 +587,19 @@ export class RaceEngine {
       // because two different clocks hang off it and they are not the same
       // length. `recovered` is the RACE's answer — when it is safe again — and
       // it has to be short or a race with three retirements spends its life
-      // behind a safety car. How long the wreck stays where it stopped is a
-      // question for the renderer, and the honest answer is much longer: a car
-      // in a barrier is still in that barrier next time you come past it.
+      // behind a safety car. How long the wreck stays where it stopped is much
+      // longer: a car in a barrier is still in that barrier next time you come
+      // past it, and `cleared` is when it finally is not.
+      //
+      // Both clocks matter to the FLAGS, and running the flags off the short
+      // one alone is the whole of the second reported defect. A car that
+      // stopped on the racing line held a double yellow for twenty-two seconds
+      // and then the sector went green — with the car still sitting on the
+      // racing line, still drawn in the world, for another two minutes. The
+      // long clock is what the marshals' signals answer to.
       car.recoveryTimer += dt;
-      if (!car.recovered && car.recoveryTimer > 22) car.recovered = true;
+      if (!car.recovered && car.recoveryTimer > SAFE_AGAIN_S) car.recovered = true;
+      if (!car.cleared && car.recoveryTimer > WRECK_CLEARANCE_S) car.cleared = true;
     }
 
     for (let i = 0; i < this.cars.length; i++) {
@@ -584,9 +622,6 @@ export class RaceEngine {
       let controls: VehicleControls;
       if (car.isPlayer) {
         controls = this.playerControls;
-        // The pit limiter is automatic for the player too — being asked to
-        // manage it by hand is tedious rather than interesting.
-        controls.pitLimiter = car.inPitLane;
       } else {
         car.ai!.onConditionsChanged(wetness);
         controls = car.ai!.update(dt, car.physics, car.s, car.lateral, car.perception);
@@ -599,6 +634,12 @@ export class RaceEngine {
       }
 
       copyControls(controls, car.appliedControls);
+      // Applied to the COPY, not to `playerControls`. The player's own control
+      // block is owned by the input layer and rewritten once per rendered
+      // frame, while this runs once per physics step; writing the assist back
+      // into it would leave a stale brake application behind whenever the assist
+      // stopped applying between two input frames.
+      if (car.isPlayer) this.applyPitLaneAssist(car, car.appliedControls);
       car.physics.drsAvailable = this.isDrsAllowed(car);
       // Where the car is BEFORE it moves, for the swept test against the solid
       // world below. Recorded here rather than at the end of the previous step
@@ -1584,6 +1625,101 @@ export class RaceEngine {
   }
 
   /**
+   * The player's pit limiter, and the braking that makes it possible.
+   *
+   * The limiter is automatic for the player — being asked to manage it by hand
+   * is tedious rather than interesting — and that decision has a consequence
+   * that went unpaid for a long time: if the game presses the button, the game
+   * owes the driver an entry that is not an instant penalty.
+   *
+   * What actually happened was the reverse. `pitLimiter` was set to
+   * `car.inPitLane` and nothing else, so it came on one step AFTER the car was
+   * already in the lane — the same step race control uses to decide whether the
+   * car was speeding. The drive-through was therefore issued before the limiter
+   * had cut a single newton, and the limiter then had to shed two hundred and
+   * twenty km/h using half a g, which needs more pit lane than exists. The
+   * player's report is exact: "you have a speed limiter on but the speed of the
+   * car isn't actually reduced and thus giving some pit lane penalty."
+   *
+   * So this does the two things a driver does, in the order a driver does them.
+   * It brakes for the entry — the same square-root profile, the same planning
+   * rate and the same shared constants the AI uses, so the player's car and the
+   * nineteen around it arrive at the line the same way — and it arms the
+   * limiter BEFORE the line rather than on it.
+   *
+   * It touches nothing else. Steering is the driver's, the throttle is the
+   * driver's everywhere except while this is braking, and the moment the car is
+   * in the lane the assist stops planning and simply holds the limiter on.
+   */
+  private applyPitLaneAssist(car: CarEntry, c: VehicleControls): void {
+    const pit = this.track.def.pitLane;
+
+    // In the lane: the limiter is on, and that is the whole of it. Speed inside
+    // the lane is the limiter's job, and stopping on the box is the driver's.
+    if (car.inPitLane) {
+      c.pitLimiter = true;
+      return;
+    }
+
+    c.pitLimiter = false;
+
+    // Not coming in, or not being let in — either way there is nothing to brake
+    // for, and slowing the car on the racing line would be an unexplained loss
+    // of speed in the middle of a lap.
+    //
+    // `mayEnterPitLane` is asked directly rather than reading the latched
+    // `pitEntryRefused`: that flag records that a refusal has been ANNOUNCED and
+    // is only cleared when the driver gives up on the idea, so a pit entry that
+    // closed and reopened would leave it set and the assist silently switched
+    // off for the rest of the request.
+    if (!car.perception.pitThisLap) return;
+    const forRepairs = car.damage.worst().health < 0.7 || car.pendingServePenalty() !== null;
+    if (!this.raceControl.mayEnterPitLane(true, forRepairs)) return;
+
+    const toEntry = loopDelta(car.s, pit.entryS, this.track.length);
+    if (toEntry < 0 || toEntry > PIT_ENTRY_SCAN_M) return;
+
+    // Is this lap the lap? A call that lands inside the braking distance cannot
+    // be answered, and standing on the brakes for an entry the car will then be
+    // refused is the worst of both. `PIT_ENTRY_RESCUE_M` of slack is what the
+    // limiter itself can finish off in the first metres of the lane.
+    //
+    // The test is stable rather than knife-edge: a car tracking the braking
+    // profile has `roomNeeded` exactly equal to `toEntry`, so once the assist
+    // is working it stays working with the whole of the slack in hand.
+    const speed = car.physics.speedMs;
+    if (pitEntryRoomNeededM(pit, speed) > toEntry + PIT_ENTRY_RESCUE_M) return;
+
+    if (speed > pitEntryCeilingMs(pit, toEntry)) {
+      const pedal = brakeFor(
+        speed, pitEntryTargetMs(pit),
+        Math.max(toEntry - PIT_ENTRY_SETTLE_M, 0.01),
+        PIT_ENTRY_DECEL_MS2,
+      );
+      if (pedal > c.brake) {
+        c.brake = pedal;
+        c.throttle = 0;
+      }
+    }
+
+    c.pitLimiter = toEntry < PIT_LIMITER_ARM_M;
+  }
+
+  /**
+   * Can the limiter get this car under the pit lane limit in the first metres
+   * of the lane?
+   *
+   * Asked at the entry line. A car that says no has missed the pit entry: it is
+   * going to be over the limit for most of a pit lane full of standing
+   * mechanics, and the drive-through it collects is served by driving down that
+   * same pit lane, where it happens again.
+   */
+  private canMakeThePitLimit(car: CarEntry): boolean {
+    return pitLimiterShedDistanceM(this.track.def.pitLane, car.physics.speedMs)
+      <= PIT_ENTRY_RESCUE_M;
+  }
+
+  /**
    * Moves a car through the pit lane: entry, the box, service, and exit.
    *
    * The pit lane is a lateral offset on the main spline rather than a separate
@@ -1645,9 +1781,29 @@ export class RaceEngine {
           'warning', this.time, car.index,
         );
       }
+      // And is the car SLOW ENOUGH to be let in?
+      //
+      // Only asked of the player. The AI declines the entry on the approach
+      // when there is no room to stop, and this is the same judgement made at
+      // the line for the one car that has no such state machine. Its limiter
+      // and its entry braking are both automatic, so arriving far too fast
+      // means the assist was never given a chance — the call landed inside the
+      // braking distance — and letting the car in anyway is a guaranteed
+      // drive-through, served by driving down the very pit lane it is currently
+      // speeding through. A driver in that position stays out and comes round
+      // again, and so does this.
+      const tooFast = car.isPlayer && !this.canMakeThePitLimit(car);
+      if (wantsPit && allowed && onPitSide && geometricallyInLane && fromEntry < 40 &&
+          tooFast && !car.pitEntryMissed) {
+        car.pitEntryMissed = true;
+        this.raceControl.log(
+          car.driver.code + ' — too fast for the pit entry, round again',
+          'warning', this.time, car.index,
+        );
+      }
       if (!geometricallyInLane) car.pitEntryMissed = false;
 
-      if (wantsPit && allowed && onPitSide && geometricallyInLane && fromEntry < 40) {
+      if (wantsPit && allowed && onPitSide && geometricallyInLane && fromEntry < 40 && !tooFast) {
         car.inPitLane = true;
         car.lastPitLap = car.lap;
         // Every per-visit flag is cleared HERE, on the way in, not on the way

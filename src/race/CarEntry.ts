@@ -223,8 +223,33 @@ export class CarEntry {
   // --- Race state ----------------------------------------------------------
   retired = false;
   retirementReason = '';
-  /** True once a retired car has been craned away and stops causing yellows. */
+  /**
+   * True once the immediate danger from a retirement has passed.
+   *
+   * This is the SAFETY CAR's clock and only that. It is deliberately short —
+   * about twenty seconds — because a race with three retirements in it would
+   * otherwise spend the rest of its distance behind a safety car and never
+   * finish.
+   *
+   * It is emphatically NOT "the car has gone". A stopped car is still exactly
+   * where it stopped long after the field has been released, and the wreck is
+   * still drawn in the world; `cleared` below is the flag for that, and it is
+   * the one the marshals' signals answer to.
+   */
   recovered = false;
+
+  /**
+   * True once the wreck has actually been taken away.
+   *
+   * Until it is, the car is a hazard beside — or on — the road, and the sector
+   * it stopped in shows a yellow. Conflating this with `recovered` is what put
+   * a green flag next to a car that was still sitting on the racing line:
+   * "you have the green flag everywhere but if there is a change in flag status
+   * like say someone crashed out that sector signals should be yellow flags no?"
+   * — and it was right. The signals said the road was clear while the car was
+   * visibly still on it.
+   */
+  cleared = false;
   finished = false;
   /** Session time at which the car crossed the line for the last time. */
   finishTime = 0;

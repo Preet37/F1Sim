@@ -232,7 +232,11 @@ export class TrackMap {
       const car = this.order[i];
       const dot = this.dots[i];
 
-      const hidden = car.retired && car.recovered;
+      // `cleared`, not `recovered`: the short clock says the race is safe to
+      // release, the long one says the car has actually been taken away. Taking
+      // the dot off the map at the first meant the map stopped showing the car
+      // while its sector was still yellow because of it.
+      const hidden = car.retired && car.cleared;
       if (hidden !== this.lastHidden[i]) {
         dot.style.display = hidden ? 'none' : '';
         this.lastHidden[i] = hidden;

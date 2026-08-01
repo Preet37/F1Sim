@@ -121,6 +121,23 @@ const TRACK_LIMIT_PENALTY_AT = 4;
 /** A car below this speed off-track is treated as a stopped car. */
 const STOPPED_SPEED_MS = 8;
 
+/**
+ * How far beyond the white line a stopped car still counts as a hazard, metres.
+ *
+ * Applies to the LINGERING yellow — the one a retired car holds while it waits
+ * for a crane, after the race has been released. A car left on the road or in
+ * the verge is something the field has to be warned about every time it comes
+ * past; a car that speared into a gravel trap twenty metres out is behind the
+ * barriers with the marshals long before that, and treating the two the same
+ * would put a third of the lap under yellow every time somebody had a harmless
+ * off.
+ *
+ * The double yellow that comes first is not subject to this. While the incident
+ * is fresh nobody knows where the car will end up or who is standing next to
+ * it.
+ */
+const WRECK_HAZARD_MARGIN_M = 4;
+
 /** Regulation pit lane limit tolerance, km/h. */
 const PIT_SPEED_TOLERANCE_KPH = 0.5;
 
@@ -567,21 +584,58 @@ export class RaceControlManager {
     for (const car of cars) {
       if (car.inPitLane) continue;
 
-      const offTrack = Math.abs(car.lateral) > this.track.halfWidthAt(car.s) + 1.0;
-      const slow = car.physics.speedMs < STOPPED_SPEED_MS;
-      const stranded = car.retired && !car.recovered;
+      // What, if anything, is this car giving the marshals to signal?
+      //
+      // A RETIREMENT is judged on two clocks, not one. `recovered` says the
+      // race is safe to release — it is short, and it has to be, or a race with
+      // three retirements never finishes. `cleared` says the car has actually
+      // been taken away, and it is much longer, because it has not been: the
+      // wreck is still sitting where it stopped and is still drawn in the world
+      // when the field comes round again.
+      //
+      // Running the flag off the SHORT clock is what produced the reported
+      // defect. Twenty-two seconds after a car stopped on the racing line the
+      // sector went green, with the car still on the racing line. So the double
+      // yellow — "a car is stopped and the situation is developing" — lasts as
+      // long as the race is neutralisable, and it then steps DOWN to a single
+      // yellow — "there is a hazard beside the road and marshals are working" —
+      // for as long as the car is still there. That is what a real circuit
+      // shows, and it is also the cheap answer: a double yellow held for two
+      // minutes in every incident sector would cost the field far more time
+      // than the recovery it is warning about.
+      //
+      // A car that is merely OFF and slow gets a single yellow while it is
+      // there and nothing once it has rejoined. It never counts toward a safety
+      // car: treating every excursion as safety-car-worthy left the race
+      // permanently neutralised, and with twenty cars there is almost always
+      // somebody off.
+      const halfWidth = this.track.halfWidthAt(car.s);
+      let severity: FlagState | null = null;
+      if (car.retired) {
+        if (!car.recovered) {
+          severity = 'double-yellow';
+          incidents++;
+        } else if (!car.cleared && Math.abs(car.lateral) < halfWidth + WRECK_HAZARD_MARGIN_M) {
+          // Still there, and still close enough to the road to matter. WHERE it
+          // stopped is the whole of this test: a car abandoned on the racing
+          // line is a hazard until it is lifted off, and one that speared deep
+          // into a gravel trap is behind the barriers within seconds of the
+          // field being released. Flagging both identically for two minutes
+          // would neutralise a third of the lap every time somebody had a
+          // harmless off.
+          severity = 'yellow';
+        }
+      } else {
+        const offTrack = Math.abs(car.lateral) > halfWidth + 1.0;
+        const slow = car.physics.speedMs < STOPPED_SPEED_MS;
+        if (offTrack && slow) severity = 'yellow';
+      }
 
-      if (stranded || (offTrack && slow)) {
-        // Only a genuinely stopped car counts toward a safety car. A car that
-        // runs wide and rejoins gets a waved yellow at most — treating every
-        // excursion as safety-car-worthy left the race permanently neutralised,
-        // and with twenty cars there is almost always somebody off.
-        if (stranded) incidents++;
+      if (severity !== null) {
         const sec = this.sectorIndexAt(car.s);
         // The incident sector and the one before it — drivers need warning
         // before they arrive, which is the whole point of a yellow.
         const prev = (sec + MARSHAL_SECTORS - 1) % MARSHAL_SECTORS;
-        const severity: FlagState = stranded ? 'double-yellow' : 'yellow';
         this.raiseFlag(sec, severity);
         this.raiseFlag(prev, severity);
 

@@ -64,9 +64,26 @@ import type { CarEntry } from '../src/race/CarEntry';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { loopDelta } from '../src/core/MathUtils';
 import { PHYSICS_DT } from '../src/core/SimClock';
+import { installDomStub, readClasses } from './lib/domStub';
+import { MarshalPosts } from '../src/render/MarshalPost';
+import { TrackMap } from '../src/ui/TrackMap';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
+
+/**
+ * Shifts every scenario seed, for judging a change against a DISTRIBUTION.
+ *
+ * A staged safety car is a twenty-car chaotic system: the form-up gap on one
+ * seed is a sample, not a measurement, and a change that shifts the race by a
+ * tenth of a second on lap one produces a different queue. Sweep the offset
+ * (`FLAG_SEED_OFFSET=1 npm run validate:flags`, and so on) and compare the
+ * distribution rather than arguing about one number.
+ *
+ * Zero by default, so the committed run is bit-identical to what it has always
+ * been.
+ */
+const SEED_OFFSET = Number(process.env.FLAG_SEED_OFFSET ?? 0) | 0;
 
 /** The flag regime a car is driving under at this instant. */
 type Bucket = 'GREEN' | 'YEL' | '2YEL' | 'VSC' | 'SC';
@@ -589,7 +606,7 @@ function reportLapRatio(m: Measurement, bucket: Bucket, label: string): number |
 // ===========================================================================
 console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists in a non-race)');
 {
-  const m = runScenario('Q1', 'silverstone', 'qualifying', 0, 480, 77001, {
+  const m = runScenario('Q1', 'silverstone', 'qualifying', 0, 480, 77001 + SEED_OFFSET, {
     atS: 200, dangerous: true, holdS: 220,
   });
 
@@ -619,7 +636,7 @@ console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists i
 // ===========================================================================
 console.log('\nVIRTUAL SAFETY CAR (Bahrain, 10 laps — benign incident, Art. 56.1a / B5.12)');
 {
-  const m = runScenario('Grand Prix', 'bahrain', 'race', 10, 0, 77002, {
+  const m = runScenario('Grand Prix', 'bahrain', 'race', 10, 0, 77002 + SEED_OFFSET, {
     atS: 90, dangerous: false, holdS: 200,
   });
 
@@ -657,7 +674,7 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
   // Two cars given a broken engine at the start, so that by the time the safety
   // car is deployed there are genuinely lapped cars in the field for the
   // unlapping procedure to act on.
-  const m = runScenario('Grand Prix', 'monza', 'race', 14, 0, 77003, {
+  const m = runScenario('Grand Prix', 'monza', 'race', 14, 0, 77003 + SEED_OFFSET, {
     atS: 520, dangerous: true, holdS: 60,
     cripple: [{ slot: 18, health: 0.45 }, { slot: 19, health: 0.4 }],
   });
@@ -730,6 +747,33 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
   }
 }
 
+// ===========================================================================
+// 4. What the signals actually SHOW
+// ===========================================================================
+//
+// Everything above this line measures what the CARS do about a flag. That was
+// the whole of this probe, and it left the obvious gap: the AI can lift
+// perfectly for a yellow the player is never shown. The report was exactly
+// that —
+//
+//   "you have the green flag everywhere but if there is a change in flag status
+//    like say someone crashed out that sector signals should be yellow flags
+//    no? it cant stay green signal if there is a yellow flag called"
+//
+// — and it is not a question the pace measurements can answer, because a
+// perfectly obedient field and a stuck display look identical from the timing
+// screen.
+//
+// So this section drives the real display objects: `MarshalPosts`, which is the
+// trackside light panels, and `TrackMap`, which is the coloured circuit map,
+// both fed from race control exactly as the renderer and the HUD feed them.
+// Nothing here is a reimplementation — the map is built through a DOM stub and
+// read back out of the SVG tree it produces, and the posts are read out of the
+// instanced colour buffer that goes to the GPU. If either drifts from race
+// control, or race control itself declares a road clear that still has a car
+// sitting on it, this fails.
+runDisplayCheck();
+
 console.log('');
 if (failures.length) {
   console.log('FAILURES:');
@@ -738,4 +782,224 @@ if (failures.length) {
   process.exitCode = 1;
 } else {
   console.log('Flag compliance validated.\n');
+}
+
+/**
+ * The colours two stacked panels are showing at one post, as a comparable key.
+ *
+ * The mapping from signal to colour lives in the renderer and is deliberately
+ * not duplicated here. What is asserted instead is that the mapping is a
+ * BIJECTION over a whole race: every sector under a yellow shows the same thing
+ * as every other sector under a yellow, and it is not the thing a green sector
+ * shows. That catches a stuck panel, an inverted lookup and a missed update
+ * without this probe having an opinion about which shade of yellow is correct.
+ */
+function panelKey(colours: { getX(i: number): number; getY(i: number): number; getZ(i: number): number }, post: number): string {
+  const parts: string[] = [];
+  for (let p = 0; p < 2; p++) {
+    const i = post * 2 + p;
+    parts.push(
+      colours.getX(i).toFixed(3) + ',' + colours.getY(i).toFixed(3) + ',' + colours.getZ(i).toFixed(3),
+    );
+  }
+  return parts.join(' | ');
+}
+
+function runDisplayCheck(): void {
+  console.log('\nWHAT THE SIGNALS SHOW (Monza, staged retirement on the racing line)');
+
+  installDomStub();
+
+  const def = getCircuit('monza');
+  const config: SessionConfig = {
+    kind: 'race', name: 'Grand Prix', durationS: 0, laps: 8,
+    playerIndex: -1, standingStart: true, pitLaneStart: false, seed: 77004 + SEED_OFFSET,
+  };
+  const engine = new RaceEngine(def, config);
+  const rc = engine.raceControl;
+
+  const posts = new MarshalPosts(engine.track, rc.marshalSectorCount);
+  const map = new TrackMap(engine.track, engine.cars, rc.marshalSectorCount);
+  // The panels are the first thing the post group adds; their instanced colour
+  // buffer is what the GPU is handed, so it is what the driver sees.
+  const panelMesh = posts.root.children[0] as unknown as {
+    instanceColor: { getX(i: number): number; getY(i: number): number; getZ(i: number): number } | null;
+  };
+
+  /** signal -> the panel colours seen for it, and the reverse. */
+  const signalToPanel = new Map<string, string>();
+  const panelToSignal = new Map<string, string>();
+
+  let samples = 0;
+  let mapMismatches = 0;
+  let postMismatches = 0;
+  let chipUnderstatements = 0;
+  /** Samples where a car was still lying there and its sector read green. */
+  let greenOverWreck = 0;
+  let wreckSamples = 0;
+  /** Longest run of green-over-wreck, in seconds. */
+  let greenOverWreckS = 0;
+  const examples: string[] = [];
+
+  let victim: CarEntry | null = null;
+  const maxSteps = Math.round(8 * def.referencePoleTimeS * 3.4 / PHYSICS_DT);
+
+  for (let step = 0; step < maxSteps && !engine.over; step++) {
+    engine.step();
+
+    // Stage one retirement, on the racing line rather than in the run-off.
+    // That is the case the reported defect is about: a car stopped ON the road,
+    // which is still there long after the race has been released.
+    if (!victim && engine.time > 70) {
+      const running = engine.standings.filter((c) => !c.retired && !c.inPitLane);
+      victim = running[running.length - 1] ?? null;
+      if (victim) {
+        victim.retire('Probe: staged incident', engine.time);
+        victim.physics.velocity.set(0, 0);
+        victim.physics.localVelX = 0;
+        victim.physics.localVelY = 0;
+        console.log(
+          '  staged: ' + victim.driver.code + ' stopped at s=' + victim.s.toFixed(0) +
+          'm (marshalling sector ' + (rc.sectorIndexAt(victim.s) + 1) + '), lateral ' +
+          victim.lateral.toFixed(1) + 'm of a ' +
+          engine.track.halfWidthAt(victim.s).toFixed(1) + 'm half-width',
+        );
+      }
+    }
+
+    // The display is repainted at rendered-frame rate, not physics rate.
+    if (step % 4 !== 0) continue;
+    posts.update(rc);
+    map.update(rc);
+    samples++;
+
+    const ribbons = readClasses(map.root as never, 'map-line flag-');
+    const chips = readClasses(map.root as never, 'map-chip flag-');
+
+    for (let i = 0; i < rc.marshalSectorCount; i++) {
+      const signal = rc.signalForSector(i);
+
+      // --- The map's ribbon for this sector ------------------------------
+      const want = 'map-line flag-' + signal;
+      if (ribbons[i] !== want) {
+        mapMismatches++;
+        if (examples.length < 6) {
+          examples.push('map sector ' + (i + 1) + ' shows "' + ribbons[i] +
+            '" while race control says ' + signal);
+        }
+      }
+
+      // --- The trackside post for this sector ----------------------------
+      if (panelMesh.instanceColor) {
+        const key = panelKey(panelMesh.instanceColor, i);
+        const seenFor = signalToPanel.get(signal);
+        const meansOther = panelToSignal.get(key);
+        if (seenFor !== undefined && seenFor !== key) {
+          postMismatches++;
+          if (examples.length < 6) {
+            examples.push('post ' + (i + 1) + ' shows a different colour for ' + signal +
+              ' than other posts under the same signal');
+          }
+        } else if (meansOther !== undefined && meansOther !== signal) {
+          postMismatches++;
+          if (examples.length < 6) {
+            examples.push('post ' + (i + 1) + ' shows the ' + meansOther + ' colour while ' +
+              'race control says ' + signal);
+          }
+        } else {
+          signalToPanel.set(signal, key);
+          panelToSignal.set(key, signal);
+        }
+      }
+    }
+
+    // --- The three timing-sector chips ------------------------------------
+    // A chip may be WORSE than the road inside it (it takes the worst), but it
+    // must never read greener.
+    const bounds = [
+      { from: 0, to: def.sector1EndS },
+      { from: def.sector1EndS, to: def.sector2EndS },
+      { from: def.sector2EndS, to: engine.track.length },
+    ];
+    for (let i = 0; i < 3; i++) {
+      const shown = (chips[i] ?? '').replace('map-chip flag-', '');
+      if (shown !== 'green') continue;
+      const first = rc.sectorIndexAt(bounds[i].from);
+      const last = rc.sectorIndexAt(bounds[i].to - 1);
+      for (let k = first; ; k = (k + 1) % rc.marshalSectorCount) {
+        if (rc.signalForSector(k) !== 'green') {
+          chipUnderstatements++;
+          if (examples.length < 6) {
+            examples.push('timing sector ' + (i + 1) + ' chip reads green while marshalling ' +
+              'sector ' + (k + 1) + ' inside it is ' + rc.signalForSector(k));
+          }
+          break;
+        }
+        if (k === last) break;
+      }
+    }
+
+    // --- And the question underneath all of it ----------------------------
+    // Is there a car lying ON THE ROAD under a green flag? `cleared` is the
+    // race engine's own statement that the wreck has been taken away, and it is
+    // the same clock the renderer stops drawing the car on, so a sector that
+    // reads green while a car is not yet cleared is a green flag next to a car
+    // the player can see out of the cockpit.
+    //
+    // Restricted to cars still near the racing surface, because that is what
+    // race control undertakes to flag: a car that speared deep into a gravel
+    // trap is behind the barriers with the marshals long before the crane
+    // arrives, and asking for a two-minute yellow for it would be asking for
+    // something wrong.
+    for (const car of engine.cars) {
+      if (!car.retired || car.cleared || car.inPitLane) continue;
+      if (Math.abs(car.lateral) > engine.track.halfWidthAt(car.s) + 4) continue;
+      wreckSamples++;
+      const sec = rc.sectorIndexAt(car.s);
+      const local = rc.sectorFlags[sec];
+      if (local === 'green') {
+        greenOverWreck++;
+        greenOverWreckS += PHYSICS_DT * 4;
+        if (examples.length < 6) {
+          examples.push(car.driver.code + ' has been stopped for ' +
+            car.recoveryTimer.toFixed(0) + 's at s=' + car.s.toFixed(0) +
+            'm and marshalling sector ' + (sec + 1) + ' is showing GREEN');
+        }
+      }
+    }
+  }
+
+  posts.dispose();
+
+  console.log('  ' + 'display samples'.padEnd(38) + samples);
+  console.log('  ' + 'map sectors disagreeing with race control'.padEnd(38) + mapMismatches);
+  console.log('  ' + 'trackside posts disagreeing'.padEnd(38) + postMismatches);
+  console.log('  ' + 'timing chips reading greener than the road'.padEnd(38) + chipUnderstatements);
+  console.log('  ' + 'samples with a car still lying on track'.padEnd(38) + wreckSamples);
+  console.log('  ' + 'of those, sector showing green'.padEnd(38) + greenOverWreck +
+    (greenOverWreck > 0 ? '   (' + greenOverWreckS.toFixed(0) + 's)' : ''));
+  console.log('  ' + 'distinct signals displayed'.padEnd(38) +
+    [...signalToPanel.keys()].sort().join(', '));
+  for (const e of examples) console.log('      ' + e);
+
+  if (mapMismatches > 0) {
+    fail(`${mapMismatches} samples where the circuit map's colour did not match ` +
+      `RaceControlManager.signalForSector — the display and race control have drifted apart`);
+  }
+  if (postMismatches > 0) {
+    fail(`${postMismatches} samples where a trackside marshal post showed the wrong signal`);
+  }
+  if (chipUnderstatements > 0) {
+    fail(`${chipUnderstatements} samples where a timing-sector chip read green while a piece ` +
+      `of road inside it was flagged`);
+  }
+  if (greenOverWreck > 0) {
+    fail(`${greenOverWreckS.toFixed(0)}s of green flag shown in a sector that still had a ` +
+      `retired car lying in it — a car that has crashed out holds a yellow until it is ` +
+      `actually taken away`);
+  }
+  if (!signalToPanel.has('yellow') && !signalToPanel.has('double-yellow')) {
+    fail('no yellow was ever displayed anywhere, on a race with a staged retirement in it ' +
+      '— the display is not being driven at all');
+  }
 }
