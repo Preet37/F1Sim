@@ -1347,7 +1347,26 @@ export class RaceEngine {
 
     if (isRace) {
       if (a.finished !== b.finished) return a.finished;
-      if (a.finished && b.finished) return a.classifiedTime() < b.classifiedTime();
+      if (a.finished && b.finished) {
+        // DISTANCE FIRST, then time. A race is classified by who covered the
+        // distance; time only separates cars that covered the same amount of
+        // it.
+        //
+        // This used to compare `classifiedTime()` alone, and that is only the
+        // same thing when every finisher completed the same number of laps.
+        // They do not: when the flag falls, everyone still circulating is
+        // classified where they are, and they all get the same finish time.
+        // Comparing on time then ranks the entire field by penalty seconds
+        // instead of by laps, and a five-second track-limits penalty put the
+        // winner of a three-lap race — the only car to complete it — fifteenth,
+        // behind fourteen cars that were still on lap three.
+        //
+        // A time penalty still costs positions, which is the point of it. It
+        // costs them among the cars on the same lap, which is where a five
+        // second gap can actually change an order.
+        if (a.lap !== b.lap) return a.lap > b.lap;
+        return a.classifiedTime() < b.classifiedTime();
+      }
       return a.totalDistance > b.totalDistance;
     }
     // Session order: a set lap beats no lap, then fastest first.
