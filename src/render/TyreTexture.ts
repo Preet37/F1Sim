@@ -320,12 +320,19 @@ function paint(compound: CompoundId, size: number): TyreLook {
 
   // Circumferential striation across the tread. Fine, low contrast, and the
   // reason a slick catches a moving highlight instead of sitting dead black.
-  for (let i = 0; i < 70; i++) {
-    const t = treadA + (i / 70) * (treadB - treadA);
+  //
+  // BAND-LIMITED, like everything else on this tyre. Seventy lines one pixel
+  // wide across a 276-pixel band is a line every 3.9 pixels, which is aliasing
+  // painted straight into the albedo AND into the roughness map — the same
+  // mistake the normal map was making, in a different file. Twenty-eight lines
+  // two pixels wide is a line every ten pixels, which survives being minified.
+  const STRIATIONS = 28;
+  for (let i = 0; i < STRIATIONS; i++) {
+    const t = treadA + (i / STRIATIONS) * (treadB - treadA);
     const y = bandY(t, size);
-    const a = 0.035 + 0.03 * Math.sin(i * 2.3);
+    const a = 0.030 + 0.025 * Math.sin(i * 2.3);
     c.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
-    c.fillRect(0, y, size, Math.max(1, bandH * 0.004));
+    c.fillRect(0, y, size, Math.max(2, bandH * 0.008));
   }
 
   // Graining: a broad, irregular mottling across the working part of the
@@ -360,7 +367,7 @@ function paint(compound: CompoundId, size: number): TyreLook {
   // Directly under the raised band, so the geometry and the paint agree. See
   // BAND_V_FROM / BAND_V_TO at the bottom of this file for where the numbers
   // come from and why the old, much wider pair were wrong.
-  for (const [a, b] of [[0.070, 0.092], [0.908, 0.930]] as const) {
+  for (const [a, b] of [[0.079, 0.094], [0.906, 0.921]] as const) {
     const y = bandY(a, size);
     const h = bandY(b, size) - y;
     c.fillStyle = stripe;
@@ -447,7 +454,12 @@ function paint(compound: CompoundId, size: number): TyreLook {
   const surface = new THREE.CanvasTexture(surfCanvas);
   surface.colorSpace = THREE.NoColorSpace;
   surface.wrapS = THREE.RepeatWrapping;
-  surface.anisotropy = 4;
+  // Matched to the colour map's 8. It was 4 on the reasoning that a roughness
+  // map matters less than an albedo — which is backwards on a tyre. The tyre is
+  // a very dark, very smooth object, so almost everything the eye gets from it
+  // arrives through the specular lobe, and the specular lobe is what this map
+  // controls. Under-filtering it is under-filtering the only channel doing work.
+  surface.anisotropy = 8;
   surface.needsUpdate = true;
 
   return { map, surface };
@@ -501,7 +513,10 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
   const relief = size > 256 ? tyreSurfaceMap() : null;
   if (relief) {
     mat.normalMap = relief;
-    mat.normalScale = new THREE.Vector2(0.55, 0.55);
+    // 0.42, not 0.55. The map is band-limited now, but the residual it carries
+    // still costs high-frequency energy at every distance, and the measurement
+    // that matters — energy per pixel at 14 metres — falls roughly with this.
+    mat.normalScale = new THREE.Vector2(0.42, 0.42);
   }
   materials.set(key, mat);
   return mat;
@@ -571,8 +586,19 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
  * wrapped over the tread shoulder, which no camera needs and which was doing
  * all of the damage.
  */
-const BAND_V_FROM = 0.908;
-const BAND_V_TO = 0.930;
+/**
+ * MEASURED, not judged. Photographed against a white void the ring came out
+ * spanning 0.788 to 0.847 of the tyre's outside radius — 21mm on a 720mm tyre,
+ * which is the right WIDTH; the reference carries about the same. What was still
+ * wrong was how much of the frame it was winning: absolute chroma over the whole
+ * tyre put 10.9 per cent of its pixels at a visible colour excursion against 2.6
+ * per cent on the Ferrari photograph and 4.2 per cent on a soft-shod Mercedes.
+ * Narrowing to 0.906-0.921 takes the ring to about 14mm and, with the knock-back
+ * and the wider edge fades in `bandTexture` below, brings the whole tyre inside
+ * the range the reference photographs occupy.
+ */
+const BAND_V_FROM = 0.906;
+const BAND_V_TO = 0.921;
 /** Rows across the band. Enough to follow the shoulder's curve without faceting. */
 const BAND_ROWS = 6;
 /**
@@ -658,7 +684,9 @@ export function buildSidewallBands(
       for (let i = 0; i <= radial; i++) {
         const a = (i / radial) * Math.PI * 2;
         positions.push(px, Math.sin(a) * pr, Math.cos(a) * pr);
-        uvs.push(i / radial, f);
+        // Reversed to match the carcass under it — see the note in
+        // `buildWheel`. The compound name was mirrored too.
+        uvs.push(1 - i / radial, f);
       }
     }
     const stride = radial + 1;
@@ -724,7 +752,7 @@ function bandTexture(id: CompoundId): THREE.CanvasTexture {
   // Knocked back the same amount the painted stripe is, and for the same
   // reason: the compound colours are picked to be legible as HUD swatches, and
   // at full strength on a sidewall they are brighter than any paint on the car.
-  ctx.fillStyle = 'rgba(24,26,30,0.42)';
+  ctx.fillStyle = 'rgba(24,26,30,0.56)';
   ctx.fillRect(0, 0, W, H);
 
   // The compound name, repeated around the tyre the way a real sidewall carries
@@ -751,8 +779,13 @@ function bandTexture(id: CompoundId): THREE.CanvasTexture {
     ctx.fillStyle = g;
     ctx.fillRect(0, Math.min(from, to), W, Math.abs(to - from));
   };
-  fade(0, H * 0.16);
-  fade(H, H * 0.82);
+  // Wide, because the fade is doing double duty: it hides the 6mm step at the
+  // shell's edge AND it is where a third of the ring's chroma budget goes. A
+  // ring that reaches full saturation at its own boundary reads as a decal
+  // stuck to the tyre; one that comes up out of the rubber over a quarter of
+  // its width reads as moulded in, and costs much less of the frame.
+  fade(0, H * 0.26);
+  fade(H, H * 0.74);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -784,7 +817,7 @@ export function sidewallMaterial(id: CompoundId): THREE.MeshStandardMaterial {
     // the bloom pass picked it up as an emitter. What the night case actually
     // needs is only enough to stop the hue collapsing to grey under a dim key,
     // and that is a much smaller number than it sounds.
-    emissiveIntensity: 0.07,
+    emissiveIntensity: 0.045,
     roughness: 0.62,
     metalness: 0.0,
     envMapIntensity: 1.0,

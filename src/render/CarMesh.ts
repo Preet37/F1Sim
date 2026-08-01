@@ -867,18 +867,32 @@ function buildShellParts(
   // mounts, so when the wing is torn off this goes with it and the nose is left
   // as the blunt stub a real car is left with.
   //
-  // It has to come down FURTHER than it did and finish NARROWER. The old wedge
-  // stopped at y = 0.168 with 104mm of width, which left it hanging above a wing
-  // it never touched — and the gap it left read as a modelling error rather than
-  // as the deliberate daylight it is supposed to be. On the reference car the
-  // tip drops between the two innermost elements and lands ON them, with clear
-  // daylight underneath and to either side; that landing is what ties the front
-  // of the car together.
+  // IT HAS TO REACH THE WING. The old wedge stopped at y = 0.168, a clear 25mm
+  // above the second element and 170mm short of the mainplane, so the nose ended
+  // in mid-air and the wing was a separate slab underneath it. From behind and
+  // above — where the wing itself is hidden by the tyres and the nose is not —
+  // that is all you can see, and it reads as two unrelated objects. The
+  // reference car has no gap and no step: the nose runs forward and DOWN as one
+  // continuous form and merges into the wing's inner elements at the tip, and
+  // the inner sections spring straight out of its flanks.
+  //
+  // So the last station is carried down to y = 0.046, which is BELOW the
+  // mainplane's upper surface at that station. It interpenetrates deliberately:
+  // both surfaces are the same near-black carbon, the intersection is 92mm wide
+  // on the car's centreline, and a surface that stops exactly on another one
+  // leaves a visible seam the moment either is resampled. Overlapping them is
+  // what makes the junction read as a fillet instead of as a butt joint.
+  //
+  // It stays NARROW — 92mm across at the tip against 148mm at the top — so the
+  // daylight either side of the nose and under the wing survives. That gap is
+  // the thing the eye reads as "modern F1"; closing it would trade one wrong
+  // silhouette for another.
   p.into('frontWing');
   p.flat(small([
     section(2.74, 0.074, 0.288, 0.458, 0.66),
-    section(2.94, 0.060, 0.216, 0.348, 0.62),
-    section(3.08, 0.046, 0.128, 0.240, 0.62),
+    section(2.94, 0.062, 0.212, 0.348, 0.62),
+    section(3.08, 0.052, 0.116, 0.238, 0.62),
+    section(3.16, 0.046, 0.046, 0.152, 0.68),
   ], t.body - 6), 'carbon');
   p.into('core');
 
@@ -1421,7 +1435,13 @@ function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeom
       positions[o + 1] = Math.sin(a) * profile[pi].r;
       positions[o + 2] = Math.cos(a) * profile[pi].r;
       const uo = (pi * cols + i) * 2;
-      uvs[uo] = i / radial;
+      // u runs the OPPOSITE way round the tyre to the vertex order, for exactly
+      // the reason `loft` does the same thing: it is what makes the (u, v) frame
+      // right-handed against the outward normal. Running it with the vertex
+      // order put every letter on both sidewalls of all four wheels back to
+      // front — "OЯITOTOЯP" — which is legible enough in a screenshot to be
+      // embarrassing and invisible enough in motion to survive a long time.
+      uvs[uo] = 1 - i / radial;
       uvs[uo + 1] = v;
     }
   }
@@ -1467,30 +1487,6 @@ function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeom
 
   const faceX = half * 0.86;
 
-  // FLANGE. The wheel cover sits 14 per cent of the tyre's width inboard of the
-  // bead, and between the two there was nothing at all: an open cylinder of
-  // annulus that the camera could see straight through into the inside of the
-  // tyre. On the high tier the wheel's thirty-two segments hid most of it; on
-  // the low tier's twelve the front wheels were visibly HOLLOW, which is what a
-  // close-up of the cheap geometry showed.
-  //
-  // Closing it with a truncated cone from the cover's edge out to the bead is
-  // both the fix and the detail: the reference car has exactly this — a bright
-  // machined ring between the dark cover and the black rubber — and it is the
-  // one genuinely metallic highlight left on the corner now that the six silver
-  // spokes are gone.
-  {
-    const beadX = half * 0.985;
-    const beadR = RIM_R + 0.008;
-    const coverEdge = Math.min(FACE_R, RIM_R + 0.003);
-    // rotateZ(+90) maps the cylinder's +Y end onto -X, so the radius given
-    // FIRST lands on the inboard side. The cover edge is the inboard end.
-    const flange = new THREE.CylinderGeometry(coverEdge, beadR, beadX - faceX, radial, 1, true);
-    flange.rotateZ(Math.PI / 2);
-    flange.translate((faceX + beadX) * 0.5, 0, 0);
-    push(flange, 'rimLip');
-  }
-
   // --- Brake disc and caliper ---------------------------------------------
   // Set inboard of the wheel face so it is genuinely seen THROUGH the spokes,
   // which is the whole point of it. A disc drawn flush with the face just looks
@@ -1529,47 +1525,133 @@ function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeom
   // the brightest thing on an otherwise black corner, so they dominated the
   // wheel at every distance and made the tyre look like a toy hubcap.
   //
-  // Built as three lathe-like pieces: a flat outer annulus at the rim flange,
-  // a shallow cone dishing inward, and a small polished centre. The disc and
-  // caliper stay where they are — they are now seen only from inboard, which
-  // is exactly where a real one is seen from.
+  // ONE SURFACE, from the centre of the cap out to the bead. It was four
+  // separate primitives, and that is why the wheels were hollow.
+  //
+  // THE BUG, because it is worth writing down: three.js lays `RingGeometry` and
+  // `CircleGeometry` out at (cos t, sin t) and `CylinderGeometry` at
+  // (sin t, cos t). Those are a QUARTER TURN apart. The old cover abutted a ring
+  // against a cone at exactly `coverR * 0.60`, the cone against a disc at
+  // exactly `coverR * 0.17`, and the ring against the flange cone at exactly
+  // `coverR` — three joints where two regular polygons of identical radius meet
+  // out of phase, so they share no edge anywhere and the seam opens to the
+  // polygon's sagitta. That is 1.2mm at the high tier's 32 sides and 8.5mm at
+  // the low tier's 12, all the way round, three times over. Through those slots
+  // you see the inside of the tyre and, past it, the road — which is exactly
+  // what "the wheels seem to be hollow, you can see the track through it"
+  // describes. It had been found and patched once before, at one tier, by adding
+  // the flange; the flange closed one of the three joints and opened none.
+  //
+  // Abutting equal radii cannot be made safe by nudging the numbers, because the
+  // failure is angular, not radial. So the cover is now generated as a single
+  // surface of revolution with ONE vertex ring per station and the SAME angular
+  // convention the tyre carcass uses. There are no joints left to open, at any
+  // tessellation, and it is also closer to the reference: a real cover is one
+  // moulding with a fine circumferential joint, not an assembly of discs.
   const coverR = Math.min(FACE_R, RIM_R + 0.003);
-  const ring = new THREE.RingGeometry(coverR * 0.60, coverR, radial);
-  ring.rotateY(Math.PI / 2);
-  ring.translate(faceX + 0.004, 0, 0);
-  push(ring, 'rimFace');
+  const beadX = half * 0.985;
+  push(revolve([
+    // radius, x. Dished inward at the centre, flat toward the rim, then out
+    // over the flange to the bead — the last leg is the bright machined ring
+    // between the dark cover and the black rubber.
+    [0.0, faceX - 0.026],
+    [coverR * 0.10, faceX - 0.025],
+    [coverR * 0.20, faceX - 0.021],
+    [coverR * 0.36, faceX - 0.013],
+    [coverR * 0.55, faceX - 0.005],
+    // A fine circumferential joint at 78 per cent of the cover, which the
+    // reference close-up shows and which is the only feature on an otherwise
+    // blank disc. Two stations 1.5mm apart in x: at any distance the step
+    // catches a thin line of specular and the disc stops reading as a sticker.
+    [coverR * 0.76, faceX + 0.0005],
+    [coverR * 0.79, faceX - 0.0010],
+    [coverR * 0.82, faceX + 0.0015],
+    [coverR, faceX + 0.004],
+    [RIM_R + 0.008, beadX],
+  ], radial, true), 'rimFace');
 
-  // The dish. A cone rather than a second flat annulus, because the shading
-  // gradient across a dish is what tells the eye the face is recessed; a flat
-  // disc at one depth reads as a sticker.
-  const dish = new THREE.CylinderGeometry(coverR * 0.17, coverR * 0.60, 0.024, radial, 1, true);
-  dish.rotateZ(Math.PI / 2);
-  dish.translate(faceX - 0.008, 0, 0);
-  push(dish, 'rimFace');
-
-  // Centre: the polished cap over the centre-lock nut. Small and bright, and
-  // the one genuinely specular highlight on the corner.
-  const cap = new THREE.CircleGeometry(coverR * 0.17, Math.max(8, radial - 4));
-  cap.rotateY(Math.PI / 2);
-  cap.translate(faceX - 0.020, 0, 0);
-  push(cap, 'rimLip');
-  const hub = new THREE.CylinderGeometry(coverR * 0.11, coverR * 0.13, 0.022, Math.max(8, t.spoke * 2));
+  // Centre boss over the centre-lock nut. It sits ON the closed cover, so even
+  // if its own two pieces disagree about phase the worst case is that a sliver
+  // of cover shows through — never a hole.
+  const hub = new THREE.CylinderGeometry(coverR * 0.11, coverR * 0.15, 0.020, Math.max(8, t.spoke * 2));
   hub.rotateZ(Math.PI / 2);
-  hub.translate(faceX - 0.010, 0, 0);
+  hub.translate(faceX - 0.032, 0, 0);
   push(hub, 'hub');
+  const cap = new THREE.CircleGeometry(coverR * 0.11, Math.max(8, radial - 4));
+  cap.rotateY(Math.PI / 2);
+  cap.translate(faceX - 0.042, 0, 0);
+  push(cap, 'rimLip');
 
-  // Inboard face: a plain disc closing the barrel. It faces the car and is
-  // never really seen, but without it the wheel is visibly hollow from below.
-  // Sized to the BEAD, not to 95 per cent of the rim, and pushed right out to
-  // the inboard sidewall. At the low tier's twelve segments an inscribed disc
-  // 20mm shy of the bead leaves a ring of daylight into the barrel, and the
+  // Inboard face: closes the barrel. Same treatment and for the same reason —
+  // a single revolved dish whose rim runs 12mm PAST the tyre's bead, so no
+  // amount of phase disagreement between it and the carcass can open a gap. The
   // inboard face of a front wheel is exactly what the chase camera looks at.
-  const inner = new THREE.CircleGeometry(RIM_R + 0.010, radial);
-  inner.rotateY(-Math.PI / 2);
-  inner.translate(-half * 0.965, 0, 0);
-  push(inner, 'inner');
+  push(revolve([
+    [0.0, -half * 0.90],
+    [RIM_R * 0.55, -half * 0.92],
+    [RIM_R * 0.90, -half * 0.95],
+    [RIM_R + 0.020, -half * 0.965],
+  ], radial), 'inner');
 
   return mergeParts(parts);
+}
+
+/**
+ * A surface of revolution about the car's X axis, built with the same angular
+ * convention as the tyre carcass: vertex i of every ring sits at
+ * (sin, cos) of i / radial turns.
+ *
+ * That last clause is the entire point of this function existing rather than a
+ * `LatheGeometry` call. Everything that has to meet the wheel — the tyre, the
+ * rim barrel, the compound band — is generated at (sin, cos); three.js's own
+ * lathe and ring primitives are at (cos, sin). Mixing the two is what put slots
+ * through the wheel face. Anything built here is in phase with all of it by
+ * construction.
+ *
+ * @param profile [radius, x] from the axis outward; a leading radius of 0 makes
+ *                a closed cap rather than an open tube
+ * @param flip    reverses the winding. The default faces -X (inboard), which is
+ *                what the inboard dish wants; the outboard cover passes true.
+ *                Getting this backwards costs nothing at build time and produces
+ *                a wheel with no face at all, backface-culled into an open
+ *                barrel — which looks exactly like the hollow wheel this whole
+ *                function exists to fix, so it is worth being explicit about.
+ */
+function revolve(
+  profile: readonly [number, number][],
+  radial: number,
+  flip = false,
+): THREE.BufferGeometry {
+  const rings = profile.length;
+  const cols = radial + 1;
+  const pos = new Float32Array(rings * cols * 3);
+  for (let r = 0; r < rings; r++) {
+    const [rad, x] = profile[r];
+    for (let i = 0; i < cols; i++) {
+      const a = (i / radial) * Math.PI * 2;
+      const o = (r * cols + i) * 3;
+      pos[o] = x;
+      pos[o + 1] = Math.sin(a) * rad;
+      pos[o + 2] = Math.cos(a) * rad;
+    }
+  }
+  const idx: number[] = [];
+  for (let r = 0; r < rings - 1; r++) {
+    const a = r * cols;
+    const b = (r + 1) * cols;
+    for (let i = 0; i < radial; i++) {
+      if (flip) {
+        idx.push(a + i, b + i + 1, b + i, a + i, a + i + 1, b + i + 1);
+      } else {
+        idx.push(a + i, b + i, b + i + 1, a + i, b + i + 1, a + i + 1);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 // ===========================================================================
