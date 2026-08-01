@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { loft, section, setFlatUV, setPanelUV, strut, tube, wingElement, type Section } from './Loft';
+import {
+  loft, section, setFlatUV, setPanelUV, strut, tube, wingElement, riseSpanwise,
+  type Section,
+} from './Loft';
 import {
   buildLivery, disposeLiveryCache, swatchUV, PANEL,
   type PanelName, type SwatchName,
@@ -87,7 +90,17 @@ export interface CarVisual {
   frontRightSpin: THREE.Object3D;
   rearLeftSpin: THREE.Object3D;
   rearRightSpin: THREE.Object3D;
+  /** The rear wing's DRS flap, on a pivot at its leading edge. */
   drsFlap: THREE.Object3D;
+  /**
+   * The two upper front-wing elements, on their X/Z-mode hinge.
+   *
+   * Driven from the same signal as `drsFlap`, and deliberately so: the point of
+   * active aero is that the whole car goes low-drag at once, and a front wing
+   * that flattened on a different trigger from the rear flap would read as a
+   * bug rather than as a system.
+   */
+  frontFlaps: THREE.Object3D;
   brakeGlow: THREE.Mesh[];
   /** The bodywork that can be knocked off, by name. */
   bodyParts: Record<BodyPartId, BodyPart>;
@@ -184,6 +197,10 @@ export interface CarOptions {
 // the wrong generation next to the reference: the wheels sat too close together
 // inside a body that was too wide, so the tyres looked small and the flanks
 // looked fat. 3.6m between the axles on a 2.0m track is the current article.
+//
+// HALF_WIDTH is the regulation limit, not a part of any shape: nothing on the
+// car may pass it, and the widest things that come near it are the front wing
+// endplates and the rear tyres. See `checkWidth`.
 const HALF_WIDTH = 1.0;
 const FRONT_AXLE_Z = 1.80;
 const REAR_AXLE_Z = -1.80;
@@ -237,8 +254,31 @@ const RIM_R = 0.229;
 /** Outer radius of the wheel cover — the dark disc that closes the wheel face. */
 const FACE_R = 0.248;
 
-const FRONT_HUB_X = HALF_WIDTH - FRONT_TYRE_W * 0.5 - 0.005;
-const REAR_HUB_X = HALF_WIDTH - REAR_TYRE_W * 0.5 - 0.005;
+/**
+ * Half the front and rear TRACK — the lateral distance from the car's
+ * centreline to a wheel centre.
+ *
+ * These were derived from HALF_WIDTH by subtracting half a tyre, which put both
+ * axles as wide as the car is legally allowed to be: the front track came out at
+ * 1665mm and the outer face of a front tyre landed at x = 0.995, a bare 5mm
+ * inboard of the bodywork limit and OUTBOARD of the front wing endplates at
+ * 0.950. So the widest thing on the front of the car was the tyres, the wing
+ * hid behind them, and head-on the two front wheels read as the full width of
+ * the car — which is exactly what was asked about, and it was right.
+ *
+ * The regulations set front track at 1600mm and overall width at 2000mm. With a
+ * 305mm front tyre that puts the tyre's outer face at 800 + 152 = 952mm, and the
+ * endplate — which is allowed the full 1000 — a clear 45mm outboard of it. That
+ * gap is small, but it is the difference between a wing that disappears behind
+ * the wheels and one that frames them, and it is visible in every head-on
+ * photograph of a real car.
+ *
+ * The rear is the other way round on a real car: the rear tyres ARE essentially
+ * the widest point at their station, so 1560mm of track on a 405mm tyre leaves
+ * the outer face at 982mm and nothing outboard of it.
+ */
+const FRONT_HUB_X = 0.800;
+const REAR_HUB_X = 0.780;
 
 /**
  * The inboard face of each tyre: no bodywork may reach this far out where the
@@ -287,6 +327,27 @@ function checkWheelClearance(geo: THREE.BufferGeometry, label: string): THREE.Bu
     console.warn(
       `[CarMesh] ${label} intersects a wheel by ${(worst * 1000).toFixed(0)}mm at z=${worstZ.toFixed(2)}`,
     );
+  }
+  return geo;
+}
+
+/**
+ * Warns if a part reaches outside the car's legal half-width.
+ *
+ * The same argument as `checkWheelClearance`: an endplate authored at x = 0.987
+ * with a 13mm half-thickness is legal on paper and 0.999 in fact, and the loft's
+ * superellipse can push a corner further out than either number. The endplates
+ * are deliberately built to within a millimetre of the limit — they have to be,
+ * because being the widest thing on the front of the car is their job — so the
+ * margin for an authoring slip is nil and the check is worth its one pass.
+ */
+function checkWidth(geo: THREE.BufferGeometry, label: string): THREE.BufferGeometry {
+  const pos = geo.attributes.position as THREE.BufferAttribute | undefined;
+  if (!pos) return geo;
+  let worst = 0;
+  for (let i = 0; i < pos.count; i++) worst = Math.max(worst, Math.abs(pos.getX(i)));
+  if (worst > HALF_WIDTH + 0.002) {
+    console.warn(`[CarMesh] ${label} is ${((worst - HALF_WIDTH) * 1000).toFixed(0)}mm over the width limit`);
   }
   return geo;
 }
@@ -383,12 +444,27 @@ class Parts {
   readonly rearWing: THREE.BufferGeometry[] = [];
   readonly sidepodL: THREE.BufferGeometry[] = [];
   readonly sidepodR: THREE.BufferGeometry[] = [];
+  /**
+   * The two upper front-wing elements, which MOVE.
+   *
+   * A sixth bucket rather than a fifth body part: it is not something the car
+   * can lose on its own — it leaves with the front wing, exactly as the rear
+   * DRS flap leaves with the rear wing — but it does have to be its own mesh,
+   * because it hangs on a pivot that rotates for X-mode. Its geometry is
+   * authored about that pivot rather than about the car's origin.
+   */
+  readonly frontFlap: THREE.BufferGeometry[] = [];
 
   private target: THREE.BufferGeometry[] = this.core;
 
   /** Directs everything added from here on into the named bucket. */
   into(bucket: 'core' | BodyPartId): void {
     this.target = this[bucket];
+  }
+
+  /** Directs everything added from here on into the movable front flaps. */
+  intoFrontFlap(): void {
+    this.target = this.frontFlap;
   }
 
   /** Adds a part that samples a single flat colour from the atlas. */
@@ -539,6 +615,235 @@ function roundedBar(
   ], cols);
 }
 
+// ===========================================================================
+// Front wing
+// ===========================================================================
+
+/**
+ * The front wing, and what was wrong with the one before it.
+ *
+ * This is the part of the car a viewer reads first and the part that dates it
+ * hardest, and the previous version failed on all four of the things that make a
+ * current wing look like one. It was FLAT ACROSS, so head-on it drew a straight
+ * dark bar. Its four elements had DECREASING chord going up and back and they
+ * overlapped each other by seventy per cent of their chord, so no daylight ever
+ * appeared between them and the whole assembly fused into a single rolled slab.
+ * Its endplates were 26mm-thick slivers that leaned INBOARD toward the rear, so
+ * from any angle they were an edge rather than a panel. And the tyres were wider
+ * than all of it. The result reads as a snowplough, which is what was reported.
+ *
+ * What a current front wing actually is, from the head-on garage photographs:
+ *
+ *  - FOUR THIN ELEMENTS, each only 13-15mm thick, of INCREASING chord and
+ *    INCREASING incidence going up and back, with a real slot gap — 10 to 20mm
+ *    of visible daylight — between each pair. The staircase and the gaps are the
+ *    whole read: it is an assembly of four separate aerofoils, not one moulding.
+ *  - THE SHALLOW W. The elements fall away either side of the nose to a low
+ *    point near the middle of each semi-span and then climb out to the endplate.
+ *    See `riseSpanwise`, which is where that curve is applied and why it is
+ *    applied where it is.
+ *  - A LARGE CURVED ENDPLATE, growing from about 145mm tall at the leading edge
+ *    to 320mm at the rear and flaring OUTBOARD as it goes, with a footplate
+ *    rolling out along the bottom and a flick over the top. It is the widest
+ *    thing on the car at this station and it is what frames the front wheels.
+ *  - CLEAR-COATED CARBON, everywhere. Not team paint.
+ *
+ * Element geometry is authored as LEADING and TRAILING EDGE POINTS rather than
+ * as a centre and an angle. Chord and incidence are then derived. That is not a
+ * style preference: the slot gaps are the thing being designed, a slot gap is
+ * the distance between one element's trailing edge and the next one's lower
+ * surface, and with a centre-and-angle parameterisation neither of those two
+ * points is a number you typed — which is how the previous version ended up with
+ * gaps that were negative.
+ */
+
+/**
+ * The hinge the two upper elements rotate about for X-mode, at the third
+ * element's leading edge.
+ *
+ * ACTIVE AERO ON THE FRONT WING. The 2026 rules move active aerodynamics to the
+ * front wing as well as the rear: Z-mode is the high-downforce position the wing
+ * is built in below, and X-mode rotates the upper elements flat for the
+ * straights so the car sheds drag. Hinging both together at the third element's
+ * leading edge is how the real mechanism is arranged and it keeps the pair
+ * rigid relative to each other, which is what the reference plan view shows.
+ */
+const FRONT_FLAP_PIVOT_Y = 0.148;
+const FRONT_FLAP_PIVOT_Z = 3.086;
+
+/**
+ * How far the upper front-wing elements rotate for X-mode, radians, negative
+ * because flattening a wing means dropping its trailing edge.
+ *
+ * 0.20 rad is only 11 degrees, and it takes the top of the wing down by 76mm out
+ * of 300 — a quarter of the assembly's height. It has to be that big to read at
+ * racing distance and it cannot be much bigger: at 0.22 the third element's
+ * lower surface starts to touch the second element's trailing edge.
+ */
+export const FRONT_X_MODE_RAD = -0.20;
+
+/** Semi-span coordinate at which the elements reach their low point. */
+const W_LOW_AT = 0.45;
+/**
+ * How far the elements fall below the root at that point, metres.
+ *
+ * Bounded from below by the road. The mainplane's lower surface sits 38mm up at
+ * the root, so a 26mm dip — which is what this was first built with — puts the
+ * middle of each semi-span 2mm UNDERGROUND, and the wing visibly ploughs into
+ * the tarmac either side of the nose. 22mm leaves 16mm of clearance, which is
+ * about what a real wing runs and is as close as it should get.
+ */
+const W_DIP = 0.022;
+/**
+ * How far above the root they finish, at the endplate.
+ *
+ * Bounded from above by the endplate, which has to contain the elements it is
+ * bolted to: the top element's trailing edge climbs by 72 per cent of this and
+ * has to stay under the plate's upper edge at the same station.
+ */
+const W_TIP_RISE = 0.062;
+
+/**
+ * The shallow W, as a function of |x| / halfSpan.
+ *
+ * `scale` trims the curve for the upper elements. Applying the identical rise to
+ * all four would translate the whole stack bodily upward at the tips, and the
+ * top element would finish 350mm off the road — outside the box the rules draw.
+ * A real wing instead CLOSES UP outboard: the upper flaps are trimmed down
+ * toward the mainplane as they approach the endplate, so the assembly is
+ * shallower at the tip than at the root. Scaling the rise reproduces that with
+ * no extra geometry.
+ */
+function wingW(scale: number): (a: number) => number {
+  return (a) => {
+    if (a <= W_LOW_AT) {
+      // Root to low point: a half-cosine, so it leaves the centreline smoothly
+      // instead of drawing a crease down either side of the nose.
+      return -W_DIP * scale * (1 - Math.cos((a / W_LOW_AT) * Math.PI)) * 0.5;
+    }
+    // Low point to tip. Raised to a power rather than eased at both ends: the
+    // real curve is still climbing where it meets the endplate, and easing it
+    // flat there makes the tip look clipped off.
+    const s = (a - W_LOW_AT) / (1 - W_LOW_AT);
+    return (-W_DIP + (W_DIP + W_TIP_RISE) * Math.pow(s, 1.55)) * scale;
+  };
+}
+
+/**
+ * One element: span, leading edge, trailing edge, thickness, rise scale, and
+ * whether it belongs to the movable upper pair.
+ *
+ * Spans grow slightly with each element because the endplate flares outboard as
+ * it goes back, so the upper elements have further to reach before they meet it.
+ */
+const FRONT_WING_ELEMENTS: {
+  span: number; leZ: number; leY: number; teZ: number; teY: number;
+  thick: number; rise: number; movable: boolean;
+}[] = [
+  { span: 1.900, leZ: 3.248, leY: 0.052, teZ: 3.140, teY: 0.062, thick: 0.013, rise: 1.00, movable: false },
+  { span: 1.918, leZ: 3.180, leY: 0.088, teZ: 3.026, teY: 0.122, thick: 0.013, rise: 0.93, movable: false },
+  { span: 1.936, leZ: 3.086, leY: 0.148, teZ: 2.888, teY: 0.210, thick: 0.014, rise: 0.84, movable: true },
+  { span: 1.954, leZ: 2.972, leY: 0.226, teZ: 2.720, teY: 0.314, thick: 0.015, rise: 0.72, movable: true },
+];
+
+function buildFrontWing(p: Parts, t: Tiers): void {
+  p.into('frontWing');
+
+  for (const e of FRONT_WING_ELEMENTS) {
+    const dz = e.leZ - e.teZ;
+    const dy = e.teY - e.leY;
+    const chord = Math.hypot(dz, dy);
+    // Positive rotation about X drops the leading edge and lifts the trailing
+    // edge, which is the way round an inverted wing works.
+    const angle = Math.atan2(dy, dz);
+    // Camber proportional to chord, so all four are the same aerofoil at four
+    // sizes rather than four differently-shaped ones. It also has to stay
+    // modest: the camber line bows the section DOWNWARD by its full amount at
+    // 40 per cent chord, and at the 28 per cent of chord a really aggressive
+    // front wing runs it eats the slot gap above the element below it.
+    const camber = -0.10 * chord;
+    // Sixteen interior stations. The W below is a curve across the span and a
+    // curve drawn through two stations is a straight line; at six it came out
+    // as a visible chevron either side of the nose.
+    const g = wingElement(e.span, chord, e.thick, camber, t.wing, 0.085, t.wing >= 10 ? 16 : 7);
+    g.rotateX(angle);
+    // The W is applied AFTER the incidence, in car-local Y. See `riseSpanwise`.
+    riseSpanwise(g, e.span * 0.5, wingW(e.rise));
+    if (e.movable) {
+      // Authored about the hinge, so the pivot group can simply be placed at it.
+      g.translate(0, (e.leY + e.teY) * 0.5 - FRONT_FLAP_PIVOT_Y, (e.leZ + e.teZ) * 0.5 - FRONT_FLAP_PIVOT_Z);
+      p.intoFrontFlap();
+      p.flat(g, 'carbon');
+      p.into('frontWing');
+    } else {
+      g.translate(0, (e.leY + e.teY) * 0.5, (e.leZ + e.teZ) * 0.5);
+      p.flat(g, 'carbon');
+    }
+  }
+
+  const small = (s: readonly Section[], cols = t.detail) => loft(s, cols, true, t.detailStep);
+
+  for (const side of [-1, 1] as const) {
+    const s = side;
+
+    // ENDPLATE. A large curved vertical panel that grows and wraps outboard and
+    // rearward. The old one ran 0.944 -> 0.930 in x, so it leaned INBOARD going
+    // back, which is backwards — every real endplate flares out to turn the
+    // front tyre's wake around the outside of the wheel. This one runs 0.950 out
+    // to 0.987, which with its 12mm half-thickness puts its outer skin at
+    // x = 0.999: the widest thing on the car, as it should be, and 47mm outboard
+    // of the front tyre.
+    const ep = small([
+      section(3.235, 0.010, 0.055, 0.215, 0.28, { xc: s * 0.950 }),
+      section(3.080, 0.012, 0.038, 0.285, 0.24, { xc: s * 0.966 }),
+      section(2.900, 0.013, 0.028, 0.345, 0.22, { xc: s * 0.978 }),
+      section(2.720, 0.013, 0.026, 0.372, 0.22, { xc: s * 0.986 }),
+      section(2.600, 0.011, 0.034, 0.350, 0.30, { xc: s * 0.987 }),
+    ], t.body - 8);
+    p.flat(checkWidth(ep, 'front wing endplate'), 'carbon');
+
+    // FOOTPLATE: the outward curl along the bottom of the endplate. It sits at
+    // ground level, it is the last thing to clear a kerb, and it is in every
+    // head-on photograph as a bright horizontal line under the dark plate.
+    const foot = small([
+      section(3.20, 0.026, 0.022, 0.052, 0.60, { xc: s * 0.952 }),
+      section(3.00, 0.032, 0.018, 0.050, 0.55, { xc: s * 0.962 }),
+      section(2.80, 0.034, 0.020, 0.052, 0.55, { xc: s * 0.964 }),
+      section(2.64, 0.026, 0.026, 0.056, 0.60, { xc: s * 0.968 }),
+    ], Math.max(6, t.detail - 4));
+    p.flat(checkWidth(foot, 'front wing footplate'), 'carbon');
+
+    // UPPER FLICK: the small winglet folded over the top of the endplate's
+    // trailing corner. It is what stops the endplate reading as a plain
+    // rectangle in silhouette.
+    const flick = small([
+      section(2.94, 0.014, 0.322, 0.340, 0.70, { xc: s * 0.958 }),
+      section(2.80, 0.024, 0.352, 0.376, 0.70, { xc: s * 0.948 }),
+      section(2.66, 0.020, 0.344, 0.364, 0.70, { xc: s * 0.940 }),
+    ], Math.max(6, t.detail - 4));
+    p.flat(checkWidth(flick, 'front wing flick'), 'carbon');
+
+    // DIVEPLANE on the endplate's outer face, and the one place the team's
+    // colour belongs on an otherwise entirely carbon assembly.
+    //
+    // A LOFT, not a `wingElement`. An extruded aerofoil is symmetric about the
+    // point it is translated to, so a 140mm-span element placed on an endplate
+    // at x = 0.985 reaches out to 1.055 — 55mm outside the car's legal width and
+    // hanging in mid-air past the end of the wing. That is what was there, and
+    // it is the yellow blade sticking out past each wing tip in the head-on
+    // screenshots. A diveplane is a small plate ON the outer skin; built as a
+    // three-station loft it can be exactly that, and `checkWidth` proves it.
+    const dive = small([
+      section(2.980, 0.024, 0.208, 0.226, 0.60, { xc: s * 0.972 }),
+      section(2.860, 0.028, 0.220, 0.240, 0.60, { xc: s * 0.970 }),
+      section(2.760, 0.021, 0.228, 0.246, 0.60, { xc: s * 0.966 }),
+    ], Math.max(6, t.detail - 4));
+    p.flat(checkWidth(dive, 'front wing diveplane'), 'accent');
+  }
+
+  p.into('core');
+}
+
 function buildShellParts(
   quality: CarTier,
   driverBody: readonly THREE.BufferGeometry[],
@@ -561,11 +866,19 @@ function buildShellParts(
   // It belongs to the WING, not to the nose: it is the fairing over the wing
   // mounts, so when the wing is torn off this goes with it and the nose is left
   // as the blunt stub a real car is left with.
+  //
+  // It has to come down FURTHER than it did and finish NARROWER. The old wedge
+  // stopped at y = 0.168 with 104mm of width, which left it hanging above a wing
+  // it never touched — and the gap it left read as a modelling error rather than
+  // as the deliberate daylight it is supposed to be. On the reference car the
+  // tip drops between the two innermost elements and lands ON them, with clear
+  // daylight underneath and to either side; that landing is what ties the front
+  // of the car together.
   p.into('frontWing');
   p.flat(small([
     section(2.74, 0.074, 0.288, 0.458, 0.66),
-    section(2.92, 0.064, 0.238, 0.362, 0.62),
-    section(3.05, 0.052, 0.168, 0.250, 0.62),
+    section(2.94, 0.060, 0.216, 0.348, 0.62),
+    section(3.08, 0.046, 0.128, 0.240, 0.62),
   ], t.body - 6), 'carbon');
   p.into('core');
 
@@ -681,84 +994,7 @@ function buildShellParts(
   }
 
   // --- Front wing ---------------------------------------------------------
-  // Four elements of increasing incidence, stacked and staggered. Negative
-  // camber: an F1 wing is an inverted aerofoil, and a wing that bulges upward
-  // instead of downward looks wrong even to people who could not say why.
-  {
-    p.into('frontWing');
-    // Each element sits higher, further back and at more incidence than the one
-    // in front of it. The staircase is the point: four aerofoils at the same
-    // angle stacked close together fuse into one slab, which is what the first
-    // attempt produced.
-    // COLOUR, and it is the single loudest error in the old car. Every element
-    // and both endplates were painted in the team's body and accent colours, so
-    // the front of the car was a solid slab of saturated paint half a metre
-    // tall — which is why the screenshots read as a toy. On the reference car,
-    // and on every real one, the whole assembly is EXPOSED CARBON: near-black,
-    // gloss, with the team's colour appearing only on the small diveplane. Dark
-    // elements are also what makes the gaps between them read as gaps; four
-    // brightly-lit slabs fuse into a single object, which is exactly what the
-    // screenshots showed.
-    const elements: [number, number, number, number, number, SwatchName][] = [
-      // chord, thickness, y, z, incidence, colour
-      [0.300, 0.032, 0.046, 3.132, 0.10, 'carbon'],
-      [0.232, 0.027, 0.098, 3.030, 0.26, 'carbon'],
-      [0.190, 0.023, 0.150, 2.958, 0.42, 'dark'],
-      [0.162, 0.020, 0.202, 2.902, 0.58, 'carbon'],
-    ];
-    for (const [chord, thick, y, z, angle, swatch] of elements) {
-      // 0.085m of forward sweep at the tips. SHALLOW is the whole point: the
-      // element chords are only 160-300mm, so a sweep of the 200mm the
-      // endplates really sit forward turns each one into a visible boomerang
-      // rather than into a wing. What the reference actually shows is a very
-      // slight forward bow in the elements with the ENDPLATES carrying most of
-      // the offset, which is how it is built below.
-      const g = wingElement(1.90, chord, thick, -0.028, t.wing, 0.085);
-      // Positive rotation about X drops the leading edge and lifts the trailing
-      // edge, which is the way round an inverted wing works.
-      g.rotateX(angle);
-      g.translate(0, y, z);
-      p.flat(g, swatch);
-    }
-
-    // Endplates: tall, thin, swept out and up, with a footplate that rolls
-    // outward at the bottom.
-    //
-    // They were 54mm thick and painted in the accent colour, which at this size
-    // is a pair of coloured bricks either side of the nose. A real endplate is
-    // a 15mm carbon plate — its job is to be invisible edge-on and to show only
-    // as a dark silhouette from the side.
-    for (const side of [-1, 1] as const) {
-      const s = side;
-      const ep = small([
-        section(3.30, 0.013, 0.024, 0.144, 0.30, { xc: s * 0.944 }),
-        section(3.16, 0.016, 0.020, 0.214, 0.25, { xc: s * 0.948 }),
-        section(2.98, 0.017, 0.024, 0.266, 0.22, { xc: s * 0.950 }),
-        section(2.84, 0.016, 0.044, 0.278, 0.25, { xc: s * 0.944 }),
-        section(2.72, 0.012, 0.082, 0.258, 0.35, { xc: s * 0.930 }),
-      ], t.body - 8);
-      p.flat(ep, 'carbon');
-
-      // Footplate: the outward curl along the bottom of the endplate that turns
-      // the front tyre's wake outboard. It is the widest thing on the car at
-      // ground level and it is in every head-on photograph.
-      const foot = small([
-        section(3.25, 0.030, 0.020, 0.048, 0.60, { xc: s * 0.962 }),
-        section(3.06, 0.038, 0.016, 0.046, 0.55, { xc: s * 0.972 }),
-        section(2.86, 0.036, 0.018, 0.048, 0.55, { xc: s * 0.968 }),
-      ], Math.max(6, t.detail - 4));
-      p.flat(foot, 'carbon');
-
-      // Diveplane on the outer face: a small canard, and the one place the
-      // team's colour belongs on the front wing.
-      const canard = wingElement(0.150, 0.110, 0.014, -0.014, Math.max(4, t.wing - 6));
-      canard.rotateX(0.20);
-      canard.rotateZ(s * 0.22);
-      canard.translate(s * 0.985, 0.216, 2.930);
-      p.flat(canard, 'accent');
-    }
-    p.into('core');
-  }
+  buildFrontWing(p, t);
 
   // --- Front brake ducts / wheel-wake fins --------------------------------
   // NOTE: the duct proper now lives on the STEER group so that it turns with the
@@ -1441,6 +1677,8 @@ interface CachedGeometry {
   rearBand: THREE.BufferGeometry;
   disc: THREE.BufferGeometry;
   flap: THREE.BufferGeometry;
+  /** The movable upper front-wing elements, authored about their hinge. */
+  frontFlap: THREE.BufferGeometry;
   shadow: THREE.BufferGeometry;
 }
 
@@ -1503,6 +1741,7 @@ function geometryFor(quality: CarTier): CachedGeometry {
       return d;
     })(),
     flap: flapGeo,
+    frontFlap: mergeParts(parts.frontFlap),
     shadow,
   };
   geometryCache.set(quality, built);
@@ -1724,6 +1963,17 @@ export function buildCar(
   root.add(flapPivot);
   swappable.push({ mesh: flap, key: 'flap' });
 
+  // The two upper front-wing elements, on their X/Z-mode hinge. Same
+  // arrangement as the DRS flap: one pivot group, one mesh, and it disappears
+  // with the front wing rather than being left hanging in the air.
+  const frontFlapPivot = new THREE.Group();
+  frontFlapPivot.position.set(0, FRONT_FLAP_PIVOT_Y, FRONT_FLAP_PIVOT_Z);
+  const frontFlap = new THREE.Mesh(geo.frontFlap, shellMat);
+  frontFlap.castShadow = true;
+  frontFlapPivot.add(frontFlap);
+  root.add(frontFlapPivot);
+  swappable.push({ mesh: frontFlap, key: 'frontFlap' });
+
   const brakeGlow: THREE.Mesh[] = [];
   const wheels: THREE.Mesh[] = [];
   const bands: THREE.Mesh[] = [];
@@ -1833,6 +2083,7 @@ export function buildCar(
     rearLeftSpin: rl.spin,
     rearRightSpin: rr.spin,
     drsFlap: flapPivot,
+    frontFlaps: frontFlapPivot,
     brakeGlow,
     driverHead,
     shadow,
@@ -1845,8 +2096,11 @@ export function buildCar(
       part.attached = attached;
       part.mesh.visible = attached;
       // The DRS flap hangs off the rear wing, so it leaves with it. Without this
-      // a car that has lost its rear wing still carries a flap in mid-air.
+      // a car that has lost its rear wing still carries a flap in mid-air. The
+      // movable front elements are in exactly the same position relative to the
+      // front wing, and were exactly the same bug waiting to happen.
       if (id === 'rearWing') flapPivot.visible = attached;
+      if (id === 'frontWing') frontFlapPivot.visible = attached;
     },
     setCockpitVisible(v: boolean): void {
       cockpit?.setVisible(v);
@@ -1881,6 +2135,7 @@ export function disposeCarGeometryCache(): void {
     set.rearBand.dispose();
     set.disc.dispose();
     set.flap.dispose();
+    set.frontFlap.dispose();
     set.shadow.dispose();
   }
   geometryCache.clear();

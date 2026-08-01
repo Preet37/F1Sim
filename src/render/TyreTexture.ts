@@ -61,13 +61,31 @@ const SWATCHES: WheelSwatch[] = [
   'disc', 'discFace', 'caliper', 'inner',
 ];
 
-/** Base colour and [roughness, metalness] for each hard part. */
+/**
+ * Base colour and [roughness, metalness] for each hard part.
+ *
+ * METALNESS WAS THE PROBLEM, and it was not obvious by eye. A metal in a PBR
+ * renderer has no diffuse term at all: everything it shows is a reflection of
+ * its surroundings, tinted by its own colour. The wheel cover was set at 0.55
+ * metal, the flange ring at 0.95 and the hub at 0.80, under a blue sky and
+ * beside a painted car — so the entire face of every wheel came back as a blue
+ * mirror. A radial saturation profile put the cover region at 0.41 mean
+ * saturation against 0.09 on the reference photograph, which is most of why the
+ * wheels read as "wrong" even in shots where the compound band was out of frame.
+ *
+ * A current wheel cover is not alloy. It is a mandated aerodynamic fairing,
+ * moulded in carbon composite and finished satin dark grey — a DIELECTRIC. The
+ * only genuinely metallic things on the corner are the centre-lock nut and the
+ * caliper, and both are small.
+ */
 const SWATCH_LOOK: Record<WheelSwatch, { colour: string; rough: number; metal: number }> = {
-  // The wheel face on a current car is a dark anodised cover, not chrome.
-  rimFace: { colour: '#2a2d34', rough: 0.42, metal: 0.55 },
-  rimSpoke: { colour: '#454b55', rough: 0.30, metal: 0.85 },
-  rimLip: { colour: '#8d949e', rough: 0.22, metal: 0.95 },
-  hub: { colour: '#3b3f47', rough: 0.35, metal: 0.80 },
+  // The wheel face on a current car is a moulded composite cover, not chrome.
+  rimFace: { colour: '#2b2e33', rough: 0.56, metal: 0.10 },
+  rimSpoke: { colour: '#3c4149', rough: 0.44, metal: 0.25 },
+  // The machined ring between the cover and the bead. Still the brightest thing
+  // on the corner, but a brushed one rather than a mirror.
+  rimLip: { colour: '#6e747c', rough: 0.42, metal: 0.40 },
+  hub: { colour: '#4a4f57', rough: 0.34, metal: 0.60 },
   // Carbon-carbon brake discs are matte grey-black and not remotely metallic.
   disc: { colour: '#2e2b28', rough: 0.72, metal: 0.05 },
   discFace: { colour: '#3a3632', rough: 0.66, metal: 0.05 },
@@ -391,17 +409,20 @@ function paint(compound: CompoundId, size: number): TyreLook {
     c.restore();
   };
 
-  // ONE row, in the COMPOUND COLOUR, in the strip of sidewall between the
-  // raised band (which now ends at BAND_V_TO = 0.930) and the bead at 0.965.
+  // ONE row, in GREY, in the strip of sidewall between the raised band and the
+  // bead at 0.965.
   //
-  // There used to be two rows, both grey, and the inner one sat under the old
-  // band's much wider footprint — drawn, then covered. Printing the remaining
-  // row in the compound colour is what the reference tyre carries, and it is
-  // what stops the now-narrow ring from being the only coloured thing on a very
-  // large black object. The compound's NAME is not repeated here; the raised
-  // band already carries it in type twice the size.
-  drawText(0.950, 'PROTOTIPO', 0.024, stripe, 700);
-  drawText(0.050, 'PROTOTIPO', 0.024, stripe, 700);
+  // It was printed in the COMPOUND COLOUR, and that was a second full coloured
+  // ring on the tyre — at a larger radius than the band itself, so it swept a
+  // bigger area of every frame than the marking it was supporting. Two
+  // concentric yellow rings on a medium is what made the tyre read as
+  // predominantly yellow however narrow the band above it got.
+  //
+  // Moulded sidewall lettering is grey. It is rubber, very slightly glossier
+  // than the wall it stands on, and the only reason it is legible at all is the
+  // relief — which is why the surface map below matters more than the ink does.
+  drawText(0.950, 'PROTOTIPO', 0.022, 'rgba(146,150,158,0.55)', 700);
+  drawText(0.050, 'PROTOTIPO', 0.022, 'rgba(146,150,158,0.55)', 700);
 
   // Raised lettering catches light: give the text rows a glossier surface so
   // the letters flare as the wheel turns past a floodlight.

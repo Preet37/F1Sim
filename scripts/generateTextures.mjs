@@ -190,6 +190,26 @@ function carbonWeave(size) {
  * moulded sidewall carries.
  *
  * TYRE_BAND in TyreTexture.ts is the contract. If it moves, this moves.
+ *
+ * EVERY FREQUENCY IN HERE IS BOUNDED BY THE SAMPLING RATE, and the first version
+ * was not. Its circumferential striation ran 110 cycles across a tread band that
+ * occupies 133 of the map's 512 rows — 2.5 pixels per cycle, right on the
+ * Nyquist limit, so the BASE level of the map was already aliased before a
+ * single mip was generated. Its graining came from a hash indexed by
+ * `Math.floor`, which is block noise: a hard step at every cell boundary, and a
+ * normal map is the DERIVATIVE of its height field, so a hard step is an
+ * impulse. Mipmapping cannot rescue either — averaging aliased content produces
+ * noise, not smoothness.
+ *
+ * The symptom was measured rather than guessed: high-frequency energy on the
+ * tyre went from 5.5 at 1.9 metres to 20.0 at 14 metres. Detail that gets
+ * STRONGER as it gets smaller is aliasing by definition; a correctly band-
+ * limited surface fades as the prefiltered mips take over. That is what "the
+ * wheels look exceptionally grainy" was.
+ *
+ * The rule applied below: nothing finer than about eight pixels per cycle at the
+ * 512-pixel base, which is the point at which trilinear filtering has something
+ * real to average.
  */
 function tyreSurface(size) {
   const BAND_V0 = 0.46;
@@ -199,6 +219,34 @@ function tyreSurface(size) {
     const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
     return s - Math.floor(s);
   };
+  /**
+   * Smoothly interpolated value noise on a lattice.
+   *
+   * The smoothstep is the entire point. Sampling `hash(floor(x), floor(y))`
+   * gives every cell a hard border, and a height field made of hard borders
+   * differentiates into a grid of bright lines — which is most of what the tyre
+   * was covered in. Interpolating with a Hermite ease makes the field C1, so its
+   * gradient is continuous and the graining reads as mottling rather than as
+   * dirt on the lens. It also wraps in x, so the seam around the circumference
+   * stays invisible.
+   */
+  const vnoise = (x, y, periodX) => {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const fx = x - xi, fy = y - yi;
+    const sx = fx * fx * (3 - 2 * fx);
+    const sy = fy * fy * (3 - 2 * fy);
+    const wrap = (a) => ((a % periodX) + periodX) % periodX;
+    const a = hash(wrap(xi), yi), b = hash(wrap(xi + 1), yi);
+    const c = hash(wrap(xi), yi + 1), d = hash(wrap(xi + 1), yi + 1);
+    return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+  };
+  // Cycles of circumferential striation per unit t. The tread spans 0.48 of t,
+  // which is 133 rows of the map, so 36 gives 17 cycles over 133 rows — just
+  // under eight pixels each. It was 110.
+  const STRIATION = 36;
+  // Radial ribs around the sidewall. 48 over 512 columns is 10.7 pixels each; it
+  // was 96, which is 5.3 and visibly crawled.
+  const RIBS = 48;
   for (let y = 0; y < size; y++) {
     // Canvas y runs down; atlas v runs up.
     const v = 1 - y / (size - 1);
@@ -210,20 +258,22 @@ function tyreSurface(size) {
       const u = x / size;
       let z = 0;
       if (fromCrown < 0.48) {
-        // Tread: fine circumferential striation. The lines run around the tyre,
-        // so they vary with t and hardly at all with u.
-        z += Math.sin(t * Math.PI * 2 * 110) * 0.30;
+        // Tread: circumferential striation. The lines run around the tyre, so
+        // they vary with t and hardly at all with u.
+        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.22;
         // Graining, in broad patches across the contact patch.
-        const gx = Math.floor(u * 26), gy = Math.floor(t * 30);
-        const g = hash(gx, gy) * hash(gy * 3 + 1, gx * 7 + 2);
-        z += (g - 0.5) * 0.55 * (1 - fromCrown / 0.48);
+        const g = vnoise(u * 22, t * 24, 22);
+        z += (g - 0.5) * 0.40 * (1 - fromCrown / 0.48);
       } else if (fromCrown < 0.62) {
         // Shoulder: still striated, fading out over the turn.
-        z += Math.sin(t * Math.PI * 2 * 110) * 0.30 * (0.62 - fromCrown) / 0.14;
+        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.22 * (0.62 - fromCrown) / 0.14;
       } else {
         // Sidewall: shallow radial ribs, and a moulded step at the bead.
-        z += Math.sin(u * Math.PI * 2 * 96) * 0.22;
-        if (fromCrown > 0.92) z += 0.9;
+        z += Math.sin(u * Math.PI * 2 * RIBS) * 0.16;
+        // Eased, not stepped. A bare `if` here put a one-pixel cliff right round
+        // the tyre and the normal map turned it into a hard bright ring.
+        const b = Math.min(1, Math.max(0, (fromCrown - 0.86) / 0.10));
+        z += b * b * (3 - 2 * b) * 0.7;
       }
       h[y * size + x] = z;
     }

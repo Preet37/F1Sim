@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp } from '../core/MathUtils';
-import { buildCar, disposeCarGeometryCache, BODY_PART_IDS, type BodyPartId, type CarVisual } from './CarMesh';
+import {
+  buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
+  type BodyPartId, type CarVisual,
+} from './CarMesh';
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
@@ -1157,9 +1160,26 @@ export class Renderer {
       // the new set is on.
       v.setCompound(car.compound);
 
-      // DRS flap: open is roughly 50 degrees.
+      // ACTIVE AERO, both ends, off one signal.
+      //
+      // When the system opens, the rear flap rotates up and forward to open a
+      // large slot above the main plane and the two upper front-wing elements
+      // rotate flat — X-mode against the Z-mode the wing is built in. Both shed
+      // drag, which is what `drsDragReduction` in the vehicle spec is already
+      // doing to the physics, and both cost downforce, which is
+      // `drsDownforceLoss`. Driving the two ends from `p.drsOpen` — the same
+      // flag the physics integrates and the same one the HUD's badge reads — is
+      // what guarantees the geometry, the handling and the indicator can never
+      // disagree about which state the car is in.
+      //
+      // DAMPED, not snapped. A real flap takes a couple of tenths to travel, and
+      // a wing that teleports between two positions reads as a rendering glitch
+      // rather than as a mechanism. The front pair move a little slower than the
+      // rear flap because they are the heavier assembly.
       const flapTarget = p.drsOpen ? -0.85 : 0;
       v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, 14, dt);
+      const frontTarget = p.drsOpen ? FRONT_X_MODE_RAD : 0;
+      v.frontFlaps.rotation.x = damp(v.frontFlaps.rotation.x, frontTarget, 10, dt);
 
       // Brake glow from braking effort. Cheap and reads brilliantly at night.
       //

@@ -478,6 +478,16 @@ export function wingElement(
    * swept about a spar actually does and what keeps the root region straight.
    */
   sweep = 0,
+  /**
+   * Interior span stations, overriding the default.
+   *
+   * A straight element is ruled between its two ends, so two stations describe
+   * it exactly, and a swept one needs six to draw its plan curve. An element
+   * that is about to be bent SPANWISE by `riseSpanwise` needs enough stations to
+   * draw THAT curve, and the bend happens after this function has returned — so
+   * the caller has to ask for them here or the shallow W comes out as a chevron.
+   */
+  interior = 0,
 ): THREE.BufferGeometry {
   // Closed aerofoil outline, upper surface forward then lower surface back, with
   // the leading and trailing edge points shared so the ring has no duplicates.
@@ -524,7 +534,7 @@ export function wingElement(
   // curve through two points is a straight line. Six stations is enough that a
   // 200mm sweep across a 1.9m span shows as a smooth arc rather than as a
   // shallow chevron.
-  const INTERIOR = sweep !== 0 ? 6 : 2;
+  const INTERIOR = Math.max(interior, sweep !== 0 ? 6 : 2);
   for (let i = 0; i < INTERIOR; i++) {
     const f = i / (INTERIOR - 1);
     stations.push({ z: -half + tuck + f * (span - 2 * tuck), scale: 1 });
@@ -592,6 +602,47 @@ export function wingElement(
   // Same bounding box as the extruded version had, so every caller's translate
   // still lands the element where it did before.
   geo.center();
+  return geo;
+}
+
+/**
+ * Bends a wing element spanwise: displaces every vertex in Y by a function of
+ * how far out along the span it sits.
+ *
+ * THE SHALLOW W. A current front wing is not a flat bar and it is not a simple
+ * arch either. Head-on it falls away either side of the nose to a low point
+ * somewhere around the middle of each semi-span, then climbs steadily out to the
+ * endplate, which is the highest point on the assembly. Both halves together
+ * draw a shallow W, and that W is one of the two or three silhouettes that dates
+ * a front wing to this generation — it is what the FIA's front-wing box forces
+ * and it is in every head-on photograph. Built flat, four elements at four
+ * heights fuse into one dark slab with a straight top edge, which is exactly
+ * what the screenshots showed.
+ *
+ * Applied AFTER the caller has set the element's incidence, not before. Rotating
+ * a bent element about X shears the bend into Z as well as Y, by an amount that
+ * differs per element because each sits at a different angle — so the four
+ * elements' W's come out at four different depths and the assembly splays. Doing
+ * it in this order keeps one shared curve across the whole stack.
+ *
+ * @param halfSpan half the element's span; the argument to `f` is |x| / halfSpan
+ *                 clamped to 1, so 0 is the root and 1 the tip
+ */
+export function riseSpanwise(
+  geo: THREE.BufferGeometry,
+  halfSpan: number,
+  f: (a: number) => number,
+): THREE.BufferGeometry {
+  const pos = geo.attributes.position as THREE.BufferAttribute | undefined;
+  if (!pos || halfSpan <= 1e-6) return geo;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setY(i, pos.getY(i) + f(Math.min(1, Math.abs(pos.getX(i)) / halfSpan)));
+  }
+  pos.needsUpdate = true;
+  // The surface has genuinely changed shape, so the normals it was given when it
+  // was straight are wrong — and on a part this dark the shading IS the shape.
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
   return geo;
 }
 
