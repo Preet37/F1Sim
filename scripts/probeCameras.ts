@@ -111,7 +111,7 @@ for (const def of CIRCUITS) {
       // over tenths of a second, and cheap — but not so coarse that a clip
       // lasting half a second falls between two samples, which at 6Hz it did.
       if (step % 8 !== 0) continue;
-      dir.update(1 / 60, car, engine.track);
+      dir.update(1 / 60, car, engine.track, engine.world);
       const p = dir.camera.position;
 
       const roadY = engine.track.elevation[engine.track.indexAt(car.s)];

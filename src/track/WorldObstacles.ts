@@ -873,6 +873,32 @@ export function buildMainStands(track: TrackSpline, keepOut: KeepOutField): Scen
 export type ObstacleKind = 'building' | 'grandstand' | 'barrier' | 'pitwall';
 
 /**
+ * How tall each kind of obstacle stands, metres.
+ *
+ * The obstacle model is plan-only, because a car has no meaningful height — a
+ * car that reaches a building's footprint has hit the building, full stop. A
+ * CAMERA does have a height, and the difference matters: a lens 4.6m up that is
+ * inside a barrier's footprint is over the top of the armco and can see
+ * perfectly well, while the same lens inside a building's footprint is inside
+ * the building. Anything that reasons about a point off the ground needs these;
+ * anything that reasons about a car does not.
+ *
+ * The figures are what the renderer draws. `scripts/probeCameras.ts` keeps its
+ * own copy on purpose — it is the statement of what the world looks like that
+ * the runtime is being checked against, and a probe that imports its subject's
+ * constants cannot catch them being wrong.
+ */
+export const OBSTACLE_HEIGHT_M: Record<ObstacleKind, number> = {
+  building: 40,
+  grandstand: 14,
+  barrier: 1.5,
+  // Over-states the 1.05m wall itself, deliberately: erring high here can only
+  // ever move a camera out of something it might have been inside, which is
+  // the safe direction, and it matches the figure the probe judges against.
+  pitwall: 1.4,
+};
+
+/**
  * Thickness of the trackside barrier as a collision box.
  *
  * Only a collision shape, not the drawn wall: it exists so a car cannot pass
