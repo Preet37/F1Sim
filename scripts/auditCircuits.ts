@@ -1,5 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -87,6 +87,13 @@ interface Shot {
   file: string;
 }
 
+/** One circuit's entry in the sweep report. */
+interface CircuitReport {
+  info: CircuitInfo;
+  shots: Shot[];
+  errors: string[];
+}
+
 async function writePng(path: string, dataUrl: string): Promise<void> {
   const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
   await writeFile(path, Buffer.from(b64, 'base64'));
@@ -153,7 +160,7 @@ async function main(): Promise<void> {
 
   const modes: string[] = await page.evaluate('window.__audit.cameraModes.slice()') as string[];
 
-  const report: { info: CircuitInfo; shots: Shot[]; errors: string[] }[] = [];
+  const report: CircuitReport[] = [];
 
   for (const id of CIRCUIT_IDS) {
     const before = errors.length;
@@ -220,12 +227,11 @@ async function main(): Promise<void> {
     );
   }
 
-  await writeFile(resolve(OUT_DIR, 'index.html'), indexPage(report), 'utf8');
-  await writeFile(
-    resolve(OUT_DIR, 'report.json'),
-    JSON.stringify(report, null, 2),
-    'utf8',
-  );
+  // Merged with whatever a previous sweep left, so a one-circuit run updates
+  // the grid instead of replacing it with a grid of one.
+  const merged = mergeReport(report);
+  await writeFile(resolve(OUT_DIR, 'index.html'), indexPage(merged), 'utf8');
+  await writeFile(resolve(OUT_DIR, 'report.json'), JSON.stringify(merged, null, 2), 'utf8');
 
   await browser.close();
   await server.close();
@@ -239,8 +245,27 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * Folds this run's circuits into the last run's report, in calendar order.
+ *
+ * Anything swept now wins; anything not swept is carried through untouched, so
+ * the index keeps showing the circuits whose PNGs are still on disk.
+ */
+function mergeReport(fresh: CircuitReport[]): CircuitReport[] {
+  let prior: CircuitReport[] = [];
+  try {
+    prior = JSON.parse(readFileSync(resolve(OUT_DIR, 'report.json'), 'utf8')) as CircuitReport[];
+  } catch {
+    // No previous sweep, or an unreadable one. Either way, this run is the report.
+  }
+  const byId = new Map<string, CircuitReport>();
+  for (const r of prior) byId.set(r.info.id, r);
+  for (const r of fresh) byId.set(r.info.id, r);
+  return ALL_CIRCUITS.map((id) => byId.get(id)).filter((r): r is CircuitReport => !!r);
+}
+
 function indexPage(
-  report: { info: CircuitInfo; shots: Shot[]; errors: string[] }[],
+  report: CircuitReport[],
 ): string {
   const esc = (s: string): string =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
