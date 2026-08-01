@@ -692,6 +692,19 @@ export function tube(
    * itself if it took a profile.
    */
   taper?: (t: number) => number,
+  /**
+   * Squashes the section vertically, turning the round tube into a flattened
+   * teardrop lying on its side.
+   *
+   * A halo is not a pipe. Photographs of the real part show a section that is
+   * appreciably wider than it is tall — an aerofoil laid flat, because the hoop
+   * spends its life in the airflow feeding the airbox and every millimetre of
+   * frontal height is drag and blocked sightline. Built round, it has to carry
+   * its structural depth in BOTH axes, so it stands off the car like a roll bar
+   * and reads, in the user's words, as "outwards" rather than as part of the
+   * chassis.
+   */
+  flattenY?: number,
 ): THREE.BufferGeometry {
   const curve = new THREE.CatmullRomCurve3(
     points.map(([x, y, z]) => new THREE.Vector3(x, y, z)),
@@ -700,7 +713,8 @@ export function tube(
     0.5,
   );
   const geo = new THREE.TubeGeometry(curve, tubularSegments, radius, radialSegments, false);
-  if (!taper) return geo;
+  if (!taper && flattenY === undefined) return geo;
+  const flat = flattenY ?? 1;
 
   // TubeGeometry lays out (tubularSegments + 1) rings of (radialSegments + 1)
   // vertices, ring i generated about curve.getPointAt(i / tubularSegments).
@@ -709,14 +723,14 @@ export function tube(
   const centre = new THREE.Vector3();
   for (let i = 0; i <= tubularSegments; i++) {
     const t = i / tubularSegments;
-    const k = taper(t);
+    const k = taper ? taper(t) : 1;
     curve.getPointAt(t, centre);
     for (let j = 0; j < ring; j++) {
       const v = i * ring + j;
       pos.setXYZ(
         v,
         centre.x + (pos.getX(v) - centre.x) * k,
-        centre.y + (pos.getY(v) - centre.y) * k,
+        centre.y + (pos.getY(v) - centre.y) * k * flat,
         centre.z + (pos.getZ(v) - centre.z) * k,
       );
     }

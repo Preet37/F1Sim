@@ -891,42 +891,56 @@ function buildShellParts(
   // the frame" — a bar because the rails were near-level with the eye, and
   // enormous because at that range nothing round is ever small.
   //
-  // Two corrections, both of which move toward the real article rather than
-  // away from it:
+  // That fix was aimed at the wrong problem, and the photographs say so.
   //
-  //  - the crown goes UP, to 0.882, which is where a real halo sits relative
-  //    to the roll hoop, and the rails go OUTBOARD to 0.398. Together those
-  //    lift the visible arc from six degrees above the sightline to sixteen,
-  //    which is the difference between a bar through the middle of the picture
-  //    and a line hugging the top edge of it;
-  //  - the section TAPERS, thick at the two rear mounts where the structure's
-  //    whole load goes into the survival cell and slim over the crown. That is
-  //    how the part is actually made, and the crown is precisely the stretch
-  //    that crosses the driver's view.
+  // Raising the crown to 0.882 and pushing the rails out to 0.398 did get the
+  // arc off the sightline, but it did it by standing the hoop off the car — and
+  // that is precisely what the user objected to next: "notice how it's thicker
+  // slightly but also fits into the car and is not outwards". Against the
+  // reference photographs of the real part, three things were wrong:
+  //
+  //  - SECTION. A real halo is a flattened aerofoil lying on its side,
+  //    appreciably wider than it is tall. Built as a round tube it has to carry
+  //    its structural depth in both axes, so it is a pipe standing off the
+  //    bodywork instead of a blade let into it.
+  //  - LINE. The rails follow the cockpit coaming closely, rising gently from
+  //    mounts on the TUB SIDES at about shoulder height. Ours climbed to 0.818
+  //    at mid-length — 240mm clear of a coaming at 0.578 — and bowed outboard
+  //    past the widest part of the tub, which is the shape of a roll bar bolted
+  //    over a car rather than of a survival cell's own structure.
+  //  - CROWN HEIGHT. Level with the top of the helmet, not 54mm above it.
+  //
+  // The rails now run from the tub sides at 0.612, hug the coaming through the
+  // middle, and crown at 0.812 — a touch below the helmet's 0.828 — and the
+  // section is squashed to 0.58 of its height, so the 42mm at the mounts is
+  // 42 wide by 24 tall and the crown is 26 by 15.
   {
     p.flat(tube([
-      [-0.330, 0.648, -0.30],
-      [-0.392, 0.726, -0.05],
-      [-0.398, 0.818, 0.30],
-      [-0.252, 0.868, 0.62],
-      [0.000, 0.882, 0.735],
-      [0.252, 0.868, 0.62],
-      [0.398, 0.818, 0.30],
-      [0.392, 0.726, -0.05],
-      [0.330, 0.648, -0.30],
+      [-0.345, 0.612, -0.30],
+      [-0.375, 0.660, -0.05],
+      [-0.370, 0.712, 0.30],
+      [-0.250, 0.780, 0.62],
+      [0.000, 0.812, 0.755],
+      [0.250, 0.780, 0.62],
+      [0.370, 0.712, 0.30],
+      [0.375, 0.660, -0.05],
+      [0.345, 0.612, -0.30],
     ], 0.021, t.halo, t.haloRadial,
     // 1.0 at both mounts, 0.62 over the crown: 42mm down to 26mm.
-    (u) => 0.62 + 0.38 * Math.abs(u * 2 - 1)), 'trim');
+    (u) => 0.62 + 0.38 * Math.abs(u * 2 - 1),
+    // Wider than tall, which is the whole difference between a blade and a pipe.
+    0.58), 'trim');
 
     // The forward strut: the only part of the halo a driver looks straight down.
     //
-    // It was a 52mm round bar 0.65m from the eye, which is four and a half
-    // degrees of solid black up the centre of the frame — the "fat central
-    // pillar splitting the view in two". A real one is a blade about 20mm
-    // across and three times that front to back, shaped exactly so that the
-    // driver sees the edge and not the face. Built round it cannot be both
-    // strong and thin; built as the blade it really is, it is both.
-    p.flat(strut(0, 0.512, 0.782, 0, 0.876, 0.742, 0.030, t.haloRadial, false, 0.34), 'trim');
+    // "That slit down the middle is exceptionally thin so that it is easy for
+    // the drivers to see." It is, and it is the fourth time this has been
+    // raised. A 20mm blade was already the real article's width and still read
+    // as a bar, so this goes narrower than the real part rather than wider:
+    // 12mm across and 46mm front to back, which at the 0.7m it passes an eye is
+    // one degree. Everything structural about the section is in the depth,
+    // where nobody is looking down it.
+    p.flat(strut(0, 0.520, 0.778, 0, 0.806, 0.752, 0.023, t.haloRadial, false, 0.26), 'trim');
   }
 
   // --- Sidepod winglet and cooling louvres ---------------------------------
