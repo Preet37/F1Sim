@@ -137,8 +137,26 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     // keeps its strength and the bump below is cut to a third of it and faded
     // on its own footprint.
     aggregate: 0.45, aggregateScale: 3.0,
-    seams: 0.55, seamScale: 0.045,
-    patches: 0.85, patchScale: 0.02,
+    // Seams and patches, both turned right down from 0.55 and 0.85.
+    //
+    // At those strengths the zero-set of the seam field read as a network of
+    // dark branching veins over the whole circuit — the road looked like
+    // cracked dry mud, and the patch field piled broad dark blotches on top.
+    // The user reported this repeatedly as the track being "grainy" and as
+    // "black shit on the track".
+    //
+    // Three separate sessions hunted it and missed, because every one of them
+    // measured TEMPORAL variance — render, jitter the camera by a fraction of a
+    // pixel, difference the frames. That finds shimmer and aliasing, and it
+    // correctly found the catch fence. But a crack is a STATIC feature: it sits
+    // still, it differences to nothing, and it is invisible to that method
+    // however ugly it looks. The lesson is that "grainy" needed someone to LOOK
+    // at a still frame, not to measure one.
+    //
+    // Real asphalt does have joints and repairs, so these are not zero — just
+    // faint enough to read as surface history rather than as damage.
+    seams: 0.10, seamScale: 0.045,
+    patches: 0.18, patchScale: 0.02,
     rubber: 1,
   },
   /**
