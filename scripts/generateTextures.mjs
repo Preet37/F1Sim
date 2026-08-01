@@ -243,6 +243,13 @@ function tyreSurface(size) {
   // Cycles of circumferential striation per unit t. The tread spans 0.48 of t,
   // which is 133 rows of the map, so 36 gives 17 cycles over 133 rows — just
   // under eight pixels each. It was 110.
+  //
+  // AMPLITUDE MATTERS AS MUCH AS FREQUENCY. Band-limiting the striation stopped
+  // it crawling, but at the old amplitude a resolvable line is a VISIBLE line,
+  // and the tread came out ribbed like a tractor tyre. A slick's tread is
+  // essentially smooth; what the striation is for is to stop the highlight
+  // sitting dead still as the wheel turns, and that needs far less relief than
+  // it needs to be seen. The graining below carries the character now.
   const STRIATION = 36;
   // Radial ribs around the sidewall. 48 over 512 columns is 10.7 pixels each; it
   // was 96, which is 5.3 and visibly crawled.
@@ -260,13 +267,13 @@ function tyreSurface(size) {
       if (fromCrown < 0.48) {
         // Tread: circumferential striation. The lines run around the tyre, so
         // they vary with t and hardly at all with u.
-        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.22;
+        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.11;
         // Graining, in broad patches across the contact patch.
         const g = vnoise(u * 22, t * 24, 22);
         z += (g - 0.5) * 0.40 * (1 - fromCrown / 0.48);
       } else if (fromCrown < 0.62) {
         // Shoulder: still striated, fading out over the turn.
-        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.22 * (0.62 - fromCrown) / 0.14;
+        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.11 * (0.62 - fromCrown) / 0.14;
       } else {
         // Sidewall: shallow radial ribs, and a moulded step at the bead.
         z += Math.sin(u * Math.PI * 2 * RIBS) * 0.16;

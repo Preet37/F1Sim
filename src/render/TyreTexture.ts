@@ -80,7 +80,7 @@ const SWATCHES: WheelSwatch[] = [
  */
 const SWATCH_LOOK: Record<WheelSwatch, { colour: string; rough: number; metal: number }> = {
   // The wheel face on a current car is a moulded composite cover, not chrome.
-  rimFace: { colour: '#2b2e33', rough: 0.56, metal: 0.10 },
+  rimFace: { colour: '#232529', rough: 0.62, metal: 0.10 },
   rimSpoke: { colour: '#3c4149', rough: 0.44, metal: 0.25 },
   // The machined ring between the cover and the bead. Still the brightest thing
   // on the corner, but a brushed one rather than a mirror.

@@ -39,6 +39,15 @@ the tread, the shoulder turn, and radial ribs on the sidewall. Again no
 lettering and no marks — the sidewall text is painted per-compound at runtime,
 in a fictional tyre-maker's name.
 
+Regenerated with every feature band-limited to roughly eight pixels per cycle at
+the 512-pixel base, and with the graining changed from a `floor`-indexed hash to
+smoothly interpolated value noise. The previous version ran its tread striation
+at 2.5 pixels per cycle and stepped its graining at every noise cell, so the base
+level of the map was aliased before any mip was built; measured high-frequency
+energy on the tyre rose from 5.5 at 1.9 m to 20.0 at 14 m, which is aliasing by
+definition. It is 5.9 to 13.4 now. Provenance is unchanged — still every pixel
+computed by `tyreSurface()` in this repository.
+
 ## Licensing boundary
 
 This project uses fictional teams, fictional drivers and a fictional tyre
