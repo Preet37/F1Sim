@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { apertureEdge, loft, section, setFlatUV, strut, type OpenTop } from './Loft';
 import { swatchUV, type SwatchName } from './Livery';
-import { GRIP_X, WHEEL_TILT, WHEEL_Y, WHEEL_Z } from './CockpitMesh';
+import {
+  buildHandParts, mirroredX, GRIP_X, HAND_X, HAND_Y,
+  WHEEL_TILT, WHEEL_Y, WHEEL_Z,
+} from './CockpitMesh';
 
 /**
  * The driver, and the cockpit he sits in.
@@ -227,12 +230,30 @@ function wheelAndGloves(d: DriverTier): THREE.BufferGeometry[] {
     grip.translate(side * GRIP_X, WHEEL_Y - 0.005, WHEEL_Z + 0.004);
     parts.push(tag(grip, 'trim'));
 
-    const glove = scaled(
-      new THREE.SphereGeometry(0.050, d.limb, Math.round(d.limb * 0.7)),
-      1, 1.1, 1.25,
-    );
-    glove.translate(side * GRIP_X, WHEEL_Y - 0.008, WHEEL_Z - 0.035);
-    parts.push(tag(glove, 'glove'));
+    // THE SAME HANDS THE COCKPIT VIEW USES, at a tenth of the tessellation.
+    //
+    // These were two squashed spheres, and that was defensible for exactly as
+    // long as the deck was closed: nothing outside the car could see them.
+    // Cutting the cockpit open changed who is looking. The chase camera now
+    // sees straight down into the tub on all twenty cars, so a pair of balls on
+    // the rim is the "hand like a lego piece" complaint reproduced nineteen
+    // more times — and it is very probably where the complaint came from, since
+    // the onboard camera sits on the roll hoop and never sees the wheel at all.
+    //
+    // Same geometry, same place, built from the same function: the swap between
+    // this pair and the onboard pair is a change of tessellation and nothing
+    // else, so the hands do not jump when the camera changes.
+    for (const part of buildHandParts({
+      ring: Math.max(8, d.limb), along: Math.max(5, d.limb - 6), radial: Math.max(6, d.limb - 6),
+    })) {
+      const g = side > 0 ? part.geo.clone() : mirroredX(part.geo);
+      // Wheel-local -> car-local, in the order the cockpit's own scene graph
+      // applies it: hand offset, then the wheel's rake, then its centre.
+      g.translate(side * HAND_X, HAND_Y, 0);
+      g.rotateX(WHEEL_TILT);
+      g.translate(0, WHEEL_Y, WHEEL_Z);
+      parts.push(tag(g, part.accent ? 'accent' : 'glove'));
+    }
   }
   return parts;
 }

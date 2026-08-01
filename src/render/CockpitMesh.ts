@@ -266,22 +266,20 @@ const SEG = {
   loftRing: 24,
   /** Ring spacing along a lofted bolster, metres. */
   loftStep: 0.04,
-  /** Rings around the hand's own loft. */
-  handRing: 26,
-  /**
-   * Segments along a finger's sweep, and around its section.
-   *
-   * The largest numbers here, and deliberately so. A finger is 10mm across and
-   * 500mm from the eye — about the same angular size as a wing endplate at two
-   * metres, which gets fourteen — and it is curved along its whole length, so
-   * the count along the sweep matters as much as the count around it. At twelve
-   * radial the section is a visible dodecagon in a specular highlight; at
-   * twenty it is round. Ten fingers and two thumbs on ONE car in the field is
-   * about twelve thousand triangles, which is a third of a single tyre's.
-   */
-  fingerAlong: 20,
-  fingerRadial: 20,
 };
+
+/**
+ * The onboard hand: the largest numbers in the project, deliberately.
+ *
+ * A finger is 10mm across and 500mm from the eye — about the same angular size
+ * as a wing endplate at two metres, which gets fourteen — and it is curved
+ * along its whole length, so the count ALONG the sweep matters as much as the
+ * count around it. At twelve radial the section is a visible dodecagon in a
+ * specular highlight; at twenty it is round. Two hands at this detail is about
+ * five thousand triangles on the ONE car in the field that has a cockpit,
+ * which is a fraction of a single tyre's.
+ */
+const COCKPIT_HAND: HandDetail = { ring: 26, along: 20, radial: 20 };
 
 /** A capsule-ish strut between two car-local points. */
 function strut(
@@ -373,6 +371,33 @@ function roundedRect(
 const GRIP_R = 0.022;
 
 /**
+ * Where a hand sits relative to the wheel's centre, in wheel-local space.
+ *
+ * Exported so DriverMesh can put the same hands in the same place: the detailed
+ * pair and the shared pair are the SAME geometry at two tessellations, and if
+ * the two disagreed by a centimetre the swap between them would be visible
+ * every time the camera changed.
+ */
+export const HAND_X = GRIP_X;
+export const HAND_Y = -0.005;
+
+/** How finely to build a hand. See `SEG` for why the cockpit's are so high. */
+export interface HandDetail {
+  /** Rings around the hand's own loft, and around a wrist or cuff. */
+  ring: number;
+  /** Segments along a finger's sweep. */
+  along: number;
+  /** Segments around a finger's section. */
+  radial: number;
+}
+
+/** One piece of a hand, and whether it wants the cuff's accent colour. */
+export interface HandPart {
+  geo: THREE.BufferGeometry;
+  accent: boolean;
+}
+
+/**
  * Bands of the glove map. Contract with `gloveNomex` in
  * scripts/generateTextures.mjs — if one moves, both move.
  */
@@ -425,7 +450,7 @@ function setTubeUV(
  * hand renders inside out. Swapping two indices of every triangle is the whole
  * fix and it is easy to forget, which is why it is here rather than inline.
  */
-function mirroredX(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+export function mirroredX(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   const g = geo.clone();
   g.scale(-1, 1, 1);
   const idx = g.index;
@@ -457,7 +482,7 @@ function mirroredX(geo: THREE.BufferGeometry): THREE.BufferGeometry {
  *               hand's do rather than staying in four parallel planes
  */
 function finger(
-  y0: number, a0: number, length: number, r0: number, drift: number,
+  y0: number, a0: number, length: number, r0: number, drift: number, d: HandDetail,
 ): THREE.BufferGeometry {
   // A swept tube is open at both ends. The tip is closed by the radius profile
   // below; the BASE is closed by burying it — the sweep starts a quarter radian
@@ -476,7 +501,7 @@ function finger(
   // Centreline radius: the grip plus the finger's own thickness, so the finger
   // rests ON the rim instead of inside it. It creeps outward toward the tip
   // because the tip does not close all the way onto the rim.
-  const N = 12;
+  const N = d.along;
   const pts: [number, number, number][] = [];
   for (let i = 0; i <= N; i++) {
     const t = i / N, u = out(t);
@@ -497,10 +522,7 @@ function finger(
     const close = u > 0.92 ? Math.sqrt(Math.max(0, 1 - ((u - 0.92) / 0.08) ** 2)) : 1;
     return (shape + joints) * close;
   };
-  return setTubeUV(
-    tube(pts, r0, SEG.fingerAlong, SEG.fingerRadial, taper),
-    GLOVE_PANEL.field, 2,
-  );
+  return setTubeUV(tube(pts, r0, d.along, d.radial, taper), GLOVE_PANEL.field, 2);
 }
 
 /**
@@ -510,8 +532,8 @@ function finger(
  * Returns geometry tagged with which material it wants, because the cuff is the
  * team's accent and the rest is glove.
  */
-function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
-  const out: { geo: THREE.BufferGeometry; accent: boolean }[] = [];
+export function buildHandParts(d: HandDetail): HandPart[] {
+  const out: HandPart[] = [];
 
   // --- The hand itself ----------------------------------------------------
   // A flattened slab wrapping the outboard-and-near quadrant of the grip, so
@@ -530,7 +552,7 @@ function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
       section(-0.040, 0.0158, -0.046, 0.034, 0.55, { xc: 0.0315 }),
       section(-0.058, 0.0142, -0.050, 0.022, 0.70, { xc: 0.0340 }),
       section(-0.070, 0.0120, -0.048, 0.010, 0.85, { xc: 0.0350 }),
-    ], SEG.handRing, true, 0.008), 0, GLOVE_PANEL.palm[0], 1, GLOVE_PANEL.palm[1]),
+    ], d.ring, true, 0.008), 0, GLOVE_PANEL.palm[0], 1, GLOVE_PANEL.palm[1]),
     accent: false,
   });
 
@@ -547,7 +569,7 @@ function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
     [-0.0290, 2.32, 0.062, 0.0088, 0.0058],
   ];
   for (const [y0, a0, len, r0, drift] of FINGERS) {
-    out.push({ geo: finger(y0, a0, len, r0, drift), accent: false });
+    out.push({ geo: finger(y0, a0, len, r0, drift, d), accent: false });
   }
 
   // --- Thumb --------------------------------------------------------------
@@ -572,7 +594,7 @@ function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
     };
     out.push({
       geo: setTubeUV(
-        tube(pts, 0.0128, SEG.fingerAlong, SEG.fingerRadial, taper),
+        tube(pts, 0.0128, d.along, d.radial, taper),
         GLOVE_PANEL.field, 2,
       ),
       accent: false,
@@ -593,7 +615,7 @@ function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
     ];
     out.push({
       geo: setTubeUV(
-        tube(pts, 0.0270, 8, SEG.round, (t) => 1 - 0.06 * t),
+        tube(pts, 0.0270, 4, d.ring, (t) => 1 - 0.06 * t),
         GLOVE_PANEL.field, 1,
       ),
       accent: false,
@@ -606,7 +628,7 @@ function handParts(): { geo: THREE.BufferGeometry; accent: boolean }[] {
           [0.0385, -0.0420, -0.0850],
           [0.0410, -0.0475, -0.0970],
           [0.0432, -0.0530, -0.1090],
-        ], 0.0300, 8, SEG.round, (t) => 1 + 0.05 * Math.sin(t * Math.PI)),
+        ], 0.0300, 4, d.ring, (t) => 1 + 0.05 * Math.sin(t * Math.PI)),
         GLOVE_PANEL.cuff, 1,
       ),
       accent: true,
@@ -979,10 +1001,10 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   //
   // Built once for the right and MIRRORED for the left. See `handParts`.
   {
-    const right = handParts();
+    const right = buildHandParts(COCKPIT_HAND);
     for (const side of [-1, 1] as const) {
       const hand = new THREE.Group();
-      hand.position.set(side * GRIP_X, -0.005, 0);
+      hand.position.set(side * HAND_X, HAND_Y, 0);
       wheelSpin.add(hand);
       for (const part of right) {
         add(side > 0 ? part.geo : mirroredX(part.geo), part.accent ? cuffAccent : glove, hand);
