@@ -661,15 +661,34 @@ function buildSurfaceMap(size: number): THREE.Texture {
   ctx.fillRect(0, 0, size, size);
 
   // Painted panels are genuinely wet-looking. A clear-coated race car is one of
-  // the glossiest large objects most people ever see, and the previous 0.28 was
-  // closer to a satin household appliance. Dropping it to 0.16 is what lets the
-  // probe's horizon draw a hard-edged reflection down a flank instead of a
-  // soft grey smear.
-  const PAINT = set(0.16, 0.28);
-  // Bare laminate is matte, unclear-coated, and NOT metallic. Getting the
-  // metalness wrong here is why carbon so often comes out looking like
-  // gunmetal: it is a resin surface with black cloth under it.
-  const CARBON = set(0.62, 0.05);
+  // the glossiest large objects most people ever see, and 0.28 was closer to a
+  // satin household appliance: dropping it is what lets the probe's horizon
+  // draw a hard-edged reflection down a flank instead of a soft grey smear.
+  //
+  // 0.21 rather than the 0.16 it went to, though. At 0.16 the sun's specular
+  // lobe on the sidepod's long, gently curved flank came out narrow enough to
+  // exceed the bloom threshold along its whole length, so a close pass showed a
+  // white bar a metre long lying across the car with the livery unreadable
+  // underneath it. The reference car has a hard, thin highlight, not a blown
+  // one, and a few points of roughness is the difference.
+  const PAINT = set(0.21, 0.26);
+  // Structural carbon on a race car is CLEAR-COATED, and that is most of the
+  // difference between the wings on the reference car and the wings that were
+  // here. 0.62 is bare laminate straight out of the autoclave: matte, dusty,
+  // the finish on an underbody panel nobody photographs. What is actually on a
+  // front wing, a floor edge or an endplate is lacquer over the weave, and it
+  // is very nearly as wet-looking as the paint beside it. At 0.62 every one of
+  // those parts came out as a flat dark-grey shape with no highlight along any
+  // edge — which is precisely how a plastic model of a car looks, and the
+  // front wing is now entirely made of them.
+  //
+  // 0.38 rather than 0.30. Lacquered carbon is glossy, but the floor edge and
+  // the sidepod's undercut are long, gently curved, near-horizontal surfaces —
+  // exactly the geometry that turns a tight specular lobe into a metre-long
+  // streak — and at 0.30 they came out as a blown white bar under the car in
+  // every three-quarter shot. Still a world away from the 0.62 that made them
+  // read as grey plastic.
+  const CARBON = set(0.38, 0.06);
 
   const body = new Panel(ctx, PANEL.body, size);
   body.fill(PAINT);
@@ -694,8 +713,8 @@ function buildSurfaceMap(size: number): THREE.Texture {
   const surfaceFor: Record<SwatchName, [number, number]> = {
     body: [0.16, 0.28],
     accent: [0.15, 0.26],
-    // Bare laminate: matte resin over black cloth, not gunmetal.
-    carbon: [0.62, 0.05],
+    // Clear-coated laminate. See the CARBON constant above.
+    carbon: [0.38, 0.06],
     // Suspension and the halo are anodised or painted metal — genuinely
     // metallic, and glossy enough to hold the rim light along their length.
     trim: [0.34, 0.72],

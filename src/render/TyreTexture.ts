@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TIRE_COMPOUNDS, type CompoundId } from '../data/tires';
+import { tyreSurfaceMap } from './DetailMaps';
 
 /**
  * Tyres.
@@ -158,11 +159,17 @@ export function tyreProfile(
   width: number, tyreR: number, rimR: number, crownRings: number,
 ): TyreProfilePoint[] {
   const half = width * 0.5;
-  const rMaxW = tyreR * 0.80;
+  // 0.845, not 0.80. A current slick on an 18-inch rim is a SQUAT object: the
+  // tread crown runs almost flat across the full width and only turns down over
+  // the last part of the shoulder. Carrying the widest point at 80 per cent of
+  // the outside radius put the turn a third of the way down the tyre, which
+  // gave a fat, round, high-sidewall section — the profile of a 13-inch tyre,
+  // and one of the reasons the wheels read as the wrong generation.
+  const rMaxW = tyreR * 0.845;
   const xMaxW = half * 1.012;
   const rBead = rimR + 0.004;
   /** Superellipse exponent. Higher is squarer in the shoulder. */
-  const N = 4.6;
+  const N = 6.2;
   const p = 2 / N;
 
   // Outboard half, crown first: v runs 0.5 at the crown to 1.0 at the bead.
@@ -332,7 +339,10 @@ function paint(compound: CompoundId, size: number): TyreLook {
   // compound still reads if the shell is ever dropped, and means the two can
   // never disagree about what colour a soft is.
   const stripe = '#' + TIRE_COMPOUNDS[compound].colour.toString(16).padStart(6, '0');
-  for (const [a, b] of [[0.150, 0.196], [0.804, 0.850]] as const) {
+  // Directly under the raised band, so the geometry and the paint agree. See
+  // BAND_V_FROM / BAND_V_TO at the bottom of this file for where the numbers
+  // come from and why the old, much wider pair were wrong.
+  for (const [a, b] of [[0.070, 0.092], [0.908, 0.930]] as const) {
     const y = bandY(a, size);
     const h = bandY(b, size) - y;
     c.fillStyle = stripe;
@@ -381,24 +391,21 @@ function paint(compound: CompoundId, size: number): TyreLook {
     c.restore();
   };
 
-  const name = TIRE_COMPOUNDS[compound].name.toUpperCase();
-  // Outer sidewall: maker's name, with the compound in smaller type inboard of
-  // it. Both in a mid grey that sits a couple of stops above the wall.
+  // ONE row, in the COMPOUND COLOUR, in the strip of sidewall between the
+  // raised band (which now ends at BAND_V_TO = 0.930) and the bead at 0.965.
   //
-  // POSITION. Both rows live between BAND_V_TO (0.905) and the bead (0.965) —
-  // the strip of sidewall left clear by the raised compound band that stands on
-  // top of this paint. They used to sit at 0.945 and 0.895, and the second of
-  // those is under the band's footprint, so it was drawn and then hidden. Two
-  // rows of text between the compound ring and the bead is what a real sidewall
-  // carries anyway.
-  drawText(0.947, 'PROTOTIPO', 0.032, '#8b9098', 700);
-  drawText(0.053, 'PROTOTIPO', 0.032, '#8b9098', 700);
-  drawText(0.917, name, 0.020, 'rgba(132,138,146,0.85)', 600);
-  drawText(0.083, name, 0.020, 'rgba(132,138,146,0.85)', 600);
+  // There used to be two rows, both grey, and the inner one sat under the old
+  // band's much wider footprint — drawn, then covered. Printing the remaining
+  // row in the compound colour is what the reference tyre carries, and it is
+  // what stops the now-narrow ring from being the only coloured thing on a very
+  // large black object. The compound's NAME is not repeated here; the raised
+  // band already carries it in type twice the size.
+  drawText(0.950, 'PROTOTIPO', 0.024, stripe, 700);
+  drawText(0.050, 'PROTOTIPO', 0.024, stripe, 700);
 
   // Raised lettering catches light: give the text rows a glossier surface so
   // the letters flare as the wheel turns past a floodlight.
-  for (const t of [0.947, 0.053] as const) {
+  for (const t of [0.950, 0.050] as const) {
     const y = bandY(t, size) - bandH * 0.020;
     s.fillStyle = set(0.34, 0.02);
     s.fillRect(0, y, size, bandH * 0.040);
@@ -456,6 +463,25 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
     metalness: 1,
     envMapIntensity: 1.0,
   });
+  // Moulded relief: circumferential striation across the tread, graining over
+  // the working part of it, radial ribs on the sidewall.
+  //
+  // This is the one place on the car where a normal map is doing something a
+  // colour map genuinely cannot. A tyre is a very large, very dark, almost
+  // perfectly smooth object, so essentially everything the eye gets from it is
+  // in the specular — and painting striation into the albedo of a black object
+  // changes almost nothing, which is why the painted version of these lines
+  // has never read at any distance. Perturbing the normal makes the highlight
+  // itself break into fine circumferential lines that travel as the wheel
+  // turns, and that is what rubber looks like.
+  //
+  // Sampled through uv, not uv1: the wheel already has a real parameterisation
+  // and the map is laid out to match it exactly. Only the high tier gets it.
+  const relief = size > 256 ? tyreSurfaceMap() : null;
+  if (relief) {
+    mat.normalMap = relief;
+    mat.normalScale = new THREE.Vector2(0.55, 0.55);
+  }
   materials.set(key, mat);
   return mat;
 }
@@ -501,13 +527,31 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
  * different physical place on the high and low tiers and the two would not line
  * up across an LOD swap.
  *
- * 0.78 is a quarter of the way up the shoulder turn, far enough round to be seen
- * from behind the car. 0.905 is just past the widest point, which is as far down
- * the sidewall as the band can go without burying the moulded lettering that
- * lives between there and the bead.
+ * THE BAND WAS FOUR TIMES TOO WIDE, and it was the loudest single fault on the
+ * whole car. It ran from 0.78 — a quarter of the way up the SHOULDER — down to
+ * 0.905, so it covered the entire visible turn of the tyre from every angle
+ * that matters. On a yellow medium the result was a wheel that was more yellow
+ * than black: not a racing tyre with a compound marking on it, but a toy wheel
+ * with a coloured tyre, and it dated the car harder than any piece of geometry
+ * on it did.
+ *
+ * On the reference car the marking is a THIN ring painted flat on the sidewall
+ * annulus, at about 79 per cent of the tyre's outside radius — well inboard of
+ * the widest point, with plain black rubber above it all the way over the
+ * shoulder. Measured against `tyreProfile`, the widest point is r = 0.80 R at
+ * v = 0.90 and the bead is 0.647 R at v = 1.0, so 0.893 to 0.936 puts the ring
+ * between 0.80 R and 0.75 R. That is the reference, to within the width of the
+ * line.
+ *
+ * READABILITY SURVIVES THIS. The argument for the wide band was that it had to
+ * be visible from astern, and it still is — both sidewalls carry a ring, and it
+ * is the INBOARD one that the chase and onboard cameras see, edge-on at the
+ * tyre's widest point. What is lost is only the part of the band that was
+ * wrapped over the tread shoulder, which no camera needs and which was doing
+ * all of the damage.
  */
-const BAND_V_FROM = 0.78;
-const BAND_V_TO = 0.905;
+const BAND_V_FROM = 0.908;
+const BAND_V_TO = 0.930;
 /** Rows across the band. Enough to follow the shoulder's curve without faceting. */
 const BAND_ROWS = 6;
 /**
@@ -659,7 +703,7 @@ function bandTexture(id: CompoundId): THREE.CanvasTexture {
   // Knocked back the same amount the painted stripe is, and for the same
   // reason: the compound colours are picked to be legible as HUD swatches, and
   // at full strength on a sidewall they are brighter than any paint on the car.
-  ctx.fillStyle = 'rgba(24,26,30,0.22)';
+  ctx.fillStyle = 'rgba(24,26,30,0.42)';
   ctx.fillRect(0, 0, W, H);
 
   // The compound name, repeated around the tyre the way a real sidewall carries
@@ -713,7 +757,13 @@ export function sidewallMaterial(id: CompoundId): THREE.MeshStandardMaterial {
     map: tex,
     emissive: new THREE.Color(0xffffff),
     emissiveMap: tex,
-    emissiveIntensity: 0.26,
+    // 0.07, not 0.26. A quarter of the texture added back as light was enough
+    // to make the ring self-luminous in daylight: it read as a neon hoop
+    // clipped to the wheel rather than as a marking moulded into rubber, and
+    // the bloom pass picked it up as an emitter. What the night case actually
+    // needs is only enough to stop the hue collapsing to grey under a dim key,
+    // and that is a much smaller number than it sounds.
+    emissiveIntensity: 0.07,
     roughness: 0.62,
     metalness: 0.0,
     envMapIntensity: 1.0,

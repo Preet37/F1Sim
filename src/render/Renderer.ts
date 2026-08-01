@@ -1093,11 +1093,24 @@ export class Renderer {
       // These must be separate objects. Putting spin (X) and steer (Y) on the
       // same Euler means that once a wheel has rotated, the steering axis is no
       // longer vertical, so the front wheels tilt and wobble rather than turning.
-      const spin = (p.speedMs / 0.36) * dt;
-      v.frontLeftSpin.rotation.x -= spin;
-      v.frontRightSpin.rotation.x -= spin;
-      v.rearLeftSpin.rotation.x -= spin;
-      v.rearRightSpin.rotation.x -= spin;
+      // THE SIGN. This was negated, and the whole field drove down the road with
+      // its wheels turning backwards.
+      //
+      // The wheel is built with its axle along the car's +x and the car's nose
+      // along +z, so a point on the FRONT of the tyre sits at (y = 0, z = +r).
+      // A positive rotation about +x takes that point to (y = -r sin, z = r cos)
+      // — down and under, which is a wheel rolling forwards. Subtracting rolled
+      // it the other way.
+      //
+      // One sign is right for all four. The left-hand wheels carry a half turn
+      // about Y, but that lives on the MESH, inside the spin group, so the axis
+      // being spun about is the car's own x on every corner. The tyre is a solid
+      // of revolution either way.
+      const spin = (p.speedMs / v.tyreRadiusM) * dt;
+      v.frontLeftSpin.rotation.x += spin;
+      v.frontRightSpin.rotation.x += spin;
+      v.rearLeftSpin.rotation.x += spin;
+      v.rearRightSpin.rotation.x += spin;
 
       const steer = car.appliedControls.steer * p.spec.maxSteerRad;
       v.frontLeftSteer.rotation.y = -steer;
