@@ -3868,9 +3868,12 @@ table.standings tr.me td.who { font-weight: 700; }
   color: var(--ink);
 }
 
-/* The front page's own column: everything readable is held to the left of
-   the car rather than spread across the whole width. */
-.menu-column { max-width: 620px; }
+/* The front page's own column.
+   EVERYTHING readable lives in it, the calendar included, so the car owns the
+   right-hand side of the screen at every width. Letting the circuit cards run
+   the full width put eleven of them straight through the middle of the car on
+   a 1920 monitor. */
+.menu-column { max-width: 640px; }
 
 /* ======================================================================
    Responsive floor for the stage
@@ -3902,6 +3905,21 @@ table.standings tr.me td.who { font-weight: 700; }
      part that mattered. */
   .sc-nat { display: none; }
   .sc-driver { grid-template-columns: 26px 40px minmax(0, 1fr) 30px; }
+
+  /* A bay short enough to leave room for the page it sits on, and a caption
+     that stays on the one line there is width for. */
+  .garagebay { height: clamp(150px, 23vh, 210px); }
+  .garagebay-info { max-width: 94%; bottom: 10px; }
+  .garagebay .nameplate { padding: 5px 18px 6px 12px; }
+  .garagebay .nameplate-name { font-size: 15px; }
+  .garagebay-line {
+    margin: 6px 0 0 14px;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .chev { width: 36px; }
 
   /* The front page gets the same band, so the car is above the way in rather
@@ -3950,10 +3968,11 @@ table.standings tr.me td.who { font-weight: 700; }
   }
 }
 
-/* A very wide desktop: hold the interface column against the left edge of the
-   page rather than letting it drift into the middle of the picture. */
+/* A very wide desktop: the column can afford to be wider, and the car takes
+   everything to the right of it. */
 @media (min-width: 1500px) {
-  .stage.stage-right { inset: 0 0 0 34%; }
+  .stage.stage-right { inset: 0 0 6% 44%; }
+  .menu-column { max-width: 760px; }
 }
 
 /* Reduced motion. The turntable is stopped in `CarStage` — a rotating car is

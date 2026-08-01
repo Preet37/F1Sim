@@ -814,9 +814,9 @@ class Game {
 
     // The calendar. In calendar order, with the round number on each card,
     // because these eleven circuits are a season and not a shelf.
-    const head = this.el('div', 'section-title', body, 'The calendar');
+    const head = this.el('div', 'section-title', column, 'The calendar');
     this.el('span', 'section-count', head, CIRCUITS.length + ' circuits');
-    const grid = this.el('div', 'grid-circuits', body);
+    const grid = this.el('div', 'grid-circuits', column);
     for (const [i, c] of CIRCUITS.entries()) {
       this.circuitCard(grid, c, {
         round: i + 1,
@@ -882,7 +882,7 @@ class Game {
       '<span class="nameplate-rank">47</span>' +
       '<span class="nameplate-name">' + escapeHtml(startTeam.name) + '</span>';
     this.el('div', 'garagebay-line', bayInfo,
-      startTeam.engine + ' · last on the grid, and the only seat you are offered');
+      startTeam.engine + ' · the only seat you are offered');
     this.mountStage('panel', {
       colour: startTeam.colour,
       accent: startTeam.accent,
