@@ -264,9 +264,12 @@ canvas#view {
 .card:focus-visible,
 .circuit-card:focus-visible,
 .choice:focus-visible,
-.paddock-card:focus-visible {
+.strip-team:focus-visible,
+/* The chevron blades run to the very edge of the screen, so an outline set
+   outside them would be half off it. */
+.chev:focus-visible {
   position: relative;
-  z-index: 2;
+  z-index: 5;
   outline-offset: -2px;
 }
 
@@ -3600,9 +3603,19 @@ table.standings tr.me td.who { font-weight: 700; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* A team whose livery is nearly white would put white on white. */
-.nameplate.on-light .nameplate-name { color: #080b10; text-shadow: none; }
-.nameplate.on-light .nameplate-rank { color: rgba(0, 0, 0, 0.55); }
+/* A pale livery — the silver car on this grid — would put white type on a
+   light slab. The fix is to darken the SLAB rather than to flip the type:
+   the plate fades in from nothing at its left edge, so a light plate has a
+   mid-tone stretch that neither white nor black type can sit on. Holding the
+   type white on every team also keeps the nameplate one object rather than
+   two, and the livery's hue survives the darkening. */
+.nameplate.on-light {
+  background: linear-gradient(90deg,
+    rgba(5, 7, 10, 0) 0%,
+    color-mix(in srgb, var(--team, #f2f6fb) 34%, #05070a) 24%,
+    color-mix(in srgb, var(--team, #f2f6fb) 58%, #0b1017) 100%);
+}
+.nameplate.on-light::after { background: var(--team, #fff); }
 
 /* ======================================================================
    CHEVRON BLADES
@@ -3755,7 +3768,7 @@ table.standings tr.me td.who { font-weight: 700; }
   font-weight: 700;
   letter-spacing: 0.1em;
   transition: background 0.14s ease, color 0.14s ease, opacity 0.14s ease;
-  opacity: 0.55;
+  opacity: 0.7;
 }
 .strip-team:hover { background: rgba(28, 36, 47, 0.85); color: var(--ink-2); opacity: 0.85; }
 .strip-team.is-current {
@@ -3901,8 +3914,16 @@ table.standings tr.me td.who { font-weight: 700; }
 /* Landscape phone: vertical room is the scarce thing, so the car keeps the
    right-hand side and the panels collapse to one column beside it. */
 @media (max-height: 470px) and (orientation: landscape) {
-  .stage.stage-right { inset: 0 -6% 0 40%; }
+  /* The car takes the right-hand half and the interface is held to the left
+     of it, rather than the two being laid over each other. */
+  .stage.stage-right { inset: 0 -6% 10% 47%; }
   .stage.stage-full { inset: 0 -6% 0 0; height: auto; }
+  .menu-column { max-width: 46%; }
+  /* A 390px-tall screen cannot spare a 300px bay. Enough to read a livery. */
+  .garagebay { height: 132px; }
+  .garagebay-info { bottom: 8px; }
+  .garagebay .nameplate-name { font-size: 17px; }
+  .garagebay-line { margin-top: 5px; font-size: 9px; }
   /* Vertical room is the scarce thing here, so the interface is compressed
      rather than allowed to push the identity off the top of a scroll. */
   .showcase { gap: 7px; min-height: 100%; --blade: 34px; }

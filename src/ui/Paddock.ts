@@ -67,7 +67,7 @@ export function hexColour(colour: number): string {
  */
 function isLight(colour: number): boolean {
   const r = (colour >> 16) & 255, g = (colour >> 8) & 255, b = colour & 255;
-  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.62;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.55;
 }
 
 /** Drivers for a team, in race-number order. */
