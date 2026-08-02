@@ -1,10 +1,5 @@
-<<<<<<< HEAD
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
-=======
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
->>>>>>> worktree-agent-a6d7856d56b0e4332
 import { resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -105,35 +100,18 @@ async function writePng(path: string, dataUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-<<<<<<< HEAD
   // Only the circuits about to be swept are cleared.
   //
-  // Wiping the whole directory means a one-circuit run with AUDIT_ONLY
-  // destroys the eleven-circuit grid it was meant to spot-check against, which
-  // costs an hour to get back and is discovered immediately afterwards.
+  // `AUDIT_ONLY` exists so a fix can be checked on one circuit without waiting
+  // for eleven, and wiping the whole directory made it useless for that: it
+  // destroyed the eleven-circuit grid the one circuit was meant to be compared
+  // against, which costs an hour to get back and is discovered immediately
+  // afterwards. Everything not being re-shot is carried through untouched —
+  // index included — so a sweep can also be finished in pieces when the
+  // machine is too busy to do it in one go.
   await mkdir(OUT_DIR, { recursive: true });
   for (const id of CIRCUIT_IDS) {
     await rm(resolve(OUT_DIR, id), { recursive: true, force: true });
-=======
-  // A narrowed sweep KEEPS what it is not re-shooting.
-  //
-  // `AUDIT_ONLY` exists so a fix can be checked on one circuit without waiting
-  // for eleven, and it was unusable for that: wiping the whole directory left
-  // an index of one circuit and threw away the ten it had not been asked to
-  // re-shoot. The circuits named are rebuilt from scratch; everything else is
-  // carried over, index included, so a sweep can also be finished in pieces
-  // when the machine is too busy to do it in one go.
-  const partial = !!process.env.AUDIT_ONLY;
-  if (!partial) await rm(OUT_DIR, { recursive: true, force: true });
-  await mkdir(OUT_DIR, { recursive: true });
-  const kept: { info: CircuitInfo; shots: Shot[]; errors: string[] }[] = [];
-  if (partial) {
-    try {
-      const prior = JSON.parse(await readFile(resolve(OUT_DIR, 'report.json'), 'utf8'));
-      for (const r of prior) if (!CIRCUIT_IDS.includes(r.info.id)) kept.push(r);
-    } catch { /* nothing to carry over */ }
-    for (const id of CIRCUIT_IDS) await rm(resolve(OUT_DIR, id), { recursive: true, force: true });
->>>>>>> worktree-agent-a6d7856d56b0e4332
   }
 
   const server: ViteDevServer = await createServer({
@@ -261,23 +239,11 @@ async function main(): Promise<void> {
     );
   }
 
-<<<<<<< HEAD
   // Merged with whatever a previous sweep left, so a one-circuit run updates
   // the grid instead of replacing it with a grid of one.
   const merged = mergeReport(report);
   await writeFile(resolve(OUT_DIR, 'index.html'), indexPage(merged), 'utf8');
   await writeFile(resolve(OUT_DIR, 'report.json'), JSON.stringify(merged, null, 2), 'utf8');
-=======
-  const all = [...kept, ...report].sort(
-    (a, b) => ALL_CIRCUITS.indexOf(a.info.id) - ALL_CIRCUITS.indexOf(b.info.id),
-  );
-  await writeFile(resolve(OUT_DIR, 'index.html'), indexPage(all), 'utf8');
-  await writeFile(
-    resolve(OUT_DIR, 'report.json'),
-    JSON.stringify(all, null, 2),
-    'utf8',
-  );
->>>>>>> worktree-agent-a6d7856d56b0e4332
 
   await browser.close();
   await server.close();

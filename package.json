@@ -6,9 +6,10 @@
   "description": "Full-simulation Formula 1 career game. WebGL/TypeScript, runs on desktop browsers and iOS Safari.",
   "scripts": {
     "dev": "vite --host",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run check:conflicts && tsc --noEmit && vite build",
     "preview": "vite preview --host",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run check:conflicts && tsc --noEmit",
+    "check:conflicts": "! grep -rIlE '^(<{7}|>{7}) ' --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=audit-out --exclude-dir=reference --exclude-dir=dist . || (echo 'ERROR: merge conflict markers left in the files above' && exit 1)",
     "validate:tracks": "tsx scripts/validateTracks.ts",
     "calibrate": "tsx scripts/calibrateSolver.ts",
     "validate:physics": "tsx scripts/validatePhysics.ts",
