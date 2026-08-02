@@ -48,9 +48,13 @@
     "probe:qualiboard": "tsx scripts/probeQualiBoard.ts",
     "probe:renderperf": "tsx scripts/probeRenderPerf.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
+    "probe:kerbs": "tsx scripts/probeKerbs.ts",
+    "probe:shoulders": "tsx scripts/probeShoulders.ts",
+    "probe:debris": "tsx scripts/probeDebris.ts",
     "shoot:hud": "tsx scripts/shootHud.ts",
     "shoot:panels": "tsx scripts/shootPanels.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
+    "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:car": "tsx scripts/auditCar.ts"
   },
   "dependencies": {

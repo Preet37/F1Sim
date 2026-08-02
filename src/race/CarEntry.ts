@@ -275,6 +275,15 @@ export class CarEntry {
   finishTime = 0;
   /** True while this car is causing a yellow flag. */
   yellowRaised = false;
+  /**
+   * Which pieces of bodywork have already been thrown on the road.
+   *
+   * A latch, keyed by `BODY_PART_IDS` order, so a part sheds its carbon ONCE —
+   * on the step its health crosses the detach threshold — rather than every
+   * step it spends below it. It goes back to false when the part is refitted in
+   * the pits, which is what lets a car lose the same wing twice in a race.
+   */
+  readonly partsShed: boolean[] = [false, false, false, false];
   /** Seconds spent stationary off the road, for the beached-car timeout. */
   stuckTimer = 0;
   /** Seconds since retiring, before marshals clear the car. */

@@ -10,6 +10,9 @@ import {
 } from './Livery';
 import { buildDriverParts } from './DriverMesh';
 import {
+  BODY_PART_IDS as DAMAGE_BODY_PART_IDS, type BodyPartId as DamageBodyPartId,
+} from '../race/DamageModel';
+import {
   wheelMaterial, wheelSwatchUV, disposeTyreCache, TYRE_BAND,
   buildSidewallBands, sidewallMaterial, tyreProfile,
   type WheelSwatch,
@@ -908,9 +911,16 @@ class Parts {
  * either invisible from outside or does not come off, and is expressed through
  * the handling instead.
  */
-export type BodyPartId = 'frontWing' | 'rearWing' | 'sidepodL' | 'sidepodR';
-
-export const BODY_PART_IDS: readonly BodyPartId[] = ['frontWing', 'rearWing', 'sidepodL', 'sidepodR'];
+/**
+ * Re-exported from the damage model, not declared again here.
+ *
+ * The simulation files a pile of debris against a part by its INDEX in this
+ * list, and the renderer reads that index back to find where on the car the
+ * part was bolted. Two independently written lists that happened to agree is
+ * one edit away from a front wing's carbon appearing where a sidepod was.
+ */
+export type BodyPartId = DamageBodyPartId;
+export const BODY_PART_IDS = DAMAGE_BODY_PART_IDS;
 
 /** A detachable piece of bodywork, and where it sits in the car's own frame. */
 export interface BodyPart {

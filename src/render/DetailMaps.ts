@@ -27,8 +27,21 @@ import * as THREE from 'three';
 
 const cache = new Map<string, THREE.Texture>();
 
-function load(file: string, repeat: boolean): THREE.Texture | null {
-  const hit = cache.get(file);
+/**
+ * @param tiles how many times the image repeats over one unit of uv, or 0 for
+ *        no repeat wrapping at all
+ *
+ * Cached per (file, tiles), and a second tiling costs a second upload of the
+ * same 256px image rather than a `clone()` of the first. That distinction is
+ * not fussiness: `Texture.clone()` copies the `image` field BY VALUE at the
+ * moment it is called, and these are loaded asynchronously — so a clone taken
+ * before the file arrives is permanently imageless, and marking it for update
+ * gets you "THREE.WebGLRenderer: Texture marked for update but no image data
+ * found" on every frame and a surface with no relief on it at all.
+ */
+function load(file: string, tiles: number): THREE.Texture | null {
+  const key = `${file}@${tiles}`;
+  const hit = cache.get(key);
   if (hit) return hit;
   if (typeof document === 'undefined') return null;
   const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/';
@@ -37,9 +50,12 @@ function load(file: string, repeat: boolean): THREE.Texture | null {
   // Getting this wrong tilts every normal toward the surface and the relief
   // comes out looking like a photograph of relief.
   tex.colorSpace = THREE.NoColorSpace;
-  if (repeat) tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  if (tiles > 0) {
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    if (tiles !== 1) tex.repeat.set(tiles, tiles);
+  }
   tex.anisotropy = 8;
-  cache.set(file, tex);
+  cache.set(key, tex);
   return tex;
 }
 
@@ -49,8 +65,8 @@ function load(file: string, repeat: boolean): THREE.Texture | null {
  * That second set is box-projected in metres — see `addDetailUV` in CarMesh —
  * so this lands at the same physical scale on a wishbone and on a floor.
  */
-export function carbonWeaveMap(): THREE.Texture | null {
-  return load('carbon_weave_normal.png', true);
+export function carbonWeaveMap(tiles = 1): THREE.Texture | null {
+  return load('carbon_weave_normal.png', tiles);
 }
 
 /**
@@ -62,7 +78,7 @@ export function carbonWeaveMap(): THREE.Texture | null {
  * atlas the rim, disc and caliper swatches occupy.
  */
 export function tyreSurfaceMap(): THREE.Texture | null {
-  return load('tyre_surface_normal.png', true);
+  return load('tyre_surface_normal.png', 1);
 }
 
 /**
@@ -78,7 +94,7 @@ export function tyreSurfaceMap(): THREE.Texture | null {
  * cuff ribbing onto the fingertips.
  */
 export function gloveNomexMap(): THREE.Texture | null {
-  return load('glove_nomex_normal.png', false);
+  return load('glove_nomex_normal.png', 0);
 }
 
 export function disposeDetailMaps(): void {

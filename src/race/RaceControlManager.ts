@@ -2,6 +2,7 @@ import { clamp01, loopDelta } from '../core/MathUtils';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from './CarEntry';
 import { RECOVERY_FAST_SECTION_MS, RECOVERY_TRACKSIDE_M } from './Recovery';
+import type { DebrisField } from './DebrisField';
 
 /**
  * Race Control: flags, track limits, and penalties.
@@ -592,9 +593,10 @@ export class RaceControlManager {
     sessionTime: number,
     isRace: boolean,
     wetness = 0,
+    debris?: DebrisField,
   ): void {
     this.wetness = wetness;
-    this.updateIncidentFlags(cars, sessionTime);
+    this.updateIncidentFlags(cars, sessionTime, debris);
     this.updateNeutralisation(dt, cars, standings, sessionTime, isRace);
 
     for (let i = 0; i < cars.length; i++) {
@@ -614,7 +616,9 @@ export class RaceControlManager {
    * means yellows appear as a consequence of incidents rather than being
    * scripted.
    */
-  private updateIncidentFlags(cars: CarEntry[], sessionTime: number): void {
+  private updateIncidentFlags(
+    cars: CarEntry[], sessionTime: number, debris?: DebrisField,
+  ): void {
     // Clear to green, then re-raise. Cheap at 20 sectors and avoids stale flags.
     for (let i = 0; i < MARSHAL_SECTORS; i++) {
       if (this.sectorFlags[i] !== 'red') this.sectorFlags[i] = 'green';
@@ -679,6 +683,31 @@ export class RaceControlManager {
         }
       } else if (car.yellowRaised) {
         car.yellowRaised = false;
+      }
+    }
+
+    // --- Debris on the racing surface --------------------------------------
+    //
+    // A yellow, at the post covering it and the one before, for exactly as long
+    // as it takes somebody to walk out and pick it up. That is the sequence a
+    // televised race shows a dozen times a season, and modelling it is the only
+    // thing that makes bodywork on the road TEMPORARY without inventing a
+    // lifetime for it — the flag goes out because the carbon is there, and the
+    // carbon goes because the flag brought marshals to it.
+    //
+    // Deliberately NOT counted toward `activeIncidents`. That counter decides
+    // whether to deploy a safety car, and the article that deploys one (2025
+    // Art. 55.3 / 2026 Art. B5.13.1) is about people in immediate physical
+    // danger. A marshal collecting an endplate under a local yellow is the
+    // routine alternative to that, not an instance of it, and wiring debris
+    // into it would neutralise a race for every piece of carbon on the circuit.
+    if (debris) {
+      for (const pile of debris.piles) {
+        const signal = pile.signal;
+        if (signal === null) continue;
+        const sec = this.sectorIndexAt(pile.s);
+        this.raiseFlag(sec, signal);
+        this.raiseFlag((sec + MARSHAL_SECTORS - 1) % MARSHAL_SECTORS, signal);
       }
     }
 

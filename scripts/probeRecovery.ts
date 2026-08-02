@@ -32,6 +32,19 @@
  *      `Wreckage` instance buffer, cycled repeatedly, so a sweep that leaked
  *      pieces or grew the buffer would show up.
  *
+ * And, since debris became an incident of its own rather than a rendering
+ * effect, the three things that make bodywork nobody is coming to recover go
+ * away anyway — which is a different defect from all of the above and the one
+ * behind "why are there blue pieces everywhere":
+ *
+ *   8. A pile on the racing line RAISES A YELLOW at the post covering it, which
+ *      is what sends anybody to it in the first place.
+ *   9. It is then COLLECTED under that local yellow, with no recovery and no
+ *      neutralisation involved, and the flag comes down when it goes.
+ *  10. A pile in the RUN-OFF outlives one on the racing line by a long way,
+ *      because nobody walks out for it until the race is slowed for something
+ *      else. Real run-off collects carbon over a race distance.
+ *
  * Circuits include a street circuit, where the run-off is a wall a metre from
  * the white line and every recovery is therefore the hard case.
  *
@@ -127,6 +140,29 @@ function runScenario(circuit: string, site: Site, seed: number): Result | null {
 
   const maxSteps = Math.round(6 * def.referencePoleTimeS * 3.6 / PHYSICS_DT);
 
+  /**
+   * Is anything OTHER than this recovery holding a yellow over these sectors?
+   *
+   * Three things can: another wreck, a car merely off and slow, and — since the
+   * debris ledger moved into the simulation — a piece of bodywork lying on the
+   * racing line, which is a hazard in its own right with its own operation and
+   * its own flag. See `src/race/DebrisField.ts`. None of them is this recovery,
+   * so a sector holding a yellow for one of them is not this recovery's flag
+   * failing to come down, and assertion 5 has nothing to say about it.
+   */
+  const contestedNow = (): boolean => {
+    const sec = r.sector;
+    const prev = (sec + rc.marshalSectorCount - 1) % rc.marshalSectorCount;
+    if (engine.cars.some((c) => c !== victim && c.retired && !c.cleared &&
+      (rc.sectorIndexAt(c.s) === sec || rc.sectorIndexAt(c.s) === prev))) return true;
+    if (engine.cars.some((c) => c !== victim && !c.retired && !c.inPitLane &&
+      (rc.sectorIndexAt(c.s) === sec || rc.sectorIndexAt(c.s) === prev) &&
+      Math.abs(c.lateral) > engine.track.halfWidthAt(c.s) + 1 &&
+      c.physics.speedMs < 8)) return true;
+    return engine.debris.piles.some((p) => p.signal !== null &&
+      (rc.sectorIndexAt(p.s) === sec || rc.sectorIndexAt(p.s) === prev));
+  };
+
   for (let step = 0; step < maxSteps && !engine.over; step++) {
     engine.step();
 
@@ -177,18 +213,16 @@ function runScenario(circuit: string, site: Site, seed: number): Result | null {
       r.clearedAfterS = since;
       r.method = victim.recovery.method;
       r.neutralisationDuring = rc.neutralisation;
-      r.contested = engine.cars.some(
-        (c) => c !== victim && c.retired && !c.cleared &&
-          (rc.sectorIndexAt(c.s) === sec || rc.sectorIndexAt(c.s) === prev),
-      );
-      // Any car merely off and slow in this sector raises a yellow of its own,
-      // which is a different incident and not this one's flag.
-      r.contested ||= engine.cars.some(
-        (c) => c !== victim && !c.retired && !c.inPitLane &&
-          rc.sectorIndexAt(c.s) === sec &&
-          Math.abs(c.lateral) > engine.track.halfWidthAt(c.s) + 1 &&
-          c.physics.speedMs < 8,
-      );
+      r.contested = contestedNow();
+    }
+
+    // And checked every step from there until the flag comes down, rather than
+    // sampled once at the moment the wreck went. Another car can spin off, or a
+    // piece of bodywork can land, at any point in that window and hold the
+    // yellow on its own account — and a snapshot taken before it arrived blames
+    // this recovery for a flag that is not its.
+    if (r.clearedAfterS >= 0 && r.flagDownAfterS < 0 && !r.contested) {
+      r.contested = contestedNow();
     }
 
     if (r.flagDownAfterS < 0 && r.flagUpAfterS >= 0 &&
@@ -313,8 +347,8 @@ for (const r of results) {
 // 2. The debris goes with the car, and the sweep does not leak
 // ===========================================================================
 //
-// The renderer sweeps a recovered car's bodywork off the road by calling
-// `Wreckage.clearOwner` on the frame the recovery finishes. That buffer is a
+// The renderer retires a pile of bodywork by calling `Wreckage.clearPile` when
+// the simulation's ledger says the marshals have collected it. That buffer is a
 // fixed-size instanced ring, so the two ways this could go wrong are leaving
 // pieces behind and growing the buffer — and a previous session established
 // that six load/unload cycles must return to identical geometry and texture
@@ -343,11 +377,11 @@ console.log('\nDEBRIS — bodywork is swept up with the car it came off');
   let grew = 0;
   for (let cycle = 0; cycle < 6; cycle++) {
     for (let car = 0; car < 4; car++) {
-      w.spawn(car * 10, 1, 0, 12, 0, 0.8, 0.2, 0.9, 0xff0000, 0, 5, car);
+      w.spawn(car * 10, 1, 0, 12, 0, 0.8, 0.2, 0.9, 0xff0000, 0, 5, car + 1);
     }
     const before = onRoad();
     if (before !== 20) leaked++;
-    for (let car = 0; car < 4; car++) w.clearOwner(car);
+    for (let car = 0; car < 4; car++) w.clearPile(car + 1);
     if (onRoad() !== 0) leaked++;
     if (w.mesh.instanceMatrix.count !== capacity) grew++;
     if (w.mesh.geometry !== geometry || w.mesh.material !== material) grew++;
@@ -363,6 +397,129 @@ console.log('\nDEBRIS — bodywork is swept up with the car it came off');
   if (grew > 0) fail(`${grew} cycles reallocated the debris buffer or its resources`);
 
   w.dispose();
+}
+
+// ===========================================================================
+// 3. Debris that no recovery is ever coming for
+// ===========================================================================
+//
+// This is the defect the whole `DebrisField` exists for, and it is not the one
+// section 2 tests. Section 2 asks whether a RECOVERED car's carbon goes with
+// it, and it always did. The reported bug is the other case: a car that sheds a
+// wing, keeps racing, and is never recovered at all. Nothing removed that
+// bodywork, ever, so a race with six contact events in two laps ended with six
+// permanent piles of it on the circuit — "why are there blue pieces everywhere".
+//
+// The three properties that make it temporary without a lifetime:
+//
+//   a. A pile on the racing surface RAISES A YELLOW at the post covering it.
+//      That is the thing that sends marshals, and it is why this is modelled in
+//      the simulation rather than in the renderer.
+//   b. It is then COLLECTED, under that local yellow, with no neutralisation
+//      and no recovery involved — and the flag comes down when it goes.
+//   c. A pile in the RUN-OFF outlives one on the racing line by a long way,
+//      because nobody walks out for it until the race is slowed for something
+//      else. Real run-off collects carbon over a race distance.
+console.log('\nLOOSE DEBRIS — carbon nobody is coming to recover');
+{
+  const CIRCUITS = ['bahrain', 'monaco', 'spa', 'suzuka'];
+  const rows: string[] = [];
+
+  for (const circuit of CIRCUITS) {
+    const def = getCircuit(circuit);
+    const config: SessionConfig = {
+      kind: 'race', name: 'Grand Prix', durationS: 0, laps: 6,
+      playerIndex: -1, standingStart: false, pitLaneStart: false, seed: 31,
+    };
+    const engine = new RaceEngine(def, config);
+    const rc = engine.raceControl;
+
+    // Settle the field, then plant three piles by hand, well apart so their
+    // marshalling sectors cannot overlap: a whole front wing on the racing
+    // line, the scatter off a contact on the racing line, and a pile out in
+    // the run-off. The three cases the ledger distinguishes.
+    for (let i = 0; i < Math.round(70 / PHYSICS_DT); i++) engine.step();
+
+    const sPart = engine.track.length * 0.10;
+    const sLoose = engine.track.length * 0.40;
+    const sOff = engine.track.length * 0.72;
+    const plant = (s: number, offRoadM: number, source: number): number =>
+      engine.debris.add({
+        s, lateralM: engine.track.halfWidthAt(s) + offRoadM, ownerIndex: 0,
+        x: 0, y: 0, z: 0, vx: 0, vz: 0,
+        sizeX: 0.4, sizeY: 0.1, sizeZ: 0.3, pieces: 3, source,
+        offRoadM,
+      }).id;
+    const partId = plant(sPart, -1.5, 1);
+    const looseId = plant(sLoose, -1.5, 0);
+    const offId = plant(sOff, 9, 1);
+
+    const partSector = rc.sectorIndexAt(sPart);
+    const plantedAt = engine.time;
+    let partGoneAt = -1;
+    let looseGoneAt = -1;
+    let offGoneAt = -1;
+    let yellowSamples = 0;
+    let liveSamples = 0;
+    let greenOverPart = 0;
+
+    const alive = (id: number): boolean => engine.debris.piles.some((p) => p.id === id);
+
+    for (let step = 0; step < Math.round(400 / PHYSICS_DT) && !engine.over; step++) {
+      engine.step();
+      if (alive(partId)) {
+        liveSamples++;
+        if (rc.sectorFlags[partSector] === 'green') greenOverPart++;
+        else yellowSamples++;
+      } else if (partGoneAt < 0) partGoneAt = engine.time - plantedAt;
+      if (!alive(looseId) && looseGoneAt < 0) looseGoneAt = engine.time - plantedAt;
+      if (!alive(offId) && offGoneAt < 0) offGoneAt = engine.time - plantedAt;
+      if (partGoneAt >= 0 && looseGoneAt >= 0 && offGoneAt >= 0) break;
+    }
+
+    const at = (x: number): string =>
+      (x < 0 ? '>400s' : x.toFixed(1) + 's').padEnd(9);
+    rows.push(
+      '  ' + circuit.padEnd(13) +
+      'wing on line ' + at(partGoneAt) +
+      'scatter on line ' + at(looseGoneAt) +
+      'run-off ' + at(offGoneAt) +
+      'green over the wing ' + greenOverPart + ' / ' + liveSamples,
+    );
+
+    // 1. A whole part on the racing line is a flagged hazard and goes quickly.
+    if (partGoneAt < 0) {
+      fail(`${circuit}: a wing lying on the racing line was never collected`);
+    } else if (partGoneAt > 90) {
+      fail(`${circuit}: a wing on the racing line took ${partGoneAt.toFixed(0)}s to collect`);
+    }
+    if (yellowSamples === 0) {
+      fail(`${circuit}: a wing lying on the racing line never raised a flag`);
+    }
+    // A step or two of green between the collection and the next flag pass is
+    // fair; anything more is a hazard nobody is being warned about.
+    if (greenOverPart > liveSamples * 0.02) {
+      fail(`${circuit}: sector read green for ${greenOverPart} of ${liveSamples} ` +
+        'samples with a wing lying on the racing line');
+    }
+
+    // 2. The scatter off a contact is not flagged — race control does not stop
+    //    a race for an endplate fragment — but it is still collected, at the
+    //    first opportunity rather than at the end of the race.
+    if (looseGoneAt < 0) {
+      fail(`${circuit}: the scatter off a contact was never collected`);
+    } else if (looseGoneAt > 130) {
+      fail(`${circuit}: contact scatter took ${looseGoneAt.toFixed(0)}s to collect`);
+    }
+
+    // 3. And carbon in the run-off outlasts both, because nobody walks out for
+    //    it until the race is slowed down for something else.
+    if (offGoneAt >= 0 && partGoneAt >= 0 && offGoneAt < partGoneAt) {
+      fail(`${circuit}: run-off debris was collected before debris on the racing line`);
+    }
+  }
+
+  for (const r of rows) console.log(r);
 }
 
 console.log('');
