@@ -135,8 +135,9 @@ export const LATERAL_LOOK_CAP_M = 12;
  * lead car's speed down to zero at contact, so a car that is already too close
  * backs out of the gap instead of holding station in it.
  *
- * Returns `Infinity` when there is nothing to follow, so callers can use it as
- * an unconditional `Math.min` without a branch.
+ * At a hundred metres the answer is far above anything any circuit allows, which
+ * is what makes this safe to apply unconditionally: in clean air it is not a
+ * limit, it is a very large number.
  */
 export function safeFollowSpeedMs(
   gapM: number, leadSpeedMs: number, decelMs2: number, standoffM: number,
