@@ -76,7 +76,12 @@ const FOV: Record<CameraMode, { base: number; gain: number }> = {
   // candidate lenses. 40 to 45 degrees vertical — 66 to 73 across at 16:9 — is
   // where the horizon sits above centre, the halo hugs the bottom, and straight
   // things stay straight.
-  cockpit: { base: 40, gain: 5 },
+  // 38, not 40, and the two onboards are deliberately no longer the same lens.
+  // The cockpit eye now sits 0.58m behind the helmet and the T-cam 0.80m; with
+  // one focal length between them the two modes were the same photograph and
+  // the second button did nothing. A slightly longer lens on the closer camera
+  // is also what makes it the tighter, more enclosed of the pair.
+  cockpit: { base: 38, gain: 5 },
   'onboard-t': { base: 43, gain: 6 },
   // Lowest camera, so the widest: at 0.44m the ground shear does the work and a
   // wide lens amplifies it.
@@ -127,6 +132,21 @@ const SOLID_MAX_PULL = 0.9;
 export const CAMERA_MODES: readonly CameraMode[] = [
   'chase', 'cockpit', 'onboard-t', 'bumper', 'tv', 'drone', 'trackside',
 ];
+
+/**
+ * The modes whose camera is ON the car, looking out over the driver.
+ *
+ * Both of them are: the cockpit eye sits on the front of the roll-hoop fairing
+ * and the T-cam on top of it. That makes them the same case for three separate
+ * decisions that used to be written for 'cockpit' alone, and the T-cam was
+ * wrong on all three — it drew the camera pod it is itself mounted in, it had
+ * no cockpit interior so its mirrors were dead swatches, and it used the far
+ * near-plane with the driver's helmet inside it. Anything that asks "is the
+ * camera inside the car" asks this.
+ */
+export function isOnboardMode(mode: CameraMode): boolean {
+  return mode === 'cockpit' || mode === 'onboard-t';
+}
 
 export const CAMERA_LABELS: Record<CameraMode, string> = {
   chase: 'Chase',
@@ -252,9 +272,9 @@ export class CameraDirector {
     this.applyNearPlane();
   }
 
-  /** Cockpit sits inside its own bodywork and needs a much closer near plane. */
+  /** An onboard camera sits inside its own bodywork and needs a closer near plane. */
   private applyNearPlane(): void {
-    const near = this.mode === 'cockpit' ? NEAR_COCKPIT : NEAR_DEFAULT;
+    const near = isOnboardMode(this.mode) ? NEAR_COCKPIT : NEAR_DEFAULT;
     if (this.camera.near !== near) {
       this.camera.near = near;
       this.camera.updateProjectionMatrix();
@@ -400,24 +420,46 @@ export class CameraDirector {
       }
 
       case 'onboard-t': {
-        // The broadcast T-cam, sitting on the airbox directly above and just
-        // behind the driver's head. The airbox crown is at 0.85m and the helmet
-        // at 0.82m, so 1.14m clears both and still frames the halo, the mirrors
-        // and the crown of the helmet along the bottom of the shot — which is
-        // exactly what the reference onboard footage looks like, and what makes
-        // this read as a camera bolted to a car rather than a floating eye.
+        // The broadcast T-cam: the pod on top of the roll hoop, looking forward
+        // over the driver's head.
+        //
+        // IT USED TO BE 0.40m BEHIND THE CAR'S CENTRE, WHICH IS IN FRONT OF THE
+        // DRIVER, and that is the whole of the "two thick black tubes sweep
+        // across the lower half of the frame in a wide shallow X" report.
+        // `probe:framing` measured it on all eleven circuits and got the same
+        // answer everywhere: the crown of the halo at 82 per cent of frame
+        // height, the driver's helmet at 145 per cent — off the bottom
+        // entirely — and the wheel at 103. A hoop whose crown is at 82 per cent
+        // and whose rails leave through the bottom edge is not a hoop in the
+        // picture at all; it is two diagonals lying in the bottom fifth of it,
+        // with nothing above them and nothing below, which is exactly what a
+        // pair of black pipes laid over the shot looks like.
+        //
+        // The cause is that a camera close in FRONT of the hoop sees it in
+        // extreme perspective: the crown is only 1.15m away and 0.33m below, so
+        // it subtends 16 degrees of depression and pins itself to the bottom of
+        // the frame however wide the lens is. Standing back behind the hoop
+        // instead — 0.80m back and 1.10m up, on the roll hoop where a T-cam
+        // actually lives — halves the depression and the hoop rises into the
+        // frame as an arc. Measured: crown 66 per cent, helmet crown 86, wheel
+        // rim 79, mirrors at 69 per cent of frame width, horizon 42. Every one
+        // of those is within a few points of the reference onboards, and the
+        // helmet now subtends 23 per cent of frame width against the
+        // reference's 21.
         this.desired.set(
-          p.position.x - sinH * 0.40,
-          carY + 1.14,
-          p.position.y - cosH * 0.40,
+          p.position.x - sinH * 0.80,
+          carY + 1.10,
+          p.position.y - cosH * 0.80,
         );
-        // Aim at a point on the road well ahead, not at the horizon: the
-        // shallow downward angle is what keeps the track in the frame and puts
-        // the horizon just above the middle of it.
+        // Aim on the road twenty metres up, which is 3.4 degrees of nose-down
+        // and puts the horizon at 42 per cent of frame height. Not further: the
+        // aim point and the eye TOGETHER set the pitch, and a distant aim
+        // flattens it until the shot is all sky and the hoop drops back out of
+        // the bottom of the frame.
         this.lookTarget.set(
-          p.position.x + sinH * 34,
-          carY + 0.35,
-          p.position.y + cosH * 34,
+          p.position.x + sinH * 20,
+          carY - 0.10,
+          p.position.y + cosH * 20,
         );
         this.applySmoothed(dt, 60, 20, this.anchor);
         break;
@@ -589,7 +631,8 @@ export class CameraDirector {
     // --- Shake --------------------------------------------------------------
     // Driven by the physics' own vibration output, so it fires on kerbs and
     // lock-ups rather than being sprinkled on for effect.
-    const targetShake = p.vibration * (this.mode === 'cockpit' || this.mode === 'bumper' ? 0.09 : 0.035);
+    const targetShake = p.vibration
+      * (isOnboardMode(this.mode) || this.mode === 'bumper' ? 0.09 : 0.035);
     this.shake = damp(this.shake, targetShake, 12, dt);
     if (this.shake > 0.0005) {
       this.shakePhase += dt * 55;
@@ -642,10 +685,10 @@ export class CameraDirector {
   ): void {
     const field = world.obstacles;
     const cam = this.camera.position;
-    // The cockpit is the driver's eye socket. It is inside the car, the car is
+    // An onboard camera is bolted to the car. It is inside the car, the car is
     // never inside anything solid, and moving it "toward the car" is a no-op
     // that would only risk perturbing a rig which must not be perturbed.
-    const target = this.mode !== 'cockpit' && !field.isEmpty;
+    const target = !isOnboardMode(this.mode) && !field.isEmpty;
 
     let want = 0;
     if (target) {

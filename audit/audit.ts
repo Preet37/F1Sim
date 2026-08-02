@@ -42,6 +42,29 @@ interface AuditApi {
   contact(cols: number): Promise<string>;
   /** Captions the shot just taken. */
   label(text: string): void;
+  /**
+   * Reshapes the frame.
+   *
+   * The cockpit complaints are all about FRAMING, and framing is a function of
+   * the aspect ratio: the camera's field of view is vertical, so a 2.17:1 phone
+   * in landscape sees the same slice of world top to bottom as a 16:9 desktop
+   * and a fifth more of it left to right. Anything measured as a fraction of
+   * frame width is therefore a different number on the two, and the reference
+   * footage being matched against is 2.17:1.
+   */
+  setFrame(w: number, h: number): void;
+  /**
+   * Parks another car directly behind the focus car, so a mirror can be proved
+   * to be showing traffic rather than sky.
+   *
+   * @param gapM    how far back, metres
+   * @param lateralM offset across the road; positive is the focus car's right
+   */
+  placeBehind(gapM: number, lateralM: number): void;
+  /** Photographs a mode, then blows a region of the frame up to full size. */
+  shootZoom(mode: CameraMode, x: number, y: number, w: number, h: number): Promise<string>;
+  /** Milliseconds per frame in the given mode, averaged over `frames`. */
+  timeMode(mode: CameraMode, frames: number): Promise<number>;
   cameraModes: readonly CameraMode[];
 }
 
@@ -60,8 +83,8 @@ const canvas = document.getElementById('view') as HTMLCanvasElement;
 
 // A fixed backing-store size, so every circuit is photographed at exactly the
 // same resolution regardless of the window the headless browser gives us.
-const SHOT_W = 1280;
-const SHOT_H = 720;
+let SHOT_W = 1280;
+let SHOT_H = 720;
 canvas.style.width = `${SHOT_W}px`;
 canvas.style.height = `${SHOT_H}px`;
 
@@ -193,8 +216,13 @@ async function load(circuitId: string): Promise<CircuitInfo> {
     seed: 11,
   };
   engine = new RaceEngine(def, config);
-  renderer.loadSession(engine);
   focus = engine.playerCar ?? engine.cars[0];
+  // The cockpit interior goes into the car the camera will be inside. There is
+  // no player car here on purpose (see `playerIndex` above), and the interior
+  // used to be tied to `isPlayer` — so every cockpit shot this sweep has ever
+  // taken was of an EMPTY tub with no wheel, no hands and no mirror panes in
+  // it, which is not the view anybody plays.
+  renderer.loadSession(engine, focus);
 
   // Roll the field away from the grid and out onto the circuit, so the shots
   // show cars at racing speed on the racing line rather than twenty cars
@@ -355,8 +383,95 @@ async function contact(cols: number): Promise<string> {
 /** Cell captions, pushed by the harness alongside each shot. */
 const labels: string[] = [];
 
+function setFrame(w: number, h: number): void {
+  SHOT_W = w;
+  SHOT_H = h;
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  renderer.resize();
+  freeCam.aspect = w / h;
+  freeCam.updateProjectionMatrix();
+}
+
+/**
+ * Puts a rival where the mirrors are supposed to see it.
+ *
+ * Teleporting a car is not something the simulation does, so this writes
+ * straight into the physics state and leaves the race engine to catch up. It is
+ * only ever used for one frame's photograph — the point is to answer "does the
+ * pane show a car that is genuinely behind", which needs a car that is
+ * genuinely behind and not a lucky moment in traffic.
+ */
+function placeBehind(gapM: number, lateralM: number): void {
+  if (!engine || !focus) throw new Error('no session');
+  const other = engine.cars.find((c) => c !== focus && !c.retired);
+  if (!other) throw new Error('nobody to place');
+  const h = focus.physics.heading;
+  const p = focus.physics.position;
+  // Along the focus car's own axes: back down the nose vector by `gapM`, then
+  // across it. The physics' position is (x, y) in plan with y along world z.
+  other.physics.position.x = p.x - Math.sin(h) * gapM + Math.cos(h) * lateralM;
+  other.physics.position.y = p.y - Math.cos(h) * gapM - Math.sin(h) * lateralM;
+  other.physics.heading = h;
+  other.s = focus.s - gapM;
+}
+
+async function shootZoom(
+  mode: CameraMode, x: number, y: number, w: number, h: number,
+): Promise<string> {
+  const full = await shootMode(mode);
+  // `shootMode` already pushed a thumbnail of the whole frame; this replaces it
+  // with the blow-up, so the contact sheet shows what was actually examined.
+  thumbs.pop();
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('bad shot'));
+    img.src = full;
+  });
+  const c = document.createElement('canvas');
+  c.width = SHOT_W;
+  c.height = SHOT_H;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = false;
+  g.drawImage(img, x, y, w, h, 0, 0, SHOT_W, SHOT_H);
+  const out = c.toDataURL('image/png');
+  const t = thumbCanvas.getContext('2d')!;
+  t.drawImage(c, 0, 0, CELL_W, CELL_H);
+  thumbs.push(thumbCanvas.toDataURL('image/jpeg', 0.82));
+  c.width = 1;
+  c.height = 1;
+  return out;
+}
+
+/**
+ * Frame cost of a mode, in milliseconds.
+ *
+ * `finish()` on the way out of each frame, because a WebGL draw call returns
+ * long before the GPU has done the work and a timer around an unsynchronised
+ * render measures the JavaScript, not the frame. Under SwiftShader — which is
+ * what the sweep runs on — everything is CPU anyway, so the number is a
+ * pessimistic stand-in for a real GPU; what it is good for is the RATIO between
+ * two configurations measured the same way, which is the question a mirror
+ * costs anything at all.
+ */
+async function timeMode(mode: CameraMode, frames: number): Promise<number> {
+  if (!engine || !focus) throw new Error('no session');
+  renderer.post.setCamera(renderer.director.camera, renderer.scene);
+  renderer.director.setMode(mode);
+  for (let i = 0; i < 8; i++) { frame(); await present(); }
+  const gl = renderer.renderer.getContext();
+  const t0 = performance.now();
+  for (let i = 0; i < frames; i++) {
+    frame();
+    gl.finish();
+  }
+  return (performance.now() - t0) / frames;
+}
+
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
   label: (t: string) => { labels.push(t); },
+  setFrame, placeBehind, shootZoom, timeMode,
   cameraModes: CAMERA_MODES,
 };

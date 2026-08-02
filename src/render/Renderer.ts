@@ -4,10 +4,11 @@ import {
   buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
   type BodyPartId, type CarVisual,
 } from './CarMesh';
+import { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
-import { CameraDirector } from './CameraDirector';
+import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
@@ -417,7 +418,19 @@ export class Renderer {
    * Loads a session: builds the circuit and one visual per car.
    * Safe to call repeatedly; the previous session's resources are released.
    */
-  loadSession(engine: RaceEngine): void {
+  /**
+   * @param cockpitCar which car gets the cockpit interior built into it.
+   *
+   * Defaults to the player's, which is the only car a player can ever sit in.
+   * It is a parameter because the audit harness runs a fully simulated field
+   * with NO player car — twenty AI drivers, so the shots are of cars actually
+   * racing — and then photographs the cockpit through `cars[0]`. With the
+   * interior tied to `isPlayer` that shot came back with no steering wheel, no
+   * hands, no bolsters and no mirror panes in it: an empty tub, photographed
+   * for months as if it were the cockpit view, while the real one had furniture
+   * in it that nothing in the sweep had ever seen.
+   */
+  loadSession(engine: RaceEngine, cockpitCar: CarEntry | null = engine.playerCar): void {
     this.unloadSession();
 
     // The set-dressing layout comes from the engine, not from the renderer:
@@ -445,7 +458,7 @@ export class Renderer {
         number: car.driver.raceNumber,
         code: car.driver.code,
         quality: this.quality,
-        withCockpit: car.isPlayer,
+        withCockpit: car === cockpitCar,
         compound: car.compound,
       });
       this.scene.add(visual.root);
@@ -835,11 +848,27 @@ export class Renderer {
     // Here rather than inside `syncCars` because it is a RENDER, not a state
     // update: it needs the camera in its final position for this frame, or the
     // reflected sightline is a frame stale and the mirrors swim in a corner.
-    // Skipped entirely on the low tier — a second pass over the scene is the
-    // one thing a phone GPU cannot absorb — and only ever for the one car that
-    // has a cockpit, which is only built for the player.
-    if (this.quality === 'high' && this.director.mode === 'cockpit') {
-      for (const v of this.carVisuals) v.cockpit?.renderMirrors(this.renderer, this.scene, cam);
+    //
+    // "The mirrors on the cars should actually be doing something." They were
+    // not, and there were two reasons rather than one, which is why fixing
+    // either on its own would have proved nothing:
+    //
+    //  - the feed only ran in 'cockpit', and the T-cam is the view the report
+    //    came from. In every other mode the panes are the shell's flat dark
+    //    swatch: mirror-SHAPED, and showing nothing, exactly as described;
+    //  - it only ran on the HIGH tier, and the tier is chosen by
+    //    `(pointer: coarse) || cores <= 4`. Every phone is 'low'. So on the
+    //    device the complaint came from the feed had never run at all, in any
+    //    mode, since it was written.
+    //
+    // It now runs on both onboard modes and on both tiers, and the low tier
+    // pays for it by refreshing less often rather than not at all — see
+    // `MIRROR_STRIDE` in CockpitMesh for the budget and what it measures.
+    if (isOnboardMode(this.director.mode)) {
+      const stride = this.quality === 'low' ? MIRROR_STRIDE_LOW : MIRROR_STRIDE_HIGH;
+      for (const v of this.carVisuals) {
+        v.cockpit?.renderMirrors(this.renderer, this.scene, cam, stride);
+      }
     }
 
     this.post.render(this.scene, cam);
@@ -1022,7 +1051,12 @@ export class Renderer {
   /** Copies simulation state onto the visuals. */
   private syncCars(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     const track = engine.track;
-    const cockpitView = this.director.mode === 'cockpit';
+    // BOTH onboard modes, not just 'cockpit'. The T-cam is mounted on the roll
+    // hoop too, so everything that follows from "the camera is inside this car"
+    // applies to it: the camera pod it is itself inside must not be drawn, and
+    // the cockpit interior — wheel, hands, dash, and the mirror panes that are
+    // the only ones with a live feed on them — must be.
+    const cockpitView = isOnboardMode(this.director.mode);
     // One shared wheel-spin phase: individual wheel speeds are indistinguishable
     // at speed and this avoids twenty separate integrations.
     this.wheelSpin += dt;
