@@ -1109,7 +1109,21 @@ export class AIVehicleController {
    * touch and that is racing, but neither of them may be the one steering into
    * the other.
    */
-  private roomLimited(want: number, lateral: number, p: AIPerception): number {
+  private roomLimited(
+    want: number, lateral: number, p: AIPerception, inLane: boolean,
+  ): number {
+    // Not in the pit lane. Down there the driver does not choose a line at all:
+    // the lane is single file between a wall and the garages, and `updatePitLane`
+    // owns the car's lateral placement outright — it drags the car onto the lane
+    // offset, or across to the working lane and its box, at a rate of its own.
+    // An AI steering for a room-limited target while the engine drags it
+    // somewhere else is two hands on the same wheel, and the car loses. Measured
+    // at Austin, where the boxes sit off the fast lane so a serviced car really
+    // is three metres to one side of the queue: the cars behind steered away
+    // from it, fought the drag, burned their grip budget sideways, and a third
+    // of the field spent the race stationary in the pit lane. Twenty-four
+    // car-laps of a hundred simply never happened.
+    if (inLane) return want;
     const left = p.roomLeftM - RACING_ROOM_M;
     const right = p.roomRightM - RACING_ROOM_M;
     if (left === Infinity && right === Infinity) return want;
@@ -1155,6 +1169,13 @@ export class AIVehicleController {
     const speed = Math.max(car.speedMs, 0.5);
     c.reverse = false;
 
+    // In the pit lane, and here on the driver's own terms rather than the
+    // engine's: the state machine is what decides whether this car is using the
+    // lane, and a car that merely happens to be passing the pits at racing speed
+    // is not in it.
+    const inLane = (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') &&
+      this.isInPitLane(s);
+
     // What the brakes can do, right now. Computed here rather than down in the
     // braking section because the traffic rules below are expressed in the same
     // currency — a car's safe following speed is a fact about its brakes — and
@@ -1183,7 +1204,8 @@ export class AIVehicleController {
     // steering command ever mentioned another car.
     const lateralRate = this.state === 'OVERTAKE' || this.state === 'DEFEND' ? 3.2 : 2.0;
     this.smoothedLateral =
-      damp(this.smoothedLateral, this.roomLimited(this.targetLateral, lateral, p), lateralRate, dt);
+      damp(this.smoothedLateral,
+        this.roomLimited(this.targetLateral, lateral, p, inLane), lateralRate, dt);
 
     // --- Steering ----------------------------------------------------------
     // Feedforward plus cross-track correction, NOT pure pursuit.
@@ -1221,7 +1243,7 @@ export class AIVehicleController {
     // smoothed target, so the room limit has to be applied here too or the one
     // state the field spends most of its time in would ignore it entirely.
     const lineHere = this.state === 'LINE_FOLLOWER'
-      ? this.roomLimited(this.sample(track.lineOffset, s), lateral, p)
+      ? this.roomLimited(this.sample(track.lineOffset, s), lateral, p, inLane)
       : this.smoothedLateral;
     const latError = lineHere - lateral;
 
@@ -1559,8 +1581,6 @@ export class AIVehicleController {
     // That is the design: this is not a caution term, it is a floor.
     const hz = p.hazard;
     if (hz !== null) {
-      const inLane = this.isInPitLane(s) &&
-        (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT');
       const standoff = inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M;
       // The pit lane gets a measured deceleration rather than the computed one.
       // Down there the tyres have been cooling since the entry and the friction
@@ -1636,8 +1656,6 @@ export class AIVehicleController {
     // driver's confidence is about how late they dare brake for a corner, and
     // nobody is confident about the back of another car.
     if (hz !== null) {
-      const inLane = this.isInPitLane(s) &&
-        (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT');
       const a = requiredDecelMs2(
         speed, hz.gapM, hz.speedMs, inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M,
       );

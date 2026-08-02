@@ -57,6 +57,8 @@ const DISC_R = 1.0;
 const DISC_OFF = [1.85, 0, -1.85];
 /** Below this the bodywork is overlapping and the cars have touched. */
 const TOUCH_M = DISC_R * 2;
+/** ...and above this they are properly clear of each other again. */
+const CLEAR_M = 3.5;
 
 function bodyGapM(a: CarEntry, b: CarEntry): number {
   const aS = Math.sin(a.physics.heading), aC = Math.cos(a.physics.heading);
@@ -85,6 +87,27 @@ function pin(car: CarEntry, x: number, z: number, heading: number): void {
   car.physics.localVelX = 0;
   car.physics.localVelY = 0;
   car.physics.yawRate = 0;
+}
+
+/**
+ * A scripted opponent: a car on rails, driving its own line at its own pace.
+ *
+ * Every staged case needs one car whose behaviour is not up for negotiation, or
+ * the test measures which of two AIs blinked first. Two earlier attempts show
+ * why it has to be rails rather than anything cleverer. A blocker simply PINNED
+ * in place is no test of a lateral squeeze at all: it is stationary, so the car
+ * behind is past it within a second and the crossing never happens beside it.
+ * A blocker told to match the runner's speed is worse — it is a feedback loop,
+ * and the pair converged on both cars crawling at 1 m/s for ever.
+ *
+ * So the opponent gets a fixed launch profile and holds its lateral offset,
+ * exactly like a driver going straight down the road minding their own business,
+ * and whether the AI ends up in the side of it is entirely the AI's doing.
+ */
+function railCar(
+  track: RaceEngine['track'], car: CarEntry, s: number, lateral: number, speedMs: number,
+): void {
+  car.placeOnTrack(track, s, lateral, speedMs);
 }
 
 /** Parks every car except the ones named, well away from the scene. */
@@ -179,11 +202,19 @@ for (const id of ['silverstone', 'monza', 'monaco', 'spa']) {
 // 2. A standing start, with a car on the path to the racing line
 // ---------------------------------------------------------------------------
 //
-// The second complaint. The AI is placed on the side of the grid AWAY from the
-// racing line, so the line it is about to chase is on the far side of the road,
-// and the blocker is put in the space it has to cross. A driver holds station
-// until the space is there; the controller used to steer for the line and let
-// the contact solver sort it out.
+// The second complaint, staged as the player described it. Both cars start on
+// the grid, level, one either side of the road. The racing line is on the
+// blocker's side, so the AI's first act after the lights is to cross the circuit
+// — and the blocker is in the way, going straight down its own half at a
+// perfectly ordinary launch pace.
+//
+// Measured on the code before this change, at Silverstone: the AI drove from
+// -3.38m to +1.30m and the gap closed to exactly 2.00m, which is the contact
+// solver holding two overlapping cars apart. It was not squeezing past, it was
+// leaning on a car that had done nothing but drive in a straight line.
+
+/** A plausible standing-start launch, m/s². Roughly 0-100 km/h in four seconds. */
+const LAUNCH_MS2 = 7;
 
 function standingStartCross(circuitId: string): { worstM: number; hits: number } {
   const def = getCircuit(circuitId);
@@ -207,23 +238,22 @@ function standingStartCross(circuitId: string): { worstM: number; hits: number }
   const runner = engine.cars[1];
   clearTheStage(engine, [0, 1], startS);
 
-  // Blocker ON the racing line's side, a car length up the road. Runner on the
-  // far side, behind it — so the runner's route to the line goes through it.
-  blocker.placeOnTrack(track, startS, lineSide * grid, 0);
-  runner.placeOnTrack(track, startS - 8, -lineSide * grid, 0);
-  const bx = blocker.physics.position.x;
-  const bz = blocker.physics.position.y;
-  const bh = blocker.physics.heading;
+  const blockLat = lineSide * grid;
+  let blockS = startS;
+  let blockV = 0;
+  blocker.placeOnTrack(track, blockS, blockLat, 0);
+  runner.placeOnTrack(track, startS, -lineSide * grid, 0);
 
   engine.started = true;
   engine.startLights = 0;
 
   let worst = Infinity;
   let hits = 0;
-  for (let i = 0; i < Math.round(12 / PHYSICS_DT); i++) {
+  for (let i = 0; i < Math.round(10 / PHYSICS_DT); i++) {
     engine.step();
-    pin(blocker, bx, bz, bh);
-    if (loopDelta(runner.s, startS, len) < -10) break;
+    blockV = Math.min(blockV + LAUNCH_MS2 * PHYSICS_DT, 60);
+    blockS = (blockS + blockV * PHYSICS_DT) % len;
+    railCar(track, blocker, blockS, blockLat, blockV);
     const g = bodyGapM(blocker, runner);
     if (g < worst) worst = g;
     if (g < TOUCH_M) hits++;
@@ -307,9 +337,14 @@ for (const id of ['monza', 'silverstone', 'spa']) {
 // 4. Alongside: racing room
 // ---------------------------------------------------------------------------
 //
-// A car holding a steady line beside the AI, close but not touching. The AI is
-// entitled to race it and is not entitled to lean on it, so the test is whether
-// it converges. Run on a straight, where there is no corner to blame.
+// A car holding a steady line beside the AI, close but not touching, on a
+// straight where there is no corner to blame. The AI is entitled to race it and
+// is not entitled to lean on it, so the test is simply whether it converges.
+//
+// The opponent sits exactly ON the racing line and the AI arrives beside it, off
+// line, level and at the same speed — which means the line the AI wants is
+// occupied for the whole run. That is the point: this is the case where holding
+// the line and leaving racing room are in direct conflict, and racing room wins.
 
 function sideBySide(circuitId: string): { worstM: number; hits: number } {
   const def = getCircuit(circuitId);
@@ -321,8 +356,8 @@ function sideBySide(circuitId: string): { worstM: number; hits: number } {
   let atS = 0;
   for (let s = 0; s < len; s += 20) {
     let flat = true;
-    for (let d = 0; d < 300; d += 20) {
-      if (Math.abs(track.lineCurvature[track.indexAt(s + d)]) > 1 / 1200) { flat = false; break; }
+    for (let d = 0; d < 400; d += 20) {
+      if (Math.abs(track.lineCurvature[track.indexAt(s + d)]) > 1 / 1500) { flat = false; break; }
     }
     if (flat) { atS = s; break; }
   }
@@ -333,23 +368,22 @@ function sideBySide(circuitId: string): { worstM: number; hits: number } {
   engine.started = true;
   engine.startLights = 0;
 
-  const v = track.targetSpeed[track.indexAt(atS)] * 0.7;
+  const v = track.targetSpeed[track.indexAt(atS)] * 0.55;
   const line = track.lineOffset[track.indexAt(atS)];
   const half = track.halfWidthAt(atS);
-  // The held car sits ON the line; the AI arrives beside it, off-line, level.
   const side = -Math.sign(line || 1);
-  held.placeOnTrack(track, atS, line, v);
-  runner.placeOnTrack(track, atS, Math.max(-half + 1.4, Math.min(half - 1.4, line + side * 3.0)), v);
+  let heldS = atS;
+  const heldLat = line;
+  held.placeOnTrack(track, heldS, heldLat, v);
+  runner.placeOnTrack(track, atS, Math.max(-half + 1.4, Math.min(half - 1.4, line + side * 2.9)), v);
 
   let worst = Infinity;
   let hits = 0;
   for (let i = 0; i < Math.round(8 / PHYSICS_DT); i++) {
-    // Held on its line at its speed — a car minding its own business.
-    held.physics.velocity.set(
-      Math.sin(held.physics.heading) * v, Math.cos(held.physics.heading) * v,
-    );
     engine.step();
-    if (Math.abs(loopDelta(runner.s, held.s, len)) > 30) break;
+    heldS = (heldS + v * PHYSICS_DT) % len;
+    railCar(track, held, heldS, heldLat, v);
+    if (Math.abs(loopDelta(runner.s, heldS, len)) > 40) break;
     const g = bodyGapM(held, runner);
     if (g < worst) worst = g;
     if (g < TOUCH_M) hits++;
@@ -407,9 +441,16 @@ function census(circuitId: string, seed: number, laps: number): Census {
         const cb = engine.cars[b];
         if (cb.retired || cb.inPitBox || ca.inPitLane !== cb.inPitLane) continue;
         const key = a * 64 + b;
-        if (bodyGapM(ca, cb) < TOUCH_M) {
+        const g = bodyGapM(ca, cb);
+        // Hysteresis, and it is not cosmetic. Two cars resting against each
+        // other bounce in and out of overlap at the solver's separation
+        // distance; counted on the bare threshold, one pair of cars nudging in
+        // a pit-lane queue produced fifteen hundred "contacts" and drowned out
+        // everything else on the calendar. A pair is one accident until they
+        // are properly clear of each other again.
+        if (g < TOUCH_M) {
           if (!touching.has(key)) { touching.add(key); contacts++; }
-        } else {
+        } else if (g > CLEAR_M) {
           touching.delete(key);
         }
       }
