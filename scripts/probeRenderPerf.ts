@@ -329,16 +329,21 @@ const FACTORS: Record<string, Factor> = {
     aLabel: 'scale 1.00', a: SET_SCALE(1),
     bLabel: 'scale 0.75', b: SET_SCALE(0.75),
   },
-  // Pass order is RenderPass, grade, bloom, OutputPass. See `PostFX`.
+  // Pass order is RenderPass, bloom, grade, OutputPass. See `PostFX`.
   bloom: {
-    name: 'UnrealBloomPass',
-    aLabel: 'bloom on', a: PASS(2, true),
-    bLabel: 'bloom off', b: PASS(2, false),
+    name: 'bloom pyramid',
+    aLabel: 'bloom on', a: PASS(1, true),
+    bLabel: 'bloom off', b: PASS(1, false),
   },
   grade: {
     name: 'grade + AO pass',
-    aLabel: 'grade on', a: PASS(1, true),
-    bLabel: 'grade off', b: PASS(1, false),
+    aLabel: 'grade on', a: PASS(2, true),
+    bLabel: 'grade off', b: PASS(2, false),
+  },
+  output: {
+    name: 'tone map / sRGB pass',
+    aLabel: 'output on', a: PASS(3, true),
+    bLabel: 'output off', b: PASS(3, false),
   },
   bloomres: {
     name: 'bloom chain resolution',

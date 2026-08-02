@@ -29,6 +29,13 @@ import type { CarEntry } from '../race/CarEntry';
  *     preferring a slightly softer image at a stable frame rate over a sharp one
  *     that stutters. A racing game is unplayable below about 50fps.
  *
+ *     It is worth knowing how badly this can go wrong, because it did, for
+ *     every player, on every circuit, for a long time: the scaler collapsed to
+ *     half resolution in the first two seconds of every session and had no
+ *     reachable path back. A quarter of the pixels, stretched to the canvas, is
+ *     an exact description of "grainy and unclear", and no amount of texture or
+ *     material work can be seen through it. See `updateResolutionScale`.
+ *
  *  2. NO PER-FRAME ALLOCATION. Vectors, colours and matrices are hoisted. The
  *     render loop runs at display rate on top of a 120Hz physics loop, and garbage
  *     collection pauses show up as stutter exactly when the car is at the limit.
@@ -77,19 +84,26 @@ const MAX_SCALE = 1.0;
 /**
  * How the dynamic resolution scaler decides. See `updateResolutionScale`.
  *
- * The two thresholds are expressed as MEDIAN FRAME TIME rather than as a frame
- * rate, and that is deliberate: a mean frame rate over half a second is
- * dominated by whichever single frame was worst, and the frames that are worst
- * are the ones nobody can do anything about — a shader compiling, a texture
- * uploading, a garbage collection. A median over a window of frames describes
- * the frame the player is actually being shown.
+ * The thresholds are FRAME TIMES rather than frame rates, and they are compared
+ * against a trimmed mean rather than an average — see `frameCostMs` for why
+ * neither a plain mean nor a median can be used here.
  */
 /** Frames of history each decision is taken on. About 0.75s at 60Hz. */
 const SCALE_WINDOW = 45;
-/** Median frame time above which the image shrinks. 20ms is 50fps. */
+/**
+ * Frame cost above which the image shrinks. 20ms is 50fps.
+ *
+ * Not tighter than this, and that is a measured decision rather than a
+ * tolerant one. On the machine this was developed on the game is CPU-bound at
+ * around 20ms a frame once the drawing buffer is under about 2.6 megapixels:
+ * dropping Monaco from scale 0.95 to 0.85 moved it from 49 to 51fps. Below
+ * this point the scaler would be giving away sharpness and buying nothing,
+ * which is exactly the trade that made the picture look cheap in the first
+ * place.
+ */
 const DROP_MS = 20;
 /**
- * Median frame time below which the image grows. 17.2ms is 58fps.
+ * Frame cost below which the image grows. 17.2ms is 58fps.
  *
  * The number that was here before asked for more than 68fps before it would
  * grow the image back, and 68fps is not a thing a vsync-limited display can
@@ -101,8 +115,17 @@ const DROP_MS = 20;
  * tests for.
  */
 const CLIMB_MS = 17.2;
-/** How far one decision moves the scale. Down is coarser than up on purpose. */
+/**
+ * How far one decision moves the scale. Down is coarser than up on purpose,
+ * and grows with how far over budget the frame is.
+ *
+ * A fixed step is fine for a machine that is a little short and wrong for one
+ * that is nowhere near: at 0.1 a step and 1.2s a decision, a device managing
+ * 10fps would spend six seconds walking down to the floor with every one of
+ * those seconds unplayable. The multiplier gets it there in two.
+ */
 const SCALE_STEP_DOWN = 0.1;
+const SCALE_STEP_DOWN_MAX = 0.25;
 const SCALE_STEP_UP = 0.05;
 /**
  * Seconds after a session loads during which the scaler watches but does not
@@ -112,8 +135,14 @@ const SCALE_STEP_UP = 0.05;
  * first shadow cascade, measured here at 3 to 15fps for about five seconds on a
  * machine that then holds 60 comfortably. Reacting to that transient is what
  * drove the scale to its floor within two seconds of every session starting.
+ *
+ * It is not free, though, so it is not longer than it has to be. A device that
+ * genuinely cannot render the first frame is being asked to keep trying for the
+ * whole of it, and on software GL that is measurable: the headless exit
+ * regression's page-`load` event went from just under its thirty-second budget
+ * to 31.7s with this at five seconds.
  */
-const SCALE_GRACE_S = 5;
+const SCALE_GRACE_S = 3.5;
 /** A drop this soon after a climb is blamed on the climb. */
 const CLIMB_VERDICT_S = 5;
 /** How long a ceiling learned that way survives before it is retried. */
@@ -783,21 +812,43 @@ export class Renderer {
 
   private readonly tmpSize = new THREE.Vector2();
 
-  /** Median of the frame-time window, in milliseconds. */
-  private medianFrameMs(): number {
+  /**
+   * What a frame costs, in milliseconds: the mean of the fastest 90% of the
+   * window.
+   *
+   * A trimmed mean rather than either of the obvious choices, and both of the
+   * obvious choices are wrong here:
+   *
+   *  - A plain MEAN is what the old scaler used, and one 200ms hitch in half a
+   *    second drags it from 60fps to 30 on its own. That is what made the
+   *    scaler collapse the image over a shader compile.
+   *
+   *  - A MEDIAN cannot see judder at all. Under vsync a machine that misses
+   *    every other frame produces exactly two frame times, 16.7ms and 33.3ms,
+   *    and as long as a bare majority land on the fast one the median reads a
+   *    flawless 16.7 — measured here at 45fps on Spa with a median of 17.2ms.
+   *    The scaler would have sat at full resolution calling it 60fps.
+   *
+   * Discarding the slowest tenth removes the hitches without hiding sustained
+   * missed frames, so a 60/40 split between 16.7 and 33.3 reads as 22ms, which
+   * is what it feels like.
+   */
+  private frameCostMs(): number {
     const n = this.frameFilled;
     const a = this.frameSort;
     for (let i = 0; i < n; i++) a[i] = this.frameTimes[i];
-    // An insertion sort on 45 already-nearly-sorted-by-nothing numbers is
-    // faster than allocating a subarray and calling `sort` with a comparator,
-    // and it allocates nothing, which is what matters in a per-frame path.
+    // An insertion sort on 45 numbers allocates nothing and beats `sort` with a
+    // comparator, which matters in a per-frame path.
     for (let i = 1; i < n; i++) {
       const v = a[i];
       let j = i - 1;
       while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; }
       a[j + 1] = v;
     }
-    return n % 2 ? a[(n - 1) >> 1] : (a[n / 2 - 1] + a[n / 2]) * 0.5;
+    const keep = Math.max(1, Math.floor(n * 0.9));
+    let sum = 0;
+    for (let i = 0; i < keep; i++) sum += a[i];
+    return sum / keep;
   }
 
   /** Throws away the history. Called whenever the resolution changes. */
@@ -834,9 +885,9 @@ export class Renderer {
    *      the floor within two seconds of the lights going out, and nothing
    *      afterwards could undo it. See `SCALE_GRACE_S`.
    *
-   *   3. It must judge on a median, not a mean. One 200ms frame in a half
-   *      second drags a mean frame rate from 60 to 30 and triggers a drop that
-   *      the following five hundred frames did not deserve.
+   *   3. It must judge on a statistic that sees sustained judder but not a
+   *      one-off hitch — a plain mean sees only the hitch, a median sees only
+   *      the judder. See `frameCostMs`.
    *
    * Still deliberately asymmetric: down in 0.1 steps after 1.2s, up in 0.05
    * steps after 2.5s, and if a climb is followed by a drop the level that
@@ -860,7 +911,7 @@ export class Renderer {
     }
     if (this.frameFilled < SCALE_WINDOW) return;
 
-    const med = this.medianFrameMs();
+    const med = this.frameCostMs();
     this.fps = 1000 / Math.max(med, 0.001);
 
     if (this.scaleCooldown > 0) return;
@@ -879,7 +930,8 @@ export class Renderer {
       if (this.sessionTime - this.lastClimbAt < CLIMB_VERDICT_S) {
         this.climbCeiling = clamp(this.resolutionScale - SCALE_STEP_UP, MIN_SCALE, MAX_SCALE);
       }
-      this.resolutionScale = clamp(this.resolutionScale - SCALE_STEP_DOWN, MIN_SCALE, MAX_SCALE);
+      const step = clamp(SCALE_STEP_DOWN * (med / DROP_MS), SCALE_STEP_DOWN, SCALE_STEP_DOWN_MAX);
+      this.resolutionScale = clamp(this.resolutionScale - step, MIN_SCALE, MAX_SCALE);
       this.scaleCooldown = 1.2;
       this.lastDropAt = this.sessionTime;
     } else if (med < CLIMB_MS && this.resolutionScale < Math.min(MAX_SCALE, this.climbCeiling)) {
