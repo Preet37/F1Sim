@@ -194,6 +194,31 @@ const PIT_BOX_STOP_SPEED_MS = 1.6;
 const MANDATORY_COMPOUND_MARGIN_LAPS = 4;
 
 /**
+ * How many laps early a strategist will pull a planned stop forward to take
+ * advantage of a neutralisation.
+ *
+ * ONE. The saving on offer is the pit loss you were going to pay anyway, so it
+ * only exists if you were going to pay it very soon; pulled further forward the
+ * "cheap" stop costs a set of tyres with most of its life left and leaves a final
+ * stint too long for the one that replaces it. A neutralisation lasts several
+ * laps, so a lap of reach is enough for any car whose window opens while it is
+ * running — and it is short enough that the plan the player was shown is still
+ * recognisably the plan the race executed. See the note at the call site for
+ * what a generous version of this did to the field.
+ */
+const NEUTRALISED_PULL_FORWARD_LAPS = 1;
+
+/**
+ * Tyre life at which a stop is due on its own merits, 0..1.
+ *
+ * Deliberately the same number `pitAdvice` uses for "TYRES WORN — PIT WINDOW
+ * OPEN". The player is given that radio call and the AI acts on it; if the two
+ * were different constants the strategist would be recommending one thing and
+ * doing another, which is the failure this whole area exists to avoid.
+ */
+const TYRE_PIT_WINDOW = 0.45;
+
+/**
  * Car collision shape: three discs strung along the car's centreline.
  *
  * Radius is the car's half-width, and the offsets span its length, so together
@@ -1701,7 +1726,7 @@ export class RaceEngine {
       const dryUsed = new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather));
       if (dryUsed.size < 2) return 'SECOND COMPOUND REQUIRED';
     }
-    if (wear < 0.45) return 'TYRES WORN — PIT WINDOW OPEN';
+    if (wear < TYRE_PIT_WINDOW) return 'TYRES WORN — PIT WINDOW OPEN';
     return null;
   }
 
@@ -1805,8 +1830,33 @@ export class RaceEngine {
     // Car may enter the pits whilst the Safety Car is deployed unless it is for
     // the purpose of changing tyres" (2025 Art. 55.12 / 2026 Art. B5.13.3, and
     // identically for the VSC at Art. 56.4 / B5.12.3).
+    //
+    // WHAT MAKES IT CHEAP IS THAT IT IS A STOP YOU WERE GOING TO MAKE ANYWAY.
+    // The saving is the pit loss you would otherwise have paid later, and if you
+    // were not going to pay it later then there is no saving — there is a
+    // twenty-second stop, a set of tyres binned with ninety-six percent of its
+    // life left, and a stint at the far end that is now too long for the tyre
+    // that has to cover it.
+    //
+    // The test used to be "more than six laps on this set", which on a
+    // thirty-lap race is most of the field most of the time. Measured at
+    // Silverstone, seed 7: a safety car came out on lap nine and sixteen of the
+    // twenty cars dived in on lap nine or ten, against plans that named laps
+    // sixteen to twenty-two, on tyres reading 0.965 of full life. That single
+    // branch was the whole of the strategy defect `probe:strategy` reports — not
+    // worn tyres and not the mandatory-compound rule, both of which were
+    // measured firing far later or not at all. The plan was not being overridden
+    // by an emergency; it was being thrown away for a bargain that was not one.
+    //
+    // A real strategist pulls a stop forward under a safety car by a couple of
+    // laps, not by twelve. Either the stop is nearly due, or the tyre is in the
+    // window the driver would be told about anyway (`pitAdvice` says "TYRES WORN
+    // — PIT WINDOW OPEN" at the same number, so the AI and the player's radio
+    // call now agree), or it is not a cheap stop and the plan stands.
     if (this.raceControl.neutralisation !== 'none') {
-      const worthIt = car.physics.rearTires.lapsOnSet > 6 &&
+      const nearlyDue = car.lap >= car.targetPitLap - NEUTRALISED_PULL_FORWARD_LAPS;
+      const inTheWindow = car.physics.rearTires.wear < TYRE_PIT_WINDOW;
+      const worthIt = (nearlyDue || inTheWindow) &&
         car.targetPitLap > 0 &&
         this.raceControl.mayEnterPitLane(true, false);
       if (worthIt) return true;
