@@ -33,6 +33,26 @@ const NODE_SPACING_M = 3;
  */
 const LINE_RESPONSE_RADIUS = 2;
 
+/**
+ * Corner radius below which a kerb is laid on the inside automatically, metres.
+ *
+ * 250, down from 400, and the difference is not a matter of taste — it was
+ * measured. At 400m the calendar averaged 42.6% of every lap with kerbing on
+ * one side or the other, running to 59% at Monaco and 58% at Zandvoort. A real
+ * circuit kerbs its apexes and its exits; it does not kerb three fifths of a
+ * lap, and a lap that is more kerb than road is a large part of why the corners
+ * looked wrong. 400m is also simply not a corner at these speeds: it is a fast
+ * curve a Formula One car takes flat, and no driver puts a wheel on a kerb
+ * there because there is nothing to gain by it.
+ *
+ * 250m is the radius at which a car is genuinely turning — around 240 km/h at
+ * the grip these cars have — and it is the point where drivers start using the
+ * inside of the road. It takes the calendar to 32.5%. Anything a circuit wants
+ * beyond that is authored, through `curbOverrides`, which is what that field is
+ * for. `npm run probe:kerbs` prints the per-circuit figures.
+ */
+const AUTO_CURB_RADIUS_M = 250;
+
 /** Reference car used to solve the speed profile. Real cars deviate from it. */
 export interface SpeedSolverParams {
   /** Peak tire friction coefficient on a dry track. */
@@ -301,11 +321,12 @@ export class TrackSpline {
     }
 
     // Curbing: authored, plus automatic curbs on the inside of every corner
-    // tighter than 400m radius. Real circuits kerb every apex, so deriving it
-    // from curvature is both accurate and saves authoring 1900 flags per track.
+    // tighter than AUTO_CURB_RADIUS_M. Real circuits kerb every apex, so
+    // deriving it from curvature is both accurate and saves authoring 1900
+    // flags per track.
     for (let i = 0; i < count; i++) {
       const k = this.curvature[i];
-      if (Math.abs(k) > 1 / 400) {
+      if (Math.abs(k) > 1 / AUTO_CURB_RADIUS_M) {
         // Kerbing goes on the inside of the corner. Positive curvature is a RIGHT
         // turn, whose inside is the track's right-hand side — and the right-hand
         // side is NEGATIVE lateral under the positive-left convention.

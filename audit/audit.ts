@@ -38,11 +38,55 @@ interface AuditApi {
   shootOverview(): Promise<string>;
   /** Eye level beside the racing line, looking down the road. */
   shootEye(fraction: number): Promise<string>;
+  /**
+   * The same, with the driving aids left ON.
+   *
+   * `shootEye` hides the racing-line ribbon so the ASPHALT can be judged. This
+   * one leaves it exactly as a player has it, because a complaint about "what
+   * is that on the corners" is a complaint about the picture the player sees,
+   * overlays included, and the two shots side by side are what tells you which
+   * of the two the complaint is about.
+   */
+  shootEyeAids(fraction: number): Promise<string>;
+  /** Low three-quarter view of one side of the road: the kerb in section. */
+  shootKerb(fraction: number, side: -1 | 1): Promise<string>;
+  /** The tightest corners on the lap, as {fraction, radiusM, side}. */
+  corners(n: number): CornerInfo[];
+  /** Measurements of what is actually drawn beside the road, per lap. */
+  measure(): TrackStats;
+  /** Fires `n` impacts on the focus car, to build a debris field. */
+  crash(n: number, severity: number): void;
+  /** Lap fraction the focus car is at. */
+  focusFraction(): number;
+  /** Close plan view of the road at a lap fraction — for looking at debris. */
+  shootDebris(fraction: number, height: number): Promise<string>;
   /** Composes the shots taken since the last call into one contact sheet. */
   contact(cols: number): Promise<string>;
   /** Captions the shot just taken. */
   label(text: string): void;
   cameraModes: readonly CameraMode[];
+}
+
+interface CornerInfo {
+  fraction: number;
+  radiusM: number;
+  /** Which side of the road the apex kerb is on: +1 left, -1 right. */
+  side: -1 | 1;
+}
+
+interface TrackStats {
+  /** Fraction of lap distance with a kerb on the left / right / either side. */
+  kerbLeft: number;
+  kerbRight: number;
+  kerbEither: number;
+  /** Fraction of the lap whose radius is under 400m, 250m, 120m. */
+  under400: number;
+  under250: number;
+  under120: number;
+  /** Median and mean road half width, metres. */
+  halfWidthM: number;
+  /** Live debris instances on the circuit. */
+  debris: number;
 }
 
 interface CircuitInfo {
@@ -291,12 +335,40 @@ async function shootOverview(): Promise<string> {
 }
 
 async function shootEye(fraction: number): Promise<string> {
-  const track = engine!.track;
-  const i = nodeAt(fraction);
-  const off = track.lineOffset[i];
   // A driver's eye height, on the racing line, looking 120m up the road. This
   // is the view the complaint is actually about: what the asphalt and the
   // trackside furniture look like from a car.
+  aimEye(fraction);
+  return drawAndShoot(renderFree);
+}
+
+/**
+ * The eye-level view with the driving aids left in.
+ *
+ * `renderFree` turns the racing line off on its way past, so this turns it back
+ * on immediately before the draw and off again after. The ribbon is rebuilt
+ * around the FOCUS CAR rather than around this camera, so it is also nudged to
+ * the camera's own station first — otherwise the shot is of a piece of road
+ * with no overlay on it, which would be evidence about a picture nobody sees.
+ */
+async function shootEyeAids(fraction: number): Promise<string> {
+  const track = engine!.track;
+  const i = nodeAt(fraction);
+  aimEye(fraction);
+  return drawAndShoot(() => {
+    renderFree();
+    renderer.racingLine?.setVisible(true);
+    renderer.racingLine?.update(track.dist[i], 62);
+    renderer.post.render(renderer.scene, freeCam);
+    renderer.racingLine?.setVisible(false);
+  });
+}
+
+/** Points `freeCam` down the road from the racing line at a lap fraction. */
+function aimEye(fraction: number): void {
+  const track = engine!.track;
+  const i = nodeAt(fraction);
+  const off = track.lineOffset[i];
   const x = track.px[i] + track.nx[i] * off;
   const z = track.pz[i] + track.nz[i] * off;
   const y = track.elevation[i] + 1.15;
@@ -310,7 +382,154 @@ async function shootEye(fraction: number): Promise<string> {
   );
   freeCam.fov = 55;
   freeCam.updateProjectionMatrix();
+}
+
+/**
+ * A close, low look along one edge of the road.
+ *
+ * Standing out in the run-off at roughly a mirror's height and looking back
+ * across the edge, so the kerb is seen in something near section: its width
+ * against the white line, its height against the asphalt, the pitch of its
+ * bands, and whatever is or is not drawn between it and the run-off. A shot
+ * from the racing line cannot show any of that — at 1.15m and forty metres out
+ * a kerb is four pixels tall.
+ */
+async function shootKerb(fraction: number, side: -1 | 1): Promise<string> {
+  const track = engine!.track;
+  const i = nodeAt(fraction);
+  const hw = track.width[i] * 0.5;
+  // Just inboard of the white line rather than out in the run-off: at a street
+  // circuit 4.5m outboard is inside the wall, and the shot came back as a
+  // close-up of concrete. Standing on the road and looking along the edge shows
+  // the kerb, the paint and the ground beyond it in one frame everywhere.
+  const lat = side * (hw - 2.0);
+  freeCam.position.set(
+    track.px[i] + track.nx[i] * lat - track.tx[i] * 10,
+    track.elevation[i] + 1.6,
+    track.pz[i] + track.nz[i] * lat - track.tz[i] * 10,
+  );
+  const j = track.indexAt((track.dist[i] + 16) % track.length);
+  const aim = side * (track.width[j] * 0.5 + 1.5);
+  freeCam.up.set(0, 1, 0);
+  freeCam.lookAt(
+    track.px[j] + track.nx[j] * aim,
+    track.elevation[j] + 0.1,
+    track.pz[j] + track.nz[j] * aim,
+  );
+  freeCam.fov = 45;
+  freeCam.updateProjectionMatrix();
   return drawAndShoot(renderFree);
+}
+
+/** Close plan over the road, for counting and colouring what is lying on it. */
+async function shootDebris(fraction: number, height: number): Promise<string> {
+  const track = engine!.track;
+  const i = nodeAt(fraction);
+  freeCam.position.set(
+    track.px[i] - track.tx[i] * height * 0.5,
+    track.elevation[i] + height,
+    track.pz[i] - track.tz[i] * height * 0.5,
+  );
+  freeCam.up.set(0, 1, 0);
+  freeCam.lookAt(track.px[i], track.elevation[i], track.pz[i]);
+  freeCam.fov = 55;
+  freeCam.updateProjectionMatrix();
+  return drawAndShoot(renderFree);
+}
+
+/**
+ * The tightest corners on the lap.
+ *
+ * Local maxima of |curvature|, taken strongest first and kept at least 120m
+ * apart so a long corner reports once rather than eleven times.
+ */
+function corners(n: number): CornerInfo[] {
+  const track = engine!.track;
+  const order: number[] = [];
+  for (let i = 0; i < track.count; i++) order.push(i);
+  order.sort((a, b) => Math.abs(track.curvature[b]) - Math.abs(track.curvature[a]));
+
+  const out: CornerInfo[] = [];
+  const taken: number[] = [];
+  for (const i of order) {
+    if (out.length >= n) break;
+    const s = track.dist[i];
+    let near = false;
+    for (const t of taken) {
+      const d = Math.abs(s - t);
+      if (Math.min(d, track.length - d) < 120) { near = true; break; }
+    }
+    if (near) continue;
+    taken.push(s);
+    const k = track.curvature[i];
+    out.push({
+      fraction: s / track.length,
+      radiusM: k !== 0 ? 1 / Math.abs(k) : Infinity,
+      side: k > 0 ? -1 : 1,
+    });
+  }
+  return out;
+}
+
+/** What is actually drawn beside the road, as fractions of a lap. */
+function measure(): TrackStats {
+  const track = engine!.track;
+  const n = track.count;
+  const per = track.length / n;
+  let kl = 0, kr = 0, ke = 0, u400 = 0, u250 = 0, u120 = 0;
+  const halves: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const l = track.isCurbLeft[i] === 1;
+    const r = track.isCurbRight[i] === 1;
+    if (l) kl++;
+    if (r) kr++;
+    if (l || r) ke++;
+    const rad = track.curvature[i] !== 0 ? 1 / Math.abs(track.curvature[i]) : Infinity;
+    if (rad < 400) u400++;
+    if (rad < 250) u250++;
+    if (rad < 120) u120++;
+    halves.push(track.width[i] * 0.5);
+  }
+  halves.sort((a, b) => a - b);
+  const w = renderer as unknown as { wreckage?: { liveCount: number } };
+  return {
+    kerbLeft: kl / n, kerbRight: kr / n, kerbEither: ke / n,
+    under400: u400 / n, under250: u250 / n, under120: u120 / n,
+    halfWidthM: halves[Math.floor(n / 2)],
+    debris: w.wreckage?.liveCount ?? -1,
+  };
+}
+
+/**
+ * Fires impacts on the FOCUS car, exactly as the engine would.
+ *
+ * On one car rather than spread round the field, because the shot that has to
+ * be taken afterwards is a close overhead of the debris, and debris scattered
+ * over eleven cars at eleven different points of the lap photographs as an
+ * empty piece of road. The reported race had six contact events; this puts all
+ * six in one place, which is also the worst case.
+ */
+function crash(n: number, severity: number): void {
+  const car = focus!;
+  for (let k = 0; k < n; k++) {
+    engine!.impacts.push({ carIndex: car.index, severity });
+    // One rendered frame per impact: `drainImpacts` runs inside
+    // `Renderer.render`, not inside the engine step, and it drains the whole
+    // queue at once — six queued together would be one impact's worth of
+    // scatter from one point rather than six along a piece of road.
+    frame();
+    for (let s = 0; s < 40; s++) engine!.step();
+  }
+  for (let s = 0; s < 240; s++) { engine!.step(); }
+  // Let the shards land. Forty frames rather than ninety: software rendering is
+  // the entire cost of this sweep and a shard launched at 4.6 m/s is on the
+  // ground inside a second.
+  for (let f = 0; f < 40; f++) frame();
+}
+
+/** Lap fraction the focus car is at — where `crash` will have left its debris. */
+function focusFraction(): number {
+  return (focus!.s % engine!.track.length) / engine!.track.length;
 }
 
 /**
@@ -357,6 +576,7 @@ const labels: string[] = [];
 
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
+  shootEyeAids, shootKerb, shootDebris, corners, measure, crash, focusFraction,
   label: (t: string) => { labels.push(t); },
   cameraModes: CAMERA_MODES,
 };

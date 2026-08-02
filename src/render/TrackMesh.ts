@@ -62,7 +62,7 @@ const GROUND_Y = Y_GROUND - 0.6;
  */
 const VERGE_FALLBACK_M = 16;
 /** Most the ground beside the road may step in or out between nodes, metres. */
-const SHOULDER_SLOPE_M = 0.6;
+export const SHOULDER_SLOPE_M = 0.6;
 /**
  * Clearance the ground beside the road keeps from every other part of the
  * circuit, metres.
@@ -75,7 +75,33 @@ const SHOULDER_SLOPE_M = 0.6;
 const SHOULDER_CLEARANCE_M = 0.4;
 /** How far the kerb section reaches outboard of the white line, metres. */
 const KERB_OUTER_M = 1.185;
+/**
+ * Width of the astroturf mat laid outboard of a kerb, metres.
+ *
+ * Measured off the reference footage against the kerb beside it: the mat runs
+ * about one and a half kerb widths, which at this kerb is a shade under two
+ * metres. It is capped by whatever room there actually is beside the road, so a
+ * narrow shoulder gets a narrow mat and no shoulder gets none.
+ */
+const ASTROTURF_W_M = 1.9;
+/**
+ * Width of the run-off strip beyond the white line, metres.
+ *
+ * Exported because `computeShoulders` takes it as an argument and a probe that
+ * wants the real answer has to pass the real number.
+ */
+export const RUNOFF_W = 9;
+/** The same, on a street circuit, where the wall is a metre off the paint. */
+export const STREET_RUNOFF_W = 2.2;
 const Y_RUNOFF = 0.0;
+/**
+ * Height of the astroturf mat, metres above the run-off plane.
+ *
+ * A whisker up rather than exactly on it. The mat is laid on top of the run-off
+ * surface in reality and coplanar in a depth buffer here, and coplanar surfaces
+ * fight.
+ */
+const Y_ASTRO = 0.006;
 const Y_ROAD = 0.02;
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
@@ -134,6 +160,14 @@ const COLOUR = {
   whiteLine: new THREE.Color(0xd8dade),
   kerbA: new THREE.Color(0xc8353c),
   kerbB: new THREE.Color(0xe8e8ea),
+  /**
+   * Astroturf beyond the kerb.
+   *
+   * A dark, slightly blue-shifted green — synthetic grass under floodlights is
+   * noticeably deader than the real thing beside it, which is what makes it
+   * read as a mat rather than as a lawn.
+   */
+  astroturf: new THREE.Color(0x2c6136),
   grass: new THREE.Color(0x2c4526),
   desert: new THREE.Color(0x8a7355),
   gravel: new THREE.Color(0x9a9285),
@@ -351,117 +385,41 @@ class StripBuilder {
   }
 }
 
-export function buildTrackMeshes(
-  track: TrackSpline,
-  quality: 'low' | 'high',
-  world: WorldModel,
-): TrackMeshes {
-  const root = new THREE.Group();
-  root.name = 'circuit';
-
-  const geometries: THREE.BufferGeometry[] = [];
-  const materials: THREE.Material[] = [];
-  const textures: THREE.Texture[] = [];
-
+/**
+ * How far the ground beside the road extends, per node, per side — run-off,
+ * verge and the skirt that drops off the end of it.
+ *
+ * Extracted from the mesh builder so a probe can measure it without a browser.
+ * The defect this exists to catch — a hole at the apex of a tight corner, where
+ * the ground beside the road stops being drawn at all — is a property of these
+ * numbers rather than of the triangles made from them, so it is answerable
+ * headlessly, per node, on all eleven circuits, in a second. See
+ * `scripts/probeShoulders.ts`.
+ *
+ * This has to be capped by the circuit itself, for the same reason the barrier
+ * line does. Where a lap runs back close to itself, a nine-metre run-off and
+ * the five metres of verge behind it are laid straight over the OTHER section's
+ * racing surface, and the skirt at the end of them is a vertical wall of grass
+ * dropping through the middle of the road. Suzuka's crossover is the worst case
+ * on the calendar - the two sections pass within a quarter of a metre of each
+ * other vertically - and COTA's turn 11 hairpin and Monaco's climb out of
+ * Sainte Devote do the same thing less violently.
+ *
+ * The first version of this shipped without the cap and put 6.35m of verge
+ * across Suzuka's road, which is a worse artefact than the black line it was
+ * added to fix.
+ *
+ * Same test as the barrier's: the outer edge must not be inside any node's road
+ * disc, with no lap-distance exclusion, which is sound because the shoulder is
+ * always at least half a metre outboard of its own road edge and therefore
+ * never inside its own disc.
+ */
+export function computeShoulders(
+  track: TrackSpline, world: WorldModel, runoffW: number,
+): { left: Float64Array; right: Float64Array } {
   const count = track.count;
-  // Step in nodes. At 3m per node, a step of 2 gives 6m quads — plenty for a
-  // stylised look and it halves the triangle count on mobile.
-  const step = quality === 'low' ? 3 : 2;
-
-  // One instance shared by every surface, so the whole circuit samples the same
-  // two textures and adjacent surfaces line up with no seam between them.
-  const detail = new SurfaceDetail();
-
-  const road = new StripBuilder();
-  const kerbs = new StripBuilder();
-  const lines = new StripBuilder();
-  const runoff = new StripBuilder();
-  /** Grass verge out to the barrier, and the skirt down to the ground plane. */
-  const verge = new StripBuilder();
-  const walls = new StripBuilder();
-  const pit = new StripBuilder();
-
-  const LINE_W = EDGE_LINE_WIDTH_M;
-  const RUNOFF_W = 9;
-  const WALL_H = 1.5;
-
-  // The pit lane's full plan and cross-section, derived once and shared by
-  // everything below — the lane surface, its paint, its walls, and the decision
-  // about which pieces of ordinary trackside furniture have to give way to it.
-  const pitGeom = pitLaneGeometry(track.def, track.length);
-
-  /**
-   * How far off the track edge the barrier, the fencing and the hoardings
-   * stand at this node — or 0 where the pit lane and the paddock take over.
-   *
-   * Read from the world model rather than derived here. The simulation collides
-   * against this same line, and a barrier that is drawn in a different place
-   * from the one a car bounces off is precisely the bug that let cars end up on
-   * the far side of the fence.
-   */
   const barrierAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
-
-  /**
-   * Pushes a piece of trackside furniture out until it is off the circuit.
-   *
-   * The gantry and the braking boards were placed at a fixed offset from the
-   * local node — the same mistake the set dressing was fixed for, left in two
-   * places because they are small. Small does not help: a 7.2m gantry post
-   * 1.6m off the edge of a street circuit, or a marker board 1.4m off it, sits
-   * inside the run-off, and wherever the lap folds back that run-off is another
-   * piece of road.
-   *
-   * @param i     node the object is anchored at
-   * @param side  which side of the road, +1 left
-   * @param from  starting distance beyond the track edge
-   * @param halfX half extent across the road
-   * @param halfZ half extent along it
-   * @returns the signed lateral offset to use
-   */
-  const clearLateral = (
-    i: number, side: -1 | 1, from: number, halfX: number, halfZ: number,
-  ): number => {
-    const hw = track.width[i] * 0.5;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const lat = side * (hw + from + attempt * 2);
-      const x = track.px[i] + track.nx[i] * lat;
-      const z = track.pz[i] + track.nz[i] * lat;
-      if (world.keepOut.clearOfBox(
-        x, z, track.tz[i], track.tx[i], halfX, halfZ, FURNITURE_CLEARANCE_M,
-      )) return lat;
-    }
-    return side * (hw + from);
-  };
-
-  const isStreet = track.def.scenery === 'street';
-  const runoffW = isStreet ? 2.2 : RUNOFF_W;
-  const runoffColour = isStreet ? COLOUR.pit : COLOUR.runoff;
-  const vergeColour = groundColour(track.def.scenery);
-
-  /**
-   * How far the ground beside the road extends, per node, per side — run-off,
-   * verge and the skirt that drops off the end of it.
-   *
-   * This has to be capped by the circuit itself, for the same reason the
-   * barrier line does. Where a lap runs back close to itself, a nine-metre
-   * run-off and the five metres of verge behind it are laid straight over the
-   * OTHER section's racing surface, and the skirt at the end of them is a
-   * vertical wall of grass dropping through the middle of the road. Suzuka's
-   * crossover is the worst case on the calendar — the two sections pass within
-   * a quarter of a metre of each other vertically — and COTA's turn 11 hairpin
-   * and Monaco's climb out of Sainte Dévote do the same thing less violently.
-   *
-   * The first version of this shipped without the cap and put 6.35m of verge
-   * across Suzuka's road, which is a worse artefact than the black line it was
-   * added to fix.
-   *
-   * Same test as the barrier's: the outer edge must not be inside any node's
-   * road disc, with no lap-distance exclusion, which is sound because the
-   * shoulder is always at least half a metre outboard of its own road edge and
-   * therefore never inside its own disc.
-   */
-  const shoulderAt = ((): (node: number, side: -1 | 1) => number => {
     const road = new KeepOutField();
     for (let i = 0; i < count; i++) {
       road.add(track.px[i], track.pz[i], track.width[i] * 0.5);
@@ -523,6 +481,29 @@ export function buildTrackMeshes(
         arr[i] = w;
       }
 
+      // --- Erode by one node --------------------------------------------
+      //
+      // Each width above was tested against a probe box half a node long, so it
+      // vouches for the ground within about a metre and a half of its own node
+      // and no further. The strips are swept between stations, and a station's
+      // quad reaches into its neighbours' territory — so a node may only claim
+      // a width its neighbours can also stand behind.
+      //
+      // The old sweep got this for free and by accident, by taking the smaller
+      // of a span's two ends; that is also what made the outer edge a staircase
+      // and put a slot through to the ground plane at every tight corner. Doing
+      // it here instead keeps the guarantee and leaves the widths continuous,
+      // which is what the sweep needs. Without it, Suzuka's crossover puts
+      // 0.83m of verge on the other leg's racing surface and `validate:world`
+      // says so.
+      const eroded = Float64Array.from(arr);
+      for (let i = 0; i < count; i++) {
+        const p = (i - 1 + count) % count;
+        const n = (i + 1) % count;
+        eroded[i] = Math.min(arr[p], arr[i], arr[n]);
+      }
+      arr.set(eroded);
+
       // Slope-limited both ways, wrapped, downward only, so the shoulder eases
       // in and out instead of stepping — and so smoothing can never push it
       // back over a piece of road the search just moved it off.
@@ -540,9 +521,103 @@ export function buildTrackMeshes(
       }
     }
 
-    return (node: number, side: -1 | 1): number =>
-      (side > 0 ? out.left : out.right)[node];
-  })();
+  return out;
+}
+
+
+export function buildTrackMeshes(
+  track: TrackSpline,
+  quality: 'low' | 'high',
+  world: WorldModel,
+): TrackMeshes {
+  const root = new THREE.Group();
+  root.name = 'circuit';
+
+  const geometries: THREE.BufferGeometry[] = [];
+  const materials: THREE.Material[] = [];
+  const textures: THREE.Texture[] = [];
+
+  const count = track.count;
+  // Step in nodes. At 3m per node, a step of 2 gives 6m quads — plenty for a
+  // stylised look and it halves the triangle count on mobile.
+  const step = quality === 'low' ? 3 : 2;
+
+  // One instance shared by every surface, so the whole circuit samples the same
+  // two textures and adjacent surfaces line up with no seam between them.
+  const detail = new SurfaceDetail();
+
+  const road = new StripBuilder();
+  const kerbs = new StripBuilder();
+  const lines = new StripBuilder();
+  const runoff = new StripBuilder();
+  /** Grass verge out to the barrier, and the skirt down to the ground plane. */
+  const verge = new StripBuilder();
+  const walls = new StripBuilder();
+  const pit = new StripBuilder();
+
+  const LINE_W = EDGE_LINE_WIDTH_M;
+  const WALL_H = 1.5;
+
+  // The pit lane's full plan and cross-section, derived once and shared by
+  // everything below — the lane surface, its paint, its walls, and the decision
+  // about which pieces of ordinary trackside furniture have to give way to it.
+  const pitGeom = pitLaneGeometry(track.def, track.length);
+
+  /**
+   * How far off the track edge the barrier, the fencing and the hoardings
+   * stand at this node — or 0 where the pit lane and the paddock take over.
+   *
+   * Read from the world model rather than derived here. The simulation collides
+   * against this same line, and a barrier that is drawn in a different place
+   * from the one a car bounces off is precisely the bug that let cars end up on
+   * the far side of the fence.
+   */
+  const barrierAt = (node: number, side: -1 | 1): number =>
+    (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
+
+  /**
+   * Pushes a piece of trackside furniture out until it is off the circuit.
+   *
+   * The gantry and the braking boards were placed at a fixed offset from the
+   * local node — the same mistake the set dressing was fixed for, left in two
+   * places because they are small. Small does not help: a 7.2m gantry post
+   * 1.6m off the edge of a street circuit, or a marker board 1.4m off it, sits
+   * inside the run-off, and wherever the lap folds back that run-off is another
+   * piece of road.
+   *
+   * @param i     node the object is anchored at
+   * @param side  which side of the road, +1 left
+   * @param from  starting distance beyond the track edge
+   * @param halfX half extent across the road
+   * @param halfZ half extent along it
+   * @returns the signed lateral offset to use
+   */
+  const clearLateral = (
+    i: number, side: -1 | 1, from: number, halfX: number, halfZ: number,
+  ): number => {
+    const hw = track.width[i] * 0.5;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const lat = side * (hw + from + attempt * 2);
+      const x = track.px[i] + track.nx[i] * lat;
+      const z = track.pz[i] + track.nz[i] * lat;
+      if (world.keepOut.clearOfBox(
+        x, z, track.tz[i], track.tx[i], halfX, halfZ, FURNITURE_CLEARANCE_M,
+      )) return lat;
+    }
+    return side * (hw + from);
+  };
+
+  const isStreet = track.def.scenery === 'street';
+  const runoffW = isStreet ? STREET_RUNOFF_W : RUNOFF_W;
+  const runoffColour = isStreet ? COLOUR.pit : COLOUR.runoff;
+  const vergeColour = groundColour(track.def.scenery);
+
+  // How far the ground beside the road reaches, per node, per side. Capped by
+  // the circuit itself where the lap folds back onto its own run-off — see
+  // `computeShoulders`, which is where all of the reasoning lives.
+  const shoulders = computeShoulders(track, world, runoffW);
+  const shoulderAt = (node: number, side: -1 | 1): number =>
+    (side > 0 ? shoulders.left : shoulders.right)[node];
 
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
@@ -662,6 +737,26 @@ export function buildTrackMeshes(
     };
   };
 
+  /**
+   * How far the ground beside the road reaches at an interpolated station.
+   *
+   * The exact counterpart of `frameLerp`, walking the same node polyline with
+   * the same parameter, so a station's width is the same number whichever of
+   * the two spans meeting there asks for it. That identity is the whole fix for
+   * the hole at the apex: two neighbouring spans that agree at their shared
+   * station cannot leave a slot between them.
+   */
+  const shoulderLerp = (a: number, b: number, f: number, side: -1 | 1): number => {
+    const arr = side > 0 ? shoulders.left : shoulders.right;
+    const span = ((b - a) % count + count) % count || count;
+    const u = f * span;
+    const k = Math.min(span - 1, Math.floor(u));
+    const t = u - k;
+    const i = (a + k) % count;
+    const j = (i + 1) % count;
+    return arr[i] * (1 - t) + arr[j] * t;
+  };
+
   /** World position at a frame station and a signed lateral offset. */
   const framePt = (
     s: ReturnType<typeof frameLerp>, lat: number, dy: number,
@@ -722,6 +817,45 @@ export function buildTrackMeshes(
       const outX = s0.nx * sign, outZ = s0.nz * sign;
       const nrm = (n: readonly [number, number]) =>
         [outX * n[0], n[1], outZ * n[0]] as const;
+
+      // --- Astroturf ------------------------------------------------------
+      //
+      // The green mat immediately outboard of the kerb. It is not decoration:
+      // it is there to be slippery, so that a driver who runs beyond the kerb
+      // gets nothing for it, and it is on the exit of very nearly every corner
+      // on the calendar. Bahrain has it at every kerb, which is what the
+      // reference footage shows and what the circuit looks like from a car —
+      // red and white, then green, then sand.
+      //
+      // Emitted into the KERB builder rather than into one of its own, so it
+      // costs no additional draw call and no additional material on a scene
+      // that is already running at 96-106 calls. Two triangles per station per
+      // side, against the twenty-two the kerb section itself is: about a tenth,
+      // and the automatic kerb threshold moving from 400m to 250m has just
+      // taken a fifth of the kerbing off the calendar, so the mesh is smaller
+      // than it was before either change.
+      //
+      // Only where there is genuinely room for it beyond the kerb. Where the
+      // shoulder runs out — the inside of a hairpin, a crossover — the mat is
+      // simply not laid, exactly as the kerb is not.
+      const room0 = shoulderLerp(a, b, f0, sign === 1 ? 1 : -1);
+      const room1 = shoulderLerp(a, b, f1, sign === 1 ? 1 : -1);
+      const astro = Math.min(
+        ASTROTURF_W_M,
+        room0 - KERB_OUTER_M - SHOULDER_CLEARANCE_M,
+        room1 - KERB_OUTER_M - SHOULDER_CLEARANCE_M,
+      );
+      if (astro > 0.15) {
+        const g0 = at(s0, KERB_OUTER_M, Y_ASTRO);
+        const g1 = at(s1, KERB_OUTER_M, Y_ASTRO);
+        const h1 = at(s1, KERB_OUTER_M + astro, Y_ASTRO);
+        const h0 = at(s0, KERB_OUTER_M + astro, Y_ASTRO);
+        kerbs.quadFlat(
+          g0[0], g0[1], g0[2], g1[0], g1[1], g1[2],
+          h1[0], h1[1], h1[2], h0[0], h0[1], h0[2],
+          COLOUR.astroturf,
+        );
+      }
 
       for (let i = 0; i < KERB_SEG.length; i++) {
         const p0 = KERB_PROFILE[i];
@@ -882,25 +1016,56 @@ export function buildTrackMeshes(
     // edge at a hairpin, which is a sliver of ground plane between two surfaces
     // that are supposed to meet — the same black line again, in the places the
     // eye is most drawn to.
+    //
+    // THE HOLE AT THE APEX. Every one of these three strips used to be swept at
+    // the NARROWER of its span's two ends — one width for the whole span — and
+    // that is what put a hole in the corners. The shoulder is a per-node
+    // quantity that is allowed to change by `SHOULDER_SLOPE_M` between
+    // neighbours, so a span ending at 5.0m sits next to one ending at 5.6m and
+    // the outer edge of the ground is a staircase rather than a curve. Nothing
+    // joins the two treads. The skirt below each one is a vertical wall dropping
+    // to the ground plane, so between the two walls there is an open slot 0.6m
+    // wide and as deep as the circuit is high — and you can see straight through
+    // it, which is exactly the "hole at the curve" that was reported.
+    //
+    // It is worst where the shoulder changes fastest, and the shoulder changes
+    // fastest where the road curves hardest, which is why it appeared at "certain
+    // corners" and never on a straight. `npm run probe:shoulders` measures both
+    // halves of that: 3357 places on the calendar step by more than 0.3m between
+    // adjacent nodes, and the mean radius at the nodes where the shoulder runs
+    // out entirely is 20 to 26 metres against a lap mean in the thousands.
+    //
+    // Taking the width at each STATION instead makes the outer edge a
+    // continuous polyline: both spans meeting at a station use that station's
+    // width, so there is nothing to see through. It also turns the places where
+    // the shoulder genuinely runs out — a hairpin whose inside touches the road
+    // on the far side of the arc — from a hole with two vertical edges into a
+    // point where the strip pinches to zero width and reopens. Same triangle
+    // count, same draw calls; it is the same sweep with the width read one level
+    // finer.
     for (let k = 0; k < step; k++) {
-      const s0 = frameLerp(a, b, k / step);
-      const s1 = frameLerp(a, b, (k + 1) / step);
+      const f0 = k / step;
+      const f1 = (k + 1) / step;
+      const s0 = frameLerp(a, b, f0);
+      const s1 = frameLerp(a, b, f1);
 
       for (const side of [-1, 1] as const) {
-        // The narrower of the two ends of the span. The width is a per-node
-        // quantity and the strip is swept between nodes, so using the near end
-        // alone lets the far end overhang by up to one slope step.
-        const outW = Math.min(shoulderAt(a, side), shoulderAt(b, side));
-        if (outW <= 0) continue;
-        const inner = Math.min(runoffW, outW);
+        const w0 = shoulderLerp(a, b, f0, side);
+        const w1 = shoulderLerp(a, b, f1, side);
+        if (w0 <= 0 && w1 <= 0) continue;
+        const in0 = Math.min(runoffW, w0);
+        const in1 = Math.min(runoffW, w1);
 
+        /** One band, with its own width at each end of the span. */
         const strip = (
-          builder: StripBuilder, inW: number, outWidth: number, colour: THREE.Color,
+          builder: StripBuilder,
+          inA: number, inB: number, outA: number, outB: number,
+          colour: THREE.Color,
         ): void => {
-          const i0 = framePt(s0, side * (s0.hw + inW), Y_RUNOFF);
-          const i1 = framePt(s1, side * (s1.hw + inW), Y_RUNOFF);
-          const o1 = framePt(s1, side * (s1.hw + outWidth), Y_RUNOFF);
-          const o0 = framePt(s0, side * (s0.hw + outWidth), Y_RUNOFF);
+          const i0 = framePt(s0, side * (s0.hw + inA), Y_RUNOFF);
+          const i1 = framePt(s1, side * (s1.hw + inB), Y_RUNOFF);
+          const o1 = framePt(s1, side * (s1.hw + outB), Y_RUNOFF);
+          const o0 = framePt(s0, side * (s0.hw + outA), Y_RUNOFF);
           builder.quadFlat(
             i0[0], i0[1], i0[2], i1[0], i1[1], i1[2],
             o1[0], o1[1], o1[2], o0[0], o0[1], o0[2],
@@ -908,15 +1073,15 @@ export function buildTrackMeshes(
           );
         };
 
-        strip(runoff, 0, inner, runoffColour);
-        if (outW > inner) strip(verge, inner, outW, vergeColour);
+        strip(runoff, 0, 0, in0, in1, runoffColour);
+        if (w0 > in0 || w1 > in1) strip(verge, in0, in1, w0, w1, vergeColour);
 
         // The skirt down to the ground plane. Into `verge`, which is drawn
         // double-sided: this is a vertical face, `quadFlat`'s upward-winding
         // rule says nothing useful about one, and a skirt that is culled from
         // the side you happen to be looking at is the hole it exists to fill.
-        const e0 = framePt(s0, side * (s0.hw + outW), Y_RUNOFF);
-        const e1 = framePt(s1, side * (s1.hw + outW), Y_RUNOFF);
+        const e0 = framePt(s0, side * (s0.hw + w0), Y_RUNOFF);
+        const e1 = framePt(s1, side * (s1.hw + w1), Y_RUNOFF);
         if (e0[1] > GROUND_Y + 0.05 || e1[1] > GROUND_Y + 0.05) {
           verge.quad(
             e0[0], e0[1], e0[2],

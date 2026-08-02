@@ -16,6 +16,10 @@ import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
 import { MarshalPosts } from './MarshalPost';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
+// One threshold, read by the simulation (which files the debris and raises the
+// flag) and by the renderer (which takes the part off the car). It used to be
+// declared privately in both.
+import { PART_DETACH_HEALTH, PART_REPAIR_HEALTH } from '../race/DamageModel';
 
 /**
  * The render layer. Reads simulation state and draws it; the simulation has no
@@ -33,18 +37,6 @@ import type { CarEntry } from '../race/CarEntry';
  *     render loop runs at display rate on top of a 120Hz physics loop, and garbage
  *     collection pauses show up as stutter exactly when the car is at the limit.
  */
-
-/**
- * Component health at which a piece of bodywork falls off.
- *
- * The bottom of the 'critical' band in the damage model, so the car loses the
- * part at exactly the point the HUD has been calling it critical and the physics
- * has been charging for it. One threshold, three consumers.
- */
-const PART_DETACH_HEALTH = 0.3;
-
-/** Health a part must be restored above for the visual to be put back. */
-const PART_REPAIR_HEALTH = 0.85;
 
 /** Suspension health below which a corner starts visibly folding up. */
 const SUSPENSION_BEND_HEALTH = 0.62;
@@ -771,6 +763,7 @@ export class Renderer {
   render(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     this.updateResolutionScale(dt);
     this.drainImpacts(engine);
+    this.drainDebris(engine);
     this.syncCars(dt, engine, focusCar);
     this.wreckage?.advance(dt);
     this.director.update(dt, focusCar, engine.track, engine.world);
@@ -896,20 +889,11 @@ export class Renderer {
       const y = engine.track.elevationAt(car.s);
       this.effects.reportImpact(car.physics.position.x, y, car.physics.position.y, ev.severity);
 
-      // A hard hit sheds bodywork whether or not a whole component was written
-      // off by it. Carbon is brittle: it does not dent, it breaks, and the
-      // pieces go on the road.
-      if (ev.severity > 0.45) {
-        this.wreckage?.spawn(
-          car.physics.position.x, y + 0.35, car.physics.position.y,
-          car.physics.velocity.x, car.physics.velocity.y,
-          0.7, 0.2, 0.7,
-          car.team.colour,
-          y,
-          Math.min(6, 1 + Math.round(ev.severity * 5)),
-          ev.carIndex,
-        );
-      }
+      // Whether the hit shed any bodywork is not decided here any more. It is
+      // decided in the simulation, because a piece of carbon on the racing line
+      // raises a yellow flag and a flag changes how the race is driven — see
+      // `RaceEngine.shedFromImpact` and `src/race/DebrisField.ts`. This half of
+      // the program draws what the ledger says is there, and nothing else.
 
       // Only the player's own accident shakes the camera. A shunt happening to
       // somebody else on the other side of the circuit should not.
@@ -918,6 +902,66 @@ export class Renderer {
       }
     }
     list.length = 0;
+  }
+
+  /**
+   * Draws the piles the simulation has put on the circuit, and stops drawing
+   * the ones the marshals have collected.
+   *
+   * Two edges rather than a state: a pile appears once and goes once, and every
+   * frame in between it is a hundred sleeping instances that cost nothing.
+   *
+   * The reason the ledger is upstream of this is worth restating, because the
+   * old arrangement looked like a rendering concern and was not. Debris used to
+   * be spawned here and removed only when the car it came off was RECOVERED, so
+   * a car that lost a sidepod and kept racing left its bodywork on the circuit
+   * until the session ended. Six contact events in two laps left six permanent
+   * piles of it. No amount of retinting fixes carbon that never goes away, and
+   * the thing that takes it away — marshals, sent because a post is showing a
+   * yellow — belongs to the race, not to the picture of it.
+   */
+  private drainDebris(engine: RaceEngine): void {
+    const field = engine.debris;
+
+    for (let i = 0; i < field.spawned.length; i++) {
+      const pile = field.spawned[i];
+      const car = engine.cars[pile.ownerIndex];
+      if (!car) continue;
+
+      // Where on the car it let go. The ledger files a pile at the CAR, which
+      // is the right place for the marshals to be sent to; the shards want the
+      // point the part was actually bolted to, which is the renderer's own
+      // knowledge because only the renderer has a mesh.
+      let x = pile.x;
+      let z = pile.z;
+      const v = this.carVisuals[pile.ownerIndex];
+      if (pile.source > 0 && v) {
+        const id = BODY_PART_IDS[pile.source - 1];
+        const o = v.bodyParts[id].origin;
+        const sin = Math.sin(car.physics.heading);
+        const cos = Math.cos(car.physics.heading);
+        x += o.x * cos + o.z * sin;
+        z += -o.x * sin + o.z * cos;
+      }
+
+      const groundY = engine.track.elevationAt(pile.s);
+      this.wreckage?.spawn(
+        x, pile.y, z,
+        pile.vx, pile.vz,
+        pile.sizeX, pile.sizeY, pile.sizeZ,
+        car.team.colour,
+        groundY,
+        pile.pieces,
+        pile.id,
+      );
+      // Carbon shattering is bright. The burst is the moment; the shards are
+      // what is left of it.
+      if (pile.source > 0) this.effects.reportImpact(x, pile.y, z, 0.75);
+    }
+    field.spawned.length = 0;
+
+    for (let i = 0; i < field.removed.length; i++) this.wreckage?.clearPile(field.removed[i]);
+    field.removed.length = 0;
   }
 
   /**
@@ -933,7 +977,7 @@ export class Renderer {
    * The only thing that IS remembered is which parts have already been thrown on
    * the ground, because debris is spawned once, on the transition.
    */
-  private syncDamage(car: CarEntry, v: CarVisual, engine: RaceEngine): void {
+  private syncDamage(car: CarEntry, v: CarVisual): void {
     const h = car.damage.health;
 
     // --- Bodywork -----------------------------------------------------------
@@ -953,10 +997,9 @@ export class Renderer {
       if (lost === !part.attached) continue;
 
       if (lost) {
-        // Throw the part on the road at the point it was bolted to, carrying
-        // the car's velocity — which is what puts a wing that came off at speed
-        // down the road rather than under the car that lost it.
-        this.spawnPartDebris(car, v, id, engine);
+        // The carbon itself is the simulation's business — it filed the pile on
+        // the step the health crossed the threshold, and `drainDebris` will
+        // have drawn it. All that is left here is taking the part off the car.
         v.setPartAttached(id, false);
       } else if (condition[id] > PART_REPAIR_HEALTH) {
         // Repaired in the pits.
@@ -987,36 +1030,6 @@ export class Renderer {
       hub.rotation.z = -side * collapse * 0.42;
       hub.rotation.x = collapse * 0.10;
     }
-  }
-
-  /** Sheds a part onto the road, with sparks and a scatter of carbon. */
-  private spawnPartDebris(
-    car: CarEntry, v: CarVisual, id: BodyPartId, engine: RaceEngine,
-  ): void {
-    const part = v.bodyParts[id];
-    const p = car.physics;
-    const sin = Math.sin(p.heading);
-    const cos = Math.cos(p.heading);
-
-    // The part's mounting point, rotated out of the car's frame into the world.
-    const o = part.origin;
-    const wx = p.position.x + o.x * cos + o.z * sin;
-    const wz = p.position.y - o.x * sin + o.z * cos;
-    const groundY = engine.track.elevationAt(car.s);
-    const wy = groundY + o.y;
-
-    this.wreckage?.spawn(
-      wx, wy, wz,
-      p.velocity.x, p.velocity.y,
-      part.size.x, part.size.y, part.size.z,
-      car.team.colour,
-      groundY,
-      id === 'frontWing' ? 5 : 4,
-      car.index,
-    );
-    // Carbon shattering is bright. The burst is the moment; the shards are what
-    // is left of it.
-    this.effects.reportImpact(wx, wy, wz, 0.75);
   }
 
   /** Copies simulation state onto the visuals. */
@@ -1055,15 +1068,12 @@ export class Renderer {
       // still have a scatter of carbon lying on the racing line. `visible` is
       // the latch: this runs once, on the frame the recovery finished.
       if (car.retired && car.cleared) {
-        if (v.root.visible) {
-          v.root.visible = false;
-          this.wreckage?.clearOwner(i);
-        }
+        v.root.visible = false;
         continue;
       }
       v.root.visible = true;
 
-      this.syncDamage(car, v, engine);
+      this.syncDamage(car, v);
 
       // The onboard camera is the pod on the roll hoop, and the detailed
       // cockpit wheel is drawn on top of the coarse one. Both live in the same

@@ -3,7 +3,11 @@ import { PHYSICS_DT } from '../core/SimClock';
 import { TrackSpline } from '../track/TrackSpline';
 import { CarEntry } from './CarEntry';
 import { RaceControlManager } from './RaceControlManager';
-import { bandOf, COMPONENT_NAMES, type ImpactZone } from './DamageModel';
+import {
+  bandOf, COMPONENT_NAMES, BODY_PART_IDS, PART_DETACH_HEALTH, PART_REPAIR_HEALTH,
+  PART_SIZE_M, type BodyPartId, type ImpactZone,
+} from './DamageModel';
+import { DebrisField } from './DebrisField';
 import { DRIVERS, getTeam, type Driver } from '../data/teams';
 import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
@@ -216,6 +220,29 @@ const MAX_DIRTY_AIR_LOSS = 0.4;
 /** Peak drag reduction from a tow. */
 const MAX_SLIPSTREAM_GAIN = 0.2;
 
+/**
+ * Impact severity above which loose carbon comes off the car.
+ *
+ * `severity` is the closing speed divided by 12 m/s, so this is a 6.6 m/s hit —
+ * hard enough to break an endplate off, and well clear of the wheel-to-wheel
+ * rubbing that goes on all race. The old figure was 0.45, which is a 5.4 m/s
+ * nudge, and combined with up to six pieces per event it carpeted the circuit.
+ */
+const IMPACT_SHED_SEVERITY = 0.55;
+
+/**
+ * Size of the piece of bodywork a hard contact breaks off, metres.
+ *
+ * A front wing endplate, roughly, which is what usually goes. The shards drawn
+ * from it are a fraction of this again — see `Wreckage.spawn`.
+ */
+const IMPACT_SHARD_SIZE_M = [0.45, 0.12, 0.35] as const;
+
+/** How far above the road each part is mounted, metres. */
+const PART_MOUNT_HEIGHT_M: Record<BodyPartId, number> = {
+  frontWing: 0.16, rearWing: 0.85, sidepodL: 0.42, sidepodR: 0.42,
+};
+
 export class RaceEngine {
   readonly track: TrackSpline;
   /**
@@ -278,6 +305,17 @@ export class RaceEngine {
    * reference so nothing here keeps a car alive past a session.
    */
   readonly impacts: { carIndex: number; severity: number }[] = [];
+
+  /**
+   * The carbon lying on the circuit, and the marshals coming for it.
+   *
+   * In the simulation rather than the renderer because it raises FLAGS, and a
+   * flag changes how the race is driven. A headless race and a rendered one
+   * have to come out the same, so the thing that puts a yellow out cannot live
+   * in the half of the program that only exists when there is a screen. See
+   * `DebrisField.ts`.
+   */
+  readonly debris = new DebrisField();
 
   readonly environment: EnvironmentState = {
     trackTempC: 38, airTempC: 24, wetness: 0, airDensityRatio: 1, abrasion: 1,
@@ -576,6 +614,9 @@ export class RaceEngine {
     // local yellow for the rest of the race, which keeps the safety car
     // deployed permanently and turns every remaining lap into a safety-car lap.
     this.updateRecoveries(dt);
+    // ...and collect the carbon. Same shape, same reason: without it a wing
+    // that came off in lap two is still on the racing line at the flag.
+    this.updateDebris(dt);
 
     for (let i = 0; i < this.cars.length; i++) {
       const car = this.cars[i];
@@ -641,6 +682,10 @@ export class RaceEngine {
       if (car.damage.specDirty) car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
 
       const crossedLine = car.updateProjection(this.track);
+      // After the projection, so a part that has just come off is filed at the
+      // lap distance and lateral offset the car is at NOW — which is the place
+      // the marshals will be sent to and the sector that shows the yellow.
+      this.updateShedParts(car);
       this.enforceBarriers(car, dt);
       this.collideWithObstacles(car, dt);
       this.updateSectorTiming(car);
@@ -657,7 +702,7 @@ export class RaceEngine {
     // 4. Race control.
     this.raceControl.update(
       dt, this.cars, this.standings, this.time,
-      this.config.kind === 'race', this.weather.wetness,
+      this.config.kind === 'race', this.weather.wetness, this.debris,
     );
     const leadLap = this.leaderLap();
     for (const car of this.cars) {
@@ -2393,11 +2438,116 @@ export class RaceEngine {
    */
   private reportImpact(car: CarEntry, severity: number): void {
     if (severity < 0.08) return;
+    this.shedFromImpact(car, severity);
     // Bounded. Twenty cars in a first-corner accident can report a lot of
     // contacts in one frame, and the renderer only needs to know that it was
     // bad, not to draw every individual one.
     if (this.impacts.length >= 24) return;
     this.impacts.push({ carIndex: car.index, severity });
+  }
+
+  /**
+   * Puts a hard hit's worth of loose carbon on the road.
+   *
+   * The threshold and the count are both a good deal meaner than they were, and
+   * the reason is arithmetic rather than taste. At `severity > 0.45` — a 5.4
+   * m/s closing speed, which is a firm nudge — with up to six pieces, the six
+   * contact events of an ordinary two-lap stint produced thirty-odd panels of
+   * bodywork on the circuit. A real Grand Prix does not leave thirty pieces of
+   * visible carbon on the road in two laps; a wheel-to-wheel rub leaves none,
+   * and a proper hit leaves an endplate and a couple of fragments.
+   *
+   * So: nothing until the hit is genuinely hard, and then one to three pieces.
+   * `severity` here is the closing speed over 12 m/s, so 0.55 is a 6.6 m/s
+   * impact — the point at which an endplate is coming off rather than scuffing.
+   */
+  private shedFromImpact(car: CarEntry, severity: number): void {
+    if (severity < IMPACT_SHED_SEVERITY) return;
+    const pieces = Math.min(3, 1 + Math.round((severity - IMPACT_SHED_SEVERITY) * 4));
+    this.recordDebris(car, IMPACT_SHARD_SIZE_M, pieces, 0, 0.35);
+  }
+
+  /**
+   * Notices a whole piece of bodywork leaving the car and puts it on the road.
+   *
+   * This decision used to be made in the renderer, from the same health numbers,
+   * and made there ONLY: the simulation had no idea a wing had come off, so the
+   * carbon on the road was invisible to race control and nothing was ever going
+   * to be sent to collect it. Reading it here means the ledger, the flag and
+   * the shards on screen all follow from one crossing of one threshold.
+   */
+  private updateShedParts(car: CarEntry): void {
+    const h = car.damage.health;
+    for (let k = 0; k < BODY_PART_IDS.length; k++) {
+      const id = BODY_PART_IDS[k];
+      const health = id === 'frontWing'
+        ? Math.min(h.frontWingL, h.frontWingR)
+        : h[id as 'rearWing' | 'sidepodL' | 'sidepodR'];
+      const gone = health <= PART_DETACH_HEALTH;
+      if (gone === car.partsShed[k]) {
+        // Refitted in the pits: the latch reopens so the same wing can be lost
+        // again later in the race.
+        if (!gone && health > PART_REPAIR_HEALTH) car.partsShed[k] = false;
+        continue;
+      }
+      if (!gone) {
+        if (health > PART_REPAIR_HEALTH) car.partsShed[k] = false;
+        continue;
+      }
+      car.partsShed[k] = true;
+      // A wing breaks into more pieces than a sidepod, because it is a thin
+      // laminate on two mounts and a sidepod is one large moulding.
+      this.recordDebris(
+        car, PART_SIZE_M[id], id === 'frontWing' ? 4 : 3, k + 1, PART_MOUNT_HEIGHT_M[id],
+      );
+    }
+  }
+
+  /**
+   * Files one pile of bodywork with the marshals.
+   *
+   * @param size    what the part measures, so the shards are a fraction of the
+   *                thing they came off rather than a fixed size
+   * @param source  0 for loose carbon off an impact, otherwise the body part's
+   *                index plus one, so the renderer can offset the shards to the
+   *                point the part was bolted to
+   * @param heightM how far above the road it left the car
+   */
+  private recordDebris(
+    car: CarEntry, size: readonly [number, number, number],
+    pieces: number, source: number, heightM: number,
+  ): void {
+    const offRoadM = Math.abs(car.lateral) - this.track.halfWidthAt(car.s);
+    this.debris.add({
+      s: car.s,
+      lateralM: car.lateral,
+      ownerIndex: car.index,
+      x: car.physics.position.x,
+      y: this.track.elevationAt(car.s) + heightM,
+      z: car.physics.position.y,
+      vx: car.physics.velocity.x,
+      vz: car.physics.velocity.y,
+      sizeX: size[0], sizeY: size[1], sizeZ: size[2],
+      pieces,
+      offRoadM,
+      source,
+    });
+  }
+
+  /**
+   * Runs the marshals' operation on every pile of carbon.
+   *
+   * Same shape as `updateRecoveries`, and deliberately: a piece of bodywork on
+   * the racing line is an incident with a flag on it and an operation to end
+   * it, not an object with a lifetime. What differs is only the precondition —
+   * a car needs the race neutralised before anybody goes near it, and a wing
+   * endplate is picked up by hand under the local yellow.
+   */
+  private updateDebris(dt: number): void {
+    const rc = this.raceControl;
+    const neutralised = this.config.kind !== 'race' ||
+      rc.neutralisation !== 'none' || rc.sessionFlag === 'red';
+    this.debris.advance(dt, neutralised);
   }
 
   /**
@@ -2482,6 +2632,9 @@ export class RaceEngine {
       op.plan(offRoadM, this.track.targetSpeed[this.track.indexAt(car.s)], car.wreckSeverity);
 
       if (op.advance(dt, permitted)) {
+        // The crane takes the wreck and the marshals sweep after it, so this
+        // car's bodywork goes off the ledger on the same step the car does.
+        this.debris.clearOwner(car.index);
         rc.log(
           car.driver.code + '’s car has been recovered — ' +
           (this.track.cornerNameAt(car.s) || 'sector ' + (rc.sectorIndexAt(car.s) + 1)) +

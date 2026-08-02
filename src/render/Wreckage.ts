@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { carbonWeaveMap } from './DetailMaps';
 
 /**
  * The pieces that end up on the road after an accident.
@@ -42,6 +43,40 @@ const SKID = 0.62;
 /** Below this speed a piece touching the road is done moving. */
 const SLEEP_SPEED = 0.35;
 
+/**
+ * The largest a single piece of loose bodywork gets, metres.
+ *
+ * Shard size used to be a fraction of the PART, uncapped, and a front wing is
+ * two metres across — so losing one put two-metre flat panels on the road, and
+ * at a glance a rectangle that size lying on the asphalt does not read as
+ * debris at all, it reads as a texture bug. Real carbon breaks small: the
+ * biggest recognisable thing that usually survives a wing failure is an
+ * endplate, and half a metre is generous for that.
+ */
+const MAX_SHARD_M = 0.55;
+
+/**
+ * How dark the painted face is against the team's own colour.
+ *
+ * A livery colour is chosen to read on a car under television lighting at 300
+ * km/h; the same value on a 30cm panel lying flat on grey asphalt is a
+ * fluorescent rectangle, which is exactly the "blue pieces everywhere"
+ * complaint. Real painted carbon is a dark, low-chroma version of the team
+ * colour with a satin lacquer over it, so the tint is pulled most of the way
+ * toward the carbon underneath and the SHEEN is left to do the work of telling
+ * you what it is.
+ */
+const PAINT_DARKEN = 0.34;
+
+/**
+ * Base colour of the unpainted side, before the per-instance tint.
+ *
+ * Not zero. A face at literally black takes no light at all and reads as a hole
+ * in the road; woven carbon under lacquer is a very dark grey with a strong
+ * specular, which is what this plus the roughness below produce.
+ */
+const CARBON = 0.055;
+
 interface Shard {
   /** World position. */
   x: number; y: number; z: number;
@@ -55,17 +90,19 @@ interface Shard {
   rest: number;
   /** True once it has stopped and its matrix no longer needs writing. */
   asleep: boolean;
+  /** Whether it settles painted side up. Decided at spawn, applied on landing. */
+  faceUp: boolean;
   /** False for a slot that has never been used. */
   live: boolean;
   /**
-   * Index of the car this came off, so the marshals can sweep up after it.
+   * Which pile in the simulation's ledger this shard belongs to.
    *
-   * A recovery takes the car AND what it left on the road — a corner race
-   * control has declared clear does not still have half a front wing lying on
-   * the racing line. Without an owner there is no way to tell one car's carbon
-   * from another's, and the only options are to clear all of it or none.
+   * The renderer no longer decides how long a piece of carbon stays on the
+   * circuit — `RaceEngine.debris` does, because that decision raises a yellow
+   * flag and a flag changes how the race is driven. This is the handle the
+   * ledger retires a pile by. See `src/race/DebrisField.ts`.
    */
-  owner: number;
+  pile: number;
 }
 
 export class Wreckage {
@@ -92,12 +129,61 @@ export class Wreckage {
     // a bevelled one would cost.
     const geometry = new THREE.BoxGeometry(1, 1, 1);
 
+    // --- One painted face, five carbon ones ---------------------------------
+    //
+    // Bodywork is a carbon laminate with paint on the OUTSIDE only. The inner
+    // face, and every broken edge, is bare weave — so a piece lying on the road
+    // shows the livery if it happens to have landed the right way up and shows
+    // black if it has not, and the edges are black either way. Painting all six
+    // faces a flat saturated team colour is what makes the old debris read as
+    // coloured paper: a real shard is mostly black with one bright side.
+    //
+    // Done with a vertex colour rather than six materials or a texture atlas,
+    // because three.js multiplies the vertex colour by the per-instance colour —
+    // so one geometry and one material still paint every team's carbon, and the
+    // whole field stays a single draw call.
+    //
+    // `BoxGeometry` lays its faces out +x, -x, +y, -y, +z, -z, four vertices
+    // each. Vertices 8..11 are the +y face; that is the painted one.
+    const faceColours = new Float32Array(24 * 3);
+    for (let v = 0; v < 24; v++) {
+      const painted = v >= 8 && v < 12;
+      const c = painted ? 1 : CARBON;
+      faceColours[v * 3] = c;
+      faceColours[v * 3 + 1] = c;
+      faceColours[v * 3 + 2] = c;
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(faceColours, 3));
+
+    // The weave itself. Cloned rather than shared, because the car samples the
+    // same image through a uv set measured in metres and this samples it
+    // through a box unwrap — the two want different repeats, and mutating the
+    // cached texture would retile every carbon surface on the car.
+    const weave = carbonWeaveMap();
+    let normalMap: THREE.Texture | null = null;
+    if (weave) {
+      normalMap = weave.clone();
+      normalMap.needsUpdate = true;
+      normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
+      // Twill at roughly a centimetre over a typical shard face. Fine enough to
+      // read as woven at arm's length and coarse enough to survive the mip
+      // chain from a car going past at speed.
+      normalMap.repeat.set(22, 22);
+    }
+
     const material = new THREE.MeshStandardMaterial({
-      // Vertex colours off; the tint is per instance, so one material paints
-      // debris in every team's livery.
-      roughness: 0.72,
-      metalness: 0.08,
+      // The per-vertex face mask above, multiplied by the per-instance livery
+      // tint. One material, every team, one draw call.
+      vertexColors: true,
+      // Lacquered carbon, not matte plastic. The old 0.72 gave a shard no
+      // highlight at all, and a highlight travelling along a piece as the
+      // camera passes it is most of what says "this is a hard, curved, painted
+      // object" rather than "this is a coloured quad".
+      roughness: 0.38,
+      metalness: 0.18,
+      ...(normalMap ? { normalMap } : {}),
     });
+    if (normalMap) material.normalScale.set(0.7, 0.7);
 
     this.mesh = new THREE.InstancedMesh(geometry, material, cap);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -112,7 +198,7 @@ export class Wreckage {
       this.shards.push({
         x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
         groundY: 0, rx: 0, ry: 0, rz: 0, sx: 0.1, sy: 0.02, sz: 0.1,
-        rest: 0.01, asleep: true, live: false, owner: -1,
+        rest: 0.01, asleep: true, live: false, faceUp: true, pile: -1,
       });
     }
   }
@@ -125,8 +211,8 @@ export class Wreckage {
    * @param velocity the car's velocity at the moment it let go, which is what
    *        makes debris land AHEAD of a car that was still moving
    * @param count how many pieces the part breaks into
-   * @param owner index of the car it came off, so `clearOwner` can sweep it up
-   *        when that car is recovered
+   * @param pile  the simulation ledger's id for this piece of bodywork, so
+   *        `clearPile` can retire it when the marshals have collected it
    */
   spawn(
     x: number, y: number, z: number,
@@ -135,8 +221,14 @@ export class Wreckage {
     colour: number,
     groundY: number,
     count: number,
-    owner: number,
+    pile: number,
   ): void {
+    // The painted face, darkened and de-chroma'd off the team's own colour.
+    // Computed once per pile rather than once per shard: every piece of one
+    // wing was the same paint.
+    this.colour.setHex(colour);
+    this.colour.multiplyScalar(PAINT_DARKEN);
+
     for (let i = 0; i < count; i++) {
       const s = this.shards[this.next];
       const slot = this.next;
@@ -163,18 +255,28 @@ export class Wreckage {
       s.ry = Math.random() * Math.PI * 2;
       s.rz = Math.random() * Math.PI * 2;
 
-      // Roughly panel-shaped: a fraction of the part in plan, and thin.
-      const k = 0.28 + Math.random() * 0.42;
-      s.sx = Math.max(0.06, sizeX * k * (0.5 + Math.random()));
-      s.sz = Math.max(0.06, sizeZ * k * (0.5 + Math.random()));
-      s.sy = 0.012 + Math.random() * 0.022;
+      // Roughly panel-shaped: a fraction of the part in plan, thin, and CAPPED.
+      // Without the cap a two-metre front wing put two-metre rectangles on the
+      // road, which is what a texture bug looks like rather than what carbon
+      // looks like. See `MAX_SHARD_M`.
+      const k = 0.18 + Math.random() * 0.26;
+      s.sx = Math.min(MAX_SHARD_M, Math.max(0.05, sizeX * k * (0.5 + Math.random())));
+      s.sz = Math.min(MAX_SHARD_M, Math.max(0.05, sizeZ * k * (0.5 + Math.random())));
+      // 4-14mm. A carbon skin is 2-3mm and a shard of one carries a little of
+      // its own curvature; anything thicker reads as a block of wood.
+      s.sy = 0.004 + Math.random() * 0.010;
       s.rest = s.sy * 0.5;
 
       s.asleep = false;
       s.live = true;
-      s.owner = owner;
+      s.pile = pile;
+      // Which way up it will finish. A piece of bodywork lands painted side up
+      // or painted side down with no particular preference, and a field where
+      // every single shard shows the livery is a field of coloured paper. Half
+      // of them are decided here and enforced when the piece settles.
+      s.faceUp = Math.random() < 0.5;
 
-      this.mesh.setColorAt(slot, this.colour.setHex(colour));
+      this.mesh.setColorAt(slot, this.colour);
       this.write(slot, s);
     }
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
@@ -218,7 +320,10 @@ export class Wreckage {
           // of the session — this is the whole reason a permanent debris field
           // is affordable.
           s.vx = s.vy = s.vz = 0;
-          s.rx = 0;
+          // Flat on the road, and the right way up. `faceUp` decides which of
+          // the two faces the light gets: a half-turn about x puts the painted
+          // +y face against the asphalt and the bare weave into the sky.
+          s.rx = s.faceUp ? 0 : Math.PI;
           s.rz = 0;
           s.asleep = true;
         }
@@ -240,24 +345,28 @@ export class Wreckage {
   }
 
   /**
-   * Sweeps up everything one car left on the road.
+   * Retires one pile, because the marshals have collected it.
    *
-   * Called when that car's recovery finishes, so the wreck and its bodywork go
-   * together. A swept piece is retired to a zero scale rather than compacted
-   * out of the buffer: the instance slots are a ring the spawner already
-   * recycles oldest-first, so a dead slot costs one degenerate box until it is
-   * reused and nothing at all after that — no reallocation, no re-upload of the
-   * whole matrix buffer, and no change to the instance count the integrity
-   * probe counts across load/unload cycles.
+   * Which pile, and when, is decided in `src/race/DebrisField.ts` and not here:
+   * carbon on the racing line raises a yellow flag, a flag changes how the race
+   * is driven, and anything that changes how the race is driven has to live
+   * where a headless simulation can see it. This end of it is bookkeeping.
+   *
+   * A swept piece is retired to a zero scale rather than compacted out of the
+   * buffer: the instance slots are a ring the spawner already recycles
+   * oldest-first, so a dead slot costs one degenerate box until it is reused
+   * and nothing at all after that — no reallocation, no re-upload of the whole
+   * matrix buffer, and no change to the instance count the integrity probe
+   * counts across load/unload cycles.
    */
-  clearOwner(owner: number): void {
+  clearPile(pile: number): void {
     let dirty = false;
     for (let i = 0; i < this.used; i++) {
       const s = this.shards[i];
-      if (!s.live || s.owner !== owner) continue;
+      if (!s.live || s.pile !== pile) continue;
       s.live = false;
       s.asleep = true;
-      s.owner = -1;
+      s.pile = -1;
       s.sx = 0; s.sy = 0; s.sz = 0;
       this.write(i, s);
       dirty = true;
@@ -265,9 +374,16 @@ export class Wreckage {
     if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
   }
 
+  /** How many pieces are actually lying on the circuit right now. */
+  get liveCount(): number {
+    let n = 0;
+    for (let i = 0; i < this.used; i++) if (this.shards[i].live) n++;
+    return n;
+  }
+
   /** Empties the field. Called when a session is unloaded. */
   clear(): void {
-    for (const s of this.shards) { s.live = false; s.asleep = true; s.owner = -1; }
+    for (const s of this.shards) { s.live = false; s.asleep = true; s.pile = -1; }
     this.used = 0;
     this.next = 0;
     this.mesh.count = 0;

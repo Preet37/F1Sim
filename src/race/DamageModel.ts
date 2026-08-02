@@ -57,6 +57,48 @@ export const COMPONENT_NAMES: Record<ComponentId, string> = {
 /** Where on the car an impact landed, so damage lands on the right parts. */
 export type ImpactZone = 'front' | 'rear' | 'left' | 'right' | 'floor';
 
+/**
+ * The four pieces of bodywork that can leave the car whole.
+ *
+ * Distinct from `ComponentId`, which is what the damage model tracks: the front
+ * wing is two components because each half can be damaged separately, and one
+ * PART because it is one assembly on two mounts and losing either side takes
+ * the whole thing off.
+ */
+export type BodyPartId = 'frontWing' | 'rearWing' | 'sidepodL' | 'sidepodR';
+
+export const BODY_PART_IDS: readonly BodyPartId[] = [
+  'frontWing', 'rearWing', 'sidepodL', 'sidepodR',
+];
+
+/**
+ * Health below which a part is no longer on the car.
+ *
+ * This used to be a private constant in `Renderer`, which is where the decision
+ * that a part had come off was made — so the SIMULATION did not know a wing had
+ * left the car, and could not put its carbon in the ledger that raises a flag
+ * for it. Here, both halves read the same number.
+ */
+export const PART_DETACH_HEALTH = 0.3;
+/** Health above which a part has been refitted in the pits. */
+export const PART_REPAIR_HEALTH = 0.85;
+
+/**
+ * Roughly what each part measures, metres, as (across, up, along).
+ *
+ * Real dimensions of the object, not of the mesh that stands in for it: the
+ * ledger is part of the simulation and the simulation has no mesh. A 2026 front
+ * wing spans the full 2.0m regulation width, a rear wing assembly is about a
+ * metre across and half a metre tall, and a sidepod is a long, deep, shallow
+ * thing running most of the length of the car's midsection.
+ */
+export const PART_SIZE_M: Record<BodyPartId, readonly [number, number, number]> = {
+  frontWing: [2.0, 0.28, 0.85],
+  rearWing: [1.05, 0.5, 0.55],
+  sidepodL: [0.62, 0.55, 2.1],
+  sidepodR: [0.62, 0.55, 2.1],
+};
+
 export class CarDamage {
   /** Health per component, 1 = pristine. */
   readonly health: Record<ComponentId, number> = {
