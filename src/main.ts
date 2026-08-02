@@ -2889,8 +2889,11 @@ class Game {
           inTheCut ? 'Through, on this order' : 'Outside the cut',
           inTheCut ? 'is-good' : 'is-warn');
       }
-      if (isQualifying) {
-        // The cost of the accident, stated as the one thing it actually costs.
+      // The cost of the accident, stated as the one thing it actually costs
+      // (Art. B4.3.2) — and only where there is something left to be barred
+      // from. In Q3 there is no rest of qualifying, so saying the driver takes
+      // no further part in it would be technically true and completely useless.
+      if (isQualifying && phase && phase < 3) {
         fact('Rest of qualifying', 'No further part', 'is-warn');
       }
     }
