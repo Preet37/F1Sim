@@ -20,6 +20,10 @@ import {
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
 import { KeepOutField } from '../track/WorldObstacles';
+import {
+  TerrainField, buildTerrainMesh, GROUND_SAMPLE_STRIDE, GROUND_MESH_NAME,
+  type GroundSamples,
+} from './Terrain';
 import type { SceneryItem, WorldModel } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
@@ -44,16 +48,43 @@ export interface TrackMeshes {
   dispose(): void;
 }
 
-/** Vertical offsets, in metres, to avoid z-fighting between coplanar surfaces. */
-const Y_GROUND = -0.02;
 /**
- * Height of the flat ground plane that fills the world beyond the circuit.
+ * How far beyond the edge of the road the banking's cross-slope runs out.
  *
- * Named, because the circuit's outer edge now drops a skirt down to exactly
- * this. Two numbers that had to agree and did not is how the void under an
- * elevated circuit went unnoticed for as long as it did.
+ * BANKING IS A PROPERTY OF THE ROAD, not of the county it is in. The surface
+ * height beside the centreline was `-lat * tan(bank)` with no limit on `lat`,
+ * and `lat` reaches the barrier: at Zandvoort's two 18-degree corners the
+ * ground beside the road is nearly seventeen metres wide, so the outer edge of
+ * the run-off was drawn 7.4m ABOVE the racing surface on one side and 7.4m
+ * below it on the other. What that looks like is a corner cut into a hillside
+ * with a wall around it — and the skirt under the raised side then dropped from
+ * 7.4m up all the way to the ground, which is the "flat wall" the Zandvoort
+ * note in the project's open items describes.
+ *
+ * A real banked corner runs its camber out over a few metres of shoulder and is
+ * then flat. Five metres, blended exponentially so there is no crease at the
+ * white line and no crease where it finishes: at 18 degrees the ground beside
+ * the road now rises at most 1.6m, which is a berm rather than a cliff.
  */
-const GROUND_Y = Y_GROUND - 0.6;
+const BANK_RUNOUT_M = 5;
+
+/**
+ * Height of the surface at a signed lateral offset, relative to the centreline,
+ * for a given banking angle and road half width.
+ *
+ * The ONE place the cross-slope is computed. It was inlined in five, which is
+ * how the barrier line, the kerb section and the run-off came to be built on
+ * three copies of the same unbounded formula — and why fixing one of them would
+ * have torn the surfaces apart at their joins instead of fixing anything.
+ */
+export function bankHeight(bank: number, lat: number, halfWidth: number): number {
+  if (bank === 0) return 0;
+  const a = Math.abs(lat);
+  const eff = a <= halfWidth
+    ? a
+    : halfWidth + BANK_RUNOUT_M * (1 - Math.exp(-(a - halfWidth) / BANK_RUNOUT_M));
+  return (lat < 0 ? eff : -eff) * Math.tan(bank);
+}
 /**
  * Verge width used where the barrier is suppressed, metres.
  *
@@ -93,7 +124,7 @@ const ASTROTURF_W_M = 1.9;
 export const RUNOFF_W = 9;
 /** The same, on a street circuit, where the wall is a metre off the paint. */
 export const STREET_RUNOFF_W = 2.2;
-const Y_RUNOFF = 0.0;
+export const Y_RUNOFF = 0.0;
 /**
  * Height of the astroturf mat, metres above the run-off plane.
  *
@@ -102,7 +133,7 @@ const Y_RUNOFF = 0.0;
  * fight.
  */
 const Y_ASTRO = 0.006;
-const Y_ROAD = 0.02;
+export const Y_ROAD = 0.02;
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 
@@ -549,6 +580,62 @@ export function computeShoulders(
   return out;
 }
 
+/**
+ * The heights the ground is known at: the circuit's own cross-section.
+ *
+ * Five points per sampled node — the centreline, the two edges of the racing
+ * surface, and the two outer edges of the ground beside it — at the height
+ * those points are actually drawn at, banking and all.
+ *
+ * THE ROAD EDGES ARE IN HERE BECAUSE OF BANKING. Without them the field knew
+ * the surface only at the centreline and out at the barrier, and across the
+ * width of a banked corner it interpolated between the two — while the road
+ * itself tilts. At Zandvoort's 18-degree corners the road's lower edge is 2.4m
+ * below its centreline, so the terrain, which was following the centreline,
+ * came out HALF A METRE ABOVE THE RACING SURFACE and stood there as patches of
+ * sand on the road. `validate:world` found it; five points fix it, because now
+ * the nearest thing the ground knows about under the road is the road.
+ *
+ * Exported so `probe:shoulders` measures the ground the renderer builds rather
+ * than a second implementation of it. The last two defects in this file were
+ * both two copies of one formula drifting apart.
+ */
+export function groundSamples(
+  track: TrackSpline, shoulders: { left: Float64Array; right: Float64Array },
+): GroundSamples {
+  const count = track.count;
+  const n = Math.max(1, Math.floor(count / GROUND_SAMPLE_STRIDE));
+  const per = 5;
+  const x = new Float64Array(n * per);
+  const z = new Float64Array(n * per);
+  const y = new Float64Array(n * per);
+  const r = new Float64Array(n * per);
+  const lats = new Array<number>(per);
+
+  for (let k = 0; k < n; k++) {
+    const i = (k * GROUND_SAMPLE_STRIDE) % count;
+    const hw = track.width[i] * 0.5;
+    const bank = track.banking[i];
+    const foot = hw + Math.max(shoulders.left[i], shoulders.right[i]) + 2;
+
+    // A shoulder of zero puts its outer edge on the road edge, which is still
+    // the right height for it.
+    lats[0] = 0;
+    lats[1] = hw;
+    lats[2] = -hw;
+    lats[3] = hw + Math.max(0, shoulders.left[i]);
+    lats[4] = -(hw + Math.max(0, shoulders.right[i]));
+    for (let q = 0; q < per; q++) {
+      const lat = lats[q];
+      const o = k * per + q;
+      x[o] = track.px[i] + track.nx[i] * lat;
+      z[o] = track.pz[i] + track.nz[i] * lat;
+      y[o] = track.elevation[i] + bankHeight(bank, lat, hw);
+      r[o] = foot;
+    }
+  }
+  return { x, z, y, r };
+}
 
 export function buildTrackMeshes(
   track: TrackSpline,
@@ -644,14 +731,19 @@ export function buildTrackMeshes(
   const shoulderAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? shoulders.left : shoulders.right)[node];
 
+  // The ground the whole circuit stands on, derived from the circuit's own
+  // elevation profile. Everything that used to reference a constant ground
+  // height — the skirt below the verge, the plane beyond it — asks this
+  // instead. See `Terrain.ts` for why there is no constant any more.
+  const terrain = new TerrainField(track, groundSamples(track, shoulders));
+
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
   const pz = (i: number, lat: number) => track.pz[i] + track.nz[i] * lat;
-  const py = (i: number, lat: number) => {
-    // Banking tilts the surface about the track's centreline.
-    const bank = track.banking[i];
-    return track.elevation[i] + (bank !== 0 ? -lat * Math.tan(bank) : 0);
-  };
+  const py = (i: number, lat: number) =>
+    // Banking tilts the surface about the track's centreline, and runs out a
+    // few metres beyond its edge — see `bankHeight`.
+    track.elevation[i] + bankHeight(track.banking[i], lat, track.width[i] * 0.5);
 
   // =========================================================================
   // Kerbs
@@ -787,7 +879,7 @@ export function buildTrackMeshes(
     s: ReturnType<typeof frameLerp>, lat: number, dy: number,
   ): readonly [number, number, number] => [
     s.x + s.nx * lat,
-    s.elev + (s.bank !== 0 ? -lat * Math.tan(s.bank) : 0) + dy,
+    s.elev + bankHeight(s.bank, lat, s.hw) + dy,
     s.z + s.nz * lat,
   ];
 
@@ -834,7 +926,7 @@ export function buildTrackMeshes(
         const lat = sign * (s.hw + off);
         return [
           s.x + s.nx * lat,
-          s.elev + (s.bank !== 0 ? -lat * Math.tan(s.bank) : 0) + y,
+          s.elev + bankHeight(s.bank, lat, s.hw) + y,
           s.z + s.nz * lat,
         ] as const;
       };
@@ -1101,18 +1193,36 @@ export function buildTrackMeshes(
         strip(runoff, 0, 0, in0, in1, runoffColour);
         if (w0 > in0 || w1 > in1) strip(verge, in0, in1, w0, w1, vergeColour);
 
-        // The skirt down to the ground plane. Into `verge`, which is drawn
-        // double-sided: this is a vertical face, `quadFlat`'s upward-winding
-        // rule says nothing useful about one, and a skirt that is culled from
-        // the side you happen to be looking at is the hole it exists to fill.
+        // The skirt down to the terrain. Into `verge`, which is drawn
+        // double-sided: this is a near-vertical face, `quadFlat`'s
+        // upward-winding rule says nothing useful about one, and a skirt that is
+        // culled from the side you happen to be looking at is the hole it exists
+        // to fill.
+        //
+        // THE CLIFF AT THE CORNER. This used to drop to a constant y of -0.62 —
+        // the height of the single flat quad that was the whole world beyond the
+        // circuit. The road is not at -0.62; it is wherever the elevation
+        // profile puts it, which is up to 6m at Bahrain, 40m at COTA and 58m at
+        // Spa. So this face was as tall as the circuit was high: 4.1m on average
+        // at Bahrain, 27.2m at Spa, and it ran continuously around the outside
+        // of every corner where the barrier stands far enough back to see past
+        // it. That is the "hugee hole" in the second batch of screenshots — a
+        // corner on a walled sand plateau with the desert floor far below, which
+        // reads as the corner having been excavated.
+        //
+        // It now drops to `terrain.heightAt` at its own foot, and the ground
+        // mesh is built by sampling the same function at its own vertices, so
+        // the two meet. What is left is a lip of about a metre.
         const e0 = framePt(s0, side * (s0.hw + w0), Y_RUNOFF);
         const e1 = framePt(s1, side * (s1.hw + w1), Y_RUNOFF);
-        if (e0[1] > GROUND_Y + 0.05 || e1[1] > GROUND_Y + 0.05) {
+        const g0 = terrain.heightAt(e0[0], e0[2]);
+        const g1 = terrain.heightAt(e1[0], e1[2]);
+        if (e0[1] > g0 + 0.02 || e1[1] > g1 + 0.02) {
           verge.quad(
             e0[0], e0[1], e0[2],
             e1[0], e1[1], e1[2],
-            e1[0], GROUND_Y, e1[2],
-            e0[0], GROUND_Y, e0[2],
+            e1[0], Math.min(g1, e1[1]), e1[2],
+            e0[0], Math.min(g0, e0[1]), e0[2],
             vergeColour,
           );
         }
@@ -1240,8 +1350,7 @@ export function buildTrackMeshes(
       const nx = track.nx[i] + (track.nx[j] - track.nx[i]) * t;
       const nz = track.nz[i] + (track.nz[j] - track.nz[i]) * t;
       const ey = track.elevation[i] + (track.elevation[j] - track.elevation[i]) * t;
-      const bank = track.banking[i];
-      const y = ey + (bank !== 0 ? -lat * Math.tan(bank) : 0) + dy;
+      const y = ey + bankHeight(track.banking[i], lat, track.width[i] * 0.5) + dy;
       return [cx + nx * lat, y, cz + nz * lat];
     };
     const quadP = (
@@ -1865,17 +1974,18 @@ export function buildTrackMeshes(
     textures.push(markerTex);
   }
 
-  // --- Ground plane --------------------------------------------------------
+  // --- Ground --------------------------------------------------------------
+  //
+  // Was one flat quad at a constant height, which is what made the circuit a
+  // mesa: the road climbs 58m at Spa and the world it stands in did not, so the
+  // join between them was a vertical wall as tall as the climb. It is now a
+  // height field driven by the circuit's own elevation, sampled at exactly the
+  // points the skirt's foot is sampled at. Padding is unchanged and generous:
+  // looking down a 1km straight, ground that stops 400m past the circuit shows
+  // its own edge as a hard horizon line, so it reaches beyond the fog's far
+  // distance rather than beyond the track.
   {
-    const b = track.bounds();
-    // Generous padding: looking down a 1km straight, a plane that stops 400m past
-    // the circuit shows its own edge as a hard horizon line. This has to extend
-    // beyond the fog's far distance, not beyond the track.
-    const pad = 6000;
-    const w = b.maxX - b.minX + pad * 2;
-    const d = b.maxZ - b.minZ + pad * 2;
-    const geo = new THREE.PlaneGeometry(w, d, 1, 1);
-    geo.rotateX(-Math.PI / 2);
+    const geo = buildTerrainMesh(track, terrain).geometry;
     const mat = new THREE.MeshStandardMaterial({
       color: groundColour(track.def.scenery), roughness: 0.95, metalness: 0,
     });
@@ -1883,8 +1993,17 @@ export function buildTrackMeshes(
     // one where a flat colour is most obvious.
     detail.apply(mat, track.def.scenery === 'desert' ? SURFACES.runoff : SURFACES.grass);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set((b.minX + b.maxX) * 0.5, GROUND_Y, (b.minZ + b.maxZ) * 0.5);
     mesh.receiveShadow = false;
+    // Named, because `probe:world` used to identify the ground as "the only
+    // mesh in the circuit with four vertices" — which was true of a quad and is
+    // not true of a height field. Unnamed, it was classified as braking boards
+    // and every terrain vertex under the road was reported as signage standing
+    // on the racing surface.
+    mesh.name = GROUND_MESH_NAME;
+    // The far cells are kilometres across and their bounding sphere is centred
+    // on the circuit, so a camera at a corner would cull the ground it is
+    // standing on if this were left alone.
+    mesh.frustumCulled = false;
     root.add(mesh);
     geometries.push(geo);
     materials.push(mat);
