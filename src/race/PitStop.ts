@@ -16,7 +16,56 @@ import { Rng } from '../core/MathUtils';
  * WHAT A REAL PIT STOP IS
  * ===========================================================================
  *
- * TODO-SOURCES
+ * Everything in this file is measured against the real thing rather than
+ * invented, in the same way `CarMesh` carries the FIA's regulation volumes. The
+ * sources, once, here:
+ *
+ * THE CREW. Around twenty to twenty-three people go over the wall, in fixed
+ * roles. Wikipedia, "Pit stop"
+ * (https://en.wikipedia.org/wiki/Pit_stop), gives the breakdown directly:
+ *
+ *   "Four wheel-gunners or tyre changers, one for each wheel/corner of the car,
+ *    use a pneumatic wrench ('tyre gun')"
+ *   "Eight tyre carriers are used (four each of wheel-off and wheel-on), two
+ *    for each wheel/corner"
+ *   "Two stabilisers stabilise the car on each side at the middle of the car"
+ *
+ * plus the front and rear jack men with "lever-type jacks to lift the car", the
+ * "front wing men, if necessary, adjust the front wing angle", and a fire
+ * extinguisher man. It also notes that Formula One rules "limit teams to a
+ * single pit crew for the mandatory two cars entered" — which is why there is
+ * one crew per garage and not two, and why `PIT_CREW` below is a single list.
+ * The user's own reference diagram adds a SPARE JACK operator standing by at
+ * each end in case the first jack is damaged, and a spotter; both are in
+ * `PIT_CREW`. Twelve on the wheels, two jacks, two spares, two stabilisers, two
+ * on the wing, one spotter — twenty-one.
+ *
+ * THE TIME. The same source: "A pit stop typically takes approximately 3
+ * seconds to complete", and "McLaren holds the current world record for the
+ * fastest pit stop, with a 1.80-second stop performed at the 2023 Qatar Grand
+ * Prix on Lando Norris." The three-second figure is the whole population
+ * including the stops that go wrong; a clean stop by a front-running team is
+ * closer to 2.0-2.4s, and the record is the left tail of that distribution
+ * rather than its centre. `PIT_CREW_TIME_ELITE_S` and `PIT_CREW_TIME_POOR_S`
+ * bracket the grid accordingly, and `probe:pitstop` prints the distribution the
+ * model actually produces and checks it against those figures.
+ *
+ * For scale, the same article on what the sport used to be: during the
+ * refuelling era, "Stops generally lasted for six to twelve seconds, depending
+ * upon how much fuel was put into the car." A modern stop is a wheel change and
+ * nothing else, which is why four corners in parallel is the whole model.
+ *
+ * THE RELEASE. Each wheel gun reports when its nut is tight, and the car is
+ * released by an automatic light rather than by a person holding a board — the
+ * driver is watching the light. That is why `resolvePitStop` gates the stop on
+ * the SLOWEST corner rather than on an average, and why the light is a drawn,
+ * colour-changing object in `PitCrew.ts` instead of an implicit timer.
+ *
+ * The regulations the engine already cites for the rest of the pit lane are in
+ * `RaceEngine.updatePitLane`: the pit-exit light (2025 Art. 37.2 / 2026 Art.
+ * B1.6.3e), closing the exit while cars unlap (2025 Art. 55.14 / 2026 Art.
+ * B5.13.4c) and the neutralised-pit-entry rules (2025 Art. 55.12, 56.4 / 2026
+ * Art. B5.13.3, B5.12.3).
  */
 
 // ===========================================================================
@@ -126,9 +175,13 @@ export const PIT_CREW: readonly CrewStation[] = (() => {
     const { x, z, side } = cornerAt(c);
     // Facing the wheel: from outboard, that is facing back across the car.
     const inward = side > 0 ? -Math.PI / 2 : Math.PI / 2;
-    out.push({ role: 'gun', corner: c, x: x + side * 0.62, z, heading: inward });
-    out.push({ role: 'wheel-off', corner: c, x: x + side * 1.05, z: z - 0.72, heading: inward + side * 0.5 });
-    out.push({ role: 'wheel-on', corner: c, x: x + side * 1.12, z: z + 0.70, heading: inward - side * 0.5 });
+    // Tucked in tighter than they look on television, because the working lane
+    // is only about four metres wide with a two-metre car in the middle of it.
+    // At a comfortable-looking 1.1m outboard the wheel carriers stood past the
+    // divider line and out in the fast lane, which other cars are driving down.
+    out.push({ role: 'gun', corner: c, x: x + side * 0.58, z, heading: inward });
+    out.push({ role: 'wheel-off', corner: c, x: x + side * 0.92, z: z - 0.78, heading: inward + side * 0.5 });
+    out.push({ role: 'wheel-on', corner: c, x: x + side * 0.98, z: z + 0.74, heading: inward - side * 0.5 });
   }
 
   // The jacks. The front jack man stands IN FRONT of the car and the driver

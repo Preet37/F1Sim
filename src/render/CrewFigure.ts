@@ -136,10 +136,18 @@ export const POSTURES = {
     stance: 1, hipPitch: 0.02, kneeBend: 0.06, spineLean: 0.03,
     armPitch: 0.08, elbowBend: 0.34, armSpread: 0.08, crouch: 0, shift: 0,
   },
-  /** Set and waiting: knees bent, weight forward, hands up ready. */
+  /**
+   * Set and waiting: down on the haunches, weight forward, hands up ready.
+   *
+   * Properly low. Every reference photograph of a pit crew waiting for a car is
+   * of people CROUCHED — often on one knee, hands already out at the height the
+   * wheel will be — and a crew standing about upright in the box reads as a
+   * group of people who have wandered over to watch. The first version of this
+   * was a shallow knee bend and it photographed as exactly that.
+   */
   ready: {
-    stance: 1.30, hipPitch: 0.40, kneeBend: 0.82, spineLean: 0.38,
-    armPitch: 0.55, elbowBend: 0.95, armSpread: 0.20, crouch: 0.10, shift: 0.02,
+    stance: 1.35, hipPitch: 0.62, kneeBend: 1.30, spineLean: 0.66,
+    armPitch: 0.70, elbowBend: 0.75, armSpread: 0.22, crouch: 0.26, shift: 0.05,
   },
   /**
    * Down over a wheel with the gun on the nut.
