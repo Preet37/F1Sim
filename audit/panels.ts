@@ -1,6 +1,9 @@
 import { buildStrategyScreen } from '../src/ui/StrategyScreen';
 import { driversForTeam, getTeam } from '../src/data/teams';
 import { getCircuit } from '../src/data/tracks/circuits';
+import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
+import { PHYSICS_DT } from '../src/core/SimClock';
+import { Hud } from '../src/ui/Hud';
 
 /**
  * The full-screen panels, without the game around them.
@@ -17,7 +20,13 @@ import { getCircuit } from '../src/data/tracks/circuits';
  */
 
 declare global {
-  interface Window { __panels: { show(name: string, teamId: string, circuitId: string): void } }
+  interface Window {
+    __panels: {
+      show(name: string, teamId: string, circuitId: string): void;
+      hud(scene: string): Promise<void>;
+      hudReport(): Record<string, unknown>;
+    };
+  }
 }
 
 const app = document.getElementById('app') as HTMLElement;
@@ -67,7 +76,93 @@ function div(cls: string, parent: HTMLElement): HTMLElement {
   return e;
 }
 
+/**
+ * The HUD, over a flat backdrop, with no renderer at all.
+ *
+ * `RaceEngine` needs no WebGL — the spline, the world model and twenty AI cars
+ * are pure arithmetic — so a HUD question can be answered in seconds here
+ * instead of in the ten minutes a circuit takes to BUILD under a software
+ * rasteriser in `audit/hud.html`. That page is still the one that answers "does
+ * this read over a night race in the rain"; this one answers "is the panel
+ * there at all", which is the question that costs the most iterations.
+ */
+let hudEngine: RaceEngine | null = null;
+let hud: Hud | null = null;
+let hudCar: ReturnType<RaceEngine['cars']['at']> | null = null;
+
+const hudInput = {
+  ersMode: 'balanced', showTouchOverlay: false, joystickActive: false,
+  joystickCentreX: 0, joystickCentreY: 0, joystickOffset: { x: 0, y: 0, radius: 60 },
+  throttleHeld: false, brakeHeld: false, reverseTouchHeld: false,
+} as never;
+
+function hudScene(scene: string): void {
+  if (!hudEngine || !hudCar || !hud) return;
+  const rc = hudEngine.raceControl;
+  rc.sessionFlag = 'green';
+  rc.neutralisation = 'none';
+  hudEngine.weather.wetness = 0.02;
+  hudCar.inPitLane = false;
+  hudCar.inPitBox = false;
+  hudCar.damage.health.frontWingL = 1;
+
+  if (scene === 'pit-advice') hudCar.damage.health.frontWingL = 0.44;
+  if (scene === 'safety-car') rc.neutralisation = 'safety-car';
+  if (scene === 'wet') hudEngine.weather.wetness = 0.55;
+  if (scene === 'radio-burst') {
+    rc.log('DEBRIS ON THE RACING LINE AT TURN 11', 'critical', hudEngine.time);
+  }
+  if (scene === 'in-box') {
+    hudCar.inPitLane = true; hudCar.inPitBox = true; hudCar.pitBoxTimer = 2.4;
+  }
+  hud.update(hudEngine, hudCar, hudInput, 60, 240);
+}
+
 window.__panels = {
+  async hud(scene: string): Promise<void> {
+    if (!hudEngine) {
+      app.innerHTML = '';
+      app.style.background =
+        'linear-gradient(160deg, #4a5c70 0%, #6d7f92 42%, #3d4a58 42.2%, #2b333d 100%)';
+      app.style.position = 'fixed';
+      app.style.inset = '0';
+      const config: SessionConfig = {
+        kind: 'race', name: 'Grand Prix', durationS: 0, laps: 57,
+        playerIndex: -1, standingStart: false, pitLaneStart: false, seed: 90210,
+      };
+      hudEngine = new RaceEngine(getCircuit('monza'), config);
+      hudCar = hudEngine.cars[6];
+      hud = new Hud(app);
+      hud.setVisible(true);
+      hud.setHelpVisible(false);
+      for (let i = 0; i < Math.round(150 / PHYSICS_DT); i++) hudEngine.step();
+    }
+    hudScene(scene);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await new Promise((r) => window.setTimeout(r, 700));
+  },
+
+  /** What the HUD is actually showing, measured rather than photographed. */
+  hudReport(): Record<string, unknown> {
+    const root = hud?.root;
+    if (!root) return {};
+    const out: Record<string, unknown> = {};
+    for (const sel of ['.hud-alert', '.hud-radiocard', '.hud-pit-cue', '.hud-weather', '.hud-tower']) {
+      const e = root.querySelector<HTMLElement>(sel);
+      if (!e) { out[sel] = 'missing'; continue; }
+      const r = e.getBoundingClientRect();
+      const cs = getComputedStyle(e);
+      out[sel] = {
+        cls: e.className,
+        box: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+        opacity: cs.opacity, display: cs.display, transform: cs.transform,
+        text: (e.textContent ?? '').slice(0, 90),
+      };
+    }
+    out.alertCount = root.querySelectorAll('.hud-alert').length;
+    return out;
+  },
+
   show(name: string, teamId: string, circuitId: string): void {
     const team = getTeam(teamId);
     const circuit = getCircuit(circuitId);

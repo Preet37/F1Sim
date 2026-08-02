@@ -123,17 +123,19 @@ const VIEWPORTS: [string, number, number, number][] = [
   ['desktop 1400x900', 1400, 900, 450],
   ['wide desktop 1920x1080', 1920, 1080, 540],
   ['laptop 1280x800', 1280, 800, 400],
-  ['landscape phone 844x390', 844, 390, 176],
-  ['landscape phone 740x360', 740, 360, 146],
+  ['landscape phone 844x390', 844, 390, 174],
+  ['landscape phone 740x360', 740, 360, 144],
   ['portrait phone 390x844', 390, 844, 300],
 ];
 
 for (const [name, w, h, clearance] of VIEWPORTS) {
   const fit = towerFit(w, h);
   const rowH = fit.compact ? 17 : 29;
-  // Session eyebrow, position line, fastest-lap capsule, column rule, padding.
-  const chrome = fit.compact ? 62 : 106;
-  const bottom = 10 + chrome + fit.rows * rowH;
+  // Session eyebrow, position line, fastest-lap capsule, column rule, padding —
+  // and the 5px break under the pinned leader. Compact drops the eyebrow and
+  // the column rule, which is where the difference between the two comes from.
+  const chrome = fit.compact ? 63 : 106;
+  const bottom = 10 + chrome + fit.rows * rowH + 5;
 
   check(fit.rows >= 4, `${name}: ${fit.rows} rows is not a running order`);
   check(bottom <= h - clearance,

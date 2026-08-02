@@ -160,11 +160,21 @@ const api: HudShootApi = {
     if (!engine || !player) return;
     const rc = engine.raceControl;
 
-    // Reset whatever the last scene forced.
+    // Reset EVERYTHING the last scene forced, not just some of it. Damage and
+    // the pit-lane latch used to survive from one scene into the next, which
+    // makes a shot a picture of every scene run before it — and, worse, hides
+    // the pop-ups: the pit call fires on a CHANGE of advice, and an advice
+    // left standing by the previous scene never changes.
     rc.sessionFlag = 'green';
     rc.neutralisation = 'none';
+    for (let i = 0; i < rc.sectorFlags.length; i++) rc.sectorFlags[i] = 'green';
     engine.weather.wetness = 0.02;
+    engine.weather.airTempC = engine.track.def.baseAirTempC;
+    engine.weather.trackTempC = engine.track.def.baseTrackTempC;
     player.pitRequested = false;
+    player.inPitLane = false;
+    player.inPitBox = false;
+    player.damage.health.frontWingL = 1;
 
     switch (name) {
       case 'pit-advice':

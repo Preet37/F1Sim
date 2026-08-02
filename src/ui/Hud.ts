@@ -1628,7 +1628,7 @@ export function towerFit(w: number, h: number): { rows: number; compact: boolean
   // the reason the tower is not simply "as many rows as fit" — the rest of
   // the left rail has to exist somewhere, and a tower sized to the viewport
   // grows straight down through the pit instruction.
-  const reserved = compact ? 250 : 554;
+  const reserved = compact ? 240 : 554;
   const fits = Math.floor((h - reserved) / rowH);
   return {
     rows: Math.max(compact ? 4 : 6, Math.min(fits, compact ? 8 : 14)),
