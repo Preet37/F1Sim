@@ -38,8 +38,26 @@ eq(resultGapCell(car({ position: 18, bestLapTime: 0 }), false), '--.---',
   'a car that set no lap has no gap to show');
 eq(resultGapCell(car({ position: 1, bestLapTime: 0 }), false), '—',
   'a session in which nobody set a lap has no fastest car');
-eq(resultGapCell(car({ position: 1, bestLapTime: 89.762, retired: true }), false), 'DNF',
-  'a car that broke down is still DNF');
+// THE BUG. A player set the fastest lap of Q1 at Bahrain — a 1:49.758, purple
+// on the tower — and put the car in the barrier at Turn 4. They were shown
+// "P20 — DNF". There is no DNF in qualifying: the 2026 regulations define a Lap
+// Time Classified Session as one classified "based upon the time taken by a
+// driver to complete a single lap" (Section B, Definitions), Art. B2.4.3a
+// orders classified drivers by the best time each of them set, and Art. B2.4.3b
+// gives the only three routes out of the classification — outside 107% having
+// been eliminated in Q1, no time in Q1 at all, and disqualification. An
+// accident is none of them, and for the fastest driver in the session it could
+// not be: they ARE the 107% reference.
+eq(resultGapCell(car({ position: 1, bestLapTime: 109.758, retired: true }), false), 'FASTEST',
+  'the fastest lap of Q1 is still the fastest lap of Q1 after the car is in the barrier');
+eq(resultGapCell(car({ position: 4, bestLapTime: 110.2, gapToLeader: 0.442, retired: true }), false),
+  '+0.442',
+  'a car that broke down in practice keeps the lap it set and the gap it shows');
+eq(resultGapCell(car({ position: 20, bestLapTime: 0, retired: true }), false), '--.---',
+  'a car that crashed before setting a lap has no time — but still no DNF');
+eq(resultGapCell(car({ position: 20, bestLapTime: 109.9, disqualified: true, retired: true }), false),
+  'DSQ',
+  'disqualification IS an outcome of qualifying (Art. B2.4.3b.iii) and still shows');
 
 console.log('\nRACE (the column is the deficit to the flag)');
 eq(resultGapCell(car({ position: 1, gapToLeader: 0 }), true), 'WINNER',

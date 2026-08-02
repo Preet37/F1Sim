@@ -335,6 +335,22 @@ export class CarEntry {
    */
   onOutLap = false;
   /**
+   * True once this car has left the pit lane under its own power this session.
+   *
+   * The evidence for Art. B2.4.3a.v's third category — "any driver who failed
+   * to leave the pits during the period" — which is the bottom of the three
+   * groups a no-time driver can be sorted into.
+   */
+  leftThePits = false;
+  /**
+   * True once this car has begun a flying lap this session.
+   *
+   * Art. B2.4.3a.v's first category, "any driver who attempted to set a lap
+   * time by starting a flying lap". Set when the out-lap is completed, which is
+   * the crossing that starts the timed one.
+   */
+  startedFlyingLap = false;
+  /**
    * Metres of pit-exit blend zone still to run.
    *
    * A car leaving the pits rejoins at 80 km/h into traffic doing 300, and if it
@@ -517,6 +533,9 @@ export class CarEntry {
     // time and let the flying lap that starts here be the one that counts.
     if (this.onOutLap) {
       this.onOutLap = false;
+      // This crossing ends the out-lap and starts the flying one. Whether the
+      // car ever finishes it, the attempt has been made — Art. B2.4.3a.v(A).
+      this.startedFlyingLap = true;
       this.lap++;
       this.lapStartTime = sessionTime;
       this.sectorStartTime = sessionTime;

@@ -574,11 +574,28 @@ export class RaceEngine {
     this.startLights = 0;
   }
 
-  /** Cars taking part in this session. */
+  /**
+   * Cars taking part in this session, in the order the last segment classified
+   * them.
+   *
+   * The ORDER is load-bearing and used to be accidental. This mapped over
+   * `this.cars` and filtered, which returns car-number order however the
+   * entry list was written. Art. B2.4.3a.v ends "the relative classification of
+   * drivers in each of the categories (A), (B), or (C) above shall be
+   * determined in accordance with the order they were classified in the
+   * previous period of Qualifying" — so when several drivers set no time, the
+   * previous period's order is the tie-break, and `rankSegment`'s stable sort
+   * can only preserve an order it is actually given. `config.participants` is
+   * written from the previous segment's classification, so mapping over it in
+   * its own order is what makes that regulation come out right.
+   */
   get participants(): CarEntry[] {
     const allowed = this.config.participants;
     if (!allowed) return this.cars;
-    return this.cars.filter((c) => allowed.includes(c.index));
+    const byIndex = new Map(this.cars.map((c) => [c.index, c]));
+    return allowed
+      .map((i) => byIndex.get(i))
+      .filter((c): c is CarEntry => c !== undefined);
   }
 
   private updateEnvironment(): void {
@@ -2095,6 +2112,9 @@ export class RaceEngine {
       // an out-lap and its time must not be classified.
       car.inPitLane = false;
       car.onOutLap = true;
+      // Art. B2.4.3a.v(C) is about drivers who never got out of the garage;
+      // this latch is the record that this one did.
+      car.leftThePits = true;
       car.blendRemainingM = PIT_EXIT_BLEND_M;
       car.pitSpeedingFlagged = false;
       car.servicedThisVisit = false;

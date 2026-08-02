@@ -127,6 +127,31 @@ export function resultGapCell(car: ClassifiedCar, isRace: boolean): string {
 /** The subset of a car the qualifying board reads. */
 export interface QualifyingCar {
   bestLapTime: number;
+  /** True once the car left the pit lane in this period. */
+  leftThePits?: boolean;
+  /** True once the car began a flying lap in this period. */
+  startedFlyingLap?: boolean;
+}
+
+/**
+ * Which of Art. B2.4.3a.v's three groups a driver without a time falls into.
+ *
+ * "If more than one driver fails to set a lap time during Q2 or Q3 they will be
+ * arranged in the following order: (A) Any driver who attempted to set a lap
+ * time by starting a flying lap. (B) Any driver who failed to start a flying
+ * lap. (C) Any driver who failed to leave the pits during the period."
+ *
+ * Lower sorts first, so this returns 0, 1, 2 in that order. It matters far more
+ * than a tie-break between two anonymous slow cars sounds like it should: a
+ * driver barred from the rest of qualifying under Art. B4.3.2 never leaves the
+ * garage, so they are always in group (C), and every other driver who failed to
+ * set a time in that period is therefore classified ahead of them. Sorting the
+ * no-time cars arbitrarily instead was worth a grid slot either way.
+ */
+export function noTimeGroup(car: QualifyingCar): number {
+  if (car.startedFlyingLap) return 0;
+  if (car.leftThePits) return 1;
+  return 2;
 }
 
 /**
@@ -146,12 +171,27 @@ export interface QualifyingCar {
  * on the screen side would be a second implementation of knockout qualifying,
  * and the two would disagree the first time either was touched — leaving the
  * screen confidently wrong about the one thing it is for.
+ *
+ * "The back of the queue" is not one place. Art. B2.4.3a.v splits the drivers
+ * who set no time into three groups — attempted a flying lap, never started
+ * one, never left the pits — and orders them in that order, and only then falls
+ * back on where they were classified in the previous period. `noTimeGroup` is
+ * the first half of that; the second half is `runners` arriving in the previous
+ * period's order, which the sort preserves because it is stable. That is why
+ * `RaceEngine.participants` hands its cars back in the order the last segment
+ * classified them rather than in car-number order.
  */
 export function rankSegment<T extends QualifyingCar>(runners: readonly T[]): T[] {
   return runners.slice().sort((a, b) => {
     const at = a.bestLapTime > 0 ? a.bestLapTime : Infinity;
     const bt = b.bestLapTime > 0 ? b.bestLapTime : Infinity;
-    return at - bt;
+    if (at !== bt) return at - bt;
+    // Both set a time and it was identical, or — far more often — neither set
+    // one at all. Art. B2.4.3a.iv settles the first case on which was set
+    // first, which stability already gives us; Art. B2.4.3a.v settles the
+    // second.
+    if (at === Infinity) return noTimeGroup(a) - noTimeGroup(b);
+    return 0;
   });
 }
 
