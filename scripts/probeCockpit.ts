@@ -63,8 +63,13 @@ async function writePng(path: string, dataUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await rm(OUT_DIR, { recursive: true, force: true });
+  // Only the circuits about to be swept are cleared, so a mirrors-only run does
+  // not throw away the framing shots it is meant to sit beside.
   await mkdir(OUT_DIR, { recursive: true });
+  for (const id of CIRCUIT_IDS) {
+    if (process.env.COCKPIT_MIRRORS_ONLY) break;
+    await rm(resolve(OUT_DIR, id), { recursive: true, force: true });
+  }
 
   const server: ViteDevServer = await createServer({
     server: { port: 0, host: '127.0.0.1', hmr: false, watch: null },
@@ -105,13 +110,19 @@ async function main(): Promise<void> {
     await mkdir(dir, { recursive: true });
     await page.evaluate(`window.__audit.load(${JSON.stringify(id)})`);
 
-    for (const [frameName, w, h] of FRAMES) {
-      await page.evaluate(`window.__audit.setFrame(${w}, ${h})`);
-      for (const mode of MODES) {
-        const png = await page.evaluate(
-          `window.__audit.shootMode(${JSON.stringify(mode)})`,
-        ) as string;
-        await writePng(resolve(dir, `${frameName}-${mode}.png`), png);
+    // `COCKPIT_MIRRORS_ONLY=1` skips the framing shots and goes straight to the
+    // mirror proof. A full-frame shot under SwiftShader takes minutes; when the
+    // question is only whether the panes have traffic in them, the six framing
+    // shots are half an hour of pictures already taken.
+    if (!process.env.COCKPIT_MIRRORS_ONLY) {
+      for (const [frameName, w, h] of FRAMES) {
+        await page.evaluate(`window.__audit.setFrame(${w}, ${h})`);
+        for (const mode of MODES) {
+          const png = await page.evaluate(
+            `window.__audit.shootMode(${JSON.stringify(mode)})`,
+          ) as string;
+          await writePng(resolve(dir, `${frameName}-${mode}.png`), png);
+        }
       }
     }
 
@@ -127,19 +138,23 @@ async function main(): Promise<void> {
     await page.evaluate(`window.__audit.setFrame(1280, 589)`);
     await page.evaluate(`window.__audit.placeBehind(10, 2)`);
     for (const mode of MODES) {
-      const png = await page.evaluate(
-        `window.__audit.shootMode(${JSON.stringify(mode)})`,
-      ) as string;
-      await writePng(resolve(dir, `mirror-${mode}.png`), png);
+      if (!process.env.COCKPIT_MIRRORS_ONLY) {
+        const png = await page.evaluate(
+          `window.__audit.shootMode(${JSON.stringify(mode)})`,
+        ) as string;
+        await writePng(resolve(dir, `mirror-${mode}.png`), png);
+      }
       // Both panes, found by projection and blown up about eight times, because
       // "there is a car in it" is not a question a sixty-pixel pane answers at
       // 1:1. The near one should have the rival in it and the far one should
       // not, which is also a check that the two are not showing the same feed.
       for (const [name, side] of [['near', 1], ['far', -1]] as const) {
-        const zoom = await page.evaluate(
-          `window.__audit.shootMirror(${JSON.stringify(mode)}, ${side}, 200)`,
-        ) as string;
-        await writePng(resolve(dir, `mirror-${name}-${mode}.png`), zoom);
+        if (!process.env.COCKPIT_MIRRORS_ONLY) {
+          const zoom = await page.evaluate(
+            `window.__audit.shootMirror(${JSON.stringify(mode)}, ${side}, 200)`,
+          ) as string;
+          await writePng(resolve(dir, `mirror-${name}-${mode}.png`), zoom);
+        }
         // And the feed itself, off the render target, with nothing in front of
         // it. The pane is a few dozen pixels across with the halo over part of
         // it; a photograph of the pane says whether you can SEE the mirror, and
