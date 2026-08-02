@@ -62,6 +62,20 @@ function chromePath(): string {
 
 interface Shot { label: string; file: string; }
 
+/**
+ * Console errors the BROWSER makes, not the page.
+ *
+ * Chrome asks every document for `/favicon.ico` whether or not one is
+ * referenced, and neither harness page has one — so the sweep failed on every
+ * run it has ever made, including the completely clean ones. A script that
+ * always exits non-zero is a script whose exit code nobody reads any more,
+ * which is worse than having no check at all. Everything else stays fatal.
+ */
+function isBrowserNoise(text: string): boolean {
+  return /favicon\.ico/.test(text) ||
+    (/404 \(Not Found\)/.test(text) && /Failed to load resource/.test(text) && !/\.(ts|js|css)/.test(text));
+}
+
 async function main(): Promise<void> {
   const outDir = resolve(OUT_ROOT, TAG);
   await mkdir(outDir, { recursive: true });
@@ -111,7 +125,9 @@ async function main(): Promise<void> {
     page.setDefaultTimeout(240_000);
     page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
     page.on('console', (m) => {
-      if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+      if (m.type() === 'error' && !isBrowserNoise(m.text())) {
+        errors.push(`console: ${m.text()}`);
+      }
     });
     await page.goto(url, { waitUntil: 'load', timeout: 120_000 });
     await page.waitForFunction('!!window.__hudShoot', { timeout: 120_000 });
