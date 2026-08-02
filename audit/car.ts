@@ -96,7 +96,13 @@ sun.shadow.camera.top = 6;
 sun.shadow.camera.bottom = -6;
 sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 60;
-sun.shadow.bias = -0.0006;
+// Bias AND normal bias. A tyre is a metre-wide curved black object and the
+// straight-astern shot puts the sun almost tangent to its face, which is the
+// exact condition for shadow acne — and acne on a tyre reads as blistering,
+// which is a defect somebody will then go and try to fix in the tyre texture.
+// It was mistaken for exactly that once.
+sun.shadow.bias = -0.0012;
+sun.shadow.normalBias = 0.004;
 scene.add(hemi, sun, sun.target, fill, rim);
 
 /** A patch of asphalt, so the car has something to stand on and reflect. */
@@ -159,26 +165,38 @@ function measure(root: THREE.Object3D, quality: string): Stats {
   const seen = new Set<THREE.BufferGeometry>();
   const parts: { name: string; verts: number; tris: number }[] = [];
   let vertices = 0;
+  // Per-INSTANCE totals: what one car actually costs the renderer per frame,
+  // as distinct from what it costs in memory. The two differ by a lot here —
+  // the four wheels are two geometries drawn twice each — and the number that
+  // decides whether twenty cars fit in a frame is this one, not the unique
+  // count. `renderer.info` cannot answer it because this scene also contains a
+  // ground plane and because the shadow pass double-counts.
+  let carMeshes = 0;
+  let carTriangles = 0;
   root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh || !m.geometry) return;
     const g = m.geometry as THREE.BufferGeometry;
     const v = g.attributes.position ? g.attributes.position.count : 0;
-    const tris = g.index ? g.index.count / 3 : v / 3;
-    // Unique geometries only: the four wheels share two, and the whole field
-    // shares all of them. Counting them per instance would report a number
-    // twenty times larger than the memory actually costs.
+    const tris = Math.round(g.index ? g.index.count / 3 : v / 3);
+    if (m.visible) {
+      carMeshes++;
+      carTriangles += tris;
+    }
+    // Unique geometries only for the memory column: the whole field shares
+    // every one of them, so counting per instance would report a number twenty
+    // times larger than the memory actually costs.
     if (!seen.has(g)) {
       seen.add(g);
       vertices += v;
-      parts.push({ name: m.name || '(unnamed)', verts: v, tris: Math.round(tris) });
+      parts.push({ name: m.name || '(unnamed)', verts: v, tris });
     }
   });
   parts.sort((a, b) => b.verts - a.verts);
   return {
     quality,
-    drawCalls: renderer.info.render.calls,
-    triangles: renderer.info.render.triangles,
+    drawCalls: carMeshes,
+    triangles: carTriangles,
     vertices,
     parts,
   };
@@ -261,9 +279,7 @@ async function shoot(view: ViewName, opts: ShotOpts = {}): Promise<string> {
   sun.target.position.set(0, 0.4, 0);
   sun.target.updateMatrixWorld(true);
   renderer.render(scene, camera);
-  const png = canvas.toDataURL('image/png');
-  stats = { ...stats, drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles };
-  return png;
+  return canvas.toDataURL('image/png');
 }
 
 window.__car = {

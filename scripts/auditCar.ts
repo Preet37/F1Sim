@@ -135,6 +135,11 @@ async function main(): Promise<void> {
 
   lines.push('# car audit — measured cost');
   lines.push('');
+  lines.push('Per CAR, per frame. `draw calls` counts the visible meshes under the car');
+  lines.push('root; `triangles` sums them per instance, so the four wheels are counted');
+  lines.push('four times. `unique vertices` is the memory cost, which the whole field');
+  lines.push('shares one copy of.');
+  lines.push('');
   lines.push('| pass | draw calls | triangles drawn | unique vertices |');
   lines.push('| --- | --- | --- | --- |');
   for (const [tag, s] of Object.entries(record)) {

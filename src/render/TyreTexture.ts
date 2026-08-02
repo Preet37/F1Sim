@@ -332,15 +332,29 @@ function paint(compound: CompoundId, size: number): TyreLook {
   // which is aperiodic, and from the roughness split across the shoulder above,
   // which is what actually makes rubber read as rubber.
 
-  // Graining: a broad, irregular mottling across the working part of the
-  // tread. Real tyres are never uniform across the contact patch.
-  for (let i = 0; i < 220; i++) {
+  // Graining: a broad, irregular mottling across the working part of the tread.
+  // Real tyres are never uniform across the contact patch.
+  //
+  // MUCH FAINTER AND MUCH MORE SMEARED THAN IT WAS, and this is the second
+  // thing that was putting marks on a tyre the user had asked to be clean. At
+  // 4.5 per cent alpha these blobs sound invisible, and on a mid-grey they
+  // would be — but the tread is painted 0x19, so a 200-grey blob at 4.5 per
+  // cent lifts it by nearly a third of its own value, and 220 of them overlap.
+  // Straight astern, where the whole rear tyre faces the camera, the result was
+  // a field of soft dark and light patches that reads as blistering. It
+  // survived two rounds of blaming the normal map for it.
+  //
+  // 1.8 per cent, and stretched eight times as far around the circumference as
+  // across the tread — because that is the direction rubber actually smears.
+  // At that aspect it can only ever read as a faint banding in the shading,
+  // which is what graining looks like, rather than as spots.
+  for (let i = 0; i < 150; i++) {
     const t = treadA + (((i * 89) % 97) / 97) * (treadB - treadA);
     const x = (((i * 53) % 101) / 101) * size;
-    const r = size * (0.006 + ((i * 29) % 17) / 17 * 0.02);
-    c.fillStyle = `rgba(${i % 3 ? 200 : 40},${i % 3 ? 195 : 40},${i % 3 ? 190 : 40},0.045)`;
+    const r = size * (0.008 + ((i * 29) % 17) / 17 * 0.018);
+    c.fillStyle = `rgba(${i % 3 ? 190 : 60},${i % 3 ? 186 : 60},${i % 3 ? 182 : 62},0.018)`;
     c.beginPath();
-    c.ellipse(x, bandY(t, size), r * 2.2, r * 0.5, 0, 0, Math.PI * 2);
+    c.ellipse(x, bandY(t, size), r * 8.0, r * 0.42, 0, 0, Math.PI * 2);
     c.fill();
   }
 
@@ -521,10 +535,15 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
   const relief = size > 256 ? tyreSurfaceMap() : null;
   if (relief) {
     mat.normalMap = relief;
-    // 0.42, not 0.55. The map is band-limited now, but the residual it carries
-    // still costs high-frequency energy at every distance, and the measurement
-    // that matters — energy per pixel at 14 metres — falls roughly with this.
-    mat.normalScale = new THREE.Vector2(0.42, 0.42);
+    // 0.30, not 0.42.
+    //
+    // The map used to carry a periodic striation across the tread, and this
+    // scale was tuned to make that striation catch a travelling highlight
+    // without crawling. There is no striation any more — a slick is smooth —
+    // so all this multiplies now is the sidewall's radial ribs and a little
+    // graining across the contact patch, and both want less of it than a
+    // moulded pattern did.
+    mat.normalScale = new THREE.Vector2(0.30, 0.30);
   }
   materials.set(key, mat);
   return mat;

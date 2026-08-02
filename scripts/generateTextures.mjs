@@ -285,9 +285,17 @@ function tyreSurface(size) {
         // Graining only, in broad aperiodic patches across the part of the tread
         // that does the work, fading out completely before the shoulder turn so
         // the shoulder — the part light rakes across — stays dead flat.
+        //
+        // 0.08, not 0.34. Removing the circumferential striation left the
+        // graining as the only relief on the tread, and at the amplitude it had
+        // been sharing the surface with, it stopped reading as mottling and
+        // started reading as DENTS — from directly astern, where the shoulder
+        // is nearly edge-on and any normal perturbation is amplified, the tyres
+        // came out covered in dark ovals. Graining on a real tyre is a change
+        // in the surface's fineness, not in its shape.
         const g = vnoise(u * 22, t * 24, 22);
         const reach = Math.min(1, Math.max(0, (0.62 - fromCrown) / 0.30));
-        z += (g - 0.5) * 0.34 * reach * reach;
+        z += (g - 0.5) * 0.08 * reach * reach;
       } else {
         // Sidewall: shallow radial ribs, and a moulded step at the bead. The
         // ribs fade IN away from the shoulder rather than starting at full
