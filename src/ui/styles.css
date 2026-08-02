@@ -214,6 +214,29 @@
   --bad: var(--sig-red);
   --purple: var(--sig-purple);
 
+  /* --- Broadcast chrome ---------------------------------------------------
+     The HUD now has two chromes, and the difference between them means
+     something. PIT-WALL chrome — 4px corners, hairline borders, flat faces —
+     is the instrument side: the driver's own machine, and it looks machined.
+     BROADCAST chrome is the team side: the running order, the principal, the
+     radio, the weather. Those are graphics a director cuts to, and on
+     television they are soft rectangles with generous corners and solid
+     pills. The radius is the entire difference; the palette, the type and the
+     five signals are shared, so the two read as one system seen from two
+     places rather than as two designs. */
+  --card-bg: rgba(7, 10, 15, 0.88);
+  --card-line: rgba(255, 255, 255, 0.1);
+  --card-r: 13px;
+  --pill-r: 999px;
+
+  /* Rain. The one colour in this game outside the five signals, and it is
+     allowed because it is literal rather than decorative: the weather pill is
+     bluer the wetter the track is, which is the whole message before a word
+     of it is read. It appears on the weather bug and nowhere else. */
+  --wet-1: #8fd0ff;
+  --wet-2: #3f9bea;
+  --wet-3: #2f6fd0;
+
   --safe-l: env(safe-area-inset-left, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
@@ -309,29 +332,48 @@ canvas#view {
   background: var(--data);
 }
 
-/* --- Top left: the driver tower --------------------------------------
-   The permanent graphic. Position, code, tyre and gap, with the leader
-   picked out and the lap count in the header — everything needed to answer
-   "what is happening in the race" without any other panel. */
+/* --- Top left: the running order --------------------------------------
+
+   THE PANEL THIS REPLACES fitted twenty three-letter codes into 224 pixels:
+   `MBE  +0.235`, nineteen more like it, nineteen pixels apart. Dense, true,
+   and unreadable — nobody parses twenty rows at 300km/h, and an abbreviation
+   only says something to a viewer who has already memorised the field.
+
+   THE ROW that replaces it is the one a broadcast timing graphic uses, and
+   every element of it is doing a job: a bar in the team's livery colour, the
+   position, the team's own generated mark, the driver's surname in heavy caps
+   with their first name small beside it, their team and their compound on a
+   second line, then the gap and the best lap in right-aligned figures. Six
+   columns, one grid template shared with the header row through a custom
+   property, so a column can never drift away from its own label.
+
+   Fourteen legible rows beat twenty illegible ones — and the ceiling is not
+   only about legibility. Everything else the team says now lives in the same
+   left rail, and a tower sized to "as many as fit" grows straight down
+   through the pit instruction. See `towerFit`. */
 .hud-tower {
+  --tower-cols: 3px 20px 20px minmax(0, 1fr) 46px 56px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
-  width: 224px;
-  padding: 6px 7px 7px 10px;
+  width: 316px;
+  padding: 9px 9px 8px;
+  border-radius: var(--card-r);
+  background: var(--card-bg);
+  border: 1px solid var(--card-line);
 }
+.hud-tower .hud-stripe { top: 12px; bottom: 12px; border-radius: 0 2px 2px 0; }
 .tower-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 3px 5px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+  padding: 0 3px 7px;
 }
 .tower-position {
   font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.01em;
+  font-size: 21px;
+  font-weight: 850;
+  font-stretch: 120%;
+  letter-spacing: 0.02em;
   line-height: 1;
 }
 .tower-lapcount {
@@ -341,40 +383,125 @@ canvas#view {
   letter-spacing: 0.08em;
   font-weight: 700;
 }
+.tower-cols,
 .tower-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--tower-cols);
   align-items: center;
-  gap: 6px;
-  padding: 2px 4px;
-  border-radius: 3px;
+  gap: 0 7px;
+  padding: 0 5px;
+}
+.tower-cols {
+  padding-bottom: 5px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+.tower-col {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.tower-col:nth-child(5),
+.tower-col:nth-child(6) { text-align: right; }
+
+.tower-row {
+  height: 29px;
+  border-radius: 8px;
+  margin-bottom: 1px;
+}
+/* Purple is the outright best in this system, and both of these are one: the
+   position at the head of the order, and the quickest lap anyone has set.
+   The leader used to be picked out in gold, which is a hair from the yellow
+   that means CAUTION twelve pixels away on the same panel. */
+.tower-row.is-leader { background: rgba(192, 77, 255, 0.1); }
+.tower-row.is-leader .tower-pos { color: var(--sig-purple); }
+.tower-row.is-fastest .tower-best { color: var(--sig-purple); }
+/* White means "the thing happening now", and the driver's own row is exactly
+   that. It is an outline rather than a fill so the team colour beside it is
+   not tinted by the highlight. */
+.tower-row.is-player {
+  background: rgba(242, 246, 251, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
+}
+.tower-row.is-out { opacity: 0.4; }
+.tower-row.is-out .tower-gap { color: var(--sig-red); }
+
+.tower-bar { width: 3px; height: 20px; border-radius: 2px; background: var(--ink-3); }
+.tower-pos {
+  text-align: right;
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--ink-2);
+}
+.tower-mark { width: 20px; height: 20px; }
+.tower-mark svg { display: block; width: 100%; height: 100%; }
+
+.tower-who { min-width: 0; }
+.tower-name {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.tower-first {
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  font-weight: 400;
+  color: var(--ink-2);
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tower-last {
+  font-family: var(--font-display);
   font-size: 11.5px;
-  font-weight: 600;
-  height: 19px;
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.035em;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-/* The leader is the one fact the tower exists to convey, so it gets a rule of
-   its own rather than being distinguishable only by the "LEADER" gap text. */
-.hud-tower .tower-row.is-leader {
-  background: linear-gradient(90deg, rgba(255, 214, 92, 0.22), rgba(255, 214, 92, 0.02));
-  box-shadow: inset 2px 0 0 #ffd65c;
+.tower-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+  margin-top: 1px;
 }
-.hud-tower .tower-row.is-leader .tower-pos,
-.hud-tower .tower-row.is-leader .tower-gap { color: #ffd65c; }
-.hud-tower .tower-row.is-leader .tower-code { color: #fff8e2; }
-.tower-row.is-player { background: rgba(53, 208, 224, 0.22); }
-.hud-tower .tower-row.is-leader.is-player {
-  background: linear-gradient(90deg, rgba(255, 214, 92, 0.26), rgba(53, 208, 224, 0.2));
+.tower-team {
+  font-family: var(--font-ui);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.tower-row.is-out { opacity: 0.42; }
-.tower-pos { width: 16px; text-align: right; color: var(--hud-dim); font-weight: 700; font-family: var(--font-data); font-size: 10.5px; }
-.tower-team { width: 3px; height: 13px; border-radius: 2px; flex: 0 0 auto; }
-.tower-code { width: 34px; letter-spacing: 0.05em; font-weight: 700; }
+/* The compound rides on the team line rather than taking a column of its own.
+   It is one letter and it belongs with the other small facts about the car. */
 .tower-tyre {
-  width: 14px; height: 14px; border-radius: 50%;
-  font-size: 9px; font-weight: 800; color: #0a0c10;
-  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-data);
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
   flex: 0 0 auto;
 }
-.tower-gap { flex: 1; text-align: right; color: var(--hud-dim); font-size: 10px; font-family: var(--font-data); }
+.tower-gap,
+.tower-best {
+  text-align: right;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.tower-best { color: var(--ink-3); }
 
 /* --- Top right: sectors and lap times ---------------------------------
    Three tiles, then the lap in progress in the largest type on screen.
@@ -586,131 +713,367 @@ canvas#view {
 .hud-gapahead { color: #ff9f68; }
 .hud-gapbehind { color: #6fb4ff; }
 
-/* --- Conditions ------------------------------------------------------ */
-.hud-conditions {
-  top: calc(10px + var(--safe-t));
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 10px;
-  color: var(--hud-dim);
-  letter-spacing: 0.09em;
-  font-weight: 700;
-  padding: 5px 12px;
-  white-space: nowrap;
-}
-
-/* --- Flag banner ----------------------------------------------------- */
+/* --- Flag banner -----------------------------------------------------
+   The one graphic still allowed in the middle of the frame — and only
+   because it has moved hard against the TOP edge, where every camera in this
+   game is looking at sky. It sat at 20% of the viewport height, which in a
+   chase shot is the corner exit and in a cockpit shot is the apex, and it
+   had two more banners stacked with it at 15% and 30%. Those two are cards
+   in the left rail now; this one is a strip. A flag is the loudest thing
+   race control can say and it earns the centre column. Nothing else does. */
 .hud-flag {
   position: absolute;
-  top: 20%;
+  top: calc(8px + var(--safe-t));
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-display);
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  padding: 9px 26px;
-  border-radius: 4px;
+  font-size: 19px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.1em;
+  padding: 6px 22px;
+  border-radius: var(--pill-r);
   text-align: center;
   white-space: nowrap;
+  /* The centre column is what the tower and the timing panel leave. Bounded
+     rather than nowrap so a long bulletin ellipsizes instead of sliding under
+     a panel on a narrow laptop. */
+  max-width: calc(100vw - 640px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 8px 26px -12px rgba(0, 0, 0, 0.9);
 }
 .flag-yellow { background: #ffd21f; color: #241c00; }
 .flag-red { background: var(--bad); color: #fff; animation: flagpulse 0.75s ease-in-out infinite; }
 .flag-sc, .flag-vsc { background: #ffd21f; color: #241c00; }
 .flag-blue { background: #2f6fd0; color: #fff; }
-.flag-start { background: var(--good); color: #06210f; font-size: 32px; }
+/* The start countdown is the exception: it runs while the gantry is lit, and
+   the gantry is at the top of the screen. It goes UNDER the lights, which is
+   where a driver on the grid is already looking, and there is no road to
+   cover because nothing is moving yet. */
+.flag-start {
+  background: var(--good);
+  color: #06210f;
+  font-size: 26px;
+  top: calc(9vh + 96px + var(--safe-t));
+  max-width: none;
+}
 .flag-chequered {
   color: #0b0d12;
   background: repeating-conic-gradient(#fff 0% 25%, #111 0% 50%) 0 0 / 15px 15px;
 }
 @keyframes flagpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
-/* --- Pit line --------------------------------------------------------
-   Below the flag banner and below the deepest a burst of team radio can reach,
-   so race control cannot bury the one instruction the driver is reading the
-   screen for. */
-.hud-pit-cue {
-  position: absolute;
-  top: 30%;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  padding: 8px 22px;
-  border-radius: 4px;
-  text-align: center;
-  white-space: nowrap;
-  background: rgba(9, 12, 18, 0.88);
-  border: 2px solid var(--data);
-  color: #eef3ff;
-}
-.hud-pit-cue.cue-live { border-color: var(--good); color: #d6ffe6; }
-.hud-pit-cue.cue-warn { border-color: #ffd21f; color: #ffeaa0; }
-.hud-pit-cue.cue-box {
-  background: var(--good);
-  border-color: var(--good);
-  color: #06210f;
-  font-size: 28px;
-}
+/* =======================================================================
+   THE LEFT RAIL — everything the team knows
+   =======================================================================
 
-/* --- Neutralisation line ---------------------------------------------
-   Directly under the flag banner, because it is the second half of the same
-   sentence: the banner says SAFETY CAR, this says what is being enforced and
-   what the target is. Narrower type than the pit cue and allowed to wrap on a
-   phone, because it carries two numbers rather than one instruction. */
-.hud-neutral-cue {
-  position: absolute;
-  top: 15%;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 5px 16px;
-  border-radius: 4px;
-  text-align: center;
-  white-space: nowrap;
-  background: rgba(9, 12, 18, 0.9);
-  border: 1px solid var(--data);
-  color: #eef3ff;
-}
-.hud-neutral-cue.cue-live { border-color: var(--good); color: #d6ffe6; }
-.hud-neutral-cue.cue-warn { border-color: #ffd21f; color: #ffeaa0; }
-.hud-neutral-cue.cue-go {
-  border-color: #7fd0ff;
-  color: #d8f1ff;
-}
+   THE COMPLAINT. "This is covering the actual road." It was: a 22px banner,
+   700 pixels wide, pinned to the horizontal centre at 30% height, reading
+   DAMAGE — PIT FOR REPAIRS — PRESS PIT across the one part of the frame the
+   driver cannot afford to lose, in the one moment they most need to see it.
+   Two other banners lived in the same band.
 
-/* --- Team radio ------------------------------------------------------ */
-.hud-radio {
+   THE RULE THAT REPLACES IT. The HUD has two owners and they get one side of
+   the screen each.
+
+     RIGHT — THE CAR. Sectors and lap times, the wheel dash, the gaps, the
+             circuit map. Figures the driver reads off their own machine.
+             This side already existed and has not moved a pixel, which is
+             also how the speed readout stays exactly where it has always
+             been in every camera and every state.
+
+     LEFT  — THE TEAM. The running order, the principal's voice, the radio,
+             the weather, the state of the car. Things somebody ELSE knows
+             and is telling you.
+
+   The middle belongs to the road. That split is why the pit call moved
+   rather than merely shrank: a pit call is not an instrument, it is the pit
+   wall talking, and the pit wall is on the left.
+
+   The stack is anchored at its BOTTOM edge so it grows upward into empty sky
+   rather than downward over the car-state panel, and the order of its
+   children is load-bearing: the two LIVE cards are last, so they hold a
+   fixed position a driver can learn, and everything transient stacks above
+   them. A pop-up that shoves the distance-to-your-box two lines down the
+   instant it appears is a pop-up that costs you the pit entry. */
+.hud-notices {
   position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  top: calc(44px + var(--safe-t));
-  width: min(390px, 40vw);
-  align-items: center;
+  left: calc(10px + var(--safe-l));
+  bottom: calc(178px + var(--safe-b));
+  /* Flush with the tower above it: the rail is one column, not two. */
+  width: 316px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  align-items: stretch;
+  gap: 8px;
 }
-.radio-entry {
-  background: var(--hud-bg);
-  backdrop-filter: blur(9px);
-  -webkit-backdrop-filter: blur(9px);
-  border-left: 3px solid var(--data);
-  border-radius: 3px;
-  padding: 5px 9px;
-  font-size: 11px;
-  font-weight: 600;
+
+/* --- The pit wall speaks ----------------------------------------------
+   The signature element, and the only face in this game. A portrait, a name,
+   and one sentence.
+
+   It enters from off the left edge on transform and opacity alone. Those are
+   the two properties a compositor can animate without going back to the
+   layout engine, and this animates while twenty cars are being simulated in
+   the same frame. */
+.hud-alerts {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+}
+.hud-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px 10px 10px;
+  border-radius: var(--card-r);
+  background: var(--card-bg);
+  border: 1px solid var(--card-line);
+  /* The tone rail: one of the five signals down the leading edge, so the
+     urgency is legible before a word of it is read. */
+  border-left: 3px solid var(--sig-white);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--plate-lift);
+  transform: translateX(0);
   opacity: 1;
-  transition: opacity 0.55s ease, transform 0.55s ease;
+  transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.16, 0.9, 0.3, 1);
 }
-.radio-entry.fading { opacity: 0; transform: translateX(-14px); }
-.radio-entry.sev-warning { border-left-color: var(--warn); }
-.radio-entry.sev-critical { border-left-color: var(--bad); }
+.hud-alert.entering { transform: translateX(-30px); opacity: 0; }
+.hud-alert.leaving { transform: translateX(-16px); opacity: 0; }
+.hud-alert.tone-warn { border-left-color: var(--sig-yellow); }
+.hud-alert.tone-urgent { border-left-color: var(--sig-red); }
+.hud-alert.tone-go { border-left-color: var(--sig-green); }
+
+.alert-portrait { flex: 0 0 auto; width: 40px; height: 40px; }
+.alert-portrait svg { display: block; width: 100%; height: 100%; }
+.alert-body { flex: 1; min-width: 0; }
+.alert-who { display: flex; align-items: baseline; gap: 7px; margin-bottom: 4px; min-width: 0; }
+.alert-name {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.alert-role {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The one place in this game a sentence is set as a sentence. Everything
+   else on the HUD is a label or a figure and is cut in tracked capitals; a
+   person speaking is neither, and setting their words that way is most of
+   what made the old banner read as a warning light rather than as somebody
+   talking to you. */
+.alert-line {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.32;
+  color: #e6edf6;
+}
+.alert-chip {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: var(--pill-r);
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-data);
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--ink-2);
+}
+.hud-alert.tone-urgent .alert-chip {
+  background: rgba(255, 45, 60, 0.2);
+  border-color: rgba(255, 45, 60, 0.55);
+  color: #ffc9ce;
+}
+
+/* --- The radio card ---------------------------------------------------
+   A driver-to-pit exchange, in the shape a broadcast uses for one: the
+   channel's owner named at the top right with RADIO under it, the team's
+   mark at the left, a rule, then the two halves of the exchange set on
+   opposite sides — the driver's own words flush right and heavy, the pit
+   wall's answer flush left, smaller and quieter. The alignment IS the
+   attribution, which is why neither line needs a label.
+
+   Deliberately rare: four engine events fire it, and each one is a moment a
+   real broadcast would actually play. See `updateRadioCard`. */
+.hud-radiocard {
+  padding: 10px 13px 13px;
+  border-radius: var(--card-r);
+  background: var(--card-bg);
+  border: 1px solid var(--card-line);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--plate-lift-hi);
+  transform: translateX(0);
+  opacity: 1;
+  transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.16, 0.9, 0.3, 1);
+}
+.hud-radiocard.entering { transform: translateX(-30px); opacity: 0; }
+.hud-radiocard.leaving { transform: translateX(-16px); opacity: 0; }
+.radio-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.radio-mark { flex: 0 0 auto; width: 26px; height: 26px; }
+.radio-mark svg { display: block; width: 100%; height: 100%; }
+.radio-who { text-align: right; min-width: 0; }
+.radio-driver {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  line-height: 1.15;
+}
+.radio-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 850;
+  font-stretch: 122%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  line-height: 1.05;
+}
+.radio-rule { height: 1px; background: rgba(255, 255, 255, 0.55); margin: 9px 0 10px; }
+.radio-said {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.34;
+  color: #fff;
+  text-align: right;
+}
+.radio-reply {
+  margin-top: 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.34;
+  color: var(--ink-2);
+  text-align: left;
+}
+
+/* --- The two live cards, pinned to the bottom of the stack ------------
+   Everything above them is transient. These are not: they carry numbers that
+   change every frame — how far the box is, whether the limiter is engaged,
+   the minimum sector time under a VSC — so they hold the bottom and never
+   move. A driver who missed the pop-up has still not lost the instruction. */
+.hud-pit-cue,
+.hud-neutral-cue {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 12px;
+  border-radius: var(--card-r);
+  background: var(--card-bg);
+  border: 1px solid var(--card-line);
+  border-left: 3px solid var(--sig-white);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--plate-lift);
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  line-height: 1.3;
+  color: #eef3ff;
+}
+.cue-tag {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: 8.5px;
+  font-weight: 800;
+  font-stretch: 116%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.cue-text { flex: 1; min-width: 0; }
+.hud-pit-cue.cue-live, .hud-neutral-cue.cue-live { border-left-color: var(--good); color: #d8ffe8; }
+.hud-pit-cue.cue-warn, .hud-neutral-cue.cue-warn { border-left-color: var(--warn); color: #ffeaa0; }
+.hud-neutral-cue.cue-go { border-left-color: #7fd0ff; color: #d8f1ff; }
+.hud-pit-cue.cue-box {
+  border-left-color: var(--good);
+  background: linear-gradient(90deg, rgba(0, 217, 95, 0.3), rgba(7, 10, 15, 0.88) 64%);
+  color: #eaffe8;
+  font-size: 14px;
+}
+.hud-pit-cue.cue-box .cue-tag { color: #9dffc4; }
+
+/* --- The weather bug --------------------------------------------------
+   It replaces a line of grey monospace across the top centre that read
+   `Dry AIR 18° TRACK 28°`: every fact present, none of them legible at
+   speed, and standing in the middle of the frame while it failed. Same three
+   facts, in the shape a broadcast uses — a drawn sky, the condition in a
+   solid pill, the two temperatures under it. */
+.hud-weather {
+  position: absolute;
+  left: calc(10px + var(--safe-l));
+  bottom: calc(120px + var(--safe-b));
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 15px 8px 11px;
+  border-radius: var(--card-r);
+  background: rgba(7, 10, 15, 0.72);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+.weather-glyph { flex: 0 0 auto; width: 30px; height: 30px; }
+.weather-glyph svg { display: block; width: 100%; height: 100%; }
+.weather-body { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.weather-pill {
+  padding: 3px 11px;
+  border-radius: var(--pill-r);
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 850;
+  font-stretch: 114%;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #06101a;
+  background: #e8eef6;
+  white-space: nowrap;
+}
+.weather-pill.wx-damp { background: var(--wet-1); }
+.weather-pill.wx-wet { background: var(--wet-2); color: #04121f; }
+.weather-pill.wx-storm { background: var(--wet-3); color: #eaf3ff; }
+.weather-temps {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+/* Every element of the glyph is present in every state and revealed by one
+   class on the panel, so a change of weather costs a single class write.
+   Nothing animates: a HUD in a game that has been reported at 30fps does not
+   get to spend a compositor layer on falling raindrops. */
+.wx-drops, .wx-sun { opacity: 0; transition: opacity 0.5s ease; }
+.hud-weather.is-dry .wx-sun { opacity: 1; }
+.hud-weather.is-dry .wx-cloud { opacity: 0.4; }
+.hud-weather.is-damp .wx-drops { opacity: 0.5; }
+.hud-weather.is-wet .wx-drops { opacity: 0.9; }
+.hud-weather.is-storm .wx-drops { opacity: 1; }
 
 /* --- Camera + diagnostics -------------------------------------------- */
 .hud-buttons {
@@ -1063,16 +1426,9 @@ canvas#view {
 @media (max-width: 620px) and (orientation: portrait) {
   .hud { font-size: 11px; }
 
-  .hud-tower {
-    width: calc(50% - 14px);
-    max-width: 176px;
-    padding: 5px 5px 6px 8px;
-  }
-  .tower-row { font-size: 10px; height: 16px; gap: 4px; padding: 1px 3px; }
+  .hud-tower { width: calc(50% - 14px); max-width: 176px; }
   .tower-position { font-size: 17px; }
   .tower-lapcount { font-size: 9px; }
-  .tower-code { width: 30px; }
-  .tower-gap { font-size: 9px; }
 
   .hud-timing {
     width: calc(50% - 14px);
@@ -1087,26 +1443,35 @@ canvas#view {
   .timing-label { font-size: 7.5px; }
   .timing-delta { font-size: 13px; }
 
-  /* Below the two top panels rather than under them. */
-  .hud-radio {
-    top: auto;
-    bottom: calc(188px + var(--safe-b));
+  /* The rail spans the width the two top panels leave, above the car state
+     and clear of the buttons on the right edge. */
+  .hud-notices {
     left: calc(10px + var(--safe-l));
     right: calc(62px + var(--safe-r));
-    transform: none;
+    bottom: calc(196px + var(--safe-b));
     width: auto;
-    align-items: stretch;
+    gap: 6px;
   }
-  .radio-entry { font-size: 10px; padding: 4px 8px; }
+  .hud-alert { padding: 7px 10px 8px 8px; gap: 8px; }
+  .alert-portrait { width: 32px; height: 32px; }
+  .alert-line { font-size: 11.5px; }
+  .hud-radiocard { padding: 8px 10px 10px; }
+  .radio-title { font-size: 15px; }
+  .radio-said { font-size: 11.5px; }
+  .radio-reply { font-size: 10px; }
+  .hud-pit-cue, .hud-neutral-cue { font-size: 10px; padding: 6px 10px; gap: 7px; }
+  .hud-pit-cue.cue-box { font-size: 12.5px; }
 
-  /* Top centre is fully occupied in portrait, so the conditions strip goes to
-     the bottom, immediately above the car state. */
-  .hud-conditions {
-    top: auto;
-    bottom: calc(152px + var(--safe-b));
-    font-size: 9px;
-    padding: 4px 10px;
+  /* Where the conditions strip used to be dropped to, and for the same
+     reason: the top centre is fully occupied in portrait. */
+  .hud-weather {
+    bottom: calc(150px + var(--safe-b));
+    padding: 6px 12px 6px 9px;
+    gap: 9px;
   }
+  .weather-glyph { width: 24px; height: 24px; }
+  .weather-pill { font-size: 9.5px; padding: 2px 9px; }
+  .weather-temps { font-size: 9px; }
 
   /* Third in the right-hand column, under the wheel panel. */
   .hud-gaps {
@@ -1185,27 +1550,15 @@ canvas#view {
 
   .hud-camera, .hud-diag { display: none; }
 
-  .hud-flag { font-size: 17px; padding: 6px 14px; top: 26%; }
-  /* The cue is centred on the viewport and set `nowrap`, which is right on a
-     wide screen — a race-control message reads as one line. On a 390px phone
-     the longest of them, SECOND COMPOUND REQUIRED — PRESS PIT, is wider than
-     the screen, so it ran off both edges and lost the instruction at the end.
-     A cue whose last two words are missing is worse than no cue. Allowed to
-     wrap and bounded to the viewport, so it grows downward instead. */
-  .hud-pit-cue {
-    top: auto; bottom: 34%; font-size: 15px; padding: 6px 14px;
-    white-space: normal;
+  /* Nothing between the two top panels in portrait, so the flag takes the
+     strip immediately under them rather than the top edge. */
+  .hud-flag {
+    font-size: 15px;
+    padding: 5px 14px;
+    top: calc(118px + var(--safe-t));
     max-width: calc(100vw - 24px);
   }
-  .hud-pit-cue.cue-box { font-size: 18px; }
-  /* Same bound and the same reason: this line carries two numbers and is the
-     longest thing on the HUD. It sits above the flag banner on a phone so the
-     banner keeps the middle of the screen. */
-  .hud-neutral-cue {
-    top: calc(26% - 34px); font-size: 12px; padding: 4px 10px;
-    white-space: normal;
-    max-width: calc(100vw - 24px);
-  }
+  .flag-start { font-size: 20px; top: calc(7vh + 78px + var(--safe-t)); }
 
   .hud-startlights { gap: 6px; padding: 8px 9px; top: calc(7vh + var(--safe-t)); }
   .hud-bulb { width: 17px; height: 17px; }
@@ -1219,8 +1572,8 @@ canvas#view {
 @media (max-height: 470px) {
   .hud { font-size: 11px; }
 
-  .hud-tower { width: 168px; padding: 4px 5px 5px 8px; }
-  .tower-row { font-size: 9.5px; height: 15px; }
+  .hud-tower { width: 196px; }
+  .tower-head { padding: 0 3px 5px; }
   .tower-position { font-size: 16px; }
   .tower-lapcount { font-size: 8.5px; }
 
@@ -1231,13 +1584,41 @@ canvas#view {
   .timing-value { font-size: 10px; }
   .timing-delta { font-size: 12px; min-height: 14px; }
 
-  /* Between the two top panels, which is the only horizontal space left. */
-  .hud-radio {
-    top: calc(6px + var(--safe-t));
-    width: min(340px, calc(100vw - 380px));
+  /* The rail keeps the left edge, narrower and tighter, in the band between
+     the bottom of the tower and the weather bug. One pop-up at a time here —
+     see `Hud.maxAlerts` — because two would reach the tower. */
+  .hud-notices {
+    left: calc(8px + var(--safe-l));
+    bottom: calc(122px + var(--safe-b));
+    width: 262px;
+    gap: 6px;
   }
-  .radio-entry { font-size: 9.5px; padding: 3px 7px; }
-  .hud-conditions { top: auto; bottom: calc(182px + var(--safe-b)); font-size: 9px; padding: 3px 9px; }
+  .hud-alert { padding: 6px 9px 7px 7px; gap: 8px; }
+  .alert-portrait { width: 28px; height: 28px; }
+  .alert-name { font-size: 9.5px; }
+  .alert-role { font-size: 7.5px; }
+  .alert-line { font-size: 11px; line-height: 1.28; }
+  .alert-chip { margin-top: 4px; font-size: 8px; }
+  .hud-radiocard { padding: 7px 10px 9px; }
+  .radio-mark { width: 22px; height: 22px; }
+  .radio-driver { font-size: 9.5px; }
+  .radio-title { font-size: 14px; }
+  .radio-rule { margin: 6px 0 7px; }
+  .radio-said { font-size: 11px; }
+  .radio-reply { font-size: 9.5px; margin-top: 5px; }
+  .hud-pit-cue, .hud-neutral-cue { font-size: 9.5px; padding: 5px 9px; gap: 7px; }
+  .cue-tag { font-size: 7.5px; }
+  .hud-pit-cue.cue-box { font-size: 12px; }
+
+  .hud-weather {
+    left: calc(8px + var(--safe-l));
+    bottom: calc(80px + var(--safe-b));
+    padding: 5px 11px 5px 8px;
+    gap: 8px;
+  }
+  .weather-glyph { width: 22px; height: 22px; }
+  .weather-pill { font-size: 9px; padding: 2px 8px; }
+  .weather-temps { font-size: 8.5px; }
 
   /* Second in the right-hand column. 390px of height is the tightest case
      there is, so the column runs timing / wheel / gaps / buttons and stops
@@ -1303,19 +1684,15 @@ canvas#view {
   .hud-btn { width: 42px; height: 30px; font-size: 9px; }
   .hud-camera, .hud-diag { display: none; }
 
-  .hud-flag { font-size: 17px; padding: 6px 14px; top: 30%; }
-  /* Same bound as the portrait rule above, for the same reason. */
-  .hud-pit-cue {
-    top: auto; bottom: 32%; font-size: 15px; padding: 5px 13px;
-    white-space: normal;
-    max-width: calc(100vw - 24px);
+  /* The strip between the two top panels is all the width there is: 844px
+     less a 196px tower and a 180px timing panel. */
+  .hud-flag {
+    font-size: 15px;
+    padding: 5px 14px;
+    top: calc(6px + var(--safe-t));
+    max-width: calc(100vw - 420px);
   }
-  .hud-pit-cue.cue-box { font-size: 18px; }
-  .hud-neutral-cue {
-    top: calc(30% - 28px); font-size: 12px; padding: 3px 10px;
-    white-space: normal;
-    max-width: calc(100vw - 24px);
-  }
+  .flag-start { font-size: 19px; top: calc(4px + 74px + var(--safe-t)); }
 
   .hud-startlights { gap: 5px; padding: 6px 8px; top: calc(4px + var(--safe-t)); }
   .hud-bulb { width: 15px; height: 15px; }
@@ -1331,10 +1708,45 @@ canvas#view {
 @media (min-width: 621px) and (max-width: 900px) and (min-height: 471px) {
   .hud-wheel { width: 210px; }
   .hud-gaps { width: 210px; }
-  .hud-tower { width: 190px; }
   .hud-timing { width: 210px; }
   .hud-map { width: 150px; }
   .hud-camera, .hud-diag { right: calc(172px + var(--safe-r)); }
+
+  .hud-tower { width: 210px; }
+  .hud-notices { width: 280px; }
+  .hud-flag { max-width: calc(100vw - 460px); font-size: 16px; }
+}
+
+/* --- The compact row --------------------------------------------------
+   ONE query, and it is an OR rather than three copies inside three separate
+   breakpoints, because `towerFit` decides the row HEIGHT in TypeScript and
+   this decides it in CSS. Those two numbers have to be the same number or the
+   panel is measured for one row and drawn at another — which is how a tower
+   ends up hanging off the bottom of a 390px screen. The condition here and
+   the condition in `towerFit` are deliberately written the same way round.
+
+   What is dropped, and why in this order: the best lap first (the gap is the
+   live number, the best lap is reference), then the driver's first name and
+   the team line. That is the order a broadcast lower-third sheds detail when
+   it gets narrow, and it leaves the two things that identify a car — its
+   colour and its surname — standing until the end. */
+@media (max-width: 900px), (max-height: 470px) {
+  .hud-tower {
+    --tower-cols: 3px 15px 15px minmax(0, 1fr) 42px;
+    padding: 6px 6px 5px;
+  }
+  .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 5px; }
+  .tower-cols { gap: 0 5px; padding: 0 3px 4px; margin-bottom: 3px; }
+  .tower-col:nth-child(5) { text-align: right; }
+  .tower-col:nth-child(6),
+  .tower-best,
+  .tower-first,
+  .tower-sub { display: none; }
+  .tower-bar { height: 12px; }
+  .tower-pos { font-size: 10px; }
+  .tower-mark { width: 15px; height: 15px; }
+  .tower-last { font-size: 10.5px; }
+  .tower-gap { font-size: 9.5px; }
 }
 
 /* ===================================================================== */

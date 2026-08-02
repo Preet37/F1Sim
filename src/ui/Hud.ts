@@ -22,14 +22,36 @@ import { TrackMap } from './TrackMap';
  * identical text still invalidates layout in some browsers.
  */
 
+/**
+ * One line of the running order.
+ *
+ * Six cells, in the shape a broadcast timing panel uses: a team-colour bar, the
+ * position, the team's mark, the driver's name over their team's name, then the
+ * gap and the best lap right-aligned in the figure face. The old row was a
+ * three-letter code and a number — `HAL  +0.985` — which is all a 224px column
+ * had space for, and which asks the viewer to have memorised twenty
+ * abbreviations before the graphic tells them anything.
+ *
+ * `seen` is the whole performance story. Every cell is compared before it is
+ * written, so a frame in which nothing overtakes anybody writes nothing at all
+ * — and the mark, which is a five-element SVG, is only rebuilt when the car in
+ * the row changes team, which happens once a session at most.
+ */
 interface Row {
   root: HTMLElement;
+  bar: HTMLElement;
   pos: HTMLElement;
-  code: HTMLElement;
+  mark: HTMLElement;
+  first: HTMLElement;
+  last: HTMLElement;
   team: HTMLElement;
-  gap: HTMLElement;
   tyre: HTMLElement;
-  lastText: { pos: string; code: string; gap: string; tyre: string };
+  gap: HTMLElement;
+  best: HTMLElement;
+  seen: {
+    pos: string; first: string; last: string; team: string;
+    tyre: string; gap: string; best: string; markTeam: string; colour: string;
+  };
 }
 
 /** What the start gantry did this frame. */
@@ -99,13 +121,43 @@ export class Hud {
   private tyreTempFront!: HTMLElement;
   private tyreTempRear!: HTMLElement;
 
-  private conditions!: HTMLElement;
   private flagBanner!: HTMLElement;
-  private pitCue!: HTMLElement;
-  private neutralCue!: HTMLElement;
-  private radioFeed!: HTMLElement;
   private cameraLabel!: HTMLElement;
   private diagnostics!: HTMLElement;
+
+  // --- The left rail -------------------------------------------------------
+  /** The bottom-anchored column the whole team side stacks into. */
+  private notices!: HTMLElement;
+  private alertStack!: HTMLElement;
+  private pitCue!: HTMLElement;
+  private pitCueText!: HTMLElement;
+  private neutralCue!: HTMLElement;
+  private neutralCueText!: HTMLElement;
+
+  private radioCard!: HTMLElement;
+  private radioMark!: HTMLElement;
+  private radioDriver!: HTMLElement;
+  private radioSaid!: HTMLElement;
+  private radioReply!: HTMLElement;
+  /** Timers for the card currently on screen, cleared when it is replaced. */
+  private radioTimers: number[] = [];
+
+  private weatherPanel!: HTMLElement;
+  private weatherPill!: HTMLElement;
+  private weatherTemps!: HTMLElement;
+
+  /** Cards on screen, oldest first. */
+  private alertCards: HTMLElement[] = [];
+  /** The pit advice the pop-up last spoke, so it speaks once per change. */
+  private lastAdvice = '';
+  /** Which team the portraits and the radio mark were drawn for. */
+  private markedTeam = '';
+  /** Driver codes of the field — tokens `relayed` must leave in capitals. */
+  private keepCaps = new Set<string>();
+  /** Race-control state the radio card has already reacted to. */
+  private lastNeutral = 'none';
+  private lastSessionFlag = 'green';
+  private radioPitShown = false;
 
   private tower!: HTMLElement;
   private startLights!: HTMLElement;
@@ -126,9 +178,8 @@ export class Hud {
   private brakePad!: HTMLElement;
   private reversePad!: HTMLElement;
 
-  /** Radio messages already shown, so each appears once. */
+  /** Race-control bulletins already relayed, so each is spoken once. */
   private shownMessages = 0;
-  private radioEntries: HTMLElement[] = [];
 
   /** Called when the on-screen camera button is used. */
   onCameraPressed: (() => void) | null = null;
@@ -171,12 +222,22 @@ export class Hud {
     // the header — the graphic a broadcast leaves on screen permanently,
     // because it is the only one that answers "what is happening in the race".
     this.tower = this.el('hud-panel hud-tower', this.root);
+    this.tower.dataset.probe = 'tower';
     const towerHead = this.el('tower-head', this.tower);
     // A team-colour stripe down the edge: instantly identifies whose car you
     // are in, and it is how every broadcast graphic does it.
     this.teamStripe = this.el('hud-stripe', this.tower);
     this.position = this.el('tower-position', towerHead, 'P1');
     this.lapCounter = this.el('tower-lapcount', towerHead, 'LAP 1/50');
+
+    // The column header. It shares its grid template with every row below it
+    // through one custom property, so a column cannot drift from its label —
+    // which is what a header row is for, and what two separately-tuned widths
+    // would eventually undo.
+    const cols = this.el('tower-cols', this.tower);
+    for (const label of ['', 'P', '', 'DRIVER', 'GAP', 'BEST']) {
+      this.el('tower-col', cols, label);
+    }
 
     // --- Top right: sectors and lap times ----------------------------------
     this.buildTimingPanel();
@@ -311,32 +372,20 @@ export class Hud {
     this.gapAhead = this.el('hud-gapahead', gaps, '');
     this.gapBehind = this.el('hud-gapbehind', gaps, '');
 
-    // --- Conditions and flags ---------------------------------------------
-    this.conditions = this.el('hud-panel hud-conditions', this.root, '');
+    // --- Weather bug -------------------------------------------------------
+    this.buildWeather();
+
+    // --- Flag --------------------------------------------------------------
+    // The one graphic still allowed in the middle of the frame, and only
+    // because it has been moved hard against the TOP edge, where every camera
+    // in this game is looking at sky. A flag is the single loudest thing race
+    // control can say and it earns the centre column; nothing else does.
     this.flagBanner = this.el('hud-flag', this.root, '');
+    this.flagBanner.dataset.probe = 'flag';
     this.flagBanner.style.display = 'none';
 
-    // The pit lane gets a line of its own, rather than a share of the flag
-    // banner. It used to be written into that banner, which sits directly under
-    // the team radio: five race-control messages in a row cover it completely,
-    // and the one moment a driver is reading the screen rather than the road is
-    // the one moment it was unreadable. It also has to coexist with a flag — a
-    // driver can be under a yellow AND looking for his box — so it is a second
-    // line, below the first, and it reports the limiter as well as the box.
-    this.pitCue = this.el('hud-pit-cue', this.root, '');
-    this.pitCue.style.display = 'none';
-
-    // The neutralisation gets its own line for the same reason the pit lane
-    // does, and it sits directly under the flag banner because it is the second
-    // half of the same sentence: the banner says SAFETY CAR, this says what is
-    // being enforced and what the target is. Under a VSC that target is a
-    // minimum SECTOR TIME and not a speed, which is not something a driver can
-    // read off a speedometer — see `RaceControlManager.minimumSectorTimeS`.
-    this.neutralCue = this.el('hud-neutral-cue', this.root, '');
-    this.neutralCue.style.display = 'none';
-
-    // --- Radio ------------------------------------------------------------
-    this.radioFeed = this.el('hud-radio', this.root);
+    // --- The left rail -----------------------------------------------------
+    this.buildNotices();
 
     // --- Camera + diagnostics ---------------------------------------------
     // Real buttons, not just a keyboard hint. The camera was bound to the `C` key
@@ -381,18 +430,92 @@ export class Hud {
     this.reversePad = this.el('touch-pad touch-reverse', this.touchOverlay, 'REV');
   }
 
+  /**
+   * The weather bug.
+   *
+   * It replaces a line of grey monospace across the top centre of the screen
+   * that read `Dry AIR 18° TRACK 28°` — every fact present, none of them
+   * legible at 200km/h, and standing in the middle of the frame while it
+   * failed. Same three facts, in the shape a broadcast uses: a drawn sky, the
+   * condition in a solid pill, the two temperatures under it.
+   */
+  private buildWeather(): void {
+    this.weatherPanel = this.el('hud-weather is-dry', this.root);
+    this.weatherPanel.dataset.probe = 'weather';
+    const glyph = this.el('weather-glyph', this.weatherPanel);
+    glyph.appendChild(weatherGlyphSvg());
+    const body = this.el('weather-body', this.weatherPanel);
+    this.weatherPill = this.el('weather-pill', body, 'DRY TRACK');
+    this.weatherTemps = this.el('weather-temps', body, '');
+  }
+
+  /**
+   * The notice stack: the pit wall's whole side of the conversation.
+   *
+   * Anchored at its BOTTOM edge, so it grows upward into empty sky rather than
+   * downward over the car-state panel. The order of the children is the point:
+   * the two LIVE cards — the pit line and the neutralisation line, which carry
+   * numbers that change every frame — are last, so they hold a fixed position
+   * on the screen that a driver can learn. Everything transient stacks above
+   * them. A pop-up that shoves the distance-to-your-box two lines down the
+   * instant it appears is a pop-up that costs you the pit entry.
+   */
+  private buildNotices(): void {
+    this.notices = this.el('hud-notices', this.root);
+
+    // --- The radio card, top of the stack ---------------------------------
+    this.radioCard = this.el('hud-radiocard', this.notices);
+    this.radioCard.dataset.probe = 'radio';
+    this.radioCard.style.display = 'none';
+    const head = this.el('radio-head', this.radioCard);
+    this.radioMark = this.el('radio-mark', head);
+    const who = this.el('radio-who', head);
+    this.radioDriver = this.el('radio-driver', who, '');
+    this.el('radio-title', who, 'Radio');
+    this.el('radio-rule', this.radioCard);
+    this.radioSaid = this.el('radio-said', this.radioCard, '');
+    this.radioReply = this.el('radio-reply', this.radioCard, '');
+
+    // --- Transient pop-ups ------------------------------------------------
+    this.alertStack = this.el('hud-alerts', this.notices);
+    this.alertStack.dataset.probe = 'alerts';
+
+    // --- The two live cards, pinned to the bottom -------------------------
+    this.neutralCue = this.el('hud-neutral-cue', this.notices);
+    this.el('cue-tag', this.neutralCue, 'Control');
+    this.neutralCueText = this.el('cue-text', this.neutralCue, '');
+    this.neutralCue.dataset.probe = 'neutral';
+    this.neutralCue.style.display = 'none';
+
+    this.pitCue = this.el('hud-pit-cue', this.notices);
+    this.el('cue-tag', this.pitCue, 'Pit');
+    this.pitCueText = this.el('cue-text', this.pitCue, '');
+    this.pitCue.dataset.probe = 'pit';
+    this.pitCue.style.display = 'none';
+  }
+
   /** Builds the timing tower rows once, sized to the field. */
   private ensureRows(n: number): void {
     while (this.rows.length < n) {
       const root = this.el('tower-row', this.tower);
+      const bar = this.el('tower-bar', root);
       const pos = this.el('tower-pos', root, '');
-      const team = this.el('tower-team', root, '');
-      const code = this.el('tower-code', root, '');
-      const tyre = this.el('tower-tyre', root, '');
+      const mark = this.el('tower-mark', root);
+      const who = this.el('tower-who', root);
+      const nameLine = this.el('tower-name', who);
+      const first = this.el('tower-first', nameLine, '');
+      const last = this.el('tower-last', nameLine, '');
+      const sub = this.el('tower-sub', who);
+      const team = this.el('tower-team', sub, '');
+      const tyre = this.el('tower-tyre', sub, '');
       const gap = this.el('tower-gap', root, '');
+      const best = this.el('tower-best', root, '');
       this.rows.push({
-        root, pos, code, team, gap, tyre,
-        lastText: { pos: '', code: '', gap: '', tyre: '' },
+        root, bar, pos, mark, first, last, team, tyre, gap, best,
+        seen: {
+          pos: '', first: '', last: '', team: '',
+          tyre: '', gap: '', best: '', markTeam: '', colour: '',
+        },
       });
     }
   }
@@ -666,6 +789,16 @@ export class Hud {
       this.seenSector[0] = this.seenSector[1] = this.seenSector[2] = 0;
       this.shownMessages = 0;
       this.map = null;
+      this.lastAdvice = '';
+      this.lastNeutral = 'none';
+      this.lastSessionFlag = 'green';
+      this.radioPitShown = false;
+      this.hideRadioCard(true);
+      for (const c of this.alertCards.slice()) this.dismissAlert(c, true);
+      // The field's driver codes, so `relayed` knows which three-letter words
+      // are people. Built once per session; the field does not change inside
+      // one, and guessing instead turns "the" into a driver.
+      this.keepCaps = new Set(engine.cars.map((c) => c.driver.code));
     }
 
     // --- Speed, gear, rpm -------------------------------------------------
@@ -781,12 +914,8 @@ export class Hud {
     setText(this.gapAhead, ahead ? '▲ ' + formatGap(ahead.gapS) : '▲ —');
     setText(this.gapBehind, behind ? '▼ ' + formatGap(behind.gapS) : '▼ —');
 
-    // --- Conditions -------------------------------------------------------
-    setText(
-      this.conditions,
-      engine.weather.label + '   AIR ' + Math.round(engine.weather.airTempC) +
-      '°   TRACK ' + Math.round(engine.weather.trackTempC) + '°',
-    );
+    // --- Weather ----------------------------------------------------------
+    this.updateWeather(engine);
 
     // --- Flags ------------------------------------------------------------
     this.updateFlag(engine, player);
@@ -794,10 +923,11 @@ export class Hud {
     // --- Timing tower -----------------------------------------------------
     this.updateTower(engine, player);
 
-    // --- Radio ------------------------------------------------------------
+    // --- The left rail ----------------------------------------------------
     this.updatePitCue(engine, player);
     this.updateNeutralCue(engine, player);
-    this.updateRadio(engine);
+    this.updateAlerts(engine, player);
+    this.updateRadioCard(engine, player);
 
     // --- Camera and diagnostics ------------------------------------------
     setText(this.cameraLabel, engine.config.name);
@@ -857,6 +987,15 @@ export class Hud {
     }
   }
 
+  /** The weather bug: one class and two strings, both diffed. */
+  private updateWeather(engine: RaceEngine): void {
+    const w = weatherReadout(engine.weather);
+    setText(this.weatherPill, w.label);
+    setClass(this.weatherPill, 'weather-pill wx-' + w.tone);
+    setText(this.weatherTemps, w.temps);
+    setClass(this.weatherPanel, 'hud-weather is-' + w.tone);
+  }
+
   /**
    * The pit line: when to come in, where the box is, and what the limiter is
    * doing.
@@ -867,6 +1006,11 @@ export class Hud {
    * into a banner the team radio covers. And nothing said whether the limiter
    * was engaged. "That pitstop logic is fucked, I don't even know when to pit or
    * where to be at" is a fair reading of that.
+   *
+   * It has not lost anything by moving off the middle of the screen. This is
+   * still the PERSISTENT statement — it holds for as long as the fact holds,
+   * so a driver who misses the pop-up has not lost the instruction. The pop-up
+   * is the attention on top of it, not a replacement for it.
    */
   private updatePitCue(engine: RaceEngine, player: CarEntry): void {
     let text = '';
@@ -897,9 +1041,9 @@ export class Hud {
     }
 
     if (text) {
-      setText(this.pitCue, text);
+      setText(this.pitCueText, text);
       setClass(this.pitCue, cls);
-      setStyle(this.pitCue, 'display', 'block');
+      setStyle(this.pitCue, 'display', 'flex');
     } else {
       setStyle(this.pitCue, 'display', 'none');
     }
@@ -911,29 +1055,49 @@ export class Hud {
       setStyle(this.neutralCue, 'display', 'none');
       return;
     }
-    setText(this.neutralCue, cue.text);
+    setText(this.neutralCueText, cue.text);
     setClass(this.neutralCue, cue.cls);
-    setStyle(this.neutralCue, 'display', 'block');
+    setStyle(this.neutralCue, 'display', 'flex');
   }
 
+  /**
+   * The running order.
+   *
+   * Rebuilt around the broadcast row: colour bar, position, the team's own
+   * generated mark, the driver's name over their team's, then the gap and the
+   * best lap in right-aligned figures. The panel it replaces fitted twenty
+   * three-letter codes into 224 pixels, which is a dense and complete answer
+   * to a question nobody asked — you cannot read twenty rows at 300km/h, and
+   * `MBE +0.235` only means anything to somebody who has already learnt the
+   * abbreviations. Fourteen legible rows beat twenty illegible ones.
+   *
+   * The row count is bounded rather than "as many as fit" for a second reason:
+   * everything else the team says lives in the same left rail, and a tower
+   * that grows to the bottom of the viewport is a tower standing on the pit
+   * instruction.
+   */
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
-    // Show as much of the field as the viewport can actually hold, and a window
-    // around the player when it cannot hold much. Height matters as much as
-    // width: a 20-row tower does not fit in the 390px of a landscape iPhone,
-    // and it used to overflow the viewport.
-    const rowH = 19;
-    const fits = Math.floor((window.innerHeight - 150) / rowH);
-    const compact = window.innerWidth < 900 || fits < 10;
-    const shown = compact
-      ? Math.max(5, Math.min(fits, 7))
-      : Math.min(standings.length, fits, 20);
+    const fit = towerFit(window.innerWidth, window.innerHeight);
+    const shown = Math.min(standings.length, fit.rows);
     this.ensureRows(shown);
 
+    // A window around the player whenever the whole field does not fit. Being
+    // shown P1 to P14 while you are running sixteenth is a graphic about
+    // somebody else's race.
     let start = 0;
-    if (compact) {
+    if (shown < standings.length) {
       const idx = standings.indexOf(player);
-      start = Math.max(0, Math.min(idx - 3, standings.length - shown));
+      start = Math.max(0, Math.min(idx - Math.floor(shown / 2), standings.length - shown));
+    }
+
+    // The session's best lap, for the purple. One pass over twenty cars, no
+    // allocation — cheaper than the string compare it saves.
+    let sessionBest = 0;
+    for (const c of standings) {
+      if (c.bestLapTime > 0 && (sessionBest === 0 || c.bestLapTime < sessionBest)) {
+        sessionBest = c.bestLapTime;
+      }
     }
 
     for (let i = 0; i < this.rows.length; i++) {
@@ -946,76 +1110,191 @@ export class Hud {
         setStyle(row.root, 'display', 'none');
         continue;
       }
-      setStyle(row.root, 'display', 'flex');
+      setStyle(row.root, 'display', 'grid');
 
-      const posText = String(car.position);
-      // A car a lap or more down is reported as such, the way a broadcast tower
-      // does it. Showing it as "+3.114" instead is not a rounding difference —
-      // it says the car is three seconds off the one ahead when it is a whole
-      // lap off, and it turned the bottom half of the tower into a close battle
-      // that was not happening.
       const ahead = start + i > 0 ? standings[start + i - 1] : null;
-      const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
-      const gapText = car.retired ? 'DNF'
-        : car.disqualified ? 'DSQ'
-        : car.position === 1 ? 'LEADER'
-        : engine.config.kind !== 'race'
-          ? (car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '--')
-        : lapsBehind > 0 ? '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS')
-        : formatGap(car.interval);
-      const tyreText = getCompound(car.compound).code;
+      const cells = standingsCells(engine, car, ahead, standings[0]);
+      const seen = row.seen;
 
-      if (row.lastText.pos !== posText) { row.pos.textContent = posText; row.lastText.pos = posText; }
-      if (row.lastText.code !== car.driver.code) { row.code.textContent = car.driver.code; row.lastText.code = car.driver.code; }
-      if (row.lastText.gap !== gapText) { row.gap.textContent = gapText; row.lastText.gap = gapText; }
-      if (row.lastText.tyre !== tyreText) {
-        row.tyre.textContent = tyreText;
-        row.tyre.style.background = '#' + getCompound(car.compound).colour.toString(16).padStart(6, '0');
-        row.lastText.tyre = tyreText;
+      if (seen.pos !== cells.pos) { row.pos.textContent = cells.pos; seen.pos = cells.pos; }
+      if (seen.first !== cells.first) { row.first.textContent = cells.first; seen.first = cells.first; }
+      if (seen.last !== cells.last) { row.last.textContent = cells.last; seen.last = cells.last; }
+      if (seen.team !== cells.team) { row.team.textContent = cells.team; seen.team = cells.team; }
+      if (seen.gap !== cells.gap) { row.gap.textContent = cells.gap; seen.gap = cells.gap; }
+      if (seen.best !== cells.best) { row.best.textContent = cells.best; seen.best = cells.best; }
+      if (seen.tyre !== cells.tyre) {
+        row.tyre.textContent = cells.tyre;
+        row.tyre.style.color = '#' + getCompound(car.compound).colour.toString(16).padStart(6, '0');
+        seen.tyre = cells.tyre;
       }
-      row.team.style.background = '#' + car.team.colour.toString(16).padStart(6, '0');
-      // The leader gets its own treatment, as it does on a broadcast tower:
-      // whoever is winning is the one fact the graphic exists to convey.
+
+      const colour = '#' + car.team.colour.toString(16).padStart(6, '0');
+      if (seen.colour !== colour) { row.bar.style.background = colour; seen.colour = colour; }
+      // The mark is a five-element SVG. It is rebuilt when the car in this row
+      // changes team — once a session at most — and never per frame.
+      if (seen.markTeam !== car.team.id) {
+        row.mark.textContent = '';
+        row.mark.appendChild(teamMarkSvg(car.team));
+        seen.markTeam = car.team.id;
+      }
+
+      // Purple is the outright best in this system, and both of these are one:
+      // the position at the head of the order, and the fastest lap anyone has
+      // set. Nothing else in the tower is coloured.
       setClass(row.root, 'tower-row'
         + (car.position === 1 ? ' is-leader' : '')
         + (car === player ? ' is-player' : '')
-        + (car.retired ? ' is-out' : ''));
+        + (car.retired || car.disqualified ? ' is-out' : '')
+        + (sessionBest > 0 && car.bestLapTime === sessionBest ? ' is-fastest' : ''));
     }
   }
 
-  private updateRadio(engine: RaceEngine): void {
+  /**
+   * The pit wall, talking.
+   *
+   * Two sources, one voice. Race control's bulletins are relayed by the
+   * principal rather than printed raw, and the pit call is spoken as a
+   * sentence — see `pitCall`. Both are events: this fires on a CHANGE and does
+   * nothing at all on the ninety-nine frames out of a hundred where the
+   * situation is the same as it was.
+   */
+  private updateAlerts(engine: RaceEngine, player: CarEntry): void {
     const messages = engine.raceControl.messages;
-    if (messages.length <= this.shownMessages) {
-      // The log is bounded and shifts; resync if it wrapped.
-      if (messages.length < this.shownMessages) this.shownMessages = messages.length;
-      return;
-    }
-
+    // The log is bounded and shifts; resync if it wrapped.
+    if (messages.length < this.shownMessages) this.shownMessages = messages.length;
     for (let i = this.shownMessages; i < messages.length; i++) {
       const m = messages[i];
-      const entry = document.createElement('div');
-      entry.className = 'radio-entry sev-' + m.severity;
-      entry.textContent = m.text;
-      this.radioFeed.appendChild(entry);
-      this.radioEntries.push(entry);
-
-      // Fade and remove after a few seconds. Removing keeps the DOM small.
-      window.setTimeout(() => {
-        entry.classList.add('fading');
-        window.setTimeout(() => {
-          entry.remove();
-          const idx = this.radioEntries.indexOf(entry);
-          if (idx >= 0) this.radioEntries.splice(idx, 1);
-        }, 600);
-      }, 5200);
+      this.pushAlert(
+        player,
+        relayed(m.text, this.keepCaps),
+        '',
+        m.severity === 'critical' ? 'urgent' : m.severity === 'warning' ? 'warn' : 'info',
+      );
     }
     this.shownMessages = messages.length;
 
-    // Hard cap, in case of a burst.
-    while (this.radioEntries.length > 5) {
-      const old = this.radioEntries.shift();
-      old?.remove();
+    // The pit call speaks once, when the advice changes — not on every frame
+    // it holds. The persistent card below carries it for as long as it stands.
+    const advice = player.inPitLane || player.pitRequested
+      ? '' : (engine.pitAdvice(player) ?? '');
+    if (advice !== this.lastAdvice) {
+      this.lastAdvice = advice;
+      const call = advice ? pitCall(advice) : null;
+      if (call) this.pushAlert(player, call.line, call.chip, call.tone);
     }
+  }
+
+  /** How many pop-ups may stand at once. One on a screen 390px tall. */
+  private maxAlerts(): number {
+    return window.innerHeight < 560 ? 1 : 2;
+  }
+
+  private pushAlert(player: CarEntry, line: string, chip: string, tone: AlertTone): void {
+    const card = document.createElement('div');
+    card.className = 'hud-alert tone-' + tone + ' entering';
+
+    const portrait = this.el('alert-portrait', card);
+    portrait.appendChild(principalSvg(player.team));
+    const body = this.el('alert-body', card);
+    const who = this.el('alert-who', body);
+    this.el('alert-name', who, principalOf(player.team.id));
+    this.el('alert-role', who, 'Team principal');
+    this.el('alert-line', body, line);
+    if (chip) this.el('alert-chip', body, chip);
+
+    this.alertStack.appendChild(card);
+    this.alertCards.push(card);
+
+    // Two frames before the entry state comes off, so the transition has a
+    // start to run from. Transform and opacity only: those two are the ones a
+    // compositor can animate without asking the layout engine for help, which
+    // matters in a game that has been reported at 30fps.
+    enterNextFrame(card);
+    window.setTimeout(() => this.dismissAlert(card), ALERT_LIFE_MS);
+
+    while (this.alertCards.length > this.maxAlerts()) {
+      this.dismissAlert(this.alertCards[0], true);
+    }
+  }
+
+  private dismissAlert(card: HTMLElement, now = false): void {
+    const i = this.alertCards.indexOf(card);
+    if (i < 0) return;
+    this.alertCards.splice(i, 1);
+    if (now) { card.remove(); return; }
+    card.classList.add('leaving');
+    window.setTimeout(() => card.remove(), 420);
+  }
+
+  /**
+   * The radio card.
+   *
+   * Deliberately rare. The pop-up above is the pit wall nagging and it fires
+   * whenever there is something to nag about; this is a moment, and there are
+   * four of them — the stop being called, the safety car, the virtual safety
+   * car, and the flag. Each is an engine event with an edge, not a line on a
+   * timer, so the card cannot cry wolf.
+   */
+  private updateRadioCard(engine: RaceEngine, player: CarEntry): void {
+    const rc = engine.raceControl;
+
+    if (rc.neutralisation !== this.lastNeutral) {
+      const was = this.lastNeutral;
+      this.lastNeutral = rc.neutralisation;
+      if (was === 'none' && rc.neutralisation === 'safety-car') {
+        this.showRadioCard(player, { kind: 'safety-car' });
+      } else if (was === 'none' && rc.neutralisation === 'vsc') {
+        this.showRadioCard(player, { kind: 'vsc' });
+      }
+    }
+
+    if (rc.sessionFlag !== this.lastSessionFlag) {
+      this.lastSessionFlag = rc.sessionFlag;
+      if (rc.sessionFlag === 'chequered') {
+        this.showRadioCard(player, { kind: 'chequered', position: player.position });
+      }
+    }
+
+    const pitting = player.pitRequested || player.inPitLane;
+    if (pitting && !this.radioPitShown) {
+      this.radioPitShown = true;
+      this.showRadioCard(player, { kind: 'pit', compound: getCompound(player.compound).name });
+    } else if (!pitting) {
+      this.radioPitShown = false;
+    }
+  }
+
+  private showRadioCard(player: CarEntry, moment: RadioMoment): void {
+    const ex = radioExchange(moment);
+    for (const t of this.radioTimers) window.clearTimeout(t);
+    this.radioTimers.length = 0;
+
+    if (this.markedTeam !== player.team.id) {
+      this.radioMark.textContent = '';
+      this.radioMark.appendChild(teamMarkSvg(player.team));
+      this.markedTeam = player.team.id;
+    }
+    setText(this.radioDriver, player.driver.lastName);
+    setText(this.radioSaid, '“' + ex.said + '”');
+    setText(this.radioReply, '“' + ex.reply + '”');
+
+    this.radioCard.classList.remove('leaving');
+    this.radioCard.classList.add('entering');
+    setStyle(this.radioCard, 'display', 'block');
+    enterNextFrame(this.radioCard);
+
+    this.radioTimers.push(window.setTimeout(() => {
+      this.radioCard.classList.add('leaving');
+      this.radioTimers.push(window.setTimeout(() => this.hideRadioCard(true), 440));
+    }, RADIO_LIFE_MS));
+  }
+
+  private hideRadioCard(now = false): void {
+    if (!now) { this.radioCard.classList.add('leaving'); return; }
+    for (const t of this.radioTimers) window.clearTimeout(t);
+    this.radioTimers.length = 0;
+    this.radioCard.classList.remove('entering', 'leaving');
+    setStyle(this.radioCard, 'display', 'none');
   }
 
   private updateTouch(input: InputController): void {
@@ -1217,4 +1496,491 @@ export function neutralisationCue(
     text: limiter + ' · MIN SECTOR ' + minimum.toFixed(2) + 's · YOU ' + sofar.toFixed(2) + 's',
     cls: 'hud-neutral-cue ' + (behind || sofar < 0.4 ? 'cue-live' : 'cue-warn'),
   };
+}
+// ===========================================================================
+// THE RUNNING ORDER
+// ===========================================================================
+
+/** How long a pop-up and a radio card stand before they leave, ms. */
+const ALERT_LIFE_MS = 7200;
+const RADIO_LIFE_MS = 8000;
+
+/**
+ * Takes a card out of its entry state on the frame after next.
+ *
+ * A transition needs a start state that has been through a style resolution,
+ * so the class cannot come off in the same frame it went on. Two frames is the
+ * cheap, reliable way to get one; a forced reflow would also work and would
+ * cost a layout in the middle of a race.
+ */
+function enterNextFrame(card: HTMLElement): void {
+  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
+  if (!raf) { card.classList.remove('entering'); return; }
+  raf(() => raf(() => card.classList.remove('entering')));
+}
+
+/**
+ * How many rows the tower shows, and whether they are the single-line kind.
+ *
+ * Bounded at both ends and on purpose. The floor stops a short viewport
+ * showing two cars, which answers nothing. The ceiling is the interesting one:
+ * the left rail also carries the weather, the car state and the pit
+ * instruction, and a tower sized to "everything that fits" grows straight
+ * through them. Fourteen rows is what is left after that reservation on a
+ * 900px screen, and it is more of the field than anyone reads at speed.
+ *
+ * Pure, and exported, so `probe:hudtext` can assert the landscape-phone case —
+ * this repo has a history of HUD panels running off the bottom of a 390px
+ * screen — without standing up a browser to measure it.
+ */
+export function towerFit(w: number, h: number): { rows: number; compact: boolean } {
+  // Written the same way round as the media query that shrinks the row —
+  // `@media (max-width: 900px), (max-height: 470px)`. If these two ever
+  // disagree the panel is measured for one row height and drawn at another,
+  // which is exactly how a tower ends up hanging off the bottom of a phone.
+  const compact = w <= 900 || h <= 470;
+  const rowH = compact ? 17 : 29;
+  // The panel's own head and column rule, plus the rail beneath it.
+  const reserved = compact ? 156 : 336;
+  const fits = Math.floor((h - reserved) / rowH);
+  return {
+    rows: Math.max(compact ? 4 : 6, Math.min(fits, compact ? 8 : 14)),
+    compact,
+  };
+}
+
+/**
+ * One row of the running order, as text.
+ *
+ * Pure and exported for the same reason `neutralisationCue` is: a probe that
+ * re-derives what the gap column ought to say is a probe that agrees with
+ * itself and with nothing else.
+ *
+ * The gap column is the only subtle one. A car a lap or more down is reported
+ * as such, the way a broadcast tower does it — showing it as `+3.114` is not a
+ * rounding difference, it says the car is three seconds off the one ahead when
+ * it is a whole lap off, and it turned the bottom half of the tower into a
+ * close battle that was not happening. Outside a race there are no intervals
+ * worth the name, so the column becomes the deficit to the quickest lap set.
+ */
+export function standingsCells(
+  engine: RaceEngine, car: CarEntry, ahead: CarEntry | null, leader: CarEntry,
+): { pos: string; first: string; last: string; team: string; tyre: string; gap: string; best: string } {
+  const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
+  const gap = car.retired ? 'DNF'
+    : car.disqualified ? 'DSQ'
+    : car.position === 1 ? '—'
+    : engine.config.kind !== 'race'
+      ? (car.bestLapTime > 0 && leader.bestLapTime > 0
+        ? formatGap(car.bestLapTime - leader.bestLapTime) : '—')
+    : lapsBehind > 0 ? '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS')
+    : formatGap(car.interval);
+
+  return {
+    pos: String(car.position),
+    first: car.driver.firstName,
+    last: car.driver.lastName.toUpperCase(),
+    team: car.team.name,
+    tyre: getCompound(car.compound).code,
+    gap,
+    best: car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '—',
+  };
+}
+
+// ===========================================================================
+// THE PIT WALL'S VOICE
+// ===========================================================================
+
+/**
+ * Who speaks for each team.
+ *
+ * Invented people for invented teams — the same rule the grid itself follows,
+ * and the reason there is not a real name, badge or trademark anywhere in this
+ * file. From where the driver sits this is a cast of one: you only ever hear
+ * your own team principal, and their job is to tell you things you would
+ * rather not hear.
+ */
+const PRINCIPALS: Readonly<Record<string, string>> = {
+  apex: 'Marco Vidal',
+  'scuderia-rosso': 'Elena Brambilla',
+  meridian: 'Tom Ashcroft',
+  albion: 'Rhys Gallagher',
+  aurora: 'Ingrid Sandell',
+  vantage: 'Cato Brenner',
+  northstar: 'Dana Whitlock',
+  lumen: 'Sofia Reyes',
+  kestrel: 'Anders Vike',
+  brava: 'Nino Carbone',
+};
+
+/** The team principal's name, for the notification's byline. */
+export function principalOf(teamId: string): string {
+  return PRINCIPALS[teamId] ?? 'Pit wall';
+}
+
+/**
+ * The pit call, said by a person.
+ *
+ * `RaceEngine.pitAdvice` returns machine text — `DAMAGE — PIT FOR REPAIRS` —
+ * and the HUD used to set it in 22px capitals across the horizontal centre of
+ * the screen. Two things were wrong with that and only one of them was the
+ * position. Shouted capitals are how a warning light talks; a team principal
+ * says "there's damage on the car, box this lap and we'll put a new nose on".
+ * Same fact, and the second one gets read once instead of skimmed twenty
+ * times and then ignored.
+ *
+ * `chip` is the control that acts on it, because a message that tells you what
+ * is wrong and not what to press is half a message.
+ *
+ * Pure and exported so `probe:hudtext` can assert on the sentence the driver
+ * is actually shown rather than on a reimplementation of it.
+ */
+export function pitCall(advice: string): { line: string; chip: string; tone: AlertTone } | null {
+  const v = PIT_VOICE[advice];
+  if (!v) return null;
+  return { line: v.line, chip: 'PRESS PIT', tone: v.tone };
+}
+
+export type AlertTone = 'info' | 'warn' | 'urgent' | 'go';
+
+const PIT_VOICE: Readonly<Record<string, { line: string; tone: AlertTone }>> = {
+  'DRIVE-THROUGH TO SERVE': {
+    line: 'Drive-through penalty. Take it this lap — through the pit lane, no stopping.',
+    tone: 'urgent',
+  },
+  'PENALTY TO SERVE': {
+    line: 'You have a penalty to serve. Box, and we take it at the stop.',
+    tone: 'urgent',
+  },
+  'DAMAGE — PIT FOR REPAIRS': {
+    line: "There's damage on the car. Box this lap and we'll put a new nose on.",
+    tone: 'urgent',
+  },
+  'RAIN — WET TYRES': {
+    line: "Rain's here and you're on slicks. Box for wets.",
+    tone: 'urgent',
+  },
+  'TRACK DRY — SLICKS': {
+    line: "Track's drying out. Box for slicks whenever you're ready.",
+    tone: 'warn',
+  },
+  'TYRES GONE': {
+    line: "Those tyres are finished. Box now — you're losing a second a lap.",
+    tone: 'urgent',
+  },
+  'SECOND COMPOUND REQUIRED': {
+    line: 'You still owe us a second compound. Box before the flag or we lose the result.',
+    tone: 'warn',
+  },
+  'TYRES WORN — PIT WINDOW OPEN': {
+    line: "Pit window's open and the rears are going off. Your call.",
+    tone: 'info',
+  },
+};
+
+/**
+ * A race-control bulletin, relayed rather than shouted.
+ *
+ * Half the log is already written as a sentence — "HAL into the barrier at
+ * Copse" — and half is signage in capitals: `SAFETY CAR DEPLOYED`, `LAPPED
+ * CARS MAY NOW OVERTAKE`. Printed side by side in the same feed they read as
+ * two different systems talking, so the capitals are brought down to the same
+ * register as everything else.
+ *
+ * `keep` is the set of tokens that stay in capitals — the driver codes of the
+ * field, and the abbreviations the sport actually says as letters. It is
+ * passed in rather than guessed because a three-letter word is a driver code
+ * or an English word depending entirely on who is in the race, and guessing
+ * turns "the" into a driver.
+ */
+export function relayed(text: string, keep: ReadonlySet<string>): string {
+  const words = text.split(' ').map((w) => {
+    const bare = w.replace(/[^A-Za-z0-9]/g, '');
+    if (keep.has(bare) || FIXED_CAPS.has(bare)) return w;
+    if (!/[A-Z]/.test(w)) return w;
+    return w === w.toUpperCase() ? w.toLowerCase() : w;
+  });
+  const joined = words.join(' ');
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
+}
+
+/** Abbreviations the sport says as letters, so they survive the relay. */
+const FIXED_CAPS = new Set([
+  'VSC', 'SC', 'DRS', 'ERS', 'FIA', 'DNF', 'DSQ', 'GP', 'S1', 'S2', 'S3',
+]);
+
+/**
+ * A radio exchange, both halves of it.
+ *
+ * Distinct from the pop-up above and used for far less: the pop-up is the pit
+ * wall nagging, this is a moment. Four of them exist, they are the four times
+ * a real driver's radio is worth broadcasting, and each is a genuine engine
+ * event rather than flavour on a timer.
+ *
+ * The driver's line and the team's answer are returned separately because the
+ * card sets them on opposite sides — the alignment is the attribution, so
+ * neither has to be labelled.
+ */
+export type RadioMoment =
+  | { kind: 'pit'; compound: string }
+  | { kind: 'safety-car' }
+  | { kind: 'vsc' }
+  | { kind: 'chequered'; position: number }
+  | { kind: 'damage'; part: string };
+
+export function radioExchange(m: RadioMoment): { said: string; reply: string } {
+  switch (m.kind) {
+    case 'pit':
+      return {
+        said: "Box this lap, yeah? I've got nothing left on the rears.",
+        reply: 'Copy that — box, box. ' + m.compound + ' on the left, stay off the limiter line.',
+      };
+    case 'safety-car':
+      return {
+        said: 'Confirm safety car?',
+        reply: 'Affirm. Safety car deployed — delta positive, close up to the car ahead.',
+      };
+    case 'vsc':
+      return {
+        said: 'Virtual safety car? Give me the delta.',
+        reply: 'VSC is out. Hold the minimum sector time — we lose the lot if you go under it.',
+      };
+    case 'chequered':
+      return {
+        said: "That's the flag. Where did we finish?",
+        reply: 'P' + m.position + '. Well driven — bring it home, cool the tyres on the in-lap.',
+      };
+    case 'damage':
+      return {
+        said: 'Something let go — I can feel it in the high speed.',
+        reply: m.part + ' has taken a hit. Numbers are still good; keep going and we watch it.',
+      };
+  }
+}
+
+// ===========================================================================
+// THE WEATHER BUG
+// ===========================================================================
+
+export type WeatherTone = 'dry' | 'damp' | 'wet' | 'storm';
+
+/**
+ * What the weather bug says.
+ *
+ * The label is the engine's own verdict on `wetness`, in the words a pit wall
+ * uses, and the tone is the same verdict as a colour. Both come from one
+ * number, which is why they cannot disagree.
+ */
+export function weatherReadout(
+  w: { wetness: number; airTempC: number; trackTempC: number },
+): { label: string; tone: WeatherTone; temps: string } {
+  const tone: WeatherTone = w.wetness < 0.05 ? 'dry'
+    : w.wetness < 0.35 ? 'damp'
+    : w.wetness < 0.7 ? 'wet' : 'storm';
+  const label = tone === 'dry' ? 'DRY TRACK'
+    : tone === 'damp' ? 'LIGHT RAIN'
+    : tone === 'wet' ? 'WET TRACK' : 'HEAVY RAIN';
+  const temps = 'Air ' + Math.round(w.airTempC) + '°  ·  Track ' + Math.round(w.trackTempC) + '°';
+  return { label, tone, temps };
+}
+
+// ===========================================================================
+// TEAM MARKS
+// ===========================================================================
+
+/**
+ * A team's mark: a disc in its livery colour carrying one geometric device in
+ * its accent.
+ *
+ * Every list of drivers in this game has had exactly one piece of team
+ * identity on it — a three-pixel colour bar — and three of the ten teams are
+ * within a hue of another one at that size. The reference this panel is built
+ * against uses a circular badge per team, and this game cannot borrow those:
+ * they are real constructors' marks. So the marks are GENERATED, from data the
+ * team already carries. Ten devices, assigned by a hash of the team id, drawn
+ * in the accent over the primary. Two teams can share a colour or share a
+ * device; they cannot share both.
+ *
+ * Everything is sized to a 24-unit box and kept inside a radius of 10 so no
+ * clip path is needed — a clip path means a unique id per instance, and there
+ * is one of these per timing row.
+ */
+export function teamMarkSvg(team: { id: string; colour: number; accent: number }): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const primary = hexOf(team.colour);
+  const accent = hexOf(team.accent);
+
+  const disc = document.createElementNS(NS, 'circle');
+  disc.setAttribute('cx', '12');
+  disc.setAttribute('cy', '12');
+  disc.setAttribute('r', '12');
+  disc.setAttribute('fill', primary);
+  svg.appendChild(disc);
+
+  for (const spec of DEVICES[hashOf(team.id) % DEVICES.length]) {
+    const e = document.createElementNS(NS, spec.tag);
+    for (const [k, v] of Object.entries(spec.attrs)) e.setAttribute(k, v);
+    // `#a` is the accent, `#p` the primary — so a device can cut a hole in the
+    // disc as well as sit on it.
+    if (spec.attrs.fill === '#a') e.setAttribute('fill', accent);
+    if (spec.attrs.fill === '#p') e.setAttribute('fill', primary);
+    if (spec.attrs.stroke === '#a') e.setAttribute('stroke', accent);
+    svg.appendChild(e);
+  }
+
+  // A hairline so the disc separates from a pale sky as well as from a panel.
+  const ring = document.createElementNS(NS, 'circle');
+  ring.setAttribute('cx', '12');
+  ring.setAttribute('cy', '12');
+  ring.setAttribute('r', '11.2');
+  ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', 'rgba(255,255,255,0.26)');
+  ring.setAttribute('stroke-width', '1.4');
+  svg.appendChild(ring);
+
+  return svg;
+}
+
+interface DeviceSpec { tag: 'path' | 'rect' | 'circle'; attrs: Record<string, string>; }
+
+/** Ten devices. Order is fixed: changing it re-badges the whole grid. */
+const DEVICES: readonly (readonly DeviceSpec[])[] = [
+  // chevron
+  [{ tag: 'path', attrs: { d: 'M9 6.5 L15.5 12 L9 17.5', fill: 'none', stroke: '#a', 'stroke-width': '3.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' } }],
+  // bar
+  [{ tag: 'rect', attrs: { x: '3', y: '9.8', width: '18', height: '4.4', rx: '1', fill: '#a' } }],
+  // half disc
+  [{ tag: 'path', attrs: { d: 'M12 0 A12 12 0 0 1 12 24 Z', fill: '#a' } }],
+  // ring
+  [{ tag: 'circle', attrs: { cx: '12', cy: '12', r: '6.4', fill: 'none', stroke: '#a', 'stroke-width': '3.2' } }],
+  // triangle
+  [{ tag: 'path', attrs: { d: 'M12 4.6 L18.6 17.2 L5.4 17.2 Z', fill: '#a' } }],
+  // twin bars
+  [
+    { tag: 'rect', attrs: { x: '5.5', y: '6.4', width: '4', height: '11.2', rx: '1.4', fill: '#a' } },
+    { tag: 'rect', attrs: { x: '14.5', y: '6.4', width: '4', height: '11.2', rx: '1.4', fill: '#a' } },
+  ],
+  // dot
+  [{ tag: 'circle', attrs: { cx: '12', cy: '12', r: '5.2', fill: '#a' } }],
+  // saltire
+  [{ tag: 'path', attrs: { d: 'M7.4 7.4 L16.6 16.6 M16.6 7.4 L7.4 16.6', fill: 'none', stroke: '#a', 'stroke-width': '3.2', 'stroke-linecap': 'round' } }],
+  // crescent
+  [
+    { tag: 'circle', attrs: { cx: '11', cy: '12', r: '8', fill: '#a' } },
+    { tag: 'circle', attrs: { cx: '15.6', cy: '12', r: '7', fill: '#p' } },
+  ],
+  // quarters
+  [
+    { tag: 'rect', attrs: { x: '12', y: '4', width: '7', height: '8', fill: '#a' } },
+    { tag: 'rect', attrs: { x: '5', y: '12', width: '7', height: '8', fill: '#a' } },
+  ],
+];
+
+/**
+ * The team principal, drawn.
+ *
+ * A bust in silhouette — head, shoulders, headset, boom mic — on a disc in the
+ * team's colour. It is the only face in this game, which is the point: the
+ * notification it heads is the only thing on screen that is a person talking
+ * rather than a machine reporting, and a portrait says that before a word is
+ * read.
+ *
+ * The silhouette's ink is picked off the disc's luminance rather than fixed,
+ * because this grid runs from a #0e3b5c navy to a #9aa5b1 grey and a fixed ink
+ * disappears into one end of that or the other.
+ */
+export function principalSvg(team: { colour: number }): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 48 48');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const ink = luminanceOf(team.colour) > 0.5 ? '#0a0e14' : '#eaf1fa';
+  const add = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.appendChild(e);
+  };
+
+  add('circle', { cx: '24', cy: '24', r: '24', fill: hexOf(team.colour) });
+  // Shoulders. The two arcs follow the disc's own edge, so the bust reads as
+  // cropped by the frame rather than as a shape floating inside it.
+  add('path', {
+    d: 'M24 27.5c-8.6 0-15 4.8-16.7 11.9A24 24 0 0 0 24 48a24 24 0 0 0 16.7-8.6C39 32.3 32.6 27.5 24 27.5z',
+    fill: ink,
+  });
+  add('circle', { cx: '24', cy: '19', r: '8.3', fill: ink });
+  // Headset: band over the crown, a cup at each ear, boom to the mouth.
+  add('path', { d: 'M13.4 20.2a10.6 10.6 0 0 1 21.2 0', fill: 'none', stroke: ink, 'stroke-width': '3' });
+  add('rect', { x: '10.2', y: '18.4', width: '5.2', height: '7.8', rx: '2.6', fill: ink });
+  add('rect', { x: '32.6', y: '18.4', width: '5.2', height: '7.8', rx: '2.6', fill: ink });
+  add('path', {
+    d: 'M13.2 26.4c0 5.2 3.8 8.4 8.6 8.8', fill: 'none', stroke: ink,
+    'stroke-width': '2.2', 'stroke-linecap': 'round',
+  });
+  add('circle', { cx: '24', cy: '24', r: '23', fill: 'none', stroke: 'rgba(255,255,255,0.22)', 'stroke-width': '1.6' });
+  return svg;
+}
+
+/**
+ * The sky, drawn.
+ *
+ * A cloud, a sun behind it, and three rain strokes. Every element is present
+ * in every state and shown or hidden by a class on the panel, so changing the
+ * weather costs one class write rather than a rebuild — and nothing here
+ * animates. A HUD in a game that has been reported at 30fps does not get to
+ * spend a compositor layer on falling raindrops.
+ */
+export function weatherGlyphSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 32 32');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const add = (tag: string, attrs: Record<string, string>, cls?: string) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (cls) e.setAttribute('class', cls);
+    svg.appendChild(e);
+    return e;
+  };
+
+  add('circle', { cx: '21.5', cy: '9.5', r: '5.4', fill: '#fff' }, 'wx-sun');
+  add('path', {
+    d: 'M9.6 20.5a5.4 5.4 0 0 1 .5-10.8 7.4 7.4 0 0 1 14 1.6 4.6 4.6 0 0 1-.8 9.2z',
+    fill: '#fff',
+  }, 'wx-cloud');
+  const drops = add('g', { stroke: '#fff', 'stroke-width': '2.1', 'stroke-linecap': 'round' }, 'wx-drops');
+  for (const [x, y] of [[11, 23], [16, 23.5], [21, 23]] as [number, number][]) {
+    const line = document.createElementNS(NS, 'path');
+    line.setAttribute('d', `M${x} ${y} L${x - 2.4} ${y + 6}`);
+    drops.appendChild(line);
+  }
+  return svg;
+}
+
+function hexOf(c: number): string {
+  return '#' + c.toString(16).padStart(6, '0');
+}
+
+/** Rec. 709 relative luminance, 0..1. */
+function luminanceOf(c: number): number {
+  const r = ((c >> 16) & 0xff) / 255;
+  const g = ((c >> 8) & 0xff) / 255;
+  const b = (c & 0xff) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** FNV-1a, so a team's device is the same on every machine and every run. */
+function hashOf(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
 }
