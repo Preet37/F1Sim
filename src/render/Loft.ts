@@ -971,6 +971,32 @@ export function creased(geo: THREE.BufferGeometry, creaseDeg = 40): THREE.Buffer
  * linkage geometry is most of what makes an open-wheeler read as engineered
  * rather than as a toy.
  */
+/**
+ * A limb segment: a cylinder that TAPERS, between two points.
+ *
+ * `strut` takes one radius, which is right for a wishbone and wrong for an arm.
+ * A forearm is half again as thick at the elbow as it is at the wrist, and it is
+ * the narrowing into the glove that tells the eye which end is the hand — an
+ * untapered tube reads as plumbing, which is what the driver's arms read as the
+ * first time anything got close enough to see them.
+ */
+export function limb(
+  a: readonly number[], b: readonly number[],
+  r0: number, r1: number, radialSegments = 10,
+): THREE.BufferGeometry {
+  const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+  const len = Math.hypot(dx, dy, dz) || 1e-4;
+  // CylinderGeometry's first radius is its +y end, which is `b` after the
+  // rotation below.
+  const g = new THREE.CylinderGeometry(r1, r0, len, radialSegments, 1, false);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(dx / len, dy / len, dz / len),
+  ));
+  g.translate((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
+  return g;
+}
+
 export function strut(
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,

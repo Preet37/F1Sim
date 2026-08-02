@@ -5,7 +5,7 @@ import {
   wingElement, riseSpanwise, type OpenTop, type Section,
 } from './Loft';
 import {
-  buildLivery, disposeLiveryCache, swatchUV, PANEL,
+  buildLivery, disposeLiveryCache, suitColour, swatchUV, PANEL,
   type PanelName, type SwatchName,
 } from './Livery';
 import { buildDriverParts } from './DriverMesh';
@@ -1448,17 +1448,30 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     g.rotateX(angle);
     // The W is applied AFTER the incidence, in car-local Y. See `riseSpanwise`.
     riseSpanwise(g, e.span * 0.5, wingW(e.rise));
+    const index = FRONT_WING_ELEMENTS.indexOf(e) + 1;
+    // THE TOP FLAP IS PAINTED, and it is the only thing on this assembly that
+    // is. "The front wing and the front is so big versus the back wing is super
+    // tiny." Measured against Appendix 1 the wing is right — 1950mm of span and
+    // 689mm of chord, from XF -1331 to -642, which is the regulation volume
+    // almost exactly — so what is wrong is not its size but its MASS: 1.35
+    // square metres of near-black carbon at the front of a blue car, with the
+    // slots between the four elements invisible from above because each element
+    // is directly over the one behind it. Every real front wing on the grid
+    // carries the team's colour on its upper elements for exactly this reason.
+    // Painting the top one turns a black slab into a wing with a wing under it,
+    // for no triangles and no draw call.
+    const swatch: SwatchName = index === 4 ? 'body' : 'carbon';
     if (e.movable) {
       // Authored about the hinge, so the pivot group can simply be placed at it.
       g.translate(0, (e.leY + e.teY) * 0.5 - FRONT_FLAP_PIVOT_Y, (e.leZ + e.teZ) * 0.5 - FRONT_FLAP_PIVOT_Z);
-      p.tag(`front wing element ${FRONT_WING_ELEMENTS.indexOf(e) + 1}`);
+      p.tag(`front wing element ${index}`);
       p.intoFrontFlap();
-      p.flat(g, 'carbon');
+      p.flat(g, swatch);
       p.into('frontWing');
     } else {
-      p.tag(`front wing element ${FRONT_WING_ELEMENTS.indexOf(e) + 1}`);
+      p.tag(`front wing element ${index}`);
       g.translate(0, (e.leY + e.teY) * 0.5, (e.leZ + e.teZ) * 0.5);
-      p.flat(g, 'carbon');
+      p.flat(g, swatch);
     }
   }
 
@@ -1482,13 +1495,25 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // the regulation ceiling of 0.510 and is what puts the plate alongside the
     // middle of the front tyre rather than under it — an endplate's whole job
     // in the silhouette is to frame that wheel.
+    //
+    // IT WAS 25mm TOO FAR OUT, ON EACH SIDE. Appendix 1 puts the front wing
+    // endplate between Y 900 and Y 975; the note above put its outer skin at
+    // 0.999 and called that "the widest thing on the car, as it should be". It
+    // is not: 975 is the wing's own limit and 1000 is the BODYWORK limit, which
+    // the wing does not get to use. A real car's widest points are the front
+    // wing at 1950mm overall and the rear tyres at 1525 of track plus a 405
+    // tyre, which is 1930 — within twenty millimetres of each other, and the
+    // tyres are the wider of the two at the back. Ours had the wing 21mm wider
+    // than the rear tyres, which is a large part of "the front wing is so big".
+    // Pulled in 24mm a side: 1950mm overall, exactly the regulation span, and
+    // now 2.5mm inside the rear tyres rather than outside them.
     const ep = small([
-      section(3.100, 0.010, 0.052, 0.196, 0.30, { xc: s * 0.948 }),
-      section(2.980, 0.012, 0.036, 0.278, 0.24, { xc: s * 0.960 }),
-      section(2.840, 0.013, 0.028, 0.352, 0.22, { xc: s * 0.972 }),
-      section(2.690, 0.014, 0.026, 0.412, 0.20, { xc: s * 0.983 }),
-      section(2.540, 0.013, 0.030, 0.436, 0.24, { xc: s * 0.987 }),
-      section(2.440, 0.010, 0.042, 0.404, 0.34, { xc: s * 0.986 }),
+      section(3.100, 0.010, 0.052, 0.196, 0.30, { xc: s * 0.924 }),
+      section(2.980, 0.012, 0.036, 0.278, 0.24, { xc: s * 0.936 }),
+      section(2.840, 0.013, 0.028, 0.352, 0.22, { xc: s * 0.948 }),
+      section(2.690, 0.014, 0.026, 0.412, 0.20, { xc: s * 0.959 }),
+      section(2.540, 0.013, 0.030, 0.436, 0.24, { xc: s * 0.963 }),
+      section(2.440, 0.010, 0.042, 0.404, 0.34, { xc: s * 0.962 }),
     ], t.body - 8);
     p.tag(`front wing endplate ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(ep, 'front wing endplate'), 'carbon');
@@ -1497,10 +1522,10 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // ground level, it is the last thing to clear a kerb, and it is in every
     // head-on photograph as a bright horizontal line under the dark plate.
     const foot = small([
-      section(3.06, 0.026, 0.020, 0.050, 0.60, { xc: s * 0.950 }),
-      section(2.88, 0.032, 0.016, 0.048, 0.55, { xc: s * 0.960 }),
-      section(2.70, 0.034, 0.018, 0.050, 0.55, { xc: s * 0.964 }),
-      section(2.52, 0.026, 0.024, 0.054, 0.60, { xc: s * 0.968 }),
+      section(3.06, 0.026, 0.020, 0.050, 0.60, { xc: s * 0.926 }),
+      section(2.88, 0.032, 0.016, 0.048, 0.55, { xc: s * 0.936 }),
+      section(2.70, 0.034, 0.018, 0.050, 0.55, { xc: s * 0.940 }),
+      section(2.52, 0.026, 0.024, 0.054, 0.60, { xc: s * 0.944 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing footplate ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(foot, 'front wing footplate'), 'carbon');
@@ -1509,9 +1534,9 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // trailing corner. It is what stops the endplate reading as a plain
     // rectangle in silhouette.
     const flick = small([
-      section(2.78, 0.014, 0.386, 0.404, 0.70, { xc: s * 0.960 }),
-      section(2.64, 0.024, 0.418, 0.442, 0.70, { xc: s * 0.950 }),
-      section(2.50, 0.020, 0.408, 0.428, 0.70, { xc: s * 0.942 }),
+      section(2.78, 0.014, 0.386, 0.404, 0.70, { xc: s * 0.936 }),
+      section(2.64, 0.024, 0.418, 0.442, 0.70, { xc: s * 0.926 }),
+      section(2.50, 0.020, 0.408, 0.428, 0.70, { xc: s * 0.918 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing flick ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(flick, 'front wing flick'), 'carbon');
@@ -1527,9 +1552,9 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // screenshots. A diveplane is a small plate ON the outer skin; built as a
     // three-station loft it can be exactly that, and `checkWidth` proves it.
     const dive = small([
-      section(2.850, 0.024, 0.196, 0.214, 0.60, { xc: s * 0.972 }),
-      section(2.730, 0.028, 0.210, 0.230, 0.60, { xc: s * 0.970 }),
-      section(2.630, 0.021, 0.218, 0.236, 0.60, { xc: s * 0.966 }),
+      section(2.850, 0.024, 0.196, 0.214, 0.60, { xc: s * 0.948 }),
+      section(2.730, 0.028, 0.210, 0.230, 0.60, { xc: s * 0.946 }),
+      section(2.630, 0.021, 0.218, 0.236, 0.60, { xc: s * 0.942 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing diveplane ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(dive, 'front wing diveplane'), 'accent');
@@ -2586,13 +2611,36 @@ function frontUprightGeometry(t: Tiers, side: 1 | -1): THREE.BufferGeometry {
   // Built as three sections arcing over the tyre's crown at 0.360 — it sits
   // 55mm clear of the rubber, and is deliberately narrow so it never fights
   // the wheel for attention.
+  //
+  // IT LOOKED LIKE IT WAS FLOATING, and it was: "not sure what that thing is on
+  // the front wheels still." It is a legal part in the right piece of sky, but
+  // it was 138mm across on a 329mm tyre, it sat entirely over the tyre's
+  // INBOARD half, and nothing joined it to anything — a dark blade hanging 40mm
+  // above the rubber with clear air all round it. On the real car the winglet is
+  // carried on a vane that runs down the INBOARD side of the tyre to the brake
+  // drum, and that vane is what makes the thing read as bolted on rather than
+  // balanced there.
+  //
+  // 220mm across now, reaching inboard to x = -0.175 — ten millimetres clear of
+  // the tyre's inner wall at 0.1645 — which is where the vane can come up
+  // without passing through the rubber.
   {
     const wing = loft([
-      section(0.150, 0.052, 0.402, 0.418, 0.60, { xc: s * -0.052 }),
-      section(0.010, 0.062, 0.414, 0.432, 0.55, { xc: s * -0.060 }),
-      section(-0.150, 0.050, 0.400, 0.416, 0.60, { xc: s * -0.066 }),
+      section(0.150, 0.098, 0.402, 0.418, 0.60, { xc: s * -0.062 }),
+      section(0.010, 0.110, 0.414, 0.432, 0.55, { xc: s * -0.065 }),
+      section(-0.150, 0.094, 0.400, 0.416, 0.60, { xc: s * -0.070 }),
     ], Math.max(6, t.detail - 6), true, t.detailStep);
     flat(wing, 'carbon');
+    // The vane that holds it up: down the inboard flank of the tyre, from the
+    // winglet's inboard edge to the top of the drum. Thin, because it is a
+    // support rather than an aerodynamic surface, and the whole point of it is
+    // that the eye can follow the load path.
+    const post = loft([
+      section(0.104, 0.007, 0.128, 0.406, 0.30, { xc: s * -0.176 }),
+      section(-0.010, 0.008, 0.120, 0.420, 0.26, { xc: s * -0.178 }),
+      section(-0.116, 0.007, 0.126, 0.404, 0.30, { xc: s * -0.176 }),
+    ], Math.max(6, t.detail - 8), true, t.detailStep);
+    flat(post, 'carbon');
   }
   // Brake duct: the carbon drum inboard of the wheel. Turns with the wheel,
   // because it is bolted to the upright. Deeper and taller than it was, so it
@@ -3180,7 +3228,7 @@ function geometryFor(quality: CarTier): CachedGeometry {
       sidepodL: mergeParts(parts.sidepodL),
       sidepodR: mergeParts(parts.sidepodR),
     },
-    onboardHidden: mergeParts([...driver.grip, ...parts.onboardHidden]),
+    onboardHidden: mergeParts([...driver.grip, ...driver.arms, ...parts.onboardHidden]),
     frontWheel: buildWheel(FRONT_TYRE_W, t, quality),
     rearWheel: buildWheel(REAR_TYRE_W, t, quality),
     frontUprightL: frontUprightGeometry(t, -1),
@@ -3251,7 +3299,9 @@ export function carPartsForProbe(quality: CarTier): CarPart[] {
   for (const g of driver.body) g.userData.tag = 'driver body';
   for (const g of driver.head) g.userData.tag = 'driver head';
   for (const g of driver.grip) g.userData.tag = 'driver grip';
+  for (const g of driver.arms) g.userData.tag = 'driver arms';
   const parts = buildShellParts(quality, [...driver.body, ...driver.head]);
+  parts.onboardHidden.push(...driver.arms);
   const out: CarPart[] = [];
   const take = (list: readonly THREE.BufferGeometry[], bucket: string, offset: THREE.Vector3 | null = null) => {
     for (const g of list) {
@@ -3508,7 +3558,12 @@ export function buildCar(
 
   // Everything only the driver can see. Parented to the car root, so it inherits
   // the chassis' position, heading, roll and pitch for free.
-  const cockpit = opts.withCockpit ? buildCockpit(accentColour) : null;
+  // The suit colour is the shell's own `suit` swatch — the body colour darkened
+  // by 0.4, see `swatchColour` in Livery — because the cockpit's articulated
+  // arms stand in for the shell's static pair and the camera swaps between them.
+  const cockpit = opts.withCockpit
+    ? buildCockpit(accentColour, suitColour(bodyColour))
+    : null;
   if (cockpit) root.add(cockpit.root);
 
   // Contact shadow: a cheap dark ellipse that grounds the car even with real

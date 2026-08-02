@@ -143,6 +143,18 @@ function readable(hex: number): string {
 }
 
 /**
+ * The race suit's colour: the team's body colour, darkened.
+ *
+ * Exported because two modules paint the same driver. The shared shell puts it
+ * on the `suit` swatch for the whole field; `buildCockpit` needs the same value
+ * as a plain colour for the articulated arms it draws for the one car the
+ * onboard camera is inside, and those two arms are in the same place.
+ */
+export function suitColour(bodyColour: number): number {
+  return shade(bodyColour, -0.4);
+}
+
+/**
  * Picks the colour used for graphics that must contrast with the base coat.
  *
  * A few teams pair two dark colours or two light ones, and a nose flash that is
@@ -634,7 +646,7 @@ function swatchColour(name: SwatchName, spec: LiverySpec, flash: number): number
     // A helmet in a lifted version of the accent reads as the driver's own
     // rather than as a second piece of bodywork.
     case 'helmet': return shade(flash, luminance(flash) > 0.5 ? -0.3 : 0.4);
-    case 'suit': return shade(spec.colour, -0.4);
+    case 'suit': return suitColour(spec.colour);
     case 'glove': return 0x15181e;
     case 'dark': return 0x04050a;
   }

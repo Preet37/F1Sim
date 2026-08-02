@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildCarbonTexture } from './Livery';
-import { creased, loft, section, setPanelUV, tube } from './Loft';
+import { creased, limb, loft, section, setPanelUV, tube } from './Loft';
 import { gloveNomexMap } from './DetailMaps';
 
 /**
@@ -259,6 +259,27 @@ export const MIRROR_GLASS_Z = 0.769;
  * back and three metres out is the piece of road a car appears from when it is
  * setting up a move, which is the question the mirrors exist to answer.
  */
+/**
+ * The driver's arm skeleton, car-local, for the side on +x.
+ *
+ * Here rather than in DriverMesh because BOTH of them need it and DriverMesh
+ * already imports from this module: the shell builds a static pair from these
+ * points for the other twenty-one cars, and `buildCockpit` builds an articulated
+ * pair from the same points for the one car the onboard camera is inside. Two
+ * sets of arms in the same place that disagree about where the shoulder is would
+ * pop the moment the camera changed.
+ *
+ * The wrist is the point the glove's cuff sits on, so the forearm ends inside
+ * the hand rather than beside it.
+ */
+export const ARM_SHOULDER = [0.150, 0.522, -0.045] as const;
+export const ARM_ELBOW = [0.163, 0.465, 0.180] as const;
+export const ARM_WRIST = [GRIP_X, WHEEL_Y - 0.012, WHEEL_Z - 0.062] as const;
+/** Upper-arm radii, shoulder end then elbow end. */
+export const UPPER_ARM_R = [0.056, 0.046] as const;
+/** Forearm radii, elbow end then wrist end. */
+export const FOREARM_R = [0.049, 0.034] as const;
+
 export const MIRROR_TARGET_X = 3.0;
 export const MIRROR_TARGET_Y = 0.85;
 export const MIRROR_TARGET_Z = -25;
@@ -1029,7 +1050,7 @@ function clamp01(v: number): number {
  * @param accentColour the team's accent, used for the glove cuffs and the wheel
  *                     grip flashes so the view is liveried like the car is.
  */
-export function buildCockpit(accentColour: number): CockpitVisual {
+export function buildCockpit(accentColour: number, suitColour: number): CockpitVisual {
   const root = new THREE.Group();
   root.name = 'cockpit';
   root.visible = false;
@@ -1088,6 +1109,18 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   }));
   const accent = mat(new THREE.MeshStandardMaterial({
     color: accentColour, metalness: 0.2, roughness: 0.5, envMapIntensity: 0.9,
+  }));
+  // The race suit, for the arms. Nomex like the gloves, so it takes the same
+  // relief map — at 0.3m from the lens a flat surface at roughness 0.8 is
+  // moulded rubber whatever colour it is, and this is the closest thing to the
+  // camera in the driver's-eye view after the wheel itself. The colour matches
+  // the `suit` swatch on the shared shell (Livery.ts: the body colour darkened
+  // by 0.4), because the shell's arms and these are the same arms and the
+  // camera swaps between them.
+  const suit = mat(new THREE.MeshStandardMaterial({
+    color: suitColour, metalness: 0.0, roughness: 0.80, envMapIntensity: 0.55,
+    normalMap: gloveNormal,
+    normalScale: new THREE.Vector2(0.6, 0.6),
   }));
   // The cuff is the same cloth in the team's colour, so it takes the same map.
   const cuffAccent = mat(new THREE.MeshStandardMaterial({
@@ -1301,15 +1334,83 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // the ninety degrees of lock an F1 car has, so they turn with it.
   //
   // Built once for the right and MIRRORED for the left. See `handParts`.
+  const forearms: THREE.Object3D[] = [];
   {
     const right = buildHandParts(COCKPIT_HAND);
     for (const side of [-1, 1] as const) {
       const hand = new THREE.Group();
       hand.position.set(side * HAND_X, HAND_Y, 0);
       wheelSpin.add(hand);
+      forearms.push(hand);
       for (const part of right) {
         add(side > 0 ? part.geo : mirroredX(part.geo), part.accent ? cuffAccent : glove, hand);
       }
+    }
+  }
+
+  // --- Arms ---------------------------------------------------------------
+  //
+  // "It looks like the hands are turning from the steering wheel but there is
+  // blue lego hands on the cockpit makes it seems like the hands are detached."
+  //
+  // The arms were merged into the shared shell, which is geometry that cannot
+  // move, so the gloves turned with the rim and the arms stayed where they
+  // were. From outside the car that never showed. The driver's-eye camera puts
+  // the player's own arms 0.3m from the lens across the bottom of the frame,
+  // and there the mismatch is the loudest thing in the shot: at the fourteen
+  // degrees of road-wheel lock a corner actually uses, a 3:1 rack swings each
+  // grip through 42 degrees and 90mm, and the arm attached to nothing follows
+  // none of it.
+  //
+  // So the shell's pair is hidden for this one car (`DriverParts.arms`) and
+  // these two chains take their place:
+  //
+  //  - the FOREARM is a child of the hand group, so it turns with the rim
+  //    exactly as the glove does. This is not a cheat: a driver's forearm
+  //    genuinely does rotate with the grip it is holding;
+  //  - the UPPER ARM is a bone. Its shoulder end is fixed in the car and its
+  //    elbow end is wherever the forearm has just put it, so it is re-aimed and
+  //    re-stretched every frame. That is the one piece of articulation on the
+  //    whole car and it is four triangles' worth of state.
+  //
+  // Cost: two meshes per side on ONE car — the same car that already pays for a
+  // live dash and two mirror feeds. Nothing changes for the other twenty-one.
+  const upperArms: { bone: THREE.Object3D; elbow: THREE.Object3D }[] = [];
+  const armElbow = new THREE.Vector3();
+  const armShoulder = new THREE.Vector3();
+  {
+    // Elbow, in the hand group's frame. The wrist is the hand group's own
+    // origin, so the forearm runs from there back and inboard to the elbow;
+    // taking the vector in CAR space and rotating it into wheel space by the
+    // rake is what keeps the arm pointing at the driver rather than at the sky.
+    const rake = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -WHEEL_TILT);
+    const seg = Math.max(8, COCKPIT_HAND.radial);
+    for (let i = 0; i < forearms.length; i++) {
+      const side = i === 0 ? -1 : 1;
+      const hand = forearms[i];
+      const elbowCar = new THREE.Vector3(side * ARM_ELBOW[0], ARM_ELBOW[1], ARM_ELBOW[2]);
+      const wristCar = new THREE.Vector3(side * ARM_WRIST[0], ARM_WRIST[1], ARM_WRIST[2]);
+      const localElbow = elbowCar.sub(wristCar).applyQuaternion(rake);
+
+      const elbow = new THREE.Object3D();
+      elbow.position.copy(localElbow);
+      hand.add(elbow);
+
+      add(limb([0, 0, 0], localElbow.toArray(), FOREARM_R[1], FOREARM_R[0], seg), suit, hand);
+
+      // The upper arm: a unit-length taper along +z, so aiming it is a lookAt
+      // and lengthening it is one scale.
+      const bone = new THREE.Object3D();
+      bone.position.set(side * ARM_SHOULDER[0], ARM_SHOULDER[1], ARM_SHOULDER[2]);
+      root.add(bone);
+      add(limb([0, 0, 0], [0, 0, 1], UPPER_ARM_R[0], UPPER_ARM_R[1], seg), suit, bone);
+      // Shoulder and elbow, so the two segments do not meet in a visible mitre.
+      const cap = new THREE.SphereGeometry(UPPER_ARM_R[0], seg, 8);
+      cap.translate(side * ARM_SHOULDER[0], ARM_SHOULDER[1], ARM_SHOULDER[2]);
+      add(cap, suit);
+      add(new THREE.SphereGeometry(FOREARM_R[0] * 0.96, seg, 8), suit, elbow);
+
+      upperArms.push({ bone, elbow });
     }
   }
 
@@ -1448,6 +1549,20 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       // twelve o'clock to the driver's right. Same sign, therefore, as the
       // steer input itself.
       wheelSpin.rotation.z = state.steerRad * RACK_RATIO;
+      // The upper arms follow the elbows the rim has just moved. The matrices
+      // are refreshed here rather than left to the renderer's own pass, because
+      // the elbows hang off `wheelSpin` and would otherwise be one frame stale —
+      // which shows on screen as the arms lagging the hands while turning.
+      root.updateMatrixWorld(true);
+      for (const { bone, elbow } of upperArms) {
+        elbow.getWorldPosition(armElbow);
+        bone.getWorldPosition(armShoulder);
+        // `Object3D.lookAt` points +z at the target for anything that is not a
+        // camera, and the segment is built along +z from 0 to 1, so aiming it is
+        // the lookAt and lengthening it is the one scale.
+        bone.lookAt(armElbow);
+        bone.scale.set(1, 1, Math.max(1e-3, armShoulder.distanceTo(armElbow)));
+      }
       dashRef.update(state);
     },
     dispose(): void {

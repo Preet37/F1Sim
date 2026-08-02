@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { apertureEdge, loft, section, setFlatUV, strut, type OpenTop } from './Loft';
+import { apertureEdge, limb, loft, section, setFlatUV, type OpenTop } from './Loft';
 import { swatchUV, type SwatchName } from './Livery';
 import {
-  buildHandParts, mirroredX, GRIP_X, HAND_X, HAND_Y,
+  buildHandParts, mirroredX, ARM_SHOULDER, ARM_ELBOW, ARM_WRIST,
+  UPPER_ARM_R, FOREARM_R, GRIP_X, HAND_X, HAND_Y,
   WHEEL_TILT, WHEEL_Y, WHEEL_Z,
 } from './CockpitMesh';
 
@@ -56,6 +57,21 @@ export interface DriverParts {
    * by the detailed cockpit wheel; see the note above.
    */
   grip: THREE.BufferGeometry[];
+  /**
+   * The arms, shoulder to wrist. Hidden with the grip, and for the same reason.
+   *
+   * These used to ride in `body` and be merged into the shell, which was safe
+   * for exactly as long as nothing could get close to them. The driver's-eye
+   * camera ended that: it puts the player's own upper arms 0.3m from the lens,
+   * across the bottom of every frame, where a pair of straight untapered tubes
+   * that CANNOT MOVE reads as "blue lego blocks connected to nothing" — the
+   * hands turn with the rim and the arms do not follow, which is the whole
+   * complaint. CockpitMesh draws an articulated pair in the same place for that
+   * one car, so these come out for it exactly the way the coarse wheel does.
+   *
+   * Nineteen other cars still get them, still for free, still merged.
+   */
+  arms: THREE.BufferGeometry[];
 }
 
 /** Seated position: eye point is a little forward of the roll hoop, low down. */
@@ -322,31 +338,45 @@ function figure(d: DriverTier): THREE.BufferGeometry[] {
   hans.translate(0, SHOULDER_Y + 0.030, HEAD_Z - 0.055);
   parts.push(tag(hans, 'carbon'));
 
-  // Arms: shoulder to elbow to hand. Two tapered members each, which is enough
-  // for the eye to read a bent arm reaching to a wheel.
-  // The elbow used to swing out to x 0.196 with a 44mm arm on it — 240mm from
-  // the centreline, through a survival cell wall that is at 214mm. Under a
-  // closed deck nobody could see it happen. Pulled in to 0.158 the forearm runs
-  // INSIDE the tub, which is both correct and the only way the arms read as
-  // going down into the car rather than over the side of it.
+  return parts;
+}
+
+/**
+ * Arms: shoulder to elbow to wrist, two tapered members each.
+ *
+ * WHAT WAS WRONG. They were two untapered tubes — 104mm across all the way from
+ * the shoulder to the elbow, 88mm from the elbow to the glove — and the elbow
+ * sat at z = 0.195, thirty millimetres in front of the driver's eye. From
+ * outside the car that was invisible; from the driver's-eye camera it is two
+ * blue cylinders across the bottom of the frame with a hard step where each
+ * meets a glove half its diameter. Tapering them, and narrowing the wrist end
+ * to 68mm so the glove is the widest thing at that joint, is most of the fix.
+ *
+ * The other half is that they have to MOVE, and geometry merged into a shared
+ * shell cannot. See `DriverParts.arms`: these are hidden for the car the onboard
+ * camera is inside, and CockpitMesh articulates a pair in the same place.
+ *
+ * The elbow used to swing out to x 0.196 with a 44mm arm on it — 240mm from the
+ * centreline, through a survival cell wall that is at 214mm. 0.163 keeps the
+ * forearm INSIDE the tub, which is both correct and the only way the arms read
+ * as going down into the car rather than over the side of it.
+ */
+function arms(d: DriverTier): THREE.BufferGeometry[] {
+  const parts: THREE.BufferGeometry[] = [];
   for (const side of [-1, 1] as const) {
-    const sx = side * 0.150, sy = SHOULDER_Y - 0.005, sz = -0.045;
-    const ex = side * 0.158, ey = SHOULDER_Y - 0.055, ez = 0.195;
-    // The hand end is the grip point, so the arm still lands on the wheel when
-    // the coarse glove is swapped for the detailed cockpit hand.
-    const hx = side * GRIP_X, hy = WHEEL_Y - 0.008, hz = WHEEL_Z - 0.035;
-
-    const upper = strut(sx, sy, sz, ex, ey, ez, 0.052, d.limb, true);
-    parts.push(tag(upper, 'suit'));
-    const fore = strut(ex, ey, ez, hx, hy, hz, 0.044, d.limb, true);
-    parts.push(tag(fore, 'suit'));
-
-    // Shoulder cap, so the arm does not meet the torso in a visible stump.
+    const sh = [side * ARM_SHOULDER[0], ARM_SHOULDER[1], ARM_SHOULDER[2]] as const;
+    const el = [side * ARM_ELBOW[0], ARM_ELBOW[1], ARM_ELBOW[2]] as const;
+    const wr = [side * ARM_WRIST[0], ARM_WRIST[1], ARM_WRIST[2]] as const;
+    parts.push(tag(limb(sh, el, UPPER_ARM_R[0], UPPER_ARM_R[1], d.limb), 'suit'));
+    parts.push(tag(limb(el, wr, FOREARM_R[0], FOREARM_R[1], d.limb), 'suit'));
+    // Elbow and shoulder, so the two segments do not meet in a visible mitre.
     const cap = new THREE.SphereGeometry(0.056, d.limb, Math.round(d.limb * 0.7));
-    cap.translate(sx, sy, sz);
+    cap.translate(sh[0], sh[1], sh[2]);
     parts.push(tag(cap, 'suit'));
+    const joint = new THREE.SphereGeometry(0.047, d.limb, Math.round(d.limb * 0.7));
+    joint.translate(el[0], el[1], el[2]);
+    parts.push(tag(joint, 'suit'));
   }
-
   return parts;
 }
 
@@ -437,5 +467,6 @@ export function buildDriverParts(quality: 'low' | 'high'): DriverParts {
     body: [...cockpitInterior(d), ...figure(d)],
     head: helmet(d),
     grip: wheelAndGloves(d),
+    arms: arms(d),
   };
 }
