@@ -911,7 +911,6 @@ canvas#view {
    instant it appears is a pop-up that costs you the pit entry. */
 .hud-notices {
   position: absolute;
-  left: calc(10px + var(--safe-l));
   /* Bounded at BOTH ends, and that is the whole trick. With only a `bottom`
      the column grows upward for as long as it has content, and a radio card
      plus a pop-up plus two live cues is taller than the gap between the
@@ -923,7 +922,16 @@ canvas#view {
   top: max(300px, 50vh);
   bottom: calc(172px + var(--safe-b));
   /* Flush with the tower above it: the rail is one column, not two. */
-  width: 336px;
+  --rail-w: 336px;
+  /* Room to slide in from. `overflow: hidden` above clips BOTH axes, so a card
+     entering at `translateX(-30px)` would have its leading edge — the tone
+     rail and the portrait, the two things that say what it is — cut off for
+     the whole animation. The box therefore starts a slide's width further
+     left and pads the content back to where it belongs. */
+  --slide: 44px;
+  left: calc(10px + var(--safe-l) - var(--slide));
+  padding-left: var(--slide);
+  width: calc(var(--rail-w) + var(--slide));
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -1581,7 +1589,7 @@ canvas#view {
   /* The rail spans the width the two top panels leave, above the car state
      and clear of the buttons on the right edge. */
   .hud-notices {
-    left: calc(10px + var(--safe-l));
+    left: calc(10px + var(--safe-l) - var(--slide));
     right: calc(62px + var(--safe-r));
     top: calc(300px + var(--safe-t));
     bottom: calc(196px + var(--safe-b));
@@ -1729,10 +1737,10 @@ canvas#view {
      older — see the bounding note on `.hud-notices`. The radio card does not
      appear at all at this height; `Hud.showRadioCard` declines it. */
   .hud-notices {
-    left: calc(8px + var(--safe-l));
+    --rail-w: 262px;
+    left: calc(8px + var(--safe-l) - var(--slide));
     top: calc(214px + var(--safe-t));
     bottom: calc(118px + var(--safe-b));
-    width: 262px;
     gap: 5px;
   }
   .hud-alert { padding: 6px 9px 7px 7px; gap: 8px; }
@@ -1859,7 +1867,7 @@ canvas#view {
   .hud-camera, .hud-diag { right: calc(172px + var(--safe-r)); }
 
   .hud-tower { width: 210px; }
-  .hud-notices { width: 280px; }
+  .hud-notices { --rail-w: 280px; }
   .hud-flag { max-width: calc(100vw - 460px); font-size: 16px; }
 }
 
@@ -1909,7 +1917,7 @@ canvas#view {
     --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 50px 12px;
     width: 392px;
   }
-  .hud-notices { width: 392px; }
+  .hud-notices { --rail-w: 392px; }
   .tower-lastlap, .c-lap { display: block; }
 }
 
