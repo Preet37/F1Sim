@@ -379,10 +379,20 @@ function helmet(d: DriverTier): THREE.BufferGeometry[] {
 
   // Visor aperture. A band of dark glass wrapped round the front of the shell,
   // slightly proud of it so it never z-fights.
+  //
+  // BIGGER, ON BOTH AXES, and this is most of the answer to "the driver's
+  // helmet is a plain sphere". It is not that the shell was a sphere — it is an
+  // egg with a jaw and a crown fin — it is that from any distance the only
+  // thing distinguishing a helmet from a ball is the DARK BAND ACROSS ITS
+  // FRONT, and ours covered 117 degrees of the circumference and 30 degrees of
+  // the elevation. A real visor aperture runs to about 150 degrees around and
+  // is half as deep again; at the old size the head read as a painted sphere
+  // with a smudge on it in every shot where the car was more than four metres
+  // away, which is every shot.
   const visor = scaled(new THREE.SphereGeometry(
     R * 1.012, wSeg, d.visorH,
-    Math.PI / 2 - 1.02, 2.04,
-    1.06, 0.52,
+    Math.PI / 2 - 1.32, 2.64,
+    0.99, 0.62,
   ), 1.0, 1.10, 1.16);
   visor.translate(0, HEAD_Y, HEAD_Z);
   parts.push(tag(visor, 'glass'));
@@ -391,11 +401,21 @@ function helmet(d: DriverTier): THREE.BufferGeometry[] {
   // aperture an edge instead of letting it float on the paint.
   const surround = scaled(new THREE.SphereGeometry(
     R * 1.004, wSeg, d.visorH,
-    Math.PI / 2 - 1.12, 2.24,
-    0.99, 0.68,
+    Math.PI / 2 - 1.42, 2.84,
+    0.93, 0.78,
   ), 1.0, 1.10, 1.16);
   surround.translate(0, HEAD_Y, HEAD_Z);
   parts.push(tag(surround, 'carbon'));
+
+  // The CHIN BAR intake: the dark slot under the visor that feeds the driver's
+  // air. Small, and it is the second feature — after the visor band — that the
+  // eye uses to tell which way a helmet is facing. Without it the lower front
+  // of the shell is an unbroken curve of paint and the head loses its front.
+  parts.push(tag(loft([
+    section(HEAD_Z + 0.148, 0.036, HEAD_Y - 0.096, HEAD_Y - 0.054, 0.55),
+    section(HEAD_Z + 0.116, 0.044, HEAD_Y - 0.110, HEAD_Y - 0.058, 0.45),
+    section(HEAD_Z + 0.076, 0.038, HEAD_Y - 0.114, HEAD_Y - 0.066, 0.60),
+  ], Math.max(6, wSeg - 10), true, d.step * 0.5), 'dark'));
 
   // Crown fin: the small aero blade along the top of every current helmet.
   parts.push(tag(loft([

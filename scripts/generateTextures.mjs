@@ -183,11 +183,33 @@ function carbonWeave(size) {
  * has to be flat there — a normal map that perturbed those would light the
  * brake disc with tyre tread — and carry relief only in the band above.
  *
- * What is in the band, from the crown outward: the fine circumferential
- * striation a slick picks up from the mould and from being dragged over
- * asphalt; a broader, irregular graining across the working part of the tread;
- * the shoulder turn; and on the sidewall the shallow radial ribs that every
- * moulded sidewall carries.
+ * A DRY FORMULA 1 TYRE IS A SLICK. There is no tread pattern on it of any kind
+ * — no circumferential grooves, no blocks, no sipes, nothing. Only the
+ * intermediate and the full wet carry moulded grooves, and this game does not
+ * change the carcass when it changes compound. That single sentence is the
+ * whole specification for the tread half of this map, and the previous version
+ * violated it: it laid 36 cycles of sine down the tread at 0.11 amplitude,
+ * which through a 0.42 normal scale came out as visible circumferential ribs
+ * running right round both tyres. Every close shot of the car showed a tyre
+ * that looked like it had been moulded for a road car. The complaint — "the
+ * tires are clean and smooth, yours have lines on them and its wrong" — was
+ * literally about this array.
+ *
+ * So the tread now carries NO periodic relief at all. What is left is the only
+ * thing a real slick's surface actually has:
+ *
+ *  - GRAINING. Broad, irregular, low-amplitude mottling across the working part
+ *    of the tread, from rubber being torn and laid back down. Aperiodic by
+ *    construction, so it can never read as a pattern however close the camera
+ *    gets.
+ *  - THE SHOULDER. Left dead smooth: it is the part of the tyre the light
+ *    actually rakes across, and any relief there turns straight into a ribbed
+ *    highlight, which is the failure being fixed.
+ *  - THE SIDEWALL. Radial ribs are real — they are the mould's own draft marks
+ *    and they run from the bead outward on every moulded sidewall — but they
+ *    are subtle, so the amplitude is now a third of what it was, and they stop
+ *    well before the shoulder.
+ *  - THE BEAD STEP, where the carcass turns down onto the rim.
  *
  * TYRE_BAND in TyreTexture.ts is the contract. If it moves, this moves.
  *
@@ -240,20 +262,13 @@ function tyreSurface(size) {
     const c = hash(wrap(xi), yi + 1), d = hash(wrap(xi + 1), yi + 1);
     return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
   };
-  // Cycles of circumferential striation per unit t. The tread spans 0.48 of t,
-  // which is 133 rows of the map, so 36 gives 17 cycles over 133 rows — just
-  // under eight pixels each. It was 110.
-  //
-  // AMPLITUDE MATTERS AS MUCH AS FREQUENCY. Band-limiting the striation stopped
-  // it crawling, but at the old amplitude a resolvable line is a VISIBLE line,
-  // and the tread came out ribbed like a tractor tyre. A slick's tread is
-  // essentially smooth; what the striation is for is to stop the highlight
-  // sitting dead still as the wheel turns, and that needs far less relief than
-  // it needs to be seen. The graining below carries the character now.
-  const STRIATION = 36;
   // Radial ribs around the sidewall. 48 over 512 columns is 10.7 pixels each; it
-  // was 96, which is 5.3 and visibly crawled.
+  // was 96, which is 5.3 and visibly crawled. The amplitude is a third of what
+  // it was, for the same reason the tread striation is gone entirely: a
+  // resolvable line is a visible line, and a sidewall that reads as corrugated
+  // from ten metres is as wrong as a treaded slick.
   const RIBS = 48;
+  const RIB_AMPLITUDE = 0.055;
   for (let y = 0; y < size; y++) {
     // Canvas y runs down; atlas v runs up.
     const v = 1 - y / (size - 1);
@@ -264,19 +279,30 @@ function tyreSurface(size) {
     for (let x = 0; x < size; x++) {
       const u = x / size;
       let z = 0;
-      if (fromCrown < 0.48) {
-        // Tread: circumferential striation. The lines run around the tyre, so
-        // they vary with t and hardly at all with u.
-        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.11;
-        // Graining, in broad patches across the contact patch.
+      if (fromCrown < 0.62) {
+        // TREAD AND SHOULDER: no periodic relief whatsoever. A slick is smooth.
+        //
+        // Graining only, in broad aperiodic patches across the part of the tread
+        // that does the work, fading out completely before the shoulder turn so
+        // the shoulder — the part light rakes across — stays dead flat.
+        //
+        // 0.08, not 0.34. Removing the circumferential striation left the
+        // graining as the only relief on the tread, and at the amplitude it had
+        // been sharing the surface with, it stopped reading as mottling and
+        // started reading as DENTS — from directly astern, where the shoulder
+        // is nearly edge-on and any normal perturbation is amplified, the tyres
+        // came out covered in dark ovals. Graining on a real tyre is a change
+        // in the surface's fineness, not in its shape.
         const g = vnoise(u * 22, t * 24, 22);
-        z += (g - 0.5) * 0.40 * (1 - fromCrown / 0.48);
-      } else if (fromCrown < 0.62) {
-        // Shoulder: still striated, fading out over the turn.
-        z += Math.sin(t * Math.PI * 2 * STRIATION) * 0.11 * (0.62 - fromCrown) / 0.14;
+        const reach = Math.min(1, Math.max(0, (0.62 - fromCrown) / 0.30));
+        z += (g - 0.5) * 0.08 * reach * reach;
       } else {
-        // Sidewall: shallow radial ribs, and a moulded step at the bead.
-        z += Math.sin(u * Math.PI * 2 * RIBS) * 0.16;
+        // Sidewall: shallow radial ribs, and a moulded step at the bead. The
+        // ribs fade IN away from the shoulder rather than starting at full
+        // amplitude, so there is no discontinuity where the two regions meet —
+        // a step here is an impulse in the derivative, which is a bright ring.
+        const into = Math.min(1, (fromCrown - 0.62) / 0.10);
+        z += Math.sin(u * Math.PI * 2 * RIBS) * RIB_AMPLITUDE * into * into * (3 - 2 * into);
         // Eased, not stepped. A bare `if` here put a one-pixel cliff right round
         // the tyre and the normal map turned it into a hard bright ring.
         const b = Math.min(1, Math.max(0, (fromCrown - 0.86) / 0.10));

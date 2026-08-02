@@ -603,7 +603,13 @@ function paintAirbox(p: Panel, spec: LiverySpec, flash: number): void {
   p.band(0, 1, 0.0, 0.10, '#101216');
   p.band(0, 1, 0.90, 1.0, '#101216');
   // The mouth end goes dark: it is a duct, not a nose.
-  p.band(0.0, 0.10, 0.0, 1.0, '#08090e');
+  //
+  // FOUR PER CENT, NOT TEN. The airbox loft's first stations are its forward
+  // fairing, and a tenth of the panel's length is 130mm of it — so the whole
+  // front of the roll hoop came out near-black, which with a flat first ring
+  // under it read as a carton stood behind the driver's head. What wants to be
+  // dark is the LIP around the intake and nothing else.
+  p.band(0.0, 0.04, 0.0, 1.0, '#08090e');
 
   const codeInk = readable(spec.colour);
   p.text(0.42, 0.255, spec.code, {
@@ -657,21 +663,39 @@ function buildSurfaceMap(size: number): THREE.Texture {
     `rgb(0,${Math.round(rough * 255)},${Math.round(metal * 255)})`;
 
   // Default: satin, so anything not explicitly covered still behaves.
-  ctx.fillStyle = set(0.45, 0.2);
+  ctx.fillStyle = set(0.45, 0.02);
   ctx.fillRect(0, 0, size, size);
 
-  // Painted panels are genuinely wet-looking. A clear-coated race car is one of
-  // the glossiest large objects most people ever see, and 0.28 was closer to a
-  // satin household appliance: dropping it is what lets the probe's horizon
-  // draw a hard-edged reflection down a flank instead of a soft grey smear.
+  // PAINT IS NOT A METAL, and this is the single line that was making the whole
+  // car read as shiny plastic.
   //
-  // 0.21 rather than the 0.16 it went to, though. At 0.16 the sun's specular
-  // lobe on the sidepod's long, gently curved flank came out narrow enough to
-  // exceed the bloom threshold along its whole length, so a close pass showed a
-  // white bar a metre long lying across the car with the livery unreadable
-  // underneath it. The reference car has a hard, thin highlight, not a blown
-  // one, and a few points of roughness is the difference.
-  const PAINT = set(0.21, 0.26);
+  // The metalness channel is not a gloss control. In a metallic-roughness
+  // renderer it is a switch between two entirely different materials: at 0 the
+  // surface has a coloured diffuse term and a small white specular; at 1 it has
+  // NO diffuse term at all and its specular is tinted by the base colour. A
+  // value in between is not "slightly shiny paint" — it is a physically
+  // impossible half-metal, and what it produces is exactly what was on screen:
+  // a body whose colour goes dead in shadow because a quarter of its diffuse
+  // has been taken away, and whose highlights carry the paint's own hue at full
+  // strength and clip to flat white where the environment probe's sun lands.
+  // Every reference photograph of a real car shows the opposite — deep, holding
+  // colour in the shade, with a WHITE highlight sitting on top of it.
+  //
+  // A painted, clear-coated carbon panel is a dielectric with a lacquer over
+  // it. Metalness 0.02, which is the Fresnel floor and not a compromise.
+  //
+  // ROUGHNESS goes UP with it, from 0.21 to 0.30, and that is the other half of
+  // the blown-highlight fix. With metalness at 0.26 the specular lobe was being
+  // fed a quarter of the base colour's energy as well as the dielectric's own
+  // 4 per cent, so it had to be kept narrow to stay dark; at metalness 0.02 the
+  // lobe is fed 4 per cent and can afford to be the width a real clear coat's
+  // is. The probe's sun is 220x the radiance of its sky (see EnvProbe), and a
+  // lobe narrow enough to resolve that disc puts a clipped white blob on every
+  // curved panel. 0.30 spreads the same energy over about twice the solid
+  // angle, which takes the peak below the point ACES flattens it — and the
+  // highlight becomes a bright soft sweep down a flank instead of a hole burnt
+  // in the livery.
+  const PAINT = set(0.30, 0.02);
   // Structural carbon on a race car is CLEAR-COATED, and that is most of the
   // difference between the wings on the reference car and the wings that were
   // here. 0.62 is bare laminate straight out of the autoclave: matte, dusty,
@@ -688,42 +712,77 @@ function buildSurfaceMap(size: number): THREE.Texture {
   // streak — and at 0.30 they came out as a blown white bar under the car in
   // every three-quarter shot. Still a world away from the 0.62 that made them
   // read as grey plastic.
-  const CARBON = set(0.38, 0.06);
+  const CARBON = set(0.40, 0.02);
+
+  /**
+   * The satin strip along the top centreline.
+   *
+   * Every deck band below used to carry metalness 0.15-0.16 for the same
+   * mistaken reason the paint did. It is the flattest, most upward-facing
+   * surface on the car, so it sees the brightest part of the probe over its
+   * whole area — which made it the first thing to blow out and the reason the
+   * engine cover came back as a white stripe in three-quarter shots.
+   */
+  const DECK = set(0.38, 0.02);
 
   const body = new Panel(ctx, PANEL.body, size);
   body.fill(PAINT);
-  // Satin deck: the strip along the top centreline of the car.
-  body.band(0, 1, 0.42, 0.58, set(0.34, 0.16));
+  body.band(0, 1, 0.42, 0.58, DECK);
   // Carbon underside.
   body.band(0, 1, 0.0, 0.13, CARBON);
   body.band(0, 1, 0.87, 1.0, CARBON);
 
   const pod = new Panel(ctx, PANEL.pod, size);
   pod.fill(PAINT);
-  pod.band(0, 1, 0.42, 0.58, set(0.36, 0.15));
+  pod.band(0, 1, 0.42, 0.58, DECK);
   pod.band(0, 1, 0.0, 0.12, CARBON);
   pod.band(0, 1, 0.88, 1.0, CARBON);
-  pod.band(0.0, 0.05, 0.0, 1.0, set(0.85, 0.05));
+  pod.band(0.0, 0.05, 0.0, 1.0, set(0.85, 0.02));
 
   const air = new Panel(ctx, PANEL.airbox, size);
   air.fill(PAINT);
-  air.band(0, 1, 0.42, 0.58, set(0.34, 0.16));
-  air.band(0.0, 0.12, 0.0, 1.0, set(0.9, 0.03));
+  air.band(0, 1, 0.42, 0.58, DECK);
+  air.band(0.0, 0.12, 0.0, 1.0, set(0.9, 0.02));
 
+  /**
+   * Roughness and metalness for each flat swatch.
+   *
+   * METALNESS IS A SWITCH, NOT A DIAL. See the note on PAINT above: a value
+   * between 0 and 1 describes a material that does not exist, and the whole
+   * table was full of them — painted bodywork at 0.28, the helmet at 0.16, the
+   * rain light at 0.05. Each one was quietly deleting that fraction of the
+   * surface's diffuse colour and adding it back as a tinted mirror, which is
+   * the precise recipe for "reads as shiny plastic". Everything here is now
+   * either a dielectric at the Fresnel floor or an honest metal.
+   *
+   * WHAT IS GENUINELY METAL ON A FORMULA 1 CAR: the halo (titanium), the
+   * wheel's centre-lock nut and flange, the brake caliper, the exhaust, and the
+   * odd fastener. That is all. The suspension members are AEROFOIL-SECTION
+   * CARBON with a painted or lacquered finish, not polished steel — they were
+   * at 0.72 metal, which under a blue sky turned every wishbone into a blue
+   * mirrored rod and is a good part of why the front of the car looked like a
+   * scatter of chrome.
+   */
   const surfaceFor: Record<SwatchName, [number, number]> = {
-    body: [0.16, 0.28],
-    accent: [0.15, 0.26],
+    // Clear-coated paint over laminate. Matches PAINT above; if one moves the
+    // other has to, or a flat-swatched panel and a painted one meeting along an
+    // edge show a step in gloss right down the car.
+    body: [0.30, 0.02],
+    accent: [0.29, 0.02],
     // Clear-coated laminate. See the CARBON constant above.
-    carbon: [0.38, 0.06],
-    // Suspension and the halo are anodised or painted metal — genuinely
-    // metallic, and glossy enough to hold the rim light along their length.
-    trim: [0.34, 0.72],
-    rim: [0.22, 0.94],
+    carbon: [0.40, 0.02],
+    // Painted carbon suspension and the titanium halo share this swatch. The
+    // halo is the metal one and it is 30mm of the car; the wishbones are not.
+    trim: [0.42, 0.10],
+    // The one honestly metallic swatch: machined and anodised hardware.
+    rim: [0.26, 0.90],
     tyre: [0.88, 0.02],
-    // A visor is the one truly mirror-like surface on the whole car.
-    glass: [0.04, 0.40],
-    light: [0.40, 0.05],
-    helmet: [0.12, 0.16],
+    // A visor is the one truly mirror-like surface on the whole car. Dielectric
+    // — it is polycarbonate with a tint, and its reflection is white.
+    glass: [0.05, 0.02],
+    light: [0.42, 0.02],
+    // A painted helmet shell, which is the same material as the bodywork.
+    helmet: [0.24, 0.02],
     suit: [0.78, 0.02],
     glove: [0.86, 0.02],
     dark: [0.90, 0.02],

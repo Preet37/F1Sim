@@ -1001,6 +1001,94 @@ export function strut(
 }
 
 /**
+ * A straight member with an AEROFOIL section: a wishbone leg, a pushrod, a
+ * trackrod.
+ *
+ * WHY THIS EXISTS ALONGSIDE `strut`. Nothing in a Formula 1 suspension is a
+ * round bar. Every member is a carbon blade with a streamwise section —
+ * typically 60 to 100mm of chord and 15 to 25mm of thickness, a ratio of about
+ * four to one — because each of them sits in clean air ahead of a tyre and
+ * costs drag if it is not shaped. That section is not a detail: it is most of
+ * what the eye uses to tell a racing car's front suspension from a go-kart's.
+ * Built as 42mm round rods, which is what `strut` was giving them, the front of
+ * the car reads as "a scatter of black rods at implausible angles" — which is
+ * the complaint this function exists to answer.
+ *
+ * `strut` cannot be extended to do it. Its `xScale` squashes the finished
+ * member along the WORLD x axis, which for a wishbone leg — a member that runs
+ * very nearly along x — shortens it rather than flattening it. The section has
+ * to be oriented in the member's own frame, which means building it there.
+ *
+ * The section is an ellipse rather than a true aerofoil. At 60mm of chord seen
+ * from two metres the difference between an ellipse and a teardrop is under a
+ * pixel; what reads is the ratio and the orientation, and both are exact.
+ *
+ * @param chord    section depth along `chordDir`, metres
+ * @param thick    section thickness perpendicular to it, metres
+ * @param chordDir the direction the chord lies along, in world axes. Defaults
+ *                 to the car's z — streamwise — which is right for every
+ *                 wishbone, pushrod and trackrod. A member that runs nearly
+ *                 parallel to it (a fore-aft link) should be given something
+ *                 else, since the component along the member's own axis is
+ *                 projected out and what is left would be arbitrary.
+ */
+export function aeroStrut(
+  x0: number, y0: number, z0: number,
+  x1: number, y1: number, z1: number,
+  chord: number, thick: number,
+  radialSegments = 8,
+  chordDir: readonly [number, number, number] = [0, 0, 1],
+): THREE.BufferGeometry {
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+  const len = Math.hypot(dx, dy, dz) || 1e-4;
+  const axis = new THREE.Vector3(dx / len, dy / len, dz / len);
+
+  // The chord direction, with the component along the member projected out. If
+  // the caller hands in something nearly parallel to the axis the projection
+  // collapses, so fall back to the world y — which for a fore-aft link is the
+  // section orientation you would have wanted anyway.
+  const c = new THREE.Vector3(chordDir[0], chordDir[1], chordDir[2]);
+  c.addScaledVector(axis, -c.dot(axis));
+  if (c.lengthSq() < 1e-8) c.set(0, 1, 0).addScaledVector(axis, -axis.y);
+  c.normalize();
+  const t = new THREE.Vector3().crossVectors(axis, c).normalize();
+
+  // Unit cylinder along +y, then squashed into the section and rotated into the
+  // member's frame. Open-ended for the same reason `strut` is: both ends are
+  // buried in an upright or a chassis pickup.
+  const g = new THREE.CylinderGeometry(1, 1, len, radialSegments, 1, true);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const nrm = g.attributes.normal as THREE.BufferAttribute;
+  const ht = thick * 0.5;
+  const hc = chord * 0.5;
+  for (let i = 0; i < pos.count; i++) {
+    const px = pos.getX(i) * ht, py = pos.getY(i), pz = pos.getZ(i) * hc;
+    pos.setXYZ(
+      i,
+      x0 + (x1 - x0) * 0.5 + t.x * px + axis.x * py + c.x * pz,
+      y0 + (y1 - y0) * 0.5 + t.y * px + axis.y * py + c.y * pz,
+      z0 + (z1 - z0) * 0.5 + t.z * px + axis.z * py + c.z * pz,
+    );
+    // Normals take the INVERSE of the section scale — the same rule `strut`
+    // documents. Scaling a normal the same way as the position tilts it toward
+    // the flattened axis and the blade lights like the round bar it was cut
+    // from, which on a 4:1 section is a very visible error.
+    let nx = nrm.getX(i) / ht, ny = nrm.getY(i), nz = nrm.getZ(i) / hc;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    nx /= l; ny /= l; nz /= l;
+    nrm.setXYZ(
+      i,
+      t.x * nx + axis.x * ny + c.x * nz,
+      t.y * nx + axis.y * ny + c.y * nz,
+      t.z * nx + axis.z * ny + c.z * nz,
+    );
+  }
+  pos.needsUpdate = true;
+  nrm.needsUpdate = true;
+  return g;
+}
+
+/**
  * A swept tube through a smooth curve. Used for the halo, which is the one part
  * of the car that is genuinely a bent pipe and looks wrong as anything else.
  */
