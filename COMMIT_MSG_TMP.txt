@@ -1,0 +1,33 @@
+Wire the new ladder into the game, and drive it in a browser
+
+Replaces CareerEngine with Career, which owns the three things a career mode gets
+wrong when they are kept apart: the world (who exists), the season (what has
+happened) and the player (where they are in it).
+
+The hub, the standings, the grid handed to RaceEngine, both result paths and the
+narrative events all move onto it, and two screens are new. The off-season is a
+report rather than an alert box: it names the champion of every tier, who was
+promoted and from where, who retired and who moved, all read from what the
+off-season actually did. The end of a career is a season-by-season table instead
+of a dead end.
+
+The driven race no longer remaps the player to the id PLAYER before recording the
+result. The engine already races them under their own id, and the remapping was a
+source of drift between the driven path and the simulated one.
+
+regress:career drives the real browser, because nothing else can: probe:season
+runs a hundred career-years and probe:save round-trips a decade, and neither
+touches a screen. It caught four things typecheck could not. The create screen
+still promised promotion "on results, reputation opens the door", which stopped
+being true. It offered a Formula 1 seat as the rookie's first drive. The hub read
+"Formula 3 - Formula 3 - your car", because a spec series has no engine supplier
+to name. And the name fields carried no input type, which is a mobile-keyboard
+problem as much as a test one.
+
+Three things the harness needed are worth recording for whoever writes the next
+one: ?quality=low, or software GL pegs the main thread hard enough that Playwright
+cannot resolve body; reducedMotion, or the entrance animations mean no element is
+ever "stable"; and polling the dev server rather than matching its banner, which
+is a race.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>

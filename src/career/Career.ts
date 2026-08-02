@@ -15,6 +15,9 @@ import {
   SAVE_MINOR, SAVE_VERSION, playerAsWorldDriver, playerStanding,
   type CareerMode, type CareerState, type PlayerProfile,
 } from './CareerState';
+import {
+  CareerEventManager, type CareerEvent, type EventContext,
+} from './Events';
 
 /**
  * The career, as one object the rest of the game talks to.
@@ -581,6 +584,21 @@ export class Career {
     this.state.narrative.rivalries.push({
       driverId, heat: 55, state: 'hostile', declared: true, wonAgainst: 0, lostTo: 0,
     });
+  }
+
+  // =======================================================================
+  // Narrative events
+  // =======================================================================
+
+  private readonly events = new CareerEventManager();
+
+  /** Picks an event for this moment, or null when nothing applies. */
+  drawEvent(ctx: EventContext): CareerEvent | null {
+    return this.events.pick(this, ctx, this.rng);
+  }
+
+  applyEventChoice(ev: CareerEvent, choiceIndex: number): string[] {
+    return this.events.applyChoice(this, ev, choiceIndex);
   }
 
   // =======================================================================
