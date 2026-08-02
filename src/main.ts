@@ -180,6 +180,17 @@ class Game {
     detail: HTMLElement;
     startedAt: number;
     cancelled: boolean;
+    /**
+     * True when the player is WATCHING rather than skipping.
+     *
+     * Same simulation, different thing to have happened. A skip is a session
+     * the player declined; this is a session they are not allowed to drive —
+     * knocked out, or barred by Art. B4.3.2 — and it is the only way they get
+     * to see it at all. Calling it "Simulating" in that case is what produced
+     * "Q3 was then simulated like I didn't even get to race": the player had
+     * just pressed a button that said WATCH.
+     */
+    watching: boolean;
   } | null = null;
 
   constructor() {
@@ -2152,13 +2163,36 @@ class Game {
     // the failure this game already had once, reported as "it just poof gone".
     const barred = config.kind === 'qualifying'
       && this.qualifyingBarred.includes('PLAYER');
-    if (barred) {
+
+    // ...and whether they are ENTERED in it at all, which is a different
+    // question with a different answer and used to be conflated with the first.
+    //
+    // Art. B2.4.2a-b knocks the slowest drivers out and they are "prohibited
+    // from taking any further part"; Art. B4.3.2 bars a recovered driver from
+    // running while leaving the entry standing. A driver can be both, and after
+    // a crash in Q2 usually is: barred from running, and then knocked out of
+    // Q2 for the no-time it produced. Telling them they were "still entered in
+    // Q3 and still classified in it" was then simply false — Q3 is ten other
+    // cars, and this driver's grid slot was settled when Q2 ended.
+    const phase = config.kind === 'qualifying' ? (config.qualifyingPhase ?? 1) : 0;
+    // Q1 has no previous segment to have been knocked out of.
+    const enteredInSegment = phase <= 1 || this.qualifyingSurvivors.includes('PLAYER');
+    const gridSlot = this.qualifyingGrid.indexOf('PLAYER') + 1;
+
+    if (barred && enteredInSegment) {
       this.el('div', 'notice', body,
         'Your car is still in the garage. The marshals recovered it earlier in ' +
         'qualifying, so under the regulations you take no further part in the ' +
         'session — but you are still entered in ' + config.name + ' and still ' +
         'classified in it. You keep every place your lap times have earned; ' +
         'what you cannot do is improve on them.');
+    } else if (!enteredInSegment) {
+      this.el('div', 'notice', body,
+        'Your qualifying is over. You were knocked out in Q' + (phase - 1) + ', so ' +
+        config.name + ' is run by the cars that got through it and nothing in it ' +
+        'can move you' +
+        (gridSlot > 0 ? ' — you start the Grand Prix from P' + gridSlot + '.' : '.') +
+        ' You can watch it decide the rows in front of you.');
     }
 
     // --- The car ----------------------------------------------------------
@@ -2251,12 +2285,17 @@ class Game {
     // to honour.
     this.button('Skip ' + config.name, actions, () => this.skipSession(circuitId), 'btn ghost');
     this.spacer(actions);
-    if (barred) {
+    if (barred || !enteredInSegment) {
       // Nothing to drive, so the primary action is the one that gets the
       // player to the other side of a session they are only a spectator in.
       // "To the Garage" would open a cockpit that does not respond.
+      //
+      // `watching` is passed on: the session is run the same way a skip is, but
+      // the player did not choose to miss it, and the screens it produces say
+      // so. A button that says WATCH followed by a screen that says SIMULATING
+      // is the whole of "Q3 was then simulated like I didn't even get to race".
       this.button('Watch ' + config.name + ' from the garage', actions,
-        () => this.skipSession(circuitId), 'btn primary');
+        () => this.skipSession(circuitId, true), 'btn primary');
       return;
     }
     // A race goes via the pit wall. Practice and qualifying do not: there is
@@ -2433,11 +2472,15 @@ class Game {
    * consumes a practice classification, so simulating one would be five seconds
    * spent producing a number the game then throws away.
    */
-  private skipSession(circuitId: string): void {
+  private skipSession(circuitId: string, watching = false): void {
     const config = this.weekend[this.weekendIndex];
     if (!config) { this.afterWeekend(); return; }
 
-    if (config.kind === 'practice') {
+    // A session the player DECLINED can be waved through; one they are WATCHING
+    // cannot. Practice is the only session nothing downstream consumes, so it
+    // is the only one worth not running — but a player sitting out Q3 has asked
+    // to see Q3, and skipping straight past it is the complaint.
+    if (config.kind === 'practice' && !watching) {
       this.advanceWeekend(circuitId);
       return;
     }
@@ -2448,9 +2491,18 @@ class Game {
     this.setScreen('simulating');
     const { body, actions } = this.page({
       tab: def.name,
-      title: 'Simulating ' + config.name,
-      sub: 'The same session, run at full simulation with nothing drawn. The ' +
-        'result is what those twenty cars actually did, not a guess.',
+      // The player is not skipping this one. They pressed a button that said
+      // WATCH, and being shown a screen headed "Simulating" is what made a
+      // session they were barred from feel like a session the game took off
+      // them — "Q3 was then simulated like I didn't even get to race".
+      title: watching ? 'Watching ' + config.name : 'Simulating ' + config.name,
+      sub: watching
+        ? 'You take no further part in this one, so it runs without you — at ' +
+          'full simulation, with the same cars on the same circuit. Every lap ' +
+          'below is one they really set, and the classification at the end is ' +
+          'the real one.'
+        : 'The same session, run at full simulation with nothing drawn. The ' +
+          'result is what those twenty cars actually did, not a guess.',
     });
 
     const bar = this.el('div', 'sim-bar', body);
@@ -2472,6 +2524,7 @@ class Game {
       detail,
       startedAt: performance.now(),
       cancelled: false,
+      watching,
     };
   }
 
@@ -2526,7 +2579,8 @@ class Game {
       return;
     }
 
-    this.showSkipResult(circuitId, config?.name ?? 'Session', result, skip.session);
+    this.showSkipResult(
+      circuitId, config?.name ?? 'Session', result, skip.session, skip.watching);
   }
 
   /** The classification of a session the player did not drive. */
@@ -2535,6 +2589,7 @@ class Game {
     name: string,
     result: { order: string[]; bestLaps: Map<string, number>; simSeconds: number; wallMs: number },
     session: HeadlessSession,
+    watching = false,
   ): void {
     this.setScreen('results');
     const def = getCircuit(circuitId);
@@ -2542,7 +2597,12 @@ class Game {
 
     const { body, actions } = this.page({
       tab: def.name,
-      title: name + ' \u2014 Simulated',
+      // A session the player was not permitted to drive has a RESULT, not a
+      // simulation. Heading it "Simulated" told a driver who had just sat out
+      // Q3 under Art. B4.3.2 that the thing they watched had not really
+      // happened \u2014 when it decides the front five rows of the grid they start
+      // from.
+      title: watching ? name + ' \u2014 Result' : name + ' \u2014 Simulated',
       sub: config?.kind === 'qualifying' && config.advancing !== undefined
         ? this.qualifyingSurvivors.length + ' advance, ' +
           (result.order.length - this.qualifyingSurvivors.length) + ' eliminated'

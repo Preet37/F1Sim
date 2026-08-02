@@ -333,6 +333,66 @@ for (const circuitId of ['bahrain', 'silverstone']) {
 }
 
 // ===========================================================================
+// A segment in which NOBODY sets a time
+// ===========================================================================
+//
+// The player was shown "P1 of 15 in Q2" against "YOUR BEST LAP: No time set".
+// First of fifteen with no time means no other car had one either, and the
+// question that raises is whether the ordering behind it is a real ordering or
+// an arbitrary one. It has to be a real one: Q2's order decides grid slots 11
+// to 15 whether or not a wheel was turned.
+//
+// Art. B2.4.3a.v: "If more than one driver fails to set a lap time during Q2 or
+// Q3 they will be arranged in the following order: (A) Any driver who attempted
+// to set a lap time by starting a flying lap. (B) Any driver who failed to
+// start a flying lap. (C) Any driver who failed to leave the pits during the
+// period", and then "the relative classification of drivers in each of the
+// categories... shall be determined in accordance with the order they were
+// classified in the previous period of Qualifying".
+//
+// So a field of no-time cars has exactly one correct order, and `rankSegment`
+// has to produce it from a stable sort over `participants` — which is why
+// `RaceEngine.participants` hands its cars back in the previous period's order
+// rather than in car-number order.
+
+console.log('\nA SEGMENT NOBODY SETS A TIME IN');
+{
+  // Named for where the previous period classified them: p1 was quickest in Q1,
+  // p8 was eighth. Handed to `rankSegment` in that order, as the engine does.
+  const mk = (name: string, group: 'A' | 'B' | 'C') => ({
+    name,
+    bestLapTime: 0,
+    startedFlyingLap: group === 'A',
+    leftThePits: group !== 'C',
+  });
+  const field = [
+    mk('p1', 'C'), // topped Q1 and was then recovered — Art. B4.3.2
+    mk('p2', 'B'),
+    mk('p3', 'A'),
+    mk('p4', 'C'),
+    mk('p5', 'A'),
+    mk('p6', 'B'),
+  ];
+  const order = rankSegment(field).map((c) => c.name);
+  check(order.join(' ') === 'p3 p5 p2 p6 p1 p4',
+    `a field where nobody set a time ranked "${order.join(' ')}", expected ` +
+    `"p3 p5 p2 p6 p1 p4" — flying laps first, then out of the pits, then the ` +
+    `garage, and the previous period's order within each (Art. B2.4.3a.v)`);
+
+  // The same field, shuffled. This must NOT change the groups — only the
+  // within-group order, because that is the only thing the previous period's
+  // classification can be. A sort that was unstable, or that fell back on
+  // insertion order across group boundaries, would pass the test above and fail
+  // this one.
+  const shuffled = [field[4], field[0], field[5], field[2], field[3], field[1]];
+  const groups = rankSegment(shuffled).map((c) => (c.startedFlyingLap ? 'A' : c.leftThePits ? 'B' : 'C'));
+  check(groups.join('') === 'AABBCC',
+    `a shuffled field of no-time cars grouped "${groups.join('')}", expected "AABBCC"`);
+
+  console.log(`no-time ranking   ${order.join(' ')}   groups ${groups.join('')}`);
+}
+
+// ===========================================================================
 // The cars that are not in the session
 // ===========================================================================
 //
