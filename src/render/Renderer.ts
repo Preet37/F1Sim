@@ -6,7 +6,7 @@ import {
 } from './CarMesh';
 import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
-import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
+import { buildTrackMeshes, carGroundY, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
@@ -1350,7 +1350,13 @@ export class Renderer {
       v.onboardHidden.visible = !inside;
 
       const p = car.physics;
-      const y = track.elevationAt(car.s);
+      // On the DRAWN asphalt, not on the bare elevation. The road mesh sits
+      // `ROAD_SURFACE_Y` above the number the simulation carries, and the car's
+      // own frame puts its contact patches at y = 0 — so placed at the bare
+      // elevation every wheel on the grid ran 20mm underground and had a
+      // 237mm-wide flat bitten out of the bottom of it. Measured by
+      // `npm run probe:carrig`.
+      const y = carGroundY(track.elevationAt(car.s));
       v.root.position.set(p.position.x, y, p.position.y);
       v.root.rotation.y = p.heading;
 

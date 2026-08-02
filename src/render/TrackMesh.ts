@@ -102,7 +102,37 @@ const Y_RUNOFF = 0.0;
  * fight.
  */
 const Y_ASTRO = 0.006;
+/**
+ * Height of the ASPHALT above the elevation the simulation uses, metres.
+ *
+ * Exported as `ROAD_SURFACE_Y`, and the export is the point. The physics knows
+ * about a road at `track.elevationAt(s)`; the road you can SEE is a mesh two
+ * centimetres above it, lifted so the run-off it sits inside does not fight it
+ * in the depth buffer. Anything that stands on the road therefore has to stand
+ * on the mesh, not on the number.
+ *
+ * The cars did not. Their origins were placed at the bare elevation with their
+ * contact patches at the origin, so all twenty ran with 20mm of tyre inside the
+ * tarmac — a 237mm-wide bite out of the bottom of every wheel, which is what
+ * "the wheels sink into the track" is and why it showed most from a low camera.
+ * See `carGroundY`.
+ */
 const Y_ROAD = 0.02;
+export const ROAD_SURFACE_Y = Y_ROAD;
+
+/**
+ * The y a car's ORIGIN must sit at for its tyres to stand on the drawn asphalt.
+ *
+ * A function rather than a constant the caller adds, so that `probe:carrig` can
+ * measure the same arithmetic the renderer performs instead of a second copy of
+ * it. `CarMesh` builds every wheel with its contact patch at car-local y = 0,
+ * which is the only sane frame for a car — a body that knows how far off the
+ * ground it rides cannot be dropped onto a kerb — so the whole correction lives
+ * here, in the one place that knows how thick the road is.
+ */
+export function carGroundY(elevationY: number): number {
+  return elevationY + ROAD_SURFACE_Y;
+}
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 
