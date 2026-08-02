@@ -14,6 +14,9 @@ import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
 import type { Neighbour, AIDifficultyId } from '../ai/AIVehicleController';
 import { corneringSpeedLimitMs, createNeighbour } from '../ai/AIVehicleController';
+import {
+  CONTACT_WIDTH_M, HAZARD_CORRIDOR_M, lateralOverlap, safeFollowSpeedMs,
+} from '../ai/TrafficAwareness';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
@@ -202,6 +205,20 @@ const DISC_OFFSETS_M = [1.85, 0, -1.85] as const;
 /** Centre-to-centre distance beyond which no discs can possibly overlap. */
 const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
 
+/** Neighbour records kept per car: ahead, behind, left, right, hazard. */
+const NEIGHBOUR_SLOTS = 5;
+
+/**
+ * Deceleration the perception sweep assumes when it RANKS hazards, m/s².
+ *
+ * Only a scoring constant. The engine's job here is to decide which of the cars
+ * in front is the one worth reporting; the controller then recomputes the answer
+ * from its own live grip, downforce and tyre state, which is the number that
+ * actually decides the pedal. Deliberately on the optimistic side so the ranking
+ * does not smother a genuinely urgent hazard behind a merely close one.
+ */
+const HAZARD_REFERENCE_DECEL_MS2 = 22;
+
 /** What race control calls each kind of solid object a car can hit. */
 const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
   building: 'a building',
@@ -323,7 +340,7 @@ export class RaceEngine {
   };
 
   private readonly rng: Rng;
-  /** Reused neighbour records, two per car, so perception never allocates. */
+  /** Reused neighbour records, five per car, so perception never allocates. */
   private readonly neighbourPool: Neighbour[] = [];
   /** Player control input, written by the input layer each frame. */
   readonly playerControls: VehicleControls = {
@@ -378,7 +395,7 @@ export class RaceEngine {
       car.physics.pitSpeedLimitKph = def.pitLane.speedLimitKph;
       this.cars.push(car);
       this.standings.push(car);
-      this.neighbourPool.push(createNeighbour(), createNeighbour(), createNeighbour(), createNeighbour());
+      for (let n = 0; n < NEIGHBOUR_SLOTS; n++) this.neighbourPool.push(createNeighbour());
     }
 
     // Cars outside this session's participant list are already knocked out.
@@ -1215,7 +1232,7 @@ export class RaceEngine {
    */
   private buildPerception(car: CarEntry): void {
     const p = car.perception;
-    const base = car.index * 4;
+    const base = car.index * NEIGHBOUR_SLOTS;
     const len = this.track.length;
 
     let bestAhead = Infinity;
@@ -1224,6 +1241,21 @@ export class RaceEngine {
     let behindCar: CarEntry | null = null;
     let leftCar: CarEntry | null = null;
     let rightCar: CarEntry | null = null;
+
+    // The collision picture, which is a different question to the racing one.
+    //
+    // `hazardCar` is whatever imposes the LOWEST safe speed rather than whatever
+    // is nearest — a stopped car sixty metres away is a bigger problem than a
+    // fast one at twenty, and picking by distance gets that backwards. Scored
+    // with a reference deceleration here because the engine is choosing between
+    // candidates, not deciding how hard to brake; the controller redoes the
+    // arithmetic with its own live grip.
+    let hazardCar: CarEntry | null = null;
+    let hazardGap = 0;
+    let hazardScore = Infinity;
+    let roomLeft = Infinity;
+    let roomRight = Infinity;
+    const ourSpeed = car.physics.speedMs;
 
     for (const other of this.cars) {
       if (other === car || other.retired) continue;
@@ -1253,6 +1285,32 @@ export class RaceEngine {
         if (dLat > 0.9 && dLat < 4.2) leftCar = other;
         else if (dLat < -0.9 && dLat > -4.2) rightCar = other;
       }
+
+      // --- Collision picture ---------------------------------------------
+      //
+      // A car sitting in its box is excluded from both halves, and that is the
+      // engine's own rule rather than a new one: `resolveContacts` skips
+      // `inPitBox` cars, so it is not something another car can hit. Treating it
+      // as solid anyway would be worse than useless — every car whose box is
+      // further down the lane would queue behind the one being serviced and the
+      // pit lane would deadlock, which is precisely the failure the comment on
+      // `isSolidWreck` describes for wrecks on the racing line.
+      if (other.inPitBox) continue;
+
+      const theirSpeed = other.physics.speedMs;
+      const dLat = other.lateral - car.lateral;
+
+      // In front, and in the corridor this car is driving down.
+      if (gap > 0 && Math.abs(dLat) < HAZARD_CORRIDOR_M) {
+        const safe = safeFollowSpeedMs(gap, theirSpeed, HAZARD_REFERENCE_DECEL_MS2, 1.1);
+        if (safe < hazardScore) { hazardScore = safe; hazardCar = other; hazardGap = gap; }
+      }
+
+      // Beside us, or close enough that a lateral move would put us beside them.
+      if (lateralOverlap(gap, ourSpeed, theirSpeed)) {
+        if (dLat > 0) roomLeft = Math.min(roomLeft, dLat - CONTACT_WIDTH_M);
+        if (dLat < 0) roomRight = Math.min(roomRight, -dLat - CONTACT_WIDTH_M);
+      }
     }
 
     p.ahead = aheadCar ? this.fillNeighbour(this.neighbourPool[base], car, aheadCar, bestAhead) : null;
@@ -1263,6 +1321,11 @@ export class RaceEngine {
     p.alongsideRight = rightCar
       ? this.fillNeighbour(this.neighbourPool[base + 3], car, rightCar, loopDelta(car.s, rightCar.s, len))
       : null;
+    p.hazard = hazardCar
+      ? this.fillNeighbour(this.neighbourPool[base + 4], car, hazardCar, hazardGap)
+      : null;
+    p.roomLeftM = roomLeft;
+    p.roomRightM = roomRight;
 
     const rc = this.raceControl;
     // The ban starts at the BOARD, not at the sector line.
