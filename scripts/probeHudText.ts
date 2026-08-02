@@ -22,9 +22,10 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
-  fastestLap, messageRoute, pitCall, principalOf, raceControlCard, radioExchange, relayed,
-  standingsCells, teamLine, towerFit, weatherReadout,
+  fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
+  radioExchange, relayed, repairableInBox, standingsCells, teamLine, towerFit, weatherReadout,
 } from '../src/ui/Hud';
+import { COMPONENT_IDS } from '../src/race/DamageModel';
 import type { RaceControlMessage, TeamNote } from '../src/race/RaceControlManager';
 
 const failures: string[] = [];
@@ -234,7 +235,7 @@ console.log('weather: 4 states, label and colour from the same number');
 // question with an answer stapled to it.
 
 const MOMENTS = [
-  { kind: 'pit', compound: 'Hard', lapsLeft: 20 },
+  { kind: 'pit', compound: 'Hard', lapsLeft: 20, reason: 'strategy' },
   { kind: 'safety-car' },
   { kind: 'vsc' },
   { kind: 'chequered', position: 4 },
@@ -267,7 +268,9 @@ for (const m of MOMENTS) {
 const chequered = radioExchange({ kind: 'chequered', position: 4 });
 check(chequered.some((t) => t.line.includes('P4')),
   'the chequered flag card does not state the finishing position');
-const boxCall = radioExchange({ kind: 'pit', compound: 'Hard', lapsLeft: 20 });
+const boxCall = radioExchange({
+  kind: 'pit', compound: 'Hard', lapsLeft: 20, reason: 'strategy',
+});
 check(boxCall.some((t) => t.line.includes('Hard')),
   'the pit card does not say which compound is going on');
 check(boxCall.some((t) => t.line.includes('20')),
@@ -464,6 +467,131 @@ for (const status of ['NOTED', 'UNDER INVESTIGATION', 'YELLOW FLAG', 'WARNING 2 
   check(noted.penalty.length === 0, `"${status}" was drawn as a decision`);
 }
 console.log(`race control decisions: ${DECISIONS.length} penalties set on two lines`);
+
+// ---------------------------------------------------------------------------
+// 8. Nothing narrates a race that is not one
+// ---------------------------------------------------------------------------
+//
+// "when I start qualifying, why am I being told to box?? that is so confusing?"
+//
+// Every session in this game except the race starts in the GARAGE, so
+// `inPitLane` is true on the first frame of practice and of every qualifying
+// segment — and the radio card keyed on it. The game opened Q1 by telling the
+// driver, on new softs at 74 degrees, that he had nothing left on the rears.
+//
+// A screenshot sweep cannot catch a message that fires on frame one and is gone
+// eight seconds later. This drives the opening of each session kind and asserts
+// what the panel says and which moments are even reachable.
+
+for (const kind of ['practice', 'qualifying', 'race'] as const) {
+  const cfg: SessionConfig = {
+    kind,
+    name: kind === 'race' ? 'Grand Prix' : kind === 'qualifying' ? 'Q1' : 'Practice',
+    durationS: kind === 'race' ? 0 : 900,
+    laps: kind === 'race' ? 50 : 0,
+    playerIndex: 0,
+    standingStart: kind === 'race',
+    pitLaneStart: kind !== 'race',
+    seed: 55,
+  };
+  const eng = new RaceEngine(getCircuit('silverstone'), cfg);
+  const car = eng.cars[0];
+
+  // The first frame, which is where the fault was.
+  const first = lapClock(eng, car);
+  if (kind !== 'race') {
+    check(car.inPitLane,
+      `${kind}: this session is supposed to start in the garage and does not`);
+    // OUT LAP, not a stopwatch. The lap out of the garage is the out-lap from
+    // the moment the car is placed in it — the engine has already set
+    // `onOutLap` — and that is the word the driver asked to see there.
+    check(!first.timed && first.text === 'OUT LAP',
+      `${kind}: the clock reads "${first.text}" leaving the garage, not OUT LAP`);
+  }
+
+  // Thirty seconds of it. `pitAdvice` is what raises the principal's pop-up,
+  // and there are no strategy stops in a session that is three laps of your
+  // own — so outside a race it must never speak at all.
+  let advised = 0;
+  let sawOutLap = false;
+  for (let i = 0; i < Math.round(30 / PHYSICS_DT); i++) {
+    eng.step();
+    if (eng.pitAdvice(car) !== null) advised++;
+    const clock = lapClock(eng, car);
+    if (clock.text === 'OUT LAP') sawOutLap = true;
+    // A clock that is running is a claim the lap will be classified.
+    if (clock.timed) {
+      check(!car.onOutLap && !car.inPitLane,
+        `${kind}: the lap clock is running on an out-lap or in the pit lane`);
+    }
+  }
+  if (kind !== 'race') {
+    check(advised === 0,
+      `${kind}: the pit wall gave ${advised} steps of pit advice in a session with no stops`);
+    check(sawOutLap,
+      `${kind}: the car left the garage and the clock never said OUT LAP`);
+  }
+  console.log(`${kind.padEnd(11)} opens on "${first.text}", ` +
+    `out-lap shown: ${sawOutLap}, pit advice: ${advised > 0 ? 'yes' : 'none'}`);
+}
+
+// And the exchange itself may not assert something the car contradicts. A stop
+// for a broken front wing on fresh tyres must not open with a tyre complaint.
+{
+  const cfg: SessionConfig = {
+    kind: 'race', name: 'Grand Prix', durationS: 0, laps: 50,
+    playerIndex: 0, standingStart: true, pitLaneStart: false, seed: 8,
+  };
+  const eng = new RaceEngine(getCircuit('silverstone'), cfg);
+  const car = eng.cars[0];
+  for (let i = 0; i < Math.round(60 / PHYSICS_DT); i++) eng.step();
+
+  car.damage.health.frontWingL = 0.3;
+  car.damage.health.frontWingR = 0.3;
+  check(pitReason(eng, car) === 'damage',
+    `a stop with a broken wing was reasoned as "${pitReason(eng, car)}"`);
+  const damaged = radioExchange({
+    kind: 'pit', compound: 'Hard', lapsLeft: 30, reason: 'damage',
+  });
+  for (const t of damaged) {
+    check(!/tyre|rear|extend/i.test(t.line),
+      `a wing stop claims something about the tyres: "${t.line}"`);
+  }
+
+  car.damage.health.frontWingL = 1;
+  car.damage.health.frontWingR = 1;
+  check(pitReason(eng, car) !== 'damage', 'an undamaged car was reasoned as a damage stop');
+  check(pitReason(eng, car) !== 'tyres',
+    'a car on fresh tyres was reasoned as a tyre stop — the wear is on the same screen');
+
+  // Every reason gets its own exchange, and no two are the same words.
+  const openings = new Set<string>();
+  for (const reason of ['tyres', 'damage', 'weather', 'penalty', 'strategy'] as const) {
+    const turns = radioExchange({ kind: 'pit', compound: 'Hard', lapsLeft: 12, reason });
+    check(turns[0].who === 'driver', `the ${reason} exchange does not open with the driver`);
+    openings.add(turns[0].line);
+  }
+  check(openings.size === 5, `five pit reasons produced ${openings.size} distinct openings`);
+  console.log(`pit radio: 5 reasons, 5 distinct exchanges, none claiming what is not true`);
+}
+
+// The damage pop-up must not promise a part the crew is not going to fit.
+{
+  const wing = pitCall('DAMAGE — PIT FOR REPAIRS', { part: 'Front wing', repairable: true });
+  check(wing !== null && /new one/.test(wing.line),
+    `a repairable wing is not offered a replacement: "${wing?.line}"`);
+  const floor = pitCall('DAMAGE — PIT FOR REPAIRS', { part: 'Floor', repairable: false });
+  check(floor !== null && /cannot fix/.test(floor.line),
+    `a cracked floor is being promised a repair: "${floor?.line}"`);
+  check(floor !== null && !/nose|wing/i.test(floor.line),
+    `a floor problem is being described as a wing: "${floor?.line}"`);
+  for (const id of COMPONENT_IDS) {
+    const ok = repairableInBox(id);
+    check(ok === (id === 'frontWingL' || id === 'frontWingR' || id === 'sidepodL' || id === 'sidepodR'),
+      `${id} is on the wrong side of what a pit crew can change`);
+  }
+  console.log('damage call: names the part it will actually fit');
+}
 
 // ---------------------------------------------------------------------------
 

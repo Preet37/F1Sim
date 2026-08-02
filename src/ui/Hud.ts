@@ -990,7 +990,9 @@ export class Hud {
       setText(this.lapCounter, engine.config.name + '  ' + formatClock(remaining));
     }
 
-    setText(this.lapTime, formatLapTime(player.currentLapTime(engine.time)));
+    const clock = lapClock(engine, player);
+    setText(this.lapTime, clock.text);
+    setClass(this.lapTime, 'timing-lap' + (clock.timed ? '' : ' is-untimed'));
     setText(this.lastLap, formatLapTime(player.lastLapTime));
     setText(this.bestLap, formatLapTime(player.bestLapTime));
 
@@ -1339,7 +1341,13 @@ export class Hud {
       ? '' : (engine.pitAdvice(player) ?? '');
     if (advice !== this.lastAdvice) {
       this.lastAdvice = advice;
-      const call = advice ? pitCall(advice) : null;
+      const worst = player.damage.worst();
+      const call = advice
+        ? pitCall(advice, {
+          part: COMPONENT_NAMES[worst.id],
+          repairable: repairableInBox(worst.id),
+        })
+        : null;
       if (call) this.pushAlert(player, call.line, call.chip, call.tone);
     }
   }
@@ -1580,16 +1588,40 @@ export class Hud {
       }
     }
 
-    const pitting = player.pitRequested || player.inPitLane;
-    if (pitting && !this.radioPitShown) {
+    // BEING IN THE PIT LANE IS NOT THE SAME EVENT AS BEING CALLED IN, and
+    // conflating them opened every session in this game by telling the driver
+    // his rear tyres were finished.
+    //
+    //   "when I start qualifying, why am I being told to box?? that is so
+    //    confusing?"
+    //
+    // Practice, qualifying and any pit-lane start begin with the car in its
+    // garage, so `inPitLane` is true on the FIRST FRAME of the session — and
+    // the latch fired there, on brand-new tyres at 74°, on the out-lap of Q1.
+    //
+    // The moment worth broadcasting is the wall calling the driver in: he has
+    // asked for a stop and is still on track on his way to the entry. Leaving
+    // the garage is the opposite event and gets no card at all, because a card
+    // that fires at the start of every session is noise by the second one.
+    //
+    // Gated to a race as well. There are no strategy stops in a session that is
+    // three laps of your own, and `planStrategies` has always known that —
+    // this layer did not.
+    const calledIn = engine.config.kind === 'race' && player.pitRequested && !player.inPitLane;
+    if (calledIn && !this.radioPitShown) {
       this.radioPitShown = true;
       const totalLaps = engine.config.laps || engine.track.def.raceLaps;
       this.showRadioCard(player, {
         kind: 'pit',
         compound: getCompound(player.compound).name,
-        lapsLeft: engine.config.kind === 'race' ? Math.max(0, totalLaps - player.lap) : 0,
+        lapsLeft: Math.max(0, totalLaps - player.lap),
+        // Why the stop is happening, read off the car at the moment the call is
+        // made. The old card asserted "I've got nothing left on the rears"
+        // whatever the reason — a lie on a lap-3 stop for a broken wing, and
+        // the wear it was lying about is printed on the same screen.
+        reason: pitReason(engine, player),
       });
-    } else if (!pitting) {
+    } else if (!player.pitRequested) {
       this.radioPitShown = false;
     }
   }
@@ -2077,6 +2109,33 @@ export function principalOf(teamId: string): string {
 }
 
 /**
+ * What the big lap clock says.
+ *
+ * A RUNNING CLOCK IS A CLAIM THAT THE LAP IS BEING TIMED, and on an out-lap it
+ * is not. Every session in this game except the race starts in the garage, so
+ * the first lap is always an out-lap — and the panel ran a stopwatch through
+ * it, reaching `0:55.392` on a lap the engine was always going to discard.
+ * "the first lap is always the out lap, it should display that on the thing."
+ *
+ * Nothing new is computed. `CarEntry.onOutLap` is the flag the engine itself
+ * uses to refuse to classify the crossing; this reads the same flag. The in-lap
+ * is the mirror case and gets the same treatment, because a driver on the way
+ * to the pit entry is not setting a time either.
+ *
+ * Pure and exported so a probe can assert what is on the clock in each session
+ * without photographing it.
+ */
+export function lapClock(
+  engine: RaceEngine, player: CarEntry,
+): { text: string; timed: boolean } {
+  if (player.onOutLap) return { text: 'OUT LAP', timed: false };
+  // Called in and still on track: this lap ends in the pit lane.
+  if (player.pitRequested && !player.inPitLane) return { text: 'IN LAP', timed: false };
+  if (player.inPitLane) return { text: 'PIT LANE', timed: false };
+  return { text: formatLapTime(player.currentLapTime(engine.time)), timed: true };
+}
+
+/**
  * The pit call, said by a person.
  *
  * `RaceEngine.pitAdvice` returns machine text — `DAMAGE — PIT FOR REPAIRS` —
@@ -2093,10 +2152,32 @@ export function principalOf(teamId: string): string {
  * Pure and exported so `probe:hudtext` can assert on the sentence the driver
  * is actually shown rather than on a reimplementation of it.
  */
-export function pitCall(advice: string): { line: string; chip: string; tone: AlertTone } | null {
+export function pitCall(
+  advice: string, damage?: { part: string; repairable: boolean },
+): { line: string; chip: string; tone: AlertTone } | null {
   const v = PIT_VOICE[advice];
   if (!v) return null;
+  // The damage call used to promise a new nose whatever was actually broken.
+  // `pitAdvice` fires on the WORST component and the crew can only reach the
+  // nose and the sidepods, so a car with a cracked floor was being told it
+  // would get a front wing — a claim the damage diagram beside it disproves.
+  if (advice === 'DAMAGE — PIT FOR REPAIRS' && damage) {
+    const part = damage.part.toLowerCase();
+    return {
+      line: damage.repairable
+        ? 'The ' + part + ' has gone. Box this lap and we put a new one on.'
+        : 'There is ' + part + ' damage and we cannot fix that in the stop. ' +
+          'Box and we take what we can off the car.',
+      chip: 'PRESS PIT',
+      tone: v.tone,
+    };
+  }
   return { line: v.line, chip: 'PRESS PIT', tone: v.tone };
+}
+
+/** What the crew can actually change in three seconds. Everything else stays. */
+export function repairableInBox(id: ComponentId): boolean {
+  return id === 'frontWingL' || id === 'frontWingR' || id === 'sidepodL' || id === 'sidepodR';
 }
 
 export type AlertTone = 'info' | 'warn' | 'urgent' | 'go';
@@ -2416,12 +2497,42 @@ const FIXED_CAPS = new Set([
  * Deliberately rare: five engine events fire it, each a moment a real
  * broadcast would actually play, and each an edge rather than a timer.
  */
+/**
+ * Why a driver is being called in.
+ *
+ * It exists because the card used to assert a fact the simulation could
+ * contradict: every pit exchange opened `"I've got nothing left on the rears"`,
+ * including on a lap-3 stop for a broken front wing with the tyre wear bars
+ * sitting at 90% two inches away on the same screen. A radio line that the HUD
+ * beside it disproves is worse than no radio line.
+ *
+ * So the reason is read off the car at the moment the call is made, and each
+ * one gets an exchange that only claims what is true.
+ */
+export type PitReason = 'tyres' | 'damage' | 'weather' | 'penalty' | 'strategy';
+
 export type RadioMoment =
-  | { kind: 'pit'; compound: string; lapsLeft: number }
+  | { kind: 'pit'; compound: string; lapsLeft: number; reason: PitReason }
   | { kind: 'safety-car' }
   | { kind: 'vsc' }
   | { kind: 'chequered'; position: number }
   | { kind: 'damage'; part: string };
+
+/**
+ * What the car itself says is wrong, in the order a pit wall would weigh it.
+ *
+ * Exported and pure so a probe can assert that a stop on fresh tyres is never
+ * described as a tyre stop.
+ */
+export function pitReason(engine: RaceEngine, player: CarEntry): PitReason {
+  if (player.pendingServePenalty() !== null) return 'penalty';
+  if (player.damage.worst().health < 0.7) return 'damage';
+  const onSlicks = !getCompound(player.compound).isWetWeather;
+  if (engine.weather.wetness > 0.4 && onSlicks) return 'weather';
+  if (engine.weather.wetness < 0.12 && !onSlicks) return 'weather';
+  if (player.physics.rearTires.wear < 0.45) return 'tyres';
+  return 'strategy';
+}
 
 export interface RadioTurn {
   who: 'driver' | 'wall';
@@ -2430,16 +2541,50 @@ export interface RadioTurn {
 
 export function radioExchange(m: RadioMoment): RadioTurn[] {
   switch (m.kind) {
-    case 'pit':
-      return [
-        { who: 'driver', line: 'My tyres are okay — can I extend? How many laps left?' },
-        {
-          who: 'wall',
-          line: m.lapsLeft > 0 ? 'And box, ' + m.lapsLeft + ' laps.' : 'And box, box.',
-        },
-        { who: 'driver', line: "I don't wanna stop." },
-        { who: 'wall', line: 'Box box. ' + m.compound + ' on the left.' },
-      ];
+    case 'pit': {
+      // The wall's closing line is the same in every case because it is the
+      // only instruction: box, and this is what is going on. What changes is
+      // what the driver says first, and it may only claim what is true.
+      const box: RadioTurn = { who: 'wall', line: 'Box box. ' + m.compound + ' on the left.' };
+      const laps = m.lapsLeft > 0 ? 'And box, ' + m.lapsLeft + ' laps.' : 'And box, box.';
+      switch (m.reason) {
+        case 'tyres':
+          return [
+            { who: 'driver', line: 'These rears are going away. How many more?' },
+            { who: 'wall', line: laps },
+            { who: 'driver', line: 'I can hold on a bit longer.' },
+            box,
+          ];
+        case 'damage':
+          return [
+            { who: 'driver', line: 'Something is not right with the car.' },
+            { who: 'wall', line: 'We can see it. Box this lap and we fix it.' },
+            { who: 'driver', line: 'How much is that going to cost me?' },
+            box,
+          ];
+        case 'weather':
+          return [
+            { who: 'driver', line: 'I am on the wrong tyre out here.' },
+            { who: 'wall', line: 'Agreed. Box box, we are changing you over.' },
+            { who: 'driver', line: 'Is anyone else coming in?' },
+            box,
+          ];
+        case 'penalty':
+          return [
+            { who: 'driver', line: 'What is the penalty for?' },
+            { who: 'wall', line: 'We argue about it later. Serve it this lap.' },
+            { who: 'driver', line: 'That is not on me.' },
+            box,
+          ];
+        case 'strategy':
+          return [
+            { who: 'driver', line: 'My tyres are okay — can I extend? How many laps left?' },
+            { who: 'wall', line: laps },
+            { who: 'driver', line: "I don't wanna stop." },
+            box,
+          ];
+      }
+    }
     case 'safety-car':
       return [
         { who: 'driver', line: 'Confirm safety car?' },

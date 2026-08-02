@@ -678,6 +678,20 @@ canvas#view {
   line-height: 1.05;
   margin-top: 6px;
 }
+/* OUT LAP / IN LAP / PIT LANE, where the stopwatch would be.
+   A running clock is a claim that the lap is being timed, and on an out-lap it
+   is not — the engine discards the crossing. So the words go in the clock's
+   place rather than beside it, set smaller and in the name face, because a
+   28px monospace `OUT LAP` reads as a broken readout rather than a state. */
+.timing-lap.is-untimed {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
 .timing-small {
   display: flex;
   gap: 16px;
