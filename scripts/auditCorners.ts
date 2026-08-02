@@ -69,6 +69,7 @@ interface Api {
     shootDebris(f: number, h: number): Promise<string>;
     focusFraction(): number;
     debrisFraction(): number;
+    shootPile(index: number, height: number): Promise<string>;
   };
 }
 
@@ -169,16 +170,22 @@ async function main(): Promise<void> {
     // evidence. The debris shots are the ones that cannot be re-derived from
     // anything else, so they are taken while the context is newest.
     //
-    // Six impacts, which is what the reported race had in two laps.
-    await page.evaluate('window.__audit.crash(6, 0.7)');
+    // Eight hits at near-full severity, spread round all four faces. The
+    // reported race had six contact events in two laps; this is that, hard
+    // enough that the damage model actually takes bodywork off the car —
+    // which is the point, because whether anything is shed is the SIMULATION's
+    // decision now and the harness must not make it.
+    await page.evaluate('window.__audit.crash(8, 0.95)');
     const after = await page.evaluate('window.__audit.measure()') as TrackStats;
     const f0 = await page.evaluate('window.__audit.debrisFraction()') as number;
-    await take('debris plan 14m', await page.evaluate(
-      (f: number) => (window as never as Api).__audit.shootDebris(f, 14), f0) as string);
+    const piles = await page.evaluate('window.__audit.pileCount()') as number;
+    for (let k = 0; k < Math.min(3, piles); k++) {
+      await take(`debris pile ${k} at 9m`, await page.evaluate(
+        (a: [number, number]) => (window as never as Api).__audit.shootPile(a[0], a[1]),
+        [k, 9] as [number, number]) as string);
+    }
     await take('debris plan 40m', await page.evaluate(
       (f: number) => (window as never as Api).__audit.shootDebris(f, 40), f0) as string);
-    await take('debris eye', await page.evaluate(
-      (f: number) => (window as never as Api).__audit.shootEye(f), f0) as string);
 
 
     for (let c = 0; c < corners.length; c++) {
@@ -199,7 +206,7 @@ async function main(): Promise<void> {
     rows.push(
       `${id.padEnd(13)} kerb L/R/any ${pct(stats.kerbLeft)}/${pct(stats.kerbRight)}/${pct(stats.kerbEither)} ` +
       `  R<400 ${pct(stats.under400)}  R<250 ${pct(stats.under250)}  R<120 ${pct(stats.under120)} ` +
-      `  hw ${stats.halfWidthM.toFixed(1)}m  debris ${after.debris}` +
+      `  hw ${stats.halfWidthM.toFixed(1)}m  shards ${after.debris} in ${piles} piles` +
       `  calls ${stats.drawCalls}  tris ${(stats.triangles / 1000).toFixed(0)}k` +
       `  tightest ${corners.map((c) => `${Math.round(c.radiusM)}m`).join(',')}`,
     );

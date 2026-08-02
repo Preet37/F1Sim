@@ -60,6 +60,10 @@ interface AuditApi {
   focusFraction(): number;
   /** Lap fraction the settled debris is lying at. */
   debrisFraction(): number;
+  /** Straight down onto one pile of carbon. */
+  shootPile(index: number, height: number): Promise<string>;
+  /** How many piles are on the circuit. */
+  pileCount(): number;
   /** Close plan view of the road at a lap fraction — for looking at debris. */
   shootDebris(fraction: number, height: number): Promise<string>;
   /** Composes the shots taken since the last call into one contact sheet. */
@@ -521,6 +525,8 @@ function measure(): TrackStats {
  * empty piece of road. The reported race had six contact events; this puts all
  * six in one place, which is also the worst case.
  */
+const ZONES = ['front', 'rear', 'left', 'right'] as const;
+
 function crash(n: number, severity: number): void {
   const car = focus!;
   for (let k = 0; k < n; k++) {
@@ -531,7 +537,7 @@ function crash(n: number, severity: number): void {
     // filed the debris itself would be photographing a debris field the game
     // does not produce. Alternating faces, because a car that is only ever hit
     // on the nose loses one wing and nothing else.
-    car.damage.applyImpact(k % 2 === 0 ? 'front' : 'rear', severity);
+    car.damage.applyImpact(ZONES[k % ZONES.length], severity);
     engine!.impacts.push({ carIndex: car.index, severity });
     // One rendered frame per impact: `drainDebris` runs inside
     // `Renderer.render`, and a piece filed between two frames has to be drawn
@@ -614,7 +620,7 @@ const labels: string[] = [];
 
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
-  shootEyeAids, shootKerb, shootDebris, corners, measure, crash, focusFraction, debrisFraction,
+  shootEyeAids, shootKerb, shootDebris, corners, measure, crash, focusFraction, debrisFraction, shootPile, pileCount,
   label: (t: string) => { labels.push(t); },
   cameraModes: CAMERA_MODES,
 };
