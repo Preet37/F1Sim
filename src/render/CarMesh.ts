@@ -1216,8 +1216,14 @@ function sidepod(side: 1 | -1): Section[] {
     // regulations forbid any rearward-facing surface behind XR = -300 — so the
     // taper from there back has to be continuous and hard. It now loses 60 per
     // cent of its width in the metre behind z = -0.08.
-    section(0.98, 0.196, 0.268, 0.540, 0.13, { undercut: 0.74, xc: s * 0.548 }),
-    section(0.76, 0.226, 0.262, 0.552, 0.17, { undercut: 0.50, xc: s * 0.552 }),
+    // The crown drops 12mm through the mirror's station. It used to peak at
+    // 0.552, which is 9mm under a mirror housing whose underside sits at 0.561
+    // — close enough that from any shallow angle the mirror read as a lump
+    // moulded into the pod's shoulder rather than as a mirror standing off it.
+    // `MIRROR_Y` cannot move (see the note in CockpitMesh), so the clearance
+    // comes out of the pod, which loses 4 per cent of a 284mm face for it.
+    section(0.98, 0.196, 0.268, 0.532, 0.13, { undercut: 0.74, xc: s * 0.548 }),
+    section(0.76, 0.226, 0.262, 0.540, 0.17, { undercut: 0.50, xc: s * 0.552 }),
     section(0.50, 0.246, 0.256, 0.548, 0.21, { undercut: 0.38, xc: s * 0.542 }),
     section(0.12, 0.244, 0.248, 0.524, 0.26, { undercut: 0.32, xc: s * 0.524 }),
     section(-0.30, 0.226, 0.240, 0.478, 0.30, { undercut: 0.30, xc: s * 0.498 }),
@@ -1311,8 +1317,8 @@ function roundedBar(
  * leading edge is how the real mechanism is arranged and it keeps the pair
  * rigid relative to each other, which is what the reference plan view shows.
  */
-const FRONT_FLAP_PIVOT_Y = 0.148;
-const FRONT_FLAP_PIVOT_Z = 3.086;
+const FRONT_FLAP_PIVOT_Y = 0.168;
+const FRONT_FLAP_PIVOT_Z = 2.850;
 
 /**
  * How far the upper front-wing elements rotate for X-mode, radians, negative
@@ -1383,11 +1389,24 @@ const FRONT_WING_ELEMENTS: {
   span: number; leZ: number; leY: number; teZ: number; teY: number;
   thick: number; rise: number; movable: boolean;
 }[] = [
-  { span: 1.900, leZ: 3.248, leY: 0.052, teZ: 3.140, teY: 0.062, thick: 0.013, rise: 1.00, movable: false },
-  { span: 1.918, leZ: 3.180, leY: 0.088, teZ: 3.026, teY: 0.122, thick: 0.013, rise: 0.93, movable: false },
-  { span: 1.936, leZ: 3.086, leY: 0.148, teZ: 2.888, teY: 0.210, thick: 0.014, rise: 0.84, movable: true },
-  { span: 1.954, leZ: 2.972, leY: 0.226, teZ: 2.720, teY: 0.314, thick: 0.015, rise: 0.72, movable: true },
+  { span: 1.900, leZ: 3.090, leY: 0.046, teZ: 2.946, teY: 0.066, thick: 0.013, rise: 1.00, movable: false },
+  { span: 1.916, leZ: 2.976, leY: 0.095, teZ: 2.806, teY: 0.143, thick: 0.013, rise: 0.93, movable: false },
+  { span: 1.932, leZ: 2.850, leY: 0.168, teZ: 2.654, teY: 0.246, thick: 0.014, rise: 0.84, movable: true },
+  { span: 1.948, leZ: 2.706, leY: 0.266, teZ: 2.472, teY: 0.382, thick: 0.015, rise: 0.72, movable: true },
 ];
+
+/**
+ * Camber as a fraction of chord, and why it came down from 0.10.
+ *
+ * The camber line bows the section DOWNWARD, and it does so into the slot above
+ * the element below. Measured by `probe:carrig`, the four elements were running
+ * gaps of 6.2, 10.1 and 4.2mm — the last of them BELOW the regulation minimum
+ * of 5 — while the code that set them claimed 13 to 20, because the arithmetic
+ * that chose the leading and trailing edge points took no account of the bow
+ * between them. The regulation range is 5 to 15mm and this wing is now built at
+ * the top of it, measured rather than asserted.
+ */
+const FRONT_WING_CAMBER = 0.07;
 
 function buildFrontWing(p: Parts, t: Tiers): void {
   p.into('frontWing');
@@ -1404,7 +1423,7 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // modest: the camber line bows the section DOWNWARD by its full amount at
     // 40 per cent chord, and at the 28 per cent of chord a really aggressive
     // front wing runs it eats the slot gap above the element below it.
-    const camber = -0.10 * chord;
+    const camber = -FRONT_WING_CAMBER * chord;
     // Sixteen interior stations. The W below is a curve across the span and a
     // curve drawn through two stations is a straight line; at six it came out
     // as a visible chevron either side of the nose.
@@ -1438,12 +1457,21 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // to 0.987, which with its 12mm half-thickness puts its outer skin at
     // x = 0.999: the widest thing on the car, as it should be, and 47mm outboard
     // of the front tyre.
+    // Six stations, not five, and the extra one buys the two things that
+    // separated a plain plate from a moulded one: a swept TOP EDGE that climbs
+    // continuously from a 144mm-tall leading edge to 410mm at the rear quarter,
+    // and a trailing corner that falls away again instead of being sawn off
+    // square. Its top is 64mm higher than before at 0.436, which is 74mm inside
+    // the regulation ceiling of 0.510 and is what puts the plate alongside the
+    // middle of the front tyre rather than under it — an endplate's whole job
+    // in the silhouette is to frame that wheel.
     const ep = small([
-      section(3.235, 0.010, 0.055, 0.215, 0.28, { xc: s * 0.950 }),
-      section(3.080, 0.012, 0.038, 0.285, 0.24, { xc: s * 0.966 }),
-      section(2.900, 0.013, 0.028, 0.345, 0.22, { xc: s * 0.978 }),
-      section(2.720, 0.013, 0.026, 0.372, 0.22, { xc: s * 0.986 }),
-      section(2.600, 0.011, 0.034, 0.350, 0.30, { xc: s * 0.987 }),
+      section(3.100, 0.010, 0.052, 0.196, 0.30, { xc: s * 0.948 }),
+      section(2.980, 0.012, 0.036, 0.278, 0.24, { xc: s * 0.960 }),
+      section(2.840, 0.013, 0.028, 0.352, 0.22, { xc: s * 0.972 }),
+      section(2.690, 0.014, 0.026, 0.412, 0.20, { xc: s * 0.983 }),
+      section(2.540, 0.013, 0.030, 0.436, 0.24, { xc: s * 0.987 }),
+      section(2.440, 0.010, 0.042, 0.404, 0.34, { xc: s * 0.986 }),
     ], t.body - 8);
     p.tag(`front wing endplate ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(ep, 'front wing endplate'), 'carbon');
@@ -1452,10 +1480,10 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // ground level, it is the last thing to clear a kerb, and it is in every
     // head-on photograph as a bright horizontal line under the dark plate.
     const foot = small([
-      section(3.20, 0.026, 0.022, 0.052, 0.60, { xc: s * 0.952 }),
-      section(3.00, 0.032, 0.018, 0.050, 0.55, { xc: s * 0.962 }),
-      section(2.80, 0.034, 0.020, 0.052, 0.55, { xc: s * 0.964 }),
-      section(2.64, 0.026, 0.026, 0.056, 0.60, { xc: s * 0.968 }),
+      section(3.06, 0.026, 0.020, 0.050, 0.60, { xc: s * 0.950 }),
+      section(2.88, 0.032, 0.016, 0.048, 0.55, { xc: s * 0.960 }),
+      section(2.70, 0.034, 0.018, 0.050, 0.55, { xc: s * 0.964 }),
+      section(2.52, 0.026, 0.024, 0.054, 0.60, { xc: s * 0.968 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing footplate ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(foot, 'front wing footplate'), 'carbon');
@@ -1464,9 +1492,9 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // trailing corner. It is what stops the endplate reading as a plain
     // rectangle in silhouette.
     const flick = small([
-      section(2.94, 0.014, 0.322, 0.340, 0.70, { xc: s * 0.958 }),
-      section(2.80, 0.024, 0.352, 0.376, 0.70, { xc: s * 0.948 }),
-      section(2.66, 0.020, 0.344, 0.364, 0.70, { xc: s * 0.940 }),
+      section(2.78, 0.014, 0.386, 0.404, 0.70, { xc: s * 0.960 }),
+      section(2.64, 0.024, 0.418, 0.442, 0.70, { xc: s * 0.950 }),
+      section(2.50, 0.020, 0.408, 0.428, 0.70, { xc: s * 0.942 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing flick ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(flick, 'front wing flick'), 'carbon');
@@ -1482,9 +1510,9 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // screenshots. A diveplane is a small plate ON the outer skin; built as a
     // three-station loft it can be exactly that, and `checkWidth` proves it.
     const dive = small([
-      section(2.980, 0.024, 0.208, 0.226, 0.60, { xc: s * 0.972 }),
-      section(2.860, 0.028, 0.220, 0.240, 0.60, { xc: s * 0.970 }),
-      section(2.760, 0.021, 0.228, 0.246, 0.60, { xc: s * 0.966 }),
+      section(2.850, 0.024, 0.196, 0.214, 0.60, { xc: s * 0.972 }),
+      section(2.730, 0.028, 0.210, 0.230, 0.60, { xc: s * 0.970 }),
+      section(2.630, 0.021, 0.218, 0.236, 0.60, { xc: s * 0.966 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing diveplane ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(dive, 'front wing diveplane'), 'accent');
@@ -1590,9 +1618,9 @@ function buildShellParts(
   p.tag('nose-to-wing fairing');
   p.into('frontWing');
   p.flat(small([
-    section(3.16, 0.046, 0.046, 0.152, 0.68),
-    section(3.08, 0.052, 0.116, 0.238, 0.62),
-    section(2.94, 0.062, 0.212, 0.348, 0.62),
+    section(3.03, 0.046, 0.046, 0.152, 0.68),
+    section(2.96, 0.052, 0.116, 0.238, 0.62),
+    section(2.87, 0.062, 0.212, 0.348, 0.62),
     section(2.74, 0.074, 0.288, 0.458, 0.66),
   ], t.body - 6), 'carbon');
   p.into('core');
@@ -2235,20 +2263,20 @@ function buildShellParts(
     // camera, which is measured in CockpitMesh and not a free parameter — so
     // the clearance has to come out of the housing's own section.
     const housing = small([
-      section(MIRROR_Z + 0.021, 0.0580, MIRROR_Y - 0.016, MIRROR_Y + 0.028, 0.42),
-      section(MIRROR_Z + 0.004, 0.0585, MIRROR_Y - 0.017, MIRROR_Y + 0.029, 0.45),
-      section(MIRROR_Z - 0.014, 0.0520, MIRROR_Y - 0.015, MIRROR_Y + 0.028, 0.55),
-      section(MIRROR_Z - 0.026, 0.0360, MIRROR_Y - 0.010, MIRROR_Y + 0.024, 0.80),
+      section(MIRROR_Z + 0.021, 0.0580, MIRROR_Y - 0.020, MIRROR_Y + 0.028, 0.42),
+      section(MIRROR_Z + 0.004, 0.0585, MIRROR_Y - 0.021, MIRROR_Y + 0.029, 0.45),
+      section(MIRROR_Z - 0.014, 0.0520, MIRROR_Y - 0.019, MIRROR_Y + 0.028, 0.55),
+      section(MIRROR_Z - 0.026, 0.0360, MIRROR_Y - 0.014, MIRROR_Y + 0.024, 0.80),
     ], t.detail);
     p.tag(`mirror housing ${side < 0 ? 'L' : 'R'}`);
     housing.translate(side * MIRROR_X, 0, 0);
     p.flat(housing, 'carbon');
     // A flat dark pane, so the mirrors read from outside too. The player's own
     // car covers this with a reflective one; see CockpitMesh.
-    const glass = new THREE.PlaneGeometry(0.096, 0.032);
+    const glass = new THREE.PlaneGeometry(0.096, 0.036);
     glass.rotateY(Math.PI);
     p.tag(`mirror glass ${side < 0 ? 'L' : 'R'}`);
-    glass.translate(side * MIRROR_X, MIRROR_Y + 0.004, MIRROR_GLASS_Z);
+    glass.translate(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z);
     p.flat(glass, 'glass');
   }
 

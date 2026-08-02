@@ -72,6 +72,28 @@ const JOINT_TOL = 0.025;
 /** The contact patch may sit this far off the road before it is a defect. */
 const CONTACT_TOL = 0.0015;
 
+/**
+ * Front wing limits, from the technical regulations quoted in `CarMesh`.
+ *
+ * SLOT GAP is the one that was reported: "slot gaps that do not read at
+ * distance". The regulations put it between 5 and 15mm, so the answer to
+ * illegibility is not a bigger gap — 15mm is the ceiling and the wing was
+ * already near it — but an OPEN one. A slot 14mm tall that the next element
+ * overhangs by half its chord is a slot no camera in front of the car can see
+ * into, and that is what the assembly was: four blades stacked with 25 to 46
+ * per cent of plan overlap, reading as one rolled slab.
+ *
+ * So both are measured. `SLOT_MIN/MAX` is the physical gap. `SEE_THROUGH` is
+ * the fraction of the span at which a straight line runs from the middle of the
+ * slot to the camera without touching the car — daylight, in other words, which
+ * is the thing the eye actually reads a multi-element wing by.
+ */
+const SLOT_MIN = 0.005;
+const SLOT_MAX = 0.015;
+const SEE_THROUGH_MIN = 0.6;
+/** Front overhang: nothing may sit more than 1350mm ahead of the front axle. */
+const FRONT_OVERHANG_Z = 3.15;
+
 const TIERS: CarTier[] = ['high', 'low'];
 
 interface Prepared {
@@ -222,6 +244,44 @@ class TriGrid {
         }
       }
     }
+  }
+
+  /**
+   * Whether the straight line from `p` to `q` touches anything.
+   *
+   * Brute force over every triangle on the car, because the whole probe casts a
+   * few dozen of these and a grid walk along a segment is more code than it
+   * saves. `skip` drops the two elements the slot is between: a ray leaving the
+   * middle of a slot starts flush with both of their surfaces and would
+   * otherwise report itself blocked by the thing it is measuring.
+   */
+  clearLine(
+    px: number, py: number, pz: number, qx: number, qy: number, qz: number,
+    skip: (part: number) => boolean,
+  ): boolean {
+    const dx = qx - px, dy = qy - py, dz = qz - pz;
+    const t = this.tri;
+    for (let f = 0; f < this.owner.length; f++) {
+      if (skip(this.owner[f])) continue;
+      const o = f * 9;
+      // Moller-Trumbore.
+      const e1x = t[o + 3] - t[o], e1y = t[o + 4] - t[o + 1], e1z = t[o + 5] - t[o + 2];
+      const e2x = t[o + 6] - t[o], e2y = t[o + 7] - t[o + 1], e2z = t[o + 8] - t[o + 2];
+      const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+      const a = e1x * hx + e1y * hy + e1z * hz;
+      if (Math.abs(a) < 1e-12) continue;
+      const inv = 1 / a;
+      const sx = px - t[o], sy = py - t[o + 1], sz = pz - t[o + 2];
+      const u = (sx * hx + sy * hy + sz * hz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qqx = sy * e1z - sz * e1y, qqy = sz * e1x - sx * e1z, qqz = sx * e1y - sy * e1x;
+      const v = (dx * qqx + dy * qqy + dz * qqz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      const s = (e2x * qqx + e2y * qqy + e2z * qqz) * inv;
+      // 1e-4 off each end so a surface the ray starts or lands on is not a hit.
+      if (s > 1e-4 && s < 1 - 1e-4) return false;
+    }
+    return true;
   }
 
   /**
@@ -399,7 +459,74 @@ function run(tier: CarTier): void {
   }
   if (!failures) console.log('  all 24 members land on a part at both ends');
 
-  // --- 3. disjoint parts ---------------------------------------------------
+  // --- 3. front wing -------------------------------------------------------
+  //
+  // The elements are measured where the wing is a wing: on the OUTER half of
+  // the semi-span, clear of the nose fairing that deliberately buries itself in
+  // the inner sections.
+  console.log('\nfront wing (mainplane + 3 flaps; slot 5-15mm, and open to the eye)');
+  const elements = [1, 2, 3, 4].map((n) => prepared[byName.get(`front wing element ${n}`)!]);
+  const STATIONS = [0.30, 0.42, 0.54, 0.66, 0.78, 0.88];
+  /**
+   * Leading and trailing edge of an element in a 60mm band about a station.
+   *
+   * A BAND rather than a plane, because the elements are lofted at sixteen
+   * spanwise stations and a plane cut at an arbitrary x finds no vertices at
+   * all — which the first version of this did, silently, and reported every
+   * slot as measured at zero stations.
+   */
+  const edgeAt = (p: Prepared, x: number): { le: THREE.Vector3; te: THREE.Vector3 } | null => {
+    let le: THREE.Vector3 | null = null, te: THREE.Vector3 | null = null;
+    const t = p.tri;
+    for (let i = 0; i < t.length; i += 3) {
+      if (Math.abs(t[i] - x) > 0.060) continue;
+      const v = new THREE.Vector3(t[i], t[i + 1], t[i + 2]);
+      if (!le || v.z > le.z) le = v;
+      if (!te || v.z < te.z) te = v;
+    }
+    return le && te ? { le, te } : null;
+  };
+  // Where the head-on camera stands in `audit/car.ts`. The slot has to be open
+  // to THAT eye, which is the shot the wing was reported from.
+  const EYE = new THREE.Vector3(0.0, 0.75, 8.4);
+  let front = -Infinity, frontName = '';
+  for (const p of prepared) {
+    if (p.part.bucket !== 'frontWing' && p.part.bucket !== 'frontFlap') continue;
+    if (p.box.max.z > front) { front = p.box.max.z; frontName = p.part.name; }
+  }
+  console.log(`  foremost point ${front.toFixed(3)} (${frontName}); the overhang limit is ${FRONT_OVERHANG_Z.toFixed(3)}`);
+  if (front > FRONT_OVERHANG_Z + 0.001) {
+    fail(`the front wing reaches ${((front - FRONT_OVERHANG_Z) * 1000).toFixed(0)}mm past the 1350mm front overhang limit`);
+  }
+  for (let i = 0; i < 3; i++) {
+    const a = elements[i], b = elements[i + 1];
+    const ai = prepared.indexOf(a), bi = prepared.indexOf(b);
+    // The gap: the closest either element's skin comes to the other's.
+    let gap = Infinity;
+    for (let q = 0; q < a.probe.length; q += 3) {
+      const hit = grid.nearest(a.probe[q], a.probe[q + 1], a.probe[q + 2], 0.05, (o) => o !== bi);
+      if (hit.dist < gap) gap = hit.dist;
+    }
+    // Daylight: from the middle of the slot to the head-on camera.
+    let open = 0, tested = 0;
+    for (const x of STATIONS) {
+      const ea = edgeAt(a, x), eb = edgeAt(b, x);
+      if (!ea || !eb) continue;
+      tested++;
+      const mid = ea.te.clone().add(eb.le).multiplyScalar(0.5);
+      if (grid.clearLine(mid.x, mid.y, mid.z, EYE.x, EYE.y, EYE.z, (o) => o === ai || o === bi)) open++;
+    }
+    const frac = tested ? open / tested : 0;
+    const gapOk = gap >= SLOT_MIN - 1e-4 && gap <= SLOT_MAX + 1e-4;
+    const seeOk = frac >= SEE_THROUGH_MIN;
+    console.log(`  slot ${i + 1}-${i + 2}   ${(gap * 1000).toFixed(1).padStart(5)}mm`
+      + `   open to the head-on eye at ${open}/${tested} stations`
+      + `   ${gapOk && seeOk ? '' : '<-'}`);
+    if (!gapOk) fail(`slot ${i + 1}-${i + 2} is ${(gap * 1000).toFixed(1)}mm; the regulation range is 5-15mm`);
+    if (!seeOk) fail(`slot ${i + 1}-${i + 2} shows daylight at only ${open} of ${tested} stations`);
+  }
+
+  // --- 4. disjoint parts ---------------------------------------------------
   console.log('\nconnectivity (every part must touch the car)');
   const dsu = new DisjointSet(prepared.length);
   for (let i = 0; i < prepared.length; i++) {
