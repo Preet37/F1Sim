@@ -61,13 +61,22 @@ export type PitRole =
  *
  * Positions are in the PIT BOX FRAME:
  *
- *   +x is across the box, away from the pit wall and towards the garage
+ *   +x is across the box, away from the pit wall and TOWARDS THE GARAGE
  *   +z is forward, the way the car is pointing
  *   the origin is the point the car's centre of gravity stops on
  *
  * so a figure at (-1.6, +1.9) is on the pit-wall side of the car, level with
  * the front axle. `heading` is a yaw in radians about +y from facing +z, i.e.
  * from facing the same way as the car.
+ *
+ * "Towards the garage" is deliberately not "the car's left". Which side of the
+ * car the garages are on depends on which side of the circuit the pit lane is
+ * and on the direction of travel, and it is not the same on every circuit on
+ * the calendar. The renderer resolves it once per frame from the track's own
+ * normal and mirrors this whole plan if it comes out the other way round; see
+ * `outward` in `PitCrew.ts`. Authoring the stations in the car's frame instead
+ * put the spare jack men and the spotter standing in the fast lane at half the
+ * circuits, which is the one place in a pit lane where nobody stands.
  *
  * The stations are laid out around a car 5.6m long and 2.0m wide with its axles
  * 3.4m apart, which is what `VehicleSpec` describes and what `CarMesh` draws.
@@ -102,8 +111,14 @@ const REAR_AXLE_Z = -1.68;
  */
 export const PIT_CREW: readonly CrewStation[] = (() => {
   const out: CrewStation[] = [];
+  // +x is the car's LEFT. That is the convention the rest of the project uses —
+  // the world is right-handed with y up, so for a car whose nose is its own +z
+  // the direction `forward x up` is its RIGHT and comes out as local -x — and
+  // getting it backwards here puts the left-front crew on the right-front
+  // wheel, which is invisible until a wheel is animated onto a hub four metres
+  // from where the man fitting it is standing.
   const cornerAt = (c: WheelCorner): { x: number; z: number; side: number } => {
-    const side = c === 'FL' || c === 'RL' ? -1 : 1;
+    const side = c === 'FL' || c === 'RL' ? 1 : -1;
     return { x: side * HALF_TRACK_M, z: c[0] === 'F' ? FRONT_AXLE_Z : REAR_AXLE_Z, side };
   };
 
@@ -121,9 +136,15 @@ export const PIT_CREW: readonly CrewStation[] = (() => {
   // moment the car has passed him.
   out.push({ role: 'front-jack', corner: null, x: 0, z: FRONT_AXLE_Z + 1.85, heading: Math.PI });
   out.push({ role: 'rear-jack', corner: null, x: 0, z: REAR_AXLE_Z - 1.75, heading: 0 });
-  // A spare of each, one either side, standing off the working area.
-  out.push({ role: 'spare-jack', corner: null, x: -2.55, z: FRONT_AXLE_Z + 1.5, heading: Math.PI - 0.5 });
-  out.push({ role: 'spare-jack', corner: null, x: 2.55, z: REAR_AXLE_Z - 1.4, heading: 0.5 });
+  // A spare of each, front and rear, standing off the working area.
+  //
+  // Both on the GARAGE side (-x here, because +x is the car's left and the
+  // garages are on its right when the lane runs the normal way round). A spare
+  // jack man standing out in the fast lane is a man standing in the road other
+  // cars are driving down at 80 km/h, and that is the one place in a pit lane
+  // nobody stands.
+  out.push({ role: 'spare-jack', corner: null, x: -2.6, z: FRONT_AXLE_Z + 1.4, heading: Math.PI - 0.5 });
+  out.push({ role: 'spare-jack', corner: null, x: -2.6, z: REAR_AXLE_Z - 1.3, heading: 0.5 });
 
   // Steadying the car, one each side, at the sidepod.
   out.push({ role: 'stabiliser', corner: null, x: -1.35, z: 0.05, heading: Math.PI / 2 });
@@ -133,8 +154,9 @@ export const PIT_CREW: readonly CrewStation[] = (() => {
   out.push({ role: 'front-wing', corner: null, x: -0.92, z: FRONT_AXLE_Z + 1.05, heading: Math.PI + 0.35 });
   out.push({ role: 'front-wing', corner: null, x: 0.92, z: FRONT_AXLE_Z + 1.05, heading: Math.PI - 0.35 });
 
-  // The spotter, back and to the pit-wall side, where he can see up the lane.
-  out.push({ role: 'spotter', corner: null, x: -2.5, z: REAR_AXLE_Z - 0.9, heading: 0.4 });
+  // The spotter, back and on the garage side, where he can see up the lane past
+  // the car without standing in the fast lane it is coming down.
+  out.push({ role: 'spotter', corner: null, x: -2.4, z: REAR_AXLE_Z - 2.6, heading: 0.25 });
 
   return out;
 })();

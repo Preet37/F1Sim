@@ -59,7 +59,8 @@
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:car": "tsx scripts/auditCar.ts",
-    "probe:pitstop": "tsx scripts/probePitStop.ts"
+    "probe:pitstop": "tsx scripts/probePitStop.ts",
+    "audit:pitlane": "tsx scripts/auditPitLane.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
