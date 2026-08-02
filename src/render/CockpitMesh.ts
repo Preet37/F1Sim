@@ -272,16 +272,21 @@ const MIRROR_H = 96;
  * because the previous arrangement — a switch, off below the high tier — is why
  * no phone has ever had a working mirror.
  *
- * MEASURED, on the software renderer the audit runs on, at Bahrain, which is
- * the heaviest thing available to measure against: a scene render into the
- * 256x96 feed costs about a fifth of a full 1280x589 frame. At stride 1 that is
- * one extra render per frame; at stride 3 it is one per three, so a third of a
- * fifth — under 7 per cent of a frame — and each pane still updates five times
- * a second at 30fps. Five updates a second is choppy to stare at and completely
- * adequate for the question the mirror answers, which is whether anybody is
- * there.
+ * MEASURED, in draw calls and triangles rather than in milliseconds, because
+ * the sweep runs on a software rasteriser whose milliseconds describe the
+ * machine and not the phone. At Silverstone a frame with no mirror in it is 120
+ * draw calls and 558 thousand triangles; one mirror render adds 87 and 480
+ * thousand. That is not a rounding error on a device already at 19 to 30fps,
+ * and it is why the stride is 2 rather than 1 even on the high tier — the
+ * amortised cost halves and each pane still refreshes at a quarter of the frame
+ * rate, which for a pane a few dozen pixels across is more than enough.
+ *
+ * The rest of the budget is elsewhere and is bigger: `MIRROR_FAR` cuts what
+ * falls in the frustum at all, and `Renderer.trafficBehind` drops the whole
+ * schedule to a quarter rate whenever there is nobody close behind, which is
+ * most of a race.
  */
-const MIRROR_STRIDE_HIGH = 1;
+const MIRROR_STRIDE_HIGH = 2;
 const MIRROR_STRIDE_LOW = 3;
 export { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW };
 
@@ -300,12 +305,18 @@ const MIRROR_FOV = 42;
 /**
  * How far a mirror can see, metres.
  *
- * Short on purpose. This is a second view frustum over the whole scene and the
- * only thing that keeps it cheap is how little of the world falls inside it;
- * at 200m a car is a pixel in a 256-wide feed and nothing behind that is worth
- * a draw call.
+ * Short on purpose, and 120 rather than 200 because the cost was measured. A
+ * mirror feed is a second view frustum over the whole scene and the only thing
+ * that keeps it cheap is how little of the world falls inside it; at 200m the
+ * feed was costing 87 draw calls and 480 thousand triangles against a frame
+ * that is otherwise 120 and 558 thousand, which is not a rounding error on a
+ * device already running at 19 to 30fps.
+ *
+ * 120m is still four seconds of closing speed at a realistic delta and well
+ * beyond the range at which anything is about to happen. A car further back
+ * than that is under two pixels in a 256-wide feed.
  */
-export const MIRROR_FAR = 200;
+export const MIRROR_FAR = 120;
 
 // ===========================================================================
 // Small geometry helpers

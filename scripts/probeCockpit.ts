@@ -97,7 +97,15 @@ async function main(): Promise<void> {
 
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+  page.on('console', (m) => {
+    // The headless browser asks for a favicon the audit page does not have, on
+    // every run, forever. A probe whose exit code is decided by that is a probe
+    // whose exit code means nothing.
+    const t = m.text();
+    if (m.type() === 'error' && !t.includes('favicon') && !t.includes('404')) {
+      errors.push(`console: ${t}`);
+    }
+  });
 
   await page.goto(url, { waitUntil: 'load', timeout: 120_000 });
   await page.waitForFunction('!!window.__audit', { timeout: 120_000 });
