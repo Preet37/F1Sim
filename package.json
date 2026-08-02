@@ -51,6 +51,7 @@
     "probe:hudtext": "tsx scripts/probeHudText.ts",
     "probe:strategy": "tsx scripts/probeStrategy.ts",
     "probe:pitstop": "tsx scripts/probePitStop.ts",
+    "probe:traffic": "tsx scripts/probeTraffic.ts",
     "probe:qualiboard": "tsx scripts/probeQualiBoard.ts",
     "probe:renderperf": "tsx scripts/probeRenderPerf.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",

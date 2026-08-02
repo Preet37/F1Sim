@@ -15,6 +15,9 @@ import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
 import type { Neighbour, AIDifficultyId } from '../ai/AIVehicleController';
 import { corneringSpeedLimitMs, createNeighbour } from '../ai/AIVehicleController';
+import {
+  CONTACT_WIDTH_M, HAZARD_CORRIDOR_M, lateralOverlap, safeFollowSpeedMs,
+} from '../ai/TrafficAwareness';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
@@ -201,6 +204,31 @@ const PIT_BOX_STOP_SPEED_MS = 1.6;
 const MANDATORY_COMPOUND_MARGIN_LAPS = 4;
 
 /**
+ * How many laps early a strategist will pull a planned stop forward to take
+ * advantage of a neutralisation.
+ *
+ * ONE. The saving on offer is the pit loss you were going to pay anyway, so it
+ * only exists if you were going to pay it very soon; pulled further forward the
+ * "cheap" stop costs a set of tyres with most of its life left and leaves a final
+ * stint too long for the one that replaces it. A neutralisation lasts several
+ * laps, so a lap of reach is enough for any car whose window opens while it is
+ * running — and it is short enough that the plan the player was shown is still
+ * recognisably the plan the race executed. See the note at the call site for
+ * what a generous version of this did to the field.
+ */
+const NEUTRALISED_PULL_FORWARD_LAPS = 1;
+
+/**
+ * Tyre life at which a stop is due on its own merits, 0..1.
+ *
+ * Deliberately the same number `pitAdvice` uses for "TYRES WORN — PIT WINDOW
+ * OPEN". The player is given that radio call and the AI acts on it; if the two
+ * were different constants the strategist would be recommending one thing and
+ * doing another, which is the failure this whole area exists to avoid.
+ */
+const TYRE_PIT_WINDOW = 0.45;
+
+/**
  * Car collision shape: three discs strung along the car's centreline.
  *
  * Radius is the car's half-width, and the offsets span its length, so together
@@ -211,6 +239,20 @@ const DISC_RADIUS_M = 1.0;
 const DISC_OFFSETS_M = [1.85, 0, -1.85] as const;
 /** Centre-to-centre distance beyond which no discs can possibly overlap. */
 const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
+
+/** Neighbour records kept per car: ahead, behind, left, right, hazard. */
+const NEIGHBOUR_SLOTS = 5;
+
+/**
+ * Deceleration the perception sweep assumes when it RANKS hazards, m/s².
+ *
+ * Only a scoring constant. The engine's job here is to decide which of the cars
+ * in front is the one worth reporting; the controller then recomputes the answer
+ * from its own live grip, downforce and tyre state, which is the number that
+ * actually decides the pedal. Deliberately on the optimistic side so the ranking
+ * does not smother a genuinely urgent hazard behind a merely close one.
+ */
+const HAZARD_REFERENCE_DECEL_MS2 = 22;
 
 /** What race control calls each kind of solid object a car can hit. */
 const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
@@ -333,7 +375,7 @@ export class RaceEngine {
   };
 
   private readonly rng: Rng;
-  /** Reused neighbour records, two per car, so perception never allocates. */
+  /** Reused neighbour records, five per car, so perception never allocates. */
   private readonly neighbourPool: Neighbour[] = [];
   /** Player control input, written by the input layer each frame. */
   readonly playerControls: VehicleControls = {
@@ -388,7 +430,7 @@ export class RaceEngine {
       car.physics.pitSpeedLimitKph = def.pitLane.speedLimitKph;
       this.cars.push(car);
       this.standings.push(car);
-      this.neighbourPool.push(createNeighbour(), createNeighbour(), createNeighbour(), createNeighbour());
+      for (let n = 0; n < NEIGHBOUR_SLOTS; n++) this.neighbourPool.push(createNeighbour());
     }
 
     // Cars outside this session's participant list are already knocked out.
@@ -1277,7 +1319,7 @@ export class RaceEngine {
    */
   private buildPerception(car: CarEntry): void {
     const p = car.perception;
-    const base = car.index * 4;
+    const base = car.index * NEIGHBOUR_SLOTS;
     const len = this.track.length;
 
     let bestAhead = Infinity;
@@ -1286,6 +1328,21 @@ export class RaceEngine {
     let behindCar: CarEntry | null = null;
     let leftCar: CarEntry | null = null;
     let rightCar: CarEntry | null = null;
+
+    // The collision picture, which is a different question to the racing one.
+    //
+    // `hazardCar` is whatever imposes the LOWEST safe speed rather than whatever
+    // is nearest — a stopped car sixty metres away is a bigger problem than a
+    // fast one at twenty, and picking by distance gets that backwards. Scored
+    // with a reference deceleration here because the engine is choosing between
+    // candidates, not deciding how hard to brake; the controller redoes the
+    // arithmetic with its own live grip.
+    let hazardCar: CarEntry | null = null;
+    let hazardGap = 0;
+    let hazardScore = Infinity;
+    let roomLeft = Infinity;
+    let roomRight = Infinity;
+    const ourSpeed = car.physics.speedMs;
 
     for (const other of this.cars) {
       if (other === car || other.retired) continue;
@@ -1315,6 +1372,32 @@ export class RaceEngine {
         if (dLat > 0.9 && dLat < 4.2) leftCar = other;
         else if (dLat < -0.9 && dLat > -4.2) rightCar = other;
       }
+
+      // --- Collision picture ---------------------------------------------
+      //
+      // A car sitting in its box is excluded from both halves, and that is the
+      // engine's own rule rather than a new one: `resolveContacts` skips
+      // `inPitBox` cars, so it is not something another car can hit. Treating it
+      // as solid anyway would be worse than useless — every car whose box is
+      // further down the lane would queue behind the one being serviced and the
+      // pit lane would deadlock, which is precisely the failure the comment on
+      // `isSolidWreck` describes for wrecks on the racing line.
+      if (other.inPitBox) continue;
+
+      const theirSpeed = other.physics.speedMs;
+      const dLat = other.lateral - car.lateral;
+
+      // In front, and in the corridor this car is driving down.
+      if (gap > 0 && Math.abs(dLat) < HAZARD_CORRIDOR_M) {
+        const safe = safeFollowSpeedMs(gap, theirSpeed, HAZARD_REFERENCE_DECEL_MS2, 1.1);
+        if (safe < hazardScore) { hazardScore = safe; hazardCar = other; hazardGap = gap; }
+      }
+
+      // Beside us, or close enough that a lateral move would put us beside them.
+      if (lateralOverlap(gap, ourSpeed, theirSpeed)) {
+        if (dLat > 0) roomLeft = Math.min(roomLeft, dLat - CONTACT_WIDTH_M);
+        if (dLat < 0) roomRight = Math.min(roomRight, -dLat - CONTACT_WIDTH_M);
+      }
     }
 
     p.ahead = aheadCar ? this.fillNeighbour(this.neighbourPool[base], car, aheadCar, bestAhead) : null;
@@ -1325,6 +1408,11 @@ export class RaceEngine {
     p.alongsideRight = rightCar
       ? this.fillNeighbour(this.neighbourPool[base + 3], car, rightCar, loopDelta(car.s, rightCar.s, len))
       : null;
+    p.hazard = hazardCar
+      ? this.fillNeighbour(this.neighbourPool[base + 4], car, hazardCar, hazardGap)
+      : null;
+    p.roomLeftM = roomLeft;
+    p.roomRightM = roomRight;
 
     const rc = this.raceControl;
     // The ban starts at the BOARD, not at the sector line.
@@ -1707,7 +1795,7 @@ export class RaceEngine {
       const dryUsed = new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather));
       if (dryUsed.size < 2) return 'SECOND COMPOUND REQUIRED';
     }
-    if (wear < 0.45) return 'TYRES WORN — PIT WINDOW OPEN';
+    if (wear < TYRE_PIT_WINDOW) return 'TYRES WORN — PIT WINDOW OPEN';
     return null;
   }
 
@@ -1830,8 +1918,33 @@ export class RaceEngine {
     // Car may enter the pits whilst the Safety Car is deployed unless it is for
     // the purpose of changing tyres" (2025 Art. 55.12 / 2026 Art. B5.13.3, and
     // identically for the VSC at Art. 56.4 / B5.12.3).
+    //
+    // WHAT MAKES IT CHEAP IS THAT IT IS A STOP YOU WERE GOING TO MAKE ANYWAY.
+    // The saving is the pit loss you would otherwise have paid later, and if you
+    // were not going to pay it later then there is no saving — there is a
+    // twenty-second stop, a set of tyres binned with ninety-six percent of its
+    // life left, and a stint at the far end that is now too long for the tyre
+    // that has to cover it.
+    //
+    // The test used to be "more than six laps on this set", which on a
+    // thirty-lap race is most of the field most of the time. Measured at
+    // Silverstone, seed 7: a safety car came out on lap nine and sixteen of the
+    // twenty cars dived in on lap nine or ten, against plans that named laps
+    // sixteen to twenty-two, on tyres reading 0.965 of full life. That single
+    // branch was the whole of the strategy defect `probe:strategy` reports — not
+    // worn tyres and not the mandatory-compound rule, both of which were
+    // measured firing far later or not at all. The plan was not being overridden
+    // by an emergency; it was being thrown away for a bargain that was not one.
+    //
+    // A real strategist pulls a stop forward under a safety car by a couple of
+    // laps, not by twelve. Either the stop is nearly due, or the tyre is in the
+    // window the driver would be told about anyway (`pitAdvice` says "TYRES WORN
+    // — PIT WINDOW OPEN" at the same number, so the AI and the player's radio
+    // call now agree), or it is not a cheap stop and the plan stands.
     if (this.raceControl.neutralisation !== 'none') {
-      const worthIt = car.physics.rearTires.lapsOnSet > 6 &&
+      const nearlyDue = car.lap >= car.targetPitLap - NEUTRALISED_PULL_FORWARD_LAPS;
+      const inTheWindow = car.physics.rearTires.wear < TYRE_PIT_WINDOW;
+      const worthIt = (nearlyDue || inTheWindow) &&
         car.targetPitLap > 0 &&
         this.raceControl.mayEnterPitLane(true, false);
       if (worthIt) return true;
