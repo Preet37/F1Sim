@@ -1862,15 +1862,40 @@ function buildShellParts(
   // onboard frame and takes the helmet out of shot. Raising the crown does not
   // affect that; moving the lip does. It was briefly at -0.255 and this is the
   // note that put it back.
+  // THE INTAKE WAS INVISIBLE. Measured, by casting a ray at every vertex of the
+  // "airbox throat" part from a viewpoint in front of the car, from a front
+  // three-quarter and from side-on: 250 of 250, 100 per cent, hidden behind the
+  // airbox's own skin, from every direction. The roll hoop had NO mouth. What
+  // read as one in a screenshot was the dark band the livery paints across the
+  // front of the panel, and the whole recessed duct underneath it — some three
+  // hundred triangles of it — had never once been drawn.
+  //
+  // The cause is structural rather than a slip of a number. The old fairing
+  // ramped the crown from 0.700 at z = -0.196 to 0.912 at z = -0.300, a
+  // continuous 50-degree dome, and a closed loft has no holes: a dark tube
+  // inside a dome is inside it. For an intake to READ, the bodywork in front of
+  // the mouth has to be LOWER than the mouth — which is also what a real car
+  // is, because the fairing behind the driver's helmet is well below the
+  // intake's lower lip.
+  //
+  // So the fairing now tops out at 0.726 and the front face rises from there to
+  // the lip at 0.912 in the last 14mm of z: a near-vertical intake face, which
+  // is what the current generation's hoop actually presents. The mouth stands
+  // proud of it. Same idiom as the sidepod inlet, which is the one opening on
+  // this car that has always read: a dark letterbox in a coloured surround.
   p.tag('airbox');
   p.painted(big([
     // A small, low forward fairing so the hoop GROWS out of the deck behind the
-    // headrest instead of starting as a wall. Without these two stations the
-    // loft's first ring is a flat 240 x 360mm cap, and painted with the dark
-    // mouth band over it that cap is the black carton the airbox was reported
-    // as. The mouth proper begins at the third station.
-    section(-0.196, 0.058, 0.586, 0.700, 0.90),
-    section(-0.248, 0.092, 0.572, 0.822, 0.76),
+    // headrest instead of starting as a wall. Without these stations the loft's
+    // first ring is a flat 240 x 360mm cap, and painted with the dark mouth
+    // band over it that cap is the black carton the airbox was reported as.
+    section(-0.184, 0.056, 0.588, 0.664, 0.92),
+    section(-0.232, 0.088, 0.576, 0.704, 0.82),
+    // The lower lip of the intake, and the top of everything ahead of it.
+    section(-0.286, 0.116, 0.564, 0.726, 0.70),
+    // The face. 186mm of rise in 14mm of z, so the ring-to-ring skin between
+    // this station and the one above IS the intake's front face, and the mouth
+    // in front of it has something to be a hole in.
     section(-0.300, 0.120, 0.560, 0.912, 0.62),
     section(-0.380, 0.150, 0.556, 0.968, 0.70),
     section(-0.500, 0.168, 0.552, 0.992, 0.74),
@@ -1881,29 +1906,50 @@ function buildShellParts(
     section(-1.760, 0.056, 0.520, 0.616, 1.00),
   ], t.body - 6), 'airbox');
 
-  // The intake. A recessed dark throat behind a lip, not a black rectangle
-  // stuck on the front: the mouth's first station sits slightly PROUD of the
-  // airbox skin so the lip catches light all the way round the opening, and the
-  // two behind it fall away and shrink, so from anywhere off-axis you see into
-  // a duct that gets darker rather than at a flat panel.
+  // The mouth. It sits 2mm in FRONT of the intake face's lower edge and its
+  // whole 196 x 160mm stands above the fairing ahead of it, so from the front
+  // it is a dark opening with a 22mm carbon margin down each side and 14mm over
+  // the top — the lip — and the fairing's own crown closing it underneath. The
+  // rings behind it fall away and shrink, so from anywhere off-axis you look
+  // into a duct that gets darker rather than at a flat panel.
+  //
+  // 196 by 160 against the 210 by 175 in the note above. The difference is the
+  // lip: a mouth cut to the full quoted size on a 240mm face leaves 15mm of
+  // bodywork round it, which at any distance is a hole with no surround, and a
+  // hole with no surround is a black rectangle glued to the front — which is
+  // the exact phrase this part was first rebuilt to get away from.
   p.tag('airbox throat');
   p.flat(small([
-    section(-0.292, 0.100, 0.716, 0.892, 0.72),
-    section(-0.340, 0.092, 0.728, 0.882, 0.78),
-    section(-0.460, 0.070, 0.744, 0.858, 0.88),
-    section(-0.590, 0.046, 0.762, 0.832, 1.00),
+    section(-0.284, 0.098, 0.738, 0.898, 0.72),
+    section(-0.340, 0.090, 0.752, 0.884, 0.78),
+    section(-0.460, 0.070, 0.768, 0.860, 0.88),
+    section(-0.590, 0.046, 0.784, 0.834, 1.00),
   ], t.body - 8), 'dark');
 
-  // The two secondary inlets either side of the main mouth, feeding the
-  // radiators and the gearbox oil cooler. Small, dark, and on every current
-  // car; without them the hoop is a single hole in a smooth dome and reads as
-  // moulded rather than as engineered.
+  // The two secondary inlets on the hoop's shoulders, feeding the gearbox oil
+  // cooler. Small, dark, and on every current car; without them the hoop is a
+  // single hole in a smooth dome and reads as moulded rather than as engineered.
+  //
+  // THEY WERE BLACK WEDGES STANDING OUT OF THE FLANK. The old sections were
+  // centred at x = 0.126 with a 30mm half width, so the mouth's outer edge was
+  // at 0.156 against an airbox skin at 0.122 — thirty-four millimetres proud,
+  // with the inboard half of the duct buried and the outboard half hanging in
+  // clear air. Seventy-two per cent of their vertices were inside the bodywork
+  // and the visible remainder was a wedge, which is exactly how it was reported.
+  //
+  // What a shoulder inlet actually is: a scoop lying ALONG the flank, its mouth
+  // a few millimetres proud where the hoop flares out behind the lip, flush a
+  // little further back, and buried from there on. So the stations track the
+  // skin rather than ignoring it — 5.7mm proud at z = -0.306 where the skin is
+  // at 0.1223, flush at -0.360, and 8mm inside it by -0.430. What shows is a
+  // 46 x 64mm dark mouth and about fifty millimetres of duct shell behind it.
   for (const side of [-1, 1] as const) {
     p.tag(`airbox side inlet ${side < 0 ? 'L' : 'R'}`);
     p.flat(small([
-      section(-0.306, 0.030, 0.648, 0.716, 0.55, { xc: side * 0.126 }),
-      section(-0.380, 0.026, 0.656, 0.710, 0.65, { xc: side * 0.130 }),
-      section(-0.470, 0.018, 0.666, 0.698, 0.85, { xc: side * 0.132 }),
+      section(-0.306, 0.023, 0.646, 0.710, 0.55, { xc: side * 0.105 }),
+      section(-0.360, 0.020, 0.652, 0.704, 0.65, { xc: side * 0.122 }),
+      section(-0.430, 0.014, 0.662, 0.694, 0.80, { xc: side * 0.134 }),
+      section(-0.510, 0.008, 0.670, 0.688, 1.00, { xc: side * 0.142 }),
     ], Math.max(6, t.detail - 6)), 'dark');
   }
 

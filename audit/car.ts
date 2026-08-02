@@ -267,6 +267,11 @@ const VIEWS = {
   // pods "small dark blisters on the shoulder, fine" while the aperture facing
   // the driver was 77mm across. This is the shot that shows what he sees.
   mirror: { pos: [0, 0.770, 0.165], at: [0.505, 0.578, 0.766], fov: 30 },
+  // The roll hoop's intake, head on. The airbox has been rebuilt three times
+  // for "there is no airbox" and every judgement was made from an oblique shot
+  // in which its mouth is edge-on; the fourth attempt found the mouth had never
+  // been drawn at all. This is the angle that answers the question.
+  hoop: { pos: [0.30, 1.02, 1.55], at: [0.0, 0.80, -0.40], fov: 26 },
   floor: { pos: [3.2, 0.22, -1.4], at: [0, 0.18, 0.4], fov: 30 },
 } as const;
 
