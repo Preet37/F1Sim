@@ -325,6 +325,29 @@ export class CarEntry {
   /** Why the car is sitting in its garage, for the board and the modal. */
   withdrawnReason = '';
   /**
+   * True when this car takes no part in the period now running.
+   *
+   * ONE CONCEPT, ONE NAME. `eliminated` and `withdrawn` arrive by different
+   * routes — knocked out of an earlier segment (Art. B2.4.2a-b) versus barred
+   * from running by Art. B4.3.2 — and they differ in exactly one respect, which
+   * grid slot the car is holding while it sits there. They do NOT differ in
+   * anything the simulation does with the car: it is not stepped, it cannot be
+   * hit, the AI cannot see it, and it is parked in its garage rather than
+   * standing on the circuit.
+   *
+   * That agreement is the whole reason this getter exists. The step loop used
+   * to skip both by testing them separately and `resolveContacts` tested
+   * neither, so the five cars knocked out of Q1 stayed solid all through Q2 —
+   * frozen where they were never placed, which at Bahrain is five metres from
+   * the centreline on the exit of Turn 4 and four metres under the road
+   * surface. The player was knocked out of Q2 by a car that could not be seen,
+   * twice, at the same corner. See `RaceEngine.resolveContacts` and
+   * `npm run probe:qualiboard`.
+   */
+  get sittingOut(): boolean {
+    return this.eliminated || this.withdrawn;
+  }
+  /**
    * True while the car is on an out-lap and its time must not count.
    *
    * A lap that begins in the garage or in the pit lane includes the stationary

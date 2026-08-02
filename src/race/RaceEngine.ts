@@ -544,6 +544,65 @@ export class RaceEngine {
    * Grid order is the current standings order (set by qualifying).
    */
   private placeGrid(): void {
+    this.placeRunners();
+    // ...and then everybody who is not running. Last, so that it overrides the
+    // pit-lane placement a withdrawn car picks up from `placeRunners` — a
+    // withdrawn car is a participant and is released with the rest of them,
+    // which is precisely what it must not be.
+    this.parkSittingOut();
+  }
+
+  /**
+   * Puts every car sitting this period out in its own garage.
+   *
+   * WHY THIS EXISTS. `placeRunners` places the cars taking part and nothing
+   * else, and a `CarEntry` is constructed at the world origin — so a car
+   * knocked out of Q1 spent the whole of Q2 and Q3 sitting at (0, 0) with its
+   * `s` still reading zero. Two things followed from that, and both of them
+   * were reported from a real session at Bahrain.
+   *
+   * It was SOLID. `resolveContacts` skipped retired cars and cars in their box,
+   * and an eliminated car is neither, so all five Q1 casualties were a single
+   * stack of collision discs standing on the circuit.
+   *
+   * And it was INVISIBLE, because the renderer takes a car's height from
+   * `elevationAt(car.s)` and `s` was zero. At Bahrain the origin lies 5.0m from
+   * the centreline at s = 1948m — inside the 7.5m half-width, on the exit of
+   * Turn 4 — where the road is about four metres higher than it is at the Line.
+   * The cars were drawn, correctly, four metres underneath the asphalt.
+   *
+   * So the player was hit and knocked out of Q2 by a car that was not there, at
+   * the same corner on two separate runs, which is exactly how a deterministic
+   * fixed obstacle behaves. Parking the car where it actually is — in its own
+   * box, under its own garage — makes the collision solver, the AI's
+   * perception and the renderer all tell the same truth without any of them
+   * needing a special case. `npm run probe:qualiboard` measures it.
+   */
+  private parkSittingOut(): void {
+    const pit = this.track.def.pitLane;
+    for (const car of this.cars) {
+      if (!car.sittingOut) continue;
+      car.placeOnTrack(this.track, car.pitBoxS, pit.lateralOffsetM, 0);
+      car.lap = 0;
+      car.lapStartTime = 0;
+      // Behind the pit wall AND stopped in the box. Either alone would keep the
+      // car out of `resolveContacts`, and both are true of a car in a garage,
+      // but the honest reason it cannot be hit is `sittingOut` — these two say
+      // where it is, not whether it exists.
+      car.inPitLane = true;
+      car.inPitBox = true;
+      // It is not queuing to be released and it is not on an out-lap; it is
+      // not going anywhere. Leaving `onOutLap` set would be a claim about a lap
+      // this car is never going to start.
+      car.releaseTimer = 0;
+      car.onOutLap = false;
+      car.servicedThisVisit = true;
+      car.physics.velocity.set(0, 0);
+      car.physics.yawRate = 0;
+    }
+  }
+
+  private placeRunners(): void {
     const startS = 0;
 
     // Only cars taking part. Q2 and Q3 run a reduced field; everyone else is
@@ -706,12 +765,12 @@ export class RaceEngine {
     for (let i = 0; i < this.cars.length; i++) {
       const car = this.cars[i];
       if (car.retired) continue;
-      // Cars knocked out of qualifying take no further part in the session.
-      if (car.eliminated) continue;
-      // ...and neither does a car the marshals recovered in an earlier segment
-      // (Art. B4.3.2). It stays parked in its box for the whole period and is
-      // classified on the time it does not set.
-      if (car.withdrawn) { this.holdOnGrid(car); continue; }
+      // Cars taking no part in this period: knocked out of an earlier segment
+      // (Art. B2.4.2a-b), or entered and barred from running by Art. B4.3.2.
+      // Both stay parked in their garage for the whole period, and both are
+      // held by the same branch on purpose — see `CarEntry.sittingOut`. Testing
+      // them separately here is how the two drifted apart in the first place.
+      if (car.sittingOut) { this.holdOnGrid(car); continue; }
 
       // Held in the garage until this car's release slot comes round.
       if (car.releaseTimer > 0) {
@@ -1346,6 +1405,26 @@ export class RaceEngine {
 
     for (const other of this.cars) {
       if (other === car || other.retired) continue;
+      // A car taking no part in this period is not on the road to be followed,
+      // and this has to be here — at the top, before `ahead` is chosen — rather
+      // than down with the collision picture.
+      //
+      // THE BUG THIS CLOSES, which is the second half of the Bahrain Q2 report.
+      // The garages are laid out with slot 0 nearest the pit exit, so the car
+      // in box 0 is at the head of the queue leaving the lane. Park a car there
+      // that never moves — a driver barred by Art. B4.3.2, or before it was
+      // parked at all, one of the Q1 casualties standing on the circuit — and
+      // it is still `p.ahead` for the car behind it. The follow logic holds
+      // station on it, the car behind that holds station on THAT, and the whole
+      // lane deadlocks: measured at Bahrain, none of the fifteen Q2 runners
+      // left the pits in twelve minutes and the segment was classified with
+      // nobody having set a time. Which is exactly what the player was shown —
+      // "P1 of 15 in Q2" with no lap.
+      //
+      // The collision picture below already skipped it. Skipping it there and
+      // not here made it a car that could not be hit but had to be queued
+      // behind, which is the worst of both.
+      if (other.sittingOut) continue;
       // The pit lane is a different road. It shares this spline — it is modelled
       // as a lateral offset on it — so a car in the lane has an `s` that reads
       // as "just ahead" to a car on the circuit passing the pits, and it was
@@ -2552,10 +2631,15 @@ export class RaceEngine {
 
     for (let i = 0; i < cars.length; i++) {
       const a = cars[i];
-      if (a.inPitBox || (a.retired && !this.isSolidWreck(a))) continue;
+      // A car taking no part in this period is not on the circuit to be hit.
+      // This is the first test rather than a corollary of `inPitBox`, because
+      // the reason it cannot be hit is that it is not in the session — not that
+      // it happens to be parked somewhere. See `CarEntry.sittingOut` for the
+      // Bahrain Q2 report this closes.
+      if (a.sittingOut || a.inPitBox || (a.retired && !this.isSolidWreck(a))) continue;
       for (let j = i + 1; j < cars.length; j++) {
         const b = cars[j];
-        if (b.inPitBox || (b.retired && !this.isSolidWreck(b))) continue;
+        if (b.sittingOut || b.inPitBox || (b.retired && !this.isSolidWreck(b))) continue;
         // Two wrecks lying against each other have nothing left to resolve.
         if (a.retired && b.retired) continue;
         // A car in the pit lane and a car on the circuit are separated by the
