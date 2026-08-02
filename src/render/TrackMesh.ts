@@ -148,7 +148,13 @@ const Y_ASTRO = 0.006;
  * "the wheels sink into the track" is and why it showed most from a low camera.
  * See `carGroundY`.
  */
-const Y_ROAD = 0.02;
+// Exported under both names, and that is not tidiness left undone. The two
+// merged branches each needed it: the terrain work reads `Y_ROAD` from
+// `probe:shoulders` to check the ground meets the asphalt, and the car work
+// reads `ROAD_SURFACE_Y` from `probe:carrig` to check the tyres stand on it.
+// Renaming either would break the other's probe for no gain — they are one
+// number and one source of truth, which is the whole point.
+export const Y_ROAD = 0.02;
 export const ROAD_SURFACE_Y = Y_ROAD;
 
 /**
