@@ -88,9 +88,16 @@ interface AuditApi {
    *             appears on the LEFT of the screen. See `placeBehind`.
    */
   shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string>;
-  /** Milliseconds per frame in the given mode, averaged over `frames`. */
-  timeMode(mode: CameraMode, frames: number): Promise<number>;
+  /** What one frame in the given mode costs. */
+  costMode(mode: CameraMode, frames: number): Promise<FrameCost>;
   cameraModes: readonly CameraMode[];
+}
+
+/** Per-frame cost of a camera mode. See `costMode`. */
+interface FrameCost {
+  ms: number;
+  calls: number;
+  triangles: number;
 }
 
 interface CircuitInfo {
@@ -510,33 +517,41 @@ async function shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Prom
 }
 
 /**
- * Frame cost of a mode, in milliseconds.
+ * What one frame in a mode costs: draw calls, triangles and wall time.
  *
- * `finish()` on the way out of each frame, because a WebGL draw call returns
- * long before the GPU has done the work and a timer around an unsynchronised
- * render measures the JavaScript, not the frame. Under SwiftShader — which is
- * what the sweep runs on — everything is CPU anyway, so the number is a
- * pessimistic stand-in for a real GPU; what it is good for is the RATIO between
- * two configurations measured the same way, which is the question a mirror
- * costs anything at all.
+ * DRAW CALLS AND TRIANGLES FIRST, time second. The sweep runs on SwiftShader,
+ * which is a software rasteriser — its milliseconds are a statement about this
+ * machine's CPU and not about the phone the complaint came from. Draw calls and
+ * triangles are the same numbers on every device, they are the units the report
+ * of "19-30fps with under 110 draw calls" is denominated in, and how many of
+ * each a second scene render adds is exactly the question a mirror raises.
+ *
+ * `finish()` on the way out of each frame anyway, because a WebGL draw call
+ * returns long before the work is done and a timer around an unsynchronised
+ * render measures the JavaScript rather than the frame.
  */
-async function timeMode(mode: CameraMode, frames: number): Promise<number> {
+async function costMode(mode: CameraMode, frames: number): Promise<FrameCost> {
   if (!engine || !focus) throw new Error('no session');
   renderer.post.setCamera(renderer.director.camera, renderer.scene);
   renderer.director.setMode(mode);
-  for (let i = 0; i < 8; i++) { frame(); await present(); }
+  for (let i = 0; i < 4; i++) { frame(); await present(); }
   const gl = renderer.renderer.getContext();
+  const info = renderer.renderer.info;
+  info.autoReset = false;
+  info.reset();
   const t0 = performance.now();
   for (let i = 0; i < frames; i++) {
     frame();
     gl.finish();
   }
-  return (performance.now() - t0) / frames;
+  const ms = (performance.now() - t0) / frames;
+  info.autoReset = true;
+  return { ms, calls: info.render.calls / frames, triangles: info.render.triangles / frames };
 }
 
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
   label: (t: string) => { labels.push(t); },
-  setFrame, placeBehind, shootZoom, shootMirror, timeMode,
+  setFrame, placeBehind, shootZoom, shootMirror, costMode,
   cameraModes: CAMERA_MODES,
 };

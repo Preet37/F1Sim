@@ -43,6 +43,8 @@ const MODES = ['cockpit', 'onboard-t'] as const;
 
 const OUT_DIR = resolve(process.cwd(), 'cockpit-out');
 
+interface Cost { ms: number; calls: number; triangles: number }
+
 function chromePath(): string {
   const candidates = [
     process.env.CHROME_PATH,
@@ -142,13 +144,27 @@ async function main(): Promise<void> {
     }
 
     // --- Frame cost -------------------------------------------------------
-    const cockpitMs = await page.evaluate(`window.__audit.timeMode('cockpit', 20)`) as number;
-    const chaseMs = await page.evaluate(`window.__audit.timeMode('chase', 20)`) as number;
-    rows.push(
-      `${id.padEnd(13)} cockpit ${cockpitMs.toFixed(1)}ms  chase ${chaseMs.toFixed(1)}ms  ` +
-      `mirror overhead ${(cockpitMs - chaseMs).toFixed(1)}ms`,
-    );
-    process.stdout.write(`shot 6  cockpit ${cockpitMs.toFixed(0)}ms  chase ${chaseMs.toFixed(0)}ms\n`);
+    // Only on the first circuit. Under SwiftShader a timed frame takes seconds,
+    // and the interesting number — how many draw calls and triangles a mirror
+    // feed adds — does not vary from circuit to circuit in any way that eleven
+    // measurements would reveal and four would not.
+    if (id === CIRCUIT_IDS[0]) {
+      const cockpit = await page.evaluate(`window.__audit.costMode('cockpit', 6)`) as Cost;
+      const onboard = await page.evaluate(`window.__audit.costMode('onboard-t', 6)`) as Cost;
+      const chase = await page.evaluate(`window.__audit.costMode('chase', 6)`) as Cost;
+      for (const [name, c] of [['chase (no mirrors)', chase], ['cockpit', cockpit], ['onboard-t', onboard]] as const) {
+        rows.push(
+          `${name.padEnd(20)} ${c.calls.toFixed(0).padStart(5)} draw calls  ` +
+          `${(c.triangles / 1000).toFixed(0).padStart(5)}k triangles  ${c.ms.toFixed(0).padStart(5)}ms`,
+        );
+      }
+      rows.push(
+        `mirror feed adds     ${(cockpit.calls - chase.calls).toFixed(0).padStart(5)} draw calls  ` +
+        `${((cockpit.triangles - chase.triangles) / 1000).toFixed(0).padStart(5)}k triangles  ` +
+        `${(cockpit.ms - chase.ms).toFixed(0).padStart(5)}ms  (high tier, one pane per frame)`,
+      );
+    }
+    process.stdout.write('shot 8\n');
   }
 
   await browser.close();

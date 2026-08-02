@@ -4,7 +4,7 @@ import {
   buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
   type BodyPartId, type CarVisual,
 } from './CarMesh';
-import { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
+import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
@@ -871,8 +871,19 @@ export class Renderer {
     // It now runs on both onboard modes and on both tiers, and the low tier
     // pays for it by refreshing less often rather than not at all — see
     // `MIRROR_STRIDE` in CockpitMesh for the budget and what it measures.
+    // COST. A mirror feed is a second pass over the scene, and this game is
+    // frame-limited on the device that asked for it — 19 to 30fps with under
+    // 110 draw calls — so the pass is rationed three ways: one pane per turn
+    // rather than both, a small short frustum, and the stride below. What
+    // rations it hardest is the question the mirror is for. If there is nobody
+    // within `MIRROR_FAR` behind, the pane shows an empty piece of road that is
+    // not changing in any way a driver needs to see promptly, and it drops to a
+    // quarter rate — which is most of a race, because most of a race is spent
+    // alone. The moment a car closes to within that range it goes back to full
+    // rate, so the refresh is fastest exactly when something is happening.
     if (isOnboardMode(this.director.mode)) {
-      const stride = this.quality === 'low' ? MIRROR_STRIDE_LOW : MIRROR_STRIDE_HIGH;
+      const base = this.quality === 'low' ? MIRROR_STRIDE_LOW : MIRROR_STRIDE_HIGH;
+      const stride = base * (this.trafficBehind(engine, focusCar) ? 1 : 4);
       for (const v of this.carVisuals) {
         v.cockpit?.renderMirrors(this.renderer, this.scene, cam, stride);
       }
@@ -880,6 +891,34 @@ export class Renderer {
 
     this.post.render(this.scene, cam);
 
+  }
+
+  /**
+   * Is there a car close enough behind for a mirror to have anything to say?
+   *
+   * Straight-line distance rather than a gap along the racing line, because a
+   * mirror is a lens and does not know what a lap is: a car on the other side
+   * of a hairpin is fifty metres away in the pane whatever its race position,
+   * and one being lapped a straight ahead of you is not in the pane at all.
+   * Behind is judged against the car's own heading, so a rival alongside counts
+   * — that is precisely when a driver looks.
+   *
+   * Twenty cars, two multiplies each, once a frame.
+   */
+  private trafficBehind(engine: RaceEngine, focusCar: CarEntry): boolean {
+    const p = focusCar.physics;
+    const sinH = Math.sin(p.heading);
+    const cosH = Math.cos(p.heading);
+    for (const car of engine.cars) {
+      if (car === focusCar || (car.retired && car.cleared)) continue;
+      const dx = car.physics.position.x - p.position.x;
+      const dz = car.physics.position.y - p.position.y;
+      // Behind, or level: anything more than a car's length up the road is not
+      // in a mirror.
+      if (dx * sinH + dz * cosH > 6) continue;
+      if (dx * dx + dz * dz < MIRROR_FAR * MIRROR_FAR) return true;
+    }
+    return false;
   }
 
   private sceneDrawCalls = 0;

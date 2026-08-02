@@ -31,58 +31,22 @@ import { gloveNomexMap } from './DetailMaps';
  */
 
 /**
- * Driver's eye point, car-local. The camera sits exactly here in cockpit mode.
+ * Where the cockpit camera sits, car-local. The camera is put exactly here.
  *
- * This is not a free parameter. It is the eye socket of the modelled driver in
- * DriverMesh.ts, whose helmet is centred at y = 0.672 with a scaled vertical
- * radius of 0.156, so the shell runs from 0.516 to 0.828 and the eyes sit a
- * little above centre and forward of it. Set it by eye instead and the camera
- * ends up above the driver's head, looking over the top of the halo hoop
- * (apex y = 0.820) rather than through it — which is exactly what happened when
- * this was left at the old car's 0.86 after the body was rebuilt.
- */
-/**
- * Onto the roll hoop, and this is a change of KIND rather than of degree.
+ * NOT INSIDE THE DRIVER'S HELMET, and that was settled two passes ago: the
+ * halo's forward pillar is already a 20mm blade — the real article — and from
+ * an eye 0.7m behind it that is still 1.7 degrees of solid black straight down
+ * the middle of the picture, which no honest pillar is thin enough to avoid.
+ * The reference onboards show the crown of the driver's OWN helmet in the
+ * bottom of the frame, which is a thing no eye inside that helmet can ever see.
+ * It is the standard onboard: a pod on the roll hoop, behind and above the
+ * head. Two things had to move out of its way and neither is reachable from
+ * here — the roll hoop's camera pod, which IS this camera, and the airbox's
+ * front lip, which hid the helmet from any eye behind it. Both are in CarMesh;
+ * see `Parts.onboardHidden` and the airbox comment.
  *
- * Three passes tried to fix "the halo splits the view in two" by thinning the
- * halo, raising it, and lifting the eye a few centimetres at a time. None of
- * them worked, and the measurements say why. The halo's forward pillar is
- * already a 20mm blade — the real article — and at the 0.69m it passes an eye
- * at y = 0.745 that is still 1.7 degrees of solid black, which is fifty-five
- * pixels of bar down the middle of a 1280-wide frame. Measured against the
- * Monoposto reference frames, whose pillar is two to three pixels over about
- * thirty rows, the geometry cannot get there: no honest pillar is thin enough
- * to be invisible from thirty inches away.
- *
- * What makes the reference work is not a thinner pillar, it is a camera on the
- * other side of it — and, once you go looking, a camera behind the DRIVER as
- * well. The reference frames all show the crown of the driver's own helmet in
- * the bottom of the picture, which is a thing no eye inside that helmet can
- * ever see. This is the standard onboard: the pod on the roll hoop.
- *
- * SOLVED, NOT DIALLED IN. Three features in reference frame f_0100 fix the rig
- * completely, because all three have known car-local coordinates: the horizon
- * at 30.6 per cent of frame height, the crown of the halo (y 0.812, z 0.755) at
- * 56 per cent, and the crown of the helmet (y 0.828, z 0) at 80 per cent. The
- * horizon gives the pitch directly; the ratio of the other two depressions
- * gives the eye, because a nearer object at the same height falls faster down
- * the frame than a far one. The pitch is exact; the eye is then slid back along
- * the ray that holds the crown at 80 per cent until the helmet subtends what it
- * subtends in the reference — 0.188m of shell across about a fifth of the frame
- * width — which lands at 0.78m behind the crown and 0.28m above it. Every other
- * landmark falls within two per cent of the reference at that point: the halo
- * crown at 58 per cent, the mirrors at three-quarters height and a quarter of
- * the way in from each edge, the top of the wheel rim 2.9 degrees clear of the
- * helmet. They are not to be nudged without redoing that arithmetic.
- *
- * TWO THINGS HAD TO MOVE OUT OF THE WAY, and neither was reachable from here:
- * the roll hoop's camera pod, which is this camera and was a dark dome across
- * the middle of every frame from 300mm away, and the airbox's front lip, which
- * hid the helmet from any eye behind it. Both are in CarMesh; see
- * `Parts.onboardHidden` and the airbox comment.
- */
-/**
- * FIFTH PASS, and this one was measured rather than eyeballed.
+ * FIFTH PASS ON THE HEIGHT AND DISTANCE, and this one was measured rather than
+ * eyeballed.
  *
  * "The halo is cooking me bro its ass." "Why is the halo still ugly and shit?"
  * "I think this is due to the halo, the halo sticks out." "You also never fixed
@@ -310,7 +274,7 @@ const MIRROR_FOV = 42;
  * at 200m a car is a pixel in a 256-wide feed and nothing behind that is worth
  * a draw call.
  */
-const MIRROR_FAR = 200;
+export const MIRROR_FAR = 200;
 
 // ===========================================================================
 // Small geometry helpers
