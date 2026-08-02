@@ -226,7 +226,13 @@ function hex(c: number): string { return '#' + c.toString(16).padStart(6, '0'); 
 window.__panels = {
   async board(kind: string): Promise<void> {
     await buildBoard(kind);
-    await new Promise((r) => window.setTimeout(r, 200));
+    // The screen chassis animates in — status rail, header, body and action
+    // bar on a staggered `rise`, and the rows after them. Two hundred
+    // milliseconds photographed a championship board with a grey title and no
+    // rows in it at all, which looks exactly like a board that failed to
+    // build. Wait for the whole sequence, then a frame.
+    await new Promise((r) => window.setTimeout(r, 1200));
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   },
 
   async hud(scene: string): Promise<void> {
