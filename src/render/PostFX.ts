@@ -4,7 +4,6 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { clamp01 } from '../core/MathUtils';
 
 /**
@@ -12,7 +11,7 @@ import { clamp01 } from '../core/MathUtils';
  *
  * Pass order is not cosmetic, it is the whole thing:
  *
- *   scene -> bloom -> grade -> tone map & sRGB
+ *   scene (MSAA) -> grade -> bloom -> tone map & sRGB -> canvas
  *
  * Bloom has to run on the linear, un-tone-mapped image. Bloom is a physical
  * effect — light scattering inside the lens and the eye — and scattering is
@@ -56,6 +55,36 @@ import { clamp01 } from '../core/MathUtils';
  * On the low quality tier the whole composer is skipped and the scene renders
  * straight to the canvas. Bloom on a phone GPU is five extra full-screen passes
  * at half resolution, and holding 60fps matters more than glow.
+ *
+ * WHAT THIS CHAIN COSTS, AND WHY IT IS SHAPED THIS WAY
+ *
+ * Measured on an M5 with `EXT_disjoint_timer_query_webgl2`, paired A/B inside a
+ * single session so that machine load cancels (`scripts/probeRenderPerf.ts`,
+ * `PERF_PAIR=`). At a 2940x1396 drawing buffer, per frame:
+ *
+ *   bloom          +28.0ms   about 38% of the whole frame
+ *   FXAA           +17.5ms
+ *   grade + AO      +1.1ms
+ *
+ * That is why two things changed here. The FXAA pass is gone: it cost more than
+ * the entire scene render, and it was the last thing to touch an image that had
+ * often been rendered at half resolution and stretched, so what it actually did
+ * was blur an already-soft picture. MSAA on the scene target is real geometric
+ * antialiasing and it stays.
+ *
+ * Bloom's internal mip chain now runs at half the buffer's resolution. Bloom is
+ * by construction the lowest-frequency thing in the frame — five successive
+ * gaussian blurs — so there is nothing in it that a half-resolution chain
+ * cannot represent, and it is four times fewer pixels through the expensive
+ * thirteen-tap separable blurs.
+ *
+ * The pass ORDER changed with it, and that is a performance fix rather than a
+ * look one. `EffectComposer` ping-pongs between two copies of the target it is
+ * given, so a target created with `samples: 4` makes EVERY pass write four
+ * samples per pixel — and a full-screen quad has nothing to antialias, so three
+ * of those four samples were pure waste at 4.1 megapixels a frame. With bloom
+ * after the grade pass, the multisampled buffer is written exactly once, by the
+ * scene, and every post pass afterwards lands in a single-sampled one.
  */
 
 /**
@@ -82,6 +111,18 @@ const BLOOM_THRESHOLD = 1.55;
  * a wash — which is what the reference footage shows around a floodlight.
  */
 const BLOOM_STRENGTH = 0.3;
+
+/**
+ * Fraction of the drawing buffer the bloom's mip chain runs at.
+ *
+ * `UnrealBloomPass` already halves once internally, so this is a second halving
+ * on top: the first and largest mip lands at a quarter of the buffer in each
+ * axis. The chain is five successive gaussian blurs — there is nothing in its
+ * output above the very lowest frequencies for a finer grid to carry — and it
+ * is four times fewer pixels through the thirteen-tap separable blur that
+ * dominates its cost.
+ */
+const BLOOM_SCALE = 0.5;
 
 const GRADE_SHADER = {
   uniforms: {
@@ -383,7 +424,6 @@ export class PostFX {
   private composer: EffectComposer | null = null;
   private bloom: UnrealBloomPass | null = null;
   private grade: ShaderPass | null = null;
-  private fxaa: ShaderPass | null = null;
   private depth: THREE.DepthTexture | null = null;
   private readonly renderer: THREE.WebGLRenderer;
   private flash = 0;
@@ -404,11 +444,18 @@ export class PostFX {
 
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
-    // A depth attachment the grade pass can read. Both of the composer's
-    // ping-pong buffers point at this same texture, so it does not matter which
-    // one is being read when the AO runs — and nothing downstream of the scene
-    // render writes depth, so it stays valid all the way to the end of the
-    // chain.
+    // A depth attachment the grade pass can read.
+    //
+    // It belongs to exactly one of the composer's two buffers, and which one is
+    // not arbitrary: `RenderPass` does not swap, so the scene always lands in
+    // the composer's READ buffer, which the composer initialises to
+    // `renderTarget2`. Nothing downstream of the scene writes depth, so it
+    // stays valid to the end of the chain.
+    //
+    // It must NOT also be attached to `renderTarget1`. The grade pass renders
+    // INTO renderTarget1 while sampling this texture, and a texture that is
+    // simultaneously an attachment of the framebuffer being drawn to is a
+    // feedback loop.
     const depth = new THREE.DepthTexture(size.x, size.y);
     depth.format = THREE.DepthFormat;
     depth.type = THREE.UnsignedIntType;
@@ -419,26 +466,23 @@ export class PostFX {
     // bloom on linear radiance in the first place.
     //
     // MSAA is kept on: it resolves geometric edges properly, which no
-    // post-process filter can, and the FXAA at the end of the chain is there to
-    // catch the shading and texture aliasing MSAA cannot see.
+    // post-process filter can, and it is now the only antialiasing in the
+    // chain.
     const target = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
       samples: 4,
       stencilBuffer: false,
-      depthTexture: depth,
     });
 
     const composer = new EffectComposer(renderer, target);
-    // The second buffer is cloned from the first and must share the depth
-    // attachment, or the AO reads an empty texture on every other frame.
     composer.renderTarget2.depthTexture = depth;
+    // `renderTarget1` only ever holds the output of a full-screen quad, and a
+    // full-screen quad has no geometric edges to resolve — multisampling it is
+    // four times the write bandwidth for a pixel-identical image. Set before
+    // the first render, so the backend allocates it single-sampled rather than
+    // reallocating it later.
+    composer.renderTarget1.samples = 0;
     composer.addPass(new RenderPass(scene, camera));
-
-    // strength / radius / threshold. See `update` for how the threshold was
-    // arrived at; the short version is that it has to sit above what a white
-    // painted line reaches, and a painted line is brighter than 1.0.
-    this.bloom = new UnrealBloomPass(size, BLOOM_STRENGTH, 0.62, BLOOM_THRESHOLD);
-    composer.addPass(this.bloom);
 
     this.grade = new ShaderPass(GRADE_SHADER);
     this.grade.uniforms.tDepth.value = depth;
@@ -452,21 +496,26 @@ export class PostFX {
     this.grade.uniforms.uAO.value = this.aoStrength;
     composer.addPass(this.grade);
 
-    // Applies the renderer's tone mapping and converts to sRGB.
-    composer.addPass(new OutputPass());
-
-    // FXAA goes AFTER the tone mapper, not before it.
+    // strength / radius / threshold. See `update` for how the threshold was
+    // arrived at; the short version is that it has to sit above what a white
+    // painted line reaches, and a painted line is brighter than 1.0.
     //
-    // FXAA decides where an edge is by looking at perceived luminance
-    // differences between neighbouring pixels. Run on linear radiance, a step
-    // from 8.0 to 9.0 — invisible once tone-mapped — reads as a huge edge and
-    // gets blended, while the step from 0.02 to 0.05 that is genuinely visible
-    // reads as nothing and is left jagged. Running it on the display-referred
-    // image is the whole reason it works.
-    const fxaa = new ShaderPass(FXAAShader);
-    fxaa.material.uniforms.resolution.value.set(1 / size.x, 1 / size.y);
-    this.fxaa = fxaa;
-    composer.addPass(fxaa);
+    // Still before the tone mapper, so it is still scattering real radiance —
+    // that constraint is what the pass order is for and it is intact. What it
+    // now runs on is the graded linear image rather than the raw one, which
+    // means at speed the halo smears with the periphery instead of sitting
+    // crisply on top of a smeared frame. That is the right way round.
+    this.bloom = new UnrealBloomPass(size, BLOOM_STRENGTH, 0.62, BLOOM_THRESHOLD);
+    composer.addPass(this.bloom);
+    // AFTER `addPass`, not before it: `EffectComposer.addPass` calls
+    // `pass.setSize` with the composer's own full size, so a smaller size set
+    // beforehand is silently thrown away.
+    this.bloom.setSize(size.x * BLOOM_SCALE, size.y * BLOOM_SCALE);
+
+    // Applies the renderer's tone mapping and converts to sRGB. Last in the
+    // chain, so the composer points it straight at the canvas and the frame is
+    // never copied again after it.
+    composer.addPass(new OutputPass());
 
     this.composer = composer;
   }
@@ -481,8 +530,7 @@ export class PostFX {
 
   setSize(width: number, height: number): void {
     this.composer?.setSize(width, height);
-    this.bloom?.setSize(width, height);
-    this.fxaa?.material.uniforms.resolution.value.set(1 / width, 1 / height);
+    this.bloom?.setSize(width * BLOOM_SCALE, height * BLOOM_SCALE);
     if (this.grade) {
       (this.grade.uniforms.uTexel.value as THREE.Vector2).set(1 / width, 1 / height);
     }

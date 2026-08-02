@@ -70,11 +70,54 @@ const SUSPENSION_BEND_HEALTH = 0.62;
  */
 const EXPOSURE = { day: 1.35, dusk: 1.4, night: 1.7 };
 
-/** Target frame rate. Below this, resolution scales down. */
-const TARGET_FPS = 60;
 /** Never scale below this fraction of native resolution. */
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 1.0;
+
+/**
+ * How the dynamic resolution scaler decides. See `updateResolutionScale`.
+ *
+ * The two thresholds are expressed as MEDIAN FRAME TIME rather than as a frame
+ * rate, and that is deliberate: a mean frame rate over half a second is
+ * dominated by whichever single frame was worst, and the frames that are worst
+ * are the ones nobody can do anything about — a shader compiling, a texture
+ * uploading, a garbage collection. A median over a window of frames describes
+ * the frame the player is actually being shown.
+ */
+/** Frames of history each decision is taken on. About 0.75s at 60Hz. */
+const SCALE_WINDOW = 45;
+/** Median frame time above which the image shrinks. 20ms is 50fps. */
+const DROP_MS = 20;
+/**
+ * Median frame time below which the image grows. 17.2ms is 58fps.
+ *
+ * The number that was here before asked for more than 68fps before it would
+ * grow the image back, and 68fps is not a thing a vsync-limited display can
+ * report. The browser hands out frames at the refresh rate and no faster, so
+ * on the overwhelmingly common 60Hz panel the climb branch was unreachable
+ * code: once the scale had dropped it could never recover, for the rest of the
+ * session, on every circuit. Sitting AT the refresh rate is precisely what
+ * headroom looks like when a display is capping you, so that is what this
+ * tests for.
+ */
+const CLIMB_MS = 17.2;
+/** How far one decision moves the scale. Down is coarser than up on purpose. */
+const SCALE_STEP_DOWN = 0.1;
+const SCALE_STEP_UP = 0.05;
+/**
+ * Seconds after a session loads during which the scaler watches but does not
+ * act.
+ *
+ * The first seconds of a session are shader compilation, texture upload and the
+ * first shadow cascade, measured here at 3 to 15fps for about five seconds on a
+ * machine that then holds 60 comfortably. Reacting to that transient is what
+ * drove the scale to its floor within two seconds of every session starting.
+ */
+const SCALE_GRACE_S = 5;
+/** A drop this soon after a climb is blamed on the climb. */
+const CLIMB_VERDICT_S = 5;
+/** How long a ceiling learned that way survives before it is retried. */
+const CEILING_RELAX_S = 25;
 
 export interface RendererOptions {
   canvas: HTMLCanvasElement;
@@ -133,10 +176,20 @@ export class Renderer {
   private envProbe: EnvProbe;
   private ambience: 'day' | 'dusk' | 'night' = 'day';
 
-  // Frame-time tracking for the resolution scaler.
-  private frameAccum = 0;
-  private frameCount = 0;
+  // Frame-time tracking for the resolution scaler. A ring buffer of the last
+  // `SCALE_WINDOW` frame times in milliseconds, plus the scratch it is sorted
+  // into — allocated once, because this runs every frame.
+  private readonly frameTimes = new Float64Array(SCALE_WINDOW);
+  private readonly frameSort = new Float64Array(SCALE_WINDOW);
+  private frameIdx = 0;
+  private frameFilled = 0;
   private scaleCooldown = 0;
+  private sessionTime = 0;
+  private graceLeft = SCALE_GRACE_S;
+  /** Highest scale the scaler currently believes this machine can hold. */
+  private climbCeiling = MAX_SCALE;
+  private lastClimbAt = -1e9;
+  private lastDropAt = -1e9;
 
   // Hoisted scratch.
   private readonly tmpColour = new THREE.Color();
@@ -419,6 +472,9 @@ export class Renderer {
    */
   loadSession(engine: RaceEngine): void {
     this.unloadSession();
+    // A new circuit is a new set of shaders to compile and a new set of
+    // textures to upload, so the grace period starts again with it.
+    this.resetResolutionScaler();
 
     // The set-dressing layout comes from the engine, not from the renderer:
     // these are the objects the simulation collides against, and the only way
@@ -727,39 +783,118 @@ export class Renderer {
 
   private readonly tmpSize = new THREE.Vector2();
 
+  /** Median of the frame-time window, in milliseconds. */
+  private medianFrameMs(): number {
+    const n = this.frameFilled;
+    const a = this.frameSort;
+    for (let i = 0; i < n; i++) a[i] = this.frameTimes[i];
+    // An insertion sort on 45 already-nearly-sorted-by-nothing numbers is
+    // faster than allocating a subarray and calling `sort` with a comparator,
+    // and it allocates nothing, which is what matters in a per-frame path.
+    for (let i = 1; i < n; i++) {
+      const v = a[i];
+      let j = i - 1;
+      while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; }
+      a[j + 1] = v;
+    }
+    return n % 2 ? a[(n - 1) >> 1] : (a[n / 2 - 1] + a[n / 2]) * 0.5;
+  }
+
+  /** Throws away the history. Called whenever the resolution changes. */
+  private resetFrameWindow(): void {
+    this.frameIdx = 0;
+    this.frameFilled = 0;
+  }
+
+  /** Puts the scaler back to a clean slate. Called when a session loads. */
+  private resetResolutionScaler(): void {
+    this.resetFrameWindow();
+    this.sessionTime = 0;
+    this.graceLeft = SCALE_GRACE_S;
+    this.scaleCooldown = 0;
+    this.climbCeiling = MAX_SCALE;
+    this.lastClimbAt = -1e9;
+    this.lastDropAt = -1e9;
+  }
+
   /**
-   * Adjusts resolution to hold the target frame rate.
+   * Adjusts resolution to hold a playable frame rate.
    *
-   * Deliberately asymmetric and slow to react: scaling down happens readily,
-   * scaling back up happens grudgingly and only once there is real headroom.
-   * A scaler that reacts symmetrically oscillates, and a resolution that visibly
-   * pulses is worse than one that is simply a bit low.
+   * Three things this has to get right, all of which the previous version got
+   * wrong and all of which were measured on a real GPU rather than reasoned
+   * about:
+   *
+   *   1. It must be able to go back up. The old climb condition was "faster
+   *      than 68fps", which a vsync-limited display can never report; the game
+   *      therefore ran the entire session at the floor. See `CLIMB_MS`.
+   *
+   *   2. It must ignore the start of a session. Shader compilation and the
+   *      first texture uploads cost five seconds at 3-15fps on hardware that
+   *      then holds 60 without effort. Reacting to that put every session at
+   *      the floor within two seconds of the lights going out, and nothing
+   *      afterwards could undo it. See `SCALE_GRACE_S`.
+   *
+   *   3. It must judge on a median, not a mean. One 200ms frame in a half
+   *      second drags a mean frame rate from 60 to 30 and triggers a drop that
+   *      the following five hundred frames did not deserve.
+   *
+   * Still deliberately asymmetric: down in 0.1 steps after 1.2s, up in 0.05
+   * steps after 2.5s, and if a climb is followed by a drop the level that
+   * failed is remembered as a ceiling and not retried for `CEILING_RELAX_S`.
+   * That is what stops it pulsing between two resolutions, which is worse to
+   * look at than either of them.
    */
   private updateResolutionScale(dt: number): void {
-    this.frameAccum += dt;
-    this.frameCount++;
+    // A tab-switch, a breakpoint or a thermal stall is not a frame time.
+    if (dt > 0 && dt < 0.5) {
+      this.frameTimes[this.frameIdx] = dt * 1000;
+      this.frameIdx = (this.frameIdx + 1) % SCALE_WINDOW;
+      if (this.frameFilled < SCALE_WINDOW) this.frameFilled++;
+    }
+
+    this.sessionTime += dt;
     this.scaleCooldown -= dt;
+    if (this.graceLeft > 0) {
+      this.graceLeft -= dt;
+      return;
+    }
+    if (this.frameFilled < SCALE_WINDOW) return;
 
-    if (this.frameAccum < 0.5) return;
-
-    this.fps = this.frameCount / this.frameAccum;
-    this.frameAccum = 0;
-    this.frameCount = 0;
+    const med = this.medianFrameMs();
+    this.fps = 1000 / Math.max(med, 0.001);
 
     if (this.scaleCooldown > 0) return;
 
-    const before = this.resolutionScale;
-    if (this.fps < TARGET_FPS - 1) {
-      // Drop harder the further behind we are.
-      const deficit = clamp01((TARGET_FPS - this.fps) / 25);
-      this.resolutionScale = clamp(this.resolutionScale - 0.08 - deficit * 0.12, MIN_SCALE, MAX_SCALE);
-      this.scaleCooldown = 0.8;
-    } else if (this.fps > TARGET_FPS + 8 && this.resolutionScale < MAX_SCALE) {
-      this.resolutionScale = clamp(this.resolutionScale + 0.05, MIN_SCALE, MAX_SCALE);
-      this.scaleCooldown = 2.5;
+    // A ceiling learned from a failed climb is not permanent. Machines get
+    // busy and then stop being busy — the whole point of this pass is that it
+    // is allowed to change its mind in both directions.
+    if (this.climbCeiling < MAX_SCALE && this.sessionTime - this.lastDropAt > CEILING_RELAX_S) {
+      this.climbCeiling = Math.min(MAX_SCALE, this.climbCeiling + SCALE_STEP_UP);
+      this.lastDropAt = this.sessionTime;
     }
 
-    if (this.resolutionScale !== before) this.applySize();
+    const before = this.resolutionScale;
+    if (med > DROP_MS && this.resolutionScale > MIN_SCALE) {
+      // If this arrives right after a climb, the climb is what caused it.
+      if (this.sessionTime - this.lastClimbAt < CLIMB_VERDICT_S) {
+        this.climbCeiling = clamp(this.resolutionScale - SCALE_STEP_UP, MIN_SCALE, MAX_SCALE);
+      }
+      this.resolutionScale = clamp(this.resolutionScale - SCALE_STEP_DOWN, MIN_SCALE, MAX_SCALE);
+      this.scaleCooldown = 1.2;
+      this.lastDropAt = this.sessionTime;
+    } else if (med < CLIMB_MS && this.resolutionScale < Math.min(MAX_SCALE, this.climbCeiling)) {
+      this.resolutionScale = clamp(this.resolutionScale + SCALE_STEP_UP, MIN_SCALE, this.climbCeiling);
+      this.scaleCooldown = 2.5;
+      this.lastClimbAt = this.sessionTime;
+    }
+
+    if (this.resolutionScale !== before) {
+      // The frames either side of a resolution change describe two different
+      // images. Mixing them would have the next decision judging the new
+      // resolution on the old one's cost.
+      this.resetFrameWindow();
+      this.applySize();
+    }
   }
 
   /**
