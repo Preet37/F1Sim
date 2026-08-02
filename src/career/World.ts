@@ -93,16 +93,16 @@ export const TIER_CAR: Record<TierId, TierCar> = {
     name: 'FIA Formula 3 Championship', shortName: 'Formula 3',
     // ~380hp against ~750hp of combustion, no hybrid, and a wing package that
     // makes about a third of the downforce.
-    powerMult: 0.44, ersMult: 0, downforceMult: 0.42,
+    powerMult: 0.52, ersMult: 0, downforceMult: 0.80,
     // Much less wing means much less drag, which is why the deficit down a
     // straight is nothing like the deficit through a corner.
-    dragMult: 0.70, mechanicalGripMult: 0.88,
+    dragMult: 0.80, mechanicalGripMult: 1.00,
     points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapPoint: true,
   },
   F2: {
     name: 'FIA Formula 2 Championship', shortName: 'Formula 2',
-    powerMult: 0.62, ersMult: 0, downforceMult: 0.60,
-    dragMult: 0.80, mechanicalGripMult: 0.93,
+    powerMult: 0.68, ersMult: 0, downforceMult: 0.86,
+    dragMult: 0.88, mechanicalGripMult: 1.00,
     points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapPoint: true,
   },
   F1: {
