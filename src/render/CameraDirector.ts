@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, wrapAngle } from '../core/MathUtils';
 import { EYE_PITCH, EYE_X, EYE_Y, EYE_Z } from './CockpitMesh';
+import { carGroundY } from './TrackMesh';
 import { nominalBarrierOffset, OBSTACLE_HEIGHT_M } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
@@ -296,7 +297,13 @@ export class CameraDirector {
     const heading = p.heading;
     const sinH = Math.sin(heading);
     const cosH = Math.cos(heading);
-    const carY = track.elevationAt(car.s);
+    // The car's own origin, which is the DRAWN road surface and not the bare
+    // elevation the simulation carries — see `carGroundY`. Every camera below
+    // is placed relative to this, and the cockpit camera in particular has to
+    // ride the car exactly: 20mm of disagreement between the eye and the
+    // chassis moves the halo three per cent of a frame height, which is what
+    // `probe:framing` is there to notice.
+    const carY = carGroundY(track.elevationAt(car.s));
 
     // Reversing: the useful view is the one the car is going towards.
     //

@@ -149,6 +149,33 @@ export interface TyreProfilePoint {
 const V_MAX_WIDTH = 0.10;
 
 /**
+ * Angular offset that puts a VERTEX at the bottom of the wheel, radians.
+ *
+ * A wheel is a prism with `radial` sides, so its true lowest point is a vertex
+ * if one happens to fall at the bottom and the middle of a facet if one does
+ * not — and a facet sits `r(1 - cos(pi/radial))` ABOVE where the tyre says its
+ * contact patch is. At the expensive tier `radial` is 36 and 27/36 lands
+ * exactly on three quarters of a turn, so it was free and nobody noticed. At
+ * the cheap tier it is 14, three quarters of a turn falls between two vertices,
+ * and the whole car floated NINE MILLIMETRES off the road — invisible at the
+ * LOD distance the tier was designed for and two or three pixels of daylight
+ * under every tyre on a phone, which runs the cheap tier at every distance.
+ * `probe:carrig` measures it as the lowest vertex on each wheel.
+ *
+ * A rotation, not a subdivision: it costs nothing, and the tyre is a solid of
+ * revolution so turning it changes nothing else. The carcass and the raised
+ * compound band MUST use the same phase — they are two prisms 6mm apart and
+ * staying in phase is the entire reason the band does not poke through — which
+ * is why this lives here, next to the profile they share, rather than in either
+ * of them.
+ */
+export function wheelPhase(radial: number): number {
+  const step = (Math.PI * 2) / radial;
+  const bottom = Math.PI * 1.5;
+  return bottom - Math.round(bottom / step) * step;
+}
+
+/**
  * The tyre's cross-section in metres, from inboard bead to outboard bead.
  *
  * Two arcs rather than hand-placed control points, because the shoulder is the
@@ -726,8 +753,9 @@ export function buildSidewallBands(
       // driver looks at from the cockpit.
       const px = p.x + n.nx * BAND_LIFT;
       const pr = p.r + n.nr * BAND_LIFT;
+      const phase = wheelPhase(radial);
       for (let i = 0; i <= radial; i++) {
-        const a = (i / radial) * Math.PI * 2;
+        const a = (i / radial) * Math.PI * 2 + phase;
         positions.push(px, Math.sin(a) * pr, Math.cos(a) * pr);
         // Reversed to match the carcass under it — see the note in
         // `buildWheel`. The compound name was mirrored too.

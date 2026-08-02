@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ParticleSystem } from './ParticleSystem';
 import { SkidMarks } from './SkidMarks';
+import { carGroundY } from './TrackMesh';
 import { clamp01 } from '../core/MathUtils';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -126,7 +127,11 @@ export class EffectsDirector {
       const p = car.physics;
       const x = p.position.x;
       const z = p.position.y;
-      const y = track.elevationAt(car.s);
+      // The DRAWN road, not the bare elevation: smoke, spray and plank sparks
+      // all leave from the contact patch, and the contact patch stands on the
+      // asphalt mesh. See `carGroundY` — the cars themselves had the same
+      // 20mm error and it put every tyre inside the tarmac.
+      const y = carGroundY(track.elevationAt(car.s));
 
       const dist = Math.hypot(x - cameraPos.x, z - cameraPos.z);
       if (!car.isPlayer && dist > CULL_DISTANCE) continue;
