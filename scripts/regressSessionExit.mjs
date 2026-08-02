@@ -78,9 +78,19 @@ const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
 page.on('dialog', async (d) => await d.dismiss());
 
+// Warm the dev server first, on the menus rather than on a circuit.
+//
+// This is not the test. The dev server transforms every module in the project
+// on the first request for it, and doing that while software-GL is building a
+// seven-kilometre circuit put the timed navigation below at 28 to 32 seconds
+// against a 30-second default — so the suite passed or failed on how busy the
+// machine was, which is not a property of the code under test. Warmed, the
+// real navigation lands under twenty.
+await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'load', timeout: 120_000 });
+
 // A long race, because the length of the race is the whole point.
 await page.goto(`http://localhost:${PORT}/?quality=low&circuit=spa&session=race&laps=44&seed=5`,
-  { waitUntil: 'load' });
+  { waitUntil: 'load', timeout: 120_000 });
 await page.waitForTimeout(4500);
 
 const st = () => page.evaluate(() => {

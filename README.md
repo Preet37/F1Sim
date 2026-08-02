@@ -204,6 +204,33 @@ clean zero-metre overshoot on every circuit while a car was demonstrably parked 
 an armco and a catch fence. A test written against the implementation's own model
 cannot see a bug in that model.
 
+### `probe:renderperf` and `probe:sharpness`
+
+Not part of `npm run validate`, because they need a real GPU and a real browser
+window. They exist because the two harnesses that photograph the renderer —
+`audit:circuits` and everything before it — drive `Renderer` with a hard-coded
+`dt` of 1/60 on software GL, and there are two questions that setup cannot
+answer:
+
+- **What resolution is the player actually shown?** A fixed 1/60 computes
+  exactly 60fps, so the dynamic resolution scaler never moves and every audit
+  PNG is shot at full resolution — whatever the game does on a real machine.
+  For years it did something else entirely. `probe:sharpness` takes the
+  browser's own screenshot of the composited page, at whatever scale the game
+  settles on, with the simulation frozen at a fixed step count so the same
+  frame comes back before and after a change.
+- **Where does the frame time go?** `probe:renderperf` drives the real game
+  through its `?circuit=` deep link in a headful Chrome and reads
+  `EXT_disjoint_timer_query_webgl2` around each frame. `PERF_PAIR=bloom,res,...`
+  toggles one factor back and forth inside a single session and compares the
+  arms cycle by cycle, so a machine that is busy — and a development machine
+  always is — cancels out. Without that pairing the first sweep reported
+  shadows-off as slower than shadows-on.
+
+`scripts/measureSharpness.py` turns the resulting PNGs into two numbers,
+high-frequency energy and mean gradient, so "grainy" stops being a matter of
+opinion. Reference footage in `reference/` measures on the same scale.
+
 ---
 
 ## Bugs these harnesses caught
@@ -237,6 +264,12 @@ its fix site.
 | The barrier laid at a flat 14m (2.5m on a street circuit) from the track edge for the whole lap | Where the circuit runs back within that distance of itself, one section's armco and five-metre debris fence were built across another section's run-off. A car legally in that run-off has a wall and a fence between it and the road |
 | Containment measured against the *nearest* spline node | Once a car is in the corridor between two barriers, its projection snaps to the far section, its lateral offset is small, and containment never fires. The old integrity probe measured the same quantity, so it reported zero overshoot for a car that was visibly walled in |
 | Nothing outside the barrier line was solid | Cars drove through buildings, grandstands and the pit wall without a scrape |
+| The dynamic resolution scaler's climb branch required more than 68fps, which a vsync-limited display cannot report | Unreachable code. Every session on every circuit collapsed to half resolution in the first two seconds — a quarter of the pixels, stretched to the canvas — and stayed there. The complaint it produced was "grainy and unclear", and it was blamed on textures for months |
+| The same scaler reacted to the first two seconds of a session, which is shader compilation | 3 to 15fps for five seconds on a machine that then holds 60 without effort, and the resolution it gave away in response was never given back |
+| The scaler then judged headroom on a median frame time | Under vsync a machine missing every other frame produces only 16.7ms and 33.3ms, so a bare majority of fast frames reads as a flawless 60fps. Measured at 45fps on Spa with a median of 17.2ms |
+| `EffectComposer` clones the target it is given, so `samples: 4` multisampled every full-screen quad | Three quarters of the write bandwidth of every post pass discarded, on a surface with no geometric edges to resolve |
+| FXAA, at 17.5ms, ran last — on an image that had already been rendered at half resolution and stretched | Paid more than the entire scene render to blur an already-soft picture |
+| `UnrealBloomPass` cost 14.4ms of a 31.5ms frame, and none of it was the blur chain | Halving the chain's resolution changed the frame by 0.38ms. The cost was its two full-resolution operations — a bright-pass read of the half-float buffer and an additive blend back into it — neither of which a bloom needs |
 
 ---
 

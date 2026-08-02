@@ -21,3 +21,8 @@ node_modules
 # Regenerate with:
 #   ffmpeg -i <recording>.MP4 -vf "fps=2,scale=1280:-1" -q:v 3 reference/<name>/f_%04d.jpg
 reference/
+
+# Screenshots and JSON written by scripts/probeSharpness.ts and
+# scripts/probeRenderPerf.ts. Evidence about a build, not part of one.
+sharp-out/
+perf-out/

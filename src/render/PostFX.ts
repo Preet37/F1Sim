@@ -1,10 +1,9 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { clamp01 } from '../core/MathUtils';
 
 /**
@@ -12,7 +11,7 @@ import { clamp01 } from '../core/MathUtils';
  *
  * Pass order is not cosmetic, it is the whole thing:
  *
- *   scene -> bloom -> grade -> tone map & sRGB
+ *   scene (MSAA) -> bloom pyramid -> grade (adds bloom) -> tone map & sRGB
  *
  * Bloom has to run on the linear, un-tone-mapped image. Bloom is a physical
  * effect — light scattering inside the lens and the eye — and scattering is
@@ -56,6 +55,37 @@ import { clamp01 } from '../core/MathUtils';
  * On the low quality tier the whole composer is skipped and the scene renders
  * straight to the canvas. Bloom on a phone GPU is five extra full-screen passes
  * at half resolution, and holding 60fps matters more than glow.
+ *
+ * WHAT THIS CHAIN COSTS, AND WHY IT IS SHAPED THIS WAY
+ *
+ * The post chain, not the scene, is where a frame goes. Measured on an M5 with
+ * `EXT_disjoint_timer_query_webgl2`, paired A/B inside a single session so that
+ * machine load cancels (`scripts/probeRenderPerf.ts`, `PERF_PAIR=`), at a
+ * 2940x1396 drawing buffer:
+ *
+ *   whole post chain   +22.5ms   of a 31.5ms frame — nearly 3x the scene render
+ *   bloom              +14.4ms
+ *   grade + AO          +8.4ms
+ *   tone map / sRGB     +1.2ms
+ *   FXAA               +17.5ms   (before it was removed)
+ *   shadow re-render     0.0ms
+ *
+ * Three things follow from those numbers.
+ *
+ * FXAA is gone. It cost more than the entire scene render, and the image it was
+ * smoothing had usually been rendered at half resolution and stretched, so what
+ * it did in practice was blur an already-soft picture. MSAA on the scene target
+ * is real geometric antialiasing and it stays.
+ *
+ * `EffectComposer` ping-pongs between two copies of the target it is given, so
+ * `samples: 4` made every full-screen quad write four samples per pixel for a
+ * pixel-identical result. Only the buffer the scene lands in is multisampled
+ * now.
+ *
+ * And bloom no longer touches a full-resolution pixel at all: see
+ * `BloomChainPass` for why `UnrealBloomPass` cost what it did, and why the
+ * replacement produces a texture that the grade pass adds rather than blending
+ * itself over the frame.
  */
 
 /**
@@ -83,11 +113,111 @@ const BLOOM_THRESHOLD = 1.55;
  */
 const BLOOM_STRENGTH = 0.3;
 
+/**
+ * A bloom chain that never touches a full-resolution pixel.
+ *
+ * `UnrealBloomPass` was measured at 14.4ms of a 31ms frame on an M5 at
+ * 2940x1396 — 46% of the whole frame — and, crucially, dropping its mip chain
+ * from half resolution to a quarter changed that by 0.4ms. So the cost was
+ * never the blurs. It was its two full-resolution operations: the bright-pass
+ * read of the full-size half-float buffer, and the full-screen additive blend
+ * of the result back into it. (For scale: a plain full-screen tone-map pass to
+ * the canvas costs 1.2ms, so this is not a general "full-screen quads are
+ * expensive" effect — writing an RGBA16F offscreen target with blending is
+ * simply far more expensive than writing the canvas.)
+ *
+ * Neither operation needs to exist. Bloom is a low-frequency term added to the
+ * image in linear light, so it can be produced entirely at reduced resolution
+ * and added by a pass that was reading the frame anyway. This class produces
+ * only a TEXTURE; the grade pass adds it. Nothing here writes to a composer
+ * buffer, and the largest surface it ever fills is a quarter of the frame in
+ * each axis.
+ *
+ * The chain is a downsample pyramid with a tent-filter upsample — the standard
+ * dual-filter arrangement — rather than five independent gaussian mips. Same
+ * shape of falloff, a third of the passes.
+ */
+const BLOOM_LEVELS = 4;
+
+/** Threshold and downsample, four bilinear taps, in one pass. */
+const BLOOM_PREFILTER_SHADER = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uTexel: { value: new THREE.Vector2() },
+    uThreshold: { value: 1.0 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    uniform sampler2D tDiffuse;
+    uniform vec2 uTexel;
+    uniform float uThreshold;
+    varying vec2 vUv;
+    void main() {
+      // Four taps on the source grid rather than one. A single tap on a
+      // quarter-size target samples every fourth pixel of the frame, so a
+      // one-pixel spark alternately clears the threshold and vanishes as the
+      // camera moves, which is a flickering dot rather than a glow.
+      vec2 o = uTexel;
+      vec3 c = texture2D(tDiffuse, vUv + vec2(-o.x, -o.y)).rgb
+             + texture2D(tDiffuse, vUv + vec2( o.x, -o.y)).rgb
+             + texture2D(tDiffuse, vUv + vec2(-o.x,  o.y)).rgb
+             + texture2D(tDiffuse, vUv + vec2( o.x,  o.y)).rgb;
+      c *= 0.25;
+      // Soft knee. A hard cutoff makes the boundary of a bloomed region a
+      // visible edge that crawls as brightness drifts across the threshold.
+      float lum = max(c.r, max(c.g, c.b));
+      float knee = uThreshold * 0.5;
+      float soft = clamp((lum - uThreshold + knee) / (2.0 * knee), 0.0, 1.0);
+      float w = max(lum - uThreshold, soft * soft * knee) / max(lum, 1e-4);
+      gl_FragColor = vec4(c * w, 1.0);
+    }
+  `,
+};
+
+/** One step of the pyramid, up or down, with a 3x3 tent. */
+const BLOOM_RESAMPLE_SHADER = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    uTexel: { value: new THREE.Vector2() },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    uniform sampler2D tDiffuse;
+    uniform vec2 uTexel;
+    varying vec2 vUv;
+    void main() {
+      vec2 o = uTexel;
+      vec3 c = texture2D(tDiffuse, vUv).rgb * 4.0;
+      c += (texture2D(tDiffuse, vUv + vec2(-o.x, 0.0)).rgb
+          + texture2D(tDiffuse, vUv + vec2( o.x, 0.0)).rgb
+          + texture2D(tDiffuse, vUv + vec2(0.0, -o.y)).rgb
+          + texture2D(tDiffuse, vUv + vec2(0.0,  o.y)).rgb) * 2.0;
+      c += texture2D(tDiffuse, vUv + vec2(-o.x, -o.y)).rgb
+         + texture2D(tDiffuse, vUv + vec2( o.x, -o.y)).rgb
+         + texture2D(tDiffuse, vUv + vec2(-o.x,  o.y)).rgb
+         + texture2D(tDiffuse, vUv + vec2( o.x,  o.y)).rgb;
+      gl_FragColor = vec4(c / 16.0, 1.0);
+    }
+  `,
+};
+
 const GRADE_SHADER = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     /** Scene depth, shared by both composer buffers. */
     tDepth: { value: null as THREE.Texture | null },
+    /** The bloom pyramid's top level, at a quarter of the frame. */
+    tBloom: { value: null as THREE.Texture | null },
+    /** How much of the bloom is scattered back in. */
+    uBloom: { value: 0 },
     /** 0..1 blur strength, driven by speed. */
     uSpeed: { value: 0 },
     /** Vanishing point in UV space — where the blur streaks converge. */
@@ -131,6 +261,8 @@ const GRADE_SHADER = {
     precision highp float;
     uniform sampler2D tDiffuse;
     uniform sampler2D tDepth;
+    uniform sampler2D tBloom;
+    uniform float uBloom;
     uniform float uSpeed;
     uniform vec2 uFocus;
     uniform float uVignette;
@@ -324,6 +456,20 @@ const GRADE_SHADER = {
         colour.b = texture2D(tDiffuse, vUv + dir * ca).b;
       }
 
+      // Bloom, added here rather than in a pass of its own.
+      //
+      // This is still scattering LINEAR radiance — the pass order constraint
+      // that the whole chain is built around — because nothing has tone mapped
+      // yet; the output pass does that afterwards. What it saves is the two
+      // full-resolution operations a standalone bloom pass needs, a bright-pass
+      // read and an additive blend, in a shader that was already reading this
+      // pixel. See BloomChainPass.
+      //
+      // Before the occlusion and the vignette, so that a glow is dimmed by the
+      // corners of the lens the same way everything else is, and is not carved
+      // into by screen-space occlusion that knows nothing about it.
+      if (uBloom > 0.0) colour += texture2D(tBloom, vUv).rgb * uBloom;
+
       // Ambient occlusion. Applied before the vignette and after the blur, so
       // that at speed the periphery smears an already-occluded image rather
       // than acquiring crisp AO on top of a smeared one.
@@ -377,13 +523,127 @@ const GRADE_SHADER = {
   `,
 };
 
+/**
+ * The bloom pyramid. Produces a texture; adds nothing to anything.
+ *
+ * A `Pass` so the composer drives it in order, with `needsSwap = false` because
+ * it leaves both composer buffers exactly as it found them.
+ */
+class BloomChainPass extends Pass {
+  /** The finished bloom, at a quarter of the frame in each axis. */
+  get texture(): THREE.Texture { return this.levels[0].texture; }
+
+  private levels: THREE.WebGLRenderTarget[] = [];
+  private readonly prefilter = new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.clone(BLOOM_PREFILTER_SHADER.uniforms),
+    vertexShader: BLOOM_PREFILTER_SHADER.vertexShader,
+    fragmentShader: BLOOM_PREFILTER_SHADER.fragmentShader,
+    depthTest: false,
+    depthWrite: false,
+  });
+  private readonly resample = new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.clone(BLOOM_RESAMPLE_SHADER.uniforms),
+    vertexShader: BLOOM_RESAMPLE_SHADER.vertexShader,
+    fragmentShader: BLOOM_RESAMPLE_SHADER.fragmentShader,
+    depthTest: false,
+    depthWrite: false,
+    // The upward half of the pyramid adds each coarse level onto the finer one
+    // below it, which is what turns a stack of blurs into a single falloff.
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+  });
+  private readonly quad = new FullScreenQuad(this.prefilter);
+
+  constructor(width: number, height: number) {
+    super();
+    this.needsSwap = false;
+    this.setSize(width, height);
+  }
+
+  /** Threshold in linear radiance, above which light scatters. */
+  set threshold(v: number) { this.prefilter.uniforms.uThreshold.value = v; }
+  get threshold(): number { return this.prefilter.uniforms.uThreshold.value as number; }
+
+  override setSize(width: number, height: number): void {
+    for (const t of this.levels) t.dispose();
+    this.levels = [];
+    // Starts at a quarter of the frame. Half would cost four times as much for
+    // a term whose finest detail is a blur several pixels across.
+    let w = Math.max(1, Math.round(width / 4));
+    let h = Math.max(1, Math.round(height / 4));
+    for (let i = 0; i < BLOOM_LEVELS; i++) {
+      const t = new THREE.WebGLRenderTarget(w, h, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+        stencilBuffer: false,
+      });
+      t.texture.minFilter = THREE.LinearFilter;
+      t.texture.magFilter = THREE.LinearFilter;
+      t.texture.generateMipmaps = false;
+      this.levels.push(t);
+      w = Math.max(1, Math.round(w / 2));
+      h = Math.max(1, Math.round(h / 2));
+    }
+  }
+
+  override render(
+    renderer: THREE.WebGLRenderer,
+    _writeBuffer: THREE.WebGLRenderTarget,
+    readBuffer: THREE.WebGLRenderTarget,
+  ): void {
+    const oldTarget = renderer.getRenderTarget();
+    const oldAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
+
+    // Down: threshold into level 0, then successively halve.
+    this.prefilter.uniforms.tDiffuse.value = readBuffer.texture;
+    (this.prefilter.uniforms.uTexel.value as THREE.Vector2)
+      .set(1 / readBuffer.width, 1 / readBuffer.height);
+    this.quad.material = this.prefilter;
+    renderer.setRenderTarget(this.levels[0]);
+    renderer.clear(true, false, false);
+    this.quad.render(renderer);
+
+    this.quad.material = this.resample;
+    this.resample.blending = THREE.NoBlending;
+    for (let i = 1; i < this.levels.length; i++) {
+      const src = this.levels[i - 1];
+      this.resample.uniforms.tDiffuse.value = src.texture;
+      (this.resample.uniforms.uTexel.value as THREE.Vector2).set(1 / src.width, 1 / src.height);
+      renderer.setRenderTarget(this.levels[i]);
+      renderer.clear(true, false, false);
+      this.quad.render(renderer);
+    }
+
+    // Up: add each coarse level back onto the one below it.
+    this.resample.blending = THREE.AdditiveBlending;
+    for (let i = this.levels.length - 1; i > 0; i--) {
+      const src = this.levels[i];
+      this.resample.uniforms.tDiffuse.value = src.texture;
+      (this.resample.uniforms.uTexel.value as THREE.Vector2).set(1 / src.width, 1 / src.height);
+      renderer.setRenderTarget(this.levels[i - 1]);
+      this.quad.render(renderer);
+    }
+
+    renderer.autoClear = oldAutoClear;
+    renderer.setRenderTarget(oldTarget);
+  }
+
+  override dispose(): void {
+    for (const t of this.levels) t.dispose();
+    this.levels = [];
+    this.prefilter.dispose();
+    this.resample.dispose();
+    this.quad.dispose();
+  }
+}
+
 export class PostFX {
   readonly enabled: boolean;
 
   private composer: EffectComposer | null = null;
-  private bloom: UnrealBloomPass | null = null;
+  private bloom: BloomChainPass | null = null;
   private grade: ShaderPass | null = null;
-  private fxaa: ShaderPass | null = null;
   private depth: THREE.DepthTexture | null = null;
   private readonly renderer: THREE.WebGLRenderer;
   private flash = 0;
@@ -404,11 +664,18 @@ export class PostFX {
 
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
-    // A depth attachment the grade pass can read. Both of the composer's
-    // ping-pong buffers point at this same texture, so it does not matter which
-    // one is being read when the AO runs — and nothing downstream of the scene
-    // render writes depth, so it stays valid all the way to the end of the
-    // chain.
+    // A depth attachment the grade pass can read.
+    //
+    // It belongs to exactly one of the composer's two buffers, and which one is
+    // not arbitrary: `RenderPass` does not swap, so the scene always lands in
+    // the composer's READ buffer, which the composer initialises to
+    // `renderTarget2`. Nothing downstream of the scene writes depth, so it
+    // stays valid to the end of the chain.
+    //
+    // It must NOT also be attached to `renderTarget1`. The grade pass renders
+    // INTO renderTarget1 while sampling this texture, and a texture that is
+    // simultaneously an attachment of the framebuffer being drawn to is a
+    // feedback loop.
     const depth = new THREE.DepthTexture(size.x, size.y);
     depth.format = THREE.DepthFormat;
     depth.type = THREE.UnsignedIntType;
@@ -419,29 +686,35 @@ export class PostFX {
     // bloom on linear radiance in the first place.
     //
     // MSAA is kept on: it resolves geometric edges properly, which no
-    // post-process filter can, and the FXAA at the end of the chain is there to
-    // catch the shading and texture aliasing MSAA cannot see.
+    // post-process filter can, and it is now the only antialiasing in the
+    // chain.
     const target = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
       samples: 4,
       stencilBuffer: false,
-      depthTexture: depth,
     });
 
     const composer = new EffectComposer(renderer, target);
-    // The second buffer is cloned from the first and must share the depth
-    // attachment, or the AO reads an empty texture on every other frame.
     composer.renderTarget2.depthTexture = depth;
+    // `renderTarget1` only ever holds the output of a full-screen quad, and a
+    // full-screen quad has no geometric edges to resolve — multisampling it is
+    // four times the write bandwidth for a pixel-identical image. Set before
+    // the first render, so the backend allocates it single-sampled rather than
+    // reallocating it later.
+    composer.renderTarget1.samples = 0;
     composer.addPass(new RenderPass(scene, camera));
 
-    // strength / radius / threshold. See `update` for how the threshold was
-    // arrived at; the short version is that it has to sit above what a white
-    // painted line reaches, and a painted line is brighter than 1.0.
-    this.bloom = new UnrealBloomPass(size, BLOOM_STRENGTH, 0.62, BLOOM_THRESHOLD);
+    // Bloom BEFORE the grade pass, because the grade pass is what adds it.
+    // It reads the composer's read buffer — the scene, in linear radiance,
+    // untouched — and writes only into its own pyramid.
+    this.bloom = new BloomChainPass(size.x, size.y);
+    this.bloom.threshold = BLOOM_THRESHOLD;
     composer.addPass(this.bloom);
 
     this.grade = new ShaderPass(GRADE_SHADER);
     this.grade.uniforms.tDepth.value = depth;
+    this.grade.uniforms.tBloom.value = this.bloom.texture;
+    this.grade.uniforms.uBloom.value = BLOOM_STRENGTH;
     // 0.6, down from 0.85. The occlusion this pass produces is a twelve-tap
     // estimate with no blur after it, so its noise scales with its strength;
     // measured against a frame with the pass disabled it was contributing
@@ -452,21 +725,10 @@ export class PostFX {
     this.grade.uniforms.uAO.value = this.aoStrength;
     composer.addPass(this.grade);
 
-    // Applies the renderer's tone mapping and converts to sRGB.
+    // Applies the renderer's tone mapping and converts to sRGB. Last in the
+    // chain, so the composer points it straight at the canvas and the frame is
+    // never copied again after it.
     composer.addPass(new OutputPass());
-
-    // FXAA goes AFTER the tone mapper, not before it.
-    //
-    // FXAA decides where an edge is by looking at perceived luminance
-    // differences between neighbouring pixels. Run on linear radiance, a step
-    // from 8.0 to 9.0 — invisible once tone-mapped — reads as a huge edge and
-    // gets blended, while the step from 0.02 to 0.05 that is genuinely visible
-    // reads as nothing and is left jagged. Running it on the display-referred
-    // image is the whole reason it works.
-    const fxaa = new ShaderPass(FXAAShader);
-    fxaa.material.uniforms.resolution.value.set(1 / size.x, 1 / size.y);
-    this.fxaa = fxaa;
-    composer.addPass(fxaa);
 
     this.composer = composer;
   }
@@ -480,11 +742,14 @@ export class PostFX {
   }
 
   setSize(width: number, height: number): void {
+    // `composer.setSize` calls `setSize` on every pass it holds, which includes
+    // the bloom chain — so the pyramid is rebuilt for the new frame size by
+    // that call, and the grade pass has to be pointed at the new top level
+    // afterwards or it samples a disposed texture.
     this.composer?.setSize(width, height);
-    this.bloom?.setSize(width, height);
-    this.fxaa?.material.uniforms.resolution.value.set(1 / width, 1 / height);
     if (this.grade) {
       (this.grade.uniforms.uTexel.value as THREE.Vector2).set(1 / width, 1 / height);
+      if (this.bloom) this.grade.uniforms.tBloom.value = this.bloom.texture;
     }
   }
 
@@ -541,7 +806,7 @@ export class PostFX {
       // What DOES change at night is the width of the range: a lamp reflected in
       // gloss paint is many times the road beside it, and the exposure the night
       // grade runs at is higher. So the threshold rises, and only the threshold.
-      this.bloom.strength = BLOOM_STRENGTH;
+      u.uBloom.value = BLOOM_STRENGTH;
       this.bloom.threshold = BLOOM_THRESHOLD + nightBias * 0.35;
     }
   }
@@ -561,6 +826,8 @@ export class PostFX {
   }
 
   dispose(): void {
+    this.bloom?.dispose();
+    this.bloom = null;
     this.composer?.dispose();
     this.composer = null;
     this.depth?.dispose();
