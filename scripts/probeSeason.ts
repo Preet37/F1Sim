@@ -46,6 +46,7 @@ import {
   type SeasonState,
 } from '../src/career/Season';
 import { CIRCUITS } from '../src/data/tracks/circuits';
+import { Career } from '../src/career/Career';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
@@ -303,6 +304,78 @@ for (let career = 0; career < CAREERS; career++) {
   check(Math.abs(endF1Skill - startF1Skill) < 0.10,
     `career ${career}: mean F1 skill moved ${startF1Skill.toFixed(3)} -> ${endF1Skill.toFixed(3)} ` +
     'over ten seasons, which is a drift rather than a grid');
+}
+
+// ---------------------------------------------------------------------------
+// 7. Can the career actually be finished?
+// ---------------------------------------------------------------------------
+
+/**
+ * The invariant nothing else covers: IS THE LADDER CLIMBABLE?
+ *
+ * Every check above proves the machinery is consistent. None of them proves the
+ * game is playable, and those are very different things — a career whose rules
+ * are impeccable and whose player can never be promoted is correct and worthless.
+ * `probe:save` found exactly that: a career simulated straight through ended in
+ * Formula 3 in its third season, because a rookie starts below the field on
+ * purpose and three seasons was not enough runway.
+ *
+ * So: run careers where the player trains between rounds the way a player would,
+ * and require that a decent proportion of them reach Formula 1 within a
+ * reasonable number of seasons — and that essentially none of them get stuck for
+ * ever, which would mean the drop rule has stopped biting.
+ */
+{
+  const REPS = 12;
+  const MAX_SEASONS = 12;
+  let reachedF1 = 0;
+  let reachedF2 = 0;
+  let ended = 0;
+  let totalSeasonsToF1 = 0;
+
+  for (let i = 0; i < REPS; i++) {
+    const career = Career.create({
+      firstName: 'Probe', lastName: 'Driver', nationality: 'United Kingdom',
+      seed: 500 + i * 131,
+    });
+    const rng = new Rng(900 + i);
+    let seasons = 0;
+    let sawF2 = false;
+    let sawF1 = false;
+
+    while (seasons < MAX_SEASONS && !career.state.endedReason) {
+      // Spend the slots the way somebody trying to be promoted would.
+      let guard = 0;
+      while (!seasonComplete(career.world, career.season, career.tier)) {
+        career.spendPrepSlot('train', 'skill');
+        career.spendPrepSlot('train', 'consistency');
+        career.recordPlayerRound(
+          simulateRound(career.world, career.season, career.tier, rng));
+        if (++guard > 40) break;
+      }
+      career.endSeason();
+      seasons++;
+      if (career.tier === 'F2') sawF2 = true;
+      if (career.tier === 'F1') { sawF1 = true; break; }
+    }
+
+    if (sawF2) reachedF2++;
+    if (sawF1) { reachedF1++; totalSeasonsToF1 += seasons; }
+    if (career.state.endedReason) ended++;
+
+    checkWorld(career.world, `progression career ${i}`);
+  }
+
+  console.log(`progression: ${reachedF2}/${REPS} reached F2, ${reachedF1}/${REPS} reached F1` +
+    (reachedF1 > 0 ? ` in ${(totalSeasonsToF1 / reachedF1).toFixed(1)} seasons on average` : '') +
+    `, ${ended}/${REPS} careers ended early`);
+
+  check(reachedF2 >= REPS * 0.5,
+    `only ${reachedF2} of ${REPS} training careers got out of Formula 3 — the ladder is too steep`);
+  check(reachedF1 >= REPS * 0.25,
+    `only ${reachedF1} of ${REPS} training careers reached Formula 1 in ${MAX_SEASONS} seasons`);
+  check(ended < REPS,
+    'every career ended early, so the drop rule is unsurvivable');
 }
 
 // ---------------------------------------------------------------------------

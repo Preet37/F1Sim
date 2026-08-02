@@ -803,6 +803,31 @@ function fillSeats(
   }
 }
 
+/**
+ * Runs the market again over a world with no promotions pending.
+ *
+ * Exists because THE PLAYER MOVES AFTER THE MARKET HAS CLOSED. The off-season
+ * fills every seat, and only then does the career place the player — which is
+ * the right order, because where the player lands depends on what the market
+ * left open. But a player promoted out of Formula 2 takes a seat with them, and
+ * that seat is now empty in a championship the market has finished with.
+ *
+ * `probe:season` caught it as Formula 2 running twenty-one cars in exactly the
+ * seasons a training career was promoted, which is a lovely example of a bug
+ * that only appears when the player does well.
+ */
+export function settleGrid(
+  world: CareerWorld, rng: Rng, playerDriverId?: string,
+): OffSeasonReport {
+  const report: OffSeasonReport = {
+    year: world.season,
+    champions: [], constructorChampions: [],
+    promotions: [], departures: [], signings: [], rookies: [],
+  };
+  fillSeats(world, report, new Set(), rng, playerDriverId);
+  return report;
+}
+
 /** How good a car is, in one number, for ranking teams against each other. */
 function rateCar(team: WorldTeam): number {
   const p = performanceOf(team);
