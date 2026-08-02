@@ -326,6 +326,8 @@ interface PitBoxState {
   /** Stationary time of this car's most recent completed stop, or 0. */
   lastStationaryS: number;
   progress: PitStopProgress;
+  /** The object `pitStopOf` hands out. Reused; never reallocated. */
+  view: PitStopView;
 }
 
 /** What a stop that went wrong is called on the radio. */
@@ -512,6 +514,10 @@ export class RaceEngine {
         missedBox: false,
         lastStationaryS: 0,
         progress: makePitStopProgress(),
+        view: {
+          active: false, elapsedS: 0, result: null, progress: makePitStopProgress(),
+          heldForTrafficS: 0, offMarksM: 0, lastStationaryS: 0,
+        },
       });
       this.cars.push(car);
       this.standings.push(car);
@@ -2547,15 +2553,19 @@ export class RaceEngine {
    */
   pitStopOf(car: CarEntry): PitStopView {
     const box = this.pitBox[car.index];
-    return {
-      active: car.inPitBox,
-      elapsedS: box.elapsedS,
-      result: box.result,
-      progress: box.progress,
-      heldForTrafficS: box.holdS,
-      offMarksM: box.offMarksM,
-      lastStationaryS: box.lastStationaryS,
-    };
+    // Written into the car's own view object rather than returned as a fresh
+    // one. The renderer asks this for every car in a box on every frame and the
+    // crew asks it again, and a stop is the one moment in a race when the
+    // frame budget is already being spent on twenty-one animated figures.
+    const v = box.view;
+    v.active = car.inPitBox;
+    v.elapsedS = box.elapsedS;
+    v.result = box.result;
+    v.progress = box.progress;
+    v.heldForTrafficS = box.holdS;
+    v.offMarksM = box.offMarksM;
+    v.lastStationaryS = box.lastStationaryS;
+    return v;
   }
 
   /**
