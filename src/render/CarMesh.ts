@@ -19,7 +19,8 @@ import {
 } from './TyreTexture';
 import type { CompoundId } from '../data/tires';
 import {
-  buildCockpit, MIRROR_X, MIRROR_Y, MIRROR_Z, MIRROR_GLASS_Z,
+  buildCockpit, mirrorPaneBasis, MIRROR_Y, MIRROR_Z,
+  PANE_W as MIRROR_PANE_W, PANE_H as MIRROR_PANE_H,
   type CockpitVisual,
 } from './CockpitMesh';
 import { carbonWeaveMap, disposeDetailMaps } from './DetailMaps';
@@ -2266,38 +2267,79 @@ function buildShellParts(
       side * 0.470, MIRROR_Y + 0.002, MIRROR_Z,
       0.011, t.strut,
     ), 'trim');
-    // A moulded pod, not a brick: the housing tapers rearward and is rounded on
-    // every edge, which is what it looks like on the reference car and what
-    // makes the two of them read as aerodynamic parts rather than as luggage.
+    // A moulded pod, not a brick: rounded on every edge, which is what it looks
+    // like on the reference car and what makes the two of them read as
+    // aerodynamic parts rather than as luggage. In CARBON rather than in the
+    // team's paint, because on the onboard a mirror is 0.8m from the eye and
+    // therefore large whatever its real size: a body-coloured block that close
+    // reads as two bright slabs pushing in from the edges of the frame. Every
+    // reference frame has dark pods with only a slim lit top surface.
     //
-    // Wider and flatter than it was, and in CARBON rather than in the team's
-    // paint. Both changes are about the onboard view, where a mirror is 0.8m
-    // from the eye and therefore large whatever its real size: a body-coloured
-    // block that close reads as two bright slabs pushing in from the edges of
-    // the frame, which is exactly the complaint. Every reference frame has dark
-    // pods with only a slim lit top surface, so the eye files them with the
-    // cockpit surround instead of treating them as objects.
-    // Its underside is lifted 7mm and its crown raised to match, so the pod's
-    // shoulder at y = 0.5504 has visible daylight under the housing instead of
-    // 3.6mm of contact. `MIRROR_Y` itself cannot move — it is pinned at 0.578
-    // by how much of the pane the halo's rear rail covers from each onboard
-    // camera, which is measured in CockpitMesh and not a free parameter — so
-    // the clearance has to come out of the housing's own section.
+    // IT TAPERED THE WRONG WAY, AND THAT IS WHY THE MIRRORS NEVER WORKED. The
+    // sections ran 117mm across at z = 0.794 down to 72mm at the back face —
+    // widest 30mm IN FRONT of the glass and narrowest AT it. Every millimetre of
+    // fairing was on the end nobody looks at, and the aperture presented to the
+    // one eye that has to look into it was 77 by 37, which capped the pane at
+    // 74 by 32 against a regulation minimum of 150 by 50. A driver looking in
+    // was looking down a funnel that opens AWAY from him.
+    //
+    // Now it is built the way a real mirror pod is, and in the PANE'S OWN
+    // FRAME rather than square to the car:
+    //
+    //  - the widest, flattest station IS the face the glass sits in, and it
+    //    tapers forward from there into a blunt rounded nose 108mm ahead of it.
+    //    172mm across the back, 38mm at the nose. The depth matters as much as
+    //    the direction: at the 62mm it was first rebuilt to, a pod 172 wide and
+    //    55 tall is a knife blade edge-on and read as one from the front;
+    //  - the whole loft is rotated by the pane's own quaternion, so the fairing
+    //    points where the mirror points. This is not cosmetic. The pane is
+    //    yawed 10.6 degrees inboard and pitched 8.2 degrees up, so a 150mm one
+    //    sweeps 34mm in z: mounted in a housing built square to the car its
+    //    inboard corner would hang 14mm out through the side of the pod, which
+    //    is the same "black piece sticking out" in a new place;
+    //  - the aperture is sized FROM `PANE_W`/`PANE_H` rather than guessed at,
+    //    with an 11mm surround around the glass, so the two cannot drift apart
+    //    again in either direction.
+    //
+    // WHAT SETS ITS HEIGHT. The sidepod's crown directly under the housing is at
+    // y = 0.540 — measured off the built geometry, not read off the sections —
+    // and `MIRROR_Y` is pinned at 0.578 by how much of the pane the halo's rear
+    // rail covers from each onboard camera (see CockpitMesh). The surround is
+    // therefore deliberately asymmetric: 2.5mm of it below the glass and 7.5mm
+    // above, which puts the underside at 0.5523 with 12.3mm of daylight over
+    // the pod. Split evenly it would be at 0.5475, and 7mm of gap closes up
+    // from any shallow angle into the "lump moulded into the pod's shoulder"
+    // this housing has twice been fixed for.
+    const { quaternion, position, normal } = mirrorPaneBasis(side);
+    const halfW = MIRROR_PANE_W * 0.5 + 0.011;
+    const below = MIRROR_PANE_H * 0.5 + 0.0025;
+    const above = MIRROR_PANE_H * 0.5 + 0.0075;
+    // Built about the glass: local +z is the mirror's normal, pointing back at
+    // the driver, and local z = 0 is the reflective surface.
     const housing = small([
-      section(MIRROR_Z + 0.021, 0.0580, MIRROR_Y - 0.020, MIRROR_Y + 0.028, 0.42),
-      section(MIRROR_Z + 0.004, 0.0585, MIRROR_Y - 0.021, MIRROR_Y + 0.029, 0.45),
-      section(MIRROR_Z - 0.014, 0.0520, MIRROR_Y - 0.019, MIRROR_Y + 0.028, 0.55),
-      section(MIRROR_Z - 0.026, 0.0360, MIRROR_Y - 0.014, MIRROR_Y + 0.024, 0.80),
+      section(-0.104, halfW * 0.22, -below * 0.40, above * 0.46, 0.95),
+      section(-0.086, halfW * 0.46, -below * 0.64, above * 0.70, 0.85),
+      section(-0.062, halfW * 0.70, -below * 0.82, above * 0.86, 0.72),
+      section(-0.036, halfW * 0.87, -below * 0.93, above * 0.95, 0.60),
+      section(-0.014, halfW * 0.97, -below * 0.99, above * 0.99, 0.48),
+      section(0.004, halfW, -below, above, 0.42),
     ], t.detail);
     p.tag(`mirror housing ${side < 0 ? 'L' : 'R'}`);
-    housing.translate(side * MIRROR_X, 0, 0);
+    housing.applyQuaternion(quaternion);
+    housing.translate(position.x, position.y, position.z);
     p.flat(housing, 'carbon');
     // A flat dark pane, so the mirrors read from outside too. The player's own
-    // car covers this with a reflective one; see CockpitMesh.
-    const glass = new THREE.PlaneGeometry(0.096, 0.036);
-    glass.rotateY(Math.PI);
+    // car covers this with a reflective one; see CockpitMesh. Same size, same
+    // basis, 2mm deeper into the housing so the live pane wins where there is
+    // one and there is nothing to z-fight where there is not.
+    const glass = new THREE.PlaneGeometry(MIRROR_PANE_W, MIRROR_PANE_H);
+    glass.applyQuaternion(quaternion);
     p.tag(`mirror glass ${side < 0 ? 'L' : 'R'}`);
-    glass.translate(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z);
+    glass.translate(
+      position.x - normal.x * 0.002,
+      position.y - normal.y * 0.002,
+      position.z - normal.z * 0.002,
+    );
     p.flat(glass, 'glass');
   }
 

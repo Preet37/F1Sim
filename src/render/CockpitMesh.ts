@@ -409,33 +409,46 @@ export interface CockpitVisual {
  *
  * THE ASPECT RATIO IS NOT FREE. It has to be the PANE's aspect, or the feed is
  * stretched on its way onto the glass and everything in the mirror is the wrong
- * shape. 256 by 112 is 2.286:1 and `PANE_W / PANE_H` is 2.284:1. Two of them in
- * half-float come to 448KB.
+ * shape. The pane is now 150 by 46, so 300 by 92 — 75:23 on both, exactly. The
+ * pane doubled in width and the target went up by a sixth, because what the
+ * extra width buys is magnification on the glass rather than more pixels: see
+ * `MIRROR_FOV`, which came DOWN to hold the same lens. Two of them in half-float
+ * come to 441KB, seven kilobytes less than the pair they replace.
  */
-const MIRROR_W = 256;
-const MIRROR_H = 112;
+const MIRROR_W = 300;
+const MIRROR_H = 92;
 
 /**
  * Reflective area of one pane, metres.
  *
  * SIZED TO THE HOUSING, and that is a constraint rather than a preference.
- * CarMesh lofts the pod around `MIRROR_X/Y/Z` and it tapers REARWARD — 117mm
- * across at its widest station, z = 0.794, down to 72mm at its back face,
- * z = 0.764 — so the aperture actually facing the driver, at the glass station
- * z = 0.769, is about 77mm by 37mm with heavily rounded corners. The pane that
- * used to be here was 112 by 42 and stood proud of the pod that is supposed to
- * hold it by seventeen millimetres a side.
  *
- * That is half of "the mirrors are into the car and there is some black piece
- * sticking out". The other half is the roll, and it is directly below.
+ * IT USED TO BE SIZED TO THE WRONG END OF IT. CarMesh lofted the pod so that it
+ * tapered REARWARD — 117mm across at z = 0.794 down to 72mm at its back face,
+ * z = 0.764 — which put the wide end of the fairing at the end nobody looks at
+ * and the narrow end facing the driver. The aperture at the glass station was
+ * about 77 by 37, so the glass was capped at 74 by 32 against a regulation
+ * MINIMUM of 150 by 50 (Article 14.3), and even that stood 5mm a side proud of
+ * the housing it was in. That is "the mirrors are into the car and there is
+ * some black piece sticking out"; the other half of it was the roll, below.
  *
- * A real F1 mirror's reflective area is nearer 150 by 50, and ours cannot be
- * until the pod stops narrowing toward the one eye that has to look into it.
- * That is CarMesh's geometry rather than this module's; what is fixed here is
- * that the glass no longer hangs out of its own housing.
+ * The housing is now built the way a real one is: its widest, flattest station
+ * IS the face the glass sits in, and it tapers forward from there into a nose.
+ * It is also built in the PANE'S OWN FRAME rather than square to the car, so
+ * the fairing points where the mirror points and a 150mm pane yawed 10.6
+ * degrees no longer has a corner hanging 14mm out through the side of its pod.
+ *
+ * 150mm across is the regulation figure exactly. 46 rather than 50 tall is the
+ * one dimension still short, and the reason is measured rather than guessed:
+ * the sidepod's crown under the housing is at y = 0.540, `MIRROR_Y` is pinned
+ * at 0.578 by halo occlusion (above), and a 50mm pane centred there needs the
+ * housing's underside at 0.549 — nine millimetres off the bodywork, which from
+ * any shallow angle closes up and puts the mirror back to reading as a lump
+ * moulded into the pod. 46mm leaves 12.5mm of daylight. Reflective area goes
+ * from 2400mm2 to 6900mm2, which is 2.9x, and the aspect ratio is unchanged.
  */
-const PANE_W = 0.074;
-const PANE_H = 0.0324;
+export const PANE_W = 0.150;
+export const PANE_H = 0.046;
 
 /**
  * How many frames apart two consecutive mirror renders are.
@@ -480,11 +493,17 @@ export { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW };
  * vertical is 91 degrees across, not 78. A 91-degree lens squeezed into a pane
  * fifty pixels wide puts a car twenty-five metres back at under four pixels,
  * which is the difference between a mirror you can read and a mirror you cannot.
- * 39 vertical on the 2.286 target below is 78.4 across — what the comment always
- * claimed — and magnifies everything in the pane by 1.16. It still spans plus
- * and minus 39 degrees, which covers a rival level with the rear wheel.
+ * 39 vertical on the 2.286 target was 78.4 across — what the comment always
+ * claimed — and magnified everything in the pane by 1.16.
+ *
+ * 28 NOW, AND IT IS THE SAME LENS. The pane went from 74x32 to 150x46, so its
+ * aspect went from 2.284 to 3.261; holding 39 vertical on that would have opened
+ * the lens to 98 degrees across and thrown away the whole point of the bigger
+ * glass. 28 vertical on 3.261 is 78.2 across — the same horizontal angle, on a
+ * pane twice as wide, which is what magnification means. A car twenty-five
+ * metres back is now about 2.1 times the on-glass size it was.
  */
-const MIRROR_FOV = 39;
+const MIRROR_FOV = 28;
 
 /**
  * How far a mirror can see, metres.

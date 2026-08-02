@@ -98,6 +98,19 @@ interface Target {
    * The number that decides whether a mirror is legible, and the one nobody
    * measured through four passes of "the mirrors don't work". A pane can be
    * correctly aimed, correctly fed and completely useless.
+   *
+   * THESE BANDS MOVED, and it is worth being plain about why, because moving a
+   * probe's tolerance to admit the change you just made is usually how a probe
+   * stops being worth running. They were never measured off reference footage —
+   * reread the note under `driver` as it was written and it describes the
+   * geometry that existed at the time, not a photograph. What they actually
+   * were was a sanity band around a 74 x 32mm pane, and that pane was 74 x 32
+   * because the housing holding it tapered the wrong way (see the note on
+   * `PANE_W` in CockpitMesh). The glass is now 150 x 46 — 150 is the FIA's own
+   * minimum reflective width, Article 14.3 — so the pane reads about twice as
+   * wide from every eye, and a band that failed that is a band describing a
+   * defect. The lower bounds are unchanged in spirit and the upper ones are
+   * roughly doubled, which is exactly the geometric change and nothing more.
    */
   panePct: [number, number];
   /**
@@ -171,15 +184,17 @@ const TARGETS: Record<string, Target> = {
     occludePct: [2.0, 16.0],
     railExit: 'side',
     // 99 means "the whole pane is inside the frame", because what is measured
-    // is its OUTBOARD CORNER and 100 is the edge. On 16:9 that corner reaches
-    // 93 to 97 per cent of frame width — hard against the edge, which is where
+    // is where its CENTRE lands and 100 is the edge. On 16:9 that centre reaches
+    // 93 to 96 per cent of frame width — hard against the edge, which is where
     // a real driver's-eye onboard carries a mirror, and as far in as it can
     // come without either widening the lens past a fisheye or moving the
-    // mounting point, which is CarMesh's. Worst case Monza, 97. On the 2.17:1
-    // phone the report came from it is 85 to 89, with the pane 6 to 8 per cent
-    // of frame width across against the cockpit's 3.9 and the T-cam's 2.9.
+    // mounting point, which is CarMesh's. On the 2.17:1 phone the report came
+    // from it is 85 to 89. The pane now reads 13 to 19.5 per cent of frame width
+    // across against the cockpit's 8 to 10 and the T-cam's 6 to 7.
     mirrorMaxXPct: 99,
-    panePct: [4.0, 12.0],
+    panePct: [10.0, 22.0],
+    // Zero on every circuit and both frames: from the driver's own eye the
+    // hoop's rear leg passes above the pane and covers none of it.
     paneBlockedMaxPct: 25,
     aimErrorMaxDeg: 22,
     wheelPct: [52, 76],
@@ -193,8 +208,11 @@ const TARGETS: Record<string, Target> = {
     railExit: 'bottom',
     mirrorMaxXPct: 96,
     // Half the driver's, because the eye is nearly twice as far from the pane.
-    panePct: [2.0, 7.0],
-    paneBlockedMaxPct: 60,
+    panePct: [6.0, 13.0],
+    // 60 before the pane grew. A taller pane drops further out from under the
+    // hoop's rear leg than the leg widens to follow it, so the same halo across
+    // the same mirror now covers 39 to 41 per cent instead of 57.
+    paneBlockedMaxPct: 50,
     aimErrorMaxDeg: 12,
     wheelPct: [62, 86],
   },
@@ -206,8 +224,11 @@ const TARGETS: Record<string, Target> = {
     occludePct: [1.0, 7.0],
     railExit: 'bottom',
     mirrorMaxXPct: 96,
-    panePct: [1.5, 6.0],
-    paneBlockedMaxPct: 80,
+    panePct: [4.0, 9.0],
+    // 80 before, and it was the worst number on the car: from 0.8m further back
+    // than the cockpit eye the hoop lay across seven tenths of a pane that was
+    // mostly not there. 37 to 40 now.
+    paneBlockedMaxPct: 55,
     aimErrorMaxDeg: 22,
     wheelPct: [64, 90],
   },

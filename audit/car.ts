@@ -260,6 +260,13 @@ const VIEWS = {
   airbox: { pos: [2.0, 1.55, -0.4], at: [0, 0.78, -0.6], fov: 34 },
   frontWing: { pos: [1.9, 0.5, 4.2], at: [0, 0.2, 2.9], fov: 30 },
   cockpit: { pos: [1.5, 1.35, 1.5], at: [0, 0.62, 0.35], fov: 34 },
+  // The mirror, from the DRIVER'S OWN EYE — `DRIVER_EYE_X/Y/Z` in CockpitMesh,
+  // 0,0.770,0.165 — looking straight at the left pane. Every other view here is
+  // outside the car, and a mirror judged from outside the car is a mirror
+  // judged by the one party who never has to use it: three passes called the
+  // pods "small dark blisters on the shoulder, fine" while the aperture facing
+  // the driver was 77mm across. This is the shot that shows what he sees.
+  mirror: { pos: [0, 0.770, 0.165], at: [0.505, 0.578, 0.766], fov: 30 },
   floor: { pos: [3.2, 0.22, -1.4], at: [0, 0.18, 0.4], fov: 30 },
 } as const;
 
