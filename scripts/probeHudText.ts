@@ -23,7 +23,8 @@ import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
-  radioExchange, relayed, repairableInBox, standingsCells, teamLine, towerFit, weatherReadout,
+  pitCueText, radioExchange, relayed, repairableInBox, standingsCells, teamLine, towerFit,
+  weatherReadout,
 } from '../src/ui/Hud';
 import { COMPONENT_IDS } from '../src/race/DamageModel';
 import type { RaceControlMessage, TeamNote } from '../src/race/RaceControlManager';
@@ -176,6 +177,16 @@ for (const advice of ADVICES) {
     `"${advice}" is still being shouted: ${call.line}`);
   check(/[.!?]$/.test(call.line), `"${advice}" is not punctuated as a sentence`);
   check(call.chip === 'PRESS PIT', `"${advice}" does not say which control acts on it`);
+
+  // The live cue beside it is an instrument rather than a person, so capitals
+  // are right — but it may not say the same word three times, which is what
+  // `DAMAGE — PIT FOR REPAIRS — PRESS PIT` did.
+  const cue = pitCueText(advice);
+  check(cue.endsWith('· PRESS PIT'), `the cue for "${advice}" does not name the control`);
+  check(cue.split(/\s+/).length <= 7, `the cue "${cue}" is too long to read at speed`);
+  const pits = cue.toLowerCase().match(/\bpit\b/g) ?? [];
+  check(pits.length <= 1, `the cue "${cue}" says "pit" ${pits.length} times`);
+  check(!cue.includes(' — '), `the cue "${cue}" still carries the log's dash`);
 }
 console.log(`pit calls voiced: ${ADVICES.length}`);
 

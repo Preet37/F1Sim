@@ -1147,7 +1147,12 @@ export class Hud {
       cls += ' cue-live';
     } else {
       const advice = engine.pitAdvice(player);
-      if (advice) { text = advice + ' — PRESS PIT'; cls += ' cue-warn'; }
+      // The cue is an instrument, not the principal — capitals belong here, and
+      // it stays up for as long as the reason stands. What it must not do is
+      // print the advice string twice over: `DAMAGE — PIT FOR REPAIRS — PRESS
+      // PIT` says "pit" three times in five words. The reason, then the
+      // control, and nothing between them.
+      if (advice) { text = pitCueText(advice); cls += ' cue-warn'; }
       else {
         const planned = plannedStopCue(engine, player);
         if (planned) { text = planned; cls += ' cue-live'; }
@@ -1582,6 +1587,17 @@ export class Hud {
    */
   private updateRadioCard(engine: RaceEngine, player: CarEntry): void {
     const rc = engine.raceControl;
+
+    // A card that was admitted on a tall window and is still standing on a
+    // short one. `showRadioCard` declines below 470px and while a stop is being
+    // chosen, but neither of those is checked again once the card is up — so
+    // rotating a phone, or calling for a stop mid-clip, left it hanging out of
+    // the top of the band. Same fault as the pop-up budget: a condition tested
+    // only on the way in is not a condition.
+    if (this.radioCard.style.display !== 'none' &&
+        (window.innerHeight <= 470 || this.pitSheetOpen)) {
+      this.hideRadioCard(true);
+    }
 
     if (rc.neutralisation !== this.lastNeutral) {
       const was = this.lastNeutral;
@@ -2206,6 +2222,30 @@ export function spokenPart(name: string): string {
 }
 
 export type AlertTone = 'info' | 'warn' | 'urgent' | 'go';
+
+/**
+ * The live pit cue: the reason, then the control.
+ *
+ * Six words at most, because this one is read in peripheral vision at 300km/h
+ * and it stands for as long as the reason does. It is the one place raw
+ * capitals are correct — it is an instrument, not a person — but it still may
+ * not repeat itself, and `DAMAGE — PIT FOR REPAIRS — PRESS PIT` said "pit"
+ * three times in five words.
+ */
+export function pitCueText(advice: string): string {
+  return (PIT_CUE[advice] ?? advice) + ' · PRESS PIT';
+}
+
+const PIT_CUE: Readonly<Record<string, string>> = {
+  'DRIVE-THROUGH TO SERVE': 'DRIVE-THROUGH TO SERVE',
+  'PENALTY TO SERVE': 'PENALTY TO SERVE',
+  'DAMAGE — PIT FOR REPAIRS': 'DAMAGE ON THE CAR',
+  'RAIN — WET TYRES': 'RAIN · WETS',
+  'TRACK DRY — SLICKS': 'TRACK DRYING · SLICKS',
+  'TYRES GONE': 'TYRES GONE',
+  'SECOND COMPOUND REQUIRED': 'SECOND COMPOUND OWED',
+  'TYRES WORN — PIT WINDOW OPEN': 'WINDOW OPEN',
+};
 
 const PIT_VOICE: Readonly<Record<string, { line: string; tone: AlertTone }>> = {
   'DRIVE-THROUGH TO SERVE': {
