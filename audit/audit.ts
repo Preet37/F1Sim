@@ -430,6 +430,42 @@ async function shootKerb(fraction: number, side: -1 | 1): Promise<string> {
   return drawAndShoot(renderFree);
 }
 
+/**
+ * Straight down onto one pile of carbon.
+ *
+ * Aimed at the pile's own world position rather than at a lap fraction. The
+ * fraction-based shot kept coming back as clean asphalt for a reason worth
+ * writing down: an accident scatters bodywork over a hundred metres of road,
+ * the piles are at the points the parts came off rather than at one place, and
+ * a camera pointed at the median of them is easily looking at the gap between
+ * two.
+ */
+async function shootPile(index: number, height: number): Promise<string> {
+  const piles = engine!.debris.piles;
+  if (piles.length === 0) return shootDebris(focusFraction(), height);
+  const p = piles[Math.min(index, piles.length - 1)];
+  const track = engine!.track;
+  const i = track.indexAt(p.s % track.length);
+  const y = track.elevationAt(p.s);
+  // Slightly off vertical and looking back down the road, so a shard reads as
+  // an object lying ON something rather than as a mark painted on it.
+  freeCam.position.set(
+    p.x - track.tx[i] * height * 0.55,
+    y + height,
+    p.z - track.tz[i] * height * 0.55,
+  );
+  freeCam.up.set(0, 1, 0);
+  freeCam.lookAt(p.x, y, p.z);
+  freeCam.fov = 50;
+  freeCam.updateProjectionMatrix();
+  return drawAndShoot(renderFree);
+}
+
+/** How many piles of carbon are on the circuit right now. */
+function pileCount(): number {
+  return engine!.debris.piles.length;
+}
+
 /** Close plan over the road, for counting and colouring what is lying on it. */
 async function shootDebris(fraction: number, height: number): Promise<string> {
   const track = engine!.track;
@@ -484,7 +520,6 @@ function corners(n: number): CornerInfo[] {
 function measure(): TrackStats {
   const track = engine!.track;
   const n = track.count;
-  const per = track.length / n;
   let kl = 0, kr = 0, ke = 0, u400 = 0, u250 = 0, u120 = 0;
   const halves: number[] = [];
   for (let i = 0; i < n; i++) {

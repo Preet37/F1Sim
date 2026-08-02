@@ -2517,9 +2517,24 @@ export class RaceEngine {
     car: CarEntry, size: readonly [number, number, number],
     pieces: number, source: number, heightM: number,
   ): void {
-    const offRoadM = Math.abs(car.lateral) - this.track.halfWidthAt(car.s);
+    // Where it will COME TO REST, not where it left the car.
+    //
+    // A wing that comes off at 300 km/h keeps most of that speed for the second
+    // or so it is in the air, so it lands the better part of a corner's length
+    // further on. The ledger's position is what decides which marshalling post
+    // shows the flag and how far somebody has to walk, and both of those are
+    // about where the carbon ends up. Filing it at the point of failure put the
+    // yellow out at the wrong post at any real speed.
+    //
+    // The fraction is the one `Wreckage.spawn` carries forward — a piece keeps
+    // 55-90% of the car's velocity — times a flight of roughly eight tenths of
+    // a second, which is what the ballistic arc there works out to from the
+    // launch heights it uses.
+    const carryM = Math.min(80, car.physics.speedMs * 0.72 * 0.8);
+    const s = wrapDistance(car.s + carryM, this.track.length);
+    const offRoadM = Math.abs(car.lateral) - this.track.halfWidthAt(s);
     this.debris.add({
-      s: car.s,
+      s,
       lateralM: car.lateral,
       ownerIndex: car.index,
       x: car.physics.position.x,
