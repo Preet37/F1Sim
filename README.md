@@ -386,7 +386,8 @@ src/
                 GPU particles, skid marks, surface detail, post-processing chain
   input/        unified keyboard / gamepad / touch / tilt
   ui/           telemetry HUD, wheel display, damage panel, sector board, paddock
-  career/       F3→F1 ladder, JSON narrative events, versioned saves
+  career/       three championships, the ladder, the transfer market, versioned saves
+  data/roster/  the real 2026 grids — the only module that names anything real
 scripts/        validation and calibration harnesses
 ```
 
@@ -396,7 +397,24 @@ is the only practical way to test whether the AI can actually race.
 
 ## Licence
 
-Code is provided as-is for personal use. Teams and drivers are original work and
-no Formula 1 intellectual property is included. Circuit centreline traces in
+Code is provided as-is for personal use.
+
+**Names, not marks.** Career mode uses the real 2026 Formula 1, Formula 2 and
+Formula 3 entry lists — team names, driver names, car numbers, nationalities and
+power-unit allocations. It reproduces **no** trademarked material: no team logo,
+badge or wordmark, no sponsor artwork, no driver likeness. Teams are identified
+the way a broadcast timing screen identifies them, by their real colours and by
+the geometric team marks this project generates. Sponsors on the cars are
+fictional and stay fictional, because a wordmark painted down a sidepod is
+reproduction rather than reference.
+
+All of it lives in `src/data/roster/`, behind generic `Team`, `Driver` and
+`PowerUnit` interfaces. Nothing else in the codebase names a real team or driver,
+so replacing the whole roster with a fictional grid — the original ten invented
+teams are still in `src/data/teams.ts` and are what Quick Race and every
+validation harness measure — is one module and one import. Driver ability ratings
+are this project's own estimates and come from no source.
+
+Circuit centreline traces in
 `data/circuits/` are vendored from bacinger/f1-circuits under the MIT licence —
 see `data/circuits/LICENSE-f1-circuits.md`.
