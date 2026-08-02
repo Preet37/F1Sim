@@ -1193,7 +1193,19 @@ export class Hud {
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
     const fit = towerFit(window.innerWidth, window.innerHeight);
-    const shown = Math.min(standings.length, fit.rows);
+    // THE TOWER GIVES WAY TO THE PIT SHEET on a short screen. 390 pixels of
+    // height leaves the notice rail a 94-pixel band between the running order
+    // and the tyre panel, and no arrangement of a tyre choice and a wing choice
+    // fits in 94. So while a stop is being chosen the order drops its rows and
+    // keeps its header — the lap count, your position, the fastest lap — and
+    // the rail takes the space back for the few seconds the decision takes.
+    //
+    // Decided HERE rather than in the stylesheet because the row's `display` is
+    // written inline by the loop below, and an inline style beats any rule a
+    // media query can offer. The tower's own row count is the only honest place
+    // to say "no rows".
+    const squeezed = this.pitSheetOpen && window.innerHeight <= 470;
+    const shown = squeezed ? 0 : Math.min(standings.length, fit.rows);
     this.ensureRows(shown);
 
     // A window around the player whenever the whole field does not fit — being
@@ -2162,7 +2174,7 @@ export function pitCall(
   // nose and the sidepods, so a car with a cracked floor was being told it
   // would get a front wing — a claim the damage diagram beside it disproves.
   if (advice === 'DAMAGE — PIT FOR REPAIRS' && damage) {
-    const part = damage.part.toLowerCase();
+    const part = spokenPart(damage.part);
     return {
       line: damage.repairable
         ? 'The ' + part + ' has gone. Box this lap and we put a new one on.'
@@ -2178,6 +2190,19 @@ export function pitCall(
 /** What the crew can actually change in three seconds. Everything else stays. */
 export function repairableInBox(id: ComponentId): boolean {
   return id === 'frontWingL' || id === 'frontWingR' || id === 'sidepodL' || id === 'sidepodR';
+}
+
+/**
+ * A component's name as a person says it.
+ *
+ * `COMPONENT_NAMES` marks the side — `Front wing (L)` — because the damage
+ * diagram has two of most things and has to say which. Speech does not: nobody
+ * on a pit wall has ever said "the front wing (l) has gone", which is exactly
+ * what came out of the first version of this. The side is dropped and the
+ * sentence keeps the part.
+ */
+export function spokenPart(name: string): string {
+  return name.replace(/\s*\([LR]\)\s*$/, '').toLowerCase();
 }
 
 export type AlertTone = 'info' | 'warn' | 'urgent' | 'go';
@@ -2378,7 +2403,7 @@ export function teamLine(
         };
 
     case 'damage': {
-      const part = note.part.toLowerCase();
+      const part = spokenPart(note.part);
       if (ctx.mate) {
         return { line: who + ' has ' + part + ' damage. Their pace is going to fall away.', tone: 'info' };
       }

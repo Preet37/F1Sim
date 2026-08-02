@@ -357,7 +357,7 @@ check(!sawForeignTeamNote,
 const ALL_NOTES: TeamNote[] = [
   { kind: 'off', corner: 'Eau Rouge', hit: 'the barrier', heavy: true },
   { kind: 'off', corner: 'Les Combes', hit: '', heavy: false },
-  { kind: 'damage', part: 'Rear suspension', health: 0.35 },
+  { kind: 'damage', part: 'Rear suspension (R)', health: 0.35 },
   { kind: 'damage', part: 'Floor', health: 0.8 },
   { kind: 'retired', reason: 'terminal damage' },
   { kind: 'failure', cause: 'Power unit failure' },
@@ -380,6 +380,8 @@ for (const note of ALL_NOTES) {
       `${note.kind}/${mate ? 'mate' : 'self'}: not a sentence — "${said.line}"`);
     check(!/^[A-Z0-9 ]{3,} — /.test(said.line),
       `${note.kind}/${mate ? 'mate' : 'self'}: reads as signage — "${said.line}"`);
+    check(!/\([LR]\)/i.test(said.line),
+      `${note.kind}/${mate ? 'mate' : 'self'}: says a side marker out loud — "${said.line}"`);
     // A line about the team-mate has to name them, or the player cannot tell
     // which of the two cars it is about.
     if (mate) {
@@ -577,7 +579,11 @@ for (const kind of ['practice', 'qualifying', 'race'] as const) {
 
 // The damage pop-up must not promise a part the crew is not going to fit.
 {
-  const wing = pitCall('DAMAGE — PIT FOR REPAIRS', { part: 'Front wing', repairable: true });
+  // The name as the diagram writes it, with the side on it — which is what the
+  // caller actually passes and what produced "the front wing (l) has gone".
+  const wing = pitCall('DAMAGE — PIT FOR REPAIRS', { part: 'Front wing (L)', repairable: true });
+  check(wing !== null && !/\(/.test(wing.line),
+    `the spoken line still carries the diagram's side marker: "${wing?.line}"`);
   check(wing !== null && /new one/.test(wing.line),
     `a repairable wing is not offered a replacement: "${wing?.line}"`);
   const floor = pitCall('DAMAGE — PIT FOR REPAIRS', { part: 'Floor', repairable: false });

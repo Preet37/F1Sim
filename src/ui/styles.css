@@ -4419,14 +4419,10 @@ table.standings tr.me td.who { font-weight: 700; }
 .hud-notices.has-pit .hud-pit-cue { display: none !important; }
 @media (max-height: 470px) {
   .hud-notices.has-pit .hud-neutral-cue { display: none !important; }
-  /* THE TOWER GIVES WAY. A 390px-tall screen leaves the rail a 56-pixel band
-     between the running order and the weather bug, and no arrangement of a
-     tyre choice and a wing choice fits in 56 pixels. So while the sheet is up
-     the running order collapses to its header — lap count, position, fastest
-     lap — and the rail takes the space back. Measured in `shoot:panels`: with
-     the tower at 76px the band runs 96..264, which is 168 for a sheet that
-     needs about 150. */
-  .hud.pit-open .hud-tower { max-height: 76px; overflow: hidden; }
+  /* THE TOWER GIVES WAY — see `Hud.updateTower`, which drops the ROWS while a
+     stop is being chosen. Only the column header is hidden here, because that
+     one has no inline style fighting it. */
+  .hud.pit-open .tower-cols { display: none; }
   .hud-notices.has-pit { top: calc(96px + var(--safe-t)); }
   /* The recommendation line is the first thing to go: the selected tile and
      the status line under it both already say what is being fitted. */
