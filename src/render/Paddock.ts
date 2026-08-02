@@ -345,6 +345,16 @@ export function buildPaddock(
     const apron = chamferBox(BAY_PITCH, 0.14, 3.4, 0.04);
     bay.add(apron, 0x8f959c, 0, 0.05, -1.6);
     apron.dispose();
+    // A painted stripe in the team's colour along the apron's front edge, and
+    // the pier faces picked out in the accent.
+    //
+    // Ten identical grey concrete boxes in a row is what made the pit lane read
+    // as an industrial estate. A real pit lane is COLOURED — every team paints
+    // its bay, and the run of ten different liveries down one wall is most of
+    // what says Grand Prix rather than warehouse.
+    const kerb = chamferBox(BAY_PITCH, 0.15, 0.34, 0.03);
+    bay.add(kerb, colour.getHex(), 0, 0.055, -3.16);
+    kerb.dispose();
 
     // Garage floor: pale epoxy, and it reads as *lit* because everything else
     // around it is dark.
@@ -352,11 +362,18 @@ export function buildPaddock(
     bay.add(floor, FLOOR, 0, 0.06, (z0 + z1) * 0.5);
     floor.dispose();
 
-    // Dividing piers between bays.
+    // Dividing piers between bays, with the team's accent down the front face
+    // of each. The accent strip is what turns a row of grey columns into ten
+    // separate garages seen from up the lane.
     const pier = chamferBox(1.1, FLOOR_H, BAY_DEPTH + 0.6, 0.08);
     bay.add(pier, CONCRETE_DARK, -half + 0.55, FLOOR_H * 0.5, (z0 + z1) * 0.5);
     bay.add(pier, CONCRETE_DARK, half - 0.55, FLOOR_H * 0.5, (z0 + z1) * 0.5);
     pier.dispose();
+    const pierFace = chamferBox(1.16, BAY_CLEAR - 0.4, 0.1, D.trim);
+    for (const sx of [-half + 0.55, half - 0.55]) {
+      bay.add(pierFace, accent.getHex(), sx, (BAY_CLEAR - 0.4) * 0.5, z0 - 0.35);
+    }
+    pierFace.dispose();
 
     // Side walls, in the team's colour, so the inside of the box is liveried.
     const sideWall = chamferBox(0.25, BAY_CLEAR, BAY_DEPTH, 0.04);
