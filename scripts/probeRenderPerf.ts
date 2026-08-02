@@ -475,7 +475,16 @@ async function main(): Promise<void> {
 
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+  // Chrome asks every document for `/favicon.ico` whether one is referenced or
+  // not, and this probe has no icon to give it — so a clean run reported a page
+  // error every time. Matched on the failing URL rather than the message: the
+  // text is the same for a missing icon and a missing module, so only the URL
+  // separates browser noise from the thing worth failing on.
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    if (/\/favicon\.ico(\?|$)/.test(m.location().url ?? '')) return;
+    errors.push(`console: ${m.text()}`);
+  });
 
   await page.goto(url, { waitUntil: 'load', timeout: 120_000 });
   console.log('GPU: ' + await gpuInfo(page));

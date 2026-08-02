@@ -67,10 +67,17 @@ async function main(): Promise<void> {
   // Chrome asks every document for a favicon it has not been offered, and the
   // resulting 404 made this sweep exit non-zero on every clean run. See the
   // same note in `shootHud.ts`.
+  //
+  // Matched on the URL that failed, NOT on the message. The message for a
+  // missing favicon and for a missing module are the same string — "Failed to
+  // load resource: the server responded with a status of 404" — so a text
+  // filter broad enough to catch the favicon also silently swallows a module
+  // that did not load, which is precisely the failure this sweep exists to
+  // catch. `m.location().url` is the one field that tells them apart.
   page.on('console', (m) => {
-    if (m.type() === 'error' && !/favicon\.ico|Failed to load resource/.test(m.text())) {
-      errors.push(`console: ${m.text()}`);
-    }
+    if (m.type() !== 'error') return;
+    if (/\/favicon\.ico(\?|$)/.test(m.location().url ?? '')) return;
+    errors.push(`console: ${m.text()}`);
   });
   await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
   await page.waitForFunction('!!window.__panels', { timeout: 60_000 });

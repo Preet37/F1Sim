@@ -71,9 +71,19 @@ interface Shot { label: string; file: string; }
  * always exits non-zero is a script whose exit code nobody reads any more,
  * which is worse than having no check at all. Everything else stays fatal.
  */
-function isBrowserNoise(text: string): boolean {
-  return /favicon\.ico/.test(text) ||
-    (/404 \(Not Found\)/.test(text) && /Failed to load resource/.test(text) && !/\.(ts|js|css)/.test(text));
+/**
+ * Decided on the URL that failed, not on the message.
+ *
+ * The console text is identical for a missing favicon and a missing module —
+ * "Failed to load resource: the server responded with a status of 404" — and
+ * does not name the resource, so no text rule can separate them. An earlier
+ * version tried, by excluding messages mentioning `.ts`/`.js`/`.css`; since
+ * the extension never appears in the text either, that test was always true
+ * and the filter swallowed every 404 there is, including the one case this
+ * sweep exists to catch. `m.location().url` is the field that distinguishes.
+ */
+function isBrowserNoise(url: string): boolean {
+  return /\/favicon\.ico(\?|$)/.test(url);
 }
 
 async function main(): Promise<void> {
@@ -125,7 +135,7 @@ async function main(): Promise<void> {
     page.setDefaultTimeout(240_000);
     page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
     page.on('console', (m) => {
-      if (m.type() === 'error' && !isBrowserNoise(m.text())) {
+      if (m.type() === 'error' && !isBrowserNoise(m.location().url ?? '')) {
         errors.push(`console: ${m.text()}`);
       }
     });
