@@ -2531,7 +2531,11 @@ class Game {
       round: career.round,
       circuitId,
       order,
-      retired: engine.cars.filter((c) => c.retired).map((c) => c.driver.id),
+      // Retirement and exclusion are separate outcomes under the 2026 rules and
+      // the engine models both, so the championship is told about both. A
+      // disqualified driver scores nothing but has not had a DNF.
+      retired: engine.cars.filter((c) => c.retired && !c.disqualified).map((c) => c.driver.id),
+      disqualified: engine.cars.filter((c) => c.disqualified).map((c) => c.driver.id),
       poleDriverId: order[0] ?? career.state.playerDriverId,
       fastestLapDriverId: fl ? fl.car.driver.id : (order[0] ?? ''),
       wetRace: engine.weather.hasRained,
@@ -3119,7 +3123,11 @@ class Game {
         round: this.career.round,
         circuitId: engine.track.def.id,
         order,
-        retired: engine.cars.filter((c) => c.retired).map((c) => c.driver.id),
+        // Retirement and exclusion are separate outcomes under the 2026 rules
+        // and the engine models both, so the championship is told about both. A
+        // disqualified driver scores nothing but has not had a DNF.
+        retired: engine.cars.filter((c) => c.retired && !c.disqualified).map((c) => c.driver.id),
+        disqualified: engine.cars.filter((c) => c.disqualified).map((c) => c.driver.id),
         poleDriverId: this.qualifyingGrid[0] ?? order[0] ?? '',
         fastestLapDriverId: fl ? fl.car.driver.id : (order[0] ?? ''),
         wetRace: engine.weather.hasRained,

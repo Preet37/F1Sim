@@ -45,10 +45,26 @@ export interface StandingsEntry {
 export interface RoundResult {
   round: number;
   circuitId: string;
-  /** Driver ids in classified order, retirements last. */
+  /** Driver ids in classified order: classified, then retired, then disqualified. */
   order: string[];
   /** Ids of drivers who did not finish. */
   retired: string[];
+  /**
+   * Ids of drivers excluded from the results.
+   *
+   * SEPARATE FROM `retired`, because the 2026 regulations make them separate
+   * outcomes and the race engine now models both. A retired car did not cover
+   * the distance; a disqualified one may well have won on the road and been
+   * excluded afterwards. Both score nothing, but only one of them is a DNF, and
+   * conflating them would put a disqualification in a driver's retirement count
+   * — which is the statistic a career screen shows to say how reliable their car
+   * has been.
+   *
+   * Optional because it was added after the save format shipped. `recordRound`
+   * treats a missing list as empty, and the codec's minor-version rule means a
+   * career written before this field existed still loads.
+   */
+  disqualified?: string[];
   poleDriverId: string;
   fastestLapDriverId: string;
   wetRace: boolean;
@@ -143,11 +159,18 @@ export function recordRound(
   const ts = season.tiers[tier];
   const points = TIER_CAR[tier].points;
   const retired = new Set(result.retired);
+  const excluded = new Set(result.disqualified ?? []);
 
   for (let i = 0; i < result.order.length; i++) {
     const id = result.order[i];
     const entry = ts.standings.find((e) => e.driverId === id);
     if (!entry) continue;
+
+    // A disqualified driver scores nothing but has not retired, so it is not
+    // counted against their reliability. The race engine sorts both behind the
+    // classified runners, so neither can take a points-paying position from
+    // somebody who finished.
+    if (excluded.has(id)) continue;
 
     const dnf = retired.has(id);
     if (dnf) {

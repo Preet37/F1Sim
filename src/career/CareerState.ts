@@ -38,7 +38,13 @@ import type { RoundResult, SeasonState, SeasonSummary } from './Season';
  */
 
 export const SAVE_VERSION = 2;
-export const SAVE_MINOR = 1;
+/**
+ * Bumped for ADDITIVE changes only, which is what makes them safe.
+ *
+ * 2: `RoundResult.disqualified`, once the race engine started modelling
+ *    exclusion separately from retirement under the 2026 regulations.
+ */
+export const SAVE_MINOR = 2;
 
 /** The player, as a driver. Mirrors `WorldDriver` because they are one. */
 export interface PlayerProfile {

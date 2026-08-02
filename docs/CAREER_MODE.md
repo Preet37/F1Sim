@@ -1050,9 +1050,30 @@ the bands should be tightened and the spread will collapse.
 **2. An optional `boxCount` on `pitLaneGeometry`** — `src/track/PitGeometry.ts`.
 
 `PIT_GARAGE_COUNT` is 20 and the pit row is centred from it, so with a real
-22-car grid two cars have a painted box past the end of the garages. Nothing
-breaks — `validate:integrity` passes on the 22-car field, with every car serviced
-and no speeding penalties — but it is cosmetically wrong. An optional argument
-defaulting to the current constant leaves every existing caller bit-identical;
-`RaceEngine` would pass its field length. **My Team makes this urgent rather than
-cosmetic**, since a twelfth team means 24 cars.
+22-car grid the last two cars have a painted box past the end of the garage row.
+An optional argument defaulting to the current constant would leave every
+existing caller bit-identical; `RaceEngine` would pass its field length.
+
+`probe:fieldsize` measures what actually happens, at 20, 22 and 24 cars, at
+Monaco, Spa and Monza. **Structurally the grid holds at every size**: every car
+starts clear of every other, every car gets its own pit box — 24 distinct boxes
+for 24 cars — everybody is classified exactly once, and the leader completes the
+distance. So this is cosmetic, not a blocker.
+
+What is *not* cosmetic is what it costs in attrition:
+
+| | Monaco | Spa | Monza |
+|---|---|---|---|
+| 20 cars (control) | 65% | 65% | 90% |
+| 22 cars | 50% | 45% | 73% |
+| 24 cars | 54% | 50% | 67% |
+
+A bigger field loses about **17 points of finishers on average**, and that is
+four more cars arriving at the same first corner rather than a defect in the grid
+size. It is first-lap racecraft, which belongs to the AI work, not to this. The
+probe guards against a structurally broken grid (below 35% finishers) rather than
+encoding today's first-lap behaviour as a pass threshold — a test that froze that
+in would fail the moment somebody improved the AI in either direction.
+
+Worth flagging to whoever owns AI racecraft: **the real grid is 22, and first-lap
+attrition is measurably worse there than at the 20 every existing probe uses.**
