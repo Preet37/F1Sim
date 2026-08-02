@@ -12,7 +12,7 @@ import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
-import { RacingLine } from './RacingLine';
+import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
 import { MarshalPosts } from './MarshalPost';
 import type { RaceEngine } from '../race/RaceEngine';
@@ -991,8 +991,13 @@ export class Renderer {
     this.effects.update(dt, engine, cam.position);
 
     // Driven from the focused car, so a spectator camera still shows the line
-    // relevant to whoever is being watched.
-    this.racingLine?.update(focusCar.s, focusCar.physics.speedMs);
+    // relevant to whoever is being watched — including what that car can
+    // actually do, which is not what the reference car the line was solved for
+    // can do. See `capabilityOf`.
+    if (this.racingLine) {
+      const cap = capabilityOf(focusCar.physics, engine.track.solverParams.maxSpeedMs);
+      this.racingLine.update(focusCar.s, focusCar.physics.speedMs, cap);
+    }
 
     // Light the player's box up when it is relevant: while they are in the pit
     // lane, and from the moment the call is made so they can see where they are

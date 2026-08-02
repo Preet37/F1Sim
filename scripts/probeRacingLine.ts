@@ -1,6 +1,11 @@
 import { RacingLine } from '../src/render/RacingLine';
-import { TrackSpline } from '../src/track/TrackSpline';
+import { TrackSpline, type CarCapability } from '../src/track/TrackSpline';
 import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
+import {
+  BASE_F1_SPEC, applySetup, baselineSetupFor, specForTeam,
+} from '../src/physics/VehicleSpec';
+import { getCompound } from '../src/data/tires';
+import { TEAMS, getTeam } from '../src/data/teams';
 
 /**
  * Does the racing-line overlay tell the truth?
@@ -35,6 +40,27 @@ import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
  * in was shown green all the way to the point they ran out of road. The display
  * was self-consistent and useless, which is the worst kind of wrong: it looked
  * like it was working.
+ *
+ * WHICH CAR THE TEST FLIES, and why this probe used to pass a display that was
+ * lying.
+ *
+ * Every measurement below used to be taken with `track.solverParams` — the
+ * REFERENCE car, mu 1.86 and 850kg, which is the car `TrackSpline` solves its
+ * speed profile for so that twenty AI drivers can share one line. The overlay
+ * was also colouring against that car. So the probe flew the reference car at a
+ * line drawn for the reference car, found that it fitted, and printed PASS.
+ *
+ * It was a tautology. No player has ever driven that car. A real one leaves the
+ * garage at mu 1.70 before the compound multiplier, times a team multiplier
+ * that tops out at 1.03, carrying up to 75kg of fuel — and comes back at the end
+ * of a stint having given up another tenth to wear and heat. The display was
+ * promising every one of them grip that only a car nobody drives possesses, and
+ * this probe was structurally incapable of noticing.
+ *
+ * So the sweep below is over CARS as well as over circuits and speeds: the best
+ * team and the worst, the softest compound and the hardest, a fresh set and a
+ * worn one, a full tank and a dry one. The assertion is made against all of
+ * them, because the promise is made to all of them.
  */
 
 const G_TOLERANCE = 1.02;
@@ -43,12 +69,71 @@ const G_TOLERANCE = 1.02;
 const RELEASE_REACTION_S = 0.2;
 
 // ===========================================================================
+// The cars the promise is actually made to
+// ===========================================================================
+
+interface Scenario {
+  name: string;
+  /** Tyre grip multiplier: compound peak times wear/thermal. */
+  tyre: number;
+  teamId: string;
+  fuelL: number;
+}
+
+/**
+ * Representative points across the range a player actually occupies.
+ *
+ * `tyre` is the number `TireState.computeGrip` produces: the compound's peak
+ * grip times its wear, thermal, warm-up and surface factors. A fresh set in its
+ * window is the compound figure alone; the worn cases apply the ~0.88 a set is
+ * down to by the end of a long stint.
+ */
+const BY_GRIP = [...TEAMS].sort(
+  (a, b) => b.performance.mechanicalGripMult - a.performance.mechanicalGripMult,
+);
+const TOP = BY_GRIP[0].id;
+const MID = BY_GRIP[Math.floor(BY_GRIP.length / 2)].id;
+const BOTTOM = BY_GRIP[BY_GRIP.length - 1].id;
+
+const SCENARIOS: readonly Scenario[] = [
+  { name: 'best team, fresh softs, low fuel', tyre: getCompound('soft').peakGrip, teamId: TOP, fuelL: 20 },
+  { name: 'best team, fresh mediums, full', tyre: getCompound('medium').peakGrip, teamId: TOP, fuelL: 100 },
+  { name: 'midfield, fresh mediums, full', tyre: getCompound('medium').peakGrip, teamId: MID, fuelL: 100 },
+  { name: 'midfield, worn hards, mid fuel', tyre: getCompound('hard').peakGrip * 0.88, teamId: MID, fuelL: 55 },
+  { name: 'backmarker, worn hards, full', tyre: getCompound('hard').peakGrip * 0.88, teamId: BOTTOM, fuelL: 100 },
+];
+
+/**
+ * The capability the overlay will be handed for this car on this circuit.
+ *
+ * Built through the real spec pipeline — team multipliers, then the circuit's
+ * baseline setup — so it is the same number the game produces, not a
+ * re-derivation that could quietly disagree with it.
+ */
+function capabilityFor(sc: Scenario, demand: number, maxSpeedMs: number): CarCapability {
+  const team = getTeam(sc.teamId);
+  const spec = applySetup(specForTeam(team.performance, BASE_F1_SPEC), baselineSetupFor(demand, sc.fuelL));
+  return {
+    mu: spec.baseMu * sc.tyre,
+    cl: spec.clBase,
+    cd: spec.cdBase,
+    massKg: spec.dryMassKg + sc.fuelL * spec.fuelDensity,
+    maxBrakeForceN: spec.maxBrakeForceN,
+    maxSpeedMs,
+  };
+}
+
+// ===========================================================================
 // 1. How early does the warning arrive?
 // ===========================================================================
 
 {
-  const track = new TrackSpline(getCircuit('monza'));
+  const monza = getCircuit('monza');
+  const track = new TrackSpline(monza);
   const line = new RacingLine(track);
+  // A real car, not the reference one — these are the distances a player is
+  // actually shown.
+  const cap = capabilityFor(SCENARIOS[3], monza.downforceDemand, track.solverParams.maxSpeedMs);
 
   let bestI = 0, bestDrop = 0;
   for (let i = 0; i < track.count; i++) {
@@ -67,7 +152,7 @@ const RELEASE_REACTION_S = 0.2;
     const speed = kph / 3.6;
     for (const dist of [600, 350, 200, 150, 100, 60]) {
       const s = (cornerS - dist + track.length) % track.length;
-      const [r, g, b] = colourAhead(line, s, speed);
+      const [r, g, b] = colourAhead(line, s, speed, cap);
       console.log(
         `${String(dist).padStart(13)}m   ${r.toFixed(2)}  ${g.toFixed(2)}  ${b.toFixed(2)}   ${reads(r, g)}`,
       );
@@ -87,53 +172,86 @@ console.log('CHANGING, which it has not yet done — and then brakes as hard as 
 console.log('tyres allow. "worst load" is the most lateral grip it is asked for on the');
 console.log('way through. Above 1.00 the car leaves the road, and the green that put');
 console.log('it there was a lie.\n');
-console.log(
-  'circuit'.padEnd(14) + 'points'.padStart(8) + 'worst load'.padStart(12) +
-  '  at'.padEnd(12) + 'was'.padStart(8),
-);
+console.log('Run for every car a player can actually be in, because the promise is');
+console.log('made to all of them and the reference car is none of them.\n');
 
 const failures: string[] = [];
+
+console.log(
+  'circuit'.padEnd(14) +
+  SCENARIOS.map((s) => shortName(s.name).padStart(13)).join('') +
+  '   worst'.padStart(9),
+);
+
+/** Worst load over the whole calendar, per scenario, for the summary. */
+const perScenarioWorst = new Float64Array(SCENARIOS.length);
 
 for (const def of CIRCUITS) {
   const track = new TrackSpline(def);
   const line = new RacingLine(track);
+  const maxV = track.solverParams.maxSpeedMs;
 
-  let worst = 0;
-  let worstS = 0;
-  let tested = 0;
+  const row: string[] = [];
+  let rowWorst = 0;
 
-  // Every fourth node — about twelve metres, far finer than the eight-metre
-  // segments the ribbon is built from.
-  for (let i = 0; i < track.count; i += 4) {
-    const s = track.dist[i];
-    const v = fastestGreen(track, line, s);
-    if (v === null) continue;
-    tested++;
-    const load = releaseFrom(track, s, v);
-    if (load > worst) { worst = load; worstS = s; }
+  for (let sci = 0; sci < SCENARIOS.length; sci++) {
+    const cap = capabilityFor(SCENARIOS[sci], def.downforceDemand, maxV);
+    let worst = 0;
+    let worstS = 0;
+
+    // Every fourth node — about twelve metres, far finer than the eight-metre
+    // segments the ribbon is built from.
+    for (let i = 0; i < track.count; i += 4) {
+      const s = track.dist[i];
+      const v = fastestGreen(track, line, s, cap);
+      if (v === null) continue;
+      const load = releaseFrom(track, s, v, cap);
+      if (load > worst) { worst = load; worstS = s; }
+    }
+
+    row.push(worst.toFixed(3).padStart(13));
+    if (worst > rowWorst) rowWorst = worst;
+    if (worst > perScenarioWorst[sci]) perScenarioWorst[sci] = worst;
+
+    if (worst > G_TOLERANCE) {
+      failures.push(
+        `${def.id} / ${SCENARIOS[sci].name}: released at the fastest speed the line ` +
+        `still calls green, the car is asked for ${(worst * 100).toFixed(0)}% of the ` +
+        `grip it has, at s=${worstS.toFixed(0)}m`,
+      );
+    }
   }
 
-  const ok = worst <= G_TOLERANCE;
+  console.log(def.id.padEnd(14) + row.join('') + rowWorst.toFixed(3).padStart(9));
+}
+
+console.log('');
+console.log('worst per car over the whole calendar:');
+for (let i = 0; i < SCENARIOS.length; i++) {
+  const w = perScenarioWorst[i];
   console.log(
-    def.id.padEnd(14) + String(tested).padStart(8) +
-    worst.toFixed(3).padStart(12) + `  s=${worstS.toFixed(0)}m`.padEnd(14) +
-    (ok ? 'ok' : 'FAIL').padStart(8),
+    `  ${SCENARIOS[i].name.padEnd(36)}${w.toFixed(3).padStart(7)}` +
+    (w <= G_TOLERANCE ? '   ok' : '   FAIL'),
   );
-  if (!ok) {
-    failures.push(
-      `${def.id}: released at the fastest speed the line still calls green, the car ` +
-      `is asked for ${(worst * 100).toFixed(0)}% of the grip available at s=${worstS.toFixed(0)}m`,
-    );
-  }
 }
 
 console.log('');
 if (failures.length === 0) {
-  console.log('PASS — green means the car makes the corner, on all eleven circuits');
+  console.log('PASS — green means the car makes the corner, on all eleven circuits,');
+  console.log('       for every car a player can be driving');
 } else {
-  console.log('FAILURES:');
-  for (const f of failures) console.log(`  - ${f}`);
+  console.log(`FAILURES (${failures.length}):`);
+  for (const f of failures.slice(0, 12)) console.log(`  - ${f}`);
+  if (failures.length > 12) console.log(`  ... and ${failures.length - 12} more`);
   process.exitCode = 1;
+}
+
+/** Compresses a scenario name into a column heading. */
+function shortName(n: string): string {
+  return n
+    .replace('best team', 'top').replace('midfield', 'mid').replace('backmarker', 'back')
+    .replace('fresh ', '').replace('worn ', 'wr ')
+    .replace(', low fuel', '/lo').replace(', full', '/full').replace(', mid fuel', '/mid');
 }
 
 // ===========================================================================
@@ -151,22 +269,35 @@ console.log('else — flown at every corner. Reported, not asserted: past the po
 console.log('colour turns, what happens is about the driver, not the display.\n');
 console.log(
   'circuit'.padEnd(14) + 'corners'.padStart(8) + 'worst load'.padStart(12) +
-  '   longitudinal-only would be'.padStart(30),
+  '   longitudinal-only would be'.padStart(30) +
+  '   graded vs reference car'.padStart(27),
 );
+
+/**
+ * The worn-hards midfield car: the state a player spends most of a race in, and
+ * the one the old display over-promised hardest.
+ */
+const REALISTIC = SCENARIOS[3];
 
 for (const def of CIRCUITS) {
   const track = new TrackSpline(def);
   const line = new RacingLine(track);
   const corners = findCorners(track);
+  const cap = capabilityFor(REALISTIC, def.downforceDemand, track.solverParams.maxSpeedMs);
   let now = 0;
   let old = 0;
+  let asRef = 0;
   for (const ci of corners) {
-    now = Math.max(now, flyAt(track, line, ci, true).load);
-    old = Math.max(old, flyAt(track, line, ci, false).load);
+    now = Math.max(now, flyAt(track, line, ci, true, cap).load);
+    old = Math.max(old, flyAt(track, line, ci, false, cap).load);
+    // The control that names the bug this change fixed: the same real car,
+    // flown at a display that is still colouring for the reference car.
+    asRef = Math.max(asRef, flyAt(track, line, ci, true, cap, track.solverParams).load);
   }
   console.log(
     def.id.padEnd(14) + String(corners.length).padStart(8) +
-    now.toFixed(3).padStart(12) + old.toFixed(3).padStart(30),
+    now.toFixed(3).padStart(12) + old.toFixed(3).padStart(30) +
+    asRef.toFixed(3).padStart(27),
   );
 }
 
@@ -179,8 +310,10 @@ for (const def of CIRCUITS) {
  * Read out of the built vertex buffer rather than by calling the colouring
  * function directly, so this tests the thing that reaches the screen.
  */
-function colourAhead(line: RacingLine, s: number, speedMs: number): [number, number, number] {
-  line.update(s, speedMs);
+function colourAhead(
+  line: RacingLine, s: number, speedMs: number, cap?: CarCapability,
+): [number, number, number] {
+  line.update(s, speedMs, cap);
   const c = line.mesh.geometry.getAttribute('color').array as Float32Array;
   const o = 4 * 6 * 3;
   return [c[o], c[o + 1], c[o + 2]];
@@ -207,16 +340,18 @@ function isGreen(r: number, g: number): boolean {
  * limit. Greenness is therefore monotone in speed and there is exactly one
  * crossing to find.
  */
-function fastestGreen(track: TrackSpline, line: RacingLine, s: number): number | null {
-  const [r0, g0] = colourAhead(line, s, 4);
+function fastestGreen(
+  track: TrackSpline, line: RacingLine, s: number, cap: CarCapability,
+): number | null {
+  const [r0, g0] = colourAhead(line, s, 4, cap);
   if (!isGreen(r0, g0)) return null;
   let lo = 4;
   let hi = track.solverParams.maxSpeedMs;
-  const [r1, g1] = colourAhead(line, s, hi);
+  const [r1, g1] = colourAhead(line, s, hi, cap);
   if (isGreen(r1, g1)) return hi;
   for (let k = 0; k < 18; k++) {
     const mid = (lo + hi) * 0.5;
-    const [r, g] = colourAhead(line, s, mid);
+    const [r, g] = colourAhead(line, s, mid, cap);
     if (isGreen(r, g)) lo = mid; else hi = mid;
   }
   return lo;
@@ -237,7 +372,9 @@ function fastestGreen(track: TrackSpline, line: RacingLine, s: number): number |
  * on the exit of a hairpin no matter how honest the display is, and a test that
  * cannot tell those two failures apart cannot be used to fix either.
  */
-function releaseFrom(track: TrackSpline, s0: number, v0: number): number {
+function releaseFrom(
+  track: TrackSpline, s0: number, v0: number, cap: CarCapability,
+): number {
   const STEP_M = 2;
   const RANGE_M = 900;
   let v = v0;
@@ -248,13 +385,15 @@ function releaseFrom(track: TrackSpline, s0: number, v0: number): number {
 
   for (let d = 0; d < RANGE_M; d += STEP_M) {
     if (coasted >= coastM) {
-      const sq = v * v - 2 * track.brakingDecel(v) * STEP_M;
+      const sq = v * v - 2 * track.brakingDecelForCar(v, cap) * STEP_M;
       v = sq > 1 ? Math.sqrt(sq) : 1;
     } else {
       coasted += STEP_M;
     }
     s = (s + STEP_M) % track.length;
-    const grip = track.corneringSpeed[track.indexAt(s)];
+    // The grip THIS car has, not the reference car's. This is the line that
+    // made the old version of this probe a tautology.
+    const grip = track.corneringSpeedForCar(track.indexAt(s), cap);
     const ask = v / Math.max(grip, 1);
     if (ask > load) load = ask;
     // Once the car is slow enough that nothing ahead can catch it out, stop.
@@ -310,6 +449,14 @@ function findCorners(track: TrackSpline): number[] {
  */
 function flyAt(
   track: TrackSpline, line: RacingLine, cornerNode: number, lateral: boolean,
+  cap: CarCapability,
+  /**
+   * The capability the DISPLAY is colouring for, when that is not the car being
+   * driven. Defaults to the car, which is the correct arrangement; passing the
+   * reference car here reproduces the bug — a real car flown at a ribbon drawn
+   * for a car with 9-30% more grip than it has.
+   */
+  colourCap: CarCapability = cap,
 ): { load: number; atS: number } {
   const RUN_UP_M = 700;
   const STEP_M = 2;
@@ -339,7 +486,7 @@ function flyAt(
 
   const steps = Math.round((RUN_UP_M + 60) / STEP_M);
   for (let n = 0; n < steps; n++) {
-    const [r, g] = colourAhead(line, s, v);
+    const [r, g] = colourAhead(line, s, v, colourCap);
     // Suppressing the lateral half of the test cannot be done from out here, so
     // the control run reproduces the old rule directly: brake only once the
     // corner stops being reachable under the old flat deceleration.
@@ -378,11 +525,11 @@ function flyAt(
 
     let a: number;
     if (committed) {
-      a = -track.brakingDecel(v);
+      a = -track.brakingDecelForCar(v, cap);
     } else {
       const fPower = p.powerW / Math.max(v, 1);
-      const fTraction = p.mu * (p.massKg * 9.81 + p.cl * v * v) * 0.62;
-      a = (Math.min(fPower, fTraction) - p.cd * v * v) / p.massKg;
+      const fTraction = cap.mu * (cap.massKg * 9.81 + cap.cl * v * v) * 0.62;
+      a = (Math.min(fPower, fTraction) - cap.cd * v * v) / cap.massKg;
     }
 
     const vSq = v * v + 2 * a * STEP_M;
@@ -401,7 +548,7 @@ function flyAt(
     // produces.
     const travelledM = (n + 1) * STEP_M;
     if (travelledM >= RUN_UP_M - SCORE_BEFORE_M) {
-      const grip = track.corneringSpeed[track.indexAt(s)];
+      const grip = track.corneringSpeedForCar(track.indexAt(s), cap);
       const ask = v / Math.max(grip, 1);
       if (ask > load) { load = ask; atS = s; }
     }

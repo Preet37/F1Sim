@@ -88,6 +88,80 @@ export const DEFAULT_INPUT_CONFIG: InputConfig = {
   brakingAssist: false,
 };
 
+/**
+ * How long a digital control has actually been held, in wall-clock time.
+ *
+ * This exists because ramping a digital input by the FRAME time is not the same
+ * thing as ramping it by the time the key was down, and the difference is a
+ * frame-rate dependency in the handling.
+ *
+ * A key held for 200ms is only seen by the frames that happen to tick while it
+ * is down, and each of those ramps the input by `rate * its own frame time`. So
+ * the steering produced is proportional to (number of ticks inside the press) x
+ * (frame period) rather than to the length of the press. Measured by
+ * `probe:framerate` on the real controller: the same 200ms of key produced 0.447
+ * of steering lock at 15fps and 0.652 at 144fps — 46% more steering for the same
+ * input — rising monotonically with frame rate the whole way. A 40ms tap was
+ * discarded entirely on 40% of attempts at 15fps and always registered at 60.
+ *
+ * It is unbiased in expectation over random press phase, which is why it never
+ * showed up as a wrong average; what it produces is SPREAD, and spread in how
+ * much lock a press buys is felt directly as the car darting more on one press
+ * than the next. The player's frame rate recently went from 19-30 to 50-60 and
+ * the same presses started buying up to a third more lock.
+ *
+ * Recording the edges against the event clock and integrating the real held time
+ * removes it. Note this changes nothing at all when a key is held across whole
+ * frames — which is the steady-state case — so the car's response to a sustained
+ * input is untouched. Only the edges move, and the edges are where the bug was.
+ */
+class HoldClock {
+  private downAt = -1;
+  private accumMs = 0;
+
+  press(tMs: number): void {
+    if (this.downAt < 0) this.downAt = tMs;
+  }
+
+  release(tMs: number): void {
+    if (this.downAt < 0) return;
+    this.accumMs += Math.max(0, tMs - this.downAt);
+    this.downAt = -1;
+  }
+
+  /** Seconds held since the previous call. Resets the window. */
+  consumeS(tMs: number): number {
+    let ms = this.accumMs;
+    this.accumMs = 0;
+    if (this.downAt >= 0) {
+      ms += Math.max(0, tMs - this.downAt);
+      this.downAt = tMs;
+    }
+    return ms * 0.001;
+  }
+
+  clear(): void {
+    this.downAt = -1;
+    this.accumMs = 0;
+  }
+
+  /**
+   * Whether the control is still down at the end of the window.
+   *
+   * Needed to get the ORDER of a frame's two portions right. A frame in which a
+   * key went down partway through is chronologically "released, then held", and
+   * a frame in which one came up is "held, then released" — and applying them
+   * the wrong way round is not a rounding error. At 15fps a press landing 50ms
+   * into a 66.7ms frame buys 0.057 of lock, and centring the other 50ms at
+   * 5.5/s afterwards takes 0.275 back: the press is erased outright. That is
+   * exactly the "flick produced nothing" case, and it is why a tap at 15fps
+   * registered 0.048 against 0.264 at 90fps.
+   */
+  get isDown(): boolean {
+    return this.downAt >= 0;
+  }
+}
+
 /** A touch zone on screen, in normalised viewport coordinates. */
 interface TouchZone {
   x0: number; y0: number; x1: number; y1: number;
@@ -194,6 +268,25 @@ export class InputController {
   gamepadSuspended = false;
 
   private readonly keys = new Set<string>();
+  /**
+   * How long each digital control has been held, against the event clock.
+   * Keyed by the logical control rather than by the key, so that Left and A
+   * are one control and holding both does not count twice.
+   */
+  private readonly holds = {
+    left: new HoldClock(), right: new HoldClock(), throttle: new HoldClock(),
+    brake: new HoldClock(), down: new HoldClock(),
+  };
+  /**
+   * The clock the held-time integration is measured against, milliseconds.
+   *
+   * Overridable so that `probe:framerate` can drive the real controller on a
+   * simulated clock and get a repeatable answer. In the game it is
+   * `performance.now()`, which is the same clock a KeyboardEvent's `timeStamp`
+   * is expressed in — so a press is timed by when the browser says it arrived,
+   * not by when a busy main thread got round to dispatching it.
+   */
+  timeSourceMs: () => number = () => performance.now();
   private readonly touches = new Map<number, ActiveTouch>();
   private element: HTMLElement | null = null;
   private tiltGamma = 0;
@@ -206,7 +299,10 @@ export class InputController {
 
   private boundKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
   private boundKeyUp = (e: KeyboardEvent) => this.onKeyUp(e);
-  private boundBlur = () => this.keys.clear();
+  private boundBlur = () => {
+    this.keys.clear();
+    for (const c of Object.values(this.holds)) c.clear();
+  };
   private boundOrientation = (e: DeviceOrientationEvent) => this.onOrientation(e);
   private boundTouchStart = (e: TouchEvent) => this.onTouchStart(e);
   private boundTouchMove = (e: TouchEvent) => this.onTouchMove(e);
@@ -299,6 +395,7 @@ export class InputController {
     if (GAME_KEYS.has(k) || GAME_KEYS.has(e.code)) e.preventDefault();
     if (this.keys.has(k)) return;
     this.keys.add(k);
+    this.syncHolds(stampOf(e, this.timeSourceMs));
     this.lastSource = 'keyboard';
 
     switch (k) {
@@ -317,6 +414,28 @@ export class InputController {
 
   private onKeyUp(e: KeyboardEvent): void {
     this.keys.delete(e.key.toLowerCase());
+    this.syncHolds(stampOf(e, this.timeSourceMs));
+  }
+
+  /**
+   * Brings the hold clocks into line with the keys that are down.
+   *
+   * Driven off the key set rather than off the individual event, so that the two
+   * keys bound to one control (Left and A) behave as one control: releasing A
+   * while Left is still down does not stop the clock.
+   *
+   * The brake is tracked as its own keys only. `ArrowDown` is a separate clock
+   * because whether it means "brake" or "reverse" depends on road speed, which
+   * an event handler has no business knowing; `update` composes the two.
+   */
+  private syncHolds(tMs: number): void {
+    const kb = this.keys;
+    const set = (c: HoldClock, on: boolean): void => { if (on) c.press(tMs); else c.release(tMs); };
+    set(this.holds.left, kb.has('a') || kb.has('arrowleft'));
+    set(this.holds.right, kb.has('d') || kb.has('arrowright'));
+    set(this.holds.throttle, kb.has('w') || kb.has('arrowup'));
+    set(this.holds.brake, kb.has('b') || kb.has(' ') || kb.has('s'));
+    set(this.holds.down, kb.has('arrowdown'));
   }
 
   private onOrientation(e: DeviceOrientationEvent): void {
@@ -490,11 +609,11 @@ export class InputController {
     // Down doing double duty is deliberate: it is the intuitive key to press when
     // you want to stop or back out of a gravel trap, and which of the two you meant
     // is unambiguous from whether the car is still moving.
+    // Which keys are down still decides what the controls MEAN — reverse, DRS.
+    // How much pedal or lock they have bought is no longer read from here but
+    // from the hold clocks, which know how long each has been down rather than
+    // merely that it is down on the frame that happened to look.
     const kb = this.keys;
-    const kbLeft = kb.has('a') || kb.has('arrowleft');
-    const kbRight = kb.has('d') || kb.has('arrowright');
-    const kbUp = kb.has('w') || kb.has('arrowup');
-    const kbBrake = kb.has('b') || kb.has(' ') || kb.has('s');
     const kbDownArrow = kb.has('arrowdown');
     const kbDrs = kb.has('shift');
 
@@ -506,8 +625,6 @@ export class InputController {
     // frame and had never once worked.
     const nearlyStopped = speedMs < 1.6;
     this.reverseHeld = (kbDownArrow && nearlyStopped) || padReverse;
-    // Down brakes whenever the car is still rolling.
-    const kbDown = kbBrake || (kbDownArrow && !nearlyStopped);
     // DRS is a held control on three different devices. Touch owns the flag
     // directly through its own handlers, so only clear it when the last input
     // actually came from a device represented here.
@@ -566,15 +683,61 @@ export class InputController {
       this.targetThrottle = moveToward(this.targetThrottle, touchThrottle, this.config.keyboardThrottleRate * dt);
       this.targetBrake = moveToward(this.targetBrake, touchBrake, this.config.keyboardBrakeRate * dt);
     } else {
-      // Keyboard: ramp toward the held direction, spring back to centre.
-      const dir = (kbRight ? 1 : 0) - (kbLeft ? 1 : 0);
-      if (dir !== 0) {
-        this.targetSteer = moveToward(this.targetSteer, dir, this.config.keyboardSteerRate * dt);
-      } else {
-        this.targetSteer = moveToward(this.targetSteer, 0, this.config.keyboardCentreRate * dt);
-      }
-      this.targetThrottle = moveToward(this.targetThrottle, kbUp ? 1 : 0, this.config.keyboardThrottleRate * dt);
-      this.targetBrake = moveToward(this.targetBrake, kbDown ? 1 : 0, this.config.keyboardBrakeRate * dt);
+      // Keyboard: ramp toward the held direction, spring back to centre — by the
+      // time each control was actually DOWN inside this frame, not by the frame
+      // time. See HoldClock for the measurement that made this necessary.
+      const now = this.timeSourceMs();
+      // Clamped into the frame so the three portions partition `dt` exactly and
+      // no ramp can outrun the frame it belongs to. Without the clamp a first
+      // frame, a resumed tab or a drifting time source could hand over a hold
+      // longer than the frame and snap the wheel to full lock.
+      const held = (c: HoldClock): number => clamp(c.consumeS(now), 0, dt);
+      const tRight = held(this.holds.right);
+      const tLeft = held(this.holds.left);
+      const tThrottle = held(this.holds.throttle);
+      const tBrakeKey = held(this.holds.brake);
+      const tDownArrow = held(this.holds.down);
+      // Down doubles as the brake while the car is still rolling. The union of
+      // the two is capped at the frame, which is exact whenever only one of them
+      // is down and never over-credits when both are.
+      const tBrake = nearlyStopped ? tBrakeKey : Math.min(dt, tBrakeKey + tDownArrow);
+      // Whatever is left of the frame, the wheel is unattended and returning.
+      const tCentre = Math.max(0, dt - tRight - tLeft);
+
+      // The two portions of a frame are applied in the order they HAPPENED. A
+      // key that is still down at the end went down partway through, so the
+      // frame reads "centring, then lock"; one that is up went up partway
+      // through, so it reads "lock, then centring". See HoldClock.isDown — the
+      // wrong order erases a short press entirely rather than rounding it.
+      const steerRate = this.config.keyboardSteerRate;
+      const ramp = (): void => {
+        if (tRight > 0) this.targetSteer = moveToward(this.targetSteer, 1, steerRate * tRight);
+        if (tLeft > 0) this.targetSteer = moveToward(this.targetSteer, -1, steerRate * tLeft);
+      };
+      const centre = (): void => {
+        if (tCentre > 0) {
+          this.targetSteer = moveToward(this.targetSteer, 0, this.config.keyboardCentreRate * tCentre);
+        }
+      };
+      if (this.holds.right.isDown || this.holds.left.isDown) { centre(); ramp(); }
+      else { ramp(); centre(); }
+
+      /** One pedal, same chronological ordering. */
+      const pedal = (cur: number, tHeld: number, rate: number, downAtEnd: boolean): number => {
+        const tOff = Math.max(0, dt - tHeld);
+        if (downAtEnd) {
+          return moveToward(moveToward(cur, 0, rate * tOff), 1, rate * tHeld);
+        }
+        return moveToward(moveToward(cur, 1, rate * tHeld), 0, rate * tOff);
+      };
+      const brakeDownAtEnd = this.holds.brake.isDown
+        || (this.holds.down.isDown && !nearlyStopped);
+      this.targetThrottle = pedal(
+        this.targetThrottle, tThrottle, this.config.keyboardThrottleRate, this.holds.throttle.isDown,
+      );
+      this.targetBrake = pedal(
+        this.targetBrake, tBrake, this.config.keyboardBrakeRate, brakeDownAtEnd,
+      );
     }
 
     // --- Steering assist ----------------------------------------------------
@@ -683,6 +846,28 @@ export class InputController {
   get showTouchOverlay(): boolean {
     return this.touchAvailable && (this.lastSource === 'touch' || this.lastSource === 'tilt');
   }
+}
+
+/**
+ * When an event actually happened, in milliseconds on the `performance.now()`
+ * clock.
+ *
+ * `KeyboardEvent.timeStamp` is a DOMHighResTimeStamp on the same origin as
+ * `performance.now()`, and it is the time the event was CREATED rather than the
+ * time the handler ran. That distinction is the whole reason to prefer it: when
+ * the main thread is busy — which on this game means a frame that took 50ms to
+ * render — events queue and are dispatched late, all together. Reading the clock
+ * inside the handler would time them all at the moment the thread came free and
+ * report a press that lasted 90ms as one that lasted nothing.
+ *
+ * Falls back to the live clock for synthetic events that carry no stamp.
+ */
+function stampOf(e: { timeStamp?: number }, fallback: () => number): number {
+  const t = e.timeStamp;
+  // `>= 0`, not `> 0`. Zero is a legitimate instant on a simulated clock, and
+  // rejecting it sent the very first press of a probe run down the fallback path
+  // — which is the frame boundary, i.e. exactly the quantisation being measured.
+  return typeof t === 'number' && Number.isFinite(t) && t >= 0 ? t : fallback();
 }
 
 /** Keys the game consumes, so everything else reaches the browser. */
