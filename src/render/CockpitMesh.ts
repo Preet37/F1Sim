@@ -274,17 +274,20 @@ const MIRROR_H = 96;
  *
  * MEASURED, in draw calls and triangles rather than in milliseconds, because
  * the sweep runs on a software rasteriser whose milliseconds describe the
- * machine and not the phone. At Silverstone a frame with no mirror in it is 120
- * draw calls and 558 thousand triangles; one mirror render adds 87 and 480
- * thousand. That is not a rounding error on a device already at 19 to 30fps,
- * and it is why the stride is 2 rather than 1 even on the high tier — the
- * amortised cost halves and each pane still refreshes at a quarter of the frame
- * rate, which for a pane a few dozen pixels across is more than enough.
+ * machine and not the phone. At Silverstone, with a car ten metres behind so
+ * the schedule is at full rate, `npm run probe:cockpit` reports:
  *
- * The rest of the budget is elsewhere and is bigger: `MIRROR_FAR` cuts what
- * falls in the frustum at all, and `Renderer.trafficBehind` drops the whole
- * schedule to a quarter rate whenever there is nobody close behind, which is
- * most of a race.
+ *   chase, no mirror     120 draw calls   558k triangles
+ *   at stride 1, 200m    207              1038k      (+87, +480k)
+ *   at stride 2, 120m    174               800k      (+54, +242k)
+ *
+ * A 73 per cent increase in draw calls was not something to ship on a device
+ * already at 19 to 30fps. Two changes brought it to 45: this stride, which
+ * halves how often the pass runs and still refreshes each pane at a quarter of
+ * the frame rate, and `MIRROR_FAR`, which cuts what falls in the frustum at
+ * all. `Renderer.trafficBehind` then drops the whole schedule to a quarter rate
+ * whenever there is nobody close behind — which is most of a race, and takes
+ * the common case to about a tenth of what it started at.
  */
 const MIRROR_STRIDE_HIGH = 2;
 const MIRROR_STRIDE_LOW = 3;
