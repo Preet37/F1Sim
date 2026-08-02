@@ -6,6 +6,8 @@ artifacts/
 # than commit: they are evidence about a build, not part of one.
 audit-out/
 cockpit-out/
+# ~30 PNGs per run, written by `npm run shoot:hud`. Same reasoning.
+hud-out/
 .DS_Store
 *.local
 .vite/

@@ -67,6 +67,13 @@ try {
   browser = await chromium.launch({ args: launchArgs });
 }
 const page = await browser.newPage({ viewport: { width: 1024, height: 700 } });
+// Playwright's default navigation timeout is thirty seconds. Booting this game
+// means building a circuit's geometry, its world model and its racing line
+// under a software rasteriser, and on a machine that is also running a sweep
+// that takes longer than thirty seconds — at which point this regression fails
+// on a stopwatch rather than on the behaviour it exists to protect. Generous,
+// and still finite.
+page.setDefaultNavigationTimeout(180000);
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
 page.on('dialog', async (d) => await d.dismiss());
