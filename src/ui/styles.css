@@ -4170,6 +4170,12 @@ table.standings tr.me td.who { font-weight: 700; }
   text-transform: uppercase;
   color: var(--race-red-hi);
 }
+/* A practice or qualifying session that ends in the barrier is not a
+   retirement — there is no such thing to retire from, the lap already counts
+   and the driver is still in the weekend. Red is the colour this game uses for
+   something being lost, so the headline that says nothing WAS lost cannot wear
+   it. Amber: the car is damaged, and that is the whole of the bad news. */
+.retire-title.is-standing { color: var(--amber); }
 
 .retire-lede {
   margin-top: 12px;
@@ -4218,6 +4224,16 @@ table.standings tr.me td.who { font-weight: 700; }
 }
 .retire-fact-value.is-bad { color: var(--race-red-hi); }
 .retire-fact-value.is-warn { color: var(--amber); }
+/* Green for a place kept, purple for the quickest lap of the session — the same
+   two signals the timing tower and the results tiles already use, so a driver
+   reading this card reads it with the vocabulary the rest of the game taught
+   them. The purple one is the point: it is the lap the old card deleted. */
+.retire-fact-value.is-good { color: var(--mint); }
+.retire-fact-value.is-hero {
+  color: var(--purple);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Every component that took damage, worst first. Bars rather than numbers:
    the shape of the damage is the readable thing, not the percentages. */

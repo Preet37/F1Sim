@@ -1336,7 +1336,9 @@ export class RaceControlManager {
         // control at a corner exit counts, spinning off into a gravel trap and
         // losing four seconds does not, and stewards apply the same logic.
         const lostTime = car.physics.speedMs < this.track.targetSpeed[this.track.indexAt(car.s)] * 0.72;
-        if (!lostTime) {
+        // ...and, outside a race, only if there is a lap time to lose. See
+        // `sanctionableLap`.
+        if (!lostTime && this.sanctionableLap(car, isRace)) {
           car.trackLimitStrikes++;
           this.onTrackLimitInfraction(car, index, sessionTime, isRace);
         }
@@ -1346,12 +1348,62 @@ export class RaceControlManager {
     }
   }
 
+  /**
+   * Is there anything the stewards could actually do about an excursion here?
+   *
+   * The driver has still left the track — Art. B1.8.6 defines that by where the
+   * car is and says nothing about which lap it is on, so the excursion is real
+   * and the physics of running through the gravel are unchanged. The question
+   * this answers is narrower: whether the offence carries a sanction.
+   *
+   * In a Lap Time Classified Session it does not, on a lap that will not be
+   * timed. Art. B1.9.4 is the whole of what the stewards may do about an
+   * incident in an LTCS — "the Stewards may delete a driver's lap time (or lap
+   * times) or drop the driver such number of grid positions as they consider
+   * appropriate" — and on an out-lap the first of those has no object. There is
+   * no lap time to delete. The game was deleting one anyway and announcing it:
+   * "lap time deleted — track limits at Turn 4", on the lap out of the garage,
+   * about a time that was never going to be classified. Reported by a player,
+   * who was right about it: "idt there should be penalties or limits for the
+   * first lap of qualifying."
+   *
+   * It also stopped the strike counter running away. The 3-strike black-and-
+   * white flag and the 5-second penalty above it are race machinery — Art.
+   * B1.9.5's penalties are all TTCS penalties, and an LTCS has no accumulating
+   * ladder at all — so a strike recorded in practice or qualifying exists only
+   * to be printed beside the driver's name on the timesheet. Counting one for
+   * an offence that carried no sanction made that column say something untrue.
+   *
+   * WHAT THIS DELIBERATELY DOES NOT SUPPRESS. Art. B1.9.4's second remedy, the
+   * grid drop, applies perfectly well to an out-lap, and the offence it is most
+   * often used for — impeding a driver who is on a flying lap while you crawl
+   * on the racing line — is an out-lap offence almost by definition. This game
+   * does not model impeding at all today. That is a gap in it, not something
+   * this function is closing: when impeding arrives it belongs on the out-lap
+   * and must not be gated on this.
+   *
+   * A race has no untimed laps, so `isRace` short-circuits the whole question.
+   */
+  private sanctionableLap(car: CarEntry, isRace: boolean): boolean {
+    if (isRace) return true;
+    // The lap out of the garage or out of the pit box. `RaceEngine` already
+    // throws its time away at the line, so there is nothing here to delete.
+    if (car.onOutLap) return false;
+    // The lap in. Its time is never classified either — the car turns off
+    // before the line and `completeLap` never runs — so a deletion notice for
+    // it is noise about a time that does not exist.
+    if (car.pitRequested) return false;
+    return true;
+  }
+
   private onTrackLimitInfraction(car: CarEntry, index: number, sessionTime: number, isRace: boolean): void {
     const n = car.trackLimitStrikes;
     const corner = this.track.cornerNameAt(car.s) || 'turn';
 
     // In qualifying and practice, an off-track lap is simply deleted — there is
-    // no strike system, because the penalty is losing the lap time.
+    // no strike system, because the penalty is losing the lap time (Art.
+    // B1.9.4). `sanctionableLap` has already established that there IS a lap
+    // time here to lose.
     if (!isRace) {
       car.currentLapInvalidated = true;
       this.log(car.driver.code + ' lap time deleted — track limits at ' + corner, 'warning', sessionTime, index);

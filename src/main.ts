@@ -5,7 +5,10 @@ import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
 import type { CarEntry } from './race/CarEntry';
 import { bandOf, COMPONENT_IDS, COMPONENT_NAMES } from './race/DamageModel';
-import { qualifyingBoardOrder, rankSegment, resultGapCell } from './race/Classification';
+import {
+  qualifyingBoardOrder, rankSegment, resolveSegment, resultGapCell,
+  type SegmentEntrant,
+} from './race/Classification';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
@@ -1837,11 +1840,26 @@ class Game {
    * ends with nobody having set a lap still has a defined survivor set.
    */
   private qualifyingSurvivors: string[] = [];
+  /**
+   * Drivers who may take no further part in this qualifying session.
+   *
+   * Art. B4.3.2: a car that stops away from the pit lane and receives physical
+   * assistance is out for the rest of the SESSION, and Q1/Q2/Q3 are three
+   * periods of one session (Art. B2.4.2). So this accumulates across segments
+   * and is only cleared by a new weekend.
+   *
+   * They are still entered and still classified. Being on this list costs a
+   * driver the laps they would have set in the segments they miss and nothing
+   * else — not the laps they have already set, and not their place in the
+   * classification those laps earned.
+   */
+  private qualifyingBarred: string[] = [];
 
   /** Clears qualifying state at the start of a weekend. */
   private resetQualifying(): void {
     this.qualifyingGrid = [];
     this.qualifyingSurvivors = [];
+    this.qualifyingBarred = [];
   }
 
   private startWeekend(circuitId: string): void {
@@ -1862,6 +1880,12 @@ class Game {
    * The survivors are carried into the next segment through `participants`, so
    * Q2 runs fifteen cars and Q3 runs ten — the track is progressively emptier,
    * exactly as it is in reality.
+   *
+   * A retirement is not consulted anywhere in that. Art. B2.4.3a classifies a
+   * driver on the best time they set and nothing else, so a car that put itself
+   * in the barrier having topped the segment advances at the top of the
+   * survivor list. What its accident DOES cost it is the right to run again
+   * (Art. B4.3.2), which is carried separately in `qualifyingBarred`.
    */
   private resolveQualifyingSegment(
     engine: RaceEngine,
@@ -1873,7 +1897,8 @@ class Game {
 
     const indexById = new Map<string, number>();
     for (const c of engine.cars) indexById.set(idOf(c), c.index);
-    this.applyQualifyingOrder(ranked.map(idOf), indexById, advancing);
+    this.applyQualifyingOrder(
+      ranked.map((c) => ({ id: idOf(c), retired: c.retired })), indexById, advancing);
     void phase;
   }
 
@@ -1900,34 +1925,51 @@ class Game {
    * qualifying, and the two would disagree the first time either was touched.
    */
   private applyQualifyingOrder(
-    ranked: string[],
+    ranked: readonly SegmentEntrant[],
     indexById: Map<string, number>,
     advancing: number | undefined,
   ): void {
-    if (advancing === undefined || ranked.length <= advancing) {
+    const outcome = resolveSegment(ranked, advancing);
+
+    // Anyone the marshals had to recover is out for the rest of the SESSION,
+    // not just for the segment they crashed in (Art. B4.3.2 with B2.4.2), so
+    // the list accumulates rather than being replaced.
+    for (const id of outcome.barred) {
+      if (!this.qualifyingBarred.includes(id)) this.qualifyingBarred.push(id);
+    }
+
+    if (outcome.knockedOut.length === 0) {
       // Q3, or a segment nobody was knocked out of: this order fills the front
       // of the grid.
-      for (let i = 0; i < ranked.length; i++) this.qualifyingGrid[i] = ranked[i];
-      this.qualifyingSurvivors = ranked.slice();
+      for (let i = 0; i < outcome.order.length; i++) {
+        this.qualifyingGrid[i] = outcome.order[i];
+      }
+      this.qualifyingSurvivors = outcome.survivors;
       return;
     }
 
-    const survivors = ranked.slice(0, advancing);
-    const knockedOut = ranked.slice(advancing);
-
     // Eliminated cars fill the grid from the back, fastest of them highest.
     // With 20 cars and 15 advancing, that is slots 16-20.
-    for (let i = 0; i < knockedOut.length; i++) {
-      this.qualifyingGrid[advancing + i] = knockedOut[i];
+    const advanced = outcome.survivors.length;
+    for (let i = 0; i < outcome.knockedOut.length; i++) {
+      this.qualifyingGrid[advanced + i] = outcome.knockedOut[i];
     }
 
-    this.qualifyingSurvivors = survivors;
+    this.qualifyingSurvivors = outcome.survivors;
 
-    // Restrict the next segment to the survivors.
+    // Restrict the next segment to the survivors — and, within them, name the
+    // ones who are entered but cannot run. They stay in `participants` on
+    // purpose: they are classified in the segment they sit out, at the bottom
+    // of it, which is what puts a Q1 crash on the fifteenth grid slot rather
+    // than the twentieth.
     const next = this.weekend[this.weekendIndex + 1];
     if (next && next.kind === 'qualifying') {
-      next.participants = survivors
-        .map((id) => indexById.get(id))
+      const toIndex = (id: string) => indexById.get(id);
+      next.participants = outcome.survivors
+        .map(toIndex)
+        .filter((i): i is number => i !== undefined);
+      next.withdrawn = this.qualifyingBarred
+        .map(toIndex)
         .filter((i): i is number => i !== undefined);
     }
   }
@@ -1984,6 +2026,25 @@ class Game {
           : i === this.weekendIndex ? 'weekend-step current' : 'weekend-step';
         this.el('div', cls, strip, entry.name);
       }
+    }
+
+    // --- Can the player go out at all? -------------------------------------
+    //
+    // Art. B4.3.2 again. If the marshals recovered this car in an earlier
+    // segment the driver takes no further part in qualifying, so the session
+    // this screen is offering is one they are entered in and cannot drive. That
+    // has to be said HERE, before they press the button — a car that sits in
+    // its garage for nine minutes with the controls doing nothing is exactly
+    // the failure this game already had once, reported as "it just poof gone".
+    const barred = config.kind === 'qualifying'
+      && this.qualifyingBarred.includes('PLAYER');
+    if (barred) {
+      this.el('div', 'notice', body,
+        'Your car is still in the garage. The marshals recovered it earlier in ' +
+        'qualifying, so under the regulations you take no further part in the ' +
+        'session — but you are still entered in ' + config.name + ' and still ' +
+        'classified in it. You keep every place your lap times have earned; ' +
+        'what you cannot do is improve on them.');
     }
 
     // --- The car ----------------------------------------------------------
@@ -2059,6 +2120,14 @@ class Game {
     // to honour.
     this.button('Skip ' + config.name, actions, () => this.skipSession(circuitId), 'btn ghost');
     this.spacer(actions);
+    if (barred) {
+      // Nothing to drive, so the primary action is the one that gets the
+      // player to the other side of a session they are only a spectator in.
+      // "To the Garage" would open a cockpit that does not respond.
+      this.button('Watch ' + config.name + ' from the garage', actions,
+        () => this.skipSession(circuitId), 'btn primary');
+      return;
+    }
     // A race goes via the pit wall. Practice and qualifying do not: there is
     // no stint plan to make when the session is three laps of your own.
     this.button(isRace ? 'Race Strategy' : 'To the Garage', actions,
@@ -2301,7 +2370,14 @@ class Game {
       for (const c of skip.session.engine.cars) {
         indexById.set(c.driver.id === playerId ? 'PLAYER' : c.driver.id, c.index);
       }
-      this.applyQualifyingOrder(result.order, indexById, config.advancing);
+      // A skipped segment reaches the grid through exactly the same call a
+      // driven one does, retirements and all — including Art. B4.3.2, so a car
+      // the simulation put in the barrier is barred from the rest of qualifying
+      // whether or not the player watched it happen.
+      const wrecked = new Set(result.retired);
+      this.applyQualifyingOrder(
+        result.order.map((id) => ({ id, retired: wrecked.has(id) })),
+        indexById, config.advancing);
     }
 
     // A skipped race still has to feed the career, or the round never happened.
@@ -2686,6 +2762,31 @@ class Game {
   private showRetirement(engine: RaceEngine, player: CarEntry): void {
     this.retireOverlay?.remove();
 
+    // WHICH SESSION THIS IS, which is the whole of what this screen got wrong.
+    //
+    // A race and a Lap Time Classified Session end differently for a driver who
+    // stops, and this screen used to speak only the race's language: RETIRED,
+    // "better luck next time", "CLASSIFIED: P20 — DNF", END SESSION. Shown to a
+    // player who had just set the fastest lap of Q1 that is four false
+    // statements in a row. Their session was over, but their lap was not
+    // deleted, they were not classified twentieth, they were not out of the
+    // weekend, and there was nothing to wish them better luck about — they were
+    // provisionally quickest of the twenty.
+    const isRace = engine.config.kind === 'race';
+    const phase = engine.config.qualifyingPhase;
+    const isQualifying = engine.config.kind === 'qualifying' && !!phase;
+
+    // Where the driver stands in the segment they were running, on the SAME
+    // sort the board and the grid use — so this screen cannot disagree with the
+    // classification the player sees ninety seconds later.
+    const segment = rankSegment(engine.participants);
+    const row = segment.indexOf(player) + 1;
+    const advancing = engine.config.advancing;
+    const inTheCut = advancing === undefined || (row > 0 && row <= advancing);
+    const hasLap = player.bestLapTime > 0;
+    const fastestOfAll = engine.fastestLap();
+    const mineIsFastest = hasLap && !!fastestOfAll && fastestOfAll.car === player;
+
     const o = document.createElement('div');
     o.className = 'retire-overlay';
     const card = this.el('div', 'retire-card', o);
@@ -2693,31 +2794,70 @@ class Game {
     const body = this.el('div', 'retire-body', card);
 
     this.el('div', 'retire-tag', body, engine.config.name + ' · ' + engine.track.def.name);
-    this.el('div', 'retire-title', body, 'Retired');
+    // The headline is the fact the driver most needs and, in a practice or
+    // qualifying session, it is not the accident. The accident is on the screen
+    // behind this one. What they cannot see is whether the lap survived it.
+    this.el('div',
+      'retire-title' + (isRace ? '' : ' is-standing'), body,
+      isRace ? 'Retired'
+        : hasLap ? 'Your lap stands'
+        : 'Session over');
 
     // The player's own words for what this screen should say. It acknowledges
     // the accident before it explains it, because that is the order a person
     // needs those two things in.
     const lede = this.el('div', 'retire-lede', body);
-    lede.innerHTML =
-      'Unfortunately you have to retire — <strong>' +
-      escapeHtml(player.retirementReason || 'the car is beyond use') +
-      '</strong>. Better luck next time.';
+    const reason = escapeHtml(player.retirementReason || 'the car is beyond use');
+    if (isRace) {
+      lede.innerHTML =
+        'Unfortunately you have to retire — <strong>' + reason +
+        '</strong>. Better luck next time.';
+    } else if (hasLap) {
+      // Qualifying is not a race and has no DNF in it: Art. B2.4.3a classifies
+      // a driver on the best time they set, and Art. B2.4.3b's three routes out
+      // of the classification are the 107% rule, no time in Q1 and
+      // disqualification. An accident is none of them.
+      lede.innerHTML =
+        'Your ' + escapeHtml(engine.config.name) + ' is over — <strong>' + reason +
+        '</strong>. The lap is not: a ' +
+        (isQualifying ? 'qualifying' : 'practice') + ' session is classified on ' +
+        'the time you set, so your <strong>' + formatLapTime(player.bestLapTime) +
+        '</strong> stays on the board' +
+        (mineIsFastest ? ' — and it is still the quickest of the session.' : '.');
+    } else {
+      lede.innerHTML =
+        'Your ' + escapeHtml(engine.config.name) + ' is over — <strong>' + reason +
+        '</strong>. You had not set a representative lap, so there is no time to keep.';
+    }
 
     const worst = player.damage.worst();
     const accident = /accident/i.test(player.retirementReason);
+    // What happens NEXT, which for a practice or qualifying session is the
+    // interesting part and used to be missing entirely.
     this.el('div', 'retire-sub', body,
-      accident
-        ? 'The car is in the barrier and the marshals are on their way to it. ' +
-          'The damage is beyond anything the crew could put right in the pit lane.'
-        : 'The car cannot continue. The crew will look at it back in the garage.');
+      isRace
+        ? (accident
+          ? 'The car is in the barrier and the marshals are on their way to it. ' +
+            'The damage is beyond anything the crew could put right in the pit lane.'
+          : 'The car cannot continue. The crew will look at it back in the garage.')
+        : isQualifying
+          // Art. B4.3.2: a car that stops away from the pit lane and receives
+          // physical assistance takes no further part in THE SESSION — and Q1,
+          // Q2 and Q3 are three periods of one session (Art. B2.4.2), so the
+          // rest of qualifying is gone however quickly the crew work.
+          ? 'The marshals have to recover the car, so under the regulations you take ' +
+            'no further part in qualifying — but you keep every place your lap earned. ' +
+            'The crew have until the race to rebuild it.'
+          : 'The crew take the car back to the garage and start rebuilding it. ' +
+            'Nothing downstream depends on a practice result; what this costs you is ' +
+            'the running, not a grid slot.');
 
     // --- The facts ---------------------------------------------------------
     const facts = this.el('div', 'retire-facts', body);
     const fact = (label: string, value: string, tone = '') => {
-      const row = this.el('div', 'retire-fact', facts);
-      this.el('div', 'retire-fact-label', row, label);
-      this.el('div', 'retire-fact-value' + (tone ? ' ' + tone : ''), row, value);
+      const row2 = this.el('div', 'retire-fact', facts);
+      this.el('div', 'retire-fact-label', row2, label);
+      this.el('div', 'retire-fact-value' + (tone ? ' ' + tone : ''), row2, value);
     };
 
     fact('Cause', player.retirementReason || 'Accident', 'is-bad');
@@ -2726,9 +2866,37 @@ class Game {
     // sector. "On circuit" told the player something they already knew.
     fact('Where', engine.track.cornerNameAt(player.s)
       || 'Sector ' + (player.currentSectorIndex + 1));
-    fact('Lap', String(player.lap + 1) + (engine.config.laps ? ' of ' + engine.config.laps : ''));
-    fact('Classified', player.position > 0 ? 'P' + player.position + ' — DNF' : 'DNF');
-    if (player.bestLapTime > 0) fact('Your best lap', formatLapTime(player.bestLapTime));
+
+    if (isRace) {
+      fact('Lap', String(player.lap + 1) + (engine.config.laps ? ' of ' + engine.config.laps : ''));
+      fact('Classified', player.position > 0 ? 'P' + player.position + ' — DNF' : 'DNF');
+      if (hasLap) fact('Your best lap', formatLapTime(player.bestLapTime));
+    } else {
+      // The lap first, because it is the thing that survived.
+      fact(mineIsFastest ? 'Fastest lap of the session' : 'Your best lap',
+        hasLap ? formatLapTime(player.bestLapTime) : 'No time set',
+        hasLap ? (mineIsFastest ? 'is-hero' : '') : 'is-warn');
+      // "As it stands", not "Classified": the session is still running behind
+      // this card and cars still on the circuit can take the place off them.
+      // Claiming a final position here would be the same species of lie as
+      // claiming a DNF.
+      fact('As it stands',
+        row > 0 ? 'P' + row + ' of ' + segment.length + ' in ' + engine.config.name
+          : engine.config.name,
+        row === 1 ? 'is-hero' : '');
+      if (isQualifying && advancing !== undefined && phase) {
+        fact('Q' + (phase + 1),
+          inTheCut ? 'Through, on this order' : 'Outside the cut',
+          inTheCut ? 'is-good' : 'is-warn');
+      }
+      // The cost of the accident, stated as the one thing it actually costs
+      // (Art. B4.3.2) — and only where there is something left to be barred
+      // from. In Q3 there is no rest of qualifying, so saying the driver takes
+      // no further part in it would be technically true and completely useless.
+      if (isQualifying && phase && phase < 3) {
+        fact('Rest of qualifying', 'No further part', 'is-warn');
+      }
+    }
 
     // --- What broke --------------------------------------------------------
     // Only the parts that took damage, worst first. A list of twelve components
@@ -2765,32 +2933,59 @@ class Game {
       actions.appendChild(b);
     };
 
-    // Ending the session is the primary action, because a retirement IS the end
-    // of the session and pretending otherwise would be the coy version of the
-    // bug this screen is fixing.
-    act('End session', 'primary', () => {
-      this.dismissRetirement();
-      this.finishSession();
-    });
-    act('Restart session', 'secondary', () => {
-      const id = engine.track.def.id;
-      this.dismissRetirement();
-      this.launchSession(id);
-    });
-    // Staying to watch is a real thing drivers and viewers do, and it is the
-    // only one of the three that needs the wreck to still be on the circuit —
-    // which it now is.
-    act('Watch the rest', 'secondary', () => {
+    const seeItOut = () => {
       this.spectating = true;
       this.dismissRetirement();
-    });
+    };
+    const skipToResult = () => {
+      this.dismissRetirement();
+      this.finishSession();
+    };
+
+    if (isRace) {
+      // Ending the session is the primary action, because a retirement IS the
+      // end of the session and pretending otherwise would be the coy version of
+      // the bug this screen is fixing.
+      act('End session', 'primary', skipToResult);
+      act('Restart session', 'secondary', () => {
+        const id = engine.track.def.id;
+        this.dismissRetirement();
+        this.launchSession(id);
+      });
+      act('Watch the rest', 'secondary', seeItOut);
+    } else {
+      // In an LTCS the session is NOT over — only the player's part in it is.
+      // Nineteen other cars are still setting times, and the classification
+      // this card has just quoted is provisional until they stop. So the
+      // primary action is to let the session reach its flag, which is both what
+      // really happens to a driver watching from the garage and the only path
+      // that produces an honest result.
+      //
+      // "End session" as a primary action was race language, and it was worse
+      // than wrong here: it froze the other cars' running mid-run and then
+      // published the truncated order as the segment's classification.
+      act(isQualifying ? 'See out ' + engine.config.name : 'See out the session',
+        'primary', seeItOut);
+      // Short on purpose: these sit two-up in a 520px card and "Skip to the
+      // classification" wraps in the half-width column.
+      act('Skip to the result', 'secondary', skipToResult);
+      act('Restart session', 'secondary', () => {
+        const id = engine.track.def.id;
+        this.dismissRetirement();
+        this.launchSession(id);
+      });
+    }
     act(this.career ? 'Back to the paddock' : 'Back to the menu', 'ghost', () => {
       this.dismissRetirement();
       this.abandonSession();
     });
 
     this.el('div', 'retire-hint', body,
-      'Watching keeps the session running to the flag, with the cameras following the leaders.');
+      isRace
+        ? 'Watching keeps the session running to the flag, with the cameras following the leaders.'
+        : 'Seeing it out runs the session to the flag with the cameras on the leaders, and ' +
+          'gives everyone still out there their last runs. Skipping stops the clock now, so ' +
+          'any lap not yet completed will not count.');
 
     (document.getElementById('app') as HTMLElement).appendChild(o);
     this.retireOverlay = o;
@@ -2917,17 +3112,24 @@ class Game {
         kind === 'race' ? 'Won it'
         : kind === 'qualifying' ? 'Pole position'
         : 'Quickest of the lot';
+      // A DNF is a race outcome and only a race outcome. In practice and
+      // qualifying the driver is classified on their lap (Art. B2.4.3a) — the
+      // accident cost them the rest of the session, not the position — so the
+      // headline tile shows the position they actually hold and the accident
+      // goes in the meta line under it, where it belongs.
+      const dnf = player.retired && kind === 'race';
       // The headline tile is scored the way every other figure in the game
       // is: purple for the outright best, green for a good day, red for a
       // retirement. It cannot be purple just for being the headline.
       const outcome =
-        player.retired ? 'bad'
+        dnf ? 'bad'
         : player.position === 1 ? 'hero'
         : player.position <= 3 ? 'good'
         : '';
       tile(headline,
-        player.retired ? 'DNF' : 'P' + player.position,
-        player.retired ? player.retirementReason
+        dnf ? 'DNF' : 'P' + player.position,
+        dnf ? player.retirementReason
+          : player.retired ? player.retirementReason + ' — the lap still counts'
           : player.position === 1 ? topNote : 'of ' + engine.standings.length + ' cars',
         outcome);
 
@@ -3010,7 +3212,12 @@ class Game {
     for (const [i, car] of order.entries()) {
       const notes: string[] = [];
       if (car.disqualified) notes.push('DSQ');
-      else if (car.retired) notes.push(car.retirementReason);
+      // A retirement is worth noting in any session — it explains why a car
+      // that was quick stopped being quick — but in an LTCS it must not
+      // out-rank the tag that says whether the driver went through, because
+      // that is the one the board exists to communicate and the accident does
+      // not change it.
+      else if (car.retired && isRace) notes.push(car.retirementReason);
       if (car.penaltySeconds > 0) notes.push('+' + car.penaltySeconds + 's');
       if (car.trackLimitStrikes > 0) notes.push(car.trackLimitStrikes + ' limits');
 
@@ -3038,7 +3245,16 @@ class Game {
           : undefined;
 
       this.trow(board, {
-        pos: car.retired || car.disqualified ? '—' : String(isQualifying ? i + 1 : car.position),
+        // A dash means "this car has no classified position". Disqualification
+        // earns one (Art. B2.4.3b.iii makes the driver unclassified); a
+        // retirement earns one in a race, where the car did not cover the
+        // distance. In practice or qualifying it earns nothing — the driver is
+        // classified on the lap they set, so the row keeps its number. Printing
+        // a dash beside the fastest lap of Q1 was the same lie as printing DNF
+        // next to it.
+        pos: car.disqualified || (car.retired && isRace)
+          ? '—'
+          : String(isQualifying ? i + 1 : car.position),
         colour: hexColour(car.team.colour),
         team: car.team,
         code: car.driver.code,
@@ -3058,7 +3274,7 @@ class Game {
         tag,
         state: car.isPlayer ? 'me'
           : out ? 'knocked'
-          : car.retired || car.disqualified ? 'out'
+          : car.disqualified || (car.retired && isRace) ? 'out'
           : through ? 'through'
           : (!isQualifying && car.position === 1) || (isQualifying && i === 0) ? 'best'
           : undefined,
