@@ -135,6 +135,15 @@ export class Hud {
   /** The bottom-anchored column the whole team side stacks into. */
   private notices!: HTMLElement;
   private alertStack!: HTMLElement;
+  /**
+   * Where the pit sheet lives, so it is laid out BY the rail rather than over
+   * it. Public because the app shell owns the sheet — the sheet mutates the
+   * car, which is not the instrument cluster's business — but the rail owns
+   * where it sits.
+   */
+  pitSlot!: HTMLElement;
+  /** True while the pit sheet is up, which changes what else the rail may show. */
+  private pitSheetOpen = false;
   private pitCue!: HTMLElement;
   private pitCueText!: HTMLElement;
   private neutralCue!: HTMLElement;
@@ -462,7 +471,10 @@ export class Hud {
       '<span class="k">Shift</span><span>DRS (when available)</span>' +
       '<span class="k">E</span><span>ERS mode</span>' +
       '<span class="k">C</span><span>Camera</span>' +
-      '<span class="k">L</span><span>Request pit stop</span>' +
+      '<span class="k">L</span><span>Request pit stop, or wave it off</span>' +
+      '<span class="k">T</span><span>Pit sheet: next tyre</span>' +
+      '<span class="k">F</span><span>Pit sheet: front wing</span>' +
+      '<span class="k">Enter</span><span>Pit sheet: confirm</span>' +
       '<span class="k">P</span><span>Pause</span>' +
       '<span class="k">R</span><span>Racing line</span>' +
       '<span class="k">H</span><span>Toggle this help</span>' +
@@ -527,6 +539,20 @@ export class Hud {
     // --- Transient pop-ups ------------------------------------------------
     this.alertStack = this.el('hud-alerts', this.notices);
     this.alertStack.dataset.probe = 'alerts';
+
+    // --- The pit sheet ----------------------------------------------------
+    //
+    // A slot in the column rather than a panel floating over it. The sheet used
+    // to be absolutely positioned at `left: 10px; bottom: 150px`, which put it
+    // straight across the top-left corner of the radio card — the portrait and
+    // half the principal's name behind an opaque panel — on every viewport at
+    // once. Two boxes given fixed coordinates on the same edge will eventually
+    // collide; two flex children of one column cannot.
+    //
+    // Below the pop-ups and above the live cues: it is a decision, so it wants
+    // the stable position nearest the cues, and it outranks anything transient.
+    this.pitSlot = this.el('hud-pitslot', this.notices);
+    this.pitSlot.dataset.probe = 'pitslot';
 
     // --- The two live cards, pinned to the bottom -------------------------
     this.neutralCue = this.el('hud-neutral-cue', this.notices);
@@ -1282,8 +1308,33 @@ export class Hud {
    * no longer see.
    */
   private maxAlerts(): number {
+    // The pit sheet is a decision with a deadline and it is the tallest thing
+    // the rail ever carries. On a landscape phone the band is about sixty
+    // pixels and the sheet needs all of them, so nothing transient may stand
+    // above it; on a desktop one pop-up still fits.
+    if (this.pitSheetOpen) return window.innerHeight < 560 ? 0 : 1;
     if (window.innerHeight < 560) return 1;
     return this.radioCard.style.display === 'none' ? 2 : 1;
+  }
+
+  /**
+   * Tells the rail the pit sheet is up.
+   *
+   * Two consequences, both about the same sixty pixels: the radio card stands
+   * down — it is atmosphere and the sheet is an instruction — and the pop-up
+   * budget shrinks. The class is what the stylesheet keys the compact layout
+   * off, so the two halves of the decision are made in one place.
+   */
+  setPitSheetOpen(open: boolean): void {
+    if (open === this.pitSheetOpen) return;
+    this.pitSheetOpen = open;
+    this.notices.classList.toggle('has-pit', open);
+    if (open) {
+      this.hideRadioCard(true);
+      while (this.alertCards.length > this.maxAlerts()) {
+        this.dismissAlert(this.alertCards[0], true);
+      }
+    }
   }
 
   private pushAlert(player: CarEntry, line: string, chip: string, tone: AlertTone): void {
@@ -1367,6 +1418,11 @@ export class Hud {
     // is the one item on the rail that is atmosphere rather than instruction,
     // so it is the one that goes.
     if (window.innerHeight <= 470) return;
+    // And it stands down entirely while a stop is being chosen. The driver has
+    // a decision in front of them with a deadline measured in corners; the rail
+    // is not tall enough to carry both, and covering the decision with the
+    // atmosphere is the fault this whole pass exists to fix.
+    if (this.pitSheetOpen) return;
     const ex = radioExchange(moment);
     for (const t of this.radioTimers) window.clearTimeout(t);
     this.radioTimers.length = 0;

@@ -12,7 +12,10 @@ import { Renderer } from './render/Renderer';
 import { CarStage } from './render/CarStage';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDirector';
 import { setRubberLine } from './render/SurfaceDetail';
-import { InputController } from './input/InputController';
+import { InputController, pitBindingHints } from './input/InputController';
+import {
+  describeButton, unboundButton, type ButtonAction, type ButtonRef,
+} from './input/GamepadProfile';
 import { Hud } from './ui/Hud';
 import {
   cutLine, qualifyingStrip, splitName, timingBoard, timingRow, type TimingRowSpec,
@@ -40,6 +43,7 @@ import { HeadlessSession } from './race/SessionSimulator';
 import { AI_DIFFICULTIES } from './ai/AIVehicleController';
 import { PauseMenu } from './ui/PauseMenu';
 import { PitStopPrompt } from './ui/PitStopPrompt';
+import { clearPitOrder } from './race/PitStop';
 
 /**
  * Application shell: screens, the game loop, and the wiring between the
@@ -204,7 +208,13 @@ class Game {
 
     const app = document.getElementById('app') as HTMLElement;
     this.pauseMenu = new PauseMenu(app);
-    this.pitPrompt = new PitStopPrompt(this.hud.root);
+    // Into the HUD's notice rail, not over it. The rail lays its children out;
+    // the shell owns what the sheet DOES, because the sheet mutates the car and
+    // that is not the instrument cluster's business.
+    this.pitPrompt = new PitStopPrompt(this.hud.pitSlot);
+    this.pitPrompt.onCancel = () => {
+      if (this.engine?.playerCar?.pitRequested) this.togglePitRequest();
+    };
 
     this.screenRoot = document.createElement('div');
     this.screenRoot.className = 'screen';
@@ -2509,12 +2519,13 @@ class Game {
 
     // Calling for a stop is the moment to decide what the stop IS. Cancelling
     // it puts the sheet away — a tyre choice for a stop that is not happening is
-    // a panel taking up the left of the screen for nothing.
-    if (on) this.pitPrompt.open(engine, car);
-    else {
-      car.pitCompoundRequest = null;
-      car.pitNoseChangeRequest = null;
+    // a panel taking up the left of the screen for nothing. The sheet itself is
+    // opened by `updatePitPrompt` off the car's state on the next frame, so
+    // there is one place that decides whether it is on screen.
+    if (!on) {
+      clearPitOrder(car);
       this.pitPrompt.close();
+      this.hud.setPitSheetOpen(false);
     }
   }
 
@@ -2601,6 +2612,7 @@ class Game {
           this.renderer.unloadSession();
           this.engine = null;
           this.pitPrompt.close();
+          this.hud.setPitSheetOpen(false);
           this.launchSession(circuitId);
         },
         onSettings: () => {
@@ -2823,6 +2835,7 @@ class Game {
     this.spectating = false;
     this.setPaused(false);
     this.pitPrompt.close();
+    this.hud.setPitSheetOpen(false);
     this.renderer.unloadSession();
     this.engine = null;
     this.weekend = [];
@@ -3198,6 +3211,17 @@ class Game {
         }
         if (this.input.pitRequestToggled) this.togglePitRequest();
 
+        // The pit sheet, operated without letting go of the wheel.
+        //
+        // These three do nothing at all unless the sheet is up — the prompt
+        // itself checks — so they are free to sit on keys and D-pad buttons a
+        // driver's hand is already near. That is the whole point: a stop is
+        // chosen at 300 km/h with a lap and a half of warning, and a panel that
+        // needs a cursor is a panel nobody can use while racing.
+        if (this.input.pitTyreCyclePressed) this.pitPrompt.cycleTyre(engine, 1);
+        if (this.input.pitRepairTogglePressed) this.pitPrompt.toggleRepair(engine);
+        if (this.input.pitConfirmPressed) this.pitPrompt.confirm();
+
         // Paddle shifts. Resolved here rather than in the input layer because
         // "one gear up" only means something against the gear the gearbox is
         // actually in, and this is the only place that knows it. Selecting 1st
@@ -3298,11 +3322,20 @@ class Game {
       (player.pitRequested || (player.inPitLane && !player.servicedThisVisit));
 
     if (relevant) {
-      this.pitPrompt.open(engine, player);
-      this.pitPrompt.update(engine, player);
+      this.pitPrompt.render(
+        engine, player,
+        pitBindingHints(this.input.lastSource, (a) => describeButton(this.activeButtonRef(a))),
+      );
     } else if (this.pitPrompt.visible) {
       this.pitPrompt.close();
     }
+    this.hud.setPitSheetOpen(this.pitPrompt.visible);
+  }
+
+  /** The live binding for one action on whichever device is in the player's hands. */
+  private activeButtonRef(action: ButtonAction): ButtonRef {
+    const profile = this.input.gamepads.profileFor(this.input.gamepadSettings);
+    return profile ? profile.buttons[action] : unboundButton();
   }
 
   stop(): void {
