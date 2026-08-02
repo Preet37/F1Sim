@@ -39,7 +39,14 @@ const FRAMES: [string, number, number][] = [
   ['wide', 1280, 720],
 ];
 
-const MODES = ['cockpit', 'onboard-t'] as const;
+/**
+ * The three views that are inside the car, driver's eye first.
+ *
+ * It is the one the mirrors are readable in — the panes are 0.83m from the eye
+ * rather than 1.52m and the hoop does not lie across them — so it is the one
+ * whose mirror blow-ups are worth looking at first.
+ */
+const MODES = ['driver', 'cockpit', 'onboard-t'] as const;
 
 const OUT_DIR = resolve(process.cwd(), 'cockpit-out');
 
