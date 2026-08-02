@@ -43,12 +43,24 @@ import type { TrackSpline } from '../track/TrackSpline';
  *   4. the garage interior lights,
  *   5. the main grandstands, as one instanced mesh.
  *
- * The crew are merged rather than instanced deliberately. An InstancedMesh
- * would need one flat colour per figure, and a figure whose skin, helmet, boots
- * and overalls are all the same colour is a mannequin. Merging costs about a
- * megabyte for the whole pit lane and buys per-vertex colour, so the crew have
- * team overalls, dark boots and a head that is not the same colour as their
- * shirt. Draw-call cost is identical: one.
+ * THE PEOPLE HERE ARE THE ONES WHO NEVER MOVE.
+ *
+ * A couple of mechanics inside each box and the engineers on each pit wall
+ * stand — the population of a pit lane between stops. They are merged into the
+ * buffer above and then cost nothing at all, for ever, which is the whole
+ * reason for merging rather than instancing them.
+ *
+ * The twenty-one who actually work on a car are NOT here. They are in
+ * `PitCrew.ts`, instanced and animated, and there is exactly one such crew:
+ * they come over the wall when their car is on its way in and go back
+ * afterwards. This file used to build them too — eleven figures at each of ten
+ * garages, frozen mid-task, permanently, whether or not anything was happening
+ * — which is a hundred and ten people performing a pit stop on twenty cars that
+ * were not there, all race.
+ *
+ * The figure itself lives in `CrewFigure.ts` and is shared with the working
+ * crew, so the mechanic leaning on a bench and the gunman on a wheel nut are
+ * the same person built two different ways.
  */
 
 export interface PaddockScene {
