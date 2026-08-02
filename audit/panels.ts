@@ -6,6 +6,7 @@ import { formatLapTime } from '../src/core/MathUtils';
 import { cutLine, qualifyingStrip, timingBoard, timingRow } from '../src/ui/TimingRow';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import { Hud } from '../src/ui/Hud';
+import { PitStopPrompt } from '../src/ui/PitStopPrompt';
 
 /**
  * The full-screen panels, without the game around them.
@@ -28,6 +29,7 @@ declare global {
       board(kind: string): Promise<void>;
       hud(scene: string): Promise<void>;
       hudReport(): Record<string, unknown>;
+      railReport(): Record<string, unknown>;
     };
   }
 }
@@ -94,6 +96,7 @@ function div(cls: string, parent: HTMLElement): HTMLElement {
  */
 let hudEngine: RaceEngine | null = null;
 let hud: Hud | null = null;
+let hudPrompt: PitStopPrompt | null = null;
 let hudCar: ReturnType<RaceEngine['cars']['at']> | null = null;
 
 const hudInput = {
@@ -110,7 +113,10 @@ function hudScene(scene: string): void {
   hudEngine.weather.wetness = 0.02;
   hudCar.inPitLane = false;
   hudCar.inPitBox = false;
+  hudCar.pitRequested = false;
   hudCar.damage.health.frontWingL = 1;
+  hudPrompt?.close();
+  hud.setPitSheetOpen(false);
 
   if (scene === 'pit-advice') hudCar.damage.health.frontWingL = 0.44;
   if (scene === 'safety-car') rc.neutralisation = 'safety-car';
@@ -121,7 +127,125 @@ function hudScene(scene: string): void {
   if (scene === 'in-box') {
     hudCar.inPitLane = true; hudCar.inPitBox = true; hudCar.pitBoxTimer = 2.4;
   }
+  if (scene === 'pit-choice' || scene === 'rail-max') {
+    hudCar.pitRequested = true;
+    hudCar.damage.health.frontWingL = 0.44;
+    hudCar.damage.health.frontWingR = 0.44;
+    hudPrompt?.render(hudEngine, hudCar, {
+      tyre: 'T', repair: 'F', confirm: 'ENTER', cancel: 'L',
+    });
+    hud.setPitSheetOpen(true);
+  }
+
+  // EVERYTHING AT ONCE. This is the case the rail has to be designed for, not
+  // the quiet frame: a stop being chosen, race control filing a bulletin, the
+  // pit wall reacting to damage, a neutralisation, and the radio card on top of
+  // all of it. The reported fault — "also from ur tests i think its being
+  // covered?" — is what this frame catches, and it catches it by MEASUREMENT in
+  // `railReport`, not by anyone looking at the picture.
+  if (scene === 'rail-max') {
+    rc.neutralisation = 'safety-car';
+    hudEngine.weather.wetness = 0.35;
+    rc.log(
+      'Contact between HAL and OKO', 'warning', hudEngine.time, -1,
+      { notice: {
+        parties: ['HAL', 'OKO'], where: 'TURN 1', offence: 'CONTACT', status: 'NOTED',
+      } },
+    );
+    rc.log(
+      hudCar.driver.code + ': front wing damage', 'warning', hudEngine.time, hudCar.index,
+      { feed: 'team', team: { kind: 'damage', part: 'Front wing', health: 0.44 } },
+    );
+  }
+
   hud.update(hudEngine, hudCar, hudInput, 60, 240);
+  if (hudCar.pitRequested && hudPrompt) {
+    hudPrompt.render(hudEngine, hudCar, {
+      tyre: 'T', repair: 'F', confirm: 'ENTER', cancel: 'L',
+    });
+    hud.setPitSheetOpen(true);
+  }
+}
+
+/**
+ * Every box on the left rail, and whether any two of them collide.
+ *
+ * WHY THIS IS A MEASUREMENT AND NOT A SCREENSHOT. The reported fault was the
+ * pit sheet drawn across the radio card, and then the radio card drawn under
+ * two notification cards. Both are invisible in a still if you are looking at
+ * the wrong corner, and both are trivially decidable from four numbers. So the
+ * sweep computes the intersections and `shootPanels` fails on any of them.
+ *
+ * `intersects` uses a one-pixel tolerance because a shared border between two
+ * stacked cards is not an overlap, and sub-pixel layout puts adjacent boxes a
+ * few hundredths of a pixel into each other on a fractional device ratio.
+ */
+function railReport(): Record<string, unknown> {
+  const root = hud?.root;
+  if (!root) return {};
+
+  const SELECTORS = [
+    '.hud-tower', '.hud-radiocard', '.pitprompt', '.hud-neutral-cue', '.hud-pit-cue',
+    '.hud-weather', '.hud-carstate', '.hud-damage', '.hud-gaps',
+  ];
+  interface Box { name: string; x: number; y: number; w: number; h: number }
+  const boxes: Box[] = [];
+  const add = (name: string, e: HTMLElement) => {
+    const cs = getComputedStyle(e);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) < 0.05) return;
+    const r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    boxes.push({ name, x: r.x, y: r.y, w: r.width, h: r.height });
+  };
+  for (const sel of SELECTORS) {
+    const e = root.querySelector<HTMLElement>(sel);
+    if (e) add(sel, e);
+  }
+  // Every card in the notice stack individually: two pop-ups that overlap each
+  // other are the same fault as a pop-up over the radio card.
+  const cards = root.querySelectorAll<HTMLElement>('.hud-alert, .hud-control');
+  for (const [i, c] of [...cards].entries()) add('.card[' + i + ']', c);
+
+  const overlaps: string[] = [];
+  const T = 1;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ox > T && oy > T) {
+        overlaps.push(a.name + ' x ' + b.name +
+          ' by ' + Math.round(ox) + 'x' + Math.round(oy) + 'px');
+      }
+    }
+  }
+
+  // Clipping. A rail child whose box escapes the rail's band is a card the
+  // driver reads half of, which is what "being covered" looked like.
+  const rail = root.querySelector<HTMLElement>('.hud-notices');
+  const clipped: string[] = [];
+  if (rail) {
+    const band = rail.getBoundingClientRect();
+    for (const child of rail.children) {
+      const e = child as HTMLElement;
+      if (getComputedStyle(e).display === 'none') continue;
+      const r = e.getBoundingClientRect();
+      if (r.height < 1) continue;
+      if (r.top < band.top - T || r.bottom > band.bottom + T) {
+        clipped.push(e.className.split(' ')[0] +
+          ' out of the band by ' +
+          Math.round(Math.max(band.top - r.top, r.bottom - band.bottom)) + 'px');
+      }
+    }
+  }
+
+  return {
+    boxes: boxes.map((b) => b.name + ' [' +
+      [b.x, b.y, b.w, b.h].map((v) => Math.round(v)).join(',') + ']'),
+    overlaps,
+    clipped,
+  };
 }
 
 /**
@@ -249,6 +373,7 @@ window.__panels = {
       hudEngine = new RaceEngine(getCircuit('monza'), config);
       hudCar = hudEngine.cars[6];
       hud = new Hud(app);
+      hudPrompt = new PitStopPrompt(hud.pitSlot);
       hud.setVisible(true);
       hud.setHelpVisible(false);
       for (let i = 0; i < Math.round(150 / PHYSICS_DT); i++) hudEngine.step();
@@ -275,9 +400,11 @@ window.__panels = {
         text: (e.textContent ?? '').slice(0, 90),
       };
     }
-    out.alertCount = root.querySelectorAll('.hud-alert').length;
+    out.alertCount = root.querySelectorAll('.hud-alert, .hud-control').length;
     return out;
   },
+
+  railReport,
 
   show(name: string, teamId: string, circuitId: string): void {
     const team = getTeam(teamId);

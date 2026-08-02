@@ -165,6 +165,8 @@ export class Hud {
   private alertCards: HTMLElement[] = [];
   /** The pit advice the pop-up last spoke, so it speaks once per change. */
   private lastAdvice = '';
+  /** Signature of what is pinned to the rail, for `enforceRailBudget`. */
+  private lastPinned = '';
   /** Which team the portraits and the radio mark were drawn for. */
   private markedTeam = '';
   /** Driver codes of the field — tokens `relayed` must leave in capitals. */
@@ -1033,6 +1035,7 @@ export class Hud {
     this.updateNeutralCue(engine, player);
     this.updateAlerts(engine, player);
     this.updateRadioCard(engine, player);
+    this.enforceRailBudget();
 
     // --- Camera and diagnostics ------------------------------------------
     setText(this.cameraLabel, engine.config.name);
@@ -1375,14 +1378,39 @@ export class Hud {
    * band, which leaves a driver reading half of a reply to a question they can
    * no longer see.
    */
+  /**
+   * How many pop-ups may stand at once.
+   *
+   * MEASURED, not guessed from a breakpoint. Every previous version of this was
+   * a rule of thumb about screen height — "one below 560px", "two if the radio
+   * card is down" — and every one of them was wrong on some combination,
+   * because what actually decides it is how much of the band the PINNED items
+   * have already taken. A landscape phone under a safety car with a planned
+   * stop showing has two live cues in a 94-pixel band and no room for anything
+   * at all; the same phone with one cue has room for exactly one card. Both
+   * numbers fall out of the same subtraction.
+   *
+   * The layout reads cost one reflow per MESSAGE, not per frame. `Hud.update`
+   * never calls this.
+   */
   private maxAlerts(): number {
-    // The pit sheet is a decision with a deadline and it is the tallest thing
-    // the rail ever carries. On a landscape phone the band is about sixty
-    // pixels and the sheet needs all of them, so nothing transient may stand
-    // above it; on a desktop one pop-up still fits.
-    if (this.pitSheetOpen) return window.innerHeight < 560 ? 0 : 1;
-    if (window.innerHeight < 560) return 1;
-    return this.radioCard.style.display === 'none' ? 2 : 1;
+    // While a stop is being chosen the rail carries the sheet and the
+    // neutralisation cue and NOTHING else. The sheet is a decision with a
+    // deadline; a pop-up over it is the fault this pass exists to fix.
+    if (this.pitSheetOpen) return 0;
+
+    const band = this.notices.clientHeight;
+    // Before the first layout — in a probe, or on the frame the HUD is built —
+    // there is no band to measure. Fall back to one, which is safe everywhere.
+    if (band <= 0) return 1;
+
+    const pinned = this.neutralCue.offsetHeight + this.pitCue.offsetHeight
+      + (this.radioCard.style.display === 'none' ? 0 : this.radioCard.offsetHeight);
+    // Gaps between the rail's children, and the mask's fade at the top, which
+    // eats the first 28px of anything that reaches it.
+    const room = band - pinned - RAIL_GAPS_PX;
+    if (room < MIN_CARD_PX) return 0;
+    return Math.min(2, Math.floor(room / MIN_CARD_PX));
   }
 
   /**
@@ -1397,11 +1425,41 @@ export class Hud {
     if (open === this.pitSheetOpen) return;
     this.pitSheetOpen = open;
     this.notices.classList.toggle('has-pit', open);
+    // On the ROOT as well, because on a landscape phone the sheet cannot fit
+    // in the band the running order leaves it — 56 pixels — and the tower is
+    // what has to give. It keeps its header (the lap count, your position, the
+    // fastest lap) and drops its rows for the few seconds the decision takes.
+    // The other nineteen cars can wait; the stop cannot.
+    this.root.classList.toggle('pit-open', open);
     if (open) {
       this.hideRadioCard(true);
       while (this.alertCards.length > this.maxAlerts()) {
         this.dismissAlert(this.alertCards[0], true);
       }
+    }
+  }
+
+  /**
+   * Re-checks the pop-up budget when what is PINNED to the rail changes.
+   *
+   * This is the bug behind both reported overlaps and it is the same bug twice.
+   * The budget was only ever consulted at the moment a card was pushed, so a
+   * card admitted into a quiet rail stayed after a safety car put a second live
+   * cue underneath it — or after the radio card came up — and the stack then
+   * ran out through the top of the band and over the running order. A budget
+   * that is only enforced on the way in is not a budget.
+   *
+   * Runs every frame and costs a string compare on four `display` values. The
+   * expensive part — `maxAlerts`, which measures — only runs on the frames
+   * where that string has actually changed, which is a handful per race.
+   */
+  private enforceRailBudget(): void {
+    const key = this.neutralCue.style.display + '|' + this.pitCue.style.display + '|' +
+      this.radioCard.style.display + '|' + (this.pitSheetOpen ? 'pit' : '');
+    if (key === this.lastPinned) return;
+    this.lastPinned = key;
+    while (this.alertCards.length > this.maxAlerts()) {
+      this.dismissAlert(this.alertCards[0], true);
     }
   }
 
@@ -1821,6 +1879,24 @@ const RADIO_LIFE_MS = 8000;
  * argument in its shortest honest form.
  */
 const RADIO_TURNS_SHOWN = 2;
+
+/**
+ * Slack subtracted from the rail's band before it is divided into cards.
+ *
+ * The gaps between the rail's children plus the top of the mask, which fades
+ * the first 28 pixels of whatever reaches it. A card allocated into that fade
+ * is a card the driver reads three quarters of.
+ */
+const RAIL_GAPS_PX = 36;
+
+/**
+ * The shortest a pop-up is ever laid out at, in pixels.
+ *
+ * Measured off the compact form: on a landscape phone the card is a name and
+ * two clamped lines with no portrait, and it comes out at 55. Anything shorter
+ * than this is not a card that fits, it is a card that is about to be clipped.
+ */
+const MIN_CARD_PX = 58;
 
 /**
  * Takes a card out of its entry state on the frame after next.

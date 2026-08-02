@@ -1923,18 +1923,44 @@ canvas#view {
     --rail-w: 262px;
     left: calc(8px + var(--safe-l) - var(--slide));
     top: calc(216px + var(--safe-t));
-    bottom: calc(118px + var(--safe-b));
+    /* Down to the top of the tyre panel, which is the first thing under it
+       once the weather bug has moved out of the column. That takes the band
+       from 48 pixels to 94, which is what a principal's card needs. */
+    bottom: calc(80px + var(--safe-b));
     gap: 5px;
   }
+  /* THE COMPACT CARD. 390 pixels of height leaves the rail a 94-pixel band
+     between the running order and the tyre panel, and the two live cues want
+     half of it — so a pop-up here is a name and two lines and nothing else.
+     The portrait goes first: it is the most expensive 28 pixels on the card
+     and it says who is speaking, which the name already says. Measured at 52,
+     against the 54 `Hud.maxAlerts` divides the band by. */
   .hud-alert { padding: 6px 9px 7px 7px; gap: 8px; }
+  .hud-alert .alert-portrait { display: none; }
+  .hud-alert .alert-role { display: none; }
+  .hud-alert .alert-chip { display: none; }
   .hud-control { padding: 6px 9px 7px; }
   .control-headline { font-size: 11px; }
-  .control-detail { font-size: 8.5px; margin-top: 3px; }
-  .alert-portrait { width: 28px; height: 28px; }
-  .alert-name { font-size: 9.5px; }
-  .alert-role { font-size: 7.5px; }
-  .alert-line { font-size: 11px; line-height: 1.28; }
-  .alert-chip { margin-top: 4px; font-size: 8px; }
+  .control-detail {
+    font-size: 8.5px;
+    margin-top: 3px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .alert-name { font-size: 9px; }
+  .alert-who { margin-bottom: 2px; }
+  .alert-line {
+    font-size: 10.5px;
+    line-height: 1.22;
+    /* Two lines, then it stops. A third line is 13 pixels the band does not
+       have, and the first two carry the instruction in every one of them. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
   /* The radio card does not appear at this height at all — `showRadioCard`
      declines it — but the rules are kept so a taller phone in the same width
      band still gets a proportionate card. */
@@ -1943,13 +1969,24 @@ canvas#view {
   .radio-driver, .radio-title { font-size: 12px; }
   .radio-rule { margin: 5px 0; }
   .radio-turn { font-size: 10px; }
-  .hud-pit-cue, .hud-neutral-cue { font-size: 9.5px; padding: 5px 9px; gap: 7px; }
+  /* One line each, as tight as they read. Every pixel taken here is a pixel
+     the pop-up above them does not get — see `Hud.maxAlerts`, which divides
+     what is left rather than guessing from the viewport. */
+  .hud-pit-cue, .hud-neutral-cue { font-size: 9.5px; padding: 3px 9px; gap: 7px; }
   .cue-tag { font-size: 7.5px; }
   .hud-pit-cue.cue-box { font-size: 12px; }
 
+  /* Out from under the notice rail.
+     390 pixels of height is the tightest case in the game and the bottom-left
+     corner had three things stacked in it: the rail, the weather bug and the
+     tyre panel. The bug in the middle of that stack was costing the rail 46
+     pixels of band — enough that a single principal's card did not fit and
+     overflowed straight up through the running order. Moved to the right of
+     the tyre panel it costs the rail nothing, and it is still in the bottom
+     band where a broadcast puts it. */
   .hud-weather {
-    left: calc(8px + var(--safe-l));
-    bottom: calc(80px + var(--safe-b));
+    left: calc(276px + var(--safe-l));
+    bottom: calc(74px + var(--safe-b));
     padding: 5px 11px 5px 8px;
     gap: 8px;
   }
@@ -1989,9 +2026,15 @@ canvas#view {
   .hud-tyretemp { width: 30px; font-size: 9px; }
   .hud-fuelrow { font-size: 9px; }
 
+  /* Clear of the weather bug and of the notice rail above it, both of which
+     reach x=270 on this screen. It used to sit at x=152 and overlap both — a
+     fault the eye forgives at 58px wide and the measurement in
+     `shoot:panels` does not. Its neighbours here are the camera buttons at
+     x=216, so it goes to the right of them, on the one strip of floor in the
+     bottom band that nothing else wants. */
   .hud-damage {
     top: auto; right: auto;
-    left: calc(152px + var(--safe-l)); bottom: calc(6px + var(--safe-b));
+    left: calc(440px + var(--safe-l)); bottom: calc(6px + var(--safe-b));
     width: 58px; padding: 4px 5px 5px;
   }
   .hud-damagetitle { font-size: 7.5px; }
@@ -4362,7 +4405,18 @@ table.standings tr.me td.who { font-weight: 700; }
 .hud-notices.has-pit .hud-pit-cue { display: none !important; }
 @media (max-height: 470px) {
   .hud-notices.has-pit .hud-neutral-cue { display: none !important; }
-  .hud-notices.has-pit { top: calc(180px + var(--safe-t)); }
+  /* THE TOWER GIVES WAY. A 390px-tall screen leaves the rail a 56-pixel band
+     between the running order and the weather bug, and no arrangement of a
+     tyre choice and a wing choice fits in 56 pixels. So while the sheet is up
+     the running order collapses to its header — lap count, position, fastest
+     lap — and the rail takes the space back. Measured in `shoot:panels`: with
+     the tower at 76px the band runs 96..264, which is 168 for a sheet that
+     needs about 150. */
+  .hud.pit-open .hud-tower { max-height: 76px; overflow: hidden; }
+  .hud-notices.has-pit { top: calc(96px + var(--safe-t)); }
+  /* The recommendation line is the first thing to go: the selected tile and
+     the status line under it both already say what is being fitted. */
+  .hud-notices.has-pit .pitprompt-note { display: none; }
   .pitprompt { padding: 6px 9px 7px; border-radius: 10px; }
   .pitprompt-note { font-size: 9.5px; margin: 3px 0 5px; }
   .pitchip { min-height: 36px; padding: 4px 2px 4px; }
