@@ -430,6 +430,7 @@ function run(tier: CarTier): void {
 
   // --- 2. suspension endpoints ---------------------------------------------
   console.log('\nsuspension members (both ends must land on the part they mount to)');
+  const beforeMembers = failures;
   const byName = new Map<string, number>();
   prepared.forEach((p, i) => byName.set(p.part.name, i));
   const corners: [string, (s: 1 | -1) => SuspensionMember[]][] = [
@@ -457,13 +458,12 @@ function run(tier: CarTier): void {
       }
     }
   }
-  if (!failures) console.log('  all 24 members land on a part at both ends');
+  if (failures === beforeMembers) console.log('  all 24 members land on a part at both ends');
 
   // --- 3. front wing -------------------------------------------------------
   //
-  // The elements are measured where the wing is a wing: on the OUTER half of
-  // the semi-span, clear of the nose fairing that deliberately buries itself in
-  // the inner sections.
+  // Measured across the span from 300mm out to the endplate, which is clear of
+  // the nose fairing that deliberately buries itself in the inner sections.
   console.log('\nfront wing (mainplane + 3 flaps; slot 5-15mm, and open to the eye)');
   const elements = [1, 2, 3, 4].map((n) => prepared[byName.get(`front wing element ${n}`)!]);
   const STATIONS = [0.30, 0.42, 0.54, 0.66, 0.78, 0.88];

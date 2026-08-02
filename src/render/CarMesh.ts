@@ -1292,9 +1292,9 @@ function roundedBar(
  *    See `riseSpanwise`, which is where that curve is applied and why it is
  *    applied where it is.
  *  - A LARGE CURVED ENDPLATE, growing from about 145mm tall at the leading edge
- *    to 320mm at the rear and flaring OUTBOARD as it goes, with a footplate
- *    rolling out along the bottom and a flick over the top. It is the widest
- *    thing on the car at this station and it is what frames the front wheels.
+ *    to 410mm at the rear quarter and flaring OUTBOARD as it goes, with a
+ *    footplate rolling out along the bottom and a flick over the top. It is the
+ *    widest thing on the car at this station and it frames the front wheels.
  *  - CLEAR-COATED CARBON, everywhere. Not team paint.
  *
  * Element geometry is authored as LEADING and TRAILING EDGE POINTS rather than
@@ -1304,6 +1304,22 @@ function roundedBar(
  * surface, and with a centre-and-angle parameterisation neither of those two
  * points is a number you typed — which is how the previous version ended up with
  * gaps that were negative.
+ *
+ * AND AUTHORING THEM IS STILL NOT MEASURING THEM. The version this replaces was
+ * authored exactly that way, with edge points chosen for 13 to 20mm of gap, and
+ * the gaps it actually built were 6.2, 10.1 and 4.2mm — the last of those below
+ * the regulation minimum of five. What the arithmetic left out was the camber
+ * line, which bows each section DOWNWARD by up to a tenth of its chord into the
+ * slot beneath it. `npm run probe:carrig` now measures the built surfaces
+ * instead: the closest approach between each pair, and whether a straight line
+ * runs from the middle of the slot to the head-on camera without touching the
+ * car. The second of those is what "the slot gaps do not read" was about — a
+ * 14mm slot that the element above overhangs by half its chord is a slot no eye
+ * in front of the car can see into.
+ *
+ * THE WHOLE ASSEMBLY ALSO SAT 139mm OUTSIDE THE CAR. Front overhang is capped
+ * at 1350mm ahead of the front axle, which is z = 3.15 here, and the mainplane's
+ * swept tips reached 3.289. Everything below is stationed against that limit.
  */
 
 /**
