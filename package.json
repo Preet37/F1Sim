@@ -58,7 +58,8 @@
     "shoot:panels": "tsx scripts/shootPanels.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",
-    "audit:car": "tsx scripts/auditCar.ts"
+    "audit:car": "tsx scripts/auditCar.ts",
+    "probe:pitstop": "tsx scripts/probePitStop.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
