@@ -183,10 +183,20 @@ let SHOT_H = 720;
 canvas.style.width = `${SHOT_W}px`;
 canvas.style.height = `${SHOT_H}px`;
 
-// Quality is forced high. The low tier exists for phones and uses coarser
-// tessellation and no mirrors; auditing it would photograph a different world
-// from the one the complaint is about.
-const renderer = new Renderer({ canvas, quality: 'high' });
+// Quality defaults to high, and is OVERRIDABLE from the URL.
+//
+// The default is right for scenery and framing work: the low tier exists for
+// phones and uses coarser tessellation, so auditing it would photograph a
+// different world from the one most complaints are about.
+//
+// It is emphatically wrong for the mirrors. The tier is chosen in the game by
+// `(pointer: coarse) || cores <= 4`, which makes every phone 'low' — and the
+// whole history of "the mirrors don't work" is a history of the mirrors being
+// verified on a tier the reporter has never run. A harness that can only
+// photograph 'high' cannot reproduce the report. `?quality=low` can.
+const qualityParam = new URLSearchParams(location.search).get('quality');
+const QUALITY: 'low' | 'high' = qualityParam === 'low' ? 'low' : 'high';
+const renderer = new Renderer({ canvas, quality: QUALITY });
 renderer.resize();
 
 let engine: RaceEngine | null = null;

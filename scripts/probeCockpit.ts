@@ -39,9 +39,25 @@ const FRAMES: [string, number, number][] = [
   ['wide', 1280, 720],
 ];
 
-const MODES = ['cockpit', 'onboard-t'] as const;
+/**
+ * Every view the driver's furniture is in shot for.
+ *
+ * 'driver' is the eye itself — see DRIVER_EYE_* in CockpitMesh — and it is the
+ * mode this harness matters most for. The other two are photographed from
+ * outside the head and their mirrors are 1.4m away with a halo rail across
+ * them; this one is 0.79m from the panes with nothing in the way, so it is
+ * where "can you actually read the mirror" is answerable from a picture rather
+ * than only from the feed behind it.
+ */
+const MODES = ['cockpit', 'driver', 'onboard-t'] as const;
 
-const OUT_DIR = resolve(process.cwd(), 'cockpit-out');
+// The low tier writes somewhere else, so a phone-tier run and a desktop-tier
+// run of the same circuit can be put side by side rather than overwriting each
+// other — which is the whole point of being able to shoot both.
+const OUT_DIR = resolve(
+  process.cwd(),
+  process.env.COCKPIT_QUALITY === 'low' ? 'cockpit-out-low' : 'cockpit-out',
+);
 
 interface Cost { ms: number; calls: number; triangles: number }
 
@@ -78,7 +94,10 @@ async function main(): Promise<void> {
   await server.listen();
   const addr = server.httpServer!.address();
   if (!addr || typeof addr === 'string') throw new Error('vite gave no port');
-  const url = `http://127.0.0.1:${addr.port}/audit/index.html`;
+  // `COCKPIT_QUALITY=low` photographs the tier every phone gets. See the
+  // `quality` parameter in audit/audit.ts for why that is not a detail.
+  const quality = process.env.COCKPIT_QUALITY === 'low' ? '?quality=low' : '';
+  const url = `http://127.0.0.1:${addr.port}/audit/index.html${quality}`;
 
   const browser: Browser = await puppeteer.launch({
     executablePath: chromePath(),

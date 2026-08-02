@@ -26,3 +26,10 @@ reference/
 # scripts/probeRenderPerf.ts. Evidence about a build, not part of one.
 sharp-out/
 perf-out/
+
+# Same reasoning as cockpit-out: the phone-tier run of the same probe.
+cockpit-out-low/
+
+# Symlinks an agent worktree makes to the main checkout.
+/reference
+/node_modules

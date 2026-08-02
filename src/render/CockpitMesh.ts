@@ -98,6 +98,72 @@ export const EYE_Z = -0.58;
 export const EYE_PITCH = 0.053;
 
 /**
+ * The DRIVER'S OWN EYE, car-local. A different camera from `EYE_*` above.
+ *
+ * "We need another view which is the driver view, imagine from the perception
+ * of the driver's lenses."
+ *
+ * `EYE_*` is not that, and deliberately so: it is a pod on the front of the
+ * roll-hoop fairing, behind and above the helmet, which is where every
+ * broadcast onboard is mounted and why the reference frames show the crown of
+ * the driver's own helmet in the bottom of the picture. A driver cannot see his
+ * own helmet. This is the view from BEHIND THE VISOR, and every number in it is
+ * taken off the head that is already modelled rather than chosen to frame a
+ * shot.
+ *
+ * WHERE IT COMES FROM. `DriverMesh` builds the helmet as an ellipsoid centred
+ * on (0, 0.672, 0.02) with semi-axes 0.142 across, 0.156 up and 0.165 fore-aft,
+ * so its crown is at 0.828 — the number `probe:framing` already reports. The
+ * visor aperture runs from y 0.666 to 0.758, and a real eye sits about 110mm
+ * below a helmet's crown, which is 0.718. 0.720 is the middle of the visor band
+ * and the eye line together.
+ *
+ * In z the eye is 45mm behind the front of the shell at that height (0.179), so
+ * 0.135. That is INSIDE the helmet, which is exactly where an eye is and costs
+ * nothing to render: the shell, the jaw and the visor are all closed
+ * front-facing surfaces, so from within them every triangle is back-facing and
+ * culled, and the few millimetres of them that are in front of the eye at all
+ * are inside the 0.12m near plane. Nothing had to be hidden and no geometry had
+ * to move.
+ *
+ * WHAT IT PUTS IN THE FRAME, measured by `probe:framing` on all eleven
+ * circuits in both frame shapes, and the reason each one is right:
+ *
+ *   - the halo arcs ABOVE the horizon, crowning around 30 per cent of frame
+ *     height against a horizon at 43. This is the signature of the view and the
+ *     exact inverse of the roll-hoop onboards, whose crown sits BELOW the
+ *     horizon at 56-66 per cent because they are looking down over the hoop;
+ *   - the halo's front pillar is 12mm of carbon 0.6m from the eye — a little
+ *     over one degree, about one per cent of frame width — straight down the
+ *     middle. That is the real article seen from the real seat. It is the whole
+ *     reason `EYE_*` is NOT here and the roll-hoop camera exists;
+ *   - the rails leave through the SIDES rather than the bottom, because the
+ *     hoop passes beside the driver's head and its mounts are behind him;
+ *   - the top of the wheel rim sits just under the sightline, at 0.703 against
+ *     an eye at 0.720. Two degrees. A real F1 driver looks over the rim by
+ *     about that much, which is why they cannot see an apex kerb;
+ *   - the mirrors land at 37 degrees off axis. See `MIRROR_FOV` for what had to
+ *     happen to make a pane at 37 degrees legible.
+ */
+export const DRIVER_EYE_X = 0;
+export const DRIVER_EYE_Y = 0.720;
+export const DRIVER_EYE_Z = 0.135;
+
+/**
+ * Downward tilt of the driver's-eye camera, radians. 4.0 degrees.
+ *
+ * More than the roll hoop's 3.04 and for the opposite reason. The hoop camera
+ * is already above the driver looking down, so its pitch only has to put the
+ * horizon at 42 per cent; this one is at eye level with a steering wheel whose
+ * rim tops out two degrees under the sightline, and without a nose-down bias
+ * the rim, the horizon and the road all pile up within four degrees of the
+ * middle of the frame. Four degrees puts the horizon at 43 per cent, the rim
+ * top at 48 and the bottom of the rim at 81, which leaves the road running away
+ * either side of the wheel the way it does from the seat.
+ */
+export const DRIVER_EYE_PITCH = 0.070;
+
+/**
  * Centre of the steering wheel, car-local, and its rake.
  *
  * Exported because DriverMesh puts the coarse wheel and the driver's hands in
@@ -197,7 +263,87 @@ const MIRROR_TARGET_X = 3.0;
 const MIRROR_TARGET_Y = 0.85;
 const MIRROR_TARGET_Z = -25;
 
+/** Which eye is looking out of the car this frame. See `CockpitState.eye`. */
+export type CockpitEye = 'pod' | 'driver';
+
+/**
+ * Reflective area of one pane, metres.
+ *
+ * 112 by 42, and still inside the housing the shell builds around it (116 by
+ * 46). A real F1 mirror's reflective area is nearer 150 by 50; ours was small
+ * even for the small one, and every millimetre of it is a millimetre of the
+ * only thing in the shot that answers "is anybody behind me".
+ */
+export const MIRROR_PANE_W = 0.112;
+export const MIRROR_PANE_H = 0.042;
+
+/**
+ * The orientation of one pane, solved for one eye.
+ *
+ * Exported so `probe:framing` measures the pane the renderer actually builds
+ * rather than a flat rectangle standing in for it. A mirror seen edge-on is
+ * three pixels wide, and a probe that asserted "the mirror is in frame" against
+ * an un-toed rectangle would pass on a pane the player cannot see.
+ *
+ * @param side +1 for the pane on the car's local +x.
+ */
+export function mirrorPaneAim(side: 1 | -1, eye: CockpitEye): THREE.Quaternion {
+  const toRoad = new THREE.Vector3(
+    side * MIRROR_TARGET_X - side * MIRROR_X,
+    MIRROR_TARGET_Y - MIRROR_Y,
+    MIRROR_TARGET_Z - MIRROR_GLASS_Z,
+  ).normalize();
+  const toEye = eye === 'driver'
+    ? new THREE.Vector3(
+      DRIVER_EYE_X - side * MIRROR_X,
+      DRIVER_EYE_Y - MIRROR_Y,
+      DRIVER_EYE_Z - MIRROR_GLASS_Z,
+    ).normalize()
+    : new THREE.Vector3(
+      EYE_X - side * MIRROR_X,
+      EYE_Y - MIRROR_Y,
+      EYE_Z - MIRROR_GLASS_Z,
+    ).normalize();
+  return new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1),
+    toEye.add(toRoad).normalize(),
+  );
+}
+
+/** The four corners of one pane, car-local, as the renderer places them. */
+export function mirrorPaneCorners(side: 1 | -1, eye: CockpitEye): THREE.Vector3[] {
+  const q = mirrorPaneAim(side, eye);
+  const c = new THREE.Vector3(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
+  const out: THREE.Vector3[] = [];
+  for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+    out.push(
+      new THREE.Vector3(u * MIRROR_PANE_W * 0.5, v * MIRROR_PANE_H * 0.5, 0)
+        .applyQuaternion(q).add(c),
+    );
+  }
+  return out;
+}
+
 export interface CockpitState {
+  /**
+   * Which eye the mirrors are adjusted for.
+   *
+   * A MIRROR IS AIMED AT A HEAD, and this project now has two heads: the
+   * roll-hoop pod that 'cockpit' and 'onboard-t' look out of, and the driver's
+   * own eye behind the visor. They are 0.72m apart in z and 0.26m in y, and the
+   * pane's normal BISECTS the line to the eye and the line to whatever the
+   * mirror is supposed to show — so a pane solved for one of them sends the
+   * other's sightline somewhere else entirely. Solved for the pod and looked at
+   * from the driver's seat, the reflected ray lands eleven metres out to the
+   * side of the car; solved for the driver and looked at from the pod, it lands
+   * on the far side of the car and under the ground.
+   *
+   * Both quaternions are computed once at build time and swapped here, which is
+   * a driver reaching up and adjusting his mirrors — a thing that happens on
+   * every car on the grid, and a thing nobody can catch him doing, because
+   * exactly one of these eyes is looking at any moment.
+   */
+  eye: CockpitEye;
   /** Road-wheel angle in radians. The rim turns by RACK_RATIO times this. */
   steerRad: number;
   gearLabel: string;
@@ -296,14 +442,28 @@ export { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW };
 /**
  * Vertical field of view of a mirror, degrees.
  *
- * A real F1 mirror is narrow and a driver aims it at the piece of road a
- * passing car appears from. This is deliberately wider than the real article —
- * 42 vertical is about 78 across — because the pane on screen is small and a
- * narrow lens would show a passing car for a fraction of a second. The
- * question being answered is "is anybody there", and a wide answer is more
- * useful than a precise one.
+ * NARROWED FROM 42, and this is half of "make the mirrors legible".
+ *
+ * The old reasoning was that the question a mirror answers is "is anybody
+ * there", so a wide answer beats a precise one. That is right about the
+ * question and wrong about the arithmetic. The feed is 2.667:1, so 42 vertical
+ * was 91 degrees ACROSS — nearly the whole rear hemisphere — packed into a pane
+ * that is between 47 and 106 pixels wide in the finished frame. A rival 25m
+ * back is 2m of car in 91 degrees: thirteen pixels of a 256-wide feed, which is
+ * two and a half pixels of pane. That is not a small car in a mirror, it is
+ * nothing, and it is why every photograph of a working feed still looked like a
+ * dead swatch.
+ *
+ * 32 vertical is 75 across. The same rival is now 3.5 pixels of pane instead of
+ * 2.5, and — because a mirror is aimed 7 degrees outboard rather than straight
+ * back — the sector it gives up is the one already filled by the car's own
+ * engine cover. What it keeps is everything from 31 degrees inboard to 44
+ * outboard of the aim, which still holds a car sitting alongside the rear wheel.
+ *
+ * It is also free, twice over: a narrower frustum culls more of the circuit
+ * before a draw call is issued, and the pane's pixels do not change.
  */
-const MIRROR_FOV = 42;
+const MIRROR_FOV = 32;
 
 /**
  * How far a mirror can see, metres.
@@ -743,6 +903,7 @@ class WheelDash {
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 4;
     this.draw({
+      eye: 'pod',
       steerRad: 0, gearLabel: 'N', speedKph: 0, rpmFraction: 0,
       drsOpen: false, ersPercent: 0,
     });
@@ -961,35 +1122,28 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // It is laid a couple of millimetres proud of the shell's pane so it wins the
   // depth test without z-fighting.
   const mirrorPanes: THREE.Mesh[] = [];
+  /** Per pane, the orientation solved for each of the two eyes. */
+  const mirrorAim: Record<CockpitEye, THREE.Quaternion>[] = [];
   for (const side of [-1, 1] as const) {
     // The glass angle is SOLVED, not dialled in: see MIRROR_TARGET_*. A
     // hand-set yaw was right for an eye point inside the helmet and is wrong
     // for one up on the roll hoop 0.42m higher and 0.65m further back, and
     // pointing the pane at the eye instead — the obvious repair — makes it a
     // retroreflector. Bisecting keeps working wherever the eye goes next.
-    // 112 by 42, up from 100 by 38 and still inside the housing the shell
-    // builds around it (116 by 46). A real F1 mirror's reflective area is
-    // nearer 150 by 50; ours was small even for the small one, and the pane is
-    // between 47 and 86 pixels across in a 1280-wide frame with the halo over
-    // part of it, so every millimetre of it is a millimetre of the only thing
-    // in the shot that answers "is anybody behind me".
-    const glass = new THREE.PlaneGeometry(0.112, 0.042);
+    // See `MIRROR_PANE_W` for the size, and `mirrorPaneAim` for the angle — both
+    // live at the top of the file so `probe:framing` can measure the pane the
+    // renderer actually builds rather than a rectangle standing in for it.
+    const glass = new THREE.PlaneGeometry(MIRROR_PANE_W, MIRROR_PANE_H);
     const g = add(glass, mirrorGlass);
     g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
-    const toEye = new THREE.Vector3(
-      EYE_X - side * MIRROR_X,
-      EYE_Y - MIRROR_Y,
-      EYE_Z - MIRROR_GLASS_Z,
-    ).normalize();
-    const toRoad = new THREE.Vector3(
-      side * MIRROR_TARGET_X - side * MIRROR_X,
-      MIRROR_TARGET_Y - MIRROR_Y,
-      MIRROR_TARGET_Z - MIRROR_GLASS_Z,
-    ).normalize();
-    g.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 0, 1),
-      toEye.add(toRoad).normalize(),
-    );
+
+    // Solved once per eye. See `CockpitState.eye` for why there are two.
+    const aim: Record<CockpitEye, THREE.Quaternion> = {
+      pod: mirrorPaneAim(side, 'pod'),
+      driver: mirrorPaneAim(side, 'driver'),
+    };
+    g.quaternion.copy(aim.pod);
+    mirrorAim.push(aim);
     mirrorPanes.push(g);
   }
 
@@ -1136,6 +1290,7 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   const mNormal = new THREE.Vector3();
   const mPos = new THREE.Vector3();
   const mLook = new THREE.Vector3();
+  const mClear = new THREE.Color();
 
   const initMirrors = (): void => {
     for (let i = 0; i < mirrorPanes.length; i++) {
@@ -1206,11 +1361,42 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       for (const p of mirrorPanes) p.visible = false;
       const prevTarget = renderer.getRenderTarget();
       const prevShadowAuto = renderer.shadowMap.autoUpdate;
+      const prevAlpha = renderer.getClearAlpha();
+      renderer.getClearColor(mClear);
+
+      // THE SKY IS NOT IN THIS FRUSTUM, AND THAT IS WHY EVERY MIRROR EVER
+      // PHOTOGRAPHED IN THIS PROJECT HAS HAD A BLACK RECTANGLE FOR A SKY.
+      //
+      // The sky is a dome of radius 3600 parented to nothing and dropped onto
+      // the main camera each frame. A mirror's far plane is `MIRROR_FAR` — 120,
+      // and 200 before that — so every triangle of the dome is beyond it and
+      // clipped away. What is left is the renderer's clear colour, which is
+      // 0x0a0c10: near black. So the top half of both panes, which is where a
+      // mirror aimed slightly down at the road puts the sky, has been solid
+      // black in daylight for as long as the feed has existed.
+      //
+      // That single fact does more to make a mirror read as dead than anything
+      // else in this file, and none of the previous passes could have found it,
+      // because every one of them was checking whether the feed CONTAINED
+      // anything. It did. It was a strip of road under a black void.
+      //
+      // Clearing to the scene's fog colour instead is exact rather than
+      // approximate: the fog colour is chosen to match the horizon (see
+      // `Renderer.applyAmbience`), and at 120m the fog has already carried
+      // everything in the pane most of the way to it. So the background is not
+      // a stand-in for the sky — it is the same haze the far end of the pane is
+      // already fading into, with no seam where the two meet. It costs two
+      // state changes and no draw calls, and it is right at night as well,
+      // where the fog colour is dark because the sky is.
+      const fog = scene.fog as { color?: THREE.Color } | null;
+      if (fog?.color) renderer.setClearColor(fog.color, 1);
+
       renderer.shadowMap.autoUpdate = false;
       renderer.setRenderTarget(mirrorTargets[i]);
       renderer.render(scene, cam);
       renderer.setRenderTarget(prevTarget);
       renderer.shadowMap.autoUpdate = prevShadowAuto;
+      renderer.setClearColor(mClear, prevAlpha);
       for (const p of mirrorPanes) p.visible = true;
     },
     mirrorTarget(side): THREE.WebGLRenderTarget | null {
@@ -1223,6 +1409,12 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     },
     update(state: CockpitState): void {
       if (!root.visible) return;
+      // Adjust the mirrors for whoever is looking. Two quaternion copies when
+      // the camera mode changes and two comparisons the rest of the time.
+      for (let i = 0; i < mirrorPanes.length; i++) {
+        const want = mirrorAim[i][state.eye];
+        if (!mirrorPanes[i].quaternion.equals(want)) mirrorPanes[i].quaternion.copy(want);
+      }
       // 3:1 rack, signed to match the road wheels.
       //
       // The road wheels take `rotation.y = -steer`, which points them at a

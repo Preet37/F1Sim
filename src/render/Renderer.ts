@@ -8,7 +8,7 @@ import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
-import { CameraDirector, isOnboardMode } from './CameraDirector';
+import { CameraDirector, isDriverEyeMode, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
@@ -1420,6 +1420,11 @@ export class Renderer {
         v.setCockpitVisible(inside);
         if (inside) {
           v.cockpit.update({
+            // Which head the mirrors are adjusted for this frame. See
+            // `CockpitState.eye`: the roll-hoop pod and the driver's own eye
+            // are 0.72m apart and a pane solved for one shows the other a
+            // different piece of road entirely.
+            eye: isDriverEyeMode(this.director.mode) ? 'driver' : 'pod',
             steerRad: steer,
             gearLabel: p.inReverse ? 'R'
               : p.speedMs < 0.6 && car.appliedControls.throttle < 0.02 ? 'N'
