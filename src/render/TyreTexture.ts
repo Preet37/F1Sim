@@ -318,22 +318,19 @@ function paint(compound: CompoundId, size: number): TyreLook {
   across(treadB, 0.76, '#1e2023', c);
   across(treadB, 0.76, set(0.70, 0.02), s);
 
-  // Circumferential striation across the tread. Fine, low contrast, and the
-  // reason a slick catches a moving highlight instead of sitting dead black.
+  // NO TREAD PATTERN. A dry Formula 1 tyre is a slick: the tread is a smooth,
+  // uninterrupted band of rubber from shoulder to shoulder, and the only tyres
+  // in the sport that carry moulded grooves are the intermediate and the full
+  // wet. What used to be here was twenty-eight white lines drawn round the
+  // circumference — "fine circumferential striation", which is a description of
+  // a road tyre — and between them and the matching sine wave in the normal map
+  // (see `tyreSurface` in scripts/generateTextures.mjs) every wheel on the car
+  // was visibly ribbed. That is the fault the user reported in as many words:
+  // "the tires are clean and smooth, yours have lines on them and its wrong."
   //
-  // BAND-LIMITED, like everything else on this tyre. Seventy lines one pixel
-  // wide across a 276-pixel band is a line every 3.9 pixels, which is aliasing
-  // painted straight into the albedo AND into the roughness map — the same
-  // mistake the normal map was making, in a different file. Twenty-eight lines
-  // two pixels wide is a line every ten pixels, which survives being minified.
-  const STRIATIONS = 28;
-  for (let i = 0; i < STRIATIONS; i++) {
-    const t = treadA + (i / STRIATIONS) * (treadB - treadA);
-    const y = bandY(t, size);
-    const a = 0.030 + 0.025 * Math.sin(i * 2.3);
-    c.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
-    c.fillRect(0, y, size, Math.max(2, bandH * 0.008));
-  }
+  // Nothing replaces them. The tread's character comes from the graining below,
+  // which is aperiodic, and from the roughness split across the shoulder above,
+  // which is what actually makes rubber read as rubber.
 
   // Graining: a broad, irregular mottling across the working part of the
   // tread. Real tyres are never uniform across the contact patch.
@@ -366,8 +363,12 @@ function paint(compound: CompoundId, size: number): TyreLook {
   const stripe = '#' + TIRE_COMPOUNDS[compound].colour.toString(16).padStart(6, '0');
   // Directly under the raised band, so the geometry and the paint agree. See
   // BAND_V_FROM / BAND_V_TO at the bottom of this file for where the numbers
-  // come from and why the old, much wider pair were wrong.
-  for (const [a, b] of [[0.079, 0.094], [0.906, 0.921]] as const) {
+  // come from. Quoted from those constants rather than repeated as literals:
+  // they disagreed once already, and a painted stripe that is not under the
+  // raised ring shows as a second, differently-placed stripe.
+  for (const [a, b] of [
+    [1 - BAND_V_TO, 1 - BAND_V_FROM], [BAND_V_FROM, BAND_V_TO],
+  ] as const) {
     const y = bandY(a, size);
     const h = bandY(b, size) - y;
     c.fillStyle = stripe;
@@ -428,8 +429,15 @@ function paint(compound: CompoundId, size: number): TyreLook {
   // Moulded sidewall lettering is grey. It is rubber, very slightly glossier
   // than the wall it stands on, and the only reason it is legible at all is the
   // relief — which is why the surface map below matters more than the ink does.
-  drawText(0.950, 'PROTOTIPO', 0.022, 'rgba(146,150,158,0.55)', 700);
-  drawText(0.050, 'PROTOTIPO', 0.022, 'rgba(146,150,158,0.55)', 700);
+  //
+  // KNOCKED BACK AGAIN. At 0.55 alpha over near-black rubber the type came out
+  // as light grey capitals legible from six metres, which put a second bright
+  // ring of writing on a wheel that already carries a coloured one. On the
+  // reference car the moulded name is barely separable from the rubber except
+  // where the light happens to rake across it — it is relief, not ink — so the
+  // ink drops to a third and the surface map below does the work.
+  drawText(0.950, 'PROTOTIPO', 0.020, 'rgba(120,124,132,0.30)', 700);
+  drawText(0.050, 'PROTOTIPO', 0.020, 'rgba(120,124,132,0.30)', 700);
 
   // Raised lettering catches light: give the text rows a glossier surface so
   // the letters flare as the wheel turns past a floodlight.
@@ -587,18 +595,36 @@ export function wheelMaterial(compound: CompoundId, size = 512): THREE.MeshStand
  * all of the damage.
  */
 /**
- * MEASURED, not judged. Photographed against a white void the ring came out
- * spanning 0.788 to 0.847 of the tyre's outside radius — 21mm on a 720mm tyre,
- * which is the right WIDTH; the reference carries about the same. What was still
- * wrong was how much of the frame it was winning: absolute chroma over the whole
- * tyre put 10.9 per cent of its pixels at a visible colour excursion against 2.6
- * per cent on the Ferrari photograph and 4.2 per cent on a soft-shod Mercedes.
- * Narrowing to 0.906-0.921 takes the ring to about 14mm and, with the knock-back
- * and the wider edge fades in `bandTexture` below, brings the whole tyre inside
- * the range the reference photographs occupy.
+ * NARROWED TWICE, AND ONCE TOO OFTEN.
+ *
+ * The band began at 0.78-0.905, which wrapped a quarter of the way up the tread
+ * shoulder and made a medium-shod car look like it was running yellow tyres.
+ * Narrowing it to 0.906-0.921 fixed that and overshot: 0.906-0.921 works out at
+ * a 16mm ring on a 720mm tyre, and a 16mm ring seen from three metres is one or
+ * two pixels of colour. That is what "a thin red ring that reads as a drawn line
+ * rather than the broad coloured sidewall band real compounds carry" is.
+ *
+ * WHERE THE NUMBERS COME FROM. The band sits on the sidewall ANNULUS — the flat
+ * face between the tyre's widest point and the bead — with its outer edge just
+ * inboard of maximum width and plain black rubber above it all the way over the
+ * shoulder. In this profile's own v that annulus is exactly 0.90 to 1.00, and
+ * the radius across it runs 0.845 R at v = 0.90 down to 0.647 R at the bead. So:
+ *
+ *   v = 0.902  ->  r = 0.839 R  =  302mm on a 720mm tyre
+ *   v = 0.928  ->  r = 0.761 R  =  274mm
+ *
+ * a 28mm ring occupying a little over a quarter of the sidewall's height, which
+ * is what the reference photographs measure. It is 1.75x the width of the ring
+ * it replaces and still less than half the width of the one before that.
+ *
+ * WHAT KEEPS IT FROM DOMINATING AGAIN is not its width, and that was the error
+ * the second time round. It is the CHROMA: the colour is knocked 56 per cent
+ * back toward the rubber under it in `bandTexture`, and a quarter of the band's
+ * height at each edge is a gradient into black. Those two together are why a
+ * band nearly twice as wide costs the frame less colour than the original did.
  */
-const BAND_V_FROM = 0.906;
-const BAND_V_TO = 0.921;
+const BAND_V_FROM = 0.902;
+const BAND_V_TO = 0.928;
 /** Rows across the band. Enough to follow the shoulder's curve without faceting. */
 const BAND_ROWS = 6;
 /**

@@ -39,7 +39,8 @@
     "validate:limits": "tsx scripts/probeTrackLimits.ts",
     "probe:drivability": "tsx scripts/probeDrivability.ts",
     "probe:cameras": "tsx scripts/probeCameras.ts",
-    "audit:circuits": "tsx scripts/auditCircuits.ts"
+    "audit:circuits": "tsx scripts/auditCircuits.ts",
+    "audit:car": "tsx scripts/auditCar.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
