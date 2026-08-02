@@ -5,6 +5,7 @@ artifacts/
 # ~200 PNGs per sweep, written by `npm run audit:circuits`. Regenerate rather
 # than commit: they are evidence about a build, not part of one.
 audit-out/
+cockpit-out/
 .DS_Store
 *.local
 .vite/

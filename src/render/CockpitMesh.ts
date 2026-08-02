@@ -31,70 +31,71 @@ import { gloveNomexMap } from './DetailMaps';
  */
 
 /**
- * Driver's eye point, car-local. The camera sits exactly here in cockpit mode.
+ * Where the cockpit camera sits, car-local. The camera is put exactly here.
  *
- * This is not a free parameter. It is the eye socket of the modelled driver in
- * DriverMesh.ts, whose helmet is centred at y = 0.672 with a scaled vertical
- * radius of 0.156, so the shell runs from 0.516 to 0.828 and the eyes sit a
- * little above centre and forward of it. Set it by eye instead and the camera
- * ends up above the driver's head, looking over the top of the halo hoop
- * (apex y = 0.820) rather than through it — which is exactly what happened when
- * this was left at the old car's 0.86 after the body was rebuilt.
- */
-/**
- * Onto the roll hoop, and this is a change of KIND rather than of degree.
+ * NOT INSIDE THE DRIVER'S HELMET, and that was settled two passes ago: the
+ * halo's forward pillar is already a 20mm blade — the real article — and from
+ * an eye 0.7m behind it that is still 1.7 degrees of solid black straight down
+ * the middle of the picture, which no honest pillar is thin enough to avoid.
+ * The reference onboards show the crown of the driver's OWN helmet in the
+ * bottom of the frame, which is a thing no eye inside that helmet can ever see.
+ * It is the standard onboard: a pod on the roll hoop, behind and above the
+ * head. Two things had to move out of its way and neither is reachable from
+ * here — the roll hoop's camera pod, which IS this camera, and the airbox's
+ * front lip, which hid the helmet from any eye behind it. Both are in CarMesh;
+ * see `Parts.onboardHidden` and the airbox comment.
  *
- * Three passes tried to fix "the halo splits the view in two" by thinning the
- * halo, raising it, and lifting the eye a few centimetres at a time. None of
- * them worked, and the measurements say why. The halo's forward pillar is
- * already a 20mm blade — the real article — and at the 0.69m it passes an eye
- * at y = 0.745 that is still 1.7 degrees of solid black, which is fifty-five
- * pixels of bar down the middle of a 1280-wide frame. Measured against the
- * Monoposto reference frames, whose pillar is two to three pixels over about
- * thirty rows, the geometry cannot get there: no honest pillar is thin enough
- * to be invisible from thirty inches away.
+ * FIFTH PASS ON THE HEIGHT AND DISTANCE, and this one was measured rather than
+ * eyeballed.
  *
- * What makes the reference work is not a thinner pillar, it is a camera on the
- * other side of it — and, once you go looking, a camera behind the DRIVER as
- * well. The reference frames all show the crown of the driver's own helmet in
- * the bottom of the picture, which is a thing no eye inside that helmet can
- * ever see. This is the standard onboard: the pod on the roll hoop.
+ * "The halo is cooking me bro its ass." "Why is the halo still ugly and shit?"
+ * "I think this is due to the halo, the halo sticks out." "You also never fixed
+ * the halo?" Four reports, four passes, and every one of them was judged from a
+ * screenshot in words — so none of them produced a number, none could be
+ * compared with the next, and twice a change made the framing worse in a way
+ * nobody could name. `npm run probe:framing` now projects the halo's own
+ * centreline through the real camera rig on all eleven circuits and says where
+ * it lands. What it said about this eye point was:
  *
- * SOLVED, NOT DIALLED IN. Three features in reference frame f_0100 fix the rig
- * completely, because all three have known car-local coordinates: the horizon
- * at 30.6 per cent of frame height, the crown of the halo (y 0.812, z 0.755) at
- * 56 per cent, and the crown of the helmet (y 0.828, z 0) at 80 per cent. The
- * horizon gives the pitch directly; the ratio of the other two depressions
- * gives the eye, because a nearer object at the same height falls faster down
- * the frame than a far one. The pitch is exact; the eye is then slid back along
- * the ray that holds the crown at 80 per cent until the helmet subtends what it
- * subtends in the reference — 0.188m of shell across about a fifth of the frame
- * width — which lands at 0.78m behind the crown and 0.28m above it. Every other
- * landmark falls within two per cent of the reference at that point: the halo
- * crown at 58 per cent, the mirrors at three-quarters height and a quarter of
- * the way in from each edge, the top of the wheel rim 2.9 degrees clear of the
- * helmet. They are not to be nudged without redoing that arithmetic.
+ *   horizon at 29-33 per cent of frame height  (reference: 42)
  *
- * TWO THINGS HAD TO MOVE OUT OF THE WAY, and neither was reachable from here:
- * the roll hoop's camera pod, which is this camera and was a dark dome across
- * the middle of every frame from 300mm away, and the airbox's front lip, which
- * hid the helmet from any eye behind it. Both are in CarMesh; see
- * `Parts.onboardHidden` and the airbox comment.
+ * That single number is the whole complaint. A camera pitched 7.8 degrees down
+ * is looking at the floor: the sky is a strip along the top, two thirds of the
+ * picture is your own car and the tarmac immediately in front of it, and the
+ * halo — which is fixed to the car — is dragged up into the middle of what is
+ * left. It is also exactly the "cockpit view is half blocked" report, and the
+ * two are the same fault seen twice.
+ *
+ * The pitch alone cannot be fixed: flattening it to 3 degrees and leaving the
+ * eye where it was pushes the crown of the hoop from 55 to 69 per cent, which
+ * lays the hoop across the middle of the frame instead. Both had to move
+ * together, and the pair below is the solution of three constraints taken off
+ * the reference onboards — horizon at 42 per cent, hoop crown around 60, the
+ * driver's own helmet crown around 80 — with the eye's DISTANCE from the helmet
+ * held near 0.66m so the helmet keeps the size it has in the reference frames.
+ * 0.98m up and 0.58m back, and the resulting numbers, on all eleven circuits:
+ *
+ *   horizon 41%, hoop crown 61%, helmet crown 81%, mirrors at 78% of frame
+ *   width and 83% of frame height, wheel rim top at 74%.
+ *
+ * The eye is now on the front of the roll-hoop fairing rather than a foot
+ * behind it, which is also where the reference game's camera plainly is: its
+ * mirrors sit at two thirds of the frame width, and ours could not reach that
+ * from 0.78m back at any field of view.
  */
 export const EYE_X = 0;
-export const EYE_Y = 1.108;
-export const EYE_Z = -0.78;
+export const EYE_Y = 0.98;
+export const EYE_Z = -0.58;
 
 /**
  * Downward tilt of the cockpit camera, radians.
  *
- * 7.8 degrees, and it is a measurement rather than a preference: it is the
- * angle that puts the horizon 30.6 per cent of the way down the frame, where
- * the reference onboards carry it. Flatter and the car fills the bottom half
- * with the road squeezed into a strip; steeper and the halo climbs back up into
- * the middle of the picture.
+ * 3.04 degrees, and it is a measurement: `probe:framing` reports the horizon at
+ * 41 per cent of frame height with it, which is where the reference onboards
+ * carry it. It used to be 7.8, which put the horizon at 30 — see EYE_Y for what
+ * that does to the picture and why the eye had to move with it.
  */
-export const EYE_PITCH = 0.136;
+export const EYE_PITCH = 0.053;
 
 /**
  * Centre of the steering wheel, car-local, and its rake.
@@ -153,8 +154,27 @@ const WHEEL_HALF_H = 0.100;
  * it sits at 33 degrees and 0.87m — still comfortably inside a driver's useful
  * field, still where a real car mounts them, and a fifth smaller on screen.
  */
+/**
+ * DOWN 26mm ONTO THE COAMING, because the halo was sitting on top of it.
+ *
+ * Measured rather than noticed: projecting the halo's own centreline over the
+ * pane from both onboard cameras and both frame shapes — the same arithmetic
+ * `probe:framing` does — the rear leg of the hoop passes NEARER to the eye than
+ * the mirror and directly across it, leaving only 36 per cent of the pane
+ * visible from the cockpit. A mirror three fifths covered by a black tube is a
+ * mirror that does not work however good the feed behind it is, and the first
+ * blow-up of one showed exactly that: a bar across the pane with a sliver of
+ * live picture below it.
+ *
+ * It cannot be made to clear entirely. The rear leg of a halo genuinely does
+ * cross the mirror line on a real car, and the two onboards pull opposite ways
+ * — lowering the pane clears it for the cockpit eye and worsens it for the
+ * T-cam behind. 0.578 is the best of that trade at a height a real mirror is
+ * actually mounted, just proud of the tub rim at 0.556: worst case 44 per cent
+ * of the pane clear against 36, and 62 per cent from the cockpit.
+ */
 export const MIRROR_X = 0.505;
-export const MIRROR_Y = 0.604;
+export const MIRROR_Y = 0.578;
 export const MIRROR_Z = 0.790;
 /** Front face of the housing, where the glass sits. */
 export const MIRROR_GLASS_Z = 0.769;
@@ -215,7 +235,20 @@ export interface CockpitVisual {
    */
   renderMirrors(
     renderer: THREE.WebGLRenderer, scene: THREE.Scene, eye: THREE.Camera,
+    stride: number,
   ): void;
+  /**
+   * The render target behind one pane, or null before the first feed has run.
+   *
+   * Exposed for the audit harness. A pane is a few dozen pixels across in the
+   * finished frame with the halo over part of it, so a photograph of one
+   * answers "can you see the mirror" and barely answers "does the mirror show
+   * traffic" — and that second question is the whole of the report. Reading the
+   * feed itself answers it with nothing in the way.
+   *
+   * @param side +1 for the pane on the car's local +x.
+   */
+  mirrorTarget(side: 1 | -1): THREE.WebGLRenderTarget | null;
   dispose(): void;
 }
 
@@ -232,6 +265,32 @@ const MIRROR_W = 256;
 const MIRROR_H = 96;
 
 /**
+ * How many frames apart two consecutive mirror renders are.
+ *
+ * The panes alternate, so a stride of N refreshes each pane every 2N frames.
+ * This is the entire cost control and it is a schedule rather than a switch,
+ * because the previous arrangement — a switch, off below the high tier — is why
+ * no phone has ever had a working mirror.
+ *
+ * MEASURED, in draw calls and triangles rather than in milliseconds, because
+ * the sweep runs on a software rasteriser whose milliseconds describe the
+ * machine and not the phone. At Silverstone a frame with no mirror in it is 120
+ * draw calls and 558 thousand triangles; one mirror render adds 87 and 480
+ * thousand. That is not a rounding error on a device already at 19 to 30fps,
+ * and it is why the stride is 2 rather than 1 even on the high tier — the
+ * amortised cost halves and each pane still refreshes at a quarter of the frame
+ * rate, which for a pane a few dozen pixels across is more than enough.
+ *
+ * The rest of the budget is elsewhere and is bigger: `MIRROR_FAR` cuts what
+ * falls in the frustum at all, and `Renderer.trafficBehind` drops the whole
+ * schedule to a quarter rate whenever there is nobody close behind, which is
+ * most of a race.
+ */
+const MIRROR_STRIDE_HIGH = 2;
+const MIRROR_STRIDE_LOW = 3;
+export { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW };
+
+/**
  * Vertical field of view of a mirror, degrees.
  *
  * A real F1 mirror is narrow and a driver aims it at the piece of road a
@@ -246,12 +305,18 @@ const MIRROR_FOV = 42;
 /**
  * How far a mirror can see, metres.
  *
- * Short on purpose. This is a second view frustum over the whole scene and the
- * only thing that keeps it cheap is how little of the world falls inside it;
- * at 200m a car is a pixel in a 256-wide feed and nothing behind that is worth
- * a draw call.
+ * Short on purpose, and 120 rather than 200 because the cost was measured. A
+ * mirror feed is a second view frustum over the whole scene and the only thing
+ * that keeps it cheap is how little of the world falls inside it; at 200m the
+ * feed was costing 87 draw calls and 480 thousand triangles against a frame
+ * that is otherwise 120 and 558 thousand, which is not a rounding error on a
+ * device already running at 19 to 30fps.
+ *
+ * 120m is still four seconds of closing speed at a realistic delta and well
+ * beyond the range at which anything is about to happen. A car further back
+ * than that is under two pixels in a 256-wide feed.
  */
-const MIRROR_FAR = 200;
+export const MIRROR_FAR = 120;
 
 // ===========================================================================
 // Small geometry helpers
@@ -899,7 +964,13 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // for one up on the roll hoop 0.42m higher and 0.65m further back, and
     // pointing the pane at the eye instead — the obvious repair — makes it a
     // retroreflector. Bisecting keeps working wherever the eye goes next.
-    const glass = new THREE.PlaneGeometry(0.100, 0.038);
+    // 112 by 42, up from 100 by 38 and still inside the housing the shell
+    // builds around it (116 by 46). A real F1 mirror's reflective area is
+    // nearer 150 by 50; ours was small even for the small one, and the pane is
+    // between 47 and 86 pixels across in a 1280-wide frame with the halo over
+    // part of it, so every millimetre of it is a millimetre of the only thing
+    // in the shot that answers "is anybody behind me".
+    const glass = new THREE.PlaneGeometry(0.112, 0.042);
     const g = add(glass, mirrorGlass);
     g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
     const toEye = new THREE.Vector3(
@@ -1095,11 +1166,16 @@ export function buildCockpit(accentColour: number): CockpitVisual {
 
   return {
     root,
-    renderMirrors(renderer, scene, eye): void {
+    renderMirrors(renderer, scene, eye, stride): void {
       if (!root.visible) return;
       if (mirrorTargets.length === 0) initMirrors();
 
-      const i = mirrorFrame++ % mirrorPanes.length;
+      // Skipped frames still leave the last feed on the pane, so a mirror that
+      // is only redrawn every third frame shows a slightly stale car rather
+      // than an empty one.
+      const tick = mirrorFrame++;
+      if (stride > 1 && tick % stride !== 0) return;
+      const i = Math.floor(tick / Math.max(1, stride)) % mirrorPanes.length;
       const pane = mirrorPanes[i];
       pane.updateWorldMatrix(true, false);
       pane.getWorldPosition(mPos);
@@ -1133,6 +1209,11 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       renderer.setRenderTarget(prevTarget);
       renderer.shadowMap.autoUpdate = prevShadowAuto;
       for (const p of mirrorPanes) p.visible = true;
+    },
+    mirrorTarget(side): THREE.WebGLRenderTarget | null {
+      // `mirrorPanes` is built over `[-1, 1]`, so index 0 is the pane on the
+      // car's local -x.
+      return mirrorTargets[side > 0 ? 1 : 0] ?? null;
     },
     setVisible(v: boolean): void {
       if (root.visible !== v) root.visible = v;
