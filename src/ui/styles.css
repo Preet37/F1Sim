@@ -5175,6 +5175,51 @@ table.standings tr.me td.who { font-weight: 700; }
   text-transform: uppercase;
   color: var(--ink);
 }
+/* The team-mate's column is INFORMATION, and the whole column says so before
+   a word of it is read: it is quieter, its tag is hollow rather than filled,
+   and its one card does not lift under the cursor because it is not a target.
+   The player is not running two cars — they are being told what the other one
+   is doing, which is worth a column because it decides whether that car is in
+   the way on lap thirty. */
+.strat-col.is-mate { opacity: 0.9; }
+.strat-mate-tag {
+  padding: 2px 9px;
+  border-radius: var(--pill-r);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+/* The strategist, stating it. Quoted because somebody said it. */
+.strat-said {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--ink);
+  margin-bottom: 12px;
+  text-wrap: pretty;
+}
+.strat-card.is-stated { cursor: default; }
+.strat-card.is-stated:hover { transform: none; border-color: var(--sig-white); }
+
+/* The line that closes the loop the briefing page used to open: the grid tyre,
+   named, with the fact that this is the only place it is chosen. */
+.strat-grid-tyre {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ink-2);
+  border-left: 2px solid var(--sig-white);
+  padding: 2px 0 2px 10px;
+  margin: 0 0 14px;
+}
+
 .strat-label {
   font-family: var(--font-data);
   font-size: 9px;

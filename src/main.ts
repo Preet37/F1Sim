@@ -30,7 +30,7 @@ import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
 import { circuitSvg, circuitLoadingArt } from './ui/CircuitArt';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
 import { buildStrategyScreen } from './ui/StrategyScreen';
-import { planFor, startingCompound, strategyOptions } from './race/Strategy';
+import { applyPlanToCar, plannedStrategy, startingCompound } from './race/Strategy';
 import { driversForTeam } from './data/teams';
 import { buildControllerScreen, type ControllerScreenHandle } from './ui/ControllerScreen';
 import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
@@ -1316,7 +1316,9 @@ class Game {
   private garageCard(parent: HTMLElement, circuitId: string, back: () => void): void {
     const circuit = getCircuit(circuitId);
     const setup = this.ensureSetup(circuitId);
-    const compound = this.playerCompound ?? 'medium';
+    // The same expression the setup sheet and the briefing use, so the tyre
+    // named on this card is the tyre the car will be on.
+    const compound = this.raceStartCompound(circuitId) ?? this.playerCompound ?? 'medium';
     const s = setupSummary(this.playerTeam(), circuit, setup, compound);
 
     this.el('div', 'section-title', parent, 'Your car');
@@ -1342,6 +1344,30 @@ class Game {
    * already in progress — a real setup change means going back to the garage,
    * and mutating the spec of a car mid-lap would invalidate the lap it is on.
    */
+  /**
+   * The tyre the player's race starts on, or null when this weekend's current
+   * session is not a race.
+   *
+   * One expression, called by every screen that MENTIONS the grid tyre —
+   * briefing, garage card, setup sheet — so that mentioning it cannot become
+   * a second way of setting it. `plannedStrategy` falls back to the
+   * strategist's recommendation, so this is right before the player has ever
+   * opened the strategy page.
+   */
+  private raceStartCompound(circuitId: string): CompoundId | null {
+    const config = this.weekend[this.weekendIndex];
+    if (!config || config.kind !== 'race') return null;
+    const circuit = getCircuit(circuitId);
+    const plan = plannedStrategy(
+      this.playerTeam(), this.playerDriverRecord(), circuit,
+      config.laps || circuit.raceLaps,
+      this.playerStrategyCircuitId === circuitId
+        ? this.playerStrategy[this.playerDriverId()]
+        : undefined,
+    );
+    return startingCompound(plan);
+  }
+
   private showSetup(circuitId: string, back: () => void): void {
     const circuit = getCircuit(circuitId);
     const setup = this.ensureSetup(circuitId);
@@ -1362,12 +1388,17 @@ class Game {
       ],
     });
 
+    // For a race the grid tyre belongs to the strategy page and this sheet
+    // states it. Asking a third time here is a third answer to one question.
+    const raceStart = this.raceStartCompound(circuitId);
+
     buildSetupScreen(body, {
       setup,
-      compound: this.playerCompound ?? 'medium',
+      compound: raceStart ?? this.playerCompound ?? 'medium',
       team: this.playerTeam(),
       track: circuit,
       offerWets: circuit.rainChance > 0.08,
+      compoundLocked: raceStart !== null,
       // The sheet updates its own readouts as the sliders move; this only has
       // to remember the choice. Re-rendering the screen from here would destroy
       // the slider mid-drag.
@@ -2031,34 +2062,51 @@ class Game {
 
     // --- The tyre you go out on ------------------------------------------
     //
-    // A race and a qualifying run want opposite things from this choice, so the
-    // screen says which it is rather than presenting five equal buttons.
-    this.el('div', 'section-title', body,
-      isRace ? 'Starting tyre' : 'Tyre for your first run');
-    this.el('div', 'card-meta', body, isRace
-      ? 'A dry race must be finished on two different dry compounds, so this ' +
-        'decides what is left for the stop.'
-      : 'Softs are quickest for one lap and last a handful of them.');
+    // A RACE DOES NOT ASK HERE. It used to, and then asked again on the next
+    // page as the first stint of a strategy \u2014 "so lets say I choose mediums,
+    // then i get a tire strategy? why do I need to do it twice?" \u2014 and the two
+    // answers were not even wired together: `applyPlayerSetup` ran after
+    // `applyStrategy` and wrote this row of chips over the plan's first stint,
+    // so the chips silently won and the strategy was a lie about the grid.
+    //
+    // The strategy page keeps the question, because that is where the choice
+    // has consequences a player can read: the stint length, the stop lap, what
+    // is left for the second compound. So a race gets a statement here and the
+    // decision one page later. Practice and qualifying still ask, because they
+    // have no strategy page \u2014 there is no stint plan to make in a session that
+    // is three laps of your own.
+    if (isRace) {
+      const start = getCompound(this.raceStartCompound(circuitId) ?? 'medium');
+      this.el('div', 'section-title', body, 'Starting tyre');
+      this.el('div', 'card-meta', body,
+        'Set by your race strategy, on the next page. You go to the grid on ' +
+        start.name.toUpperCase() + ' \u2014 a dry race must be finished on two ' +
+        'different dry compounds, so that decides what is left for the stop.');
+    } else {
+      this.el('div', 'section-title', body, 'Tyre for your first run');
+      this.el('div', 'card-meta', body,
+        'Softs are quickest for one lap and last a handful of them.');
 
-    const wetsLikely = circuit.rainChance > 0.08;
-    const offered: CompoundId[] = wetsLikely
-      ? [...DRY_COMPOUNDS, ...WET_COMPOUNDS]
-      : [...DRY_COMPOUNDS];
-    const chosen = this.playerCompound ?? (isRace ? 'medium' : 'soft');
+      const wetsLikely = circuit.rainChance > 0.08;
+      const offered: CompoundId[] = wetsLikely
+        ? [...DRY_COMPOUNDS, ...WET_COMPOUNDS]
+        : [...DRY_COMPOUNDS];
+      const chosen = this.playerCompound ?? 'soft';
 
-    const tyres = this.el('div', 'tyre-row', body);
-    for (const id of offered) {
-      const c = getCompound(id);
-      const chip = this.el('div', 'tyre-chip' + (id === chosen ? ' selected' : ''), tyres);
-      chip.style.setProperty('--chip', hexColour(c.colour));
-      this.el('div', 'tyre-chip-code', chip, c.code);
-      this.el('div', 'tyre-chip-name', chip, c.name);
-      this.el('div', 'tyre-chip-meta', chip,
-        'grip x' + c.peakGrip.toFixed(2) + ' \u00b7 wear x' + c.wearRate.toFixed(2));
-      chip.addEventListener('click', () => {
-        this.playerCompound = id;
-        this.showBriefing(circuitId);
-      });
+      const tyres = this.el('div', 'tyre-row', body);
+      for (const id of offered) {
+        const c = getCompound(id);
+        const chip = this.el('div', 'tyre-chip' + (id === chosen ? ' selected' : ''), tyres);
+        chip.style.setProperty('--chip', hexColour(c.colour));
+        this.el('div', 'tyre-chip-code', chip, c.code);
+        this.el('div', 'tyre-chip-name', chip, c.name);
+        this.el('div', 'tyre-chip-meta', chip,
+          'grip x' + c.peakGrip.toFixed(2) + ' \u00b7 wear x' + c.wearRate.toFixed(2));
+        chip.addEventListener('click', () => {
+          this.playerCompound = id;
+          this.showBriefing(circuitId);
+        });
+      }
     }
 
     // --- Go, or do not go -------------------------------------------------
@@ -2136,11 +2184,20 @@ class Game {
   }
 
   /**
-   * Writes the chosen plans onto the real cars.
+   * Writes the plans onto the real cars, and with them the tyres on the grid.
    *
-   * Both of them. A team principal who sets a strategy for one car and lets the
+   * Both cars. A team principal who sets a strategy for one car and lets the
    * engine roll dice for the other is not running a team, and the team-mate's
-   * plan is the one that decides whether they are in the way on lap thirty.
+   * plan is the one that decides whether they are in the way on lap thirty —
+   * which is why their column on the strategy page states it. What the player
+   * does not do is CHOOSE it; `plannedStrategy` with no chosen id returns the
+   * strategist's own call, and that is the same call the column printed.
+   *
+   * This is now the only writer of a race's starting compound. It used to share
+   * the job with `applyPlayerSetup`, which ran afterwards and overwrote it from
+   * a separate row of chips on the briefing page — so the plan on screen and
+   * the tyre on the grid were two answers to one question, and the chips won
+   * silently. The chips are gone and this runs unopposed.
    */
   private applyStrategy(engine: RaceEngine): void {
     if (engine.config.kind !== 'race') return;
@@ -2150,24 +2207,12 @@ class Game {
 
     for (const entry of engine.cars) {
       if (entry.team.id !== car.team.id) continue;
-      const chosenId = this.playerStrategy[entry.driver.id];
-      if (!chosenId) continue;
-      const option = strategyOptions(entry.team, entry.driver, engine.track.def, laps)
-        .find((o) => o.id === chosenId);
-      if (!option) continue;
+      const option = plannedStrategy(
+        entry.team, entry.driver, engine.track.def, laps,
+        entry === car ? this.playerStrategy[entry.driver.id] : undefined,
+      );
 
-      entry.plan = planFor(option);
-      entry.targetPitLap = entry.plan[0].pitOnLap;
-      // A plan whose first stint is a soft has to be sitting on softs when the
-      // lights go out, or it is not that plan. The player's own explicit tyre
-      // choice on the briefing screen still wins — `applyPlayerSetup` runs
-      // after this and writes over it.
-      const start = startingCompound(option);
-      entry.compound = start;
-      entry.usedCompounds.length = 0;
-      entry.usedCompounds.push(start);
-      entry.physics.frontTires.fit(start, engine.weather.trackTempC + 40);
-      entry.physics.rearTires.fit(start, engine.weather.trackTempC + 40);
+      applyPlanToCar(entry, option, engine.weather.trackTempC + 40);
     }
   }
 
@@ -2215,6 +2260,15 @@ class Game {
   /** The driver id the player is racing under, career or not. */
   private playerDriverId(): string {
     return this.career ? this.career.playerAsDriver().id : DRIVERS[0].id;
+  }
+
+  /**
+   * The player's own driver record — their tyre management, which is half of
+   * how long a stint lasts, so the plan quoted on the briefing page is the plan
+   * the strategy page will offer rather than a generic one.
+   */
+  private playerDriverRecord(): Driver {
+    return this.career ? this.career.playerAsDriver() : DRIVERS[0];
   }
 
   // =======================================================================
@@ -2475,7 +2529,13 @@ class Game {
     const spec = applySetup(specForTeam(car.team.performance), car.setup);
     car.physics.setSpec(spec);
 
-    if (this.playerCompound) {
+    // A RACE'S starting tyre is not this screen's to set. It is the first stint
+    // of the strategy, written by `applyStrategy`, which runs immediately
+    // before this — and this used to run afterwards and overwrite it from a
+    // separate chip row, which is how a player who chose a soft-start strategy
+    // could arrive on the grid on mediums with nothing telling them so. Outside
+    // a race there is no plan, and the choice is genuinely this one.
+    if (this.playerCompound && engine.config.kind !== 'race') {
       car.compound = this.playerCompound;
       car.usedCompounds.length = 0;
       car.usedCompounds.push(this.playerCompound);
