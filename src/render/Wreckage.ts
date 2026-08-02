@@ -56,26 +56,30 @@ const SLEEP_SPEED = 0.35;
 const MAX_SHARD_M = 0.55;
 
 /**
- * How dark the painted face is against the team's own colour.
+ * Brightest linear channel of the painted face.
  *
- * A livery colour is chosen to read on a car under television lighting at 300
- * km/h; the same value on a 30cm panel lying flat on grey asphalt is a
- * fluorescent rectangle, which is exactly the "blue pieces everywhere"
- * complaint. Real painted carbon is a dark, low-chroma version of the team
- * colour with a satin lacquer over it, so the tint is pulled most of the way
- * toward the carbon underneath and the SHEEN is left to do the work of telling
- * you what it is.
+ * The team colour supplies the HUE and this supplies the level, which is why it
+ * is set rather than scaled. A livery colour is chosen to read on a car under
+ * television lighting at 300 km/h; the same value on a 30cm panel lying flat on
+ * grey asphalt is a fluorescent rectangle, and that is exactly the "blue pieces
+ * everywhere" complaint. Painted carbon is dark — around 0.085 linear, which is
+ * a third of the way up in sRGB — and every team's is equally dark, because it
+ * is the same lacquer at the same thickness under the same floodlights. What
+ * tells you whose it is is the hue, and what tells you it is carbon is the
+ * SHEEN, not the brightness.
  */
-const PAINT_DARKEN = 0.34;
+const PAINT_LEVEL = 0.085;
 
 /**
- * Base colour of the unpainted side, before the per-instance tint.
+ * The bare side, as a fraction of the painted one.
  *
  * Not zero. A face at literally black takes no light at all and reads as a hole
  * in the road; woven carbon under lacquer is a very dark grey with a strong
- * specular, which is what this plus the roughness below produce.
+ * specular, which is what this plus the roughness below produce. It keeps a
+ * trace of the paint's hue, which is right — a dark glossy surface a centimetre
+ * from a painted one picks some of it up.
  */
-const CARBON = 0.055;
+const CARBON = 0.26;
 
 interface Shard {
   /** World position. */
@@ -223,11 +227,13 @@ export class Wreckage {
     count: number,
     pile: number,
   ): void {
-    // The painted face, darkened and de-chroma'd off the team's own colour.
-    // Computed once per pile rather than once per shard: every piece of one
-    // wing was the same paint.
+    // The painted face: the team's hue at carbon's own brightness. Computed
+    // once per pile rather than once per shard — every piece of one wing was
+    // the same paint — and normalised so that a pale livery and a dark one
+    // produce panels of the same luminance, differing only in colour.
     this.colour.setHex(colour);
-    this.colour.multiplyScalar(PAINT_DARKEN);
+    const peak = Math.max(this.colour.r, this.colour.g, this.colour.b, 1e-4);
+    this.colour.multiplyScalar(PAINT_LEVEL / peak);
 
     for (let i = 0; i < count; i++) {
       const s = this.shards[this.next];

@@ -55,7 +55,7 @@ interface CornerInfo { fraction: number; radiusM: number; side: -1 | 1 }
 interface TrackStats {
   kerbLeft: number; kerbRight: number; kerbEither: number;
   under400: number; under250: number; under120: number;
-  halfWidthM: number; debris: number;
+  halfWidthM: number; debris: number; drawCalls: number; triangles: number;
 }
 
 /** The page's own API, as this side needs to see it. */
@@ -114,6 +114,12 @@ async function main(): Promise<void> {
    */
   const openPage = async (): Promise<Page> => {
     const p2: Page = await browser.newPage();
+    // Brought to front, and it is not cosmetic: `present()` in the page waits on
+    // `requestAnimationFrame`, and Chrome throttles rAF in a BACKGROUND tab to
+    // the point of never firing. A new tab that opens behind the browser's own
+    // initial about:blank therefore hangs in `load()` forever, having written
+    // nothing — which looks exactly like a slow circuit.
+    await p2.bringToFront();
     await p2.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
     p2.setDefaultTimeout(240_000);
     p2.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
@@ -174,6 +180,7 @@ async function main(): Promise<void> {
       `${id.padEnd(13)} kerb L/R/any ${pct(stats.kerbLeft)}/${pct(stats.kerbRight)}/${pct(stats.kerbEither)} ` +
       `  R<400 ${pct(stats.under400)}  R<250 ${pct(stats.under250)}  R<120 ${pct(stats.under120)} ` +
       `  hw ${stats.halfWidthM.toFixed(1)}m  debris ${after.debris}` +
+      `  calls ${stats.drawCalls}  tris ${(stats.triangles / 1000).toFixed(0)}k` +
       `  tightest ${corners.map((c) => `${Math.round(c.radiusM)}m`).join(',')}`,
     );
     process.stdout.write(rows[rows.length - 1].slice(13) + '\n');

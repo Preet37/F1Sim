@@ -156,7 +156,8 @@ const COLOUR = {
   asphaltDark: new THREE.Color(0x3b3d42),
   /** Scratch for the along-track shade drift; never read directly. */
   asphaltMix: new THREE.Color(),
-  runoff: new THREE.Color(0x4f4034),
+  /** Pale, dusty gravel: what a run-off trap is actually filled with. */
+  gravel: new THREE.Color(0x8d8574),
   whiteLine: new THREE.Color(0xd8dade),
   kerbA: new THREE.Color(0xc8353c),
   kerbB: new THREE.Color(0xe8e8ea),
@@ -170,7 +171,6 @@ const COLOUR = {
   astroturf: new THREE.Color(0x2c6136),
   grass: new THREE.Color(0x2c4526),
   desert: new THREE.Color(0x8a7355),
-  gravel: new THREE.Color(0x9a9285),
   wall: new THREE.Color(0x9aa0a8),
   /** Painted stripe along the top of a street circuit's wall. */
   wallStripe: new THREE.Color(0xd8dce2),
@@ -203,6 +203,31 @@ function groundColour(scenery: string): THREE.Color {
     case 'coastal': return new THREE.Color(0x6d6a55);
     case 'forest': return new THREE.Color(0x2b4527);
     default: return COLOUR.grass;
+  }
+}
+
+/**
+ * What the nine metres immediately beyond the white line is made of.
+ *
+ * One colour, 0x4f4034, used to serve every permanent circuit on the calendar,
+ * and it is a dark chocolate brown that nothing at a real one is. What is
+ * actually there is either pale gravel or grey asphalt, and at a desert circuit
+ * it is sand — which is why the reference footage of Bahrain shows the kerb
+ * meeting beige, not meeting a dark band. The dark band read as a shadow or a
+ * seam around the outside of every corner.
+ *
+ * A shade off the ground colour behind it in every case, rather than the same
+ * value, because the two ARE different surfaces and a run-off that vanishes
+ * into the landscape takes the edge of the circuit with it.
+ */
+function runoffColourFor(scenery: string): THREE.Color {
+  switch (scenery) {
+    // Sand, a little warmer and lighter than the desert floor behind it.
+    case 'desert': return new THREE.Color(0x9c8763);
+    // A street circuit's run-off is a metre or two of the same asphalt.
+    case 'street': return COLOUR.pit;
+    // Pale, dusty gravel, which is what a trap is filled with.
+    default: return COLOUR.gravel;
   }
 }
 
@@ -609,7 +634,7 @@ export function buildTrackMeshes(
 
   const isStreet = track.def.scenery === 'street';
   const runoffW = isStreet ? STREET_RUNOFF_W : RUNOFF_W;
-  const runoffColour = isStreet ? COLOUR.pit : COLOUR.runoff;
+  const runoffColour = runoffColourFor(track.def.scenery);
   const vergeColour = groundColour(track.def.scenery);
 
   // How far the ground beside the road reaches, per node, per side. Capped by
@@ -838,8 +863,8 @@ export function buildTrackMeshes(
       // Only where there is genuinely room for it beyond the kerb. Where the
       // shoulder runs out — the inside of a hairpin, a crossover — the mat is
       // simply not laid, exactly as the kerb is not.
-      const room0 = shoulderLerp(a, b, f0, sign === 1 ? 1 : -1);
-      const room1 = shoulderLerp(a, b, f1, sign === 1 ? 1 : -1);
+      const room0 = shoulderLerp(a, b, f0, sign);
+      const room1 = shoulderLerp(a, b, f1, sign);
       const astro = Math.min(
         ASTROTURF_W_M,
         room0 - KERB_OUTER_M - SHOULDER_CLEARANCE_M,

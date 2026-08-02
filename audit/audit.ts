@@ -87,6 +87,9 @@ interface TrackStats {
   halfWidthM: number;
   /** Live debris instances on the circuit. */
   debris: number;
+  /** Draw calls and triangles the last drawn frame cost. */
+  drawCalls: number;
+  triangles: number;
 }
 
 interface CircuitInfo {
@@ -492,11 +495,18 @@ function measure(): TrackStats {
   }
   halves.sort((a, b) => a - b);
   const w = renderer as unknown as { wreckage?: { liveCount: number } };
+  // Through the game's own camera, so the figure is comparable with the one the
+  // diagnostics overlay shows a player. A change to the circuit mesh that adds
+  // a draw call has to be seen, not assumed away: the reported frame rate is
+  // 19-30 fps at 96-106 calls.
+  frame();
   return {
     kerbLeft: kl / n, kerbRight: kr / n, kerbEither: ke / n,
     under400: u400 / n, under250: u250 / n, under120: u120 / n,
     halfWidthM: halves[Math.floor(n / 2)],
     debris: w.wreckage?.liveCount ?? -1,
+    drawCalls: renderer.drawCalls,
+    triangles: renderer.triangleCount,
   };
 }
 

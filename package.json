@@ -40,7 +40,9 @@
     "probe:drivability": "tsx scripts/probeDrivability.ts",
     "probe:cameras": "tsx scripts/probeCameras.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
-    "audit:corners": "tsx scripts/auditCorners.ts"
+    "audit:corners": "tsx scripts/auditCorners.ts",
+    "probe:kerbs": "tsx scripts/probeKerbs.ts",
+    "probe:shoulders": "tsx scripts/probeShoulders.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
