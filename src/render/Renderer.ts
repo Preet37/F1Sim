@@ -4,10 +4,11 @@ import {
   buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
   type BodyPartId, type CarVisual,
 } from './CarMesh';
+import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
-import { CameraDirector } from './CameraDirector';
+import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { EnvProbe } from './EnvProbe';
 import { PostFX } from './PostFX';
@@ -104,7 +105,14 @@ export class Renderer {
   /** The player's own pit box, highlighted so they can find it. */
   private pitBox: PitBoxMarker | null = null;
   private marshalPosts: MarshalPosts | null = null;
-  private carVisuals: CarVisual[] = [];
+  /**
+   * Readable so the audit harness can find the car with the cockpit in it and
+   * project its mirror panes. A mirror pane is about sixty pixels across in a
+   * 1280-wide frame and it moves with the car; photographing one by guessing at
+   * a crop box does not work, and a mirror nobody can photograph is a mirror
+   * nobody can prove is working, which is how this one stayed broken.
+   */
+  readonly carVisuals: CarVisual[] = [];
   /** Bodywork lying on the circuit. One draw call, session-lifetime. */
   private wreckage: Wreckage | null = null;
   private readonly canvas: HTMLCanvasElement;
@@ -417,7 +425,19 @@ export class Renderer {
    * Loads a session: builds the circuit and one visual per car.
    * Safe to call repeatedly; the previous session's resources are released.
    */
-  loadSession(engine: RaceEngine): void {
+  /**
+   * @param cockpitCar which car gets the cockpit interior built into it.
+   *
+   * Defaults to the player's, which is the only car a player can ever sit in.
+   * It is a parameter because the audit harness runs a fully simulated field
+   * with NO player car — twenty AI drivers, so the shots are of cars actually
+   * racing — and then photographs the cockpit through `cars[0]`. With the
+   * interior tied to `isPlayer` that shot came back with no steering wheel, no
+   * hands, no bolsters and no mirror panes in it: an empty tub, photographed
+   * for months as if it were the cockpit view, while the real one had furniture
+   * in it that nothing in the sweep had ever seen.
+   */
+  loadSession(engine: RaceEngine, cockpitCar: CarEntry | null = engine.playerCar): void {
     this.unloadSession();
 
     // The set-dressing layout comes from the engine, not from the renderer:
@@ -445,7 +465,7 @@ export class Renderer {
         number: car.driver.raceNumber,
         code: car.driver.code,
         quality: this.quality,
-        withCockpit: car.isPlayer,
+        withCockpit: car === cockpitCar,
         compound: car.compound,
       });
       this.scene.add(visual.root);
@@ -835,15 +855,70 @@ export class Renderer {
     // Here rather than inside `syncCars` because it is a RENDER, not a state
     // update: it needs the camera in its final position for this frame, or the
     // reflected sightline is a frame stale and the mirrors swim in a corner.
-    // Skipped entirely on the low tier — a second pass over the scene is the
-    // one thing a phone GPU cannot absorb — and only ever for the one car that
-    // has a cockpit, which is only built for the player.
-    if (this.quality === 'high' && this.director.mode === 'cockpit') {
-      for (const v of this.carVisuals) v.cockpit?.renderMirrors(this.renderer, this.scene, cam);
+    //
+    // "The mirrors on the cars should actually be doing something." They were
+    // not, and there were two reasons rather than one, which is why fixing
+    // either on its own would have proved nothing:
+    //
+    //  - the feed only ran in 'cockpit', and the T-cam is the view the report
+    //    came from. In every other mode the panes are the shell's flat dark
+    //    swatch: mirror-SHAPED, and showing nothing, exactly as described;
+    //  - it only ran on the HIGH tier, and the tier is chosen by
+    //    `(pointer: coarse) || cores <= 4`. Every phone is 'low'. So on the
+    //    device the complaint came from the feed had never run at all, in any
+    //    mode, since it was written.
+    //
+    // It now runs on both onboard modes and on both tiers, and the low tier
+    // pays for it by refreshing less often rather than not at all — see
+    // `MIRROR_STRIDE` in CockpitMesh for the budget and what it measures.
+    // COST. A mirror feed is a second pass over the scene, and this game is
+    // frame-limited on the device that asked for it — 19 to 30fps with under
+    // 110 draw calls — so the pass is rationed three ways: one pane per turn
+    // rather than both, a small short frustum, and the stride below. What
+    // rations it hardest is the question the mirror is for. If there is nobody
+    // within `MIRROR_FAR` behind, the pane shows an empty piece of road that is
+    // not changing in any way a driver needs to see promptly, and it drops to a
+    // quarter rate — which is most of a race, because most of a race is spent
+    // alone. The moment a car closes to within that range it goes back to full
+    // rate, so the refresh is fastest exactly when something is happening.
+    if (isOnboardMode(this.director.mode)) {
+      const base = this.quality === 'low' ? MIRROR_STRIDE_LOW : MIRROR_STRIDE_HIGH;
+      const stride = base * (this.trafficBehind(engine, focusCar) ? 1 : 4);
+      for (const v of this.carVisuals) {
+        v.cockpit?.renderMirrors(this.renderer, this.scene, cam, stride);
+      }
     }
 
     this.post.render(this.scene, cam);
 
+  }
+
+  /**
+   * Is there a car close enough behind for a mirror to have anything to say?
+   *
+   * Straight-line distance rather than a gap along the racing line, because a
+   * mirror is a lens and does not know what a lap is: a car on the other side
+   * of a hairpin is fifty metres away in the pane whatever its race position,
+   * and one being lapped a straight ahead of you is not in the pane at all.
+   * Behind is judged against the car's own heading, so a rival alongside counts
+   * — that is precisely when a driver looks.
+   *
+   * Twenty cars, two multiplies each, once a frame.
+   */
+  private trafficBehind(engine: RaceEngine, focusCar: CarEntry): boolean {
+    const p = focusCar.physics;
+    const sinH = Math.sin(p.heading);
+    const cosH = Math.cos(p.heading);
+    for (const car of engine.cars) {
+      if (car === focusCar || (car.retired && car.cleared)) continue;
+      const dx = car.physics.position.x - p.position.x;
+      const dz = car.physics.position.y - p.position.y;
+      // Behind, or level: anything more than a car's length up the road is not
+      // in a mirror.
+      if (dx * sinH + dz * cosH > 6) continue;
+      if (dx * dx + dz * dz < MIRROR_FAR * MIRROR_FAR) return true;
+    }
+    return false;
   }
 
   private sceneDrawCalls = 0;
@@ -1022,7 +1097,12 @@ export class Renderer {
   /** Copies simulation state onto the visuals. */
   private syncCars(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     const track = engine.track;
-    const cockpitView = this.director.mode === 'cockpit';
+    // BOTH onboard modes, not just 'cockpit'. The T-cam is mounted on the roll
+    // hoop too, so everything that follows from "the camera is inside this car"
+    // applies to it: the camera pod it is itself inside must not be drawn, and
+    // the cockpit interior — wheel, hands, dash, and the mirror panes that are
+    // the only ones with a live feed on them — must be.
+    const cockpitView = isOnboardMode(this.director.mode);
     // One shared wheel-spin phase: individual wheel speeds are indistinguishable
     // at speed and this avoids twenty separate integrations.
     this.wheelSpin += dt;

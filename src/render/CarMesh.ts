@@ -365,6 +365,67 @@ const HALF_WIDTH = 1.0;
 const FRONT_AXLE_Z = 1.80;
 const REAR_AXLE_Z = -1.80;
 
+// ===========================================================================
+// The halo
+// ===========================================================================
+
+/**
+ * The halo's centreline, car-local, left mount round to right mount.
+ *
+ * EXPORTED, and that is the point of it being up here instead of inline where
+ * it is built. The halo is the single most complained-about object in the
+ * project and every previous attempt at it was judged by eye off a screenshot,
+ * which is how a hoop that is dimensionally correct ends up framed as two
+ * diagonal pipes and nobody can say by how much. `probe:framing` projects THESE
+ * numbers through the real camera rig and reports where the hoop lands in the
+ * frame, in the same units the reference footage is measured in. If the
+ * geometry and the measurement read the same array, they cannot disagree.
+ *
+ * See the assembly site for what the shape is and why. In short: the rails run
+ * from the tub sides at 0.612, hug the coaming through the middle, and crown at
+ * 0.812 — a touch below the helmet's 0.828.
+ */
+export const HALO_PATH: readonly [number, number, number][] = [
+  [-0.345, 0.612, -0.30],
+  [-0.375, 0.660, -0.05],
+  [-0.370, 0.712, 0.30],
+  [-0.250, 0.780, 0.62],
+  [0.000, 0.812, 0.755],
+  [0.250, 0.780, 0.62],
+  [0.370, 0.712, 0.30],
+  [0.375, 0.660, -0.05],
+  [0.345, 0.612, -0.30],
+];
+
+/** Half-width of the hoop's section at the mounts, metres. */
+export const HALO_R = 0.021;
+/** 1.0 at both mounts, 0.72 over the crown: 42mm wide down to 30mm. */
+export function haloRadiusAt(u: number): number {
+  return 0.72 + 0.28 * Math.abs(u * 2 - 1);
+}
+/**
+ * How much shallower the section is than it is wide. A blade, not a pipe.
+ *
+ * 0.78, up from 0.58, and this is a correction toward the real part rather than
+ * away from it. The rails run near-HORIZONTALLY over the crown, so the
+ * dimension a driver sees there is the section's HEIGHT — and at 0.58 on a 26mm
+ * crown that was 15mm, which `probe:framing` measures at nine tenths of one per
+ * cent of frame width. A real halo's crown is around 30mm across and about as
+ * deep; ours was reading as a wire because the squash was taking its depth out
+ * of exactly the axis that shows. At 30mm by 0.78 the crown is 23mm tall and
+ * still visibly a blade from outside, which is what the squash was for.
+ */
+export const HALO_SQUASH = 0.78;
+
+/** The forward pillar, bottom to top. */
+export const HALO_PILLAR: readonly [number, number, number][] = [
+  [0, 0.520, 0.778],
+  [0, 0.806, 0.752],
+];
+export const HALO_PILLAR_R = 0.023;
+/** 12mm across the driver's sightline, 46mm front to back. */
+export const HALO_PILLAR_SQUASH = 0.26;
+
 /**
  * Geometry detail tier.
  *
@@ -1750,21 +1811,11 @@ function buildShellParts(
   // section is squashed to 0.58 of its height, so the 42mm at the mounts is
   // 42 wide by 24 tall and the crown is 26 by 15.
   {
-    p.flat(tube([
-      [-0.345, 0.612, -0.30],
-      [-0.375, 0.660, -0.05],
-      [-0.370, 0.712, 0.30],
-      [-0.250, 0.780, 0.62],
-      [0.000, 0.812, 0.755],
-      [0.250, 0.780, 0.62],
-      [0.370, 0.712, 0.30],
-      [0.375, 0.660, -0.05],
-      [0.345, 0.612, -0.30],
-    ], 0.021, t.halo, t.haloRadial,
-    // 1.0 at both mounts, 0.62 over the crown: 42mm down to 26mm.
-    (u) => 0.62 + 0.38 * Math.abs(u * 2 - 1),
-    // Wider than tall, which is the whole difference between a blade and a pipe.
-    0.58), 'trim');
+    p.flat(tube(
+      HALO_PATH, HALO_R, t.halo, t.haloRadial, haloRadiusAt,
+      // Wider than tall, which is the whole difference between a blade and a pipe.
+      HALO_SQUASH,
+    ), 'trim');
 
     // The forward strut: the only part of the halo a driver looks straight down.
     //
@@ -1775,7 +1826,11 @@ function buildShellParts(
     // 12mm across and 46mm front to back, which at the 0.7m it passes an eye is
     // one degree. Everything structural about the section is in the depth,
     // where nobody is looking down it.
-    p.flat(strut(0, 0.520, 0.778, 0, 0.806, 0.752, 0.023, t.haloRadial, false, 0.26), 'trim');
+    p.flat(strut(
+      HALO_PILLAR[0][0], HALO_PILLAR[0][1], HALO_PILLAR[0][2],
+      HALO_PILLAR[1][0], HALO_PILLAR[1][1], HALO_PILLAR[1][2],
+      HALO_PILLAR_R, t.haloRadial, false, HALO_PILLAR_SQUASH,
+    ), 'trim');
   }
 
   // --- Sidepod winglet and cooling louvres ---------------------------------

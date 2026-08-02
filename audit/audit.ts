@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Renderer } from '../src/render/Renderer';
 import { CAMERA_MODES, type CameraMode } from '../src/render/CameraDirector';
+import { MIRROR_GLASS_Z, MIRROR_X, MIRROR_Y } from '../src/render/CockpitMesh';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
@@ -42,7 +43,71 @@ interface AuditApi {
   contact(cols: number): Promise<string>;
   /** Captions the shot just taken. */
   label(text: string): void;
+  /**
+   * Reshapes the frame.
+   *
+   * The cockpit complaints are all about FRAMING, and framing is a function of
+   * the aspect ratio: the camera's field of view is vertical, so a 2.17:1 phone
+   * in landscape sees the same slice of world top to bottom as a 16:9 desktop
+   * and a fifth more of it left to right. Anything measured as a fraction of
+   * frame width is therefore a different number on the two, and the reference
+   * footage being matched against is 2.17:1.
+   */
+  setFrame(w: number, h: number): void;
+  /**
+   * Parks another car directly behind the focus car, so a mirror can be proved
+   * to be showing traffic rather than sky.
+   *
+   * @param gapM    how far back, metres
+   * @param lateralM offset across the road, along the car's local +x.
+   *
+   * WHICH WAY +X IS. It is the car's LEFT, and it appears on the LEFT of the
+   * screen, and those two facts are not the same fact. The world is
+   * right-handed with y up, so for a car whose nose is its own +z the direction
+   * `forward x up` — its right — comes out as local -x; and a camera behind it
+   * looking the same way has its screen-right on local -x too. The two
+   * inversions cancel, which is why nothing in the game looks mirrored and why
+   * nobody has ever had to think about it. A mirror is the one place they do
+   * not cancel, because a mirror reverses handedness on purpose, so a test of
+   * one has to be explicit about which side the car it is looking for is on.
+   */
+  placeBehind(gapM: number, lateralM: number): void;
+  /** Photographs a mode, then blows a region of the frame up to full size. */
+  shootZoom(mode: CameraMode, x: number, y: number, w: number, h: number): Promise<string>;
+  /**
+   * Photographs a mode and blows up the mirror pane on one side, found by
+   * projecting the pane itself rather than by guessing at a crop.
+   *
+   * The pane is about sixty pixels across in a 1280-wide frame and it moves
+   * with the car's yaw, roll and the camera's head turn, so a fixed crop box
+   * lands on it only by luck — two attempts at eyeballing one came back with a
+   * picture of the front wing and a picture of the driver's helmet, neither of
+   * which says anything about whether the mirror works.
+   *
+   * @param side +1 for the pane on the car's local +x, which is the one that
+   *             appears on the LEFT of the screen. See `placeBehind`.
+   */
+  shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string>;
+  /** What one frame in the given mode costs. */
+  costMode(mode: CameraMode, frames: number): Promise<FrameCost>;
+  /**
+   * The mirror's own feed, read straight off its render target and blown up.
+   *
+   * The pane is between 47 and 86 pixels across in the finished frame with the
+   * halo over part of it, so photographing the pane answers "can you see the
+   * mirror" and only barely answers "does the mirror work". This answers the
+   * second question on its own terms: it is the 256x96 image the pane is
+   * textured with, at eight times size, with nothing in front of it.
+   */
+  mirrorFeed(mode: CameraMode, side: 1 | -1): Promise<string>;
   cameraModes: readonly CameraMode[];
+}
+
+/** Per-frame cost of a camera mode. See `costMode`. */
+interface FrameCost {
+  ms: number;
+  calls: number;
+  triangles: number;
 }
 
 interface CircuitInfo {
@@ -60,8 +125,8 @@ const canvas = document.getElementById('view') as HTMLCanvasElement;
 
 // A fixed backing-store size, so every circuit is photographed at exactly the
 // same resolution regardless of the window the headless browser gives us.
-const SHOT_W = 1280;
-const SHOT_H = 720;
+let SHOT_W = 1280;
+let SHOT_H = 720;
 canvas.style.width = `${SHOT_W}px`;
 canvas.style.height = `${SHOT_H}px`;
 
@@ -193,8 +258,13 @@ async function load(circuitId: string): Promise<CircuitInfo> {
     seed: 11,
   };
   engine = new RaceEngine(def, config);
-  renderer.loadSession(engine);
   focus = engine.playerCar ?? engine.cars[0];
+  // The cockpit interior goes into the car the camera will be inside. There is
+  // no player car here on purpose (see `playerIndex` above), and the interior
+  // used to be tied to `isPlayer` — so every cockpit shot this sweep has ever
+  // taken was of an EMPTY tub with no wheel, no hands and no mirror panes in
+  // it, which is not the view anybody plays.
+  renderer.loadSession(engine, focus);
 
   // Roll the field away from the grid and out onto the circuit, so the shots
   // show cars at racing speed on the racing line rather than twenty cars
@@ -355,8 +425,187 @@ async function contact(cols: number): Promise<string> {
 /** Cell captions, pushed by the harness alongside each shot. */
 const labels: string[] = [];
 
+function setFrame(w: number, h: number): void {
+  SHOT_W = w;
+  SHOT_H = h;
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  renderer.resize();
+  freeCam.aspect = w / h;
+  freeCam.updateProjectionMatrix();
+}
+
+/**
+ * Puts a rival where the mirrors are supposed to see it.
+ *
+ * Teleporting a car is not something the simulation does, so this writes
+ * straight into the physics state and leaves the race engine to catch up. It is
+ * only ever used for one frame's photograph — the point is to answer "does the
+ * pane show a car that is genuinely behind", which needs a car that is
+ * genuinely behind and not a lucky moment in traffic.
+ */
+function placeBehind(gapM: number, lateralM: number): void {
+  if (!engine || !focus) throw new Error('no session');
+  const other = engine.cars.find((c) => c !== focus && !c.retired);
+  if (!other) throw new Error('nobody to place');
+  const h = focus.physics.heading;
+  const p = focus.physics.position;
+  // Along the focus car's own axes: back down the nose vector by `gapM`, then
+  // across it. The physics' position is (x, y) in plan with y along world z.
+  other.physics.position.x = p.x - Math.sin(h) * gapM + Math.cos(h) * lateralM;
+  other.physics.position.y = p.y - Math.cos(h) * gapM - Math.sin(h) * lateralM;
+  other.physics.heading = h;
+  other.s = focus.s - gapM;
+}
+
+async function shootZoom(
+  mode: CameraMode, x: number, y: number, w: number, h: number,
+): Promise<string> {
+  const full = await shootMode(mode);
+  // `shootMode` already pushed a thumbnail of the whole frame; this replaces it
+  // with the blow-up, so the contact sheet shows what was actually examined.
+  thumbs.pop();
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('bad shot'));
+    img.src = full;
+  });
+  const c = document.createElement('canvas');
+  c.width = SHOT_W;
+  c.height = SHOT_H;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = false;
+  g.drawImage(img, x, y, w, h, 0, 0, SHOT_W, SHOT_H);
+  const out = c.toDataURL('image/png');
+  const t = thumbCanvas.getContext('2d')!;
+  t.drawImage(c, 0, 0, CELL_W, CELL_H);
+  thumbs.push(thumbCanvas.toDataURL('image/jpeg', 0.82));
+  c.width = 1;
+  c.height = 1;
+  return out;
+}
+
+const mirrorWorld = new THREE.Vector3();
+
+async function shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string> {
+  if (!engine || !focus) throw new Error('no session');
+  // Take the shot first: the camera has to be settled in the mode before the
+  // pane's screen position means anything.
+  const full = await shootMode(mode);
+  thumbs.pop();
+
+  const car = renderer.carVisuals?.find((v) => v.cockpit) ?? null;
+  if (!car) throw new Error('no cockpit on any car');
+  mirrorWorld.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z);
+  car.root.updateWorldMatrix(true, false);
+  mirrorWorld.applyMatrix4(car.root.matrixWorld);
+  mirrorWorld.project(renderer.director.camera);
+  const cx = (mirrorWorld.x * 0.5 + 0.5) * SHOT_W;
+  const cy = (0.5 - mirrorWorld.y * 0.5) * SHOT_H;
+
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('bad shot'));
+    img.src = full;
+  });
+  const c = document.createElement('canvas');
+  c.width = SHOT_W;
+  c.height = SHOT_H;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = false;
+  const h = (spanPx * SHOT_H) / SHOT_W;
+  g.drawImage(img, cx - spanPx / 2, cy - h / 2, spanPx, h, 0, 0, SHOT_W, SHOT_H);
+  const out = c.toDataURL('image/png');
+  const t = thumbCanvas.getContext('2d')!;
+  t.drawImage(c, 0, 0, CELL_W, CELL_H);
+  thumbs.push(thumbCanvas.toDataURL('image/jpeg', 0.82));
+  c.width = 1;
+  c.height = 1;
+  return out;
+}
+
+/**
+ * What one frame in a mode costs: draw calls, triangles and wall time.
+ *
+ * DRAW CALLS AND TRIANGLES FIRST, time second. The sweep runs on SwiftShader,
+ * which is a software rasteriser — its milliseconds are a statement about this
+ * machine's CPU and not about the phone the complaint came from. Draw calls and
+ * triangles are the same numbers on every device, they are the units the report
+ * of "19-30fps with under 110 draw calls" is denominated in, and how many of
+ * each a second scene render adds is exactly the question a mirror raises.
+ *
+ * `finish()` on the way out of each frame anyway, because a WebGL draw call
+ * returns long before the work is done and a timer around an unsynchronised
+ * render measures the JavaScript rather than the frame.
+ */
+async function costMode(mode: CameraMode, frames: number): Promise<FrameCost> {
+  if (!engine || !focus) throw new Error('no session');
+  renderer.post.setCamera(renderer.director.camera, renderer.scene);
+  renderer.director.setMode(mode);
+  for (let i = 0; i < 4; i++) { frame(); await present(); }
+  const gl = renderer.renderer.getContext();
+  const info = renderer.renderer.info;
+  info.autoReset = false;
+  info.reset();
+  const t0 = performance.now();
+  for (let i = 0; i < frames; i++) {
+    frame();
+    gl.finish();
+  }
+  const ms = (performance.now() - t0) / frames;
+  info.autoReset = true;
+  return { ms, calls: info.render.calls / frames, triangles: info.render.triangles / frames };
+}
+
+/** Scratch for `mirrorFeed`: a full-frame quad that shows one texture. */
+const feedScene = new THREE.Scene();
+// Near at -1, not 0: the quad sits at z = 0 and a near plane of 0 puts it
+// exactly on the clip boundary, which is a coin toss between a picture and a
+// black frame — and a black frame here reads as "the mirror shows nothing".
+const feedCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+const feedMat = new THREE.MeshBasicMaterial();
+feedScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), feedMat));
+
+/**
+ * The mirror's feed, drawn to the canvas on its own.
+ *
+ * BLITTED THROUGH THE RENDERER rather than read back with
+ * `readRenderTargetPixels`, and the first version did the latter and produced
+ * 1024x393 of pure black. The mirror target is HalfFloatType — deliberately, so
+ * a floodlight in the pane reaches the bloom pass as something above white —
+ * and a half-float attachment cannot be read into a Float32Array. Drawing the
+ * texture on a quad puts it through the renderer's own tone map and sRGB
+ * encode, which is also the pipeline the pane itself is seen through, so what
+ * comes out is what a player would see if the pane filled the screen.
+ */
+async function mirrorFeed(mode: CameraMode, side: 1 | -1): Promise<string> {
+  if (!engine || !focus) throw new Error('no session');
+  // Draw the mode first so the feed for THIS frame exists. The panes alternate,
+  // so a handful of frames covers both.
+  renderer.post.setCamera(renderer.director.camera, renderer.scene);
+  renderer.racingLine?.setVisible(true);
+  renderer.director.setMode(mode);
+  for (let i = 0; i < 8; i++) { frame(); await present(); }
+
+  const car = renderer.carVisuals.find((v) => v.cockpit);
+  const target = car?.cockpit?.mirrorTarget(side);
+  if (!target) throw new Error('no mirror feed — it has never been rendered');
+
+  feedMat.map = target.texture;
+  feedMat.needsUpdate = true;
+  // The pane flips u to turn a rearward camera into a mirror; the feed is shown
+  // as the pane shows it, so the flip on the texture applies here too.
+  return drawAndShoot(() => {
+    renderer.renderer.setRenderTarget(null);
+    renderer.renderer.render(feedScene, feedCam);
+  });
+}
+
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
   label: (t: string) => { labels.push(t); },
+  setFrame, placeBehind, shootZoom, shootMirror, costMode, mirrorFeed,
   cameraModes: CAMERA_MODES,
 };

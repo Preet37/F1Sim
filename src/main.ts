@@ -23,6 +23,9 @@ import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
 import { circuitSvg, circuitLoadingArt } from './ui/CircuitArt';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
+import { buildStrategyScreen } from './ui/StrategyScreen';
+import { planFor, startingCompound, strategyOptions } from './race/Strategy';
+import { driversForTeam } from './data/teams';
 import { buildControllerScreen, type ControllerScreenHandle } from './ui/ControllerScreen';
 import { applySetup, specForTeam, type CarSetup } from './physics/VehicleSpec';
 import { DRY_COMPOUNDS, WET_COMPOUNDS, getCompound, type CompoundId } from './data/tires';
@@ -52,6 +55,7 @@ type Screen =
   | 'career-hub'
   | 'session-select'
   | 'setup'
+  | 'strategy'
   | 'briefing'
   | 'simulating'
   | 'paddock'
@@ -114,6 +118,17 @@ class Game {
   private playerSetup: CarSetup | null = null;
   private playerSetupCircuitId = '';
   private playerCompound: CompoundId | null = null;
+  /**
+   * The tyre plan chosen on the strategy screen, by driver id — the player's
+   * car and their team-mate's.
+   *
+   * Kept on `Main` rather than on the engine for the same reason the setup is:
+   * the engine does not exist yet when the choice is made, and it is rebuilt
+   * for every session. `applyPlayerSetup` is the single funnel that writes all
+   * of it onto real cars.
+   */
+  private playerStrategy: Record<string, string> = {};
+  private playerStrategyCircuitId = '';
 
   private rafHandle = 0;
   /** Controls card starts visible each session, then fades out. */
@@ -2075,8 +2090,106 @@ class Game {
     // to honour.
     this.button('Skip ' + config.name, actions, () => this.skipSession(circuitId), 'btn ghost');
     this.spacer(actions);
-    this.button(isRace ? 'To the Grid' : 'To the Garage', actions,
+    // A race goes via the pit wall. Practice and qualifying do not: there is
+    // no stint plan to make when the session is three laps of your own.
+    this.button(isRace ? 'Race Strategy' : 'To the Garage', actions,
+      () => (isRace ? this.showStrategy(circuitId) : this.launchSession(circuitId)), 'btn primary');
+  }
+
+  /**
+   * The race plan, before the lights.
+   *
+   * THE GAP THIS CLOSES. `RaceEngine.planStrategies` has always written a stint
+   * sequence onto every car in the constructor, the player's included, and
+   * nothing ever showed it or let them change it — the largest decision in a
+   * Grand Prix was made for them off screen. This screen makes it, for both of
+   * the team's cars, and `applyStrategy` writes the answer onto the real
+   * `CarEntry.plan` so the race runs what was chosen.
+   *
+   * It sits between the briefing and the grid for races only. There is no stint
+   * plan to make in a practice session.
+   */
+  private showStrategy(circuitId: string): void {
+    const config = this.weekend[this.weekendIndex];
+    const circuit = getCircuit(circuitId);
+    if (!config) { this.afterWeekend(); return; }
+
+    // A plan is about a circuit and a distance. Carrying Monaco's two-stop to
+    // Monza is not a choice anyone meant to make, exactly as with the setup.
+    if (this.playerStrategyCircuitId !== circuitId) {
+      this.playerStrategyCircuitId = circuitId;
+      this.playerStrategy = {};
+    }
+
+    const team = this.playerTeam();
+    const playerId = this.playerDriverId();
+    const mates = driversForTeam(team.id);
+    const me = mates.find((d) => d.id === playerId) ?? mates[0];
+    const drivers = [me, ...mates.filter((d) => d.id !== me.id)];
+    const laps = config.laps || circuit.raceLaps;
+
+    const { body, actions } = this.page({
+      tab: 'Race weekend · ' + circuit.name,
+      title: 'Race Setup',
+      sub: 'The plan for both cars, over ' + laps + ' laps',
+      back: () => this.showBriefing(circuitId),
+      meta: [['Laps', String(laps)], ['Pit limit', circuit.pitLane.speedLimitKph + ' km/h']],
+      rule: this.circuitRule(circuit, 2),
+    });
+
+    const panel = this.el('div', 'strategy', body);
+    buildStrategyScreen(panel, {
+      team,
+      drivers,
+      playerIndex: 0,
+      track: circuit,
+      laps,
+      chosen: this.playerStrategy,
+      onChoose: (driverId, optionId) => { this.playerStrategy[driverId] = optionId; },
+    });
+
+    this.button('Car Setup', actions,
+      () => this.showSetup(circuitId, () => this.showStrategy(circuitId)), 'btn ghost');
+    this.spacer(actions);
+    this.button('Confirm — to the grid', actions,
       () => this.launchSession(circuitId), 'btn primary');
+    this.setScreen('strategy');
+  }
+
+  /**
+   * Writes the chosen plans onto the real cars.
+   *
+   * Both of them. A team principal who sets a strategy for one car and lets the
+   * engine roll dice for the other is not running a team, and the team-mate's
+   * plan is the one that decides whether they are in the way on lap thirty.
+   */
+  private applyStrategy(engine: RaceEngine): void {
+    if (engine.config.kind !== 'race') return;
+    const car = engine.playerCar;
+    if (!car) return;
+    const laps = engine.config.laps || engine.track.def.raceLaps;
+
+    for (const entry of engine.cars) {
+      if (entry.team.id !== car.team.id) continue;
+      const chosenId = this.playerStrategy[entry.driver.id];
+      if (!chosenId) continue;
+      const option = strategyOptions(entry.team, entry.driver, engine.track.def, laps)
+        .find((o) => o.id === chosenId);
+      if (!option) continue;
+
+      entry.plan = planFor(option);
+      entry.targetPitLap = entry.plan[0].pitOnLap;
+      // A plan whose first stint is a soft has to be sitting on softs when the
+      // lights go out, or it is not that plan. The player's own explicit tyre
+      // choice on the briefing screen still wins — `applyPlayerSetup` runs
+      // after this and writes over it.
+      const start = startingCompound(option);
+      entry.compound = start;
+      entry.usedCompounds.length = 0;
+      entry.usedCompounds.push(start);
+      entry.physics.frontTires.fit(start, engine.weather.trackTempC + 40);
+      entry.physics.rearTires.fit(start, engine.weather.trackTempC + 40);
+    }
   }
 
   /** Where to go when a weekend runs out of sessions, or is abandoned. */
@@ -2333,6 +2446,7 @@ class Game {
       const field = this.fieldFor(config);
 
       this.engine = new RaceEngine(def, config, field);
+      this.applyStrategy(this.engine);
       this.applyPlayerSetup(this.engine);
       // A fresh session is a fresh chance to crash.
       this.retirementShown = false;
