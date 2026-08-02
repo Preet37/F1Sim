@@ -114,17 +114,31 @@ async function main(): Promise<void> {
     }
 
     // --- The mirror proof -------------------------------------------------
-    // A car is put ten metres back and two metres to the left, which is where
-    // one sits when it is lining a move up, and the LEFT mirror is blown up.
-    // If the pane is showing sky, or showing the road ahead, or showing the
-    // car on the wrong side, this is where it is visible.
+    // A car is put ten metres back and two metres over, which is where one sits
+    // when it is lining a move up, and the mirror on that side is blown up. If
+    // the pane is showing sky, or showing the road ahead, or showing the car on
+    // the wrong side of the pane, this is where it is visible.
+    //
+    // +2 along the car's local +x, which is the side of the car that appears on
+    // the LEFT of the screen — see `placeBehind` for why those are two separate
+    // facts — so the blow-up below takes the left half of the frame.
     await page.evaluate(`window.__audit.setFrame(1280, 589)`);
-    await page.evaluate(`window.__audit.placeBehind(10, -2)`);
+    await page.evaluate(`window.__audit.placeBehind(10, 2)`);
     for (const mode of MODES) {
       const png = await page.evaluate(
         `window.__audit.shootMode(${JSON.stringify(mode)})`,
       ) as string;
       await writePng(resolve(dir, `mirror-${mode}.png`), png);
+      // Both panes, found by projection and blown up about eight times, because
+      // "there is a car in it" is not a question a sixty-pixel pane answers at
+      // 1:1. The near one should have the rival in it and the far one should
+      // not, which is also a check that the two are not showing the same feed.
+      for (const [name, side] of [['near', 1], ['far', -1]] as const) {
+        const zoom = await page.evaluate(
+          `window.__audit.shootMirror(${JSON.stringify(mode)}, ${side}, 160)`,
+        ) as string;
+        await writePng(resolve(dir, `mirror-${name}-${mode}.png`), zoom);
+      }
     }
 
     // --- Frame cost -------------------------------------------------------

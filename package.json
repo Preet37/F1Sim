@@ -39,6 +39,7 @@
     "validate:limits": "tsx scripts/probeTrackLimits.ts",
     "probe:drivability": "tsx scripts/probeDrivability.ts",
     "probe:cameras": "tsx scripts/probeCameras.ts",
+    "probe:reverse": "tsx scripts/probeReverse.ts",
     "probe:cockpit": "tsx scripts/probeCockpit.ts",
     "probe:framing": "tsx scripts/probeFraming.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts"

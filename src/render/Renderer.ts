@@ -105,7 +105,14 @@ export class Renderer {
   /** The player's own pit box, highlighted so they can find it. */
   private pitBox: PitBoxMarker | null = null;
   private marshalPosts: MarshalPosts | null = null;
-  private carVisuals: CarVisual[] = [];
+  /**
+   * Readable so the audit harness can find the car with the cockpit in it and
+   * project its mirror panes. A mirror pane is about sixty pixels across in a
+   * 1280-wide frame and it moves with the car; photographing one by guessing at
+   * a crop box does not work, and a mirror nobody can photograph is a mirror
+   * nobody can prove is working, which is how this one stayed broken.
+   */
+  readonly carVisuals: CarVisual[] = [];
   /** Bodywork lying on the circuit. One draw call, session-lifetime. */
   private wreckage: Wreckage | null = null;
   private readonly canvas: HTMLCanvasElement;

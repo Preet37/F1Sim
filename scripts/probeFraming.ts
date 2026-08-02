@@ -279,8 +279,9 @@ interface Measured {
   horizon: number;
   helmet: string;
   wheel: string;
-  mirrorL: string;
-  mirrorR: string;
+  /** Named by which side of the SCREEN they land on; see `placeBehind`. */
+  mirrorScreenL: string;
+  mirrorScreenR: string;
 }
 
 function measure(
@@ -370,8 +371,8 @@ function measure(
     // The helmet's crown, from DriverMesh: centre 0.672, scaled radius 0.156.
     helmet: at(new THREE.Vector3(0, 0.828, 0)),
     wheel: at(new THREE.Vector3(0, WHEEL_Y + 0.100, WHEEL_Z)),
-    mirrorL: at(new THREE.Vector3(-MIRROR_X, MIRROR_Y, MIRROR_Z)),
-    mirrorR: at(new THREE.Vector3(MIRROR_X, MIRROR_Y, MIRROR_Z)),
+    mirrorScreenL: at(new THREE.Vector3(MIRROR_X, MIRROR_Y, MIRROR_Z)),
+    mirrorScreenR: at(new THREE.Vector3(-MIRROR_X, MIRROR_Y, MIRROR_Z)),
   };
 }
 
@@ -386,7 +387,7 @@ console.log(
 console.log(
   'circuit'.padEnd(13) + 'frame'.padEnd(7) + 'mode'.padEnd(11) +
   'crown'.padStart(7) + 'thick'.padStart(7) + 'occl'.padStart(6) +
-  'horiz'.padStart(7) + '  rail exits'.padEnd(34) + 'helmet'.padStart(9) + 'wheel'.padStart(9),
+  'horiz'.padStart(7) + '  rail exits'.padEnd(34) + 'helmet'.padStart(9) + 'wheel'.padStart(9) + 'mirror<'.padStart(9) + 'mirror>'.padStart(9),
 );
 
 for (const def of CIRCUITS) {
@@ -438,7 +439,7 @@ for (const def of CIRCUITS) {
         `${m.occludePct.toFixed(1)}%`.padStart(6) +
         `${m.horizon.toFixed(0)}%`.padStart(7) + '  ' +
         m.exits.join(' ').padEnd(32) +
-        m.helmet.padStart(9) + m.wheel.padStart(9) +
+        m.helmet.padStart(9) + m.wheel.padStart(9) + m.mirrorScreenL.padStart(9) + m.mirrorScreenR.padStart(9) +
         (bad.length ? '  <-- ' + bad.join('; ') : ''),
       );
       for (const b of bad) failures.push(`${def.id} ${frameName} ${mode}: ${b}`);

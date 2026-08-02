@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Renderer } from '../src/render/Renderer';
 import { CAMERA_MODES, type CameraMode } from '../src/render/CameraDirector';
+import { MIRROR_GLASS_Z, MIRROR_X, MIRROR_Y } from '../src/render/CockpitMesh';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
@@ -58,11 +59,35 @@ interface AuditApi {
    * to be showing traffic rather than sky.
    *
    * @param gapM    how far back, metres
-   * @param lateralM offset across the road; positive is the focus car's right
+   * @param lateralM offset across the road, along the car's local +x.
+   *
+   * WHICH WAY +X IS. It is the car's LEFT, and it appears on the LEFT of the
+   * screen, and those two facts are not the same fact. The world is
+   * right-handed with y up, so for a car whose nose is its own +z the direction
+   * `forward x up` — its right — comes out as local -x; and a camera behind it
+   * looking the same way has its screen-right on local -x too. The two
+   * inversions cancel, which is why nothing in the game looks mirrored and why
+   * nobody has ever had to think about it. A mirror is the one place they do
+   * not cancel, because a mirror reverses handedness on purpose, so a test of
+   * one has to be explicit about which side the car it is looking for is on.
    */
   placeBehind(gapM: number, lateralM: number): void;
   /** Photographs a mode, then blows a region of the frame up to full size. */
   shootZoom(mode: CameraMode, x: number, y: number, w: number, h: number): Promise<string>;
+  /**
+   * Photographs a mode and blows up the mirror pane on one side, found by
+   * projecting the pane itself rather than by guessing at a crop.
+   *
+   * The pane is about sixty pixels across in a 1280-wide frame and it moves
+   * with the car's yaw, roll and the camera's head turn, so a fixed crop box
+   * lands on it only by luck — two attempts at eyeballing one came back with a
+   * picture of the front wing and a picture of the driver's helmet, neither of
+   * which says anything about whether the mirror works.
+   *
+   * @param side +1 for the pane on the car's local +x, which is the one that
+   *             appears on the LEFT of the screen. See `placeBehind`.
+   */
+  shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string>;
   /** Milliseconds per frame in the given mode, averaged over `frames`. */
   timeMode(mode: CameraMode, frames: number): Promise<number>;
   cameraModes: readonly CameraMode[];
@@ -444,6 +469,46 @@ async function shootZoom(
   return out;
 }
 
+const mirrorWorld = new THREE.Vector3();
+
+async function shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string> {
+  if (!engine || !focus) throw new Error('no session');
+  // Take the shot first: the camera has to be settled in the mode before the
+  // pane's screen position means anything.
+  const full = await shootMode(mode);
+  thumbs.pop();
+
+  const car = renderer.carVisuals?.find((v) => v.cockpit) ?? null;
+  if (!car) throw new Error('no cockpit on any car');
+  mirrorWorld.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z);
+  car.root.updateWorldMatrix(true, false);
+  mirrorWorld.applyMatrix4(car.root.matrixWorld);
+  mirrorWorld.project(renderer.director.camera);
+  const cx = (mirrorWorld.x * 0.5 + 0.5) * SHOT_W;
+  const cy = (0.5 - mirrorWorld.y * 0.5) * SHOT_H;
+
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('bad shot'));
+    img.src = full;
+  });
+  const c = document.createElement('canvas');
+  c.width = SHOT_W;
+  c.height = SHOT_H;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = false;
+  const h = (spanPx * SHOT_H) / SHOT_W;
+  g.drawImage(img, cx - spanPx / 2, cy - h / 2, spanPx, h, 0, 0, SHOT_W, SHOT_H);
+  const out = c.toDataURL('image/png');
+  const t = thumbCanvas.getContext('2d')!;
+  t.drawImage(c, 0, 0, CELL_W, CELL_H);
+  thumbs.push(thumbCanvas.toDataURL('image/jpeg', 0.82));
+  c.width = 1;
+  c.height = 1;
+  return out;
+}
+
 /**
  * Frame cost of a mode, in milliseconds.
  *
@@ -472,6 +537,6 @@ async function timeMode(mode: CameraMode, frames: number): Promise<number> {
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
   label: (t: string) => { labels.push(t); },
-  setFrame, placeBehind, shootZoom, timeMode,
+  setFrame, placeBehind, shootZoom, shootMirror, timeMode,
   cameraModes: CAMERA_MODES,
 };

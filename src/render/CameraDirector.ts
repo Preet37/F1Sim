@@ -298,22 +298,6 @@ export class CameraDirector {
     const cosH = Math.cos(heading);
     const carY = track.elevationAt(car.s);
 
-    // Direction the car is actually travelling, which differs from where it is
-    // pointing when it slides. Looking along the velocity rather than the nose is
-    // what makes a slide legible.
-    //
-    // CLAMPED, and that clamp is a bug fix rather than a refinement. The bias is
-    // `heading - slip * 0.55`, so a slip angle of 180 degrees — which is exactly
-    // what reversing is, the car travelling the way it is not pointing — swings
-    // the camera 99 degrees round to the side of the car. That is the "when the
-    // car is reversing the camera goes sideways and you can't see anything"
-    // report, and a spin produces the same thing for the same reason. Past about
-    // sixty degrees of slip there is no more information in the angle anyway:
-    // the car is going somewhere other than where it points and the camera has
-    // already said so.
-    const travelHeading = speed > 3 ? Math.atan2(p.velocity.x, p.velocity.y) : heading;
-    const slip = clamp(wrapAngle(travelHeading - heading), -1.05, 1.05);
-
     // Reversing: the useful view is the one the car is going towards.
     //
     // Hysteresis on the forward speed component rather than on a control input,
@@ -321,6 +305,9 @@ export class CameraDirector {
     // on below -1.2 m/s and off above -0.2, so nothing flickers as the car rocks
     // through a standstill, and the swing round the car is damped rather than
     // cut so it reads as the camera moving rather than as an edit.
+    //
+    // COMPUTED BEFORE THE SLIP ANGLE, which it did not use to be, and the order
+    // is the fix. See below.
     const forwardMs = p.velocity.x * sinH + p.velocity.y * cosH;
     if (forwardMs < -1.2) this.reverseLatch = true;
     else if (forwardMs > -0.2) this.reverseLatch = false;
@@ -329,8 +316,49 @@ export class CameraDirector {
     // the aim, so the pair stays a follow shot with the car between the lens
     // and where it is going — just facing the other way.
     const reverseYaw = this.reverse * Math.PI;
-    const sinR = Math.sin(heading + reverseYaw);
-    const cosR = Math.cos(heading + reverseYaw);
+    const viewHeading = heading + reverseYaw;
+    const sinR = Math.sin(viewHeading);
+    const cosR = Math.cos(viewHeading);
+
+    // Direction the car is actually travelling, which differs from where it is
+    // pointing when it slides. Looking along the velocity rather than the nose
+    // is what makes a slide legible.
+    //
+    // "THE BACKUP CAMERA IS JITTERING WHEN I TRY TO BACK UP."
+    //
+    // Measured, on all eleven circuits, by `npm run probe:reverse`: while the
+    // car was reversing the chase camera was swinging up to nine degrees in a
+    // single frame — 540 a second — with nothing in the world moving to justify
+    // it. The mechanism is exact and it was in the two lines this replaces.
+    //
+    // The slip angle used to be measured against the car's NOSE. A car
+    // travelling backwards has a slip angle of almost exactly 180 degrees, so
+    // `wrapAngle` returned something within a whisker of +pi or -pi and WHICH
+    // ONE was decided by the sign of the lateral velocity — a quantity that
+    // crosses zero constantly when a driver is sawing at the wheel to get out
+    // of somewhere. The clamp to +-1.05 kept the magnitude and did nothing
+    // about the sign, so every zero crossing swapped the bias from +1.05 to
+    // -1.05 and lurched the desired azimuth by 66 degrees. The camera chased
+    // that, at nine degrees a frame, back and forth, for as long as the driver
+    // kept reversing. The previous pass added the clamp to fix "the camera goes
+    // sideways when reversing" and could not have found this, because a clamp
+    // is exactly the shape of fix that leaves a sign flip behind it.
+    //
+    // Measuring the slip against the direction the camera is actually LOOKING
+    // removes it at the root rather than clamping it again. When the reverse
+    // view is fully engaged, `viewHeading` is the direction of travel, so the
+    // slip is near zero and there is no longer a large number to flip the sign
+    // of; while the view is swinging round, both terms move together and it
+    // stays continuous; and going forwards `reverseYaw` is zero and this is the
+    // expression it always was.
+    //
+    // The speed gate is a RAMP for the same class of reason. At `speed > 3` the
+    // slip snapped between zero and its full value as the car crept across 3
+    // m/s, which is a 33-degree step in the desired azimuth sitting exactly in
+    // the speed range a car being reversed lives in.
+    const travelHeading = speed > 0.5 ? Math.atan2(p.velocity.x, p.velocity.y) : viewHeading;
+    const slipWeight = clamp01((speed - 1.5) / 2.5);
+    const slip = clamp(wrapAngle(travelHeading - viewHeading), -1.05, 1.05) * slipWeight;
 
     // The point every following camera is anchored to.
     this.anchor.set(p.position.x, carY, p.position.y);
@@ -379,7 +407,10 @@ export class CameraDirector {
         dist += clamp(p.longitudinalG * 0.20, -1.0, 0.7);
 
         // Bias the camera toward the outside of a slide so the car's angle shows.
-        const yaw = heading - slip * 0.55 + reverseYaw;
+        // `viewHeading` is `heading + reverseYaw`, and the slip is now measured
+        // against it too — so this reads the same way going forwards and
+        // backwards instead of being two terms that could disagree.
+        const yaw = viewHeading - slip * 0.55;
         this.desired.set(
           p.position.x - Math.sin(yaw) * dist,
           carY + height,
@@ -502,7 +533,7 @@ export class CameraDirector {
         // invisible at the old 87-degree spread and would now put it out of
         // frame entirely.
         const dist = lerp(12, 15, clamp01(this.smoothSpeed / 90));
-        const yaw = heading - slip * 0.3 + reverseYaw;
+        const yaw = viewHeading - slip * 0.3;
         this.desired.set(
           p.position.x - Math.sin(yaw) * dist,
           carY + 3.4,
@@ -883,6 +914,21 @@ export class CameraDirector {
 
   get modeLabel(): string {
     return CAMERA_LABELS[this.mode];
+  }
+
+  /**
+   * How far round the reverse view is, 0 (following) to 1 (facing back).
+   *
+   * Exposed for `probe:reverse`, which has to tell a camera that is swinging
+   * round the car on purpose from one that is oscillating — and the honest way
+   * to do that is to ask the rig which it is doing rather than to guess from
+   * the car's speed. Guessing was tried: a proxy built on the sign of the
+   * forward velocity blanked the wrong second on a car that was sliding
+   * sideways at 13 m/s with only 3 of it going backwards, and reported a
+   * legitimate half-turn as a fault on three circuits.
+   */
+  get reverseBlend(): number {
+    return this.reverse;
   }
 
   /** Approximate lateral g for the HUD's g-meter, read off the camera's target. */
