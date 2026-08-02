@@ -58,6 +58,8 @@ interface AuditApi {
   crash(n: number, severity: number): void;
   /** Lap fraction the focus car is at. */
   focusFraction(): number;
+  /** Lap fraction the settled debris is lying at. */
+  debrisFraction(): number;
   /** Close plan view of the road at a lap fraction — for looking at debris. */
   shootDebris(fraction: number, height: number): Promise<string>;
   /** Composes the shots taken since the last call into one contact sheet. */
@@ -544,9 +546,28 @@ function crash(n: number, severity: number): void {
   for (let f = 0; f < 40; f++) frame();
 }
 
-/** Lap fraction the focus car is at — where `crash` will have left its debris. */
+/** Lap fraction the focus car is at. */
 function focusFraction(): number {
   return (focus!.s % engine!.track.length) / engine!.track.length;
+}
+
+/**
+ * Lap fraction the debris is actually lying at.
+ *
+ * NOT the car's own position, which is where the first version of this pointed
+ * the camera and why the first debris shots came back as clean, empty asphalt.
+ * A car doing 60 m/s covers three hundred metres in the five seconds between
+ * the accident and the shards settling, so by the time there is anything to
+ * photograph the car is most of a straight past it.
+ *
+ * The median rather than the mean, so one piece that skidded a long way does
+ * not drag the camera off the pile.
+ */
+function debrisFraction(): number {
+  const piles = engine!.debris.piles;
+  if (piles.length === 0) return focusFraction();
+  const ss = piles.map((p) => p.s).sort((a, b) => a - b);
+  return (ss[Math.floor(ss.length / 2)] % engine!.track.length) / engine!.track.length;
 }
 
 /**
@@ -593,7 +614,7 @@ const labels: string[] = [];
 
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
-  shootEyeAids, shootKerb, shootDebris, corners, measure, crash, focusFraction,
+  shootEyeAids, shootKerb, shootDebris, corners, measure, crash, focusFraction, debrisFraction,
   label: (t: string) => { labels.push(t); },
   cameraModes: CAMERA_MODES,
 };

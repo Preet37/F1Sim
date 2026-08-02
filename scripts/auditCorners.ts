@@ -68,6 +68,7 @@ interface Api {
     shootKerb(f: number, side: -1 | 1): Promise<string>;
     shootDebris(f: number, h: number): Promise<string>;
     focusFraction(): number;
+    debrisFraction(): number;
   };
 }
 
@@ -92,7 +93,13 @@ async function main(): Promise<void> {
   const browser: Browser = await puppeteer.launch({
     executablePath: chromePath(),
     headless: true,
-    protocolTimeout: 20 * 60_000,
+    // Ten minutes, not twenty and not four. A page whose WebGL context has been
+    // lost never answers another `evaluate`, and at twenty minutes that stops
+    // the sweep dead with nine circuits unphotographed; at four, Spa and Monza
+    // — the two biggest meshes — fail an honest call on a busy machine. Ten is
+    // comfortably above the slowest real call measured and well below the point
+    // at which a hang costs the rest of the sweep.
+    protocolTimeout: 10 * 60_000,
     args: [
       '--headless=new', '--no-sandbox', '--hide-scrollbars',
       '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
@@ -135,6 +142,7 @@ async function main(): Promise<void> {
   for (const id of CIRCUIT_IDS) {
     process.stdout.write(`${id.padEnd(13)}`);
     const page = await openPage();
+    try {
     const dir = resolve(OUT_DIR, id);
     await mkdir(dir, { recursive: true });
 
@@ -152,6 +160,27 @@ async function main(): Promise<void> {
       shots.push({ label, file });
     };
 
+    // Debris FIRST, before the eight corner shots.
+    //
+    // Not an ordering preference. Software-rendered WebGL under swiftshader
+    // loses its context after enough work in one page, and when it does the
+    // canvas comes back uniformly white and `toDataURL` returns a 20KB blank
+    // PNG — which is worse than a crash, because it is written to disk as
+    // evidence. The debris shots are the ones that cannot be re-derived from
+    // anything else, so they are taken while the context is newest.
+    //
+    // Six impacts, which is what the reported race had in two laps.
+    await page.evaluate('window.__audit.crash(6, 0.7)');
+    const after = await page.evaluate('window.__audit.measure()') as TrackStats;
+    const f0 = await page.evaluate('window.__audit.debrisFraction()') as number;
+    await take('debris plan 14m', await page.evaluate(
+      (f: number) => (window as never as Api).__audit.shootDebris(f, 14), f0) as string);
+    await take('debris plan 40m', await page.evaluate(
+      (f: number) => (window as never as Api).__audit.shootDebris(f, 40), f0) as string);
+    await take('debris eye', await page.evaluate(
+      (f: number) => (window as never as Api).__audit.shootEye(f), f0) as string);
+
+
     for (let c = 0; c < corners.length; c++) {
       const k = corners[c];
       const tag = `c${c}-r${Math.round(k.radiusM)}m`;
@@ -167,15 +196,6 @@ async function main(): Promise<void> {
         [k.fraction, -k.side as -1 | 1] as [number, -1 | 1]) as string);
     }
 
-    // Debris. Six impacts, which is what the reported race had in two laps.
-    await page.evaluate('window.__audit.crash(6, 0.7)');
-    const after = await page.evaluate('window.__audit.measure()') as TrackStats;
-    const f0 = await page.evaluate('window.__audit.focusFraction()') as number;
-    await take('debris plan 22m', await page.evaluate(
-      (f: number) => (window as never as Api).__audit.shootDebris(f, 22), f0) as string);
-    await take('debris eye', await page.evaluate(
-      (f: number) => (window as never as Api).__audit.shootEye(f), f0) as string);
-
     rows.push(
       `${id.padEnd(13)} kerb L/R/any ${pct(stats.kerbLeft)}/${pct(stats.kerbRight)}/${pct(stats.kerbEither)} ` +
       `  R<400 ${pct(stats.under400)}  R<250 ${pct(stats.under250)}  R<120 ${pct(stats.under120)} ` +
@@ -187,7 +207,14 @@ async function main(): Promise<void> {
 
     sections.push(`<section id="${id}"><h2>${id}</h2><pre>${rows[rows.length - 1]}</pre>
     <div class="grid">${shots.map((s) => `<figure><a href="${s.file}"><img loading="lazy" src="${s.file}"></a><figcaption>${s.label}</figcaption></figure>`).join('')}</div></section>`);
-    await page.close();
+    } catch (e) {
+      // One circuit failing must not cost the other ten. A lost context is the
+      // usual reason and it is not recoverable inside the page.
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`${id}: ${msg}`);
+      process.stdout.write(`  FAILED: ${msg.split('\n')[0]}\n`);
+    }
+    await page.close().catch(() => { /* already gone with its context */ });
   }
 
   await writeFile(resolve(OUT_DIR, 'index.html'), `<!DOCTYPE html>

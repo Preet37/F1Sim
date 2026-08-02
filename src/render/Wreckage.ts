@@ -159,21 +159,15 @@ export class Wreckage {
     }
     geometry.setAttribute('color', new THREE.BufferAttribute(faceColours, 3));
 
-    // The weave itself. Cloned rather than shared, because the car samples the
-    // same image through a uv set measured in metres and this samples it
-    // through a box unwrap — the two want different repeats, and mutating the
-    // cached texture would retile every carbon surface on the car.
-    const weave = carbonWeaveMap();
-    let normalMap: THREE.Texture | null = null;
-    if (weave) {
-      normalMap = weave.clone();
-      normalMap.needsUpdate = true;
-      normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
-      // Twill at roughly a centimetre over a typical shard face. Fine enough to
-      // read as woven at arm's length and coarse enough to survive the mip
-      // chain from a car going past at speed.
-      normalMap.repeat.set(22, 22);
-    }
+    // The weave itself, at its own tiling. The car samples the same image
+    // through a uv set measured in metres and this samples it through a box
+    // unwrap, so the two want different repeats — asked for by tiling rather
+    // than taken by `clone()`, which copies the image field by value before the
+    // file has arrived and leaves a texture that never gets one. Twenty-two
+    // tiles is twill at roughly a centimetre over a typical shard face: fine
+    // enough to read as woven at arm's length, coarse enough to survive the mip
+    // chain from a car going past at speed.
+    const normalMap = carbonWeaveMap(22);
 
     const material = new THREE.MeshStandardMaterial({
       // The per-vertex face mask above, multiplied by the per-instance livery
