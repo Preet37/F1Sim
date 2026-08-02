@@ -2028,6 +2028,25 @@ class Game {
       }
     }
 
+    // --- Can the player go out at all? -------------------------------------
+    //
+    // Art. B4.3.2 again. If the marshals recovered this car in an earlier
+    // segment the driver takes no further part in qualifying, so the session
+    // this screen is offering is one they are entered in and cannot drive. That
+    // has to be said HERE, before they press the button — a car that sits in
+    // its garage for nine minutes with the controls doing nothing is exactly
+    // the failure this game already had once, reported as "it just poof gone".
+    const barred = config.kind === 'qualifying'
+      && this.qualifyingBarred.includes('PLAYER');
+    if (barred) {
+      this.el('div', 'notice', body,
+        'Your car is still in the garage. The marshals recovered it earlier in ' +
+        'qualifying, so under the regulations you take no further part in the ' +
+        'session — but you are still entered in ' + config.name + ' and still ' +
+        'classified in it. You keep every place your lap times have earned; ' +
+        'what you cannot do is improve on them.');
+    }
+
     // --- The car ----------------------------------------------------------
     // The car you are about to be released in, in the garage it is sitting in.
     // The screen's own first line is "in the garage, waiting to be released" —
@@ -2101,6 +2120,14 @@ class Game {
     // to honour.
     this.button('Skip ' + config.name, actions, () => this.skipSession(circuitId), 'btn ghost');
     this.spacer(actions);
+    if (barred) {
+      // Nothing to drive, so the primary action is the one that gets the
+      // player to the other side of a session they are only a spectator in.
+      // "To the Garage" would open a cockpit that does not respond.
+      this.button('Watch ' + config.name + ' from the garage', actions,
+        () => this.skipSession(circuitId), 'btn primary');
+      return;
+    }
     // A race goes via the pit wall. Practice and qualifying do not: there is
     // no stint plan to make when the session is three laps of your own.
     this.button(isRace ? 'Race Strategy' : 'To the Garage', actions,
