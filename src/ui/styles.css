@@ -2387,19 +2387,35 @@ canvas#view {
    THE TIMING ROW
    The recurring device, and the thing this interface is built out of.
 
-       P  ▐ CODE   NAME .................   FIGURE   FIGURE   TAG
+       ▐  P   (●)   Viktor HALVORSEN        26      —      2×
+                    Apex Racing
 
-   A position, a team colour, a fixed-width code, a name that takes up the
-   slack, and figures in right-aligned monospaced columns whose digits line
-   up down the page. Every list in the game is made of these, because
-   everything in this sport is a ranked order and a grid of cards throws the
-   order away.
+   A livery bar, a position, the team's own generated mark, the driver's
+   name with the surname carrying the weight, their team beneath it, then
+   figures in right-aligned monospaced columns whose digits line up down the
+   page. Every list in the game is made of these, because everything in this
+   sport is a ranked order and a grid of cards throws the order away.
+
+   WHY IT CHANGED. The row was `P ▐ CODE NAME · fig fig tag`: a three-letter
+   abbreviation and one line of name, identical whether it was carrying a
+   championship, a classification or a list of circuits. The in-race running
+   order was rebuilt around the broadcast row first, and leaving these three
+   boards behind meant the order you read at 300km/h and the order you read
+   thirty seconds later were two different graphics about the same twenty
+   people. They are one graphic at two sizes now.
+
+   The mark's column does double duty and that is deliberate: on a driver row
+   it holds the generated team badge, and on the boards that are not driver
+   lists — the season's form, where the "code" is a country — it holds that
+   code instead, because that is what the column means there.
    ====================================================================== */
 
 .tboard {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
+  border-radius: var(--card-r);
+  overflow: hidden;
   background: linear-gradient(180deg, rgba(19, 25, 33, 0.84), rgba(10, 14, 19, 0.84));
   backdrop-filter: blur(16px) saturate(115%);
   -webkit-backdrop-filter: blur(16px) saturate(115%);
@@ -2412,21 +2428,21 @@ canvas#view {
 .trow {
   display: grid;
   grid-template-columns:
-    var(--col-pos, 30px)      /* position   */
-    var(--col-bar, 3px)       /* team colour */
-    var(--col-code, 46px)     /* code        */
-    minmax(0, 1fr)            /* name        */
+    var(--col-bar, 3px)       /* livery bar  */
+    var(--col-pos, 30px)      /* position    */
+    var(--col-mark, 26px)     /* team mark   */
+    minmax(0, 1fr)            /* driver      */
     var(--col-a, 88px)        /* figure      */
     var(--col-b, 74px)        /* figure      */
     var(--col-c, 42px);       /* tag         */
   align-items: center;
-  gap: 0 10px;
-  padding: 0 12px;
+  gap: 0 11px;
+  padding: 0 13px;
   font-family: var(--font-data);
 }
 
 .tboard-head {
-  height: 26px;
+  height: 28px;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -2440,7 +2456,7 @@ canvas#view {
 }
 
 .trow {
-  height: 34px;
+  height: 46px;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--ink-2);
@@ -2454,7 +2470,7 @@ canvas#view {
 .trow:last-child { border-bottom: 0; }
 button.trow, .trow[role='button'] { cursor: pointer; }
 button.trow:hover, .trow[role='button']:hover { background: var(--fill-white); }
-button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink); }
+button.trow:hover .t-last, .trow[role='button']:hover .t-last { color: var(--ink); }
 
 /* The player's own row, and the row currently selected: white, because white
    means "this one, now". */
@@ -2463,15 +2479,22 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
   background: var(--fill-white);
   box-shadow: inset 3px 0 0 var(--sig-white);
 }
-.trow.is-me .t-name, .trow.is-selected .t-name { color: var(--ink); font-weight: 700; }
-/* A car that is out is dimmed and its position is struck through — a timing
-   screen does not delete a retirement, it greys it. */
+.trow.is-me .t-last, .trow.is-selected .t-last { color: var(--ink); }
+/* A car that is out is dimmed — a timing screen does not delete a
+   retirement, it greys it. */
 .trow.is-out { color: var(--ink-3); }
 .trow.is-out .t-pos { color: var(--sig-red); }
+.trow.is-out .t-last { color: var(--ink-2); }
+/* Knockout qualifying: through on green, gone on nothing at all. The tag
+   says which, and the row's weight agrees with the tag. */
+.trow.is-through .t-pos { color: var(--sig-green); }
+.trow.is-knocked { opacity: 0.5; }
+.trow.is-knocked .t-pos { color: var(--ink-3); }
 
+.t-bar { width: 100%; height: 26px; border-radius: 2px; background: var(--line-2); }
 .t-pos {
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   color: var(--ink-3);
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -2479,27 +2502,77 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
 .trow.is-me .t-pos { color: var(--ink); }
 /* The leader, and anything else that is the outright best on the board. */
 .trow.is-best .t-pos { color: var(--sig-purple); }
-.t-bar { width: 100%; height: 18px; background: var(--line-2); }
-.t-code {
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--ink);
+
+.t-mark {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+.t-mark svg { display: block; width: 100%; height: 100%; }
+/* The short code, for the boards whose mark column is not a team. */
+.t-code {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.t-who { min-width: 0; overflow: hidden; }
 .t-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* The given name yields first. A surname identifies a driver and a given
+   name decorates one, so a short column clips "Vik…" and never "HALVORS…". */
+.t-first {
+  font-family: var(--font-ui);
+  font-style: normal;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--ink-3);
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.t-last {
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A row that is not about a person — a circuit, a session — keeps the same
+   slot but not the broadcast capitals. */
+.t-last.plain {
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-stretch: normal;
   letter-spacing: 0.01em;
 }
-.t-name small {
-  font-size: 11px;
+.t-team {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-weight: 500;
   color: var(--ink-3);
-  margin-left: 8px;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
 /* Figures. Right-aligned and tabular, so tenths sit under tenths. */
 .t-fig {
   text-align: right;
@@ -2542,15 +2615,97 @@ button.trow:hover .t-name, .trow[role='button']:hover .t-name { color: var(--ink
   letter-spacing: 0;
 }
 
-/* Per-board columns. Each board has its own figures, and their widths are the
-   widths those figures actually need — a lap time is not a points total. */
+/* --- The cut line ------------------------------------------------------
+   Knockout qualifying has a fact in it that a ranked list cannot express:
+   the boundary between the cars that go through and the cars whose weekend
+   has just been decided. On a real timing screen it is a line across the
+   board, so it is a line across the board — labelled, because a rule on its
+   own says that something happens here and not what. */
+.tcut {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 13px;
+  height: 26px;
+  background: var(--carbon-0);
+  border-top: 1px solid rgba(0, 217, 95, 0.35);
+  border-bottom: 1px solid var(--line);
+}
+.tcut-rule { flex: 1; height: 1px; background: rgba(0, 217, 95, 0.28); }
+.tcut-label {
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sig-green);
+  white-space: nowrap;
+}
+/* The second cut — the cars that went out in an earlier segment — is not a
+   decision being made now, so it is quiet all the way through. Green is the
+   colour of a grid being decided; these cars had theirs decided a segment
+   ago. */
+.tcut.past { border-top-color: var(--line); background: transparent; }
+.tcut.past .tcut-rule { background: var(--line); }
+.tcut.past .tcut-label { color: var(--ink-3); }
+
+/* --- The segment strip -------------------------------------------------
+   Which part of qualifying this was, and where it sits in the three. The
+   sector rule under the header already carries "how far through the lap";
+   this carries "how far through the session", which is a fact a knockout
+   format has and a practice session does not. */
+.qstrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.qstrip-seg {
+  padding: 10px 14px 11px;
+  border-radius: var(--card-r);
+  border: 1px solid var(--line);
+  background: var(--carbon-1);
+  opacity: 0.55;
+}
+.qstrip-seg.done { opacity: 1; border-color: var(--line-2); }
+.qstrip-seg.live {
+  opacity: 1;
+  border-color: var(--sig-white);
+  background: var(--carbon-2);
+  box-shadow: var(--plate-lift);
+}
+.qstrip-name {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  line-height: 1;
+}
+.qstrip-seg.done .qstrip-name { color: var(--ink-2); }
+.qstrip-seg.live .qstrip-name { color: var(--ink); }
+.qstrip-note {
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 6px;
+}
+
+/* Per-board columns. Each board has its own figures, and their widths are
+   the widths those figures actually need — a lap time is not a points
+   total. */
 .tboard-champ { --col-c: 56px; }
 .tboard-class { --col-c: 54px; }
-.tboard-form  { --col-pos: 34px; --col-code: 54px; }
+.tboard-quali { --col-a: 96px; --col-b: 82px; --col-c: 74px; }
+.tboard-form  { --col-pos: 34px; --col-mark: 34px; }
 .tboard-sessions {
   --col-pos: 0px;
   --col-bar: 0px;
-  --col-code: 0px;
+  --col-mark: 0px;
   --col-a: 86px;
   --col-b: 152px;
   --col-c: 84px;
@@ -3332,6 +3487,32 @@ table.standings tr.me td.who { font-weight: 700; }
    Screens on a phone
    ====================================================================== */
 
+/* NOTE ON ORDER. This block and the one below it live here, after the board
+   CSS, and not up with the HUD's own breakpoints. They override base rules
+   at the same specificity, so they only win by coming later in the file —
+   which they did not, the first time: the whole thing was written two
+   thousand lines above the rules it was meant to beat and did nothing at
+   all on a landscape phone. */
+/* --- The boards on a short viewport ------------------------------------
+   A landscape phone is 390 pixels tall and the qualifying strip is the first
+   thing to eat them: three cards, a header and an action bar leave four rows
+   of board visible. The strip still has to be there — it is the fact that
+   makes a knockout segment a knockout segment — so it gets small instead. */
+@media (max-height: 470px) {
+  .trow { height: 38px; }
+  .t-last { font-size: 12.5px; }
+  .t-first { font-size: 10.5px; }
+  .t-team { font-size: 9.5px; }
+  .t-mark, .t-bar { height: 22px; }
+  .t-mark { width: 22px; }
+  .qstrip { gap: 7px; margin-bottom: 12px; }
+  .qstrip-seg { padding: 6px 11px 7px; }
+  .qstrip-name { font-size: 14px; }
+  .qstrip-note { font-size: 8px; letter-spacing: 0.1em; margin-top: 3px; }
+  .tcut { height: 21px; }
+  .tcut-label { font-size: 8px; }
+}
+
 @media (max-width: 720px) {
   .topbar { gap: 10px; padding: 11px calc(14px + var(--safe-r)) 10px calc(14px + var(--safe-l)); }
   .topbar-meta { display: none; }
@@ -3360,11 +3541,18 @@ table.standings tr.me td.who { font-weight: 700; }
   .field { flex: 1 1 140px; }
 
   /* The timing row on a phone. The name column is the one that can give up
-     room, and the third figure column goes entirely — a 390px screen cannot
-     hold five columns and still have digits you can read. */
+     room, and the tag column goes entirely — a 390px screen cannot hold five
+     columns and still have digits you can read.
+
+     The column list is spelled out again rather than inherited because it is
+     one column shorter, and it has to stay in the SAME ORDER as the base
+     grid — bar, position, mark, driver, figure, figure. It did not, for a
+     while: the base grid gained the mark and moved the bar to the front, this
+     override was left on the old `pos / bar / code` order, and every phone
+     board drew its livery bar where the position belonged. */
   .tboard-head, .trow {
     grid-template-columns:
-      var(--col-pos, 22px) var(--col-bar, 3px) var(--col-code, 40px)
+      var(--col-bar, 3px) var(--col-pos, 22px) var(--col-mark, 22px)
       minmax(0, 1fr) var(--col-a, 74px) var(--col-b, 60px);
     gap: 0 8px;
     padding: 0 9px;
@@ -3372,8 +3560,26 @@ table.standings tr.me td.who { font-weight: 700; }
   .tboard-head .t-tag, .trow .t-tag { display: none; }
   .tboard-champ { --col-c: 0px; }
   .tboard-class { --col-c: 0px; }
-  .tboard-form { --col-pos: 26px; --col-code: 34px; }
+  /* The tag column goes, not the cut line — on a phone the through/out tag is
+     the least of it, because the rule across the board already says which side
+     of the cut a row is on. */
+  .tboard-quali { --col-a: 78px; --col-b: 62px; --col-c: 0px; }
+  .tboard-form { --col-pos: 26px; --col-mark: 30px; }
   .tboard-sessions { --col-a: 60px; --col-b: 104px; --col-c: 0px; }
+  .tboard-head, .trow { gap: 0 8px; padding: 0 9px; }
+  .trow { height: 40px; }
+  .t-last { font-size: 12.5px; }
+  .t-first { font-size: 10.5px; }
+  .t-team { font-size: 9.5px; }
+  .t-pos { font-size: 12px; }
+  .t-mark, .t-bar { height: 22px; }
+  .t-mark { width: 22px; }
+  .qstrip { gap: 6px; margin-bottom: 14px; }
+  .qstrip-seg { padding: 7px 10px 8px; }
+  .qstrip-name { font-size: 15px; }
+  .qstrip-note { font-size: 8px; letter-spacing: 0.1em; margin-top: 4px; }
+  .tcut { height: 22px; padding: 0 9px; gap: 8px; }
+  .tcut-label { font-size: 8px; letter-spacing: 0.12em; }
   .tboard-sessions .t-name { font-size: 12px; }
   .trow { height: 32px; font-size: 11.5px; }
   .t-name { font-size: 12px; }

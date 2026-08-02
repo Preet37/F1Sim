@@ -44,6 +44,7 @@
     "probe:framing": "tsx scripts/probeFraming.ts",
     "probe:hudtext": "tsx scripts/probeHudText.ts",
     "probe:strategy": "tsx scripts/probeStrategy.ts",
+    "probe:qualiboard": "tsx scripts/probeQualiBoard.ts",
     "shoot:hud": "tsx scripts/shootHud.ts",
     "shoot:panels": "tsx scripts/shootPanels.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts"

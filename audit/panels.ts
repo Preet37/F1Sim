@@ -2,6 +2,8 @@ import { buildStrategyScreen } from '../src/ui/StrategyScreen';
 import { driversForTeam, getTeam } from '../src/data/teams';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
+import { formatLapTime } from '../src/core/MathUtils';
+import { cutLine, qualifyingStrip, timingBoard, timingRow } from '../src/ui/TimingRow';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import { Hud } from '../src/ui/Hud';
 
@@ -23,6 +25,7 @@ declare global {
   interface Window {
     __panels: {
       show(name: string, teamId: string, circuitId: string): void;
+      board(kind: string): Promise<void>;
       hud(scene: string): Promise<void>;
       hudReport(): Record<string, unknown>;
     };
@@ -31,7 +34,10 @@ declare global {
 
 const app = document.getElementById('app') as HTMLElement;
 
-function chassis(tab: string, title: string, sub: string): HTMLElement {
+function chassis(
+  tab: string, title: string, sub: string,
+  primaryLabel = 'Confirm — to the grid',
+): HTMLElement {
   app.innerHTML = '';
   const screen = document.createElement('div');
   screen.className = 'screen';
@@ -64,7 +70,7 @@ function chassis(tab: string, title: string, sub: string): HTMLElement {
   div('actionbar-spacer', actions);
   const primary = document.createElement('button');
   primary.className = 'btn primary';
-  primary.textContent = 'Confirm — to the grid';
+  primary.textContent = primaryLabel;
   actions.appendChild(primary);
   return body;
 }
@@ -118,7 +124,111 @@ function hudScene(scene: string): void {
   hud.update(hudEngine, hudCar, hudInput, 60, 240);
 }
 
+/**
+ * The three full-screen boards, off a real session.
+ *
+ * Every row here is built by the game's own `timingRow` / `timingBoard` /
+ * `cutLine` / `qualifyingStrip` — the same functions `Main` calls — so these
+ * shots are evidence about the product rather than about this file. The only
+ * thing reproduced is the page chassis, and that is bounded: a wrong chassis is
+ * obvious in the picture, a wrong row would not be.
+ */
+async function buildBoard(kind: string): Promise<void> {
+  const circuit = getCircuit('silverstone');
+  const isQuali = kind === 'qualifying';
+  const config: SessionConfig = {
+    kind: isQuali ? 'qualifying' : 'race',
+    name: isQuali ? 'Qualifying 2' : 'Grand Prix',
+    durationS: isQuali ? 900 : 0,
+    laps: isQuali ? 12 : 20,
+    playerIndex: -1,
+    standingStart: !isQuali,
+    pitLaneStart: false,
+    seed: 4242,
+    ...(isQuali
+      ? { qualifyingPhase: 2 as const, advancing: 10, participants: [...Array(15).keys()] }
+      : {}),
+  };
+  const e = new RaceEngine(circuit, config);
+  for (let i = 0; i < Math.round(900 / PHYSICS_DT) && !e.over; i++) e.step();
+
+  const body = chassis(
+    'Race weekend · ' + circuit.name,
+    kind === 'champ' ? 'Championship' : 'Classification',
+    kind === 'champ' ? '2026 · after 8 rounds'
+      : circuit.officialName + ' · ' + e.weather.label,
+    kind === 'champ' ? 'Back to the paddock' : 'Continue',
+  );
+
+  if (isQuali) qualifyingStrip(body, 2);
+
+  const head = div('section-title', body);
+  head.textContent = kind === 'champ' ? 'Drivers'
+    : isQuali ? 'Qualifying' : 'Race classification';
+
+  const cols = kind === 'champ'
+    ? ['P', 'Driver', 'Points', 'Gap', 'Won']
+    : isQuali ? ['P', 'Driver', 'Best Lap', 'Gap', '']
+      : ['P', 'Driver', 'Best Lap', 'Gap', 'Stops'];
+  const board = timingBoard(body, cols);
+  board.classList.add(kind === 'champ' ? 'tboard-champ'
+    : isQuali ? 'tboard-quali' : 'tboard-class');
+
+  const runners = e.participants.slice().sort((a, b) =>
+    (a.bestLapTime > 0 ? a.bestLapTime : Infinity) - (b.bestLapTime > 0 ? b.bestLapTime : Infinity));
+  const out = e.standings.filter((c) => c.eliminated);
+  const order = isQuali ? [...runners, ...out] : e.standings;
+  const lead = order[0];
+
+  order.forEach((car, i) => {
+    const knocked = isQuali && car.eliminated;
+    const through = isQuali && !knocked && i < 10;
+    const figA = kind === 'champ' ? String(Math.max(0, 240 - i * 17))
+      : car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '--:--.---';
+    const figB = kind === 'champ' ? (i === 0 ? '—' : '-' + i * 17)
+      : i === 0 ? 'FASTEST'
+        : car.bestLapTime > 0 && lead.bestLapTime > 0
+          ? '+' + (car.bestLapTime - lead.bestLapTime).toFixed(3) : 'NO TIME';
+
+    timingRow(board, {
+      pos: String(i + 1),
+      colour: hex(car.team.colour),
+      team: car.team,
+      code: car.driver.code,
+      name: car.driver.firstName + ' ' + car.driver.lastName,
+      first: car.driver.firstName,
+      last: car.driver.lastName.toUpperCase(),
+      note: car.team.name,
+      index: i,
+      figs: [
+        { text: figA, cls: i === 0 && kind !== 'champ' ? 'best' : '' },
+        { text: figB, cls: i === 0 ? 'best' : figB === 'NO TIME' ? 'none' : 'dim' },
+      ],
+      tag: isQuali
+        ? (knocked ? { text: 'Q1', cls: 'out' }
+          : through ? { text: 'Through', cls: 'go' } : { text: 'Out', cls: 'warn' })
+        : kind === 'champ'
+          ? (i < 3 ? { text: 3 - i + '×', cls: 'best' } : undefined)
+          : { text: '2 stops' },
+      state: i === 3 ? 'me' : knocked ? 'knocked' : through ? 'through'
+        : i === 0 ? 'best' : undefined,
+    });
+
+    if (isQuali && i === 9) cutLine(board, '10 advance to Q3');
+    if (isQuali && out.length > 0 && i === runners.length - 1) {
+      cutLine(board, 'Already out — grid slots ' + (runners.length + 1) + '–' + order.length, true);
+    }
+  });
+}
+
+function hex(c: number): string { return '#' + c.toString(16).padStart(6, '0'); }
+
 window.__panels = {
+  async board(kind: string): Promise<void> {
+    await buildBoard(kind);
+    await new Promise((r) => window.setTimeout(r, 200));
+  },
+
   async hud(scene: string): Promise<void> {
     if (!hudEngine) {
       app.innerHTML = '';

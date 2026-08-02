@@ -56,3 +56,55 @@ export function resultGapCell(car: ClassifiedCar, isRace: boolean): string {
   if (!Number.isFinite(car.gapToLeader)) return '--.---';
   return '+' + car.gapToLeader.toFixed(3);
 }
+
+/** The subset of a car the qualifying board reads. */
+export interface QualifyingCar {
+  bestLapTime: number;
+}
+
+/**
+ * One qualifying segment's runners, ranked by their best lap of it.
+ *
+ * No lap set goes to the back of the queue.
+ *
+ * THE BUG THIS PREVENTS. `RaceEngine.standings` ranks every car on best lap,
+ * and after Q1 that is the wrong order for a qualifying board: a car knocked
+ * out in Q1 keeps its Q1 lap, which is routinely quicker than a survivor's
+ * first run in Q2, so the two interleave and the board reads as though somebody
+ * eliminated is still in the fight. The segment has its own order and this is
+ * it.
+ *
+ * Shared between the grid resolution and the results board on purpose. The
+ * board exists to tell the player what just happened to the grid; a second sort
+ * on the screen side would be a second implementation of knockout qualifying,
+ * and the two would disagree the first time either was touched — leaving the
+ * screen confidently wrong about the one thing it is for.
+ */
+export function rankSegment<T extends QualifyingCar>(runners: readonly T[]): T[] {
+  return runners.slice().sort((a, b) => {
+    const at = a.bestLapTime > 0 ? a.bestLapTime : Infinity;
+    const bt = b.bestLapTime > 0 ? b.bestLapTime : Infinity;
+    return at - bt;
+  });
+}
+
+/**
+ * Where the cut falls, and what sits below it.
+ *
+ * Returns the runners in order, the index the cut line is drawn after, and the
+ * cars already knocked out in an earlier segment — which belong on the board
+ * beneath everyone still running, holding the grid slots they earned, rather
+ * than interleaved by a lap time they set in a different session.
+ */
+export function qualifyingBoardOrder<T extends QualifyingCar & { eliminated: boolean;
+  eliminatedInPhase: number }>(
+  participants: readonly T[], allCars: readonly T[], advancing: number | undefined,
+): { runners: T[]; alreadyOut: T[]; cutAfter: number } {
+  const runners = rankSegment(participants);
+  const alreadyOut = allCars.filter((c) => c.eliminated)
+    .sort((a, b) => b.eliminatedInPhase - a.eliminatedInPhase);
+  // A cut only exists when somebody is actually being knocked out, and only
+  // when there are more runners than places. Q3 has neither.
+  const cutAfter = advancing !== undefined && advancing < runners.length ? advancing : -1;
+  return { runners, alreadyOut, cutAfter };
+}

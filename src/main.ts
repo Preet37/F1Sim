@@ -5,7 +5,7 @@ import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
 import type { CarEntry } from './race/CarEntry';
 import { bandOf, COMPONENT_IDS, COMPONENT_NAMES } from './race/DamageModel';
-import { resultGapCell } from './race/Classification';
+import { qualifyingBoardOrder, rankSegment, resultGapCell } from './race/Classification';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
@@ -14,6 +14,9 @@ import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDir
 import { setRubberLine } from './render/SurfaceDetail';
 import { InputController } from './input/InputController';
 import { Hud } from './ui/Hud';
+import {
+  cutLine, qualifyingStrip, splitName, timingBoard, timingRow, type TimingRowSpec,
+} from './ui/TimingRow';
 import {
   CareerEngine, TIER_INFO, playerChampionshipPosition,
   type CareerEvent, type SeasonResult,
@@ -611,68 +614,24 @@ class Game {
   }
 
   /**
-   * The timing row: the unit this whole interface is built out of.
+   * The timing row, the board it sits in, and the cut line across it.
    *
-   * Position, team colour, code, name, then figures in right-aligned
-   * monospaced columns. Everything in this sport is a ranked order, so
-   * everything in these menus is a list of these — a grid of cards would
-   * throw the order away, which is the one thing the order is for.
+   * The implementations moved to `src/ui/TimingRow.ts` so the panel harness
+   * can photograph the REAL row rather than a reproduction of it — see the
+   * note at the head of that file. These stay as methods because every screen
+   * in here calls them as ones, and a screen is not the place to be reminded
+   * where a helper lives.
    */
-  private trow(
-    parent: HTMLElement,
-    r: {
-      pos?: string;
-      colour?: string;
-      code?: string;
-      name: string;
-      note?: string;
-      /** Right-aligned figures. `cls` is one of dim/best/gain/loss/out/none. */
-      figs?: { text: string; cls?: string }[];
-      tag?: { text: string; cls?: string };
-      state?: 'me' | 'selected' | 'out' | 'best';
-      index?: number;
-      onClick?: () => void;
-    },
-  ): HTMLElement {
-    const el = document.createElement(r.onClick ? 'button' : 'div');
-    el.className = 'trow' + (r.state ? ' is-' + r.state : '');
-    if (r.index !== undefined) el.style.setProperty('--i', String(r.index));
-    if (r.onClick) (el as HTMLButtonElement).type = 'button';
-
-    let html = '<span class="t-pos">' + escapeHtml(r.pos ?? '') + '</span>';
-    html += '<span class="t-bar"' +
-      (r.colour ? ' style="background:' + escapeHtml(r.colour) + '"' : '') + '></span>';
-    html += '<span class="t-code">' + escapeHtml(r.code ?? '') + '</span>';
-    html += '<span class="t-name">' + escapeHtml(r.name) +
-      (r.note ? '<small>' + escapeHtml(r.note) + '</small>' : '') + '</span>';
-    for (const f of r.figs ?? []) {
-      html += '<span class="t-fig ' + (f.cls ?? '') + '">' + escapeHtml(f.text) + '</span>';
-    }
-    // Keep the grid's column count stable whether or not a row has figures.
-    for (let i = (r.figs ?? []).length; i < 2; i++) html += '<span class="t-fig"></span>';
-    html += r.tag
-      ? '<span class="t-tag"><span class="tag ' + (r.tag.cls ?? '') + '">' +
-        escapeHtml(r.tag.text) + '</span></span>'
-      : '<span class="t-tag"></span>';
-    el.innerHTML = html;
-
-    if (r.onClick) el.addEventListener('click', r.onClick);
-    parent.appendChild(el);
-    return el;
+  private trow(parent: HTMLElement, r: TimingRowSpec): HTMLElement {
+    return timingRow(parent, r);
   }
 
-  /** A board: a column header, then rows. */
   private board(parent: HTMLElement, cols: string[]): HTMLElement {
-    const b = this.el('div', 'tboard', parent);
-    const head = this.el('div', 'tboard-head', b);
-    head.innerHTML =
-      '<span></span><span></span>' +
-      '<span>' + escapeHtml(cols[0] ?? '') + '</span>' +
-      '<span>' + escapeHtml(cols[1] ?? '') + '</span>' +
-      '<span class="t-fig">' + escapeHtml(cols[2] ?? '') + '</span>' +
-      '<span class="t-fig">' + escapeHtml(cols[3] ?? '') + '</span>' +
-      '<span class="t-tag">' + escapeHtml(cols[4] ?? '') + '</span>';
-    return b;
+    return timingBoard(parent, cols);
+  }
+
+  private cutLine(parent: HTMLElement, label: string, past = false): HTMLElement {
+    return cutLine(parent, label, past);
   }
 
   /** Pushes everything added after it to the right-hand end of the action bar. */
@@ -1148,18 +1107,22 @@ class Game {
     // The gap to the lead is the number a championship table is read for, and
     // it was the one number the old table did not have.
     const topPoints = leader?.points ?? 0;
-    const b = this.board(body, ['Code', 'Driver', 'Points', 'Gap', 'Won']);
+    const b = this.board(body, ['P', 'Driver', 'Points', 'Gap', 'Won']);
     b.classList.add('tboard-champ');
     for (const [i, e] of rows.entries()) {
       const team = e.teamId ? getTeam(e.teamId) : null;
       const me = e.driverId === 'PLAYER';
       const gap = topPoints - e.points;
+      const name = splitName(career.displayName(e));
       this.trow(b, {
         pos: String(i + 1),
         colour: team ? hexColour(team.colour) : undefined,
+        team: team ?? undefined,
         code: career.displayCode(e),
         name: career.displayName(e),
-        note: team ? team.shortName : undefined,
+        first: name.first,
+        last: name.last,
+        note: team ? team.name : undefined,
         index: i,
         figs: [
           { text: String(e.points), cls: e.points > 0 ? '' : 'none' },
@@ -1906,20 +1869,26 @@ class Game {
     advancing: number | undefined,
   ): void {
     const idOf = (c: CarEntry) => (c.isPlayer ? 'PLAYER' : c.driver.id);
-
-    // Rank this segment's runners by best lap. No lap set = back of the queue.
-    const ranked = engine.participants
-      .slice()
-      .sort((a, b) => {
-        const at = a.bestLapTime > 0 ? a.bestLapTime : Infinity;
-        const bt = b.bestLapTime > 0 ? b.bestLapTime : Infinity;
-        return at - bt;
-      });
+    const ranked = this.rankSegment(engine);
 
     const indexById = new Map<string, number>();
     for (const c of engine.cars) indexById.set(idOf(c), c.index);
     this.applyQualifyingOrder(ranked.map(idOf), indexById, advancing);
     void phase;
+  }
+
+  /**
+   * This qualifying segment's runners, ranked by their best lap of it.
+   *
+   * No lap set goes to the back of the queue. Shared between the grid
+   * resolution and the results board on purpose: the board exists to tell the
+   * player what just happened to the grid, and a second sort here would be a
+   * second implementation of knockout qualifying — the two would disagree the
+   * first time either was touched, and the screen would be confidently wrong
+   * about the one thing it is for.
+   */
+  private rankSegment(engine: RaceEngine): CarEntry[] {
+    return rankSegment(engine.participants);
   }
 
   /**
@@ -2977,10 +2946,35 @@ class Game {
       }
     }
 
+    // --- Qualifying: a segment, not a flat list ---------------------------
+    //
+    // `engine.standings` ranks every car on its best lap, and after Q1 that is
+    // the wrong board: a car knocked out in Q1 keeps its Q1 lap, which can be
+    // quicker than a survivor's slow first run in Q2, so the two interleave
+    // and the list reads as though somebody eliminated is still in the fight.
+    // The segment's own runners come first, ranked by `rankSegment` — the SAME
+    // function that decides the grid — and the cars already out sit beneath
+    // them, holding the slots they earned.
+    const phase = engine.config.qualifyingPhase;
+    const isQualifying = engine.config.kind === 'qualifying' && !!phase;
+    const advancing = isQualifying ? engine.config.advancing : undefined;
+    const qOrder = isQualifying
+      ? qualifyingBoardOrder(engine.participants, engine.standings, advancing)
+      : { runners: [] as CarEntry[], alreadyOut: [] as CarEntry[], cutAfter: -1 };
+    const runners = qOrder.runners;
+    const alreadyOut = qOrder.alreadyOut;
+
+    // The segment strip: which part of qualifying this was, and where it sits
+    // in the three. The sector rule already carries "how far through the lap";
+    // this carries "how far through the session", which is the fact a knockout
+    // format has and a practice session does not.
+    if (isQualifying && phase) {
+      qualifyingStrip(body, phase);
+    }
+
     // After a knockout segment, say plainly who went through and who is out.
     // A bare classification does not communicate that five cars just had their
     // weekend decided.
-    const phase = engine.config.qualifyingPhase;
     if (phase && engine.config.advancing !== undefined) {
       const out = engine.participants.length - this.qualifyingSurvivors.length;
       this.el('div', 'notice', body,
@@ -2991,17 +2985,29 @@ class Game {
     }
 
     const classHead = this.el('div', 'section-title', body,
-      isRace ? 'Race classification' : 'Timesheet');
-    this.el('span', 'section-count', classHead, engine.standings.length + ' cars');
+      isRace ? 'Race classification' : isQualifying ? 'Qualifying' : 'Timesheet');
+    this.el('span', 'section-count', classHead,
+      isQualifying ? runners.length + ' running' : engine.standings.length + ' cars');
 
     // The classification, as the timing board it is. The fastest lap of the
     // session is purple, everything else is white — the sport's own rule, so
     // the board needs no legend.
     const bestOfAll = fastest?.time ?? 0;
-    const board = this.board(body, ['Code', 'Driver', 'Best Lap', 'Gap', 'Stops']);
-    board.classList.add('tboard-class');
+    const board = this.board(body, isRace
+      ? ['P', 'Driver', 'Best Lap', 'Gap', 'Stops']
+      : ['P', 'Driver', 'Best Lap', 'Gap', '']);
+    board.classList.add(isQualifying ? 'tboard-quali' : 'tboard-class');
 
-    for (const [i, car] of engine.standings.entries()) {
+    // In qualifying the board is the SEGMENT, not the whole field: the cars
+    // that went out in Q1 are not competing in Q2 and ranking them together on
+    // best lap puts a knocked-out car above a survivor, which is exactly what
+    // the old flat list did. So this segment's runners come first, in this
+    // segment's order, and the cars already out sit beneath them holding the
+    // grid slots they have earned.
+    const order = isQualifying ? [...runners, ...alreadyOut] : engine.standings;
+    const segmentLeader = isQualifying ? runners[0] : engine.standings[0];
+
+    for (const [i, car] of order.entries()) {
       const notes: string[] = [];
       if (car.disqualified) notes.push('DSQ');
       else if (car.retired) notes.push(car.retirementReason);
@@ -3010,28 +3016,65 @@ class Game {
 
       const hasLap = car.bestLapTime > 0;
       const isFastest = hasLap && bestOfAll > 0 && Math.abs(car.bestLapTime - bestOfAll) < 1e-6;
-      const gap = resultGapCell(car, isRace);
+      const out = isQualifying && car.eliminated;
+      const through = isQualifying && !out && advancing !== undefined && i < advancing;
+
+      // In qualifying the gap that matters is to the quickest lap of the
+      // segment, not the race-classification gap — nobody is racing anybody.
+      const gap = isQualifying
+        ? (!hasLap ? 'NO TIME'
+          : i === 0 && !out ? 'FASTEST'
+          : segmentLeader && segmentLeader.bestLapTime > 0
+            ? '+' + (car.bestLapTime - segmentLeader.bestLapTime).toFixed(3)
+            : '—')
+        : resultGapCell(car, isRace);
+
+      const tag = notes.length ? { text: notes[0], cls: 'out' }
+        : out ? { text: 'Q' + car.eliminatedInPhase, cls: 'out' }
+        : through ? { text: 'Through', cls: 'go' }
+        : isQualifying && advancing !== undefined ? { text: 'Out', cls: 'warn' }
+        : !isQualifying && car.pitStops > 0
+          ? { text: car.pitStops + ' stop' + (car.pitStops === 1 ? '' : 's') }
+          : undefined;
 
       this.trow(board, {
-        pos: car.retired || car.disqualified ? '—' : String(car.position),
+        pos: car.retired || car.disqualified ? '—' : String(isQualifying ? i + 1 : car.position),
         colour: hexColour(car.team.colour),
+        team: car.team,
         code: car.driver.code,
         name: car.driver.firstName + ' ' + car.driver.lastName,
-        note: car.team.shortName,
+        first: car.driver.firstName,
+        last: car.driver.lastName.toUpperCase(),
+        note: car.team.name,
         index: i,
         figs: [
           hasLap
             ? { text: formatLapTime(car.bestLapTime), cls: isFastest ? 'best' : '' }
             : { text: '--:--.---', cls: 'none' },
-          { text: gap, cls: gap === 'WINNER' || gap === 'FASTEST' ? 'best' : gap.startsWith('+') ? 'dim' : 'none' },
+          { text: gap, cls: gap === 'WINNER' || gap === 'FASTEST' ? 'best'
+            : gap === 'NO TIME' ? 'none'
+            : gap.startsWith('+') ? 'dim' : 'none' },
         ],
-        tag: notes.length
-          ? { text: notes[0], cls: 'out' }
-          : car.pitStops > 0 ? { text: car.pitStops + ' stop' + (car.pitStops === 1 ? '' : 's') } : undefined,
+        tag,
         state: car.isPlayer ? 'me'
+          : out ? 'knocked'
           : car.retired || car.disqualified ? 'out'
-          : car.position === 1 ? 'best' : undefined,
+          : through ? 'through'
+          : (!isQualifying && car.position === 1) || (isQualifying && i === 0) ? 'best'
+          : undefined,
       });
+
+      // The line across the board, drawn where the weekend is decided.
+      if (isQualifying && qOrder.cutAfter > 0 && i === qOrder.cutAfter - 1) {
+        this.cutLine(board, qOrder.cutAfter + ' advance to Q' + ((phase ?? 1) + 1));
+      }
+      if (isQualifying && alreadyOut.length > 0 && i === runners.length - 1) {
+        // Quiet, because this one is not a decision being made now: these cars
+        // were knocked out in an earlier segment and are on the board only so
+        // the grid reads whole.
+        this.cutLine(board, 'Already out — grid slots ' +
+          (runners.length + 1) + '–' + order.length, true);
+      }
     }
 
     this.spacer(actions);
