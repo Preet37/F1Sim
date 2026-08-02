@@ -258,6 +258,30 @@ export interface SegmentResolution {
    *
    * This is the difference between a grid slot of P15 and a grid slot of P20,
    * and it is the whole reason a crash in Q1 is not the end of a weekend.
+   *
+   * WHY NOT JUST REPAIR THE CAR IN THE SEVEN-MINUTE BREAK. Because Art. B4.3.2
+   * is about the driver, not the car: once the marshals have touched it the
+   * entry takes no further part however quickly the crew work. The repair
+   * question is real, but it is a question about the RACE, and it has a
+   * counter-intuitive answer worth recording here so nobody re-derives the
+   * wrong one:
+   *
+   *   Qualifying is under parc fermé throughout. Art. B3.5.1b — "each F1 Car
+   *   will be deemed to be in parc fermé from the time ... at which it leaves
+   *   the Pit Lane for the first time during Qualifying until the start of the
+   *   Race". Not from the end of qualifying: from the car's first run in Q1.
+   *
+   * Under it the crew may still put the car back together — Art. B3.5.4 lets a
+   * competitor change a broken or damaged part during Qualifying without asking
+   * the Technical Delegate first, provided the part is like-for-like and the
+   * broken one stays in view of the scrutineer, and Appendix B2 lists the rest
+   * of the permitted work. What they may NOT do is change the setup: Art.
+   * B3.5.3a makes the driver start the Race from the Pit Lane if they do.
+   *
+   * So a wrecked car is rebuilt for Sunday, on the setup it crashed on. This
+   * game does not model a pit-lane start, so that consequence is not yet
+   * enforceable here; the rule is written down so the next person to reach for
+   * it does not have to find it twice.
    */
   barred: string[];
 }
