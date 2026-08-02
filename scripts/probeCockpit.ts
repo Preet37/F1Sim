@@ -187,10 +187,14 @@ async function main(): Promise<void> {
     // feed adds — does not vary from circuit to circuit in any way that eleven
     // measurements would reveal and four would not.
     if (id === CIRCUIT_IDS[0]) {
+      const driver = await page.evaluate(`window.__audit.costMode('driver', 6)`) as Cost;
       const cockpit = await page.evaluate(`window.__audit.costMode('cockpit', 6)`) as Cost;
       const onboard = await page.evaluate(`window.__audit.costMode('onboard-t', 6)`) as Cost;
       const chase = await page.evaluate(`window.__audit.costMode('chase', 6)`) as Cost;
-      for (const [name, c] of [['chase (no mirrors)', chase], ['cockpit', cockpit], ['onboard-t', onboard]] as const) {
+      for (const [name, c] of [
+        ['chase (no mirrors)', chase], ['driver', driver],
+        ['cockpit', cockpit], ['onboard-t', onboard],
+      ] as const) {
         rows.push(
           `${name.padEnd(20)} ${c.calls.toFixed(0).padStart(5)} draw calls  ` +
           `${(c.triangles / 1000).toFixed(0).padStart(5)}k triangles  ${c.ms.toFixed(0).padStart(5)}ms`,
@@ -200,6 +204,11 @@ async function main(): Promise<void> {
         `mirror feed adds     ${(cockpit.calls - chase.calls).toFixed(0).padStart(5)} draw calls  ` +
         `${((cockpit.triangles - chase.triangles) / 1000).toFixed(0).padStart(5)}k triangles  ` +
         `${(cockpit.ms - chase.ms).toFixed(0).padStart(5)}ms  (high tier, one pane per frame)`,
+      );
+      rows.push(
+        `driver's eye adds    ${(driver.calls - chase.calls).toFixed(0).padStart(5)} draw calls  ` +
+        `${((driver.triangles - chase.triangles) / 1000).toFixed(0).padStart(5)}k triangles  ` +
+        `${(driver.ms - chase.ms).toFixed(0).padStart(5)}ms  (mirrors AND cockpit interior)`,
       );
     }
     process.stdout.write('shot 8\n');

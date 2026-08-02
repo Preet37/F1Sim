@@ -259,9 +259,35 @@ export const MIRROR_GLASS_Z = 0.769;
  * back and three metres out is the piece of road a car appears from when it is
  * setting up a move, which is the question the mirrors exist to answer.
  */
-const MIRROR_TARGET_X = 3.0;
-const MIRROR_TARGET_Y = 0.85;
-const MIRROR_TARGET_Z = -25;
+export const MIRROR_TARGET_X = 3.0;
+export const MIRROR_TARGET_Y = 0.85;
+export const MIRROR_TARGET_Z = -25;
+
+/**
+ * The eye a mirror is AIMED for, car-local.
+ *
+ * A pane has one angle and this game now looks into it from three places, and
+ * the three do not agree. Solving the bisector against the roll-hoop eye — which
+ * is what this did, because that was the only eye there was — leaves the pane
+ * looking 24 degrees OUTBOARD from the driver's own eye 0.58m further forward
+ * and 0.21m lower, which spends half the glass on the barrier. Solving it
+ * against the driver instead swings it 13 degrees INBOARD from the roll-hoop
+ * camera, where it looks at the car's own gearbox. Neither is a mirror that
+ * works in all three views.
+ *
+ * So it is aimed at the point midway between them, which is the honest answer
+ * to a pane that genuinely has to serve both: the roll-hoop cameras come out
+ * within about a degree of straight back and the driver's eye within 18 degrees
+ * of the piece of road the mirror is for, against 24. `probe:framing` reports
+ * that angle per mode, per side, on every circuit, so this cannot drift.
+ *
+ * NOT weighted further toward the driver, and the arithmetic is why: at 70 per
+ * cent driver the driver's error falls to 11 degrees and the roll-hoop camera's
+ * rises to 15, which is worse in total and worse for the mode most people play.
+ */
+const AIM_EYE_X = (EYE_X + DRIVER_EYE_X) * 0.5;
+const AIM_EYE_Y = (EYE_Y + DRIVER_EYE_Y) * 0.5;
+const AIM_EYE_Z = (EYE_Z + DRIVER_EYE_Z) * 0.5;
 
 /**
  * Where one pane sits and which way it faces, car-local.
@@ -283,9 +309,9 @@ export function mirrorPaneBasis(side: 1 | -1): {
 } {
   const position = new THREE.Vector3(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
   const toEye = new THREE.Vector3(
-    EYE_X - side * MIRROR_X,
-    EYE_Y - MIRROR_Y,
-    EYE_Z - MIRROR_GLASS_Z,
+    AIM_EYE_X - side * MIRROR_X,
+    AIM_EYE_Y - MIRROR_Y,
+    AIM_EYE_Z - MIRROR_GLASS_Z,
   ).normalize();
   const toRoad = new THREE.Vector3(
     side * MIRROR_TARGET_X - side * MIRROR_X,

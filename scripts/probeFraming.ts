@@ -5,7 +5,8 @@ import {
   haloRadiusAt,
 } from '../src/render/CarMesh';
 import {
-  DRIVER_EYE_Y, EYE_Y, MIRROR_X, MIRROR_Y, MIRROR_Z, mirrorPaneCorners, WHEEL_Y, WHEEL_Z,
+  DRIVER_EYE_Y, EYE_Y, MIRROR_GLASS_Z, MIRROR_TARGET_X, MIRROR_TARGET_Y, MIRROR_TARGET_Z,
+  MIRROR_X, MIRROR_Y, MIRROR_Z, mirrorPaneBasis, mirrorPaneCorners, WHEEL_Y, WHEEL_Z,
 } from '../src/render/CockpitMesh';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CIRCUITS } from '../src/data/tracks/circuits';
@@ -114,6 +115,19 @@ interface Target {
    * and it is the reason the driver's eye is the view to look in.
    */
   paneBlockedMaxPct: number;
+  /**
+   * How far a mirror's reflected sightline may miss the piece of road it is
+   * aimed at, degrees.
+   *
+   * ONE PANE, THREE EYES. A mirror is a physical object with a single angle,
+   * and the reflection it hands you depends on where you look into it from —
+   * so the same glass points 18 degrees outboard for the driver and within a
+   * degree of straight back for the roll-hoop cameras. See `AIM_EYE_*` in
+   * CockpitMesh for the compromise and what the alternatives cost. The
+   * numbers below are what that compromise actually delivers; a mirror
+   * pointing 40 degrees off is showing you the barrier.
+   */
+  aimErrorMaxDeg: number;
   /** Top of the steering wheel rim, percentage of frame height. */
   wheelPct: [number, number];
 }
@@ -167,6 +181,7 @@ const TARGETS: Record<string, Target> = {
     mirrorMaxXPct: 99,
     panePct: [4.0, 12.0],
     paneBlockedMaxPct: 25,
+    aimErrorMaxDeg: 22,
     wheelPct: [52, 76],
   },
   cockpit: {
@@ -180,6 +195,7 @@ const TARGETS: Record<string, Target> = {
     // Half the driver's, because the eye is nearly twice as far from the pane.
     panePct: [2.0, 7.0],
     paneBlockedMaxPct: 60,
+    aimErrorMaxDeg: 12,
     wheelPct: [62, 86],
   },
   'onboard-t': {
@@ -192,6 +208,7 @@ const TARGETS: Record<string, Target> = {
     mirrorMaxXPct: 96,
     panePct: [1.5, 6.0],
     paneBlockedMaxPct: 80,
+    aimErrorMaxDeg: 22,
     wheelPct: [64, 90],
   },
 };
@@ -403,6 +420,8 @@ interface Measured {
   panePct: number;
   /** How much of a pane the halo lies across, percent. */
   paneBlockedPct: number;
+  /** Worst of the two panes' aim errors, degrees. See `aimErrorMaxDeg`. */
+  aimErrorDeg: number;
 }
 
 function measure(
@@ -524,6 +543,39 @@ function measure(
     if (cells > 0) paneBlockedPct = Math.max(paneBlockedPct, (100 * blocked) / cells);
   }
 
+  // --- Where the mirrors actually point, from THIS eye ---------------------
+  //
+  // The reflected sightline, worked in the car's own frame: the camera's world
+  // position taken back to car-local, a ray from it to the pane, bounced about
+  // the pane's normal, and the angle between that and the direction to the
+  // piece of road the mirror is aimed at. This is what "the mirror works"
+  // means before legibility gets a look in.
+  let aimErrorDeg = 0;
+  {
+    const local = new THREE.Vector3(
+      cam.position.x - carX, cam.position.y - carY, cam.position.z - carZ,
+    );
+    const s2 = Math.sin(-heading), c2 = Math.cos(-heading);
+    const eyeLocal = new THREE.Vector3(
+      local.x * c2 + local.z * s2, local.y, -local.x * s2 + local.z * c2,
+    );
+    if (roll !== 0 || pitch !== 0) {
+      eyeLocal.applyEuler(new THREE.Euler(-pitch, 0, -roll, 'ZYX'));
+    }
+    for (const side of [1, -1] as const) {
+      const b = mirrorPaneBasis(side);
+      const d = b.position.clone().sub(eyeLocal).normalize();
+      d.addScaledVector(b.normal, -2 * d.dot(b.normal));
+      const want = new THREE.Vector3(
+        side * MIRROR_TARGET_X - side * MIRROR_X,
+        MIRROR_TARGET_Y - MIRROR_Y,
+        MIRROR_TARGET_Z - MIRROR_GLASS_Z,
+      ).normalize();
+      const deg = (Math.acos(Math.max(-1, Math.min(1, d.dot(want)))) * 180) / Math.PI;
+      if (deg > aimErrorDeg) aimErrorDeg = deg;
+    }
+  }
+
   const rimTop = project(
     cam, new THREE.Vector3(0, WHEEL_Y + 0.100, WHEEL_Z), carX, carY, carZ, heading,
     roll, pitch,
@@ -547,6 +599,7 @@ function measure(
     mirrorOffPct,
     panePct,
     paneBlockedPct,
+    aimErrorDeg,
   };
 }
 
@@ -567,7 +620,7 @@ console.log(
   'crown'.padStart(7) + 'thick'.padStart(7) + 'occl'.padStart(6) +
   'horiz'.padStart(7) + '  rail exits'.padEnd(34) + 'helmet'.padStart(9) + 'wheel'.padStart(9) +
   'mirror<'.padStart(9) + 'mirror>'.padStart(9) + 'pane'.padStart(7) + 'over'.padStart(6) +
-  'edge'.padStart(7),
+  'edge'.padStart(7) + 'aim'.padStart(6),
 );
 
 for (const def of CIRCUITS) {
@@ -638,6 +691,9 @@ for (const def of CIRCUITS) {
       if (m.paneBlockedPct > TARGET.paneBlockedMaxPct) {
         bad.push(`the halo lies across ${m.paneBlockedPct.toFixed(0)}% of a mirror`);
       }
+      if (m.aimErrorDeg > TARGET.aimErrorMaxDeg) {
+        bad.push(`a mirror points ${m.aimErrorDeg.toFixed(0)} degrees off the road it is aimed at`);
+      }
       if (m.wheelPct < TARGET.wheelPct[0] || m.wheelPct > TARGET.wheelPct[1]) {
         bad.push(`the wheel rim tops out at ${m.wheelPct.toFixed(0)}% of frame height`);
       }
@@ -653,6 +709,7 @@ for (const def of CIRCUITS) {
         m.helmet.padStart(9) + m.wheel.padStart(9) + m.mirrorScreenL.padStart(9) + m.mirrorScreenR.padStart(9) +
         `${m.panePct.toFixed(1)}%`.padStart(7) + `${m.paneBlockedPct.toFixed(0)}%`.padStart(6) +
         `${m.mirrorOffPct.toFixed(0)}%`.padStart(7) +
+        `${m.aimErrorDeg.toFixed(0)}d`.padStart(6) +
         (bad.length ? '  <-- ' + bad.join('; ') : ''),
       );
       for (const b of bad) failures.push(`${def.id} ${frameName} ${mode}: ${b}`);
