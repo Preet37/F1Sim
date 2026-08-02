@@ -137,9 +137,17 @@ async function main(): Promise<void> {
       // not, which is also a check that the two are not showing the same feed.
       for (const [name, side] of [['near', 1], ['far', -1]] as const) {
         const zoom = await page.evaluate(
-          `window.__audit.shootMirror(${JSON.stringify(mode)}, ${side}, 160)`,
+          `window.__audit.shootMirror(${JSON.stringify(mode)}, ${side}, 200)`,
         ) as string;
         await writePng(resolve(dir, `mirror-${name}-${mode}.png`), zoom);
+        // And the feed itself, off the render target, with nothing in front of
+        // it. The pane is a few dozen pixels across with the halo over part of
+        // it; a photograph of the pane says whether you can SEE the mirror, and
+        // this says whether the mirror is showing the car that is behind.
+        const feed = await page.evaluate(
+          `window.__audit.mirrorFeed(${JSON.stringify(mode)}, ${side})`,
+        ) as string;
+        await writePng(resolve(dir, `feed-${name}-${mode}.png`), feed);
       }
     }
 

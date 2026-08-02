@@ -237,6 +237,18 @@ export interface CockpitVisual {
     renderer: THREE.WebGLRenderer, scene: THREE.Scene, eye: THREE.Camera,
     stride: number,
   ): void;
+  /**
+   * The render target behind one pane, or null before the first feed has run.
+   *
+   * Exposed for the audit harness. A pane is a few dozen pixels across in the
+   * finished frame with the halo over part of it, so a photograph of one
+   * answers "can you see the mirror" and barely answers "does the mirror show
+   * traffic" — and that second question is the whole of the report. Reading the
+   * feed itself answers it with nothing in the way.
+   *
+   * @param side +1 for the pane on the car's local +x.
+   */
+  mirrorTarget(side: 1 | -1): THREE.WebGLRenderTarget | null;
   dispose(): void;
 }
 
@@ -1186,6 +1198,11 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       renderer.setRenderTarget(prevTarget);
       renderer.shadowMap.autoUpdate = prevShadowAuto;
       for (const p of mirrorPanes) p.visible = true;
+    },
+    mirrorTarget(side): THREE.WebGLRenderTarget | null {
+      // `mirrorPanes` is built over `[-1, 1]`, so index 0 is the pane on the
+      // car's local -x.
+      return mirrorTargets[side > 0 ? 1 : 0] ?? null;
     },
     setVisible(v: boolean): void {
       if (root.visible !== v) root.visible = v;

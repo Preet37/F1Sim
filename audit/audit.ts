@@ -90,6 +90,16 @@ interface AuditApi {
   shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string>;
   /** What one frame in the given mode costs. */
   costMode(mode: CameraMode, frames: number): Promise<FrameCost>;
+  /**
+   * The mirror's own feed, read straight off its render target and blown up.
+   *
+   * The pane is between 47 and 86 pixels across in the finished frame with the
+   * halo over part of it, so photographing the pane answers "can you see the
+   * mirror" and only barely answers "does the mirror work". This answers the
+   * second question on its own terms: it is the 256x96 image the pane is
+   * textured with, at eight times size, with nothing in front of it.
+   */
+  mirrorFeed(mode: CameraMode, side: 1 | -1): Promise<string>;
   cameraModes: readonly CameraMode[];
 }
 
@@ -549,9 +559,66 @@ async function costMode(mode: CameraMode, frames: number): Promise<FrameCost> {
   return { ms, calls: info.render.calls / frames, triangles: info.render.triangles / frames };
 }
 
+/**
+ * The mirror's feed, read off its render target.
+ *
+ * Half-float, so the readback is Float32 and has to be tone-mapped by hand on
+ * the way into a canvas — the feed carries the same radiance as the rest of the
+ * scene and a bright sign in it is well above 1. A plain clamp would blow the
+ * whole picture out; the Reinhard curve below is only there to make the numbers
+ * visible, and this is a diagnostic rather than something a player sees.
+ */
+async function mirrorFeed(mode: CameraMode, side: 1 | -1): Promise<string> {
+  if (!engine || !focus) throw new Error('no session');
+  // Draw the mode first so the feed for THIS frame exists. Both panes refresh
+  // within two frames of each other at stride 1, so a handful is plenty.
+  renderer.post.setCamera(renderer.director.camera, renderer.scene);
+  renderer.racingLine?.setVisible(true);
+  renderer.director.setMode(mode);
+  for (let i = 0; i < 8; i++) { frame(); await present(); }
+
+  const car = renderer.carVisuals.find((v) => v.cockpit);
+  const target = car?.cockpit?.mirrorTarget(side);
+  if (!target) throw new Error('no mirror feed — it has never been rendered');
+
+  const w = target.width, h = target.height;
+  const buf = new Float32Array(w * h * 4);
+  renderer.renderer.readRenderTargetPixels(target, 0, 0, w, h, buf);
+
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d')!;
+  const img = g.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // The readback is bottom-up; ImageData is top-down.
+      const s = ((h - 1 - y) * w + x) * 4;
+      const d = (y * w + x) * 4;
+      for (let k = 0; k < 3; k++) {
+        const v = buf[s + k];
+        img.data[d + k] = Math.round(255 * Math.pow(v / (1 + v), 1 / 2.2));
+      }
+      img.data[d + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+
+  // Blown up with no smoothing, so what is in the feed is what is on screen.
+  const big = document.createElement('canvas');
+  big.width = w * 4;
+  big.height = h * 4;
+  const bg = big.getContext('2d')!;
+  bg.imageSmoothingEnabled = false;
+  bg.drawImage(c, 0, 0, big.width, big.height);
+  const out = big.toDataURL('image/png');
+  c.width = 1; c.height = 1; big.width = 1; big.height = 1;
+  return out;
+}
+
 window.__audit = {
   load, shootMode, shootPlan, shootOverview, shootEye, contact,
   label: (t: string) => { labels.push(t); },
-  setFrame, placeBehind, shootZoom, shootMirror, costMode,
+  setFrame, placeBehind, shootZoom, shootMirror, costMode, mirrorFeed,
   cameraModes: CAMERA_MODES,
 };
