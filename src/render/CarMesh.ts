@@ -574,6 +574,106 @@ function checkWidth(geo: THREE.BufferGeometry, label: string): THREE.BufferGeome
 }
 
 /**
+ * One suspension member: two points and the section it is extruded at.
+ *
+ * `chord` runs fore-aft, `thick` vertically — see `aeroStrut`. Both are the
+ * FAIRING's dimensions, which is what is visible; the load-bearing member
+ * inside it is much smaller.
+ */
+export interface SuspensionMember {
+  readonly name: string;
+  readonly a: readonly [number, number, number];
+  readonly b: readonly [number, number, number];
+  readonly chord: number;
+  readonly thick: number;
+}
+
+/**
+ * FRONT MEMBER SECTIONS, and why they are not at the regulation maximum.
+ *
+ * The regulations cap a suspension fairing at 100mm of chord and 3.5:1 aspect
+ * ratio, so the fattest legal leg is 100 x 28.6mm, and these were built at
+ * 92 x 28 on exactly that reasoning. Then the front corner was MEASURED through
+ * the real onboard camera rather than looked at, and the reasoning turned out
+ * to be answering the wrong question.
+ *
+ * From the driver's eye the front suspension is not a set of small parts in the
+ * distance. It is six members per side, three to four metres away, and the
+ * number that matters is how much of the PICTURE each one covers. What a driver
+ * sees of a laterally-running member is its THICKNESS — the chord is edge-on —
+ * so `thick` is very nearly the only figure in this table that governs the
+ * onboard view, and twelve members at 28mm apiece is what "a cage of black
+ * rods over the picture" is counting.
+ *
+ * So the sections are thinned to 22mm on the legs and 17mm on the rods.
+ *
+ * AND THE CHORD COMES DOWN WITH THEM, which was not the first instinct. The
+ * first pass thinned the members and gave the chord BACK — 96mm, near the
+ * regulation limit — on the argument that chord is edge-on from the cockpit and
+ * therefore free. The probe said otherwise: the worst member is the lower
+ * wishbone's REAR leg, which runs 330mm forward as it runs 540mm outboard, so
+ * from the driver's eye it is seen at about thirty degrees and presents a third
+ * of its chord. It measured 2.43 per cent of frame width — as thick as the halo
+ * rail — with the thinning already applied. Chord is only free for a member
+ * that runs exactly across the car, and four of the six do not.
+ *
+ * 78 by 22 is 3.5:1 exactly, which is the regulation aspect limit, so the legs
+ * are now the SLIMMEST SHAPE THE RULES ALLOW rather than the fattest. Real
+ * fairings sit at the fat end of that range and Red Bull's 2022 car was
+ * specifically noted for running slimmer legs than the limit allowed; this is
+ * the same direction, taken as far as it legally goes. Measured before and
+ * after by `npm run probe:suspension`.
+ */
+const LEG_CHORD = 0.078;
+const LEG_THICK = 0.022;
+const ROD_CHORD = 0.056;
+const ROD_THICK = 0.017;
+
+/**
+ * The six members of one front corner, in car-local metres.
+ *
+ * Article 10.3.2 says a corner has exactly six members and no redundant ones:
+ * two wishbones of two legs each, the trackrod, and the push or pull rod. This
+ * is that list.
+ *
+ * EXPORTED so `scripts/probeSuspension.ts` can project the members the mesh is
+ * actually built from rather than a second copy of the same numbers. The halo
+ * was "fixed" four times from screenshots before anybody exported its
+ * centreline and measured it; this is that lesson applied one part earlier.
+ *
+ * @param side -1 for the left-hand corner, +1 for the right
+ */
+export function frontMembers(side: 1 | -1): SuspensionMember[] {
+  const s = side;
+  const fz = FRONT_AXLE_Z;
+  // The steering axis, as two points. Both wishbones converge on these and so
+  // does the upright, which is what makes the three read as one joint. See the
+  // note in `buildShellParts` for why they sit as high as they do.
+  const fUpX = s * 0.734, fUpY = 0.550;
+  const fLoX = s * 0.752, fLoY = 0.325;
+  return [
+    // Upper wishbone. The FRONT leg's chassis pickup is 46mm higher than the
+    // rear leg's; that rake is the era's anti-dive geometry.
+    { name: 'upper-front', chord: LEG_CHORD, thick: LEG_THICK,
+      a: [s * 0.216, 0.578, fz + 0.40], b: [fUpX, fUpY, fz + 0.012] },
+    { name: 'upper-rear', chord: LEG_CHORD, thick: LEG_THICK,
+      a: [s * 0.196, 0.532, fz - 0.30], b: [fUpX, fUpY, fz + 0.012] },
+    // Lower wishbone. Inboard pickups at the regulation floor of Z = 250.
+    { name: 'lower-front', chord: LEG_CHORD, thick: LEG_THICK,
+      a: [s * 0.230, 0.302, fz + 0.38], b: [fLoX, fLoY, fz + 0.008] },
+    { name: 'lower-rear', chord: LEG_CHORD, thick: LEG_THICK,
+      a: [s * 0.214, 0.286, fz - 0.32], b: [fLoX, fLoY, fz + 0.008] },
+    // Trackrod, at the lower wishbone's height, out to a ball joint ON the
+    // steering axis.
+    { name: 'trackrod', chord: ROD_CHORD, thick: ROD_THICK,
+      a: [s * 0.190, 0.312, fz - 0.30], b: [s * 0.744, 0.334, fz - 0.070] },
+    // Pushrod, up and inboard to the rocker inside the tub at about 35 degrees.
+    { name: 'pushrod', chord: ROD_CHORD, thick: ROD_THICK,
+      a: [s * 0.716, 0.318, fz + 0.020], b: [s * 0.206, 0.556, fz - 0.276] },
+  ];
+}
+
+/**
  * Rear wing plane, and the pivot the DRS flap hinges about.
  *
  * THE PIVOT IS AT THE FLAP'S TRAILING EDGE, and that is the whole mechanism.
@@ -1947,66 +2047,28 @@ function buildShellParts(
   // the steering arm hanging off them go into `frontUprightGeometry` and turn
   // with the wheel.
   {
-    const fz = FRONT_AXLE_Z;
     const rz = REAR_AXLE_Z;
     const sg = t.strut;
-    /**
-     * Wishbone leg section: chord fore-aft, thickness vertical.
-     *
-     * 92mm by 28mm, which is a 3.3:1 lens. The regulations cap the fairing
-     * chord at 100mm and the aspect ratio at 3.5:1, so the MINIMUM legal
-     * thickness at full chord is 28.6mm — these are deliberately FAT, blunt
-     * sections, not the thin aerofoils a modeller's instinct reaches for, and
-     * the bluntness is a large part of why a real front suspension photographs
-     * as substantial rather than spindly.
-     */
-    const LEG_C = 0.092, LEG_T = 0.028;
-    /** Trackrod and the push/pull rods: shorter chord, near-round. */
-    const ROD_C = 0.058, ROD_T = 0.028;
+    /** Rear wishbone leg section. The front's live in `frontMembers`. */
+    const LEG_C = LEG_CHORD, LEG_T = LEG_THICK;
+    /** Toe link and pullrod. */
+    const ROD_C = ROD_CHORD, ROD_T = ROD_THICK;
 
     for (const s of [-1, 1] as const) {
       // --- Front corner ----------------------------------------------------
       //
-      // THE BALL JOINTS ARE MUCH HIGHER THAN THEY LOOK. This is the detail
-      // almost every model of a current car gets wrong, and the previous
-      // version here got it wrong by 130mm.
+      // THE BALL JOINTS ARE MUCH HIGHER THAN THEY LOOK, and the sections are
+      // THINNER than the rulebook allows. Both are argued where the numbers
+      // live, on `frontMembers` and `LEG_THICK` above.
       //
-      // Article 10.3.4 requires every outboard suspension point to be above
-      // ZW = -40, that is NO MORE THAN 40mm BELOW THE WHEEL CENTRE, and inside
-      // the brake drum. Article 3.13.2 then permits the front drum to be cut
-      // for the upright only between ZW = 155 and ZW = 230. So the lower
-      // wishbone meets the upright essentially AT HUB HEIGHT and the upper one
-      // about 190mm above it: the kingpin span is barely 230mm, and both arms
-      // live in the upper half of the wheel.
-      //
-      // Drawn the intuitive way — lower arm down by the rim's bottom edge,
-      // upper arm level with the top of the tub — the front of the car gets a
-      // tall splayed A of members across the whole face of the wheel, which is
-      // a 1990s car. Drawn correctly the two arms are close together, high, and
-      // nearly parallel, and the wheel hangs off the top of them.
-      //
-      // Wheel centre is at y = TYRE_R = 0.360, so: upper at +0.190, lower at
-      // -0.035.
-      const fUpX = s * 0.734, fUpY = 0.550;
-      const fLoX = s * 0.752, fLoY = 0.325;
-      // A little kingpin inclination: the upper ball joint is 18mm INBOARD of
-      // the lower one, which is what tips the wheel's steering axis and is
-      // clearly visible head-on in the reference.
-
-      // Upper wishbone, from high on the survival cell — the inboard pickups
-      // sit at Z 500-555, y 0.535-0.590 here.
-      //
-      // ANTI-DIVE. The FRONT leg's chassis pickup is 46mm HIGHER than the rear
-      // leg's, so in side view the arm rakes nose-up going rearward. Every
-      // current car runs it and it is the defining look of the era; Mercedes
-      // published a 30mm move of exactly this pickup as their 2024 anti-dive
-      // change. Ours had no rake at all.
-      p.flat(aeroStrut(s * 0.216, 0.578, fz + 0.40, fUpX, fUpY, fz + 0.012, LEG_C, LEG_T, sg), 'trim');
-      p.flat(aeroStrut(s * 0.196, 0.532, fz - 0.30, fUpX, fUpY, fz + 0.012, LEG_C, LEG_T, sg), 'trim');
-      // Lower wishbone. Inboard pickups at the regulation floor of Z = 250,
-      // y 0.285-0.302 here, rising slightly to the hub.
-      p.flat(aeroStrut(s * 0.230, 0.302, fz + 0.38, fLoX, fLoY, fz + 0.008, LEG_C, LEG_T, sg), 'trim');
-      p.flat(aeroStrut(s * 0.214, 0.286, fz - 0.32, fLoX, fLoY, fz + 0.008, LEG_C, LEG_T, sg), 'trim');
+      // Built from `frontMembers`, which is exported, so `probe:suspension` can
+      // measure the members the mesh is actually made of rather than a second
+      // copy of the same numbers. The halo went through four "fixes" judged from
+      // screenshots before it was given the same treatment; this is that lesson
+      // applied one part earlier.
+      for (const m of frontMembers(s)) {
+        p.flat(aeroStrut(m.a[0], m.a[1], m.a[2], m.b[0], m.b[1], m.b[2], m.chord, m.thick, sg), 'trim');
+      }
 
       // Trackrod, from the steering rack out to a ball joint ON the steering
       // axis, mid-way between the two wishbones.
@@ -2030,11 +2092,9 @@ function buildShellParts(
       // lower arm and runs nearly horizontally out of the rack at the front
       // bulkhead. It used to sit half way up the kingpin, which was a
       // consequence of the kingpin being drawn far too tall.
-      p.flat(aeroStrut(s * 0.190, 0.312, fz - 0.30, s * 0.744, 0.334, fz - 0.070, ROD_C, ROD_T, sg), 'trim');
-      // Pushrod: from the lower wishbone's outboard end up and inboard to the
-      // rocker inside the tub, at about 35 degrees — steeply raked, which is
-      // what identifies it as a PUSHrod rather than a pullrod.
-      p.flat(aeroStrut(s * 0.716, 0.318, fz + 0.020, s * 0.206, 0.556, fz - 0.276, ROD_C, ROD_T, sg), 'trim');
+      // The trackrod and the pushrod are in `frontMembers` above, with the
+      // wishbones — all six members of the corner in one exported table, which
+      // is what Article 10.3.2 says a corner is and what the probe measures.
 
       // --- Rear corner -----------------------------------------------------
       const rUpX = s * 0.700, rUpY = 0.512;
