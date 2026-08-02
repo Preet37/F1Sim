@@ -187,6 +187,34 @@ generated at — for standing on the racing surface or the pit lane, and reports
 tightest clearance. It also drives a car into a wall at 200 km/h and asserts that the
 session ends and the damage panel says why.
 
+### `probe:shoulders`, `probe:kerbs`, `probe:debris`
+
+Three questions about the corners and what is lying in them, answered per node and
+per circuit without a browser.
+
+`probe:shoulders` reports how far the ground beside the road reaches at every node of
+every circuit, how often it steps between neighbours, and — the number that matters —
+the mean corner radius at the nodes where it runs out entirely against the mean radius
+over the lap. A defect that appears at "certain corners" and never on a straight is a
+function of radius, and that is a thing to measure rather than to hunt for in
+screenshots.
+
+`probe:kerbs` reports what fraction of each lap carries kerbing and how many separate
+stretches of it there are, so the automatic threshold is a measurement instead of a
+guess.
+
+`probe:debris` runs whole races and reports how much carbon ends up on the circuit,
+how much of it is flagged, and what fraction of a race a marshalling sector spends
+under a flag as a result — which is the cost side of making debris temporary by
+sending marshals to it.
+
+### `audit:circuits`, `audit:corners`
+
+Photograph all eleven circuits through the game's own renderer, engine and world
+model, headlessly. `audit:corners` picks the tightest corners off the curvature rather
+than sampling fixed fractions of the lap, stands at them, and also causes an accident
+and looks at what it left.
+
 ### `validate:integrity`
 
 Containment, in world space, with no knowledge of how containment is implemented.
@@ -237,6 +265,9 @@ its fix site.
 | The barrier laid at a flat 14m (2.5m on a street circuit) from the track edge for the whole lap | Where the circuit runs back within that distance of itself, one section's armco and five-metre debris fence were built across another section's run-off. A car legally in that run-off has a wall and a fence between it and the road |
 | Containment measured against the *nearest* spline node | Once a car is in the corridor between two barriers, its projection snaps to the far section, its lateral offset is small, and containment never fires. The old integrity probe measured the same quantity, so it reported zero overshoot for a car that was visibly walled in |
 | Nothing outside the barrier line was solid | Cars drove through buildings, grandstands and the pit wall without a scrape |
+| The ground beside the road swept at the narrower of each span's two ends | The shoulder is a per-node width allowed to change 0.6m between neighbours, so its outer edge was a staircase and nothing joined the treads. Between the vertical skirts under two neighbouring spans was an open slot 0.6m wide and as deep as the circuit is high — a hole at the apex you could see through, at tight corners and nowhere else. `probe:shoulders` finds 3357 such steps on the calendar and puts the mean radius where the shoulder runs out entirely at 20-26m against a lap mean in the thousands |
+| Debris removed only when the car it came off was *recovered* | A car that loses a sidepod and keeps racing is never recovered, so its bodywork stayed on the circuit until the session ended. Six contact events in two laps left six permanent piles of flat, saturated team colour on the racing line |
+| Automatic kerbing at every radius under 400m | 400m is a curve these cars take flat. `probe:kerbs` measured 42.6% of the average lap kerbed on one side or the other, 59% at Monaco — a lap that is more kerb than road |
 
 ---
 
