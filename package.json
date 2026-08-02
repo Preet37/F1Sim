@@ -55,6 +55,7 @@
     "shoot:panels": "tsx scripts/shootPanels.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",
+    "audit:shoulders": "tsx scripts/auditShoulders.ts",
     "audit:car": "tsx scripts/auditCar.ts"
   },
   "dependencies": {

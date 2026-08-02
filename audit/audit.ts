@@ -264,9 +264,26 @@ function renderFree(): void {
   renderer.post.render(renderer.scene, freeCam);
 }
 
-/** Waits for the browser to actually present the frame we just drew. */
+/**
+ * Waits for the browser to actually present the frame we just drew.
+ *
+ * With a TIMER RACING THE FRAME CALLBACK, and that is not belt and braces. A
+ * headless page whose tab is not frontmost has its `requestAnimationFrame`
+ * throttled to the point of never firing, and on a plain rAF wait that is not a
+ * slow sweep, it is a permanent hang: the harness sat on Bahrain for forty
+ * minutes with both the node process and the renderer at zero percent, having
+ * written nothing and reported nothing, which looks exactly like a slow
+ * circuit. Whichever of the two arrives first is enough — the draw has already
+ * been issued, and the only thing being waited on is a chance for the compositor
+ * to take it.
+ */
 function present(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 250);
+  });
 }
 
 /**
