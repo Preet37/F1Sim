@@ -561,7 +561,10 @@ async function costMode(mode: CameraMode, frames: number): Promise<FrameCost> {
 
 /** Scratch for `mirrorFeed`: a full-frame quad that shows one texture. */
 const feedScene = new THREE.Scene();
-const feedCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+// Near at -1, not 0: the quad sits at z = 0 and a near plane of 0 puts it
+// exactly on the clip boundary, which is a coin toss between a picture and a
+// black frame — and a black frame here reads as "the mirror shows nothing".
+const feedCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
 const feedMat = new THREE.MeshBasicMaterial();
 feedScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), feedMat));
 
