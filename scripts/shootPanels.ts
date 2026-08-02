@@ -104,6 +104,21 @@ async function main(): Promise<void> {
   await page.reload({ waitUntil: 'load' });
   await page.waitForFunction('!!window.__panels', { timeout: 60_000 });
 
+  // The three full-screen boards: championship, race classification, and a
+  // knockout qualifying segment with its cut line.
+  for (const vp of VIEWPORTS) {
+    await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
+    for (const kind of ['champ', 'classification', 'qualifying']) {
+      await page.evaluate((k: string) => window.__panels.board(k), kind);
+      const file = `${vp.name}-board-${kind}.png`;
+      await page.screenshot({
+        path: resolve(OUT, file) as `${string}.png`,
+        fullPage: vp.name === 'portrait',
+      });
+      console.log('  ' + file);
+    }
+  }
+
   for (const vp of VIEWPORTS) {
     await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
     for (const [panel, team, circuit] of SHOTS) {
