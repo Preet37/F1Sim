@@ -85,18 +85,43 @@ async function main(): Promise<void> {
   // The HUD, over a flat backdrop and with no renderer — see `audit/panels.ts`.
   // This is the fast loop: "is the panel there, and where", answered in seconds
   // instead of the ten minutes a real circuit build costs.
-  const HUD_SCENES = (process.env.SHOOT_SCENES ?? 'clear,pit-advice,safety-car,wet,in-box').split(',');
+  const HUD_SCENES = (process.env.SHOOT_SCENES
+    ?? 'clear,pit-advice,safety-car,wet,in-box,pit-choice,rail-max').split(',');
+
+  // THE OVERLAP CHECK, and it is an assertion rather than a picture.
+  //
+  // Two faults were reported here in a row — the pit sheet drawn across the
+  // radio card, and then the radio card drawn under two notification cards —
+  // and both are invisible in a still if you are looking at the wrong corner
+  // while being trivially decidable from four numbers. So every viewport and
+  // every scene is measured, `rail-max` turns everything on at once, and any
+  // intersection or anything escaping the rail's band fails the sweep.
+  const railFailures: string[] = [];
+
   for (const vp of VIEWPORTS) {
     await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
     for (const scene of HUD_SCENES) {
       await page.evaluate((s: string) => window.__panels.hud(s), scene);
       const file = `${vp.name}-hud-${scene}.png`;
       await page.screenshot({ path: resolve(OUT, file) as `${string}.png` });
+
+      const rail = await page.evaluate(() => window.__panels.railReport()) as {
+        boxes: string[]; overlaps: string[]; clipped: string[];
+      };
+      for (const o of rail.overlaps) railFailures.push(`${vp.name}/${scene}: overlap ${o}`);
+      for (const c of rail.clipped) railFailures.push(`${vp.name}/${scene}: clipped ${c}`);
+
+      const verdict = rail.overlaps.length === 0 && rail.clipped.length === 0
+        ? 'no overlap'
+        : `${rail.overlaps.length} overlap(s), ${rail.clipped.length} clipped`;
       if (vp.name === 'desktop') {
         const report = await page.evaluate(() => window.__panels.hudReport());
-        console.log('  ' + file + '  ' + JSON.stringify(report));
+        console.log('  ' + file + '  ' + verdict + '  ' + JSON.stringify(report));
       } else {
-        console.log('  ' + file);
+        console.log('  ' + file + '  ' + verdict);
+      }
+      if (rail.overlaps.length > 0 || rail.clipped.length > 0) {
+        console.log('      boxes: ' + rail.boxes.join('  '));
       }
     }
   }
@@ -139,6 +164,14 @@ async function main(): Promise<void> {
   await browser.close();
   await server.close();
   console.log(`\nwrote ${OUT}`);
+  if (railFailures.length) {
+    console.log(`\n${railFailures.length} rail layout failure(s) — nothing on the rail may`);
+    console.log('cover anything else, in any viewport, in any combination:');
+    for (const f of railFailures) console.log('  ' + f);
+    process.exitCode = 1;
+  } else {
+    console.log('rail: nothing overlaps anything, all viewports, all scenes');
+  }
   if (errors.length) {
     for (const e of errors) console.log('  ' + e);
     process.exitCode = 1;

@@ -107,6 +107,16 @@ export interface SetupScreenOptions {
   track: TrackDefinition;
   /** True when the session is expected to be wet, so inters and wets are offered. */
   offerWets: boolean;
+  /**
+   * Set for a race, where the grid tyre belongs to the strategy and not to this
+   * sheet. The section becomes a statement of what is being fitted and where
+   * that was decided.
+   *
+   * A third place to pick the same tyre is a third answer to one question, and
+   * the last one to run wins by accident rather than by intent. The setup sheet
+   * is about the car; the strategy page is about the race.
+   */
+  compoundLocked?: boolean;
   onChange: (setup: CarSetup, compound: CompoundId) => void;
 }
 
@@ -426,12 +436,9 @@ export function buildSetupScreen(parent: HTMLElement, opts: SetupScreenOptions):
 
   // --- Tyres ---------------------------------------------------------------
   el('div', 'section-title', parent, 'Starting tyre compound');
-  const tyres = el('div', 'card-grid', parent);
-  const offered = opts.offerWets ? [...DRY_COMPOUNDS, ...WET_COMPOUNDS] : DRY_COMPOUNDS;
-
-  for (const id of offered) {
-    const c = getCompound(id);
-    const card = el('div', 'card', tyres);
+  if (opts.compoundLocked) {
+    const c = getCompound(compound);
+    const card = el('div', 'card selected', el('div', 'card-grid', parent));
     const name = el('div', 'card-name', card);
     const dot = document.createElement('span');
     dot.className = 'setup-tyre-dot';
@@ -442,13 +449,32 @@ export function buildSetupScreen(parent: HTMLElement, opts: SetupScreenOptions):
       'grip x' + c.peakGrip.toFixed(2) + ' · wear x' + c.wearRate.toFixed(2) +
       ' · window ' + c.optimalTempMinC + '-' + c.optimalTempMaxC + '°C');
     el('div', 'card-stat', card,
-      c.isWetWeather
-        ? 'Only on a wet track — overheats and destroys itself on a dry one'
-        : c.wearRate > 1.2 ? 'Fastest, but the shortest stint'
-        : c.wearRate < 0.8 ? 'Slowest, but it will run and run'
-        : 'The compromise: quick enough, and it lasts');
-    card.addEventListener('click', () => { compound = id; changed(); });
-    refresh.push(() => card.classList.toggle('selected', compound === id));
+      'The first stint of your race strategy. Change it on the Race Strategy page.');
+  } else {
+    const tyres = el('div', 'card-grid', parent);
+    const offered = opts.offerWets ? [...DRY_COMPOUNDS, ...WET_COMPOUNDS] : DRY_COMPOUNDS;
+
+    for (const id of offered) {
+      const c = getCompound(id);
+      const card = el('div', 'card', tyres);
+      const name = el('div', 'card-name', card);
+      const dot = document.createElement('span');
+      dot.className = 'setup-tyre-dot';
+      dot.style.background = '#' + c.colour.toString(16).padStart(6, '0');
+      name.appendChild(dot);
+      name.appendChild(document.createTextNode(c.name));
+      el('div', 'card-meta', card,
+        'grip x' + c.peakGrip.toFixed(2) + ' · wear x' + c.wearRate.toFixed(2) +
+        ' · window ' + c.optimalTempMinC + '-' + c.optimalTempMaxC + '°C');
+      el('div', 'card-stat', card,
+        c.isWetWeather
+          ? 'Only on a wet track — overheats and destroys itself on a dry one'
+          : c.wearRate > 1.2 ? 'Fastest, but the shortest stint'
+          : c.wearRate < 0.8 ? 'Slowest, but it will run and run'
+          : 'The compromise: quick enough, and it lasts');
+      card.addEventListener('click', () => { compound = id; changed(); });
+      refresh.push(() => card.classList.toggle('selected', compound === id));
+    }
   }
 
   const advice = el('div', 'setup-trade', parent);

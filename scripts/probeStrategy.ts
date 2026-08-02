@@ -25,7 +25,8 @@ import { DRIVERS, getTeam } from '../src/data/teams';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
-  pitLossS, planFor, startingCompound, stintLife, strategyOptions, strategySummary,
+  applyPlanToCar, pitLossS, planFor, plannedStrategy, startingCompound, stintLife,
+  strategyOptions, strategySummary,
 } from '../src/race/Strategy';
 import { plannedStopCue } from '../src/ui/Hud';
 
@@ -237,6 +238,78 @@ check(stopped >= Math.ceil(running.length * 0.75),
 check(Number.isFinite(medianDrift) && Math.abs(medianDrift) <= 10,
   `the field's first stop lands ${medianDrift} laps from the lap its plan named — ` +
   'the strategy is not reaching the race at all');
+
+// ---------------------------------------------------------------------------
+// 4. The starting tyre is asked for ONCE, and the answer is what is on the grid
+// ---------------------------------------------------------------------------
+//
+// "at the start screen I get this which is the tire options? so lets say I
+//  choose mediums, then i get a tire strategy? why do I need to do it twice?"
+//
+// It was asked three times — the briefing chips, the setup sheet, and the first
+// stint of a strategy card — and they were not wired together. `applyStrategy`
+// wrote the plan's tyre and `applyPlayerSetup` ran afterwards and wrote the
+// chips' tyre over it, so a player who picked the soft-start strategy and never
+// touched the chips went to the grid on mediums with nothing saying so.
+//
+// The chips are gone for a race. `plannedStrategy` is the one answer, and this
+// asserts that following it to the car really does put that tyre on it — for
+// both of the team's cars, on every circuit.
+
+for (const def of CIRCUITS.slice(0, 5)) {
+  const laps = def.raceLaps;
+  const cfg: SessionConfig = {
+    kind: 'race', name: 'grid tyre', durationS: 0, laps,
+    playerIndex: 0, standingStart: true, pitLaneStart: false, seed: 909,
+  };
+  const eng = new RaceEngine(def, cfg);
+  const player = eng.cars[0];
+  const mates = eng.cars.filter((c) => c.team.id === player.team.id);
+  check(mates.length === 2, `${def.id}: the player's team has ${mates.length} cars`);
+
+  // Nothing chosen: the strategist's own call, on both cars, and the tyre on
+  // the grid is that plan's first stint.
+  for (const entry of mates) {
+    const option = plannedStrategy(entry.team, entry.driver, def, laps);
+    check(option.label === 'RECOMMENDED',
+      `${def.id}/${entry.driver.code}: with no choice made the plan is ${option.label}, not the recommendation`);
+    applyPlanToCar(entry, option, 90);
+    check(entry.compound === startingCompound(option),
+      `${def.id}/${entry.driver.code}: plan starts on ${startingCompound(option)}, car is on ${entry.compound}`);
+    check(entry.usedCompounds.length === 1 && entry.usedCompounds[0] === entry.compound,
+      `${def.id}/${entry.driver.code}: the tyre log does not match the tyre`);
+    check(entry.physics.frontTires.compound.id === entry.compound &&
+      entry.physics.rearTires.compound.id === entry.compound,
+      `${def.id}/${entry.driver.code}: the compound was recorded but not fitted`);
+  }
+
+  // And every option the player can actually pick reaches the grid. This is the
+  // assertion the old code would have failed: the aggressive plan starts on the
+  // soft, and the briefing chips defaulted to medium.
+  for (const option of strategyOptions(player.team, player.driver, def, laps)) {
+    const picked = plannedStrategy(player.team, player.driver, def, laps, option.id);
+    check(picked.id === option.id,
+      `${def.id}: choosing ${option.id} returned ${picked.id}`);
+    applyPlanToCar(player, picked, 90);
+    check(player.compound === startingCompound(option),
+      `${def.id}: chose ${option.id} (starts ${startingCompound(option)}) and went to the grid on ${player.compound}`);
+    check(player.plan.length === option.stints.length,
+      `${def.id}: chose a ${option.stints.length}-stint plan and the car got ${player.plan.length}`);
+    check(player.targetPitLap === option.stints[0].pitOnLap,
+      `${def.id}: the car's first stop is lap ${player.targetPitLap}, the plan says ${option.stints[0].pitOnLap}`);
+  }
+}
+console.log('grid tyre: one source, followed to the car on 5 circuits x 3 options x 2 drivers');
+
+// An unknown id — a save from an older build, or a plan that no longer exists
+// on this circuit — falls back to the recommendation rather than to nothing.
+{
+  const def = getCircuit('spa');
+  const team = getTeam(DRIVERS[0].teamId);
+  const fallback = plannedStrategy(team, DRIVERS[0], def, def.raceLaps, 'no-such-plan');
+  check(fallback.label === 'RECOMMENDED',
+    `an unknown plan id fell back to ${fallback.label}, not the recommendation`);
+}
 
 // ---------------------------------------------------------------------------
 

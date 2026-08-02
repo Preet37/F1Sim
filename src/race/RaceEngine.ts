@@ -939,10 +939,18 @@ export class RaceEngine {
     const writeOff = severity > 0.72;
     if (severity > 0.25) {
       this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz), writeOff);
+      const where = this.track.cornerNameAt(car.s) || 'the exit';
       this.raceControl.log(
-        car.driver.code + ' into ' + what + ' at ' +
-        (this.track.cornerNameAt(car.s) || 'the exit'),
+        car.driver.code + ' into ' + what + ' at ' + where,
         severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: where.toUpperCase(),
+            offence: 'CONTACT WITH ' + what.toUpperCase(), status: 'NOTED',
+          },
+          team: { kind: 'off', corner: where, hit: what, heavy: severity > 0.6 },
+        },
       );
     }
     if (writeOff) {
@@ -957,6 +965,14 @@ export class RaceEngine {
       this.raceControl.log(
         car.driver.code + ' is out on the spot — heavy impact',
         'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+            offence: 'CAR STOPPED', status: 'RECOVERY IN PROGRESS',
+          },
+          team: { kind: 'retired', reason: 'heavy impact' },
+        },
       );
     }
   }
@@ -1701,8 +1717,8 @@ export class RaceEngine {
    *
    * Everything here is read from the same functions that run the stop, so the
    * screen cannot describe a stop the engine would not perform. `compound` is
-   * literally `chooseCompoundForStint`'s answer with the driver's own override
-   * removed, which is what makes it honest to label it "the engineers' call".
+   * literally `compoundForStint`'s answer with the driver's own instruction
+   * excluded, which is what makes it honest to label it "the engineers' call".
    */
   pitBriefing(car: CarEntry): {
     compound: CompoundId;
@@ -1719,10 +1735,16 @@ export class RaceEngine {
     baseStopS: number;
     lapsRemaining: number;
   } {
-    const held = car.pitCompoundRequest;
-    car.pitCompoundRequest = null;
-    const compound = this.chooseCompoundForStint(car);
-    car.pitCompoundRequest = held;
+    // The engineers' own answer: the same function the stop runs, asked to
+    // ignore the driver's instruction rather than having it temporarily deleted
+    // off the car. The previous version wrote `null` onto `pitCompoundRequest`,
+    // called the chooser, and wrote the value back — a read-only query that
+    // mutated the one piece of state the whole pit sheet is derived from. Any
+    // throw between the two writes, and any read taken in between, saw a driver
+    // who had asked for nothing. That is exactly the shape of "I chose hard and
+    // it gave me softs", and no amount of care at the call sites fixes a getter
+    // that edits the model.
+    const compound = this.compoundForStint(car, true);
 
     const totalLaps = this.config.laps || this.track.def.raceLaps;
     const dryUsed = [...new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather))];
@@ -1739,6 +1761,19 @@ export class RaceEngine {
       baseStopS: car.team.performance.pitCrewTimeS,
       lapsRemaining: Math.max(0, totalLaps - car.lap),
     };
+  }
+
+  /**
+   * Will the crew take the nose off at this car's next stop?
+   *
+   * The crew's own rule is "below 70%", and a driver who has been asked
+   * overrules it in either direction. Public for the same reason
+   * `compoundForStint` is: the sheet that offers the choice and the stop that
+   * performs it have to be reading one function.
+   */
+  noseChangeForStop(car: CarEntry): boolean {
+    const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
+    return car.pitNoseChangeRequest ?? (frontWing < 0.7);
   }
 
   private shouldPit(car: CarEntry): boolean {
@@ -2018,6 +2053,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' — pit entry closed, stay out',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-closed' } },
         );
       }
       if (!wantsPit) car.pitEntryRefused = false;
@@ -2041,6 +2077,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' missed the pit entry — round again',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-missed' } },
         );
       }
       // And is the car SLOW ENOUGH to be let in?
@@ -2061,6 +2098,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' — too fast for the pit entry, round again',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-fast' } },
         );
       }
       if (!geometricallyInLane) car.pitEntryMissed = false;
@@ -2130,6 +2168,14 @@ export class RaceEngine {
           this.raceControl.log(
             car.driver.code + ' has served the drive-through penalty',
             'info', this.time, car.index,
+            {
+              feed: 'either',
+              notice: {
+                parties: [car.driver.code], where: 'PIT LANE',
+                offence: 'DRIVE-THROUGH PENALTY', status: 'SERVED',
+              },
+              team: { kind: 'penalty-served' },
+            },
           );
         }
         car.pitTransitOnly = false;
@@ -2235,7 +2281,7 @@ export class RaceEngine {
       // who changed their mind mid-stop would be billed for a wing they did not
       // get, or get one they did not pay for.
       const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
-      car.pitNoseChanging = car.pitNoseChangeRequest ?? (frontWing < 0.7);
+      car.pitNoseChanging = this.noseChangeForStop(car);
       if (car.pitNoseChanging && frontWing < 0.999) {
         car.pitBoxTimer += 9 + (1 - frontWing) * 5;
       }
@@ -2259,7 +2305,7 @@ export class RaceEngine {
         car.servicedThisVisit = true;
         // The lap out of the garage is an out-lap and must not be timed.
         car.onOutLap = true;
-        const compound = this.chooseCompoundForStint(car);
+        const compound = this.compoundForStint(car);
         car.serviceInBox(compound, 0, this.weather.trackTempC + 40);
 
         // The crew replaces the nose and the bodywork they can reach. Floor,
@@ -2284,18 +2330,28 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' pit stop — ' + getCompound(compound).name,
           'info', this.time, car.index,
+          { feed: 'team', team: { kind: 'stop', compound: getCompound(compound).name } },
         );
       }
     }
   }
 
-  /** Picks the compound for the next stint, honouring the two-compound rule. */
-  private chooseCompoundForStint(car: CarEntry): CompoundId {
+  /**
+   * The compound this car's next stop will fit. THE value, not a copy of it.
+   *
+   * Public and pure — it reads the car and the session and writes nothing — so
+   * the pit sheet, the status line, the briefing and the stop itself are all
+   * one function call rather than four re-derivations that drift.
+   *
+   * @param ignoreDriverRequest asks what the CREW would do, for the line that
+   *        says so. It does not, and must not, disturb the driver's own call.
+   */
+  compoundForStint(car: CarEntry, ignoreDriverRequest = false): CompoundId {
     // A driver who has told the crew what to fit gets what they asked for,
     // including when it is a mistake. The pit screen states the mandatory
     // second-compound position and the weather in plain terms before the choice
     // is made; overriding it here would make the screen a suggestion box.
-    if (car.pitCompoundRequest) return car.pitCompoundRequest;
+    if (!ignoreDriverRequest && car.pitCompoundRequest) return car.pitCompoundRequest;
 
     // Weather first: the right tyre for the conditions beats any plan.
     if (this.weather.wetness > 0.6) return 'wet';
@@ -2478,7 +2534,12 @@ export class RaceEngine {
             this.applyContactDamage(b, severity, zoneFor(b.physics.heading, -nx, -nz));
             this.raceControl.log(
               'Contact between ' + a.driver.code + ' and ' + b.driver.code,
-              'warning', this.time,
+              'warning', this.time, -1,
+              { notice: {
+                parties: [a.driver.code, b.driver.code],
+                where: (this.track.cornerNameAt(a.s) || '').toUpperCase(),
+                offence: 'CONTACT', status: 'NOTED',
+              } },
             );
           }
         }
@@ -2643,9 +2704,14 @@ export class RaceEngine {
     for (const id of broken) {
       const h = car.damage.health[id];
       if (bandOf(h) === 'ok') continue;
+      // Team only, and this is the line the user pointed at: "nobody will ever
+      // say this person's suspension broke ... that is a team only
+      // conversation". A rival's floor damage is not race control's business
+      // and it is certainly not the player's principal's.
       this.raceControl.log(
         car.driver.code + ': ' + COMPONENT_NAMES[id].toLowerCase() + ' damage',
         bandOf(h) === 'critical' ? 'critical' : 'warning', this.time, car.index,
+        { feed: 'team', team: { kind: 'damage', part: COMPONENT_NAMES[id], health: h } },
       );
     }
 
@@ -2658,7 +2724,17 @@ export class RaceEngine {
       // precede it — otherwise every hard racing contact would strip the car.
       car.damage.applyImpact(zone, severity, true);
       car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
-      this.raceControl.log(car.driver.code + ' is out of the race', 'critical', this.time, car.index);
+      this.raceControl.log(
+        car.driver.code + ' is out of the race', 'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'CAR RETIRED', status: 'OUT OF THE RACE',
+          },
+          team: { kind: 'retired', reason: 'terminal damage' },
+        },
+      );
     }
   }
 
@@ -2712,6 +2788,16 @@ export class RaceEngine {
           (this.track.cornerNameAt(car.s) || 'sector ' + (rc.sectorIndexAt(car.s) + 1)) +
           ' is clear',
           'info', this.time, car.index,
+          {
+            feed: 'either',
+            notice: {
+              parties: [car.driver.code],
+              where: (this.track.cornerNameAt(car.s) ||
+                'sector ' + (rc.sectorIndexAt(car.s) + 1)).toUpperCase(),
+              offence: 'CAR RECOVERED', status: 'TRACK CLEAR',
+            },
+            team: { kind: 'recovered' },
+          },
         );
       }
       car.recoveryTimer = op.elapsedS;
@@ -2741,6 +2827,15 @@ export class RaceEngine {
         car.retire('Beached in the gravel', this.time);
         this.raceControl.log(
           car.driver.code + ' is out — stranded off track', 'critical', this.time, car.index,
+          {
+            feed: 'either',
+            notice: {
+              parties: [car.driver.code],
+              where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+              offence: 'CAR STOPPED OFF TRACK', status: 'RECOVERY IN PROGRESS',
+            },
+            team: { kind: 'stranded' },
+          },
         );
       }
     } else {
@@ -2761,7 +2856,17 @@ export class RaceEngine {
       const causes = ['Power unit failure', 'Gearbox failure', 'Hydraulics', 'Overheating', 'Loss of drive'];
       const cause = this.rng.pick(causes);
       car.retire(cause, this.time);
-      this.raceControl.log(car.driver.code + ' — ' + cause, 'critical', this.time, car.index);
+      this.raceControl.log(
+        car.driver.code + ' — ' + cause, 'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'CAR RETIRED', status: cause.toUpperCase(),
+          },
+          team: { kind: 'failure', cause },
+        },
+      );
     }
   }
 

@@ -172,6 +172,33 @@ export function strategyOptions(
   return options;
 }
 
+/**
+ * The plan this car will actually start the race on.
+ *
+ * ONE function, called by the screen that states the plan and by the code that
+ * writes it onto the car. That is the whole reason it exists: the starting tyre
+ * used to be asked for twice — once as a row of chips on the briefing page and
+ * again as the first stint of a strategy card — and the two disagreed, because
+ * `applyPlayerSetup` ran after `applyStrategy` and wrote the chip's answer over
+ * the plan's. A player who picked a soft-start strategy and had never touched
+ * the chips started on mediums, and nothing on any screen said so.
+ *
+ * The chips are gone. This is the answer, for the player and for their
+ * team-mate, and `startingCompound` of what it returns is the tyre on the grid.
+ *
+ * `chosenId` is what the player picked, if they picked. Nobody picks for the
+ * team-mate — see `StrategyScreen` — so their column passes nothing and gets
+ * the strategist's own call, which is what their column says it is getting.
+ */
+export function plannedStrategy(
+  team: Team, driver: Driver, track: TrackDefinition, laps: number, chosenId?: string,
+): StrategyOption {
+  const options = strategyOptions(team, driver, track, laps);
+  return options.find((o) => o.id === chosenId)
+    ?? options.find((o) => o.label === 'RECOMMENDED')
+    ?? options[0];
+}
+
 function lifeOf(life: StintLife, c: CompoundId): number {
   return c === 'soft' ? life.soft : c === 'hard' ? life.hard : life.medium;
 }
@@ -184,6 +211,38 @@ export function planFor(option: StrategyOption): StintPlan[] {
 /** The compound a plan starts on — what the car is fitted with on the grid. */
 export function startingCompound(option: StrategyOption): CompoundId {
   return option.stints[0].compound;
+}
+
+/**
+ * Writes a plan onto a car, tyres included.
+ *
+ * Here rather than inline in the app shell because it is the step where the
+ * screen's promise becomes the car's state, and a probe has to be able to run
+ * exactly it. Fitting the tyres is not decoration: a plan whose first stint is
+ * a soft has to be sitting on softs when the lights go out, or it is not that
+ * plan — and the tyre model, not the `compound` field, owns the grip curve and
+ * the wear rate that make it one.
+ */
+export function applyPlanToCar(
+  car: {
+    plan: StintPlan[];
+    targetPitLap: number;
+    compound: CompoundId;
+    usedCompounds: CompoundId[];
+    physics: { frontTires: { fit(c: CompoundId, t: number): void };
+      rearTires: { fit(c: CompoundId, t: number): void } };
+  },
+  option: StrategyOption,
+  blanketTempC: number,
+): void {
+  car.plan = planFor(option);
+  car.targetPitLap = car.plan[0].pitOnLap;
+  const start = startingCompound(option);
+  car.compound = start;
+  car.usedCompounds.length = 0;
+  car.usedCompounds.push(start);
+  car.physics.frontTires.fit(start, blanketTempC);
+  car.physics.rearTires.fit(start, blanketTempC);
 }
 
 /**
