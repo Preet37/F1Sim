@@ -96,15 +96,19 @@ function stubElement(): HTMLElement {
 }
 
 /** Fires a keyboard event at whatever `InputController.attach` registered. */
-function fireKey(type: 'keydown' | 'keyup', key: string): void {
-  const evt = { key, code: key, preventDefault: () => {} };
+function fireKey(type: 'keydown' | 'keyup', key: string, timeStamp = 0): void {
+  // `timeStamp` is the time the event was CREATED, which in a browser is the
+  // moment the key moved — not the moment a busy main thread got round to
+  // dispatching it. Carrying it is what lets the controller charge a press for
+  // the time it was actually down rather than for the frames that saw it.
+  const evt = { key, code: key, timeStamp, preventDefault: () => {} };
   for (const fn of windowListeners.get(type) ?? []) fn(evt);
 }
 
 installWindowStub();
 
 import { PHYSICS_DT, SimClock } from '../src/core/SimClock';
-import { InputController } from '../src/input/InputController';
+import { DEFAULT_INPUT_CONFIG, InputController } from '../src/input/InputController';
 import { VehiclePhysics, type EnvironmentState, type VehicleControls } from '../src/physics/VehiclePhysics';
 import { BASE_F1_SPEC } from '../src/physics/VehicleSpec';
 
@@ -149,6 +153,10 @@ const RATE_CASES: RateCase[] = [
   // is the shape a real rAF trace has when the compositor is under load.
   { label: 'jitter~24', fps: 24, periodsMs: [20.8, 62.5, 33.3, 50.0] },
   { label: 'jitter~60', fps: 60, periodsMs: [8.3, 25.0, 12.5, 20.9] },
+  // Three good frames and a stall. Averages ~23fps, which is what a struggling
+  // browser reports, but one frame in four is past the step ceiling — so the
+  // AVERAGE frame rate is not what decides whether the sim keeps up.
+  { label: 'hitchy~23', fps: 23, periodsMs: [16.7, 16.7, 16.7, 120.0] },
 ];
 
 const REFERENCE_LABEL = '120fps';
@@ -362,6 +370,10 @@ function runCase(rate: RateCase, mv: Manoeuvre): RunResult {
   let nextEvent = 0;
 
   let nowMs = 0;
+  // The controller reads the clock to close off each frame's held time. Point it
+  // at the simulated one so the run is repeatable and independent of how long
+  // the probe itself takes to execute.
+  input.timeSourceMs = () => nowMs;
   let frames = 0;
   let steps = 0;
   let saturatedFrames = 0;
@@ -390,7 +402,7 @@ function runCase(rate: RateCase, mv: Manoeuvre): RunResult {
     // is exactly what a browser does with a flick shorter than a frame.
     while (nextEvent < events.length && events[nextEvent].t * 1000 <= nowMs + 1e-9) {
       const e = events[nextEvent++];
-      fireKey(e.type, e.key);
+      fireKey(e.type, e.key, e.t * 1000);
     }
 
     const stepsThisFrame = clock.advance(nowMs);
@@ -633,14 +645,18 @@ console.log(`\n  ceiling frame period = ${MAX_STEPS_PER_FRAME} x ${(PHYSICS_DT *
 console.log(`  lowest tested rate with zero saturated frames: ${firstClean} fps`);
 
 // Jitter matters here too: a run that AVERAGES a safe rate can still stall.
-console.log('\n  jittery frame delivery at a safe average rate:');
-for (const rate of RATE_CASES.filter((r) => r.label.startsWith('jitter'))) {
+// An AVERAGE frame rate well clear of the ceiling proves nothing: the ceiling
+// is applied per frame, so one stalled frame in a fast stream still discards
+// time. This is the difference between "I get 24fps" and "I get 24fps".
+console.log('\n  irregular frame delivery at a safe AVERAGE rate:');
+for (const rate of RATE_CASES.filter((r) => r.periodsMs.length > 1)) {
   const r = runCase(rate, satMv);
   const wanted = Math.round(satMv.durationS / PHYSICS_DT);
+  const meanFps = 1000 / (rate.periodsMs.reduce((a, b) => a + b, 0) / rate.periodsMs.length);
   console.log(
     `    ${padr(rate.label, 12)} periods ${rate.periodsMs.map((p) => p.toFixed(1)).join('/')}ms  ` +
-    `sat ${r.saturatedFrames}/${r.frames}  realtime x${r.realtimeFactor.toFixed(3)}  ` +
-    `lost ${((wanted - r.steps) * PHYSICS_DT).toFixed(3)}s`,
+    `(mean ${meanFps.toFixed(1)}fps)  sat ${r.saturatedFrames}/${r.frames}  ` +
+    `realtime x${r.realtimeFactor.toFixed(3)}  lost ${((wanted - r.steps) * PHYSICS_DT).toFixed(3)}s`,
   );
 }
 
@@ -665,10 +681,11 @@ for (const rate of RATE_CASES) {
   const input = new InputController();
   input.attach(stubElement());
   const c = freshControls();
-  fireKey('keydown', 'd');
   const holdS = 0.2;
   let t = 0;
   let i = 0;
+  input.timeSourceMs = () => t * 1000;
+  fireKey('keydown', 'd', 0);
   while (t < holdS - 1e-9) {
     let dt = rate.periodsMs[i++ % rate.periodsMs.length] / 1000;
     if (t + dt > holdS) dt = holdS - t;
@@ -676,7 +693,7 @@ for (const rate of RATE_CASES) {
     input.update(dt, c, 150 / 3.6, 1, 1);
   }
   console.log('   ' + padr(rate.label, 10) + pad(input.targetSteer.toFixed(9), 14) + pad(c.steer.toFixed(9), 12));
-  fireKey('keyup', 'd');
+  fireKey('keyup', 'd', t * 1000);
   input.detach();
 }
 console.log('   (0.200s x 3.4/s = 0.680 expected if the ramp is dt-invariant)');
@@ -771,49 +788,89 @@ for (const rate of RATE_CASES) {
   );
 }
 
-// (3) Edge quantisation. How much of a short press survives to the key set?
-console.log('\n3. EDGE QUANTISATION — how much of a short press is ever OBSERVED by a frame?');
-console.log('   A key held for L is only seen by frames that tick while it is down, and each such');
-console.log('   frame ramps by rate x its own dt. So the steer the press produces is proportional');
-console.log('   to (frames that ticked) x (frame period), not to L. Averaged over 400 start phases,');
-console.log('   that is unbiased — but the SPREAD is what the player feels, because their finger');
+// (3) Edge quantisation. How much of a short press reaches the steering?
+console.log('\n3. EDGE QUANTISATION — how much of a short press reaches the steering?');
+console.log('   A press of length L lands at an arbitrary point inside a frame. This drives the');
+console.log('   REAL InputController through 400 start phases per rate and reports the steering');
+console.log('   the press actually bought, as a percentage of rate x L — what it would buy if');
+console.log('   the press were timed rather than counted in frames. 100% at every rate is the');
+console.log('   property being asserted; the SPREAD is what a player feels, because their finger');
 console.log('   has no idea where in the frame it landed.');
 console.log('   ' + padr('rate', 11) + pad('frameMs', 9) +
   '   ' + padr('40ms press', 22) + padr('80ms press', 22) + padr('250ms press', 22));
 console.log('   ' + padr('', 11) + pad('', 9) +
-  '   ' + padr('min..max of L   lost', 22) + padr('min..max of L   lost', 22) + padr('min..max of L   lost', 22));
+  '   ' + padr('min..max of ideal lost', 22) + padr('min..max of ideal lost', 22) +
+  padr('min..max of ideal lost', 22));
+
+/** Worst spread seen in this section, for the verdict. */
+let edgeWorstSpreadPct = 0;
+let edgeWorstName = '';
+let edgeAnyLost = false;
 
 for (const rate of RATE_CASES) {
   const period = rate.periodsMs.reduce((a, b) => a + b, 0) / rate.periodsMs.length;
   const cells: string[] = [];
   for (const pressMs of [40, 80, 250]) {
-    // A frame at time tau observes the key held iff t0 <= tau < t0 + L, and it
-    // ramps with dt = the period it just consumed. So the effective ramp time is
-    // (number of frame ticks landing inside the press) x period.
     let lo = Infinity, hi = 0, lost = 0;
     const trials = 400;
+    // What a perfectly timed press would buy. moveToward is linear until it
+    // saturates at 1, and these presses are all well short of that.
+    const ideal = DEFAULT_INPUT_CONFIG.keyboardSteerRate * (pressMs / 1000);
+
     for (let k = 0; k < trials; k++) {
       const t0 = (k / trials) * period;
-      let ticks = 0;
-      // Frames tick at period, 2*period, ... Count those inside [t0, t0+L).
-      const first = Math.ceil(t0 / period);
-      for (let n = first; n * period < t0 + pressMs; n++) ticks++;
-      const observed = ticks * period;
-      if (observed < lo) lo = observed;
-      if (observed > hi) hi = observed;
-      if (ticks === 0) lost++;
+      windowListeners.clear();
+      const input = new InputController();
+      input.attach(stubElement());
+      const c = freshControls();
+      let tMs = 0;
+      input.timeSourceMs = () => tMs;
+
+      let downFired = false;
+      let upFired = false;
+      let peak = 0;
+      // Run well past the press so the frame that observes the release is
+      // included, but read the PEAK: that is what the car ever saw.
+      const endMs = t0 + pressMs + period * 3;
+      let i = 0;
+      while (tMs < endMs) {
+        const next = tMs + rate.periodsMs[i++ % rate.periodsMs.length];
+        // The event loop delivers everything stamped at or before this frame.
+        if (!downFired && t0 <= next) { fireKey('keydown', 'd', t0); downFired = true; }
+        if (!upFired && t0 + pressMs <= next) {
+          fireKey('keyup', 'd', t0 + pressMs); upFired = true;
+        }
+        const dt = (next - tMs) / 1000;
+        tMs = next;
+        input.update(dt, c, 150 / 3.6, 1, 1);
+        if (input.targetSteer > peak) peak = input.targetSteer;
+      }
+      input.detach();
+
+      const frac = peak / ideal;
+      if (frac < lo) lo = frac;
+      if (frac > hi) hi = frac;
+      if (peak <= 1e-9) lost++;
     }
+
+    const spread = lo > 1e-9 ? (hi / lo - 1) * 100 : Infinity;
+    if (Number.isFinite(spread) && spread > edgeWorstSpreadPct) {
+      edgeWorstSpreadPct = spread;
+      edgeWorstName = `${pressMs}ms @ ${rate.label}`;
+    }
+    if (lost > 0) edgeAnyLost = true;
     cells.push(
-      `${(lo / pressMs * 100).toFixed(0)}-${(hi / pressMs * 100).toFixed(0)}%` +
+      `${(lo * 100).toFixed(0)}-${(hi * 100).toFixed(0)}%` +
       `  ${lost > 0 ? (lost / trials * 100).toFixed(0) + '%' : '-'}`,
     );
   }
   console.log('   ' + padr(rate.label, 11) + pad(period.toFixed(2), 9) +
     '   ' + padr(cells[0], 22) + padr(cells[1], 22) + padr(cells[2], 22));
 }
-console.log('   "lost" = fraction of start phases at which NO frame ever sees the key down,');
-console.log('   i.e. the press produces exactly zero steering. Jitter rows use the MEAN period,');
-console.log('   so they understate the real spread of a genuinely irregular frame stream.');
+console.log('   "lost" = fraction of start phases at which the press produces NO steering at all.');
+console.log('   Jitter rows use the MEAN period, so they understate a genuinely irregular stream.');
+console.log(`   worst spread in this section: ${edgeWorstSpreadPct.toFixed(1)}%  (${edgeWorstName})` +
+  (edgeAnyLost ? '   — AND SOME PRESSES ARE STILL LOST' : '   — no press is ever lost'));
 
 // ===========================================================================
 // Verdict
@@ -866,4 +923,47 @@ console.log('\n  Past the tyre peak (real, but chaotic — the size is not attri
 console.log(`    worst peak-steer spread:  ${satSteer.pct.toFixed(1)}%  (${satSteer.name})`);
 console.log(`    worst peak-yaw spread:    ${satYaw.pct.toFixed(1)}%  (${satYaw.name})`);
 console.log(`    worst off-line deviation: ${satLat.toFixed(3)} m  (${satLatName})`);
+
+// The same numbers restricted to perfectly steady frame rates, so the reader can
+// see how much of the spread is the frame RATE and how much is the frame JITTER.
+let steadyYaw = 0, steadyYawName = '', steadySteer = 0, steadySteerName = '';
+const steady = RATE_CASES.filter((r) => r.periodsMs.length === 1);
+for (const mv of MANOEUVRES) {
+  const byRate = allResults.get(mv.name)!;
+  if (RATE_CASES.some((rc) => pastPeak(byRate.get(rc.label)!))) continue;
+  const yaws = steady.map((rc) => byRate.get(rc.label)!.peakYawRate);
+  const steers = steady.map((rc) => byRate.get(rc.label)!.peakSteerInput);
+  const rel = (a: number[]): number =>
+    ((Math.max(...a) - Math.min(...a)) / Math.max(Math.min(...a), 1e-9)) * 100;
+  if (rel(yaws) > steadyYaw) { steadyYaw = rel(yaws); steadyYawName = mv.name; }
+  if (rel(steers) > steadySteer) { steadySteer = rel(steers); steadySteerName = mv.name; }
+}
+console.log('\n  Restricted to PERFECTLY STEADY rates (15..144fps, no jitter, linear range):');
+console.log(`    worst peak-steer spread:  ${steadySteer.toFixed(1)}%  (${steadySteerName})`);
+console.log(`    worst peak-yaw spread:    ${steadyYaw.toFixed(1)}%  (${steadyYawName})`);
+
+console.log('\n  Mechanisms:');
+console.log('    A. EDGE QUANTISATION of the key hold — FIXED, and this probe is what found it.');
+console.log('       A hold of length L used to be seen only by the frames that ticked while it');
+console.log('       was down, each ramping by rate x its own dt, so the steering it bought was');
+console.log('       proportional to (ticks inside L) x frame period rather than to L. At 66.7ms');
+console.log('       frames a 200ms hold bought 133ms of ramp; at 6.9ms frames, 194ms. Same');
+console.log('       finger, 46% more steering at 144fps than at 15fps, rising monotonically the');
+console.log('       whole way — and a 40ms flick was discarded outright on 40% of attempts at');
+console.log('       15fps. InputController now integrates the time each control was ACTUALLY');
+console.log('       down, taken from the event timestamps, and applies the held and unheld');
+console.log('       portions of a frame in the order they happened. Measured on "catch gentle":');
+console.log('       peak-steer spread 47.0% -> 9.3%, off-line deviation at 15fps 6.92m -> 0.13m.');
+console.log('    B. ZERO-ORDER HOLD of the sampled steer across a frame\'s physics steps. This is');
+console.log('       the residue in section 3, and it is inherent to sampling input once per frame:');
+console.log('       a deflection that begins and ends inside one frame is never seen by the');
+console.log('       physics at all. It bounds how good A can get. Section 2 isolates it — mean');
+console.log('       steer error against a per-step ideal falls ~9x from 15fps to 144fps. Removing');
+console.log('       it means ramping per 120Hz step rather than per frame, which is legitimate');
+console.log('       for a KEY (the edges are timestamped, so it is reconstruction rather than');
+console.log('       invention) but not for a stick (there is no sample between polls to use).');
+console.log('    C. STEP-CEILING SATURATION, below ~15fps instantaneous. Not a frame-rate effect');
+console.log('       on the INPUT — the whole simulation slows down. See the hitchy~23 row.');
+console.log('    NOT a mechanism: the ramp rates themselves. Section 1 shows moveToward is');
+console.log('    exactly dt-invariant — identical to nine decimal places at every rate.');
 console.log('');
