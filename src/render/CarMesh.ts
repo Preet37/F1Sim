@@ -2174,7 +2174,12 @@ function buildShellParts(
       p.flat(aeroStrut(
         side * 0.348, 0.610, -0.300,
         side * 0.258, 0.540, -0.306,
-        0.078, 0.044, t.strut,
+        // Slim. A real fitting is a bracket you can barely see, and at 78 by
+        // 44mm the first version read from the airbox camera as a black wedge
+        // standing out of the flank — trading a hoop that floated for a lump
+        // that did not belong. 62 by 32 is the hoop's own section carried down
+        // into the cell, which is what the eye expects a leg to be.
+        0.062, 0.032, t.strut,
       ), 'trim');
     }
     // The forward pillar's root, down into the cockpit trough's floor. Built as
