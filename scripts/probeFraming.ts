@@ -8,6 +8,7 @@ import {
   DRIVER_EYE_Y, EYE_Y, MIRROR_GLASS_Z, MIRROR_TARGET_X, MIRROR_TARGET_Y, MIRROR_TARGET_Z,
   MIRROR_X, MIRROR_Y, MIRROR_Z, mirrorPaneBasis, mirrorPaneCorners, WHEEL_Y, WHEEL_Z,
 } from '../src/render/CockpitMesh';
+import { MIRROR_PANES, type PaneRect } from '../src/ui/Hud';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CIRCUITS } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
@@ -422,6 +423,23 @@ interface Measured {
   paneBlockedPct: number;
   /** Worst of the two panes' aim errors, degrees. See `aimErrorMaxDeg`. */
   aimErrorDeg: number;
+  /**
+   * Each pane's bounding rectangle on screen, percentages of the frame.
+   *
+   * WHAT THE HUD IS LAID OUT AGAINST. `MIRROR_PANES` in `src/ui/Hud.ts`
+   * declares a keep-out rectangle per pane per camera, and the stylesheet
+   * moves the whole bottom band out of it — that is how a weather bug drawn
+   * across the left mirror got fixed. This is the other half of that contract:
+   * the geometry is re-measured every run and the declared rectangle has to
+   * still contain it, so nobody can move the mirror mount and silently leave
+   * the HUD standing on the glass.
+   *
+   * Measured through BOTH the live camera and the camera with the head put
+   * straight. A driver looking through a corner swings the outside pane most
+   * of the way to the frame edge; a keep-out that only covered the resting
+   * position would be honoured on the straights and broken everywhere else.
+   */
+  paneRects: PaneRect[];
 }
 
 function measure(
@@ -509,6 +527,7 @@ function measure(
   let panePct = 0;
   let mirrorOffPct = 0;
   let paneBlockedPct = 0;
+  const paneRects: PaneRect[] = [];
   for (const side of [1, -1] as const) {
     const corners = mirrorPaneCorners(side);
     // Where it lands is measured with the head STRAIGHT — see `headTurn` — and
@@ -523,8 +542,16 @@ function measure(
     const wide = Math.max(...xs) - Math.min(...xs);
     if (wide > panePct) panePct = wide;
     const restXs = restPts.map((p) => p!.xPct);
+    const restYs = restPts.map((p) => p!.yPct);
     const cx = (Math.max(...restXs) + Math.min(...restXs)) * 0.5;
     mirrorOffPct = Math.max(mirrorOffPct, Math.max(cx, 100 - cx));
+    // The union of the two, which is the box the HUD has to stay out of.
+    paneRects.push({
+      x0: Math.min(...xs, ...restXs),
+      y0: Math.min(...ys, ...restYs),
+      x1: Math.max(...xs, ...restXs),
+      y1: Math.max(...ys, ...restYs),
+    });
 
     // How much of the pane's bounding box the hoop's mask covers. Coarse — it
     // is a rectangle against a rasterised silhouette — but it is the same
@@ -600,6 +627,7 @@ function measure(
     panePct,
     paneBlockedPct,
     aimErrorDeg,
+    paneRects,
   };
 }
 
@@ -693,6 +721,34 @@ for (const def of CIRCUITS) {
       }
       if (m.aimErrorDeg > TARGET.aimErrorMaxDeg) {
         bad.push(`a mirror points ${m.aimErrorDeg.toFixed(0)} degrees off the road it is aimed at`);
+      }
+      // --- The keep-out the HUD is laid out against ----------------------
+      //
+      // Each measured pane must still sit inside the rectangle declared for it
+      // in `MIRROR_PANES`. A pane that has escaped is a pane the weather bug
+      // or the tyre panel is about to be drawn across — which is the fault
+      // this pair of checks exists to prevent, and which was live in the game
+      // on the day the mirrors were first made to work.
+      const declared = MIRROR_PANES[mode as keyof typeof MIRROR_PANES] as
+        readonly PaneRect[] | undefined;
+      if (declared) {
+        for (const r of m.paneRects) {
+          const side = r.x0 + r.x1 < 100 ? 'left' : 'right';
+          const d = declared.find((k) => (k.x0 + k.x1 < 100) === (r.x0 + r.x1 < 100));
+          if (!d) continue;
+          // Clamped, because a pane may legitimately leave the frame at full
+          // lock and a rectangle cannot follow it off the edge.
+          const x0 = Math.max(0, r.x0);
+          const x1 = Math.min(100, r.x1);
+          if (x0 < d.x0 || x1 > d.x1 || r.y0 < d.y0 || r.y1 > d.y1) {
+            bad.push(
+              `the ${side} mirror pane [${x0.toFixed(1)},${r.y0.toFixed(1)} ` +
+              `${x1.toFixed(1)},${r.y1.toFixed(1)}] has escaped the keep-out ` +
+              `MIRROR_PANES declares for it [${d.x0},${d.y0} ${d.x1},${d.y1}] — ` +
+              'the HUD is laid out against that rectangle',
+            );
+          }
+        }
       }
       if (m.wheelPct < TARGET.wheelPct[0] || m.wheelPct > TARGET.wheelPct[1]) {
         bad.push(`the wheel rim tops out at ${m.wheelPct.toFixed(0)}% of frame height`);

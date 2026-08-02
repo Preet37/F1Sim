@@ -307,7 +307,28 @@ canvas#view {
   z-index: 10;
   font-size: 13px;
   line-height: 1.25;
+
+  /* THE MIRROR FLOOR.
+     Three of the eight cameras have the car's own mirrors in shot, and a
+     mirror is not decoration — it is the only way to see a car that is about
+     to be alongside. So the panes are treated exactly as the racing surface
+     is: part of the frame the HUD is not allowed to stand on. The mirrors had
+     been mounted 78.6 degrees out of roll since they were written, and on the
+     frame they were fixed the weather bug was lying across the left pane in
+     the driver's eye and the tyre panel across it in the cockpit.
+
+     `Hud.setCameraMode` writes the three properties below off `MIRROR_PANES`,
+     which is measured by `probe:framing` off the geometry the mesh is built
+     from. Everything anchored to the bottom edge is offset by `--floor`, so
+     one number moves the whole bottom band clear; `--mirror-l` and
+     `--mirror-r` are the corridor between the two panes, for the few things
+     that go sideways instead of up. `shoot:panels` fails on any intersection.
+
+     Zero in the five cameras that see no glass, where the HUD has the whole
+     frame back. */
+  --floor: 0px;
 }
+.hud[data-mirrors] { --floor: var(--mirror-bottom); }
 
 .hud-panel {
   position: absolute;
@@ -2169,6 +2190,119 @@ canvas#view {
   }
   .hud-notices { --rail-w: 392px; }
   .tower-lastlap, .c-lap { display: block; }
+}
+
+/* ==========================================================================
+   HUD — the mirror band
+
+   LAST IN THE FILE ON PURPOSE. These rules have to beat the three media
+   queries above them, and they are the same specificity as the rules inside
+   them, so source order is what decides it. They are also the only place in
+   the HUD that changes with the CAMERA rather than with the viewport.
+
+   WHAT THIS IS FOR. Three of the eight cameras have the car's own mirrors in
+   shot. The mirrors had been mounted 78.6 degrees out of roll since the day
+   they were written; on the frame they were finally made to work, the weather
+   bug was drawn across the left pane in the driver's eye and the tyre panel
+   across it in the cockpit — so on a landscape phone the player could not see
+   one of their own mirrors in either roll-hoop view, and the fix that had just
+   landed was invisible. A mirror is the only way to see a car that is about to
+   be alongside. It is part of the frame the HUD keeps clear, in exactly the
+   sense the racing surface is.
+
+   THE RULE, in one line: below `--mirror-top` the HUD may use the corridor
+   between the two panes and nothing else, so everything anchored to the bottom
+   edge lifts by `--floor` and the few panels that cannot be lifted go sideways
+   into the corridor or stand down. The numbers come from `MIRROR_PANES` in
+   `Hud.ts`, which `probe:framing` re-measures off the mesh geometry every run;
+   `shoot:panels` measures the real DOM against them in every viewport and
+   every onboard camera and fails on any intersection.
+
+   WHAT PAYS FOR IT. The running order — see `towerFit`, which takes the floor
+   as a parameter and drops to four rows under it — and the circuit map, which
+   stands down. The map is a plan view of the track the driver is looking
+   through the windscreen at, and it was the panel sitting on the right pane in
+   all three onboard cameras. It comes back the moment the camera does.
+   ========================================================================== */
+
+.hud[data-mirrors] .hud-map { display: none; }
+
+/* The left column, lifted whole. The rail's top comes up with it, because a
+   band whose foot has risen 274 pixels and whose head has not is a band with
+   nothing in it. */
+.hud[data-mirrors] .hud-carstate { bottom: calc(10px + var(--safe-b) + var(--floor)); }
+.hud[data-mirrors] .hud-weather { bottom: calc(116px + var(--safe-b) + var(--floor)); }
+/* The rail's top follows the RUNNING ORDER rather than a fraction of the
+   viewport. `--rail-top` is the tower's own measured bottom edge, written by
+   `Hud.updateTower` on the frames where the row count changes; a band whose
+   foot has risen 274 pixels and whose head has not is a band with nothing in
+   it, and half the viewport is not where the tower ends once it has dropped to
+   four rows. */
+.hud[data-mirrors] .hud-notices {
+  top: var(--rail-top, max(240px, calc(50vh - var(--floor))));
+  bottom: calc(172px + var(--safe-b) + var(--floor));
+}
+/* The camera name and the frame counter sit under the right-hand column and
+   are the only two things in the bottom-right corner that survive. */
+.hud[data-mirrors] .hud-camera { bottom: calc(10px + var(--safe-b) + var(--floor)); }
+.hud[data-mirrors] .hud-diag { bottom: calc(28px + var(--safe-b) + var(--floor)); }
+
+/* --- Portrait -------------------------------------------------------- */
+@media (max-width: 620px) and (orientation: portrait) {
+  .hud[data-mirrors] .hud-carstate { bottom: calc(10px + var(--safe-b) + var(--floor)); }
+  .hud[data-mirrors] .hud-damage { bottom: calc(10px + var(--safe-b) + var(--floor)); }
+  .hud[data-mirrors] .hud-weather { bottom: calc(150px + var(--safe-b) + var(--floor)); }
+  /* Never above the gap readout, which holds the strip under the wheel panel
+     in portrait — so here the measured tower bottom is a floor rather than the
+     answer. The exception is a stop being chosen: the tower has already given
+     up its rows for that, and the gap to the car ahead is not the number being
+     read while a tyre is being picked. */
+  .hud[data-mirrors] .hud-notices {
+    top: max(var(--rail-top, 300px), calc(300px + var(--safe-t)));
+    bottom: calc(196px + var(--safe-b) + var(--floor));
+  }
+  .hud.pit-open[data-mirrors] .hud-notices { top: var(--rail-top, 300px); }
+  .hud.pit-open[data-mirrors] .hud-gaps { display: none; }
+  /* Already clear: the buttons sit 300px up in portrait, which is above the
+     band in all three cameras. Lifting them again would put them through the
+     wheel panel. */
+  .hud[data-mirrors] .hud-buttons { bottom: calc(300px + var(--safe-b)); }
+}
+
+/* --- Landscape phones -------------------------------------------------
+   The tightest case in the game and the only one where the band does not
+   simply lift: 390 pixels of height less a 119-pixel band leaves 271, and the
+   left column alone wants more than that. So the rail keeps the left edge and
+   takes the whole of what is left of it, and the four panels that used to
+   share the bottom strip with it move right — into the corridor between the
+   two panes, which is 434 pixels wide in the driver's eye and 261 in the
+   cockpit. The weather bug is the one that does not fit and stands down; it is
+   the only panel here whose fact is also legible out of the windscreen. */
+@media (max-height: 470px) {
+  .hud[data-mirrors] .hud-weather { display: none; }
+  .hud[data-mirrors] .hud-notices {
+    top: var(--rail-top, calc(150px + var(--safe-t)));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-carstate {
+    left: max(280px, calc(var(--mirror-l) + 6px));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
+  /* Each of the four is placed against the corridor's left edge plus the width
+     of everything already standing on it, so they stay in the same order and
+     the same relationship to each other in all three cameras. */
+  .hud[data-mirrors] .hud-gaps {
+    left: max(448px, calc(var(--mirror-l) + 154px));
+    bottom: calc(48px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-buttons {
+    left: max(448px, calc(var(--mirror-l) + 154px));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-damage {
+    left: max(600px, calc(var(--mirror-l) + 306px));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
 }
 
 /* ===================================================================== */

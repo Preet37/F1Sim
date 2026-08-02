@@ -98,12 +98,50 @@ async function main(): Promise<void> {
   // intersection or anything escaping the rail's band fails the sweep.
   const railFailures: string[] = [];
 
+  // THE MIRROR CHECK, and it is the second thing in this game the HUD is not
+  // allowed to stand on. The mirrors had been mounted 78.6 degrees out of roll
+  // since they were written; on the frame they were fixed, the weather bug was
+  // lying across the left pane in the driver's eye and the tyre panel across it
+  // in the cockpit — so on a landscape phone the player could not see one of
+  // their own mirrors in either roll-hoop view. Same method as the rail: the
+  // panes are boxes, the HUD is boxes, and an intersection fails the sweep.
+  const MIRROR_MODES = ['driver', 'cockpit', 'onboard-t'];
+  const mirrorFailures: string[] = [];
+
   for (const vp of VIEWPORTS) {
     await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
     for (const scene of HUD_SCENES) {
       await page.evaluate((s: string) => window.__panels.hud(s), scene);
       const file = `${vp.name}-hud-${scene}.png`;
       await page.screenshot({ path: resolve(OUT, file) as `${string}.png` });
+
+      for (const mode of MIRROR_MODES) {
+        await page.evaluate((m: string) => window.__panels.camera(m), mode);
+        const mirrors = await page.evaluate(
+          (m: string) => window.__panels.mirrorReport(m), mode,
+        ) as { panes: string[]; boxes: string[]; overlaps: string[] };
+        for (const o of mirrors.overlaps) {
+          mirrorFailures.push(`${vp.name}/${scene}/${mode}: ${o}`);
+        }
+        if (mirrors.overlaps.length > 0 && vp.name === 'desktop' && scene === 'rail-max') {
+          console.log('      panes: ' + mirrors.panes.join('  '));
+        }
+        // The rail's own guarantee has to survive the relayout, not just the
+        // mirrors': lifting the whole bottom band by 274 pixels is exactly the
+        // kind of move that stacks two panels on each other somewhere else.
+        const railHere = await page.evaluate(() => window.__panels.railReport()) as {
+          boxes: string[]; overlaps: string[]; clipped: string[];
+        };
+        for (const o of railHere.overlaps) {
+          railFailures.push(`${vp.name}/${scene}/${mode}: overlap ${o}`);
+        }
+        for (const c of railHere.clipped) {
+          railFailures.push(`${vp.name}/${scene}/${mode}: clipped ${c}`);
+        }
+      }
+      // Back to a camera with no glass in it, so the rail is measured in the
+      // layout the rest of this sweep photographs.
+      await page.evaluate(() => window.__panels.camera('chase'));
 
       const rail = await page.evaluate(() => window.__panels.railReport()) as {
         boxes: string[]; overlaps: string[]; clipped: string[];
@@ -167,10 +205,32 @@ async function main(): Promise<void> {
   if (railFailures.length) {
     console.log(`\n${railFailures.length} rail layout failure(s) — nothing on the rail may`);
     console.log('cover anything else, in any viewport, in any combination:');
-    for (const f of railFailures) console.log('  ' + f);
+    const seenRail = new Set<string>();
+    for (const f of railFailures) {
+      const key = f.slice(f.indexOf(':'));
+      if (seenRail.has(key)) continue;
+      seenRail.add(key);
+      console.log('  ' + f);
+    }
     process.exitCode = 1;
   } else {
     console.log('rail: nothing overlaps anything, all viewports, all scenes');
+  }
+  if (mirrorFailures.length) {
+    console.log(`\n${mirrorFailures.length} mirror layout failure(s) — nothing in the HUD may`);
+    console.log('cover a mirror pane, in any viewport, in any camera that has glass in it:');
+    // One line per distinct complaint: the same widget over the same pane on
+    // three viewports is one thing to fix, not three.
+    const seen = new Set<string>();
+    for (const f of mirrorFailures) {
+      const key = f.slice(f.indexOf(':'));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      console.log('  ' + f);
+    }
+    process.exitCode = 1;
+  } else {
+    console.log('mirrors: nothing covers a pane, all viewports, all onboard cameras');
   }
   if (errors.length) {
     for (const e of errors) console.log('  ' + e);

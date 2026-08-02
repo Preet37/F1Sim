@@ -182,6 +182,15 @@ export class Hud {
   /** Lights lit last frame, so each transition fires exactly once. */
   private litCount = -1;
   private rows: Row[] = [];
+  /**
+   * The tower's shape — row count and whether the flag band is out.
+   *
+   * The only two things that change its HEIGHT, and the rail below it is laid
+   * out against that height. Kept as a string so one compare covers both and
+   * `Hud.update` measures nothing on the frames where neither has moved.
+   */
+  private lastTowerShape = '';
+  private flagBandShown = false;
 
   private buttonBar!: HTMLElement;
   private cameraButton!: HTMLElement;
@@ -1197,7 +1206,7 @@ export class Hud {
    */
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
-    const fit = towerFit(window.innerWidth, window.innerHeight);
+    const fit = towerFit(window.innerWidth, window.innerHeight, this.mirrorFloorPx);
     // THE TOWER GIVES WAY TO THE PIT SHEET on a short screen. 390 pixels of
     // height leaves the notice rail a 94-pixel band between the running order
     // and the tyre panel, and no arrangement of a tyre choice and a wing choice
@@ -1209,7 +1218,11 @@ export class Hud {
     // written inline by the loop below, and an inline style beats any rule a
     // media query can offer. The tower's own row count is the only honest place
     // to say "no rows".
-    const squeezed = this.pitSheetOpen && window.innerHeight <= 470;
+    // ...and under the mirror cameras for the same reason: the band the rail
+    // has left, once it has lifted clear of the glass, is not one a tyre
+    // choice and a wing choice fit in either.
+    const squeezed = this.pitSheetOpen &&
+      (window.innerHeight <= 470 || this.mirrorFloor > 0);
     const shown = squeezed ? 0 : Math.min(standings.length, fit.rows);
     this.ensureRows(shown);
 
@@ -1300,6 +1313,21 @@ export class Hud {
         + (car === player ? ' is-player' : '')
         + (car.retired || car.disqualified ? ' is-out' : '')
         + (sessionBest > 0 && car.bestLapTime === sessionBest ? ' is-fastest' : ''));
+    }
+
+    // WHERE THE RAIL STARTS. The notice rail used to begin at half the
+    // viewport height, which is a guess about where the running order ends —
+    // and it is wrong the moment the tower changes size, which it now does
+    // whenever the camera picks up the mirrors. So the tower measures itself
+    // and the rail is laid out against the answer.
+    //
+    // One layout read, on the frames where the row count or the flag band has
+    // actually changed. `Hud.update` does not measure anything.
+    const shape = shown + '|' + (this.flagBandShown ? 'f' : '');
+    if (shape !== this.lastTowerShape) {
+      this.lastTowerShape = shape;
+      const bottom = Math.round(this.tower.getBoundingClientRect().bottom);
+      if (bottom > 0) this.root.style.setProperty('--rail-top', bottom + 8 + 'px');
     }
   }
 
@@ -1458,9 +1486,7 @@ export class Hud {
     this.root.classList.toggle('pit-open', open);
     if (open) {
       this.hideRadioCard(true);
-      while (this.alertCards.length > this.maxAlerts()) {
-        this.dismissAlert(this.alertCards[0], true);
-      }
+      this.fitRail();
     }
   }
 
@@ -1479,13 +1505,79 @@ export class Hud {
    * where that string has actually changed, which is a handful per race.
    */
   private enforceRailBudget(): void {
+    // The viewport is in the key because a rotation changes the band without
+    // changing anything on it, and a rail that only re-checks itself when a
+    // card arrives is a rail that stays wrong until the next message.
     const key = this.neutralCue.style.display + '|' + this.pitCue.style.display + '|' +
-      this.radioCard.style.display + '|' + (this.pitSheetOpen ? 'pit' : '');
+      this.radioCard.style.display + '|' + (this.pitSheetOpen ? 'pit' : '') + '|' +
+      this.lastTowerShape + '|' + window.innerWidth + 'x' + window.innerHeight +
+      '|' + this.mirrorFloor;
     if (key === this.lastPinned) return;
     this.lastPinned = key;
-    while (this.alertCards.length > this.maxAlerts()) {
-      this.dismissAlert(this.alertCards[0], true);
+    this.fitRail();
+  }
+
+  /**
+   * Empties the rail until what is in it fits the band it has.
+   *
+   * THE BUDGET, MEASURED RATHER THAN PREDICTED. `maxAlerts` divides the band by
+   * the shortest a card is ever laid out at, which is a good estimate and was
+   * the right answer while the band was a fixed strip. It is not one any more:
+   * the band's foot rises by up to a third of the viewport when the camera
+   * picks up the mirrors, and its head now follows the running order, so the
+   * two ends move independently and an estimate is wrong in both directions.
+   * This asks the browser what actually fits.
+   *
+   * The eviction order is the priority order. The oldest pop-up goes first —
+   * it is the one already read — and the radio card after them, because it is
+   * the one item on the rail that is atmosphere rather than instruction. The
+   * two live cues and the pit sheet are never evicted: a cue is the state of
+   * the race and the sheet is a decision with a deadline.
+   *
+   * One layout read per rail CHANGE. `Hud.update` reaches this through
+   * `enforceRailBudget`, which compares a string first and returns.
+   */
+  private fitRail(): void {
+    // A STOP BEING CHOSEN TAKES THE RAIL. The sheet is a decision with a
+    // deadline measured in corners and a pop-up over it is the fault this
+    // whole arrangement exists to prevent, so the pop-ups go whether or not
+    // they would have fitted beside it.
+    if (this.pitSheetOpen) {
+      for (const c of this.alertCards.slice()) this.dismissAlert(c, true);
     }
+    // Bounded so a card taller than the whole band cannot spin here.
+    for (let guard = 0; guard < 8; guard++) {
+      if (this.railOverflowPx() <= 0) return;
+      if (this.alertCards.length > 0) {
+        this.dismissAlert(this.alertCards[0], true);
+        continue;
+      }
+      if (this.radioCard.style.display !== 'none') {
+        this.hideRadioCard(true);
+        continue;
+      }
+      return;
+    }
+  }
+
+  /** How far the rail's contents overrun its band, pixels. */
+  private railOverflowPx(): number {
+    const band = this.notices.clientHeight;
+    // Before the first layout — in a probe, or on the frame the HUD is built —
+    // there is nothing to measure and nothing has been shown yet.
+    if (band <= 0) return 0;
+    const gap = parseFloat(getComputedStyle(this.notices).rowGap) || 0;
+    let used = 0;
+    let n = 0;
+    for (const child of this.notices.children) {
+      const e = child as HTMLElement;
+      const h = e.offsetHeight;
+      if (h < 1) continue;
+      used += h;
+      n++;
+    }
+    if (n > 1) used += (n - 1) * gap;
+    return used - band;
   }
 
   private pushAlert(player: CarEntry, line: string, chip: string, tone: AlertTone): void {
@@ -1562,9 +1654,7 @@ export class Hud {
     enterNextFrame(card);
     window.setTimeout(() => this.dismissAlert(card), this.alertDwellMs);
 
-    while (this.alertCards.length > this.maxAlerts()) {
-      this.dismissAlert(this.alertCards[0], true);
-    }
+    this.fitRail();
   }
 
   private dismissAlert(card: HTMLElement, now = false): void {
@@ -1588,14 +1678,13 @@ export class Hud {
   private updateRadioCard(engine: RaceEngine, player: CarEntry): void {
     const rc = engine.raceControl;
 
-    // A card that was admitted on a tall window and is still standing on a
-    // short one. `showRadioCard` declines below 470px and while a stop is being
-    // chosen, but neither of those is checked again once the card is up — so
-    // rotating a phone, or calling for a stop mid-clip, left it hanging out of
-    // the top of the band. Same fault as the pop-up budget: a condition tested
-    // only on the way in is not a condition.
-    if (this.radioCard.style.display !== 'none' &&
-        (window.innerHeight <= 470 || this.pitSheetOpen)) {
+    // A card that was admitted into a tall band and is still standing in a
+    // short one. Rotating a phone, calling for a stop mid-clip, or changing to
+    // a camera with the mirrors in it all shrink the band under a card that is
+    // already up — and a condition tested only on the way in is not a
+    // condition. The size case is handled by `fitRail`, which measures; this is
+    // the one rule that is not about size.
+    if (this.radioCard.style.display !== 'none' && this.pitSheetOpen) {
       this.hideRadioCard(true);
     }
 
@@ -1655,12 +1744,14 @@ export class Hud {
   }
 
   private showRadioCard(player: CarEntry, moment: RadioMoment): void {
-    // 390 pixels of height carries the running order, the live cues, the
-    // weather and the car state, and that is the whole budget. The radio card
-    // is the one item on the rail that is atmosphere rather than instruction,
-    // so it is the one that goes.
-    if (window.innerHeight <= 470) return;
-    // And it stands down entirely while a stop is being chosen. The driver has
+    // WHETHER IT FITS IS MEASURED, at the end of this function, by `fitRail` —
+    // the band's foot rises by up to a third of the viewport under the mirror
+    // cameras and its head follows the running order, so no rule written in
+    // viewport pixels is right in every combination. The card is the one item
+    // on the rail that is atmosphere rather than instruction, so it is the
+    // first thing evicted when the answer is no.
+    //
+    // It stands down entirely while a stop is being chosen. The driver has
     // a decision in front of them with a deadline measured in corners; the rail
     // is not tall enough to carry both, and covering the decision with the
     // atmosphere is the fault this whole pass exists to fix.
@@ -1703,9 +1794,10 @@ export class Hud {
     // out through the top of the mask. The budget is now enforced when the
     // budget CHANGES, not only when something new is pushed. Ordered after the
     // display write because `maxAlerts` reads it.
-    while (this.alertCards.length > this.maxAlerts()) {
-      this.dismissAlert(this.alertCards[0], true);
-    }
+    // The eviction the reported overlap came from, and it is measured now
+    // rather than estimated: `maxAlerts` divides a band whose two ends both
+    // move. See `fitRail`.
+    this.fitRail();
 
     this.radioTimers.push(window.setTimeout(() => {
       this.radioCard.classList.add('leaving');
@@ -1767,14 +1859,45 @@ export class Hud {
    * moves or disappears when the camera changes is a readout you have to go
    * looking for.
    *
-   * Kept as a hook — the camera mode is a thing the HUD is entitled to know —
-   * but it no longer changes the layout.
+   * WHAT IT DOES CHANGE, and the exception is the mirrors. Three of the eight
+   * cameras have the car's own mirrors in shot, and a mirror is not decoration
+   * — it is the only way to see a car that is about to be alongside. The HUD
+   * therefore treats the panes exactly as it treats the racing surface: as part
+   * of the frame it is not allowed to stand on. `MIRROR_PANES` says where they
+   * land, `mirrorBand` reduces that to the corridor between them, and the three
+   * custom properties written here are what the stylesheet lays the bottom band
+   * out against. Every other camera clears the flag and the HUD spreads back
+   * out.
+   *
+   * One attribute and three properties per camera CHANGE, which happens when a
+   * player presses the camera button. Nothing here runs per frame.
    */
   setCameraMode(mode: string): void {
     this.cockpitView = mode === 'cockpit';
+    const band = mirrorBand(mode);
+    this.mirrorFloor = band ? (100 - band.top) / 100 : 0;
+    if (this.root.dataset.camera !== mode) this.root.dataset.camera = mode;
+    if (band) {
+      this.root.dataset.mirrors = 'yes';
+      this.root.style.setProperty('--mirror-l', band.left.toFixed(1) + '%');
+      this.root.style.setProperty('--mirror-r', (100 - band.right).toFixed(1) + '%');
+      this.root.style.setProperty('--mirror-top', band.top.toFixed(1) + '%');
+      this.root.style.setProperty('--mirror-bottom', (100 - band.top).toFixed(1) + '%');
+    } else {
+      delete this.root.dataset.mirrors;
+      for (const p of ['--mirror-l', '--mirror-r', '--mirror-top', '--mirror-bottom']) {
+        this.root.style.removeProperty(p);
+      }
+    }
   }
   /** Which camera is live. Read by nothing yet; see `setCameraMode`. */
   cockpitView = false;
+  /** Height of the mirror band as a fraction of the viewport, 0 when none. */
+  private mirrorFloor = 0;
+  /** The same, in pixels, for `towerFit`. */
+  private get mirrorFloorPx(): number {
+    return this.mirrorFloor * window.innerHeight;
+  }
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? 'block' : 'none';
@@ -1922,6 +2045,122 @@ export function neutralisationCue(
   };
 }
 // ===========================================================================
+// THE MIRRORS
+// ===========================================================================
+
+/**
+ * The three cameras that have the car's own mirrors in shot.
+ *
+ * `bumper`, `chase`, `tv`, `drone` and `trackside` are outside the cockpit or
+ * ahead of it and see no glass at all, so the HUD has the whole frame in those.
+ */
+export type MirrorView = 'driver' | 'cockpit' | 'onboard-t';
+
+export interface PaneRect {
+  /** Percentages of frame width and height, top-left origin. */
+  x0: number; y0: number; x1: number; y1: number;
+}
+
+/**
+ * WHERE THE MIRROR PANES LAND, per camera, as percentages of the frame.
+ *
+ * THE FAULT THIS FIXES. The mirrors were mounted 78.6 degrees out of roll from
+ * the day they were written and were only just made to work. On the frame they
+ * started working, the weather bug was lying across the left pane in the
+ * driver's eye and the tyre panel across it in the cockpit — so on a landscape
+ * phone the player could not see one of their own mirrors in either roll-hoop
+ * view, and the fix that had just landed was invisible.
+ *
+ * A mirror is not decoration. It is the only way to see a car that is about to
+ * be alongside, and it is therefore part of the frame the HUD must keep clear
+ * in exactly the sense the racing surface is. The non-overlap guarantee used to
+ * cover only the left notice rail; these rectangles extend it to the glass.
+ *
+ * MEASURED, NOT DESIGNED. Every number is the envelope of `mirrorPaneCorners`
+ * projected through the real `CameraDirector` on all eleven circuits, in both
+ * frame shapes (2.17:1 and 16:9), with the head at rest AND turned to the stops
+ * — a driver looking through a corner swings the outside pane most of the way
+ * to the frame edge, and a keep-out that ignored that would be clear only on
+ * the straights. `probe:framing` re-measures the geometry every run and fails
+ * if a pane escapes the rectangle declared for it, so a change to the mirror
+ * mount cannot silently invalidate the layout below.
+ *
+ * A one-point margin is added to each measured edge, for the circuits and
+ * chassis attitudes that are not in the twelve-sample sweep.
+ */
+export const MIRROR_PANES: Readonly<Record<MirrorView, readonly PaneRect[]>> = {
+  // The driver's own eye: the panes are nearest and largest here, and the left
+  // one reaches the frame edge in the 16:9 shape.
+  driver: [
+    { x0: 0, y0: 70.5, x1: 20.0, y1: 88.5 },
+    { x0: 71.5, y0: 69.5, x1: 100, y1: 91.0 },
+  ],
+  // The roll-hoop pod, 0.2m behind and above the eye: the panes pull inboard
+  // and drop down the frame.
+  cockpit: [
+    { x0: 5.0, y0: 78.5, x1: 31.0, y1: 93.0 },
+    { x0: 62.0, y0: 77.5, x1: 86.0, y1: 94.0 },
+  ],
+  // The T-cam, 0.8m further back again. Small, low and close to the centre.
+  'onboard-t': [
+    { x0: 24.0, y0: 82.5, x1: 35.0, y1: 89.5 },
+    { x0: 66.0, y0: 82.5, x1: 76.5, y1: 90.5 },
+  ],
+};
+
+/**
+ * The corridor the HUD may use low in the frame, derived from the panes.
+ *
+ * ONE NUMBER EACH, and it is deliberately blunter than the rectangles it comes
+ * from: above `top` the HUD has the whole width, and below it the HUD has
+ * `left` to `right` and nothing outside them. A stylesheet cannot express "this
+ * box may be in the bottom-left corner as long as it is not in that rectangle",
+ * and a rule that cannot be expressed is a rule that gets broken by the next
+ * media query. A corridor is one comparison per edge and it is conservative in
+ * the safe direction.
+ *
+ * Derived rather than declared so the corridor cannot drift from the panes.
+ */
+export function mirrorBand(
+  mode: string,
+): { left: number; right: number; top: number } | null {
+  const panes = MIRROR_PANES[mode as MirrorView] as readonly PaneRect[] | undefined;
+  if (!panes) return null;
+  let left = 0;
+  let right = 100;
+  let top = 100;
+  for (const p of panes) {
+    // Which side of the frame a pane is on decides which edge it pushes.
+    if (p.x0 + p.x1 < 100) left = Math.max(left, p.x1);
+    else right = Math.min(right, p.x0);
+    top = Math.min(top, p.y0);
+  }
+  return { left, right, top };
+}
+
+/**
+ * The panes as pixel boxes, for a harness that measures the real DOM.
+ *
+ * `shoot:panels` walks every HUD box against these and fails on any
+ * intersection, which is the same treatment the notice rail already gets. The
+ * conversion lives here rather than in the harness so the picture and the
+ * assertion are reading one table.
+ */
+export function mirrorPaneBoxes(
+  mode: string, w: number, h: number,
+): { name: string; x: number; y: number; w: number; h: number }[] {
+  const panes = MIRROR_PANES[mode as MirrorView] as readonly PaneRect[] | undefined;
+  if (!panes) return [];
+  return panes.map((p, i) => ({
+    name: 'mirror[' + (p.x0 + p.x1 < 100 ? 'L' : 'R') + i + ']',
+    x: (p.x0 / 100) * w,
+    y: (p.y0 / 100) * h,
+    w: ((p.x1 - p.x0) / 100) * w,
+    h: ((p.y1 - p.y0) / 100) * h,
+  }));
+}
+
+// ===========================================================================
 // THE RUNNING ORDER
 // ===========================================================================
 
@@ -1990,7 +2229,9 @@ function enterNextFrame(card: HTMLElement): void {
  * this repo has a history of HUD panels running off the bottom of a 390px
  * screen — without standing up a browser to measure it.
  */
-export function towerFit(w: number, h: number): { rows: number; compact: boolean } {
+export function towerFit(
+  w: number, h: number, floorPx = 0,
+): { rows: number; compact: boolean } {
   // Written the same way round as the media query that shrinks the row —
   // `@media (max-width: 900px), (max-height: 470px)`. If these two ever
   // disagree the panel is measured for one row height and drawn at another,
@@ -2003,9 +2244,18 @@ export function towerFit(w: number, h: number): { rows: number; compact: boolean
   // the left rail has to exist somewhere, and a tower sized to the viewport
   // grows straight down through the pit instruction.
   const reserved = compact ? 240 : 554;
-  const fits = Math.floor((h - reserved) / rowH);
+  const fits = Math.floor((h - floorPx - reserved) / rowH);
+  // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
+  // glass in shot the bottom of the frame is not the HUD's to use — see
+  // `MIRROR_PANES` — so the whole left column lifts by the height of the band
+  // and the running order is what pays for it. Four rows is the floor there
+  // rather than six: a tower that keeps six rows on a landscape phone standing
+  // on a 119-pixel mirror band leaves the notice rail forty pixels, and forty
+  // pixels is not a rail. The other sixteen cars can wait for a straight; the
+  // car about to be alongside cannot.
+  const min = floorPx > 0 ? 4 : compact ? 4 : 6;
   return {
-    rows: Math.max(compact ? 4 : 6, Math.min(fits, compact ? 8 : 14)),
+    rows: Math.max(min, Math.min(fits, compact ? 8 : 14)),
     compact,
   };
 }
