@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { clamp01 } from '../core/MathUtils';
-import type { TrackSpline } from '../track/TrackSpline';
+import type { CarCapability, TrackSpline } from '../track/TrackSpline';
 
 /**
  * The racing-line overlay: the optimal line laid on the track, coloured by
@@ -46,6 +46,23 @@ import type { TrackSpline } from '../track/TrackSpline';
  * car is carrying more speed than the radius it is about to turn into will
  * take, whether or not the corner could still be saved by braking. Green now
  * means the car will make it, not that it could still be made to.
+ *
+ * WHOSE car, though. Both tests used to be asked of the REFERENCE car — mu
+ * 1.86, 850kg, the single car `TrackSpline` solves its speed profile for so
+ * that twenty AI drivers can share one line. Nobody drives that car. The player
+ * leaves the garage on mu 1.70 before the compound multiplier is applied,
+ * carrying up to 75kg of fuel, and finishes a stint on tyres that have given up
+ * another tenth of their grip to wear and heat. The gap is not small and it
+ * does not average out: a top team on fresh mediums is being promised 9% more
+ * grip than it has, and on worn hards nearer 30%.
+ *
+ * That is the second way this display has lied, and it is the one the probe
+ * could not see, because the probe flew the reference car at a line solved for
+ * the reference car and quite correctly reported that it fitted. Both tests now
+ * take the capability of the car actually driving — `TrackSpline` owns the
+ * algebra so the overlay and the solver cannot drift apart — which folds in
+ * compound, wear, temperature, fuel load, damage, team performance and setup
+ * without any of them needing to be named here.
  *
  * Only a window ahead of the car is drawn. Colouring the whole circuit would
  * mean rewriting every vertex colour on the lap every frame, and the far side
@@ -93,6 +110,24 @@ const Y_OFFSET = 0.05;
  * profile itself was solved with.
  */
 const BRAKE_CONFIDENCE = 0.88;
+
+/**
+ * Seconds the longitudinal test assumes the driver spends NOT braking after the
+ * colour changes, before the pedal moves.
+ *
+ * A display that computes "can I still stop from here" and answers it as though
+ * the brakes come on at that instant is describing a car with no driver in it.
+ * A human needs about a quarter of a second to see a colour change and act on
+ * it — the same 250ms `probe:drivability` grants everywhere else — and at 300
+ * km/h that is 21 metres of road gone before anything happens.
+ *
+ * This used to be absorbed into `BRAKE_CONFIDENCE`, and could not be: reaction
+ * distance scales with speed and a confidence factor does not. A flat 12% haircut
+ * on deceleration is far too much margin at 90 km/h and not enough at 320, which
+ * is exactly the pattern `probe:racingline` reported — the surviving over-promise
+ * was at the fast end of the calendar.
+ */
+const REACTION_S = 0.25;
 
 /**
  * How far ahead the lateral test looks, in SECONDS of travel.
@@ -193,11 +228,50 @@ export class RacingLine {
    *
    * @param s       the car's distance along the lap, metres
    * @param speedMs the car's current speed
+   * @param car     what the car can actually do right now. Omitted, the
+   *                reference car is used and the display is back to promising
+   *                a capability the player does not have — so callers with a
+   *                real car should always pass one.
    */
-  update(s: number, speedMs: number): void {
+  update(s: number, speedMs: number, car?: CarCapability): void {
     if (!this._visible) return;
 
     const track = this.track;
+    const cap = car ?? track.solverParams;
+    // Cheap identity test so the common case — a car whose numbers happen to
+    // match the reference — keeps reading the precomputed array.
+    const isReference = cap === track.solverParams;
+    const cornerAt = (i: number): number => (
+      isReference ? track.corneringSpeed[i] : track.corneringSpeedForCar(i, cap)
+    );
+
+    /**
+     * The LOWEST grip limit anywhere between two nodes, not the one at the end.
+     *
+     * The ribbon is drawn in 8m segments and the track is noded every 3m or so,
+     * so reading the limit only at each segment's far end steps clean over two
+     * nodes in three. That is fine on a straight and wrong exactly where it
+     * matters: a curvature spike narrower than a segment — the tightest point of
+     * an apex, which is the only part of a corner that actually decides whether
+     * the car makes it — could sit between two samples and never be tested.
+     * Measured, it was worth 3% of grip at Silverstone: the last case where a
+     * green road still put a car past its limit.
+     *
+     * The speed solver already reasons this way; `kWorst` exists for the same
+     * reason and is described in the same terms.
+     */
+    const worstCornerOver = (iA: number, iB: number): number => {
+      let m = cornerAt(iA);
+      let i = iA;
+      // Bounded: a segment is stepM metres, a handful of nodes at most. The cap
+      // stops a wrapped or degenerate index pair walking the whole circuit.
+      for (let guard = 0; i !== iB && guard < 16; guard++) {
+        i = i + 1 >= track.count ? 0 : i + 1;
+        const c = cornerAt(i);
+        if (c < m) m = c;
+      }
+      return m;
+    };
     const len = track.length;
     let v = 0;
     let c = 0;
@@ -206,6 +280,8 @@ export class RacingLine {
     const half = WIDTH_M * 0.5;
 
     const horizon = Math.max(speedMs, LATERAL_MIN_SPEED) * LATERAL_HORIZON_S;
+    /** Road covered before the brakes come on at all. */
+    const reactionM = speedMs * REACTION_S;
 
     // The best-case speed the car could have at the segment being considered,
     // integrated forward as the loop walks up the road.
@@ -258,8 +334,9 @@ export class RacingLine {
       px[p + 15] = bx + bnx; px[p + 16] = by; px[p + 17] = bz + bnz;
 
       // --- 1. Longitudinal: can the car still slow down enough? -------------
-      // The distance available to shed speed before reaching it.
-      const ahead = Math.max(dB, 0);
+      // The distance available to shed speed before reaching it — less the road
+      // the car covers while the driver is still reacting. See REACTION_S.
+      const ahead = Math.max(dB - reactionM, 0);
       // The lower of the solved profile and the raw grip limit.
       //
       // They disagree, by up to 22% at Monaco's tightest apexes, because the
@@ -270,14 +347,20 @@ export class RacingLine {
       // tyres will hold, and this display must not promise a speed the tyres
       // will not hold. Taking the minimum costs nothing anywhere else on the
       // lap, where the profile is far below the grip limit anyway.
-      const target = Math.min(track.targetSpeed[iB], track.corneringSpeed[iB]);
+      // `targetSpeed` is still the reference car's plan for the lap — it is the
+      // line the player is being shown and it does not become a different line
+      // because their tyres are worn. What DOES change is whether their tyres
+      // will hold it, so the grip term is the player's, and taking the minimum
+      // means a worn car is told to arrive slower at the same apex.
+      const segWorst = worstCornerOver(iA, iB);
+      const target = Math.min(track.targetSpeed[iB], segWorst);
 
       // Brake flat out from here to there, and see what speed that leaves.
       // One step per segment: `ahead` grows by exactly `stepM` each time round
       // once it is past the car.
       while (integrated < ahead) {
         const h = Math.min(this.stepM, ahead - integrated);
-        const a = track.brakingDecel(vBrake) * BRAKE_CONFIDENCE;
+        const a = track.brakingDecelForCar(vBrake, cap) * BRAKE_CONFIDENCE;
         const sq = vBrake * vBrake - 2 * a * h;
         vBrake = sq > 1 ? Math.sqrt(sq) : 1;
         integrated += h;
@@ -298,8 +381,7 @@ export class RacingLine {
       // Only within the horizon — beyond it the car has time to do something
       // about the corner, and test 1 is the one that says so.
       if (ahead <= horizon) {
-        const grip = track.corneringSpeed[iB];
-        const lateral = speedMs / Math.max(grip, 1);
+        const lateral = speedMs / Math.max(segWorst, 1);
         if (lateral > ratio) ratio = lateral;
       }
 
@@ -336,7 +418,7 @@ export class RacingLine {
     //
     // The ribbon must never be greener than the situation the car is in.
     const here = this.track.indexAt(wrap(s, len));
-    let worst = speedMs / Math.max(this.track.corneringSpeed[here], 1);
+    let worst = speedMs / Math.max(cornerAt(here), 1);
     for (let i = this.segments - 1; i >= 0; i--) {
       if (this.ratio[i] > worst) worst = this.ratio[i];
       else this.ratio[i] = worst;
@@ -391,6 +473,53 @@ function colourFor(ratio: number): [number, number, number] {
   // Amber to red.
   const k = (t - 0.5) * 2;
   return [1.0, 0.75 - 0.70 * k, 0.03];
+}
+
+/**
+ * What a live car can actually do, in the form the track's algebra wants.
+ *
+ * Reads the physics' own state rather than a stored copy, so everything that
+ * has already been folded into the car — team performance and setup (both baked
+ * into `spec` before the car is built), damage, compound, wear, temperature,
+ * warm-up and fuel burn — arrives here without being enumerated.
+ *
+ * Two deliberate omissions:
+ *
+ *  - SURFACE. `VehiclePhysics` multiplies mu by the surface under the wheels,
+ *    and a car with two wheels on the grass genuinely has 42% of its grip. But
+ *    the ribbon describes the ROAD AHEAD, which is asphalt, and a driver who
+ *    clips a kerb does not need the whole corner in front of them to flash red
+ *    for the two tenths they are on it. Colouring a road the car is not on by a
+ *    surface it is briefly crossing conflates two different questions.
+ *
+ *  - DRS. The rear wing costs downforce when it is open, so including it would
+ *    make the line more pessimistic on the straight — where DRS is legal — and
+ *    then relax as the flap shuts. That is backwards: the capability the driver
+ *    needs to be told about is the one they will have AT the corner, and DRS is
+ *    already shut by then (it requires `brake < 0.05` and closes on the pedal).
+ */
+export function capabilityOf(
+  physics: {
+    spec: { baseMu: number; clBase: number; cdBase: number; maxBrakeForceN: number };
+    frontTires: { grip: number };
+    rearTires: { grip: number };
+    totalMassKg: number;
+    dirtyAirDownforceMult: number;
+  },
+  maxSpeedMs: number,
+): CarCapability {
+  const spec = physics.spec;
+  // The LOWER of the two axles, not the mean. A corner is lost at whichever end
+  // gives up first, and this display exists to stop over-promising.
+  const tyre = Math.min(physics.frontTires.grip, physics.rearTires.grip);
+  return {
+    mu: spec.baseMu * tyre,
+    cl: spec.clBase * physics.dirtyAirDownforceMult,
+    cd: spec.cdBase,
+    massKg: physics.totalMassKg,
+    maxBrakeForceN: spec.maxBrakeForceN,
+    maxSpeedMs,
+  };
 }
 
 /** Wraps a distance into [0, len). */

@@ -305,6 +305,26 @@ export class CarEntry {
   /** The qualifying segment this car was eliminated in, or 0 if it survived. */
   eliminatedInPhase = 0;
   /**
+   * True when this car is ENTERED in the session but may take no part in it.
+   *
+   * Art. B4.3.2: "Any driver whose F1 Car stops in any area other than the Pit
+   * Lane during Sprint Qualifying or Qualifying and receives physical
+   * assistance will not be permitted to take any further part in that session."
+   * Q1, Q2 and Q3 are three periods of ONE session (Art. B2.4.2 — "the session
+   * will resume"), so a car the marshals lifted out of the barrier in Q1 is
+   * done for the whole of qualifying however quickly the crew could rebuild it.
+   *
+   * NOT the same thing as `eliminated`, and the difference is the point. An
+   * eliminated car has been knocked out and holds a grid slot already decided.
+   * A withdrawn car is still in the segment and still gets classified in it —
+   * it simply sets no time, so Art. B2.4.3a.v(C) ranks it among the cars that
+   * "failed to leave the pits during the period". It sits at the bottom of the
+   * segment it could not run, not at the bottom of the field.
+   */
+  withdrawn = false;
+  /** Why the car is sitting in its garage, for the board and the modal. */
+  withdrawnReason = '';
+  /**
    * True while the car is on an out-lap and its time must not count.
    *
    * A lap that begins in the garage or in the pit lane includes the stationary
@@ -314,6 +334,22 @@ export class CarEntry {
    * leaving the pits, cleared the first time the car crosses the line.
    */
   onOutLap = false;
+  /**
+   * True once this car has left the pit lane under its own power this session.
+   *
+   * The evidence for Art. B2.4.3a.v's third category — "any driver who failed
+   * to leave the pits during the period" — which is the bottom of the three
+   * groups a no-time driver can be sorted into.
+   */
+  leftThePits = false;
+  /**
+   * True once this car has begun a flying lap this session.
+   *
+   * Art. B2.4.3a.v's first category, "any driver who attempted to set a lap
+   * time by starting a flying lap". Set when the out-lap is completed, which is
+   * the crossing that starts the timed one.
+   */
+  startedFlyingLap = false;
   /**
    * Metres of pit-exit blend zone still to run.
    *
@@ -497,6 +533,9 @@ export class CarEntry {
     // time and let the flying lap that starts here be the one that counts.
     if (this.onOutLap) {
       this.onOutLap = false;
+      // This crossing ends the out-lap and starts the flying one. Whether the
+      // car ever finishes it, the attempt has been made — Art. B2.4.3a.v(A).
+      this.startedFlyingLap = true;
       this.lap++;
       this.lapStartTime = sessionTime;
       this.sectorStartTime = sessionTime;

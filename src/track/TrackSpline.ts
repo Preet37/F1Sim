@@ -53,8 +53,17 @@ const LINE_RESPONSE_RADIUS = 2;
  */
 const AUTO_CURB_RADIUS_M = 250;
 
-/** Reference car used to solve the speed profile. Real cars deviate from it. */
-export interface SpeedSolverParams {
+/**
+ * Everything needed to answer "how fast can THIS car go round THIS radius, and
+ * how hard can it stop".
+ *
+ * Split out of `SpeedSolverParams` so that the two questions the track gets
+ * asked can be told apart. Solving a speed profile is a whole-lap operation
+ * that needs engine power; asking whether a particular car will make a
+ * particular corner does not, and the caller that asks it — the racing-line
+ * overlay — has a live car in front of it rather than a reference.
+ */
+export interface CarCapability {
   /** Peak tire friction coefficient on a dry track. */
   mu: number;
   /** Downforce coefficient: F_down = cl * v^2  (Newtons, v in m/s). */
@@ -62,11 +71,15 @@ export interface SpeedSolverParams {
   /** Drag coefficient: F_drag = cd * v^2. */
   cd: number;
   massKg: number;
-  /** Peak power in Watts, used for the traction-limited forward pass. */
-  powerW: number;
   /** Total brake force at full pedal, N — the same cap the car itself has. */
   maxBrakeForceN: number;
   maxSpeedMs: number;
+}
+
+/** Reference car used to solve the speed profile. Real cars deviate from it. */
+export interface SpeedSolverParams extends CarCapability {
+  /** Peak power in Watts, used for the traction-limited forward pass. */
+  powerW: number;
 }
 
 /**
@@ -181,6 +194,21 @@ export class TrackSpline {
   readonly corneringSpeed: Float32Array;
 
   /**
+   * The curvature the cornering limit at each node was actually solved against:
+   * the WORST |curvature| in a short window around the node, not the value at
+   * the node itself. See the `kWorst` block in `solveSpeedProfile` for why the
+   * window exists.
+   *
+   * Stored because `corneringSpeed` answers the grip question for ONE car — the
+   * reference car — and anything asking it for a DIFFERENT car needs the radius
+   * back. Recovering it algebraically from `corneringSpeed` is possible but
+   * breaks exactly where it matters least and lies most: on a straight the
+   * solved speed is clamped to `maxSpeedMs`, and inverting that clamp yields a
+   * finite radius for a road that has none.
+   */
+  readonly lineCurvatureWorst: Float32Array;
+
+  /**
    * The aero and grip constants the speed profile was solved with.
    *
    * Exposed so that anything asking "could the car do X here" answers it with
@@ -240,6 +268,7 @@ export class TrackSpline {
     this.lineCurvature = new Float32Array(count);
     this.targetSpeed = new Float32Array(count);
     this.corneringSpeed = new Float32Array(count);
+    this.lineCurvatureWorst = new Float32Array(count);
     this.isCurbLeft = new Uint8Array(count);
     this.isCurbRight = new Uint8Array(count);
     this.isDrsZone = new Uint8Array(count);
@@ -1009,6 +1038,7 @@ export class TrackSpline {
         if (a > peak) peak = a;
       }
       kWorst[i] = peak;
+      this.lineCurvatureWorst[i] = peak;
     }
 
     for (let i = 0; i < count; i++) {
@@ -1122,6 +1152,42 @@ export class TrackSpline {
     const p = this.solverParams;
     const gripLimit = p.mu * (p.massKg * G + p.cl * v * v);
     return (Math.min(p.maxBrakeForceN, gripLimit) + p.cd * v * v) / p.massKg;
+  }
+
+  /**
+   * The same expression, for a car that is NOT the reference car.
+   *
+   * The reference car exists so that one solved line and one lap time can be
+   * shared by twenty cars. That is the right trade for the AI, which is judged
+   * on lap time. It is the wrong trade for anything that makes the PLAYER a
+   * promise about their own car, because no player ever drives the reference
+   * car: it has mu 1.86 and 850kg, and a real car leaves the garage at 1.70
+   * before the compound multiplier, carrying 75kg of fuel.
+   */
+  brakingDecelForCar(v: number, car: CarCapability): number {
+    const gripLimit = car.mu * (car.massKg * G + car.cl * v * v);
+    return (Math.min(car.maxBrakeForceN, gripLimit) + car.cd * v * v) / car.massKg;
+  }
+
+  /**
+   * Grip-limited cornering speed at node `i` for an arbitrary car, m/s.
+   *
+   * Identical algebra to the cornering pass in `solveSpeedProfile` — the same
+   * banking term, the same windowed curvature, the same closed-form solve of
+   *
+   *     mu * (m g + cl v^2)  =  m v^2 / r
+   *
+   * so that a car with the reference car's numbers gets the reference car's
+   * answer to the last bit. It is written once here rather than duplicated into
+   * the overlay precisely so the two cannot drift apart.
+   */
+  corneringSpeedForCar(i: number, car: CarCapability): number {
+    const r = 1 / Math.max(this.lineCurvatureWorst[i], 1e-6);
+    const bank = Math.abs(this.banking[i]);
+    const effMu = car.mu * (Math.cos(bank) + Math.sin(bank) * 1.2);
+    const denom = car.massKg / r - effMu * car.cl;
+    if (denom <= 1e-6) return car.maxSpeedMs;
+    return Math.min(Math.sqrt((effMu * car.massKg * G) / denom), car.maxSpeedMs);
   }
 
   /** Node index for a distance-along-lap value. */
