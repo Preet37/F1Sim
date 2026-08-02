@@ -390,11 +390,46 @@ No reputation gate, no discretion, for the player or for anyone. If the player
 finishes second in F3, they are in F2 next year. If they finish third, they are
 not.
 
-Two F2 graduates arriving in F1 displace two F1 drivers. The seats that open are
-chosen by a valuation over the F1 field — the lowest-valued drivers whose
-contracts have expired, with age and a poor season weighing against them — so the
-grid renews itself the way a real one does rather than by deleting whoever is
-last alphabetically.
+### How a real grid makes room for the player
+
+This is the hardest question in the design, and getting it wrong is exactly what
+makes a career mode feel arbitrary. The Formula 1 grid is real and it is full:
+eleven teams, twenty-two seats, every one occupied by a real driver. The
+promotion rule says the top two in Formula 2 come up **every** year. Those two
+facts collide every single winter.
+
+They are resolved the way the real sport resolves them, in this order, and only
+the last step is ever forced:
+
+1. **Retirement.** The grid this career starts from is genuinely old at the top —
+   a 44-year-old, a 41-year-old, a 38-year-old and two at 36. The retirement
+   curve alone opens two or three seats in most winters, and in the first winter
+   it very probably opens three. Nobody has to be pushed anywhere.
+2. **Expiring contracts.** A driver whose deal is up is not guaranteed a seat.
+   Teams choose from the market, and some choose somebody else. A driver **under
+   contract is never displaced** — the player cannot arrive in Formula 1 by
+   evicting a champion who has two years left to run.
+3. **Only if that is still not enough:** the least-valued out-of-contract driver
+   at the weakest team loses the seat. This is a real event that happens most
+   seasons, and it is applied to the driver a paddock would actually drop —
+   ranked by the same `valuation()` teams use when signing — rather than to
+   whoever is last in an array.
+
+If even that is not enough, the shortest remaining contract is bought out, which
+is what a team with a champion waiting in Formula 2 actually does. The promotion
+is honoured unconditionally, because *"top two go up"* is the one promise this
+career makes and a promise with an exception is not one.
+
+The player goes through this market like everybody else. They are not special-
+cased into a seat; they are placed by the same `valuation()` against the same
+teams, which is why the seat a champion gets is better than the seat a runner-up
+gets without either being scripted.
+
+The consequence worth stating plainly: **by season four or five this is no longer
+the real grid**, and it should not be. Drivers have retired, rookies the game
+generated have come through Formula 3, and the player has taken a seat somebody
+real used to hold. That is what a career is. The roster is a starting position,
+not a fixture list.
 
 Two seats open in F2 and are filled by the F3 graduates. Two seats open in F3 and
 are filled by **generated rookies**: new drivers with invented names from a
@@ -813,11 +848,14 @@ moment.
 
 ### Rules it has to obey
 
-- **Skippable from the first frame.** A persistent skip control, plus any key,
-  tap or gamepad button. Skipping goes straight to creation. Once the sequence
-  has been seen it never plays again unless asked for from the menu — the flag
-  lives in `GameSettings`, not in a career, because it is a fact about the player
-  and not about a championship.
+- **Skippable from the first frame.** A visible **SKIP** button pinned to the
+  **bottom right**, present before the first frame has finished drawing, plus a
+  keyboard binding and a gamepad binding for the same action — a button alone is
+  not reachable on a pad, and this game supports pads. Skipping goes straight to
+  creation. Once the sequence has been seen it never plays again unless asked
+  for; the flag lives in `GameSettings`, not in a career, because it is a fact
+  about the player rather than about a championship, and the menu keeps a
+  **Watch the opening** entry for anyone who wants it back.
 - **It cannot block the boot path.** The menu must appear whether or not the
   sequence can be built. There is prior history here of start-up work throwing
   before the UI existed and leaving a blank screen, so the sequence is
