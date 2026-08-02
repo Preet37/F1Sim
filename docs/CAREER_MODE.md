@@ -880,6 +880,53 @@ the wrong trade and it is not taken.
 
 ---
 
+## 8b. The podium
+
+The reference the player sent is a broadcast still: a three-step rostrum set into
+a pit-building frontage, a backdrop board carrying the event identity, the top
+three drivers on their steps, a constructor's representative on a fourth marked
+spot, trophies on a plinth, champagne, confetti, photographers at the foot of the
+stage and a crowd along the barriers.
+
+Almost all of it is already in the build. The circuits have pit buildings and
+grandstands with a crowd; there is a driver mesh; the particle system that draws
+tyre smoke and rain spray draws champagne and confetti without modification; the
+camera director already knows how to be a broadcast camera. What is genuinely new
+is a rostrum, a backdrop board, a trophy plinth, and a scripted camera over the
+top of them — which is the **same machinery as the opening montage** (section 8):
+a scripted camera, an in-engine scene, and one skip control. Building the montage
+first makes the podium substantially cheaper, and they should be built together.
+
+**No real sponsor artwork.** The reference is thick with it and that is precisely
+the layer to leave off; a podium reads correctly without a single logo on it. The
+backdrop carries the game's own event identity — the championship name, the Grand
+Prix, the year — set in the display face the rest of the interface uses.
+
+**It differs by tier**, and that is the point of building it at all. The player's
+whole premise is a rookie working up from Formula 3, and a first podium in
+Formula 3 and a first win in Formula 1 must not both be a row in a results table.
+
+| | Formula 3 | Formula 2 | Formula 1 |
+|---|---|---|---|
+| Rostrum | a modest portable one at the pit exit | permanent, in front of the main stand | full frontage, elevated |
+| Backdrop | a single banner | board with the round's identity | full board, championship identity |
+| Crowd | thin, close | most of one stand | both stands, full |
+| Ceremony | trophy only | trophy and anthem beat | trophies, constructor's representative, champagne, confetti |
+
+The constructor's representative on the fourth spot is worth keeping precisely
+because of My Team: in a career where the player owns the outfit, the person
+collecting the constructors' trophy is theirs.
+
+**It is where the narrative surfaces.** A declared rivalry beaten, a teammate
+out-scored, the fan rating moving — the podium is the natural moment for all of
+it, and it is the one screen where a line of dialogue is earned rather than
+inserted.
+
+**Skippable**, on the same control as the intro, for the same reason: the tenth
+podium of a season must not cost forty seconds.
+
+---
+
 ## 9. Screens
 
 The visual language is fixed and is not up for reinvention. Every screen below
@@ -924,8 +971,29 @@ It is the moment the career stops being a table.
    sponsors, declared rivalries, the transfer market; `probe:narrative`.
 5. **The opening sequence** — section 8.
 
-Layers 1 and 2 are delivered and verified. Everything after goes as far as it can
-go whole.
+### What is built, as of this commit
+
+**Layers 1 and 2 are complete and verified.** Layers 3, 4 and 5 are designed here
+and not built.
+
+| | |
+|---|---|
+| `src/data/roster/` | The real 2026 grid: 11 F1 teams and 22 drivers, 11 F2 teams and 22 drivers, 10 F3 teams and 20 drivers, 5 power units. The only module that names anything real. |
+| `src/data/teams.ts` | Gains `installGrid` / `clearGrid` — the overlay career mode installs its world behind `getTeam`. ~50 lines; nothing else in the file moved. |
+| `src/career/World.ts` | Tier cars, per-save form, the roster-to-simulation conversion, `performanceOf` — the one function every management decision has to reach. |
+| `src/career/Season.ts` | Three championships, points, the paper simulation, top-two promotion, retirements, the transfer market, the off-season. |
+| `src/career/CareerState.ts` | The save's shape. |
+| `src/career/SaveCodec.ts` | Encode, decode, the migration ladder, the unknown-key bag. |
+| `src/career/Career.ts` | The orchestrator: world plus season plus player. |
+| `src/career/Events.ts` | The existing narrative events, rewritten against the new state. `events.json` is unchanged. |
+| `src/main.ts` | Hub, standings, grid, both result paths, plus two new screens: the off-season report and the end of a career. |
+| `scripts/probeSeason.ts` | 100 career-years, 300 championships. |
+| `scripts/probeTiers.ts` | Lap times for every tier at every circuit. |
+| `scripts/probeSave.ts` | Round-trips, migration, forward compatibility, eight kinds of garbage. |
+| `scripts/regressCareerFlow.mjs` | The whole loop, in a real browser. |
+
+`src/career/CareerEngine.ts` is deleted. Nothing else in the repository referred
+to it.
 
 ## 11. Provenance of the real-world data
 
@@ -951,9 +1019,40 @@ exports. Nothing else in the codebase knows a real name.
 - **No online, no accounts, no server.** Saves stay in `localStorage` with the
   existing in-memory fallback, and export/import stays the way a career moves
   between devices.
-- **No mass scaling for junior cars** until `TeamPerformance` gains `massMult`
-  (section 2). Flagged, not taken.
-- **No 22-car F1 grid.** My Team takes over an existing entry instead
-  (section 5).
 - **No driver academies, no junior programme contracts, no reserve-driver
   seasons.** They are good ideas and they are not in this pass.
+
+## 13. Two things needed from files this work does not own
+
+Both are small, both are flagged rather than taken, and neither blocks what is
+built.
+
+**1. `massMult` on `TeamPerformance`** — `src/physics/VehicleSpec.ts`, owned by
+the vehicle-handling work.
+
+```ts
+// in TeamPerformance
+massMult: number;
+// in specForTeam
+dryMassKg: base.dryMassKg * perf.massMult,
+```
+
+A real Formula 3 car is 605kg against a Formula 1 car's 798, and `specForTeam`
+scales power, downforce, drag and grip but not mass. The junior cars are
+therefore correctly underpowered and correctly short of downforce, but too
+heavy. Mass costs most where speed is lowest, so the tier deficit comes out right
+at Monza (+12.7% for F2) and overstated at Zandvoort (+16.8%), and **no amount of
+tuning downforce fixes it** — downforce does nothing at 80km/h, which is exactly
+where the error lives. `probe:tiers` records this openly: its per-circuit band is
+wider than its season-mean band, and the comment says why. When `massMult` lands,
+the bands should be tightened and the spread will collapse.
+
+**2. An optional `boxCount` on `pitLaneGeometry`** — `src/track/PitGeometry.ts`.
+
+`PIT_GARAGE_COUNT` is 20 and the pit row is centred from it, so with a real
+22-car grid two cars have a painted box past the end of the garages. Nothing
+breaks — `validate:integrity` passes on the 22-car field, with every car serviced
+and no speeding penalties — but it is cosmetically wrong. An optional argument
+defaulting to the current constant leaves every existing caller bit-identical;
+`RaceEngine` would pass its field length. **My Team makes this urgent rather than
+cosmetic**, since a twelfth team means 24 cars.
