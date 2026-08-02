@@ -154,8 +154,27 @@ const WHEEL_HALF_H = 0.100;
  * it sits at 33 degrees and 0.87m — still comfortably inside a driver's useful
  * field, still where a real car mounts them, and a fifth smaller on screen.
  */
+/**
+ * DOWN 26mm ONTO THE COAMING, because the halo was sitting on top of it.
+ *
+ * Measured rather than noticed: projecting the halo's own centreline over the
+ * pane from both onboard cameras and both frame shapes — the same arithmetic
+ * `probe:framing` does — the rear leg of the hoop passes NEARER to the eye than
+ * the mirror and directly across it, leaving only 36 per cent of the pane
+ * visible from the cockpit. A mirror three fifths covered by a black tube is a
+ * mirror that does not work however good the feed behind it is, and the first
+ * blow-up of one showed exactly that: a bar across the pane with a sliver of
+ * live picture below it.
+ *
+ * It cannot be made to clear entirely. The rear leg of a halo genuinely does
+ * cross the mirror line on a real car, and the two onboards pull opposite ways
+ * — lowering the pane clears it for the cockpit eye and worsens it for the
+ * T-cam behind. 0.578 is the best of that trade at a height a real mirror is
+ * actually mounted, just proud of the tub rim at 0.556: worst case 44 per cent
+ * of the pane clear against 36, and 62 per cent from the cockpit.
+ */
 export const MIRROR_X = 0.505;
-export const MIRROR_Y = 0.604;
+export const MIRROR_Y = 0.578;
 export const MIRROR_Z = 0.790;
 /** Front face of the housing, where the glass sits. */
 export const MIRROR_GLASS_Z = 0.769;
@@ -922,7 +941,13 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // for one up on the roll hoop 0.42m higher and 0.65m further back, and
     // pointing the pane at the eye instead — the obvious repair — makes it a
     // retroreflector. Bisecting keeps working wherever the eye goes next.
-    const glass = new THREE.PlaneGeometry(0.100, 0.038);
+    // 112 by 42, up from 100 by 38 and still inside the housing the shell
+    // builds around it (116 by 46). A real F1 mirror's reflective area is
+    // nearer 150 by 50; ours was small even for the small one, and the pane is
+    // between 47 and 86 pixels across in a 1280-wide frame with the halo over
+    // part of it, so every millimetre of it is a millimetre of the only thing
+    // in the shot that answers "is anybody behind me".
+    const glass = new THREE.PlaneGeometry(0.112, 0.042);
     const g = add(glass, mirrorGlass);
     g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
     const toEye = new THREE.Vector3(
