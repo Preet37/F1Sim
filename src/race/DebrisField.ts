@@ -62,6 +62,27 @@ export const DEBRIS_ON_SURFACE_MARGIN_M = 0.9;
 export const DEBRIS_COLLECT_S = 14;
 
 /**
+ * How long the scatter from a contact lies on the racing line before somebody
+ * nips out for it, seconds.
+ *
+ * This is the one number here that is a clock rather than a consequence, and it
+ * is worth being straight about why. A WHOLE PART on the road — a front wing, a
+ * sidepod — is an incident: the post covering it shows a yellow, and the yellow
+ * is what sends anybody to it. The scatter a wheel-to-wheel rub leaves is not.
+ * Race control does not flag a race for an endplate fragment, and if it did,
+ * there would be a yellow out for most of a Grand Prix: measured over twelve
+ * laps at Bahrain and Monaco, flagging every pile on the racing surface put a
+ * marshalling sector under a flag 7-9% of the time, which was enough to slow
+ * the field's green laps to the point that `validate:flags` could no longer
+ * tell a safety-car lap from a racing one.
+ *
+ * So small debris is collected at the first opportunity instead — under any
+ * neutralisation, or otherwise at the next gap in the traffic, which is what
+ * this stands for. About a lap, which is what it looks like on television.
+ */
+export const DEBRIS_LOOSE_BACKSTOP_S = 100;
+
+/**
  * The most piles the ledger tracks at once.
  *
  * Bounded for the same reason the instanced mesh is: a first-corner accident
@@ -152,6 +173,18 @@ export class DebrisPile {
   }
 
   /**
+   * True when this is a whole piece of bodywork rather than the scatter a
+   * contact leaves.
+   *
+   * The distinction race control actually makes. A wing or a sidepod lying on
+   * the racing line is a hazard with a post on it; the fragments off a rub are
+   * picked up when there is a chance to, and nobody stops the race for them.
+   */
+  get substantial(): boolean {
+    return this.source > 0;
+  }
+
+  /**
    * Runs the operation for one step.
    *
    * @param neutralised true while the race is under a safety car or VSC, which
@@ -162,11 +195,14 @@ export class DebrisPile {
     if (this.done) return false;
     this.elapsedS += dt;
 
-    // Off the racing surface, nothing happens at all until the race is slowed
-    // down for something else. This is the whole of "run-off debris persists":
-    // it is not a longer timer, it is an operation with a precondition that may
-    // simply never arrive during the race.
-    if (!this.onSurface && !neutralised) return this.checkBackstop();
+    // Anything that is not a flagged hazard waits for an opportunity. Off the
+    // racing surface that means a neutralisation and nothing less — this is the
+    // whole of "run-off debris persists", and it is not a longer timer but an
+    // operation with a precondition that may simply never arrive during the
+    // race. On the racing surface, small debris waits for a neutralisation too,
+    // but its backstop is about a lap rather than three and a half minutes,
+    // because somebody will nip out for a piece on the line.
+    if (this.signal === null && !neutralised) return this.checkBackstop();
 
     if (this.reachRemainingS > 0) {
       this.reachRemainingS -= dt;
@@ -184,7 +220,9 @@ export class DebrisPile {
   }
 
   private checkBackstop(): boolean {
-    if (this.elapsedS < RECOVERY_BACKSTOP_S) return false;
+    const limit = this.onSurface && !this.substantial
+      ? DEBRIS_LOOSE_BACKSTOP_S : RECOVERY_BACKSTOP_S;
+    if (this.elapsedS < limit) return false;
     this.reachRemainingS = 0;
     this.workRemainingS = 0;
     this.done = true;
@@ -210,7 +248,7 @@ export class DebrisPile {
    * alternative to that, not a case of it.
    */
   get signal(): 'yellow' | null {
-    return this.done || !this.onSurface ? null : 'yellow';
+    return this.done || !this.onSurface || !this.substantial ? null : 'yellow';
   }
 }
 
@@ -225,9 +263,19 @@ export class DebrisField {
    * Two queues rather than the renderer diffing the list every frame. The
    * renderer has to do something at each end — build shards for a new pile,
    * retire the shards of a gone one — and both are edges, not states.
+   *
+   * BOUNDED, because most of the time nothing is draining them. The validation
+   * harnesses run entire race weekends with no renderer at all, and a queue
+   * that only ever grows would carry every pile of carbon a 44-lap race
+   * produced for the length of the race. Dropping the oldest entry costs a
+   * rendered session nothing — the renderer empties both every frame, so they
+   * never approach the cap — and costs a headless one a bounded array.
    */
   readonly spawned: DebrisPile[] = [];
   readonly removed: number[] = [];
+
+  /** Longest either edge queue may get before its oldest entry is dropped. */
+  private static readonly QUEUE_CAP = 128;
 
   private nextId = 1;
 
@@ -255,13 +303,13 @@ export class DebrisField {
       onSurface: init.offRoadM < DEBRIS_ON_SURFACE_MARGIN_M,
     });
     this.piles.push(pile);
-    this.spawned.push(pile);
+    this.push(this.spawned, pile);
     // Oldest first, so a pile-up cannot grow the ledger without bound and the
     // thing that gets dropped is the one that has already been looked at.
     while (this.piles.length > DEBRIS_MAX_PILES) {
       const gone = this.piles.shift()!;
       gone.done = true;
-      this.removed.push(gone.id);
+      this.push(this.removed, gone.id);
     }
     return pile;
   }
@@ -274,7 +322,7 @@ export class DebrisField {
       if (pile.advance(dt, neutralised)) {
         collected.push(pile);
         this.piles.splice(i, 1);
-        this.removed.push(pile.id);
+        this.push(this.removed, pile.id);
       }
     }
     return collected;
@@ -291,9 +339,15 @@ export class DebrisField {
     for (let i = this.piles.length - 1; i >= 0; i--) {
       if (this.piles[i].ownerIndex !== ownerIndex) continue;
       this.piles[i].done = true;
-      this.removed.push(this.piles[i].id);
+      this.push(this.removed, this.piles[i].id);
       this.piles.splice(i, 1);
     }
+  }
+
+  /** Appends to an edge queue, dropping the oldest entry past the cap. */
+  private push<T>(queue: T[], item: T): void {
+    queue.push(item);
+    if (queue.length > DebrisField.QUEUE_CAP) queue.shift();
   }
 
   /** How many piles are lying where the cars run. */

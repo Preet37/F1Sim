@@ -522,11 +522,18 @@ function measure(): TrackStats {
 function crash(n: number, severity: number): void {
   const car = focus!;
   for (let k = 0; k < n; k++) {
+    // Real damage through the real component model, NOT a hand-written entry in
+    // the debris ledger. Whether a hit sheds carbon at all, how much, and how
+    // big the pieces are is now the simulation's decision — see
+    // `RaceEngine.shedFromImpact` and `updateShedParts` — so a harness that
+    // filed the debris itself would be photographing a debris field the game
+    // does not produce. Alternating faces, because a car that is only ever hit
+    // on the nose loses one wing and nothing else.
+    car.damage.applyImpact(k % 2 === 0 ? 'front' : 'rear', severity);
     engine!.impacts.push({ carIndex: car.index, severity });
-    // One rendered frame per impact: `drainImpacts` runs inside
-    // `Renderer.render`, not inside the engine step, and it drains the whole
-    // queue at once — six queued together would be one impact's worth of
-    // scatter from one point rather than six along a piece of road.
+    // One rendered frame per impact: `drainDebris` runs inside
+    // `Renderer.render`, and a piece filed between two frames has to be drawn
+    // before the next accident moves the car on.
     frame();
     for (let s = 0; s < 40; s++) engine!.step();
   }

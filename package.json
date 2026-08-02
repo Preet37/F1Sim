@@ -42,7 +42,8 @@
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",
     "probe:kerbs": "tsx scripts/probeKerbs.ts",
-    "probe:shoulders": "tsx scripts/probeShoulders.ts"
+    "probe:shoulders": "tsx scripts/probeShoulders.ts",
+    "probe:debris": "tsx scripts/probeDebris.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
