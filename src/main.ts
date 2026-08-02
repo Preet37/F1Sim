@@ -2966,7 +2966,9 @@ class Game {
       // published the truncated order as the segment's classification.
       act(isQualifying ? 'See out ' + engine.config.name : 'See out the session',
         'primary', seeItOut);
-      act('Skip to the classification', 'secondary', skipToResult);
+      // Short on purpose: these sit two-up in a 520px card and "Skip to the
+      // classification" wraps in the half-width column.
+      act('Skip to the result', 'secondary', skipToResult);
       act('Restart session', 'secondary', () => {
         const id = engine.track.def.id;
         this.dismissRetirement();
