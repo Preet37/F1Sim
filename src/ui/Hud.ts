@@ -194,6 +194,20 @@ export class Hud {
    */
   private lastMessage: RaceControlMessage | null = null;
 
+  /**
+   * How long a pop-up and a radio card stand before they leave, ms.
+   *
+   * A property rather than a constant for one reason, and it is worth stating
+   * because it is a test seam in production code: a single headless screenshot
+   * of a 1400x900 WebGL page under a software rasteriser takes several seconds,
+   * which is long enough that a seven-second pop-up had come and gone before
+   * the shutter closed. The sweep photographed a HUD with no notifications on
+   * it and the notifications were working the whole time. The shoot harness
+   * raises this; nothing else touches it.
+   */
+  alertDwellMs = ALERT_LIFE_MS;
+  radioDwellMs = RADIO_LIFE_MS;
+
   /** Called when the on-screen camera button is used. */
   onCameraPressed: (() => void) | null = null;
   /** Called when the on-screen pit button is used. */
@@ -1293,7 +1307,7 @@ export class Hud {
     // compositor can animate without asking the layout engine for help, which
     // matters in a game that has been reported at 30fps.
     enterNextFrame(card);
-    window.setTimeout(() => this.dismissAlert(card), ALERT_LIFE_MS);
+    window.setTimeout(() => this.dismissAlert(card), this.alertDwellMs);
 
     while (this.alertCards.length > this.maxAlerts()) {
       this.dismissAlert(this.alertCards[0], true);
@@ -1374,7 +1388,7 @@ export class Hud {
     this.radioTimers.push(window.setTimeout(() => {
       this.radioCard.classList.add('leaving');
       this.radioTimers.push(window.setTimeout(() => this.hideRadioCard(true), 440));
-    }, RADIO_LIFE_MS));
+    }, this.radioDwellMs));
   }
 
   private hideRadioCard(now = false): void {

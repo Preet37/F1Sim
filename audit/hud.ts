@@ -66,6 +66,12 @@ hud.setVisible(true);
 // The controls card covers the middle of the screen for the first seconds of a
 // session and is not what any of these shots are about.
 hud.setHelpVisible(false);
+// A single headless screenshot of this page takes seconds under a software
+// rasteriser — long enough that a seven-second pop-up expired before the
+// shutter closed, and the sweep reported a HUD with no notifications on it
+// while the notifications were working perfectly. See `Hud.alertDwellMs`.
+hud.alertDwellMs = 10 * 60_000;
+hud.radioDwellMs = 10 * 60_000;
 
 let engine: RaceEngine | null = null;
 let player: CarEntry | null = null;
@@ -230,6 +236,24 @@ const api: HudShootApi = {
 
   readText(): Record<string, string> {
     const out: Record<string, string> = {};
+    // Measured, not photographed. A panel that is in the DOM and off screen and
+    // a panel that was never built look identical in a screenshot, and telling
+    // those two apart is most of what debugging a HUD is.
+    const notices = hud.root.querySelector<HTMLElement>('.hud-notices');
+    if (notices) {
+      const r = notices.getBoundingClientRect();
+      out.__noticesBox = [r.x, r.y, r.width, r.height].map(Math.round).join(',');
+    }
+    const cards = hud.root.querySelectorAll<HTMLElement>('.hud-alert');
+    out.__alertCount = String(cards.length);
+    const first = cards[0];
+    if (first) {
+      const r = first.getBoundingClientRect();
+      const cs = getComputedStyle(first);
+      out.__alertBox = [r.x, r.y, r.width, r.height].map(Math.round).join(',');
+      out.__alertState = first.className + ' opacity=' + cs.opacity + ' ' + cs.transform;
+      out.__alertText = (first.textContent ?? '').slice(0, 60);
+    }
     for (const el of Array.from(hud.root.querySelectorAll<HTMLElement>('[data-probe]'))) {
       const key = el.dataset.probe as string;
       const hidden = el.offsetParent === null && el.style.display === 'none';

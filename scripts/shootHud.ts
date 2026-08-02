@@ -45,7 +45,8 @@ const SCENES = (process.env.SHOOT_SCENES ?? 'clear,pit-advice,safety-car,wet,rad
   .split(',');
 
 /** Camera modes shot for the occlusion check, on the desktop viewport only. */
-const CAMERAS = (process.env.SHOOT_CAMERAS ?? 'chase,cockpit,bumper,tv,drone,trackside').split(',');
+const CAMERAS = (process.env.SHOOT_CAMERAS ?? 'chase,cockpit,bumper,tv,drone,trackside')
+  .split(',').filter(Boolean);
 
 function chromePath(): string {
   const candidates = [
@@ -161,6 +162,10 @@ async function main(): Promise<void> {
           await page.evaluate((s: string) => window.__hudShoot.scene(s as never), scene);
           await page.evaluate(() => window.__hudShoot.repaint());
           await take(`${vp.name} ${circuit} ${scene}`);
+          if (process.env.SHOOT_REPORT) {
+            const t = await page.evaluate(() => window.__hudShoot.readText());
+            console.log(`\n  ${vp.name}/${scene}: ${JSON.stringify(t)}`);
+          }
         });
       }
     }
