@@ -9,6 +9,7 @@ import {
   PART_SIZE_M, type BodyPartId, type ImpactZone,
 } from './DamageModel';
 import { DebrisField } from './DebrisField';
+import { classificationTier } from './Classification';
 import { DRIVERS, getTeam, type Driver } from '../data/teams';
 import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
@@ -74,6 +75,15 @@ export interface SessionConfig {
    * Q2 and Q3 run with a progressively smaller field.
    */
   participants?: readonly number[];
+  /**
+   * Car indices that are entered in this segment but may not run in it.
+   *
+   * Art. B4.3.2 — a car the marshals had to recover during qualifying takes no
+   * further part in the session. These cars stay in `participants`, so they are
+   * counted and classified, and are simply never released from the garage. They
+   * set no time and Art. B2.4.3a.v(C) ranks them accordingly.
+   */
+  withdrawn?: readonly number[];
   /**
    * How hard the AI field is to race against. Defaults to the medium level.
    *
@@ -393,6 +403,21 @@ export class RaceEngine {
       }
     }
 
+    // Art. B4.3.2 cars: entered, classified, and going nowhere. Marked here
+    // rather than filtered out of `participants`, because filtering them out
+    // would make them `eliminated` — which would hand them the grid slot of the
+    // segment they were knocked out of instead of the one they are about to be
+    // classified last in. The regulation bars the driver from running; it does
+    // not strike the entry.
+    if (config.withdrawn) {
+      for (const car of this.cars) {
+        if (config.withdrawn.includes(car.index)) {
+          car.withdrawn = true;
+          car.withdrawnReason = 'Recovered by the marshals in an earlier segment';
+        }
+      }
+    }
+
     this.planStrategies();
     this.placeGrid();
     this.updateEnvironment();
@@ -624,6 +649,10 @@ export class RaceEngine {
       if (car.retired) continue;
       // Cars knocked out of qualifying take no further part in the session.
       if (car.eliminated) continue;
+      // ...and neither does a car the marshals recovered in an earlier segment
+      // (Art. B4.3.2). It stays parked in its box for the whole period and is
+      // classified on the time it does not set.
+      if (car.withdrawn) { this.holdOnGrid(car); continue; }
 
       // Held in the garage until this car's release slot comes round.
       if (car.releaseTimer > 0) {
@@ -1435,9 +1464,16 @@ export class RaceEngine {
   }
 
   private ordersBefore(a: CarEntry, b: CarEntry, isRace: boolean): boolean {
-    // Retired and disqualified cars sort to the back.
-    if (a.disqualified !== b.disqualified) return b.disqualified;
-    if (a.retired !== b.retired) return b.retired;
+    // Disqualified cars sort to the back of any session; retired cars sort to
+    // the back of a RACE only. `classificationTier` owns that rule and cites
+    // the articles — the short version is that a Lap Time Classified Session is
+    // classified on a lap time (Art. B2.4.3a) and putting the car in a barrier
+    // afterwards does not delete the lap. This test used to demote a retired
+    // car in every session type, which is how the fastest driver in Q1 ended up
+    // sorted twentieth by their own accident and was then shown "P20 — DNF".
+    const at = classificationTier(a, isRace);
+    const bt = classificationTier(b, isRace);
+    if (at !== bt) return at < bt;
 
     if (isRace) {
       if (a.finished !== b.finished) return a.finished;

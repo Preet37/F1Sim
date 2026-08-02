@@ -1,4 +1,5 @@
 import { RaceEngine, type SessionConfig } from './RaceEngine';
+import { rankSegment } from './Classification';
 import type { CarEntry } from './CarEntry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import type { Driver } from '../data/teams';
@@ -44,6 +45,15 @@ export interface SimulatedSessionResult {
   simSeconds: number;
   /** Wall-clock milliseconds spent. */
   wallMs: number;
+  /**
+   * Driver ids the marshals had to recover.
+   *
+   * Reported because a skipped segment has to hand the caller the same facts a
+   * driven one does. In qualifying these are the Art. B4.3.2 cars: they keep
+   * every lap they set and their place in this segment's classification, and
+   * they take no further part in the session.
+   */
+  retired: string[];
 }
 
 /** Timed laps every car needs before a qualifying segment can be cut short. */
@@ -98,7 +108,10 @@ export class HeadlessSession {
     if (cars.length === 0) return 1;
     let ready = 0;
     for (const c of cars) {
-      if (c.retired || (c.bestLapTime > 0 && c.lap >= QUALIFYING_TIMED_LAPS + 1)) ready++;
+      // A withdrawn car (Art. B4.3.2) is never going to set a lap, so waiting
+      // for it would hold the early exit open for the whole segment.
+      if (c.retired || c.withdrawn
+        || (c.bestLapTime > 0 && c.lap >= QUALIFYING_TIMED_LAPS + 1)) ready++;
     }
     return ready / cars.length;
   }
@@ -141,14 +154,13 @@ export class HeadlessSession {
 
     // Qualifying and practice classify on best lap; a race classifies on the
     // engine's own standings, which already account for laps, penalties and
-    // retirements.
+    // retirements. `rankSegment` rather than a sort written out here, because a
+    // skipped segment and a driven one must reach the same grid — a local copy
+    // of the sort is a second implementation of knockout qualifying and the two
+    // disagree the first time either is touched.
     const ranked = e.config.kind === 'race'
       ? e.standings.slice()
-      : e.participants.slice().sort((a, b) => {
-          const at = a.bestLapTime > 0 ? a.bestLapTime : Infinity;
-          const bt = b.bestLapTime > 0 ? b.bestLapTime : Infinity;
-          return at - bt;
-        });
+      : rankSegment(e.participants);
 
     const bestLaps = new Map<string, number>();
     for (const c of e.cars) bestLaps.set(id(c), c.bestLapTime);
@@ -158,6 +170,7 @@ export class HeadlessSession {
       bestLaps,
       simSeconds: e.time,
       wallMs: this.wallMs,
+      retired: e.participants.filter((c) => c.retired).map(id),
     };
   }
 }

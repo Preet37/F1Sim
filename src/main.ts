@@ -5,7 +5,10 @@ import { formatLapTime, clamp } from './core/MathUtils';
 import { RaceEngine, type SessionConfig, type SessionKind } from './race/RaceEngine';
 import type { CarEntry } from './race/CarEntry';
 import { bandOf, COMPONENT_IDS, COMPONENT_NAMES } from './race/DamageModel';
-import { qualifyingBoardOrder, rankSegment, resultGapCell } from './race/Classification';
+import {
+  qualifyingBoardOrder, rankSegment, resolveSegment, resultGapCell,
+  type SegmentEntrant,
+} from './race/Classification';
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
@@ -1837,11 +1840,26 @@ class Game {
    * ends with nobody having set a lap still has a defined survivor set.
    */
   private qualifyingSurvivors: string[] = [];
+  /**
+   * Drivers who may take no further part in this qualifying session.
+   *
+   * Art. B4.3.2: a car that stops away from the pit lane and receives physical
+   * assistance is out for the rest of the SESSION, and Q1/Q2/Q3 are three
+   * periods of one session (Art. B2.4.2). So this accumulates across segments
+   * and is only cleared by a new weekend.
+   *
+   * They are still entered and still classified. Being on this list costs a
+   * driver the laps they would have set in the segments they miss and nothing
+   * else — not the laps they have already set, and not their place in the
+   * classification those laps earned.
+   */
+  private qualifyingBarred: string[] = [];
 
   /** Clears qualifying state at the start of a weekend. */
   private resetQualifying(): void {
     this.qualifyingGrid = [];
     this.qualifyingSurvivors = [];
+    this.qualifyingBarred = [];
   }
 
   private startWeekend(circuitId: string): void {
@@ -1862,6 +1880,12 @@ class Game {
    * The survivors are carried into the next segment through `participants`, so
    * Q2 runs fifteen cars and Q3 runs ten — the track is progressively emptier,
    * exactly as it is in reality.
+   *
+   * A retirement is not consulted anywhere in that. Art. B2.4.3a classifies a
+   * driver on the best time they set and nothing else, so a car that put itself
+   * in the barrier having topped the segment advances at the top of the
+   * survivor list. What its accident DOES cost it is the right to run again
+   * (Art. B4.3.2), which is carried separately in `qualifyingBarred`.
    */
   private resolveQualifyingSegment(
     engine: RaceEngine,
@@ -1873,7 +1897,8 @@ class Game {
 
     const indexById = new Map<string, number>();
     for (const c of engine.cars) indexById.set(idOf(c), c.index);
-    this.applyQualifyingOrder(ranked.map(idOf), indexById, advancing);
+    this.applyQualifyingOrder(
+      ranked.map((c) => ({ id: idOf(c), retired: c.retired })), indexById, advancing);
     void phase;
   }
 
@@ -1900,34 +1925,51 @@ class Game {
    * qualifying, and the two would disagree the first time either was touched.
    */
   private applyQualifyingOrder(
-    ranked: string[],
+    ranked: readonly SegmentEntrant[],
     indexById: Map<string, number>,
     advancing: number | undefined,
   ): void {
-    if (advancing === undefined || ranked.length <= advancing) {
+    const outcome = resolveSegment(ranked, advancing);
+
+    // Anyone the marshals had to recover is out for the rest of the SESSION,
+    // not just for the segment they crashed in (Art. B4.3.2 with B2.4.2), so
+    // the list accumulates rather than being replaced.
+    for (const id of outcome.barred) {
+      if (!this.qualifyingBarred.includes(id)) this.qualifyingBarred.push(id);
+    }
+
+    if (outcome.knockedOut.length === 0) {
       // Q3, or a segment nobody was knocked out of: this order fills the front
       // of the grid.
-      for (let i = 0; i < ranked.length; i++) this.qualifyingGrid[i] = ranked[i];
-      this.qualifyingSurvivors = ranked.slice();
+      for (let i = 0; i < outcome.order.length; i++) {
+        this.qualifyingGrid[i] = outcome.order[i];
+      }
+      this.qualifyingSurvivors = outcome.survivors;
       return;
     }
 
-    const survivors = ranked.slice(0, advancing);
-    const knockedOut = ranked.slice(advancing);
-
     // Eliminated cars fill the grid from the back, fastest of them highest.
     // With 20 cars and 15 advancing, that is slots 16-20.
-    for (let i = 0; i < knockedOut.length; i++) {
-      this.qualifyingGrid[advancing + i] = knockedOut[i];
+    const advanced = outcome.survivors.length;
+    for (let i = 0; i < outcome.knockedOut.length; i++) {
+      this.qualifyingGrid[advanced + i] = outcome.knockedOut[i];
     }
 
-    this.qualifyingSurvivors = survivors;
+    this.qualifyingSurvivors = outcome.survivors;
 
-    // Restrict the next segment to the survivors.
+    // Restrict the next segment to the survivors — and, within them, name the
+    // ones who are entered but cannot run. They stay in `participants` on
+    // purpose: they are classified in the segment they sit out, at the bottom
+    // of it, which is what puts a Q1 crash on the fifteenth grid slot rather
+    // than the twentieth.
     const next = this.weekend[this.weekendIndex + 1];
     if (next && next.kind === 'qualifying') {
-      next.participants = survivors
-        .map((id) => indexById.get(id))
+      const toIndex = (id: string) => indexById.get(id);
+      next.participants = outcome.survivors
+        .map(toIndex)
+        .filter((i): i is number => i !== undefined);
+      next.withdrawn = this.qualifyingBarred
+        .map(toIndex)
         .filter((i): i is number => i !== undefined);
     }
   }
@@ -2301,7 +2343,14 @@ class Game {
       for (const c of skip.session.engine.cars) {
         indexById.set(c.driver.id === playerId ? 'PLAYER' : c.driver.id, c.index);
       }
-      this.applyQualifyingOrder(result.order, indexById, config.advancing);
+      // A skipped segment reaches the grid through exactly the same call a
+      // driven one does, retirements and all — including Art. B4.3.2, so a car
+      // the simulation put in the barrier is barred from the rest of qualifying
+      // whether or not the player watched it happen.
+      const wrecked = new Set(result.retired);
+      this.applyQualifyingOrder(
+        result.order.map((id) => ({ id, retired: wrecked.has(id) })),
+        indexById, config.advancing);
     }
 
     // A skipped race still has to feed the career, or the round never happened.
