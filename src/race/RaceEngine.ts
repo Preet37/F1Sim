@@ -2,6 +2,7 @@ import { clamp, clamp01, damp, loopDelta, Rng, wrapDistance, MS_TO_KPH } from '.
 import { PHYSICS_DT } from '../core/SimClock';
 import { TrackSpline } from '../track/TrackSpline';
 import { CarEntry } from './CarEntry';
+import { stintLife } from './Strategy';
 import { RaceControlManager } from './RaceControlManager';
 import { bandOf, COMPONENT_NAMES, type ImpactZone } from './DamageModel';
 import { DRIVERS, getTeam, type Driver } from '../data/teams';
@@ -374,16 +375,16 @@ export class RaceEngine {
   private planStrategies(): void {
     if (this.config.kind !== 'race') return;
     const laps = this.config.laps || this.track.def.raceLaps;
-    const abrasion = this.track.def.surfaceAbrasion;
 
     for (const car of this.cars) {
-      const wearMult = car.team.performance.tireWearMult * abrasion;
-      const care = car.driver.tyreManagement;
-
-      // Laps a medium will last before the cliff on this surface.
-      const mediumLife = clamp(30 / wearMult * (0.85 + care * 0.3), 12, 46);
-      const hardLife = mediumLife * 1.45;
-      const softLife = mediumLife * 0.66;
+      // The tyre-life model lives in `Strategy.ts` so that the plan a car
+      // actually runs and the plan the strategy screen recommends are the same
+      // arithmetic. They used to be the same only by coincidence, because this
+      // expression was private to this method and the screen did not exist; a
+      // strategist whose recommendation the race then contradicts is worse
+      // than no strategist.
+      const { soft: softLife, medium: mediumLife, hard: hardLife } =
+        stintLife(car.team, car.driver, this.track.def);
 
       const twoStopTotal = softLife + mediumLife + mediumLife;
       const oneStopTotal = mediumLife + hardLife;

@@ -352,21 +352,96 @@ canvas#view {
    left rail, and a tower sized to "as many as fit" grows straight down
    through the pit instruction. See `towerFit`. */
 .hud-tower {
-  --tower-cols: 3px 20px 20px minmax(0, 1fr) 46px 56px;
+  --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 12px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
-  width: 316px;
-  padding: 9px 9px 8px;
+  width: 336px;
+  padding: 8px 9px 8px;
   border-radius: var(--card-r);
   background: var(--card-bg);
   border: 1px solid var(--card-line);
 }
 .hud-tower .hud-stripe { top: 12px; bottom: 12px; border-radius: 0 2px 2px 0; }
+.tower-session {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+  padding: 0 3px 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tower-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 3px 7px;
+  padding: 0 3px 6px;
+}
+/* --- The fastest lap ---------------------------------------------------
+   The one fact a broadcast keeps permanently on screen that this game had
+   nowhere at all: the purple was on the player's own sector tiles and said
+   nothing about the other nineteen cars. An outlined capsule rather than
+   another table row, because it is about somebody who may not be in the
+   visible window of the order — and it is drawn in the purple the holder's
+   own name is drawn in below, so the two are obviously the same fact. */
+.tower-fastest {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 1px 7px;
+  padding: 3px 9px;
+  border-radius: var(--pill-r);
+  border: 1px solid rgba(192, 77, 255, 0.45);
+  background: rgba(192, 77, 255, 0.12);
+  min-width: 0;
+}
+.fastest-label {
+  font-family: var(--font-display);
+  font-size: 8px;
+  font-weight: 850;
+  font-stretch: 116%;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--sig-purple);
+  flex: 0 0 auto;
+}
+.fastest-dot { color: var(--ink-3); font-size: 9px; flex: 0 0 auto; }
+/* The given name is the first thing to go when the capsule is narrow — a
+   surname identifies a driver, "NIA…" identifies nobody. */
+.fastest-first {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--ink-2);
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fastest-who {
+  font-family: var(--font-display);
+  font-size: 9.5px;
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink);
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fastest-time {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 800;
+  color: var(--sig-purple);
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding-left: 6px;
 }
 .tower-position {
   font-family: var(--font-display);
@@ -403,9 +478,13 @@ canvas#view {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink-3);
+  overflow: hidden;
 }
-.tower-col:nth-child(5),
-.tower-col:nth-child(6) { text-align: right; }
+/* Each header cell carries the name of its column rather than a position in
+   the row, so hiding a column at a breakpoint hides its label with it and the
+   two cannot come apart. */
+.c-gap, .c-best, .c-lap { text-align: right; }
+.tower-lastlap, .c-lap { display: none; }
 
 .tower-row {
   height: 29px;
@@ -418,13 +497,28 @@ canvas#view {
    that means CAUTION twelve pixels away on the same panel. */
 .tower-row.is-leader { background: rgba(192, 77, 255, 0.1); }
 .tower-row.is-leader .tower-pos { color: var(--sig-purple); }
-.tower-row.is-fastest .tower-best { color: var(--sig-purple); }
+.tower-row.is-fastest .tower-best,
+.tower-row.is-fastest .tower-surname { color: var(--sig-purple); }
 /* White means "the thing happening now", and the driver's own row is exactly
    that. It is an outline rather than a fill so the team colour beside it is
    not tinted by the highlight. */
 .tower-row.is-player {
   background: rgba(242, 246, 251, 0.11);
   box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
+}
+/* The leader is pinned above a window that has scrolled past them, so the row
+   under it is not the car behind it. The break says so. */
+.tower-row.is-pinned {
+  margin-bottom: 5px;
+  position: relative;
+}
+.tower-row.is-pinned::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: -3px;
+  border-bottom: 1px dashed rgba(150, 180, 214, 0.3);
 }
 .tower-row.is-out { opacity: 0.4; }
 .tower-row.is-out .tower-gap { color: var(--sig-red); }
@@ -448,22 +542,27 @@ canvas#view {
   min-width: 0;
   white-space: nowrap;
 }
+/* The first name yields first. A surname identifies a driver and a given name
+   decorates one, so when the column is short it is "Vik… HALVORSEN" that has
+   to be avoided and "V… HALVORSEN" that is acceptable. */
 .tower-first {
   font-family: var(--font-ui);
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: 400;
-  color: var(--ink-2);
+  color: var(--ink-3);
   flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tower-last {
+.tower-surname {
   font-family: var(--font-display);
   font-size: 11.5px;
   font-weight: 800;
-  font-stretch: 112%;
-  letter-spacing: 0.035em;
+  font-stretch: 110%;
+  letter-spacing: 0.03em;
   color: var(--ink);
+  flex: 0 0 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -484,24 +583,37 @@ canvas#view {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The compound rides on the team line rather than taking a column of its own.
-   It is one letter and it belongs with the other small facts about the car. */
-.tower-tyre {
-  font-family: var(--font-data);
-  font-size: 8.5px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  flex: 0 0 auto;
-}
 .tower-gap,
-.tower-best {
+.tower-best,
+.tower-lastlap {
   text-align: right;
   font-family: var(--font-data);
   font-size: 10px;
   font-weight: 700;
   color: var(--ink-2);
+  overflow: hidden;
 }
-.tower-best { color: var(--ink-3); }
+/* The gap is the live number and the best lap is the reference, so they are
+   not the same weight of grey. The last lap is louder than either: it is the
+   one that has just changed. */
+.tower-best { color: var(--ink-3); font-weight: 600; }
+.tower-lastlap { color: var(--ink); }
+.tower-row.is-leader .tower-gap {
+  font-family: var(--font-display);
+  font-size: 8px;
+  font-weight: 850;
+  font-stretch: 114%;
+  letter-spacing: 0.1em;
+  color: var(--sig-purple);
+}
+/* The compound, in its own colour, at the end of the row — the last thing on
+   a broadcast timing line and the only one-character column here. */
+.tower-tyre {
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  text-align: center;
+}
 
 /* --- Top right: sectors and lap times ---------------------------------
    Three tiles, then the lap in progress in the largest type on screen.
@@ -800,14 +912,28 @@ canvas#view {
 .hud-notices {
   position: absolute;
   left: calc(10px + var(--safe-l));
-  bottom: calc(178px + var(--safe-b));
+  /* Bounded at BOTH ends, and that is the whole trick. With only a `bottom`
+     the column grows upward for as long as it has content, and a radio card
+     plus a pop-up plus two live cues is taller than the gap between the
+     weather bug and the running order — so it grew straight through the
+     tower. A fixed band with the content aligned to its foot means a busy
+     moment clips the OLDEST card off the top instead, which is the one you
+     have already read. The top is the deepest the tower can ever reach; see
+     `towerFit`. */
+  top: max(300px, 50vh);
+  bottom: calc(172px + var(--safe-b));
   /* Flush with the tower above it: the rail is one column, not two. */
-  width: 316px;
+  width: 336px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  justify-content: flex-end;
+  overflow: hidden;
   gap: 8px;
 }
+/* Nothing in the rail may shrink to fit — a squashed card is worse than a
+   clipped one, because a clipped card is obviously incomplete. */
+.hud-notices > * { flex: 0 0 auto; }
 
 /* --- The pit wall speaks ----------------------------------------------
    The signature element, and the only face in this game. A portrait, a name,
@@ -1026,7 +1152,7 @@ canvas#view {
 .hud-weather {
   position: absolute;
   left: calc(10px + var(--safe-l));
-  bottom: calc(120px + var(--safe-b));
+  bottom: calc(116px + var(--safe-b));
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1367,10 +1493,19 @@ canvas#view {
 /* ==========================================================================
    Damage panel
    ========================================================================== */
+/* --- The car diagram ---------------------------------------------------
+   Moved from the bottom-left corner to the foot of the right-hand column,
+   and by the same rule that moved everything else: the state of YOUR car is
+   an instrument, not something the pit wall is telling you, so it belongs
+   with the instruments. It was also the panel standing in the way — 180px of
+   the left rail's height, in the middle of it, which is where the pit
+   instruction now has to live. */
 .hud-damage {
   position: absolute;
-  left: calc(176px + var(--safe-l));
-  bottom: calc(10px + var(--safe-b));
+  top: calc(400px + var(--safe-t));
+  right: calc(10px + var(--safe-r));
+  left: auto;
+  bottom: auto;
   width: 92px;
   padding: 7px 8px 8px;
   display: flex;
@@ -1448,6 +1583,7 @@ canvas#view {
   .hud-notices {
     left: calc(10px + var(--safe-l));
     right: calc(62px + var(--safe-r));
+    top: calc(300px + var(--safe-t));
     bottom: calc(196px + var(--safe-b));
     width: auto;
     gap: 6px;
@@ -1495,6 +1631,7 @@ canvas#view {
   .hud-fuelrow { font-size: 9px; }
 
   .hud-damage {
+    top: auto;
     left: auto;
     right: calc(134px + var(--safe-r));
     bottom: calc(10px + var(--safe-b));
@@ -1587,11 +1724,16 @@ canvas#view {
   /* The rail keeps the left edge, narrower and tighter, in the band between
      the bottom of the tower and the weather bug. One pop-up at a time here —
      see `Hud.maxAlerts` — because two would reach the tower. */
+  /* 390 pixels of height, and the running order takes the top 210 of them.
+     The band left is 60px, so the rail shows the live cue and clips anything
+     older — see the bounding note on `.hud-notices`. The radio card does not
+     appear at all at this height; `Hud.showRadioCard` declines it. */
   .hud-notices {
     left: calc(8px + var(--safe-l));
-    bottom: calc(122px + var(--safe-b));
+    top: calc(214px + var(--safe-t));
+    bottom: calc(118px + var(--safe-b));
     width: 262px;
-    gap: 6px;
+    gap: 5px;
   }
   .hud-alert { padding: 6px 9px 7px 7px; gap: 8px; }
   .alert-portrait { width: 28px; height: 28px; }
@@ -1652,7 +1794,11 @@ canvas#view {
   .hud-tyretemp { width: 30px; font-size: 9px; }
   .hud-fuelrow { font-size: 9px; }
 
-  .hud-damage { left: calc(152px + var(--safe-l)); bottom: calc(6px + var(--safe-b)); width: 58px; padding: 4px 5px 5px; }
+  .hud-damage {
+    top: auto; right: auto;
+    left: calc(152px + var(--safe-l)); bottom: calc(6px + var(--safe-b));
+    width: 58px; padding: 4px 5px 5px;
+  }
   .hud-damagetitle { font-size: 7.5px; }
   .hud-damagesummary { font-size: 7px; }
 
@@ -1732,21 +1878,39 @@ canvas#view {
    colour and its surname — standing until the end. */
 @media (max-width: 900px), (max-height: 470px) {
   .hud-tower {
-    --tower-cols: 3px 15px 15px minmax(0, 1fr) 42px;
+    --tower-cols: 3px 15px 15px minmax(0, 1fr) 42px 11px;
     padding: 6px 6px 5px;
   }
   .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 5px; }
   .tower-cols { gap: 0 5px; padding: 0 3px 4px; margin-bottom: 3px; }
-  .tower-col:nth-child(5) { text-align: right; }
-  .tower-col:nth-child(6),
-  .tower-best,
-  .tower-first,
-  .tower-sub { display: none; }
+  .c-best, .c-lap, .tower-best, .tower-lastlap,
+  .tower-first, .tower-sub, .tower-session { display: none; }
   .tower-bar { height: 12px; }
   .tower-pos { font-size: 10px; }
   .tower-mark { width: 15px; height: 15px; }
-  .tower-last { font-size: 10.5px; }
+  .tower-surname { font-size: 10.5px; }
   .tower-gap { font-size: 9.5px; }
+  .tower-row.is-leader .tower-gap { font-size: 7.5px; }
+  .tower-tyre { font-size: 8px; }
+  .tower-fastest { padding: 2px 7px; gap: 5px; margin-bottom: 5px; }
+  .fastest-label { font-size: 7px; }
+  .fastest-first { display: none; }
+  .fastest-who { font-size: 8.5px; }
+  .fastest-time { font-size: 8.5px; }
+}
+
+/* --- Wide desktops -----------------------------------------------------
+   The one place the last lap fits. It is the column a broadcast adds when it
+   has the room and drops when it does not, and 1500px is where this panel
+   has the room: the classification the reference shows is a full-screen
+   graphic with three times this width to spend. */
+@media (min-width: 1500px) {
+  .hud-tower {
+    --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 50px 12px;
+    width: 392px;
+  }
+  .hud-notices { width: 392px; }
+  .tower-lastlap, .c-lap { display: block; }
 }
 
 /* ===================================================================== */
@@ -4448,4 +4612,361 @@ table.standings tr.me td.who { font-weight: 700; }
    and the transitions go with it. */
 @media (prefers-reduced-motion: reduce) {
   .chev, .btn, .strip-team { transition: none; }
+}
+
+/* =======================================================================
+   RACE SETUP — the plan for both cars
+   =======================================================================
+
+   The only screen in this game where the player runs the team rather than
+   drives the car, so it is the only one with a person on it. The principal
+   is the same drawn portrait the in-race pop-up uses — one character, one
+   voice, two places — and the line they give is derived rather than written:
+   the tyre life for this car on this surface decides whether they ask for one
+   stop or two, and the sentence says which and why.
+
+   The card is the row a pit wall draws a race on: what it is called, how many
+   stops, then compound → pit window → compound, left to right. Every number
+   in it comes off the same `Strategy.ts` model the race then runs, and the
+   two numbers that CANNOT be derived — a lap-time delta and a real forecast —
+   are absent rather than invented. See the note at the head of that file.
+
+   This screen is not drawn while anything is being simulated, so unlike the
+   HUD it can afford blur, shadow and a two-column grid. */
+
+.strategy { display: flex; flex-direction: column; gap: 22px; }
+
+/* --- The principal, and the conditions -------------------------------- */
+.strat-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px;
+  align-items: start;
+}
+.strat-speaker { display: flex; align-items: flex-start; gap: 16px; min-width: 0; }
+.strat-portrait { flex: 0 0 auto; width: 68px; height: 68px; }
+.strat-portrait svg { display: block; width: 100%; height: 100%; }
+/* A speech bubble, with the tail pointing back at whoever is talking. One
+   rotated square — the whole gesture, and the only decorative shape on the
+   page. */
+.strat-bubble {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding: 14px 18px;
+  border-radius: var(--card-r);
+  background: var(--carbon-2);
+  border: 1px solid var(--line);
+  box-shadow: var(--plate-lift);
+}
+.strat-bubble::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 24px;
+  width: 11px;
+  height: 11px;
+  transform: rotate(45deg);
+  background: var(--carbon-2);
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.strat-who {
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 6px;
+}
+.strat-say {
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.strat-weather {
+  flex: 0 0 auto;
+  padding: 12px 18px 13px;
+  border-radius: var(--card-r);
+  border: 1px solid var(--line-2);
+  background: rgba(10, 14, 20, 0.6);
+}
+.strat-weather-label {
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 9px;
+}
+.strat-weather-body { display: flex; align-items: center; gap: 14px; }
+.strat-weather-glyph { flex: 0 0 auto; width: 38px; height: 38px; }
+.strat-weather-glyph svg { display: block; width: 100%; height: 100%; }
+.strat-weather-glyph.is-dry .wx-sun { opacity: 1; }
+.strat-weather-glyph.is-dry .wx-cloud { opacity: 0.4; }
+.strat-weather-glyph.is-wet .wx-drops { opacity: 0.9; }
+.strat-weather-word {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.strat-weather-temps {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-2);
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+/* --- One column per car ------------------------------------------------
+   A rule between them rather than a gap alone: these are two halves of one
+   decision, not two unrelated lists. */
+.strat-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 0 34px;
+}
+.strat-col { min-width: 0; padding-right: 0; }
+.strat-col + .strat-col {
+  border-left: 1px solid var(--line-2);
+  padding-left: 34px;
+  margin-left: -17px;
+}
+.strat-colhead {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-2);
+  margin-bottom: 14px;
+}
+.strat-mark { flex: 0 0 auto; width: 28px; height: 28px; }
+.strat-mark svg { display: block; width: 100%; height: 100%; }
+.strat-driver { display: flex; align-items: baseline; gap: 7px; min-width: 0; flex: 1; }
+.strat-driver-first {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+.strat-driver-last {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+}
+.strat-carno {
+  font-family: var(--font-data);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink-3);
+}
+.strat-you {
+  padding: 2px 9px;
+  border-radius: var(--pill-r);
+  background: rgba(242, 246, 251, 0.12);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.strat-label {
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 4px;
+}
+/* The two real numbers the choice turns on, stated before the options rather
+   than buried inside them. */
+.strat-life {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-2);
+  margin-bottom: 12px;
+}
+
+/* --- A strategy card -------------------------------------------------- */
+.strat-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 12px;
+  padding: 13px 16px 14px;
+  border-radius: var(--card-r);
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+.strat-card:hover { border-color: var(--line-2); transform: translateY(-1px); }
+/* The recommendation is outlined and carries a marker down its leading edge —
+   the strategist's own answer, visible before anything is read. */
+.strat-card.tone-go { border-color: rgba(0, 217, 95, 0.5); }
+.strat-card.tone-go::before,
+.strat-card.selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--sig-green);
+}
+.strat-card.tone-warn { border-color: rgba(255, 210, 31, 0.4); }
+.strat-card.tone-warn::before { background: var(--sig-yellow); }
+.strat-card.selected {
+  background: var(--carbon-2);
+  border-color: var(--sig-white);
+  box-shadow: var(--plate-lift-hi);
+}
+.strat-card.selected::before { background: var(--sig-white); }
+.strat-card.tone-go.selected::before { background: var(--sig-green); }
+
+.strat-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.strat-card-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 850;
+  font-stretch: 116%;
+  letter-spacing: 0.14em;
+  color: var(--ink-2);
+}
+.strat-card.tone-go .strat-card-label { color: var(--sig-green); }
+.strat-card.tone-warn .strat-card-label { color: var(--sig-yellow); }
+.strat-card-stops {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 850;
+  font-stretch: 116%;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+
+/* The stint sequence, read left to right: tyre, window, tyre. */
+.strat-run {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 13px 0 12px;
+  overflow-x: auto;
+}
+.strat-leg { flex: 0 0 auto; text-align: center; width: 64px; }
+.strat-tyre {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto 6px;
+  border-radius: 50%;
+  border: 4px solid var(--compound, #888);
+  background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.5));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-data);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--compound, #fff);
+}
+.strat-leg-name {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 800;
+  font-stretch: 114%;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+.strat-leg-laps {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.strat-window { flex: 1 1 auto; min-width: 62px; padding-top: 8px; text-align: center; }
+.strat-window-label {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+.strat-window-rule { height: 1px; background: var(--line-2); }
+.strat-window-laps {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  margin-top: 5px;
+}
+
+.strat-card-why {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.strat-card-cost {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-3);
+  margin-top: 7px;
+}
+.strat-card-warn {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--fill-yellow);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #ffe9a3;
+}
+
+@media (max-width: 860px) {
+  .strat-head { grid-template-columns: minmax(0, 1fr); }
+  /* One column. `auto-fit` will happily fit two 340px columns into an 844px
+     landscape phone, and two 340px columns of tyre discs and pit windows is
+     not a thing anyone can use. */
+  .strat-cols { grid-template-columns: minmax(0, 1fr); }
+  .strat-portrait { width: 52px; height: 52px; }
+  .strat-say { font-size: 13.5px; }
+  .strat-col + .strat-col {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    margin-left: 0;
+    padding-top: 20px;
+    margin-top: 4px;
+  }
+  .strat-leg { width: 56px; }
+  .strat-tyre { width: 32px; height: 32px; border-width: 3px; font-size: 11px; }
 }

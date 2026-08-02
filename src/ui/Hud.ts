@@ -4,7 +4,7 @@ import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
 import { bandOf, COMPONENT_NAMES, type ComponentId } from '../race/DamageModel';
-import type { FlagSignal } from '../race/RaceControlManager';
+import type { FlagSignal, RaceControlMessage } from '../race/RaceControlManager';
 import { TrackMap } from './TrackMap';
 
 /**
@@ -43,14 +43,15 @@ interface Row {
   pos: HTMLElement;
   mark: HTMLElement;
   first: HTMLElement;
-  last: HTMLElement;
+  surname: HTMLElement;
   team: HTMLElement;
-  tyre: HTMLElement;
   gap: HTMLElement;
   best: HTMLElement;
+  lastLap: HTMLElement;
+  tyre: HTMLElement;
   seen: {
-    pos: string; first: string; last: string; team: string;
-    tyre: string; gap: string; best: string; markTeam: string; colour: string;
+    pos: string; first: string; surname: string; team: string; tyre: string;
+    gap: string; best: string; lastLap: string; markTeam: string; colour: string;
   };
 }
 
@@ -103,6 +104,11 @@ export class Hud {
   private fuelDelta!: HTMLElement;
   private lapCounter!: HTMLElement;
   private position!: HTMLElement;
+  private sessionName!: HTMLElement;
+  private fastestBar!: HTMLElement;
+  private fastestFirst!: HTMLElement;
+  private fastestWho!: HTMLElement;
+  private fastestTime!: HTMLElement;
   private lapTime!: HTMLElement;
   private lastLap!: HTMLElement;
   private bestLap!: HTMLElement;
@@ -178,8 +184,15 @@ export class Hud {
   private brakePad!: HTMLElement;
   private reversePad!: HTMLElement;
 
-  /** Race-control bulletins already relayed, so each is spoken once. */
-  private shownMessages = 0;
+  /**
+   * The last race-control bulletin relayed.
+   *
+   * Identity, not a count. The log is capped at sixty entries and SHIFTS when
+   * it is full, so `messages.length` stops growing — and a HUD watching the
+   * length silently stops relaying anything for the rest of a busy race. The
+   * panel this replaced had that bug from the day it was written.
+   */
+  private lastMessage: RaceControlMessage | null = null;
 
   /** Called when the on-screen camera button is used. */
   onCameraPressed: (() => void) | null = null;
@@ -223,20 +236,41 @@ export class Hud {
     // because it is the only one that answers "what is happening in the race".
     this.tower = this.el('hud-panel hud-tower', this.root);
     this.tower.dataset.probe = 'tower';
-    const towerHead = this.el('tower-head', this.tower);
     // A team-colour stripe down the edge: instantly identifies whose car you
     // are in, and it is how every broadcast graphic does it.
     this.teamStripe = this.el('hud-stripe', this.tower);
+
+    // The header block. What a broadcast leaves on screen permanently is not
+    // just the order — it is the session, the lap, and who holds the fastest
+    // lap. The last of those was nowhere in this game: the purple was on the
+    // sector tiles of the player's own panel and told you nothing about the
+    // other nineteen cars.
+    this.sessionName = this.el('tower-session', this.tower, '');
+    const towerHead = this.el('tower-head', this.tower);
     this.position = this.el('tower-position', towerHead, 'P1');
     this.lapCounter = this.el('tower-lapcount', towerHead, 'LAP 1/50');
+
+    // The fastest lap, in its own outlined capsule. Purple, because purple is
+    // the outright best in this system and the fastest lap is the definition
+    // of it — the same purple the holder's name is drawn in below.
+    this.fastestBar = this.el('tower-fastest', this.tower);
+    this.el('fastest-label', this.fastestBar, 'Fastest lap');
+    this.el('fastest-dot', this.fastestBar, '·');
+    this.fastestFirst = this.el('fastest-first', this.fastestBar, '');
+    this.fastestWho = this.el('fastest-who', this.fastestBar, '');
+    this.fastestTime = this.el('fastest-time', this.fastestBar, '');
+    this.fastestBar.dataset.probe = 'fastest';
 
     // The column header. It shares its grid template with every row below it
     // through one custom property, so a column cannot drift from its label —
     // which is what a header row is for, and what two separately-tuned widths
     // would eventually undo.
     const cols = this.el('tower-cols', this.tower);
-    for (const label of ['', 'P', '', 'DRIVER', 'GAP', 'BEST']) {
-      this.el('tower-col', cols, label);
+    for (const [cls, label] of [
+      ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-driver', 'Driver'],
+      ['c-gap', 'Gap'], ['c-best', 'Best'], ['c-lap', 'Lap'], ['c-tyre', ''],
+    ] as [string, string][]) {
+      this.el('tower-col ' + cls, cols, label);
     }
 
     // --- Top right: sectors and lap times ----------------------------------
@@ -504,17 +538,18 @@ export class Hud {
       const who = this.el('tower-who', root);
       const nameLine = this.el('tower-name', who);
       const first = this.el('tower-first', nameLine, '');
-      const last = this.el('tower-last', nameLine, '');
+      const surname = this.el('tower-surname', nameLine, '');
       const sub = this.el('tower-sub', who);
       const team = this.el('tower-team', sub, '');
-      const tyre = this.el('tower-tyre', sub, '');
       const gap = this.el('tower-gap', root, '');
       const best = this.el('tower-best', root, '');
+      const lastLap = this.el('tower-lastlap', root, '');
+      const tyre = this.el('tower-tyre', root, '');
       this.rows.push({
-        root, bar, pos, mark, first, last, team, tyre, gap, best,
+        root, bar, pos, mark, first, surname, team, gap, best, lastLap, tyre,
         seen: {
-          pos: '', first: '', last: '', team: '',
-          tyre: '', gap: '', best: '', markTeam: '', colour: '',
+          pos: '', first: '', surname: '', team: '', tyre: '',
+          gap: '', best: '', lastLap: '', markTeam: '', colour: '',
         },
       });
     }
@@ -787,7 +822,11 @@ export class Hud {
       this.lastEngine = engine;
       this.worstSector[0] = this.worstSector[1] = this.worstSector[2] = 0;
       this.seenSector[0] = this.seenSector[1] = this.seenSector[2] = 0;
-      this.shownMessages = 0;
+      // Everything already in the log belongs to the session that just ended,
+      // or to the part of this one that happened before the HUD was pointed at
+      // it. Neither is news.
+      const log = engine.raceControl.messages;
+      this.lastMessage = log.length > 0 ? log[log.length - 1] : null;
       this.map = null;
       this.lastAdvice = '';
       this.lastNeutral = 'none';
@@ -875,6 +914,7 @@ export class Hud {
     setText(this.position, 'P' + player.position);
     setStyle(this.teamStripe, 'background',
       '#' + player.team.colour.toString(16).padStart(6, '0'));
+    setText(this.sessionName, engine.config.name.toUpperCase() + ' · ' + engine.track.def.name.toUpperCase());
     const totalLaps = engine.config.laps || engine.track.def.raceLaps;
     if (engine.config.kind === 'race') {
       setText(this.lapCounter, 'LAP ' + Math.min(player.lap + 1, totalLaps) + '/' + totalLaps);
@@ -1038,6 +1078,10 @@ export class Hud {
     } else {
       const advice = engine.pitAdvice(player);
       if (advice) { text = advice + ' — PRESS PIT'; cls += ' cue-warn'; }
+      else {
+        const planned = plannedStopCue(engine, player);
+        if (planned) { text = planned; cls += ' cue-live'; }
+      }
     }
 
     if (text) {
@@ -1082,22 +1126,35 @@ export class Hud {
     const shown = Math.min(standings.length, fit.rows);
     this.ensureRows(shown);
 
-    // A window around the player whenever the whole field does not fit. Being
+    // A window around the player whenever the whole field does not fit — being
     // shown P1 to P14 while you are running sixteenth is a graphic about
-    // somebody else's race.
+    // somebody else's race — and the LEADER pinned to the top of it whenever
+    // that window has moved off them. "See who hit the fastest lap, and the
+    // race leaders" is the whole job of this panel, and a window that scrolls
+    // past P1 answers neither. Broadcast towers do exactly this.
     let start = 0;
+    let pinLeader = false;
     if (shown < standings.length) {
       const idx = standings.indexOf(player);
       start = Math.max(0, Math.min(idx - Math.floor(shown / 2), standings.length - shown));
+      if (start > 0) {
+        pinLeader = true;
+        const rest = shown - 1;
+        start = Math.max(1, Math.min(idx - Math.floor(rest / 2), standings.length - rest));
+      }
     }
 
-    // The session's best lap, for the purple. One pass over twenty cars, no
-    // allocation — cheaper than the string compare it saves.
-    let sessionBest = 0;
-    for (const c of standings) {
-      if (c.bestLapTime > 0 && (sessionBest === 0 || c.bestLapTime < sessionBest)) {
-        sessionBest = c.bestLapTime;
-      }
+    // Who holds the fastest lap, and what it is. One pass over twenty cars and
+    // no allocation — cheaper than the string compares it saves downstream.
+    const fastest = fastestLap(standings);
+    const sessionBest = fastest ? fastest.time : 0;
+    if (fastest) {
+      setText(this.fastestFirst, fastest.first);
+      setText(this.fastestWho, fastest.surname);
+      setText(this.fastestTime, formatLapTime(fastest.time));
+      setStyle(this.fastestBar, 'display', 'flex');
+    } else {
+      setStyle(this.fastestBar, 'display', 'none');
     }
 
     for (let i = 0; i < this.rows.length; i++) {
@@ -1105,23 +1162,30 @@ export class Hud {
       // Rows are only ever created, never destroyed, so a window that has been
       // made shorter has more of them than it can now fit. Hiding the surplus
       // is what keeps the tower inside the viewport after a resize.
-      const car = i < shown ? standings[start + i] : undefined;
+      // With the leader pinned, row zero is P1 and everything below it is the
+      // window, shifted by one.
+      const at = pinLeader ? (i === 0 ? 0 : start + i - 1) : start + i;
+      const car = i < shown ? standings[at] : undefined;
       if (!car) {
         setStyle(row.root, 'display', 'none');
         continue;
       }
       setStyle(row.root, 'display', 'grid');
 
-      const ahead = start + i > 0 ? standings[start + i - 1] : null;
+      // The car actually ahead on the road, which is what an interval is
+      // measured to — not the row above, which may be the pinned leader with
+      // half the field between them.
+      const ahead = at > 0 ? standings[at - 1] : null;
       const cells = standingsCells(engine, car, ahead, standings[0]);
       const seen = row.seen;
 
       if (seen.pos !== cells.pos) { row.pos.textContent = cells.pos; seen.pos = cells.pos; }
       if (seen.first !== cells.first) { row.first.textContent = cells.first; seen.first = cells.first; }
-      if (seen.last !== cells.last) { row.last.textContent = cells.last; seen.last = cells.last; }
+      if (seen.surname !== cells.surname) { row.surname.textContent = cells.surname; seen.surname = cells.surname; }
       if (seen.team !== cells.team) { row.team.textContent = cells.team; seen.team = cells.team; }
       if (seen.gap !== cells.gap) { row.gap.textContent = cells.gap; seen.gap = cells.gap; }
       if (seen.best !== cells.best) { row.best.textContent = cells.best; seen.best = cells.best; }
+      if (seen.lastLap !== cells.lastLap) { row.lastLap.textContent = cells.lastLap; seen.lastLap = cells.lastLap; }
       if (seen.tyre !== cells.tyre) {
         row.tyre.textContent = cells.tyre;
         row.tyre.style.color = '#' + getCompound(car.compound).colour.toString(16).padStart(6, '0');
@@ -1141,7 +1205,10 @@ export class Hud {
       // Purple is the outright best in this system, and both of these are one:
       // the position at the head of the order, and the fastest lap anyone has
       // set. Nothing else in the tower is coloured.
+      // A rule under the pinned leader, because the row below it is not the
+      // car behind it. A list that silently skips eight places is a lie.
       setClass(row.root, 'tower-row'
+        + (pinLeader && i === 0 ? ' is-pinned' : '')
         + (car.position === 1 ? ' is-leader' : '')
         + (car === player ? ' is-player' : '')
         + (car.retired || car.disqualified ? ' is-out' : '')
@@ -1160,9 +1227,16 @@ export class Hud {
    */
   private updateAlerts(engine: RaceEngine, player: CarEntry): void {
     const messages = engine.raceControl.messages;
-    // The log is bounded and shifts; resync if it wrapped.
-    if (messages.length < this.shownMessages) this.shownMessages = messages.length;
-    for (let i = this.shownMessages; i < messages.length; i++) {
+    // Where to resume. If the last bulletin relayed has been shifted off the
+    // end of the log, everything between then and now is gone — so pick up
+    // from as much of the tail as the stack can show rather than replaying a
+    // race's worth of history at somebody who has been away from the screen.
+    let from = 0;
+    if (this.lastMessage) {
+      const i = messages.lastIndexOf(this.lastMessage);
+      from = i >= 0 ? i + 1 : Math.max(0, messages.length - this.maxAlerts());
+    }
+    for (let i = from; i < messages.length; i++) {
       const m = messages[i];
       this.pushAlert(
         player,
@@ -1171,7 +1245,7 @@ export class Hud {
         m.severity === 'critical' ? 'urgent' : m.severity === 'warning' ? 'warn' : 'info',
       );
     }
-    this.shownMessages = messages.length;
+    if (messages.length > 0) this.lastMessage = messages[messages.length - 1];
 
     // The pit call speaks once, when the advice changes — not on every frame
     // it holds. The persistent card below carries it for as long as it stands.
@@ -1265,6 +1339,11 @@ export class Hud {
   }
 
   private showRadioCard(player: CarEntry, moment: RadioMoment): void {
+    // 390 pixels of height carries the running order, the live cues, the
+    // weather and the car state, and that is the whole budget. The radio card
+    // is the one item on the rail that is atmosphere rather than instruction,
+    // so it is the one that goes.
+    if (window.innerHeight <= 470) return;
     const ex = radioExchange(moment);
     for (const t of this.radioTimers) window.clearTimeout(t);
     this.radioTimers.length = 0;
@@ -1514,9 +1593,13 @@ const RADIO_LIFE_MS = 8000;
  * cost a layout in the middle of a race.
  */
 function enterNextFrame(card: HTMLElement): void {
-  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
-  if (!raf) { card.classList.remove('entering'); return; }
-  raf(() => raf(() => card.classList.remove('entering')));
+  // Called by name, not through a local alias. `const raf = requestAnimationFrame`
+  // then `raf(fn)` invokes it with an undefined receiver, which browsers reject
+  // with "Illegal invocation" — and the throw takes the whole HUD update with
+  // it, so the card is left in its entry state and never appears at all. That
+  // is precisely what the first sweep photographed: no pop-ups, anywhere.
+  if (typeof requestAnimationFrame !== 'function') { card.classList.remove('entering'); return; }
+  requestAnimationFrame(() => requestAnimationFrame(() => card.classList.remove('entering')));
 }
 
 /**
@@ -1540,8 +1623,12 @@ export function towerFit(w: number, h: number): { rows: number; compact: boolean
   // which is exactly how a tower ends up hanging off the bottom of a phone.
   const compact = w <= 900 || h <= 470;
   const rowH = compact ? 17 : 29;
-  // The panel's own head and column rule, plus the rail beneath it.
-  const reserved = compact ? 156 : 336;
+  // The panel's own header block and column rule, PLUS the whole rail beneath
+  // it: the notice stack, the weather bug and the car state. This number is
+  // the reason the tower is not simply "as many rows as fit" — the rest of
+  // the left rail has to exist somewhere, and a tower sized to the viewport
+  // grows straight down through the pit instruction.
+  const reserved = compact ? 250 : 554;
   const fits = Math.floor((h - reserved) / rowH);
   return {
     rows: Math.max(compact ? 4 : 6, Math.min(fits, compact ? 8 : 14)),
@@ -1565,11 +1652,14 @@ export function towerFit(w: number, h: number): { rows: number; compact: boolean
  */
 export function standingsCells(
   engine: RaceEngine, car: CarEntry, ahead: CarEntry | null, leader: CarEntry,
-): { pos: string; first: string; last: string; team: string; tyre: string; gap: string; best: string } {
+): {
+  pos: string; first: string; surname: string; team: string;
+  tyre: string; gap: string; best: string; lastLap: string;
+} {
   const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
   const gap = car.retired ? 'DNF'
     : car.disqualified ? 'DSQ'
-    : car.position === 1 ? '—'
+    : car.position === 1 ? 'LEADER'
     : engine.config.kind !== 'race'
       ? (car.bestLapTime > 0 && leader.bestLapTime > 0
         ? formatGap(car.bestLapTime - leader.bestLapTime) : '—')
@@ -1579,11 +1669,65 @@ export function standingsCells(
   return {
     pos: String(car.position),
     first: car.driver.firstName,
-    last: car.driver.lastName.toUpperCase(),
+    surname: car.driver.lastName.toUpperCase(),
     team: car.team.name,
     tyre: getCompound(car.compound).code,
     gap,
     best: car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '—',
+    lastLap: car.lastLapTime > 0 ? formatLapTime(car.lastLapTime) : '—',
+  };
+}
+
+/**
+ * The stop the plan asks for, once it is close enough to matter.
+ *
+ * THE GAP THIS CLOSES. Every car in this game has had a stint plan since the
+ * engine was written — compounds and the laps to stop on — and the player's
+ * car was given one it was never told about. Now that the plan is chosen on
+ * the race-setup screen, the driver is owed the other half of it: which lap
+ * the pit wall is expecting them, and what is going on the car.
+ *
+ * Six laps out, and not before. A line that reads PLANNED STOP LAP 34 for
+ * thirty-three laps is a line nobody reads on lap thirty-four.
+ *
+ * Pure and exported so `probe:strategy` can assert what the driver is shown
+ * against the plan the engine is actually running.
+ */
+export function plannedStopCue(engine: RaceEngine, player: CarEntry): string | null {
+  if (engine.config.kind !== 'race') return null;
+  if (player.retired || player.finished || player.inPitLane) return null;
+  const lap = player.targetPitLap;
+  if (lap <= 0) return null;
+  const away = lap - (player.lap + 1);
+  if (away < 0 || away > 5) return null;
+
+  const next = player.plan[player.pitStops + 1];
+  const onto = next ? getCompound(next.compound).name.toUpperCase() : null;
+  const when = away === 0 ? 'PLANNED STOP THIS LAP' : 'PLANNED STOP LAP ' + lap;
+  return onto ? when + ' · ' + onto : when;
+}
+
+/**
+ * Who holds the fastest lap of the session.
+ *
+ * The one fact a broadcast keeps on screen that this game had nowhere: the
+ * purple lived on the player's own sector tiles and said nothing about the
+ * other nineteen cars. Returns null before anybody has set a lap, which is a
+ * real state — the first three minutes of every session.
+ */
+export function fastestLap(
+  standings: readonly CarEntry[],
+): { code: string; first: string; surname: string; time: number } | null {
+  let best: CarEntry | null = null;
+  for (const c of standings) {
+    if (c.bestLapTime > 0 && (!best || c.bestLapTime < best.bestLapTime)) best = c;
+  }
+  if (!best) return null;
+  return {
+    code: best.driver.code,
+    first: best.driver.firstName,
+    surname: best.driver.lastName.toUpperCase(),
+    time: best.bestLapTime,
   };
 }
 

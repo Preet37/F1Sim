@@ -22,7 +22,8 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
-  pitCall, principalOf, radioExchange, relayed, standingsCells, towerFit, weatherReadout,
+  fastestLap, pitCall, principalOf, radioExchange, relayed, standingsCells, towerFit,
+  weatherReadout,
 } from '../src/ui/Hud';
 
 const failures: string[] = [];
@@ -59,13 +60,13 @@ for (let i = 0; i < standings.length; i++) {
   const cells = standingsCells(engine, car, ahead, leader);
 
   check(cells.pos === String(car.position), `row ${i}: position ${cells.pos} != ${car.position}`);
-  check(cells.last === car.driver.lastName.toUpperCase(), `row ${i}: surname not upper-cased`);
+  check(cells.surname === car.driver.lastName.toUpperCase(), `row ${i}: surname not upper-cased`);
   check(cells.first === car.driver.firstName, `row ${i}: first name missing`);
   check(cells.team === car.team.name, `row ${i}: team name missing`);
   check(cells.tyre.length > 0, `row ${i}: no compound`);
 
   if (i === 0) {
-    check(cells.gap === '—', `leader gap should be a dash, got ${cells.gap}`);
+    check(cells.gap === 'LEADER', `leader gap should read LEADER, got ${cells.gap}`);
   } else if (!car.retired && !car.disqualified) {
     const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
     if (lapsBehind > 0) {
@@ -88,6 +89,20 @@ check(withLap.length > 0, 'nobody set a lap in 1500s of racing — the probe is 
 for (const car of withLap) {
   const cells = standingsCells(engine, car, null, leader);
   check(/^\d+:\d\d\.\d\d\d$/.test(cells.best), `best lap ${cells.best} is not m:ss.mmm`);
+  check(cells.lastLap === '—' || /^\d+:\d\d\.\d\d\d$/.test(cells.lastLap),
+    `last lap ${cells.lastLap} is not m:ss.mmm`);
+}
+
+// The fastest lap must be a real car's real lap, and the quickest one there is.
+const fastest = fastestLap(standings);
+check(fastest !== null, 'nobody holds the fastest lap after 1500s of racing');
+if (fastest) {
+  const quickest = Math.min(...withLap.map((c) => c.bestLapTime));
+  check(Math.abs(fastest.time - quickest) < 1e-9,
+    `fastest lap ${fastest.time} is not the quickest lap set (${quickest})`);
+  check(standings.some((c) => c.driver.code === fastest.code),
+    'the fastest lap is credited to a driver who is not in the field');
+  console.log(`fastest lap: ${fastest.first} ${fastest.surname} ${fastest.time.toFixed(3)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,18 +115,24 @@ for (const car of withLap) {
  * so the arithmetic it is sized by is asserted rather than eyeballed.
  */
 const VIEWPORTS: [string, number, number, number][] = [
-  // name, width, height, px of rail that must be left below the panel
-  ['desktop 1400x900', 1400, 900, 300],
-  ['laptop 1280x800', 1280, 800, 260],
-  ['landscape phone 844x390', 844, 390, 110],
-  ['landscape phone 740x360', 740, 360, 100],
+  // name, width, height, px of rail that must be left below the panel.
+  // The clearance is not a guess: on a full-size viewport the rail below the
+  // tower carries the notice stack, the weather bug and the car state, and
+  // `.hud-notices` is pinned to `max(300px, 50vh)` — so the tower must end
+  // above half the screen or the two meet.
+  ['desktop 1400x900', 1400, 900, 450],
+  ['wide desktop 1920x1080', 1920, 1080, 540],
+  ['laptop 1280x800', 1280, 800, 400],
+  ['landscape phone 844x390', 844, 390, 176],
+  ['landscape phone 740x360', 740, 360, 146],
   ['portrait phone 390x844', 390, 844, 300],
 ];
 
 for (const [name, w, h, clearance] of VIEWPORTS) {
   const fit = towerFit(w, h);
   const rowH = fit.compact ? 17 : 29;
-  const chrome = fit.compact ? 52 : 74; // head, column rule and padding
+  // Session eyebrow, position line, fastest-lap capsule, column rule, padding.
+  const chrome = fit.compact ? 62 : 106;
   const bottom = 10 + chrome + fit.rows * rowH;
 
   check(fit.rows >= 4, `${name}: ${fit.rows} rows is not a running order`);

@@ -41,7 +41,9 @@
     "probe:cameras": "tsx scripts/probeCameras.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "shoot:hud": "tsx scripts/shootHud.ts",
-    "probe:hudtext": "tsx scripts/probeHudText.ts"
+    "probe:hudtext": "tsx scripts/probeHudText.ts",
+    "probe:strategy": "tsx scripts/probeStrategy.ts",
+    "shoot:panels": "tsx scripts/shootPanels.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
