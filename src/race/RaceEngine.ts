@@ -893,10 +893,18 @@ export class RaceEngine {
     const writeOff = severity > 0.72;
     if (severity > 0.25) {
       this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz), writeOff);
+      const where = this.track.cornerNameAt(car.s) || 'the exit';
       this.raceControl.log(
-        car.driver.code + ' into ' + what + ' at ' +
-        (this.track.cornerNameAt(car.s) || 'the exit'),
+        car.driver.code + ' into ' + what + ' at ' + where,
         severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: where.toUpperCase(),
+            offence: 'CONTACT WITH ' + what.toUpperCase(), status: 'NOTED',
+          },
+          team: { kind: 'off', corner: where, hit: what, heavy: severity > 0.6 },
+        },
       );
     }
     if (writeOff) {
@@ -911,6 +919,14 @@ export class RaceEngine {
       this.raceControl.log(
         car.driver.code + ' is out on the spot — heavy impact',
         'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+            offence: 'CAR STOPPED', status: 'RECOVERY IN PROGRESS',
+          },
+          team: { kind: 'retired', reason: 'heavy impact' },
+        },
       );
     }
   }
@@ -1984,6 +2000,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' — pit entry closed, stay out',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-closed' } },
         );
       }
       if (!wantsPit) car.pitEntryRefused = false;
@@ -2007,6 +2024,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' missed the pit entry — round again',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-missed' } },
         );
       }
       // And is the car SLOW ENOUGH to be let in?
@@ -2027,6 +2045,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' — too fast for the pit entry, round again',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-fast' } },
         );
       }
       if (!geometricallyInLane) car.pitEntryMissed = false;
@@ -2093,6 +2112,14 @@ export class RaceEngine {
           this.raceControl.log(
             car.driver.code + ' has served the drive-through penalty',
             'info', this.time, car.index,
+            {
+              feed: 'either',
+              notice: {
+                parties: [car.driver.code], where: 'PIT LANE',
+                offence: 'DRIVE-THROUGH PENALTY', status: 'SERVED',
+              },
+              team: { kind: 'penalty-served' },
+            },
           );
         }
         car.pitTransitOnly = false;
@@ -2247,6 +2274,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' pit stop — ' + getCompound(compound).name,
           'info', this.time, car.index,
+          { feed: 'team', team: { kind: 'stop', compound: getCompound(compound).name } },
         );
       }
     }
@@ -2450,7 +2478,12 @@ export class RaceEngine {
             this.applyContactDamage(b, severity, zoneFor(b.physics.heading, -nx, -nz));
             this.raceControl.log(
               'Contact between ' + a.driver.code + ' and ' + b.driver.code,
-              'warning', this.time,
+              'warning', this.time, -1,
+              { notice: {
+                parties: [a.driver.code, b.driver.code],
+                where: (this.track.cornerNameAt(a.s) || '').toUpperCase(),
+                offence: 'CONTACT', status: 'NOTED',
+              } },
             );
           }
         }
@@ -2615,9 +2648,14 @@ export class RaceEngine {
     for (const id of broken) {
       const h = car.damage.health[id];
       if (bandOf(h) === 'ok') continue;
+      // Team only, and this is the line the user pointed at: "nobody will ever
+      // say this person's suspension broke ... that is a team only
+      // conversation". A rival's floor damage is not race control's business
+      // and it is certainly not the player's principal's.
       this.raceControl.log(
         car.driver.code + ': ' + COMPONENT_NAMES[id].toLowerCase() + ' damage',
         bandOf(h) === 'critical' ? 'critical' : 'warning', this.time, car.index,
+        { feed: 'team', team: { kind: 'damage', part: COMPONENT_NAMES[id], health: h } },
       );
     }
 
@@ -2630,7 +2668,17 @@ export class RaceEngine {
       // precede it — otherwise every hard racing contact would strip the car.
       car.damage.applyImpact(zone, severity, true);
       car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
-      this.raceControl.log(car.driver.code + ' is out of the race', 'critical', this.time, car.index);
+      this.raceControl.log(
+        car.driver.code + ' is out of the race', 'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'CAR RETIRED', status: 'OUT OF THE RACE',
+          },
+          team: { kind: 'retired', reason: 'terminal damage' },
+        },
+      );
     }
   }
 
@@ -2684,6 +2732,16 @@ export class RaceEngine {
           (this.track.cornerNameAt(car.s) || 'sector ' + (rc.sectorIndexAt(car.s) + 1)) +
           ' is clear',
           'info', this.time, car.index,
+          {
+            feed: 'either',
+            notice: {
+              parties: [car.driver.code],
+              where: (this.track.cornerNameAt(car.s) ||
+                'sector ' + (rc.sectorIndexAt(car.s) + 1)).toUpperCase(),
+              offence: 'CAR RECOVERED', status: 'TRACK CLEAR',
+            },
+            team: { kind: 'recovered' },
+          },
         );
       }
       car.recoveryTimer = op.elapsedS;
@@ -2713,6 +2771,15 @@ export class RaceEngine {
         car.retire('Beached in the gravel', this.time);
         this.raceControl.log(
           car.driver.code + ' is out — stranded off track', 'critical', this.time, car.index,
+          {
+            feed: 'either',
+            notice: {
+              parties: [car.driver.code],
+              where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+              offence: 'CAR STOPPED OFF TRACK', status: 'RECOVERY IN PROGRESS',
+            },
+            team: { kind: 'stranded' },
+          },
         );
       }
     } else {
@@ -2733,7 +2800,17 @@ export class RaceEngine {
       const causes = ['Power unit failure', 'Gearbox failure', 'Hydraulics', 'Overheating', 'Loss of drive'];
       const cause = this.rng.pick(causes);
       car.retire(cause, this.time);
-      this.raceControl.log(car.driver.code + ' — ' + cause, 'critical', this.time, car.index);
+      this.raceControl.log(
+        car.driver.code + ' — ' + cause, 'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'CAR RETIRED', status: cause.toUpperCase(),
+          },
+          team: { kind: 'failure', cause },
+        },
+      );
     }
   }
 

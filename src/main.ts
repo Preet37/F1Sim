@@ -2571,10 +2571,10 @@ class Game {
     const on = !car.pitRequested;
     engine.requestPit(car, on);
     engine.raceControl.log(
-      on ? 'Box this lap — your box is ' + car.driver.code + "'s, in the " +
-        car.team.name + ' garage'
+      on ? 'Box this lap — your box is ready'
         : 'Stay out, stay out',
       'info', engine.time, car.index,
+      { feed: 'team' },
     );
 
     // Calling for a stop is the moment to decide what the stop IS. Cancelling

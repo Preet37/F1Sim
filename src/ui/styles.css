@@ -1047,20 +1047,191 @@ canvas#view {
   color: #ffc9ce;
 }
 
-/* --- The radio card ---------------------------------------------------
-   A driver-to-pit exchange, in the shape a broadcast uses for one: the
-   channel's owner named at the top right with RADIO under it, the team's
-   mark at the left, a rule, then the two halves of the exchange set on
-   opposite sides — the driver's own words flush right and heavy, the pit
-   wall's answer flush left, smaller and quieter. The alignment IS the
-   attribution, which is why neither line needs a label.
+/* --- Race control -----------------------------------------------------
+   THE OTHER VOICE, and it must not be mistakable for the first one.
 
-   Deliberately rare: four engine events fire it, and each one is a moment a
-   real broadcast would actually play. See `updateRadioCard`. */
+   The principal's card has a face, a name, a role and a sentence. This has
+   none of those, because an official notice is not a person: a hard label,
+   the parties, and the four facts of the bulletin — where, what, and what is
+   being done about it — set in the figure face, in capitals, on a flat
+   square-cornered plate. The reference broadcast draws exactly this shape:
+   `RACE CONTROL: <DRIVER>, <DRIVER> INCIDENT` over `TURN 1 · IMPEDING ·
+   NOTED`. It shares the rail and the entry animation with the pit wall's
+   card and shares nothing else, which is the point.
+
+   No sanctioning body's mark appears anywhere in it. The words are the
+   authority. */
+.hud-control {
+  padding: 8px 11px 9px;
+  border-radius: 4px;
+  background: rgba(10, 12, 16, 0.93);
+  border: 1px solid var(--card-line);
+  border-left: 3px solid var(--sig-white);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--plate-lift);
+  transform: translateX(0);
+  opacity: 1;
+  transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.16, 0.9, 0.3, 1);
+}
+.hud-control.entering { transform: translateX(-30px); opacity: 0; }
+.hud-control.leaving { transform: translateX(-16px); opacity: 0; }
+.hud-control.tone-warn { border-left-color: var(--sig-yellow); }
+.hud-control.tone-urgent { border-left-color: var(--sig-red); }
+
+.control-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.control-mark {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: var(--ink-3);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.control-headline {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.05em;
+  line-height: 1.2;
+  color: var(--ink);
+  text-transform: uppercase;
+}
+.control-detail {
+  margin-top: 4px;
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  line-height: 1.35;
+}
+.hud-control.tone-urgent .control-detail { color: #ffc9ce; }
+.hud-control.tone-warn .control-detail { color: #ffe9a0; }
+
+/* --- A decision, rather than a note -----------------------------------
+   Race control has two states and a broadcast draws them differently. The
+   banner above is an INVESTIGATION: facts, quiet, `NOTED`. This is a
+   DECISION, and it is a horizontal strip of butted segments — the
+   authority, the sentence itself set large in red, the driver it is
+   against, and a narrow red end cap carrying the same `!` the running
+   order puts against a penalised car. That shared glyph is what ties the
+   banner to the tower.
+
+   It is loud because it has changed the result. Nothing else in this rail
+   is allowed to be. */
+.hud-control.is-penalty {
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  border-left-width: 1px;
+  border-left-color: var(--card-line);
+  overflow: hidden;
+}
+.control-seg { display: flex; align-items: center; padding: 7px 9px; min-width: 0; }
+.is-penalty .control-mark {
+  border: 0;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.05);
+  align-self: stretch;
+  writing-mode: horizontal-tb;
+  max-width: 62px;
+  line-height: 1.15;
+  white-space: normal;
+}
+.control-penalty {
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  background: var(--sig-red);
+  padding: 6px 10px;
+}
+.control-penline {
+  font-family: var(--font-display);
+  font-size: 11.5px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.05em;
+  line-height: 1.06;
+  color: #fff;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.control-driver { flex: 1; gap: 6px; min-width: 0; }
+.control-first {
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: #fff;
+  white-space: nowrap;
+}
+.control-last {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.03em;
+  color: var(--team, var(--ink));
+  text-transform: uppercase;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.control-teammark { flex: 0 0 auto; width: 18px; height: 18px; margin-left: auto; }
+.control-teammark svg { display: block; width: 100%; height: 100%; }
+.control-bang {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  background: var(--sig-red);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 850;
+  color: #fff;
+}
+
+/* --- The radio card ---------------------------------------------------
+   THE BROADCAST PLATE, which is a different object from the square
+   social-media radio card and is the one that belongs on screen while
+   somebody is driving. Three lines tall, dark navy, and built as:
+
+     SURNAME        heavy caps, right-aligned, in the TEAM'S COLOUR
+     RADIO          heavy white caps under it, team mark beside it
+     ─────────      a rule in the team's colour
+     "…"            the words, quoted, heavy caps
+
+   THE COLOUR IS THE ATTRIBUTION, and it is the only one there is: the
+   DRIVER speaks in his team's colour, the PIT WALL speaks in white. That
+   holds across every team — orange for one, red for another, whatever the
+   roster says — because every coloured thing on this card reads one custom
+   property, `--team`, written by `showRadioCard` from `team.colour`. A
+   change of roster changes the card with no change to this file.
+
+   Nothing is labelled "driver" or "engineer". A broadcast never labels
+   them, and if the colour is doing its job it does not need to.
+
+   The mark is this game's own generated geometry, keyed to the team and
+   drawn in the team's colour. No real badge is reproduced.
+
+   Deliberately rare: five engine events fire it, each a moment a broadcast
+   would actually play. See `updateRadioCard`. */
 .hud-radiocard {
-  padding: 10px 13px 13px;
-  border-radius: var(--card-r);
-  background: var(--card-bg);
+  --team: var(--sig-white);
+  padding: 8px 11px 10px;
+  /* Square-ish. This is the one card in the rail that is a clip rather than
+     a graphic, and the near-right-angle is what says so beside the broadcast
+     radii on everything around it. */
+  border-radius: 4px;
+  background: rgba(8, 12, 22, 0.95);
   border: 1px solid var(--card-line);
   backdrop-filter: blur(14px) saturate(1.2);
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
@@ -1071,48 +1242,49 @@ canvas#view {
 }
 .hud-radiocard.entering { transform: translateX(-30px); opacity: 0; }
 .hud-radiocard.leaving { transform: translateX(-16px); opacity: 0; }
-.radio-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.radio-mark { flex: 0 0 auto; width: 26px; height: 26px; }
+
+/* Mark at the left, the two title lines hard right. */
+.radio-head { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+.radio-mark { flex: 0 0 auto; width: 22px; height: 22px; }
 .radio-mark svg { display: block; width: 100%; height: 100%; }
 .radio-who { text-align: right; min-width: 0; }
 .radio-driver {
   font-family: var(--font-display);
-  font-size: 10.5px;
-  font-weight: 800;
-  font-stretch: 116%;
-  letter-spacing: 0.11em;
+  font-size: 14px;
+  font-weight: 850;
+  font-stretch: 120%;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--ink-2);
-  line-height: 1.15;
+  color: var(--team);
+  line-height: 1.02;
+  overflow-wrap: break-word;
 }
 .radio-title {
   font-family: var(--font-display);
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 850;
-  font-stretch: 122%;
-  letter-spacing: 0.14em;
+  font-stretch: 120%;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
   color: #fff;
-  line-height: 1.05;
+  line-height: 1.02;
 }
-.radio-rule { height: 1px; background: rgba(255, 255, 255, 0.55); margin: 9px 0 10px; }
-.radio-said {
-  font-family: var(--font-ui);
-  font-size: 12.5px;
-  font-weight: 700;
-  line-height: 1.34;
-  color: #fff;
-  text-align: right;
+/* The accent rule, in the team's colour, dividing the header from the words. */
+.radio-rule { height: 2px; background: var(--team); margin: 7px 0 7px; }
+
+.radio-turn {
+  font-family: var(--font-display);
+  font-size: 11.5px;
+  font-weight: 800;
+  font-stretch: 108%;
+  letter-spacing: 0.02em;
+  line-height: 1.24;
+  text-transform: uppercase;
+  text-wrap: pretty;
 }
-.radio-reply {
-  margin-top: 8px;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.34;
-  color: var(--ink-2);
-  text-align: left;
-}
+.radio-turn + .radio-turn { margin-top: 4px; }
+.radio-turn.is-driver { color: var(--team); }
+.radio-turn.is-wall { color: #fff; }
 
 /* --- The two live cards, pinned to the bottom of the stack ------------
    Everything above them is transient. These are not: they carry numbers that
@@ -1607,12 +1779,13 @@ canvas#view {
     gap: 6px;
   }
   .hud-alert { padding: 7px 10px 8px 8px; gap: 8px; }
+  .hud-control { padding: 7px 10px 8px; }
+  .control-headline { font-size: 11.5px; }
   .alert-portrait { width: 32px; height: 32px; }
   .alert-line { font-size: 11.5px; }
-  .hud-radiocard { padding: 8px 10px 10px; }
-  .radio-title { font-size: 15px; }
-  .radio-said { font-size: 11.5px; }
-  .radio-reply { font-size: 10px; }
+  .hud-radiocard { padding: 7px 10px 9px; }
+  .radio-driver, .radio-title { font-size: 13px; }
+  .radio-turn { font-size: 11px; }
   .hud-pit-cue, .hud-neutral-cue { font-size: 10px; padding: 6px 10px; gap: 7px; }
   .hud-pit-cue.cue-box { font-size: 12.5px; }
 
@@ -1754,18 +1927,22 @@ canvas#view {
     gap: 5px;
   }
   .hud-alert { padding: 6px 9px 7px 7px; gap: 8px; }
+  .hud-control { padding: 6px 9px 7px; }
+  .control-headline { font-size: 11px; }
+  .control-detail { font-size: 8.5px; margin-top: 3px; }
   .alert-portrait { width: 28px; height: 28px; }
   .alert-name { font-size: 9.5px; }
   .alert-role { font-size: 7.5px; }
   .alert-line { font-size: 11px; line-height: 1.28; }
   .alert-chip { margin-top: 4px; font-size: 8px; }
-  .hud-radiocard { padding: 7px 10px 9px; }
-  .radio-mark { width: 22px; height: 22px; }
-  .radio-driver { font-size: 9.5px; }
-  .radio-title { font-size: 14px; }
-  .radio-rule { margin: 6px 0 7px; }
-  .radio-said { font-size: 11px; }
-  .radio-reply { font-size: 9.5px; margin-top: 5px; }
+  /* The radio card does not appear at this height at all — `showRadioCard`
+     declines it — but the rules are kept so a taller phone in the same width
+     band still gets a proportionate card. */
+  .hud-radiocard { padding: 6px 9px 8px; }
+  .radio-mark { width: 18px; height: 18px; }
+  .radio-driver, .radio-title { font-size: 12px; }
+  .radio-rule { margin: 5px 0; }
+  .radio-turn { font-size: 10px; }
   .hud-pit-cue, .hud-neutral-cue { font-size: 9.5px; padding: 5px 9px; gap: 7px; }
   .cue-tag { font-size: 7.5px; }
   .hud-pit-cue.cue-box { font-size: 12px; }

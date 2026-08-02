@@ -22,9 +22,10 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
-  fastestLap, pitCall, principalOf, radioExchange, relayed, standingsCells, towerFit,
-  weatherReadout,
+  fastestLap, messageRoute, pitCall, principalOf, raceControlCard, radioExchange, relayed,
+  standingsCells, teamLine, towerFit, weatherReadout,
 } from '../src/ui/Hud';
+import type { RaceControlMessage, TeamNote } from '../src/race/RaceControlManager';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
@@ -224,11 +225,16 @@ for (const [wetness, label, tone] of WET) {
 console.log('weather: 4 states, label and colour from the same number');
 
 // ---------------------------------------------------------------------------
-// 6. The radio card has two sides
+// 6. The radio card is an argument, not a notification
 // ---------------------------------------------------------------------------
+//
+// A radio clip is worth broadcasting because somebody is being overruled on it:
+// the driver pushes back, the wall insists. So each moment has to be a real
+// back-and-forth — both voices, alternating, more than once — and not a
+// question with an answer stapled to it.
 
 const MOMENTS = [
-  { kind: 'pit', compound: 'Hard' },
+  { kind: 'pit', compound: 'Hard', lapsLeft: 20 },
   { kind: 'safety-car' },
   { kind: 'vsc' },
   { kind: 'chequered', position: 4 },
@@ -236,15 +242,228 @@ const MOMENTS = [
 ] as const;
 
 for (const m of MOMENTS) {
-  const ex = radioExchange(m);
-  check(ex.said.length > 8 && ex.reply.length > 8, `radio moment ${m.kind} is not an exchange`);
-  check(ex.said !== ex.reply, `radio moment ${m.kind} says the same thing twice`);
+  const turns = radioExchange(m);
+  check(turns.length >= 2, `radio moment ${m.kind} has ${turns.length} turn(s), not an exchange`);
+  check(turns.some((t) => t.who === 'driver') && turns.some((t) => t.who === 'wall'),
+    `radio moment ${m.kind} is only one voice`);
+  // Alternating: the card draws the driver on one side and the wall on the
+  // other, so two turns from the same speaker in a row would read as one line
+  // that wrapped rather than as two people.
+  for (let i = 1; i < turns.length; i++) {
+    check(turns[i].who !== turns[i - 1].who,
+      `radio moment ${m.kind}: turns ${i - 1} and ${i} are both the ${turns[i].who}`);
+  }
+  for (const t of turns) {
+    check(t.line.length > 6, `radio moment ${m.kind}: "${t.line}" is not a line of speech`);
+    // Signage, not speech. `OFF TRACK — YELLOW FLAG` is what this card used to
+    // print; a capitalised token with a dash after it is the shape of a status
+    // string and never the shape of something a person said.
+    check(!/^[A-Z0-9 ]{3,} — /.test(t.line),
+      `radio moment ${m.kind}: "${t.line}" reads as a status string`);
+  }
+  check(new Set(turns.map((t) => t.line)).size === turns.length,
+    `radio moment ${m.kind} repeats itself`);
 }
-check(radioExchange({ kind: 'chequered', position: 4 }).reply.includes('P4'),
+const chequered = radioExchange({ kind: 'chequered', position: 4 });
+check(chequered.some((t) => t.line.includes('P4')),
   'the chequered flag card does not state the finishing position');
-check(radioExchange({ kind: 'pit', compound: 'Hard' }).reply.includes('Hard'),
+const boxCall = radioExchange({ kind: 'pit', compound: 'Hard', lapsLeft: 20 });
+check(boxCall.some((t) => t.line.includes('Hard')),
   'the pit card does not say which compound is going on');
-console.log(`radio: ${MOMENTS.length} moments, both sides present`);
+check(boxCall.some((t) => t.line.includes('20')),
+  'the pit card knows how many laps are left and does not say so');
+console.log(`radio: ${MOMENTS.length} exchanges, ${MOMENTS.length * 4} turns, both voices alternating`);
+
+// ---------------------------------------------------------------------------
+// 7. Two channels, and the filter is ownership
+// ---------------------------------------------------------------------------
+//
+// "the team principal should only be talking about the team related stuff ...
+//  nobody will ever say this person's suspension broke or this broke, that is a
+//  team only conversation so if they are not part of the users team then they
+//  shouldn't be getting those notifs."
+//
+// The whole log used to be read out by the player's own principal, so a
+// stranger's excursion arrived as `MARCO VIDAL · TEAM PRINCIPAL — "Yellow flag
+// — HAL off at sector 2"`. This asserts the routing on a REAL race's messages:
+// every bulletin the engine files, classified by which car it names.
+
+const ROUTE_CONFIG: SessionConfig = {
+  kind: 'race', name: 'Grand Prix', durationS: 0, laps: 40,
+  playerIndex: 0, standingStart: true, pitLaneStart: false, seed: 1337,
+};
+const routeEngine = new RaceEngine(getCircuit('spa'), ROUTE_CONFIG);
+for (let i = 0; i < Math.round(1200 / PHYSICS_DT); i++) routeEngine.step();
+const me = routeEngine.cars[0];
+
+let toControl = 0;
+let toTeam = 0;
+let dropped = 0;
+let sawForeignTeamNote = false;
+for (const m of routeEngine.raceControl.messages) {
+  const about = m.carIndex >= 0 ? routeEngine.cars[m.carIndex] : undefined;
+  const ours = about !== undefined && about.team.id === me.team.id;
+  const route = messageRoute(m, ours);
+
+  if (route === 'team') {
+    toTeam++;
+    // THE assertion. Nothing on the team channel may be about a car that is
+    // not one of the team's two.
+    if (!ours) sawForeignTeamNote = true;
+    if (m.team) {
+      const said = teamLine(m.team, {
+        mate: about !== me, surname: about!.driver.lastName,
+        position: me.position, lapsLeft: 12, rival: 'KOV', rivalGapS: 1.4,
+      });
+      check(said.line.length > 12, `team note ${m.team.kind} is too short to be speech`);
+      // A principal reacts, instructs or judges. He does not read out a status
+      // string, and a dash-joined fragment is exactly what he was doing.
+      check(!/^[A-Z ]+ — /.test(said.line),
+        `team note ${m.team.kind} reads as signage: "${said.line}"`);
+      check(/[.?!]$/.test(said.line),
+        `team note ${m.team.kind} is not a sentence: "${said.line}"`);
+    }
+  } else if (route === 'race-control') {
+    toControl++;
+    const card = raceControlCard(m);
+    check(card.headline.length > 0, `a race-control bulletin has no headline: "${m.text}"`);
+    check(card.headline === card.headline.toUpperCase(),
+      `race control is not speaking officially: "${card.headline}"`);
+    if (m.notice && m.notice.parties.length > 0) {
+      // The reference banner's second line: where, what, and what is being
+      // done about it. A notice with parties and no detail is half a bulletin.
+      check(card.detail.length > 0,
+        `an incident naming ${m.notice.parties.join(', ')} carries no detail line`);
+      check(card.detail.includes(m.notice.status),
+        `the bulletin does not state its status "${m.notice.status}"`);
+      check(card.headline.includes(m.notice.parties[0]),
+        `the bulletin does not name ${m.notice.parties[0]}`);
+    }
+  } else {
+    dropped++;
+    check(m.feed === 'team' && !ours,
+      `a bulletin was dropped that was not a foreign team matter: "${m.text}"`);
+  }
+}
+check(!sawForeignTeamNote,
+  "a car outside the player's team reached the team channel");
+
+// Every team note, said about the player and about their team-mate. Driven off
+// the union rather than off whatever this seed happened to produce, so a note
+// that is never raised in a clean race still has to be a sentence.
+const ALL_NOTES: TeamNote[] = [
+  { kind: 'off', corner: 'Eau Rouge', hit: 'the barrier', heavy: true },
+  { kind: 'off', corner: 'Les Combes', hit: '', heavy: false },
+  { kind: 'damage', part: 'Rear suspension', health: 0.35 },
+  { kind: 'damage', part: 'Floor', health: 0.8 },
+  { kind: 'retired', reason: 'terminal damage' },
+  { kind: 'failure', cause: 'Power unit failure' },
+  { kind: 'stranded' },
+  { kind: 'recovered' },
+  { kind: 'stop', compound: 'Hard' },
+  { kind: 'pit-closed' },
+  { kind: 'pit-missed' },
+  { kind: 'pit-fast' },
+  { kind: 'penalty-served' },
+];
+const spoken = new Set<string>();
+for (const note of ALL_NOTES) {
+  for (const mate of [false, true]) {
+    const said = teamLine(note, {
+      mate, surname: 'Halvorsen', position: 6, lapsLeft: 14, rival: 'KOV', rivalGapS: 2.3,
+    });
+    check(said.line.length > 12, `${note.kind}/${mate ? 'mate' : 'self'}: too short to be speech`);
+    check(/[.?!]$/.test(said.line),
+      `${note.kind}/${mate ? 'mate' : 'self'}: not a sentence — "${said.line}"`);
+    check(!/^[A-Z0-9 ]{3,} — /.test(said.line),
+      `${note.kind}/${mate ? 'mate' : 'self'}: reads as signage — "${said.line}"`);
+    // A line about the team-mate has to name them, or the player cannot tell
+    // which of the two cars it is about.
+    if (mate) {
+      check(said.line.includes('Halvorsen'),
+        `${note.kind}: a line about the team-mate does not name them — "${said.line}"`);
+    }
+    spoken.add(said.line);
+  }
+}
+check(spoken.size === ALL_NOTES.length * 2,
+  `${ALL_NOTES.length * 2} team lines produced ${spoken.size} distinct sentences`);
+// The one line the game knows enough to be genuinely specific on.
+const stop = teamLine({ kind: 'stop', compound: 'Hard' }, {
+  mate: false, surname: 'Halvorsen', position: 6, lapsLeft: 14, rival: 'KOV', rivalGapS: 2.3,
+});
+check(stop.line.includes('P6') && stop.line.includes('KOV') && stop.line.includes('14'),
+  `the stop call is not specific: "${stop.line}"`);
+console.log(`team voice: ${spoken.size} distinct lines across ${ALL_NOTES.length} events`);
+check(toControl > 0, 'race control never spoke in a 20-minute race');
+check(toTeam + dropped > 0, 'no team-owned bulletin was filed in a 20-minute race');
+console.log(`channels: ${toControl} to race control, ${toTeam} to the team, ` +
+  `${dropped} dropped as somebody else's business`);
+
+// And the specific pair from the screenshot, checked directly: a rival off at
+// a corner, and a rival's suspension. Neither may reach the principal.
+{
+  const rival = routeEngine.cars.find((c) => c.team.id !== me.team.id)!;
+  const yellow: RaceControlMessage = {
+    time: 0, text: 'Yellow flag — ' + rival.driver.code + ' off at sector 2',
+    severity: 'warning', carIndex: rival.index, feed: 'either',
+    notice: {
+      parties: [rival.driver.code], where: 'SECTOR 2',
+      offence: 'CAR OFF TRACK', status: 'YELLOW FLAG',
+    },
+    team: { kind: 'off', corner: 'sector 2', hit: '', heavy: false },
+  };
+  check(messageRoute(yellow, false) === 'race-control',
+    "a rival's excursion must be race control, not the pit wall");
+  check(messageRoute(yellow, true) === 'team',
+    "the player's own excursion must come from their own pit wall");
+
+  const suspension: RaceControlMessage = {
+    time: 0, text: rival.driver.code + ': rear suspension damage',
+    severity: 'warning', carIndex: rival.index, feed: 'team',
+    team: { kind: 'damage', part: 'Rear suspension', health: 0.4 },
+  };
+  check(messageRoute(suspension, false) === 'none',
+    "a rival's suspension damage must not be shown at all");
+  check(messageRoute(suspension, true) === 'team',
+    "the team's own suspension damage must reach the pit wall");
+
+  const banner = raceControlCard(yellow);
+  check(banner.headline === rival.driver.code + ' INCIDENT',
+    `the incident banner reads "${banner.headline}"`);
+  check(banner.detail === 'SECTOR 2 · CAR OFF TRACK · YELLOW FLAG',
+    `the incident detail reads "${banner.detail}"`);
+  check(banner.penalty.length === 0, 'a note was drawn as a decision');
+  console.log(`race control banner: "${banner.headline}" / "${banner.detail}"`);
+}
+
+// Race control's two states: NOTED, and then DECIDED. A note is a banner of
+// facts; a decision is the strip with the sentence set large across it, and it
+// has to break onto the two lines a broadcast sets it on.
+const DECISIONS: [string, string[]][] = [
+  ['5 SECOND TIME PENALTY', ['5 SECOND', 'TIME PENALTY']],
+  ['10 SECOND TIME PENALTY', ['10 SECOND', 'TIME PENALTY']],
+  ['DRIVE-THROUGH PENALTY', ['DRIVE-THROUGH', 'PENALTY']],
+  ['LAP TIME DELETED', ['LAP TIME', 'DELETED']],
+  ['BLACK AND WHITE FLAG', ['BLACK AND', 'WHITE FLAG']],
+  ['DISQUALIFIED', ['DISQUALIFIED']],
+];
+for (const [status, want] of DECISIONS) {
+  const decided = raceControlCard({
+    time: 0, text: 'x', severity: 'critical', carIndex: 0, feed: 'race-control',
+    notice: { parties: ['HAL'], where: 'TURN 1', offence: 'CONTACT', status },
+  });
+  check(decided.penalty.join('/') === want.join('/'),
+    `"${status}" sets as ${JSON.stringify(decided.penalty)}, wanted ${JSON.stringify(want)}`);
+}
+for (const status of ['NOTED', 'UNDER INVESTIGATION', 'YELLOW FLAG', 'WARNING 2 OF 3']) {
+  const noted = raceControlCard({
+    time: 0, text: 'x', severity: 'warning', carIndex: 0, feed: 'race-control',
+    notice: { parties: ['HAL'], where: 'TURN 1', offence: 'CONTACT', status },
+  });
+  check(noted.penalty.length === 0, `"${status}" was drawn as a decision`);
+}
+console.log(`race control decisions: ${DECISIONS.length} penalties set on two lines`);
 
 // ---------------------------------------------------------------------------
 
