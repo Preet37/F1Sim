@@ -1258,9 +1258,18 @@ export class Hud {
     }
   }
 
-  /** How many pop-ups may stand at once. One on a screen 390px tall. */
+  /**
+   * How many pop-ups may stand at once.
+   *
+   * One on a screen 390px tall, and one while a radio card is up: the rail is
+   * a fixed band and everything in it is competing for the same 300 pixels.
+   * Two pop-ups on top of a radio card push the card's whole header out of the
+   * band, which leaves a driver reading half of a reply to a question they can
+   * no longer see.
+   */
   private maxAlerts(): number {
-    return window.innerHeight < 560 ? 1 : 2;
+    if (window.innerHeight < 560) return 1;
+    return this.radioCard.style.display === 'none' ? 2 : 1;
   }
 
   private pushAlert(player: CarEntry, line: string, chip: string, tone: AlertTone): void {
