@@ -25,33 +25,49 @@ import { TrackMap } from './TrackMap';
 /**
  * One line of the running order.
  *
- * Six cells, in the shape a broadcast timing panel uses: a team-colour bar, the
- * position, the team's mark, the driver's name over their team's name, then the
- * gap and the best lap right-aligned in the figure face. The old row was a
- * three-letter code and a number — `HAL  +0.985` — which is all a 224px column
- * had space for, and which asks the viewer to have memorised twenty
- * abbreviations before the graphic tells them anything.
+ * Seven cells, in the order a broadcast timing panel puts them: a team-colour
+ * bar, the position — in a filled red cell for the leader — the team's own
+ * generated mark in its livery colour, the three-letter code in heavy white
+ * caps, the gap, the tyre compound as a single colour-coded letter, and the
+ * status badges in a column of their own.
+ *
+ * THE BADGE COLUMN IS THE POINT OF THIS PASS. "You can see who has set the
+ * fastest lap, who's got a penalty, who's out, what tire compounds etc." —
+ * four facts about twenty cars, all of them on one panel, none of them needing
+ * a word. A purple square with a stopwatch is the fastest lap, a red square
+ * with an exclamation is a penalty — the same glyph the penalty banner ends
+ * with, deliberately, so the two read as one system — and a chequered square is
+ * a car that has finished. A retired car keeps its place at the foot of the
+ * order with the whole row dimmed and `Out` where the gap was.
+ *
+ * WHY THE CODE AND NOT THE NAME. The row this replaces set the driver's given
+ * name and surname over their team's name, on the argument that an
+ * abbreviation means nothing to somebody who has not learnt the field. What it
+ * cost was the rest of the row: three lines of type in a 336-pixel panel
+ * leaves no column for the tyre, none for the badges, and half the field's
+ * worth of rows. The identification is not gone — it has moved to the mark
+ * beside the code, which is in the team's own livery colour, and the two
+ * together are what a broadcast tower identifies a car by.
  *
  * `seen` is the whole performance story. Every cell is compared before it is
  * written, so a frame in which nothing overtakes anybody writes nothing at all
  * — and the mark, which is a five-element SVG, is only rebuilt when the car in
- * the row changes team, which happens once a session at most.
+ * the row changes team, which happens once a session at most. The badges are
+ * three elements whose display is toggled off one diffed string, so a car
+ * taking the fastest lap costs one comparison and one class write.
  */
 interface Row {
   root: HTMLElement;
   bar: HTMLElement;
   pos: HTMLElement;
   mark: HTMLElement;
-  first: HTMLElement;
-  surname: HTMLElement;
-  team: HTMLElement;
+  code: HTMLElement;
   gap: HTMLElement;
-  best: HTMLElement;
-  lastLap: HTMLElement;
   tyre: HTMLElement;
+  badges: HTMLElement;
   seen: {
-    pos: string; first: string; surname: string; team: string; tyre: string;
-    gap: string; best: string; lastLap: string; markTeam: string; colour: string;
+    pos: string; code: string; tyre: string; gap: string;
+    markTeam: string; colour: string; badges: string; state: string;
   };
 }
 
@@ -103,8 +119,14 @@ export class Hud {
   private fuel!: HTMLElement;
   private fuelDelta!: HTMLElement;
   private lapCounter!: HTMLElement;
-  private position!: HTMLElement;
+  private lapTotal!: HTMLElement;
+  private lapBlock!: HTMLElement;
   private sessionName!: HTMLElement;
+  private rowsBox!: HTMLElement;
+  /** The flag band under the tower's header, and its two lines. */
+  private flagBand!: HTMLElement;
+  private flagBandLabel!: HTMLElement;
+  private flagBandCause!: HTMLElement;
   private fastestBar!: HTMLElement;
   private fastestFirst!: HTMLElement;
   private fastestWho!: HTMLElement;
@@ -274,26 +296,40 @@ export class Hud {
     // are in, and it is how every broadcast graphic does it.
     this.teamStripe = this.el('hud-stripe', this.tower);
 
-    // The header block. What a broadcast leaves on screen permanently is not
-    // just the order — it is the session, the lap, and who holds the fastest
-    // lap. The last of those was nowhere in this game: the purple was on the
-    // sector tiles of the player's own panel and told you nothing about the
-    // other nineteen cars.
-    this.sessionName = this.el('tower-session', this.tower, '');
+    // --- The header -------------------------------------------------------
+    //
+    // The series mark, then the lap. Two facts and no more: a broadcast tower
+    // header says which championship you are watching and how far through the
+    // race it is, and the lap is the one number on the whole panel that is read
+    // from across a room, so it is set big and the total is set small beside
+    // it.
+    //
+    // The mark is this game's own, and it is the only wordmark anywhere in the
+    // HUD. No real series mark is reproduced.
     const towerHead = this.el('tower-head', this.tower);
-    this.position = this.el('tower-position', towerHead, 'P1');
-    this.lapCounter = this.el('tower-lapcount', towerHead, 'LAP 1/50');
+    this.el('tower-series', towerHead).innerHTML = 'F1<b>SIM</b>';
+    this.sessionName = this.el('tower-session', towerHead, '');
+    const lapBlock = this.el('tower-lapblock', towerHead);
+    this.lapBlock = lapBlock;
+    this.el('tower-lapword', lapBlock, 'LAP');
+    this.lapCounter = this.el('tower-lapnow', lapBlock, '1');
+    this.el('tower-lapbar', lapBlock, '/');
+    this.lapTotal = this.el('tower-laptotal', lapBlock, '50');
 
-    // The fastest lap, in its own outlined capsule. Purple, because purple is
-    // the outright best in this system and the fastest lap is the definition
-    // of it — the same purple the holder's name is drawn in below.
-    this.fastestBar = this.el('tower-fastest', this.tower);
-    this.el('fastest-label', this.fastestBar, 'Fastest lap');
-    this.el('fastest-dot', this.fastestBar, '·');
-    this.fastestFirst = this.el('fastest-first', this.fastestBar, '');
-    this.fastestWho = this.el('fastest-who', this.fastestBar, '');
-    this.fastestTime = this.el('fastest-time', this.fastestBar, '');
-    this.fastestBar.dataset.probe = 'fastest';
+    // --- The flag band ----------------------------------------------------
+    //
+    // WHERE FLAG STATE BELONGS, and it took two complaints to get here. A
+    // yellow flag used to be a strip across the top centre of the frame, over
+    // the road, in the one place every camera in this game is pointed. It is
+    // race control talking about the session, and the panel that says what the
+    // session is doing is this one — so the flag is a full-width band directly
+    // under the header, in the flag's own colour, with a second line naming the
+    // cause. The centre of the frame keeps exactly one thing: the start.
+    this.flagBand = this.el('tower-flagband', this.tower);
+    this.flagBand.dataset.probe = 'flag';
+    this.flagBandLabel = this.el('flagband-label', this.flagBand, '');
+    this.flagBandCause = this.el('flagband-cause', this.flagBand, '');
+    this.flagBand.style.display = 'none';
 
     // The column header. It shares its grid template with every row below it
     // through one custom property, so a column cannot drift from its label —
@@ -301,11 +337,28 @@ export class Hud {
     // would eventually undo.
     const cols = this.el('tower-cols', this.tower);
     for (const [cls, label] of [
-      ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-driver', 'Driver'],
-      ['c-gap', 'Gap'], ['c-best', 'Best'], ['c-lap', 'Lap'], ['c-tyre', ''],
+      ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-code', 'Driver'],
+      ['c-gap', 'Gap'], ['c-tyre', ''], ['c-badge', ''],
     ] as [string, string][]) {
       this.el('tower-col ' + cls, cols, label);
     }
+
+    // The rows get a box of their own so the fastest-lap strip can sit under
+    // them: rows are appended as the field is sized, and a footer appended
+    // before them would end up in the middle of the order.
+    this.rowsBox = this.el('tower-rows', this.tower);
+
+    // The fastest lap, along the foot of the panel. The badge in the order
+    // above says WHO holds it, which is what the eye wants mid-corner; this
+    // says what it is, which is the number you read on the straight. Purple,
+    // because purple is the outright best in this system and the fastest lap is
+    // the definition of it.
+    this.fastestBar = this.el('tower-fastest', this.tower);
+    this.el('fastest-label', this.fastestBar, 'Fastest lap');
+    this.fastestFirst = this.el('fastest-first', this.fastestBar, '');
+    this.fastestWho = this.el('fastest-who', this.fastestBar, '');
+    this.fastestTime = this.el('fastest-time', this.fastestBar, '');
+    this.fastestBar.dataset.probe = 'fastest';
 
     // --- Top right: sectors and lap times ----------------------------------
     this.buildTimingPanel();
@@ -443,13 +496,15 @@ export class Hud {
     // --- Weather bug -------------------------------------------------------
     this.buildWeather();
 
-    // --- Flag --------------------------------------------------------------
-    // The one graphic still allowed in the middle of the frame, and only
-    // because it has been moved hard against the TOP edge, where every camera
-    // in this game is looking at sky. A flag is the single loudest thing race
-    // control can say and it earns the centre column; nothing else does.
+    // --- The start ----------------------------------------------------------
+    // The one graphic still allowed in the middle of the frame, and the only
+    // one that has ever earned it: five red lights and the count to them. Every
+    // flag this used to carry is a band across the top of the running order
+    // now — see `updateFlag`.
     this.flagBanner = this.el('hud-flag', this.root, '');
-    this.flagBanner.dataset.probe = 'flag';
+    // `start`, not `flag`: the flags moved into the tower band, which carries
+    // the `flag` token now. This element is the countdown and nothing else.
+    this.flagBanner.dataset.probe = 'start';
     this.flagBanner.style.display = 'none';
 
     // --- The left rail -----------------------------------------------------
@@ -607,25 +662,25 @@ export class Hud {
   /** Builds the timing tower rows once, sized to the field. */
   private ensureRows(n: number): void {
     while (this.rows.length < n) {
-      const root = this.el('tower-row', this.tower);
+      const root = this.el('tower-row', this.rowsBox);
       const bar = this.el('tower-bar', root);
       const pos = this.el('tower-pos', root, '');
       const mark = this.el('tower-mark', root);
-      const who = this.el('tower-who', root);
-      const nameLine = this.el('tower-name', who);
-      const first = this.el('tower-first', nameLine, '');
-      const surname = this.el('tower-surname', nameLine, '');
-      const sub = this.el('tower-sub', who);
-      const team = this.el('tower-team', sub, '');
+      const code = this.el('tower-code', root, '');
       const gap = this.el('tower-gap', root, '');
-      const best = this.el('tower-best', root, '');
-      const lastLap = this.el('tower-lastlap', root, '');
       const tyre = this.el('tower-tyre', root, '');
+      // Three badges, built once and shown by class. Creating an element in the
+      // frame a car takes the fastest lap is a layout in the frame something
+      // interesting happened, which is the worst frame to spend one in.
+      const badges = this.el('tower-badges', root);
+      this.el('tbadge tb-fast', badges).appendChild(stopwatchSvg());
+      this.el('tbadge tb-pen', badges, '!');
+      this.el('tbadge tb-fin', badges).appendChild(chequerSvg());
       this.rows.push({
-        root, bar, pos, mark, first, surname, team, gap, best, lastLap, tyre,
+        root, bar, pos, mark, code, gap, tyre, badges,
         seen: {
-          pos: '', first: '', surname: '', team: '', tyre: '',
-          gap: '', best: '', lastLap: '', markTeam: '', colour: '',
+          pos: '', code: '', tyre: '', gap: '',
+          markTeam: '', colour: '', badges: '', state: '',
         },
       });
     }
@@ -987,16 +1042,22 @@ export class Hud {
     setClass(this.tyreTempRear, 'hud-tyretemp ' + tempClass(p.rearTires.thermalBalance));
 
     // --- Position and timing ---------------------------------------------
-    setText(this.position, 'P' + player.position);
     setStyle(this.teamStripe, 'background',
       '#' + player.team.colour.toString(16).padStart(6, '0'));
-    setText(this.sessionName, engine.config.name.toUpperCase() + ' · ' + engine.track.def.name.toUpperCase());
+    setText(this.sessionName, engine.track.def.name.toUpperCase());
     const totalLaps = engine.config.laps || engine.track.def.raceLaps;
     if (engine.config.kind === 'race') {
-      setText(this.lapCounter, 'LAP ' + Math.min(player.lap + 1, totalLaps) + '/' + totalLaps);
+      setText(this.lapCounter, String(Math.min(player.lap + 1, totalLaps)));
+      setText(this.lapTotal, String(totalLaps));
+      setClass(this.lapBlock, 'tower-lapblock');
     } else {
+      // A practice or qualifying session is a clock, not a lap count. The big
+      // slot carries whichever of the two this session is measured in, so the
+      // number read from across a room is always the one that matters.
       const remaining = Math.max(0, engine.config.durationS - engine.time);
-      setText(this.lapCounter, engine.config.name + '  ' + formatClock(remaining));
+      setText(this.lapCounter, formatClock(remaining));
+      setText(this.lapTotal, '');
+      setClass(this.lapBlock, 'tower-lapblock is-clock');
     }
 
     const clock = lapClock(engine, player);
@@ -1060,50 +1121,48 @@ export class Hud {
     this.updateTouch(input);
   }
 
+  /**
+   * The flag, in the tower — and the start, in the middle of the frame.
+   *
+   * THE COMPLAINT, TWICE. A yellow flag used to be a strip across the top
+   * centre of the picture. That is the one place every camera in this game is
+   * pointed, and a flag is not a thing that happens for a second and goes: it
+   * stands for as long as the hazard does, so it stood on the road for as long
+   * as the hazard did.
+   *
+   * A flag is race control talking about the SESSION, and the panel that says
+   * what the session is doing is the running order. So it is a band across the
+   * top of the tower now, in the flag's own colour, with a second line naming
+   * the cause — because a driver shown a yellow wants to know what is round the
+   * corner, and `YELLOW FLAG` alone does not say.
+   *
+   * The centre column keeps exactly one graphic, and it is the one thing that
+   * has to be in the middle of the frame because it is the thing you are
+   * looking at the middle of the frame for: the start.
+   */
   private updateFlag(engine: RaceEngine, player: CarEntry): void {
-    const rc = engine.raceControl;
-    let text = '';
-    let cls = 'hud-flag';
-
     if (!engine.started) {
-      text = engine.startLights > 0 ? 'LIGHTS OUT IN ' + Math.ceil(engine.startLights) : 'GO';
-      cls = 'hud-flag flag-start';
-    } else if (rc.sessionFlag === 'chequered') {
-      text = 'CHEQUERED FLAG';
-      cls = 'hud-flag flag-chequered';
-    } else if (rc.sessionFlag === 'red') {
-      text = 'RED FLAG';
-      cls = 'hud-flag flag-red';
-    } else if (rc.neutralisation === 'safety-car') {
-      text = 'SAFETY CAR';
-      cls = 'hud-flag flag-sc';
-    } else if (rc.neutralisation === 'vsc') {
-      text = 'VIRTUAL SAFETY CAR';
-      cls = 'hud-flag flag-vsc';
-    } else if (player.blueFlag) {
-      text = 'BLUE FLAG — LET THEM BY';
-      cls = 'hud-flag flag-blue';
-    } else {
-      const local = rc.flagAt(player.s);
-      if (local === 'double-yellow') { text = 'DOUBLE YELLOW'; cls = 'hud-flag flag-yellow'; }
-      else if (local === 'yellow') { text = 'YELLOW FLAG'; cls = 'hud-flag flag-yellow'; }
-    }
-
-    // Penalties take precedence — the player needs to know immediately.
-    const pen = player.penalties[player.penalties.length - 1];
-    if (!text && pen && !pen.served && pen.kind === 'drive-through') {
-      text = 'DRIVE THROUGH PENALTY';
-      cls = 'hud-flag flag-red';
-    }
-    if (player.disqualified) { text = 'DISQUALIFIED'; cls = 'hud-flag flag-red'; }
-
-    if (text) {
+      const text = engine.startLights > 0
+        ? 'LIGHTS OUT IN ' + Math.ceil(engine.startLights) : 'GO';
       setText(this.flagBanner, text);
-      setClass(this.flagBanner, cls);
+      setClass(this.flagBanner, 'hud-flag flag-start');
       setStyle(this.flagBanner, 'display', 'block');
     } else {
       setStyle(this.flagBanner, 'display', 'none');
     }
+
+    const band = flagBandState(engine, player);
+    if (band) {
+      setText(this.flagBandLabel, band.label);
+      setText(this.flagBandCause, band.cause);
+      setClass(this.flagBand, 'tower-flagband fb-' + band.tone);
+      setStyle(this.flagBand, 'display', 'flex');
+    } else {
+      setStyle(this.flagBand, 'display', 'none');
+    }
+    // The band changes the panel's height, and the notice rail below it is laid
+    // out against that height. See the shape check at the end of `updateTower`.
+    this.flagBandShown = band !== null;
   }
 
   /** The weather bug: one class and two strings, both diffed. */
@@ -1280,12 +1339,8 @@ export class Hud {
       const seen = row.seen;
 
       if (seen.pos !== cells.pos) { row.pos.textContent = cells.pos; seen.pos = cells.pos; }
-      if (seen.first !== cells.first) { row.first.textContent = cells.first; seen.first = cells.first; }
-      if (seen.surname !== cells.surname) { row.surname.textContent = cells.surname; seen.surname = cells.surname; }
-      if (seen.team !== cells.team) { row.team.textContent = cells.team; seen.team = cells.team; }
+      if (seen.code !== cells.code) { row.code.textContent = cells.code; seen.code = cells.code; }
       if (seen.gap !== cells.gap) { row.gap.textContent = cells.gap; seen.gap = cells.gap; }
-      if (seen.best !== cells.best) { row.best.textContent = cells.best; seen.best = cells.best; }
-      if (seen.lastLap !== cells.lastLap) { row.lastLap.textContent = cells.lastLap; seen.lastLap = cells.lastLap; }
       if (seen.tyre !== cells.tyre) {
         row.tyre.textContent = cells.tyre;
         row.tyre.style.color = '#' + getCompound(car.compound).colour.toString(16).padStart(6, '0');
@@ -1302,17 +1357,21 @@ export class Hud {
         seen.markTeam = car.team.id;
       }
 
-      // Purple is the outright best in this system, and both of these are one:
-      // the position at the head of the order, and the fastest lap anyone has
-      // set. Nothing else in the tower is coloured.
+      // The badge column: three facts, three squares, one diffed string.
+      const badges = statusBadges(car, sessionBest);
+      if (seen.badges !== badges) {
+        setClass(row.badges, 'tower-badges' + badges);
+        seen.badges = badges;
+      }
+
       // A rule under the pinned leader, because the row below it is not the
       // car behind it. A list that silently skips eight places is a lie.
-      setClass(row.root, 'tower-row'
+      const state = 'tower-row'
         + (pinLeader && i === 0 ? ' is-pinned' : '')
         + (car.position === 1 ? ' is-leader' : '')
         + (car === player ? ' is-player' : '')
-        + (car.retired || car.disqualified ? ' is-out' : '')
-        + (sessionBest > 0 && car.bestLapTime === sessionBest ? ' is-fastest' : ''));
+        + (car.retired || car.disqualified ? ' is-out' : '');
+      if (seen.state !== state) { row.root.className = state; seen.state = state; }
     }
 
     // WHERE THE RAIL STARTS. The notice rail used to begin at half the
@@ -1562,7 +1621,7 @@ export class Hud {
 
   /** How far the rail's contents overrun its band, pixels. */
   private railOverflowPx(): number {
-    const band = this.notices.clientHeight;
+    const band = this.notices.getBoundingClientRect().height;
     // Before the first layout — in a probe, or on the frame the HUD is built —
     // there is nothing to measure and nothing has been shown yet.
     if (band <= 0) return 0;
@@ -1571,7 +1630,10 @@ export class Hud {
     let n = 0;
     for (const child of this.notices.children) {
       const e = child as HTMLElement;
-      const h = e.offsetHeight;
+      // Fractional, not `offsetHeight`. Four or five children each rounded
+      // down to the pixel is several pixels of slack that is not there, which
+      // is exactly the margin a card overflows a band by.
+      const h = e.getBoundingClientRect().height;
       if (h < 1) continue;
       used += h;
       n++;
@@ -2237,13 +2299,13 @@ export function towerFit(
   // disagree the panel is measured for one row height and drawn at another,
   // which is exactly how a tower ends up hanging off the bottom of a phone.
   const compact = w <= 900 || h <= 470;
-  const rowH = compact ? 17 : 29;
+  const rowH = compact ? 17 : 26;
   // The panel's own header block and column rule, PLUS the whole rail beneath
   // it: the notice stack, the weather bug and the car state. This number is
   // the reason the tower is not simply "as many rows as fit" — the rest of
   // the left rail has to exist somewhere, and a tower sized to the viewport
   // grows straight down through the pit instruction.
-  const reserved = compact ? 240 : 554;
+  const reserved = compact ? 260 : 570;
   const fits = Math.floor((h - floorPx - reserved) / rowH);
   // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
   // glass in shot the bottom of the frame is not the HUD's to use — see
@@ -2277,13 +2339,19 @@ export function towerFit(
 export function standingsCells(
   engine: RaceEngine, car: CarEntry, ahead: CarEntry | null, leader: CarEntry,
 ): {
-  pos: string; first: string; surname: string; team: string;
+  pos: string; code: string; first: string; surname: string; team: string;
   tyre: string; gap: string; best: string; lastLap: string;
 } {
   const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
-  const gap = car.retired ? 'DNF'
+  // `Out`, not `DNF`. The row is already dimmed and already at the foot of the
+  // order; three capitals of jargon on top of that is the panel saying the same
+  // thing three times. A broadcast tower says the car is out and moves on.
+  const gap = car.retired ? 'Out'
     : car.disqualified ? 'DSQ'
-    : car.position === 1 ? 'LEADER'
+    // The leader's cell names the COLUMN rather than restating the position the
+    // number beside it already gives. Every other row is a figure, so a word
+    // there reads as the heading it is.
+    : car.position === 1 ? 'Interval'
     : engine.config.kind !== 'race'
       ? (car.bestLapTime > 0 && leader.bestLapTime > 0
         ? formatGap(car.bestLapTime - leader.bestLapTime) : '—')
@@ -2292,6 +2360,7 @@ export function standingsCells(
 
   return {
     pos: String(car.position),
+    code: car.driver.code.toUpperCase(),
     first: car.driver.firstName,
     surname: car.driver.lastName.toUpperCase(),
     team: car.team.name,
@@ -2300,6 +2369,84 @@ export function standingsCells(
     best: car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '—',
     lastLap: car.lastLapTime > 0 ? formatLapTime(car.lastLapTime) : '—',
   };
+}
+
+/**
+ * Which status badges a car is carrying, as a class suffix.
+ *
+ * Three facts the running order has always known and never shown: who holds the
+ * fastest lap, who has something to serve, and who has finished. Returned as a
+ * string of classes rather than as booleans so the row can diff the whole
+ * column in one compare — twenty rows times sixty frames is not a place to
+ * touch three elements each.
+ *
+ * Pure and exported so `probe:hudtext` can assert what the panel claims about a
+ * car against what the engine says about it.
+ */
+export function statusBadges(car: CarEntry, sessionBest: number): string {
+  let out = '';
+  if (sessionBest > 0 && car.bestLapTime === sessionBest) out += ' has-fast';
+  // Anything not yet served, and any time already added to the race result. A
+  // five-second penalty is served at the stop and is a fact about the classified
+  // order from the moment it is issued.
+  if (car.penaltySeconds > 0 || car.penalties.some((p) => !p.served)) out += ' has-pen';
+  if (car.finished) out += ' has-fin';
+  return out;
+}
+
+/**
+ * What the flag band says, and what colour it is.
+ *
+ * PRECEDENCE IS THE WHOLE OF THIS FUNCTION. Several of these can be true at
+ * once — a car can be disqualified under a safety car while a yellow is out in
+ * the sector it is in — and a band that showed the wrong one would be worse
+ * than no band. The order is: what has happened to YOU, then what has happened
+ * to the session, then what is round the next corner. A driver who has been
+ * disqualified does not need to be told about a yellow.
+ *
+ * The second line names the cause, because a driver shown a yellow wants to
+ * know what is round the corner and `YELLOW FLAG` on its own does not say.
+ *
+ * Pure and exported so a probe can assert the band against the race control it
+ * is reading, rather than against a reimplementation of it.
+ */
+export function flagBandState(
+  engine: RaceEngine, player: CarEntry,
+): { label: string; cause: string; tone: string } | null {
+  const rc = engine.raceControl;
+
+  if (player.disqualified) {
+    return { label: 'DISQUALIFIED', cause: 'BLACK FLAG', tone: 'black' };
+  }
+  const pen = player.penalties[player.penalties.length - 1];
+  if (pen && !pen.served && pen.kind === 'drive-through') {
+    return { label: 'DRIVE THROUGH', cause: 'PENALTY TO SERVE', tone: 'red' };
+  }
+
+  if (rc.sessionFlag === 'chequered') {
+    return { label: 'CHEQUERED FLAG', cause: 'SESSION OVER', tone: 'chequered' };
+  }
+  if (rc.sessionFlag === 'red') {
+    return { label: 'RED FLAG', cause: 'SESSION STOPPED', tone: 'red' };
+  }
+  if (rc.neutralisation === 'safety-car') {
+    return { label: 'SAFETY CAR', cause: 'FIELD NEUTRALISED', tone: 'yellow' };
+  }
+  if (rc.neutralisation === 'vsc') {
+    return { label: 'VIRTUAL SAFETY CAR', cause: 'DELTA TIME ENFORCED', tone: 'yellow' };
+  }
+  if (player.blueFlag) {
+    return { label: 'BLUE FLAG', cause: 'LET THE LEADERS BY', tone: 'blue' };
+  }
+
+  const local = rc.flagAt(player.s);
+  if (local === 'double-yellow') {
+    return { label: 'DOUBLE YELLOW', cause: 'HAZARD ON THE RACING LINE', tone: 'yellow' };
+  }
+  if (local === 'yellow') {
+    return { label: 'YELLOW FLAG', cause: 'TRACK HAZARD', tone: 'yellow' };
+  }
+  return null;
 }
 
 /**
@@ -3052,6 +3199,58 @@ const DEVICES: readonly (readonly DeviceSpec[])[] = [
     { tag: 'rect', attrs: { x: '5', y: '12', width: '7', height: '8', fill: '#a' } },
   ],
 ];
+
+/**
+ * The stopwatch, drawn.
+ *
+ * The fastest lap's badge. A watch rather than a letter because the badge is
+ * eleven pixels across in the running order and a glyph at that size is read as
+ * a shape, not as type — and because the purple square already says which of
+ * the four things it is. Crown, bezel and a hand at ten past.
+ */
+export function stopwatchSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const add = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.appendChild(e);
+  };
+  add('rect', { x: '9.4', y: '1.6', width: '5.2', height: '2.6', rx: '1.1', fill: 'currentColor' });
+  add('circle', {
+    cx: '12', cy: '14', r: '8', fill: 'none',
+    stroke: 'currentColor', 'stroke-width': '2.4',
+  });
+  add('path', {
+    d: 'M12 14 L12 9.2 M12 14 L15.4 15.8', fill: 'none', stroke: 'currentColor',
+    'stroke-width': '2', 'stroke-linecap': 'round',
+  });
+  return svg;
+}
+
+/**
+ * The chequered flag, drawn.
+ *
+ * A car that has taken the flag. Four squares rather than a waving flag on a
+ * pole: at badge size a flag is a smudge and a two-by-two chequer is
+ * unmistakable, which is the whole job of a square eleven pixels across.
+ */
+export function chequerSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const [x, y] of [[3, 3], [12.5, 12.5]] as [number, number][]) {
+    const e = document.createElementNS(NS, 'rect');
+    for (const [k, v] of Object.entries({
+      x: String(x), y: String(y), width: '8.5', height: '8.5', fill: 'currentColor',
+    })) e.setAttribute(k, v);
+    svg.appendChild(e);
+  }
+  return svg;
+}
 
 /**
  * The team principal, drawn.

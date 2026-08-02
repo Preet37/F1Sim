@@ -373,50 +373,356 @@ canvas#view {
    left rail, and a tower sized to "as many as fit" grows straight down
    through the pit instruction. See `towerFit`. */
 .hud-tower {
-  --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 12px;
+  --tower-cols: 3px 22px 20px minmax(0, 1fr) 52px 12px 32px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
-  width: 336px;
+  width: 300px;
   padding: 8px 9px 8px;
   border-radius: var(--card-r);
-  background: var(--card-bg);
-  border: 1px solid var(--card-line);
+  /* Dark navy and translucent, not the neutral carbon the instrument panels
+     are drawn on. This is the one graphic on screen that is ABOUT the race
+     rather than about the car, and it is the one a broadcast leaves up
+     permanently; giving it its own ground is what separates the two systems
+     at a glance. */
+  background: linear-gradient(180deg, rgba(9, 17, 33, 0.9), rgba(6, 11, 22, 0.86));
+  border: 1px solid rgba(120, 160, 214, 0.16);
+  box-shadow: var(--plate-lift);
 }
 .hud-tower .hud-stripe { top: 12px; bottom: 12px; border-radius: 0 2px 2px 0; }
+/* --- The header -------------------------------------------------------
+   The series mark, the circuit, and the lap. A broadcast tower header says
+   which championship you are watching and how far through the race it is,
+   and little else — so those are the only things here, with the lap number
+   set at the size it is read at from across a room and the total set small
+   beside it. The mark is this game's own and is the only wordmark in the
+   HUD; no real series mark is reproduced. */
+.tower-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 0 4px 7px;
+}
+.tower-series {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 500;
+  font-stretch: 118%;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.tower-series b { font-weight: 900; color: var(--ink); }
 .tower-session {
   font-family: var(--font-data);
   font-size: 8px;
   font-weight: 800;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   color: var(--ink-3);
-  padding: 0 3px 3px;
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tower-head {
+.tower-lapblock {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  padding: 0 3px 6px;
+  gap: 3px;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
+.tower-lapword {
+  font-family: var(--font-display);
+  font-size: 8px;
+  font-weight: 850;
+  font-stretch: 116%;
+  letter-spacing: 0.15em;
+  color: var(--ink-3);
+}
+.tower-lapnow {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 900;
+  font-stretch: 120%;
+  letter-spacing: 0.01em;
+  line-height: 0.9;
+  color: var(--ink);
+}
+.tower-lapbar { font-size: 11px; color: var(--ink-3); }
+.tower-laptotal {
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+/* A practice or qualifying session is a clock, not a lap count. Same slot,
+   figure face — the big number is always the one that matters. */
+.tower-lapblock.is-clock .tower-lapbar,
+.tower-lapblock.is-clock .tower-laptotal { display: none; }
+.tower-lapblock.is-clock .tower-lapnow {
+  font-family: var(--font-data);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+/* --- The flag band ----------------------------------------------------
+   WHERE FLAG STATE BELONGS, and it took two complaints to get here. A yellow
+   used to be a strip across the top centre of the picture — the one place
+   every camera in this game is pointed — and a flag is not a thing that
+   happens for a second and goes. It stands for as long as the hazard does,
+   so it stood on the road for as long as the hazard did.
+
+   A flag is race control talking about the SESSION, and the panel that says
+   what the session is doing is this one. Full width, the flag's own colour,
+   its name in heavy black caps, and a second line naming the cause — because
+   a driver shown a yellow wants to know what is round the corner, and
+   `YELLOW FLAG` on its own does not say. */
+.tower-flagband {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  margin: 0 0 7px;
+  padding: 4px 8px 5px;
+  border-radius: 3px;
+  text-align: center;
+}
+.flagband-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 900;
+  font-stretch: 118%;
+  letter-spacing: 0.09em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.flagband-cause {
+  font-family: var(--font-data);
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+.fb-yellow { background: var(--sig-yellow); color: #14100a; }
+.fb-red { background: var(--sig-red); color: #fff2f3; }
+.fb-blue { background: #1668e3; color: #eef4ff; }
+/* A black flag is the only one whose own colour is the panel's colour, so it
+   is the only one that needs an outline to read as a band at all. */
+.fb-black {
+  background: #06080b;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.55);
+}
+/* The chequer goes on a strip along the top rather than under the words: a
+   name set over a chequerboard is a name nobody reads. */
+.fb-chequered { background: #eef2f8; color: #06080b; padding-top: 8px; }
+.fb-chequered::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: repeating-conic-gradient(#06080b 0% 25%, #eef2f8 0% 50%) 0 0 / 10px 10px;
+}
+
+/* --- The order --------------------------------------------------------- */
+.tower-cols,
+.tower-row {
+  display: grid;
+  grid-template-columns: var(--tower-cols);
+  align-items: center;
+  gap: 0 7px;
+  padding: 0 5px;
+}
+.tower-cols {
+  padding-bottom: 5px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+.tower-col {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  overflow: hidden;
+}
+/* Each header cell carries the name of its column rather than a position in
+   the row, so hiding a column at a breakpoint hides its label with it and the
+   two cannot come apart. */
+.c-gap { text-align: right; }
+
+.tower-row {
+  height: 26px;
+  border-radius: 5px;
+  margin-bottom: 1px;
+}
+/* THE LEADER'S NUMBER IN A FILLED RED CELL. This is the one place in this
+   game red does not mean "stopped", and it is deliberate: it is what a
+   broadcast tower does, and it is the fastest way to find the front of the
+   order in peripheral vision. The clash is real and it is paid for elsewhere
+   — a retired car says so in words (`Out`) and by being dimmed to two fifths,
+   not by being red. */
+.tower-row.is-leader .tower-pos {
+  background: var(--sig-red);
+  color: #fff;
+}
+/* White means "the thing happening now", and the driver's own row is exactly
+   that. It is an outline rather than a fill so the team colour beside it is
+   not tinted by the highlight. */
+.tower-row.is-player {
+  background: rgba(242, 246, 251, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
+}
+/* The leader is pinned above a window that has scrolled past them, so the row
+   under it is not the car behind it. The break says so. */
+.tower-row.is-pinned {
+  margin-bottom: 5px;
+  position: relative;
+}
+.tower-row.is-pinned::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: -3px;
+  border-bottom: 1px dashed rgba(150, 180, 214, 0.3);
+}
+.tower-row.is-out { opacity: 0.4; }
+.tower-row.is-out .tower-gap { color: var(--ink-3); }
+
+/* WHILE A STOP IS BEING CHOSEN the order gives up more than its rows. The
+   sheet is a decision with a deadline measured in corners, the rail it stands
+   in reaches from the foot of this panel to the mirrors, and on a landscape
+   phone that band is only wide enough for the sheet if the panel above it is
+   down to its header and its flag. The column rule and the fastest lap are
+   both reference; neither is being read in the two seconds this lasts. */
+.hud.pit-open .tower-cols,
+.hud.pit-open .tower-fastest { display: none; }
+
+.tower-bar { width: 3px; height: 18px; border-radius: 2px; background: var(--ink-3); }
+.tower-pos {
+  text-align: center;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink-2);
+  border-radius: 3px;
+  padding: 2px 0;
+  line-height: 1;
+}
+.tower-mark { width: 20px; height: 20px; }
+.tower-mark svg { display: block; width: 100%; height: 100%; }
+
+/* The code, in heavy white caps: the identification a timing tower uses, with
+   the team's own mark beside it in the team's own colour carrying the second
+   axis. Between them they say which car this is without a word of prose. */
+.tower-code {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 850;
+  font-stretch: 112%;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  text-transform: uppercase;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.tower-gap {
+  text-align: right;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* The leader's cell names the column instead of restating the position the
+   number beside it already gives. A word among figures reads as the heading
+   it is. */
+.tower-row.is-leader .tower-gap {
+  font-family: var(--font-display);
+  font-size: 7.5px;
+  font-weight: 850;
+  font-stretch: 114%;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+/* The compound, in its own colour — soft red, medium yellow, hard white. One
+   character, because that is what the sport calls them. */
+.tower-tyre {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 800;
+  text-align: center;
+}
+
+/* --- The status column -------------------------------------------------
+   "You can see who has set the fastest lap, who's got a penalty, who's out,
+   what tire compounds etc." Four facts about twenty cars on one panel, three
+   of them in this column and none of them needing a word.
+
+   The exclamation is the same glyph the penalty banner ends with. That is not
+   a coincidence and it is not decoration: the banner announces the decision
+   once and this says which car is still carrying it, and a driver should be
+   able to see that they are the same statement. */
+.tower-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+}
+.tbadge {
+  display: none;
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.tbadge svg { display: block; width: 9px; height: 9px; }
+.tower-badges.has-fast .tb-fast {
+  display: flex;
+  background: var(--sig-purple);
+  color: #fff;
+}
+.tower-badges.has-pen .tb-pen {
+  display: flex;
+  background: var(--sig-red);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 900;
+}
+.tower-badges.has-fin .tb-fin {
+  display: flex;
+  background: #eef2f8;
+  color: #06080b;
+}
+
 /* --- The fastest lap ---------------------------------------------------
-   The one fact a broadcast keeps permanently on screen that this game had
-   nowhere at all: the purple was on the player's own sector tiles and said
-   nothing about the other nineteen cars. An outlined capsule rather than
-   another table row, because it is about somebody who may not be in the
-   visible window of the order — and it is drawn in the purple the holder's
-   own name is drawn in below, so the two are obviously the same fact. */
+   The badge in the order above says WHO holds it, which is what the eye wants
+   mid-corner. This says what it is, which is the number read on the straight.
+   Along the foot of the panel, under a hairline, in the purple that means
+   outright best everywhere else in this game. */
 .tower-fastest {
   display: flex;
   align-items: baseline;
   overflow: hidden;
   gap: 6px;
-  margin: 0 1px 7px;
-  padding: 3px 9px;
-  border-radius: var(--pill-r);
-  border: 1px solid rgba(192, 77, 255, 0.45);
-  background: rgba(192, 77, 255, 0.12);
+  margin: 6px 1px 0;
+  padding: 5px 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
   min-width: 0;
 }
 .fastest-label {
@@ -429,14 +735,13 @@ canvas#view {
   color: var(--sig-purple);
   flex: 0 0 auto;
 }
-.fastest-dot { color: var(--ink-3); font-size: 9px; flex: 0 0 auto; }
-/* The given name is the first thing to go when the capsule is narrow — a
-   surname identifies a driver, "NIA…" identifies nobody. */
+/* The given name is the first thing to go when the strip is narrow — a
+   surname identifies a driver, "NIA..." identifies nobody. */
 .fastest-first {
   font-family: var(--font-ui);
   font-size: 9px;
   font-weight: 400;
-  color: var(--ink-2);
+  color: var(--ink-3);
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -464,181 +769,6 @@ canvas#view {
   margin-left: auto;
   flex: 0 0 auto;
   padding-left: 6px;
-}
-.tower-position {
-  font-family: var(--font-display);
-  font-size: 21px;
-  font-weight: 850;
-  font-stretch: 120%;
-  letter-spacing: 0.02em;
-  line-height: 1;
-}
-.tower-lapcount {
-  font-family: var(--font-data);
-  font-size: 10px;
-  color: var(--hud-dim);
-  letter-spacing: 0.08em;
-  font-weight: 700;
-}
-.tower-cols,
-.tower-row {
-  display: grid;
-  grid-template-columns: var(--tower-cols);
-  align-items: center;
-  gap: 0 7px;
-  padding: 0 5px;
-}
-.tower-cols {
-  padding-bottom: 5px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
-}
-.tower-col {
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  overflow: hidden;
-}
-/* Each header cell carries the name of its column rather than a position in
-   the row, so hiding a column at a breakpoint hides its label with it and the
-   two cannot come apart. */
-.c-gap, .c-best, .c-lap { text-align: right; }
-.tower-lastlap, .c-lap { display: none; }
-
-.tower-row {
-  height: 29px;
-  border-radius: 8px;
-  margin-bottom: 1px;
-}
-/* Purple is the outright best in this system, and both of these are one: the
-   position at the head of the order, and the quickest lap anyone has set.
-   The leader used to be picked out in gold, which is a hair from the yellow
-   that means CAUTION twelve pixels away on the same panel. */
-.tower-row.is-leader { background: rgba(192, 77, 255, 0.1); }
-.tower-row.is-leader .tower-pos { color: var(--sig-purple); }
-.tower-row.is-fastest .tower-best,
-.tower-row.is-fastest .tower-surname { color: var(--sig-purple); }
-/* White means "the thing happening now", and the driver's own row is exactly
-   that. It is an outline rather than a fill so the team colour beside it is
-   not tinted by the highlight. */
-.tower-row.is-player {
-  background: rgba(242, 246, 251, 0.11);
-  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
-}
-/* The leader is pinned above a window that has scrolled past them, so the row
-   under it is not the car behind it. The break says so. */
-.tower-row.is-pinned {
-  margin-bottom: 5px;
-  position: relative;
-}
-.tower-row.is-pinned::after {
-  content: '';
-  position: absolute;
-  left: 5px;
-  right: 5px;
-  bottom: -3px;
-  border-bottom: 1px dashed rgba(150, 180, 214, 0.3);
-}
-.tower-row.is-out { opacity: 0.4; }
-.tower-row.is-out .tower-gap { color: var(--sig-red); }
-
-.tower-bar { width: 3px; height: 20px; border-radius: 2px; background: var(--ink-3); }
-.tower-pos {
-  text-align: right;
-  font-family: var(--font-data);
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--ink-2);
-}
-.tower-mark { width: 20px; height: 20px; }
-.tower-mark svg { display: block; width: 100%; height: 100%; }
-
-.tower-who { min-width: 0; overflow: hidden; }
-/* The surname does not shrink — see below — so the LINE has to clip, or a long
-   one pushes the gap column out of the panel and lands on top of the compound.
-   Clipping "MARCHETTI" is a legible row; overlapping it with "LEADER" is not. */
-.tower-name {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-/* The first name yields first. A surname identifies a driver and a given name
-   decorates one, so when the column is short it is "Vik… HALVORSEN" that has
-   to be avoided and "V… HALVORSEN" that is acceptable. */
-.tower-first {
-  font-family: var(--font-ui);
-  font-size: 9px;
-  font-weight: 400;
-  color: var(--ink-3);
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tower-surname {
-  font-family: var(--font-display);
-  font-size: 11.5px;
-  font-weight: 800;
-  font-stretch: 110%;
-  letter-spacing: 0.03em;
-  color: var(--ink);
-  flex: 0 0 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tower-sub {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  min-width: 0;
-  white-space: nowrap;
-  margin-top: 1px;
-}
-.tower-team {
-  font-family: var(--font-ui);
-  font-size: 8.5px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  color: var(--ink-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tower-gap,
-.tower-best,
-.tower-lastlap {
-  text-align: right;
-  font-family: var(--font-data);
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--ink-2);
-  overflow: hidden;
-}
-/* The gap is the live number and the best lap is the reference, so they are
-   not the same weight of grey. The last lap is louder than either: it is the
-   one that has just changed. */
-.tower-best { color: var(--ink-3); font-weight: 600; }
-.tower-lastlap { color: var(--ink); }
-.tower-row.is-leader .tower-gap {
-  font-family: var(--font-display);
-  font-size: 8px;
-  font-weight: 850;
-  font-stretch: 114%;
-  letter-spacing: 0.1em;
-  color: var(--sig-purple);
-}
-/* The compound, in its own colour, at the end of the row — the last thing on
-   a broadcast timing line and the only one-character column here. */
-.tower-tyre {
-  font-family: var(--font-data);
-  font-size: 9px;
-  font-weight: 800;
-  text-align: center;
 }
 
 /* --- Top right: sectors and lap times ---------------------------------
@@ -959,7 +1089,7 @@ canvas#view {
      moment clips the OLDEST card off the top instead, which is the one you
      have already read. The top is the deepest the tower can ever reach; see
      `towerFit`. */
-  top: max(300px, 50vh);
+  top: var(--rail-top, max(300px, 50vh));
   bottom: calc(172px + var(--safe-b));
   /* Flush with the tower above it: the rail is one column, not two. */
   --rail-w: 336px;
@@ -1787,8 +1917,6 @@ canvas#view {
   .hud { font-size: 11px; }
 
   .hud-tower { width: calc(50% - 14px); max-width: 176px; }
-  .tower-position { font-size: 17px; }
-  .tower-lapcount { font-size: 9px; }
 
   .hud-timing {
     width: calc(50% - 14px);
@@ -1935,10 +2063,7 @@ canvas#view {
 @media (max-height: 470px) {
   .hud { font-size: 11px; }
 
-  .hud-tower { width: 196px; }
-  .tower-head { padding: 0 3px 5px; }
-  .tower-position { font-size: 16px; }
-  .tower-lapcount { font-size: 8.5px; }
+  .hud-tower { width: 214px; }
 
   .hud-timing { width: 180px; padding: 5px 6px 6px; }
   .timing-lap { font-size: 20px; margin-top: 4px; }
@@ -2151,27 +2276,40 @@ canvas#view {
    colour and its surname — standing until the end. */
 @media (max-width: 900px), (max-height: 470px) {
   .hud-tower {
-    --tower-cols: 3px 15px 15px minmax(0, 1fr) 42px 11px;
+    --tower-cols: 3px 17px 15px minmax(0, 1fr) 44px 10px 26px;
+    width: 232px;
     padding: 6px 6px 5px;
   }
   .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 5px; }
   .tower-cols { gap: 0 5px; padding: 0 3px 4px; margin-bottom: 3px; }
-  /* The column rule goes too. Five columns, two of them a colour bar and a
-     badge, do not need labelling — and fifteen pixels of header is most of a
-     row on a screen 390 pixels tall. */
-  .c-best, .c-lap, .tower-best, .tower-lastlap,
-  .tower-first, .tower-sub, .tower-session, .tower-cols { display: none; }
+  /* The column rule goes, and so does the circuit name. Six columns, three of
+     them a colour bar, a badge and a single letter, do not need labelling —
+     and fifteen pixels of header is most of a row on a screen 390 pixels
+     tall. The circuit is on the timing panel and in the driver's windscreen. */
+  .tower-session, .tower-cols { display: none; }
+  .tower-head { padding: 0 3px 5px; gap: 5px; }
+  .tower-series { font-size: 10px; }
+  .tower-lapnow { font-size: 16px; }
+  .tower-lapword { font-size: 7px; letter-spacing: 0.12em; }
+  .tower-laptotal, .tower-lapbar { font-size: 9.5px; }
+  .tower-lapblock.is-clock .tower-lapnow { font-size: 12.5px; }
+  .tower-flagband { margin-bottom: 5px; padding: 3px 6px 4px; }
+  .flagband-label { font-size: 10.5px; letter-spacing: 0.07em; }
+  .flagband-cause { font-size: 6.5px; letter-spacing: 0.1em; }
+  .fb-chequered { padding-top: 6px; }
+  .fb-chequered::before { height: 4px; background-size: 8px 8px; }
   .tower-bar { height: 12px; }
-  .tower-pos { font-size: 10px; }
+  .tower-pos { font-size: 9.5px; padding: 1px 0; }
   .tower-mark { width: 15px; height: 15px; }
-  /* With the first name gone there is nothing for the surname to compete
-     with, so here it may shrink — and an ellipsis is a better cut than the
-     hard clip the line would otherwise take mid-letter. */
-  .tower-surname { font-size: 10.5px; flex: 0 1 auto; min-width: 0; }
+  .tower-code { font-size: 10.5px; letter-spacing: 0.04em; }
   .tower-gap { font-size: 9.5px; }
-  .tower-row.is-leader .tower-gap { font-size: 7.5px; }
+  .tower-row.is-leader .tower-gap { font-size: 6.5px; letter-spacing: 0.06em; }
   .tower-tyre { font-size: 8px; }
-  .tower-fastest { padding: 2px 7px; gap: 5px; margin-bottom: 5px; }
+  .tbadge { width: 11px; height: 11px; border-radius: 2px; }
+  .tbadge svg { width: 7.5px; height: 7.5px; }
+  .tower-badges { gap: 2px; }
+  .tower-badges.has-pen .tb-pen { font-size: 8.5px; }
+  .tower-fastest { padding: 4px 3px 0; gap: 5px; margin-top: 4px; }
   .fastest-label { font-size: 7px; }
   .fastest-first { display: none; }
   .fastest-who { font-size: 8.5px; flex: 0 1 auto; min-width: 0; }
@@ -2185,11 +2323,12 @@ canvas#view {
    graphic with three times this width to spend. */
 @media (min-width: 1500px) {
   .hud-tower {
-    --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 50px 12px;
-    width: 392px;
+    --tower-cols: 3px 24px 22px minmax(0, 1fr) 58px 14px 36px;
+    width: 340px;
   }
-  .hud-notices { --rail-w: 392px; }
-  .tower-lastlap, .c-lap { display: block; }
+  .hud-notices { --rail-w: 340px; }
+  .tower-code { font-size: 13.5px; }
+  .tower-row { height: 28px; }
 }
 
 /* ==========================================================================
@@ -2232,14 +2371,7 @@ canvas#view {
    nothing in it. */
 .hud[data-mirrors] .hud-carstate { bottom: calc(10px + var(--safe-b) + var(--floor)); }
 .hud[data-mirrors] .hud-weather { bottom: calc(116px + var(--safe-b) + var(--floor)); }
-/* The rail's top follows the RUNNING ORDER rather than a fraction of the
-   viewport. `--rail-top` is the tower's own measured bottom edge, written by
-   `Hud.updateTower` on the frames where the row count changes; a band whose
-   foot has risen 274 pixels and whose head has not is a band with nothing in
-   it, and half the viewport is not where the tower ends once it has dropped to
-   four rows. */
 .hud[data-mirrors] .hud-notices {
-  top: var(--rail-top, max(240px, calc(50vh - var(--floor))));
   bottom: calc(172px + var(--safe-b) + var(--floor));
 }
 /* The camera name and the frame counter sit under the right-hand column and
@@ -2280,6 +2412,51 @@ canvas#view {
    the only panel here whose fact is also legible out of the windscreen. */
 @media (max-height: 470px) {
   .hud[data-mirrors] .hud-weather { display: none; }
+  /* The last 27 pixels, and they come from the flag band. On a landscape phone
+     under a mirror camera with a stop being chosen, the rail runs from the foot
+     of the running order to the top of the glass and the sheet does not fit in
+     it by ten pixels. The band is the thing to give up here and only here: the
+     neutralisation cue pinned at the foot of that same rail already says
+     SAFETY CAR in words, with the limiter speed and the gap to the queue,
+     which is strictly more than the band says.
+     `!important` because `Hud.updateFlag` writes the band's `display` inline,
+     and an inline style beats any selector a stylesheet can offer. The
+     alternative is a second class toggled from TypeScript, which puts half of
+     one layout decision in each file. */
+  .hud.pit-open[data-mirrors] .tower-flagband { display: none !important; }
+  /* And the header with it, which leaves the panel as a sliver. That is the
+     honest end of this trade: on a 390-pixel screen, in a camera whose bottom
+     third belongs to the mirrors, with a decision on the rail that has a
+     deadline measured in corners, there is no running order. The pit cue at
+     the foot of the rail carries the lap. */
+  .hud.pit-open[data-mirrors] .tower-head { display: none; }
+  .hud.pit-open[data-mirrors] .hud-tower { padding: 3px 6px; }
+
+  /* AND THE RAIL GOES INTO THE CORRIDOR. Even with the running order down to a
+     sliver, a pit sheet does not fit in the 181 pixels left between the tower
+     and the top of the glass — it is 191 tall. Lifting it clear of the mirrors
+     is not negotiable and shrinking the sheet is not this file's to do, so the
+     rail moves sideways instead: into the 434-pixel gap between the two panes
+     in the driver's eye, 261 in the cockpit, where it has the whole height of
+     the frame again.
+
+     Everything that was sharing the bottom strip with it stands down for the
+     two seconds this lasts. The tyre panel goes because the sheet IS the tyre
+     choice; the gap readout and the car diagram go because neither is the
+     question being answered. The camera buttons move right of the rail and
+     stay, because a player who cannot reach them is stuck. */
+  .hud.pit-open[data-mirrors] .hud-notices {
+    --rail-w: 196px;
+    left: calc(var(--mirror-l) + var(--safe-l));
+    width: calc(var(--rail-w) + var(--slide));
+    bottom: calc(6px + var(--safe-b));
+  }
+  .hud.pit-open[data-mirrors] .hud-carstate,
+  .hud.pit-open[data-mirrors] .hud-gaps,
+  .hud.pit-open[data-mirrors] .hud-damage { display: none; }
+  .hud.pit-open[data-mirrors] .hud-buttons {
+    left: max(520px, calc(var(--mirror-l) + 260px));
+  }
   .hud[data-mirrors] .hud-notices {
     top: var(--rail-top, calc(150px + var(--safe-t)));
     bottom: calc(6px + var(--safe-b) + var(--floor));
