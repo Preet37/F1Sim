@@ -20,10 +20,15 @@ import { Hud } from './ui/Hud';
 import {
   cutLine, qualifyingStrip, splitName, timingBoard, timingRow, type TimingRowSpec,
 } from './ui/TimingRow';
+import { Career } from './career/Career';
+import { TIER_CAR } from './career/World';
+import { REAL_ROSTER } from './data/roster';
 import {
-  CareerEngine, TIER_INFO, playerChampionshipPosition,
-  type CareerEvent, type SeasonResult,
-} from './career/CareerEngine';
+  sortedStandings,
+  type OffSeasonReport, type RoundResult, type SeasonSummary,
+} from './career/Season';
+import type { CareerEvent } from './career/Events';
+import { needsWorldRebuild } from './career/SaveCodec';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
@@ -86,7 +91,7 @@ class Game {
   private hud!: Hud;
 
   private engine: RaceEngine | null = null;
-  private career: CareerEngine | null = null;
+  private career: Career | null = null;
   private careerId = 'slot1';
   private settings: GameSettings;
 
@@ -574,11 +579,10 @@ class Game {
 
     const career = this.career;
     if (career) {
-      const s = career.state;
-      const pos = playerChampionshipPosition(s);
       this.el('div', 'statusrail-state', rail,
-        TIER_INFO[s.tier].name + ' · R' + Math.min(s.round + 1, career.calendar.length) +
-        '/' + career.calendar.length + ' · P' + pos);
+        TIER_CAR[career.tier].shortName +
+        ' · R' + Math.min(career.round + 1, career.calendar.length) +
+        '/' + career.calendar.length + ' · P' + career.championshipPosition);
       this.el('div', 'statusrail-sep', rail, '/');
     }
     this.el('div', 'statusrail-live', rail, 'Live');
@@ -730,8 +734,8 @@ class Game {
     if (recent) {
       line.innerHTML =
         escapeHtml(recent.driverName) + '<span class="sep">·</span>' +
-        escapeHtml(tierInfo(recent.tier).name) + '<span class="sep">·</span>' +
-        '<span class="go">R' + (recent.round + 1) + '/' + tierInfo(recent.tier).rounds + '</span>';
+        escapeHtml(tierLabel(recent.tier)) + '<span class="sep">·</span>' +
+        '<span class="go">Round ' + (recent.round + 1) + '</span>';
     } else {
       line.innerHTML =
         '<span class="none">F3</span><span class="sep">→</span>' +
@@ -759,20 +763,45 @@ class Game {
 
     if (recent) {
       entry('Continue', 'Pick your career back up where you left it',
-        'R' + (recent.round + 1) + '/' + tierInfo(recent.tier).rounds, () => {
-          const state = this.saves.load(recent.id);
-          if (!state) {
-            alert('That save could not be loaded.');
+        'R' + (recent.round + 1), () => {
+          const result = this.saves.loadResult(recent.id);
+          if (!result.ok) {
+            // The reason matters: a save from a newer build is a completely
+            // different situation from a corrupt file, and telling somebody
+            // their career is gone when it is merely from tomorrow's build is
+            // the worst possible version of this message.
+            alert(loadFailureMessage(result));
             return;
           }
+          if (needsWorldRebuild(result.state)) {
+            // A career from before the ladder existed. The driver survives; the
+            // three championships around them cannot be reconstructed, because
+            // the save predates their existence. See SaveCodec's migration note.
+            const rebuilt = Career.create({
+              firstName: result.state.player.firstName,
+              lastName: result.state.player.lastName,
+              nationality: result.state.player.nationality,
+              raceNumber: result.state.player.raceNumber,
+              seed: result.state.seed,
+            });
+            rebuilt.state.player = result.state.player;
+            rebuilt.state.narrative = result.state.narrative;
+            rebuilt.state.history = result.state.history;
+            rebuilt.syncPlayerIntoWorld();
+            this.career = rebuilt;
+            alert('This career was started before the Formula 3 and Formula 2 ' +
+              'championships existed. Your driver has been carried over; the ' +
+              'season around them has been rebuilt.');
+          } else {
+            this.career = new Career(result.state);
+          }
           this.careerId = recent.id;
-          this.career = new CareerEngine(state);
           this.showCareerHub();
         }, true);
     }
     entry(recent ? 'New Career' : 'Start Career',
       'Sign for a junior team and race for a Formula 1 seat',
-      TIER_INFO.F3.rounds + ' rounds',
+      'F3 to F1',
       () => this.showCareerCreate(), !recent);
     entry('Quick Race', 'Any circuit, any session, straight to the grid',
       CIRCUITS.length + ' circuits',
@@ -815,7 +844,7 @@ class Game {
       sub: 'You start in Formula 3 with a junior team. Earn a Formula 1 seat, then a championship.',
       back: () => this.showMenu(),
       // The three tiers, as the three sectors of a career.
-      rule: { parts: [TIER_INFO.F3.rounds, TIER_INFO.F2.rounds, TIER_INFO.F1.rounds], at: 0 },
+      rule: { parts: [9, 12, 11], at: 0 },
     });
 
     this.el('div', 'section-title', body, 'Driver');
@@ -826,6 +855,11 @@ class Game {
       l.textContent = label;
       f.appendChild(l);
       const i = document.createElement('input');
+      i.type = 'text';
+      // Named, so a browser's autofill and a password manager leave them alone,
+      // and so the mobile keyboard comes up as a plain one rather than guessing.
+      i.autocomplete = 'off';
+      i.spellcheck = false;
       i.value = value;
       f.appendChild(i);
       return i;
@@ -842,14 +876,19 @@ class Game {
       this.el('div', 'stat-value', s, value);
       this.el('div', 'stat-meta', s, meta);
     };
-    step('Starting tier', TIER_INFO.F3.name, 'A junior seat, and a car to match');
-    step('Calendar', TIER_INFO.F3.rounds + ' rounds', 'One season to prove yourself');
-    step('Promotion', 'On results', 'Reputation opens the door to F2, then F1');
+    step('Starting tier', TIER_CAR.F3.shortName, 'A junior seat, and a car to match');
+    step('Promotion', 'Top two go up', 'F3 to F2 to F1, at the end of every season');
+    step('Calendar', '9 rounds', 'One season to finish in the top two');
 
-    // The car you will actually be handed. `CareerEngine.create` starts every
+    // The car you will actually be handed. `Career.create` starts every
     // career at the back of the grid in number 47, so this is not an
     // illustration — it is the machine, in the livery, with the number on it.
-    const startTeam = TEAMS[TEAMS.length - 1];
+    // The real seat: the weakest Formula 3 team, which is exactly what
+    // `Career.create` hands a rookie. It used to show the last entry of the
+    // static Formula 1 grid — a different car, in a different championship, in
+    // colours the player would never see again.
+    const f3Teams = REAL_ROSTER.tiers.F3.teams;
+    const startTeam = f3Teams[f3Teams.length - 1];
     this.el('div', 'section-title', body, 'The seat on offer');
     const bay = this.el('div', 'garagebay', body);
     const bayInfo = this.el('div', 'garagebay-info', bay);
@@ -859,7 +898,7 @@ class Game {
       '<span class="nameplate-rank">47</span>' +
       '<span class="nameplate-name">' + escapeHtml(startTeam.name) + '</span>';
     this.el('div', 'garagebay-line', bayInfo,
-      startTeam.engine + ' · the only seat you are offered');
+      TIER_CAR.F3.shortName + ' · the only seat you are offered');
     this.mountStage('panel', {
       colour: startTeam.colour,
       accent: startTeam.accent,
@@ -871,7 +910,10 @@ class Game {
     this.button('Begin Career', actions, () => {
       const f = first.value.trim() || 'Alex';
       const l = last.value.trim() || 'Carter';
-      this.career = CareerEngine.create(f, l, nat.value.trim() || 'United Kingdom');
+      this.career = Career.create({
+        firstName: f, lastName: l,
+        nationality: nat.value.trim() || 'United Kingdom',
+      });
       this.careerId = 'career-' + Date.now().toString(36);
       this.saves.save(this.careerId, this.career.state);
       this.showCareerHub();
@@ -885,13 +927,14 @@ class Game {
     this.setScreen('career-hub');
     const s = career.state;
     const team = getTeam(s.teamId);
-    const standings = career.sortedStandings();
-    const mine = standings.find((e) => e.driverId === 'PLAYER');
-    const champPos = Math.max(1, standings.findIndex((e) => e.driverId === 'PLAYER') + 1);
-    const round = Math.min(s.round + 1, career.calendar.length);
+    const ts = s.season.tiers[s.tier];
+    const standings = sortedStandings(ts);
+    const mine = standings.find((e) => e.driverId === s.playerDriverId);
+    const champPos = Math.max(1, career.championshipPosition);
+    const round = Math.min(career.round + 1, career.calendar.length);
 
     const { body, actions } = this.page({
-      tab: TIER_INFO[s.tier].name + ' · ' + s.seasonYear,
+      tab: TIER_CAR[s.tier].shortName + ' · ' + s.season.year,
       where: 'Career',
       title: s.player.firstName + ' ' + s.player.lastName,
       sub: team.name + ' · ' + s.player.nationality,
@@ -903,9 +946,9 @@ class Game {
       // The season, in three parts: rounds done, the round in hand, the rest.
       rule: {
         parts: [
-          Math.max(0, s.round),
+          Math.max(0, career.round),
           1,
-          Math.max(0, career.calendar.length - s.round - 1),
+          Math.max(0, career.calendar.length - career.round - 1),
         ],
         at: 1,
       },
@@ -925,8 +968,13 @@ class Game {
     plate.innerHTML =
       '<span class="nameplate-rank">' + s.player.raceNumber + '</span>' +
       '<span class="nameplate-name">' + escapeHtml(team.name) + '</span>';
+    // In Formula 1 the engine is a supply deal worth naming. In the junior
+    // formulae it is spec, so `team.engine` is already the championship's name
+    // and printing both gave "Formula 3 · Formula 3 · your car".
     this.el('div', 'garagebay-line', bayInfo,
-      team.engine + ' · ' + TIER_INFO[s.tier].name + ' · your car');
+      s.tier === 'F1'
+        ? team.engine + ' · ' + TIER_CAR[s.tier].shortName + ' · your car'
+        : TIER_CAR[s.tier].shortName + ' · spec chassis · your car');
 
     this.mountStage('panel', {
       colour: team.colour,
@@ -938,7 +986,7 @@ class Game {
     // --- Driver and team state -------------------------------------------
     const seasonHead = this.el('div', 'section-title', body, 'Season so far');
     this.el('span', 'section-count', seasonHead,
-      s.round + ' of ' + career.calendar.length + ' run');
+      career.round + ' of ' + career.calendar.length + ' run');
     const statGrid = this.el('div', 'stat-grid', body);
     let statIndex = 0;
     const stat = (
@@ -970,32 +1018,48 @@ class Game {
     stat('Championship', 'P' + champPos,
       (mine?.points ?? 0) + ' pts · ' + (mine?.wins ?? 0) + ' wins',
       leading ? { hero: true } : { hero: true, band: champPos <= 3 ? 'good' : 'plain' });
-    stat('Reputation', String(Math.round(s.reputation)), 'F1 seats open above 60',
-      { meter: s.reputation, band: band(s.reputation) });
-    stat('Team morale', String(Math.round(s.teamMorale)), 'how the garage feels',
-      { meter: s.teamMorale, band: band(s.teamMorale) });
+    const n = s.narrative;
+    // Promotion is the only figure that matters in a junior season, so it is
+    // stated as a fact rather than left to be inferred from a table.
+    if (s.tier !== 'F1') {
+      const up = champPos <= 2;
+      stat('Promotion', up ? 'IN' : 'OUT',
+        up ? 'top two go up at the end of the season'
+          : 'P' + champPos + ' — the top two go up',
+        { band: up ? 'good' : 'warn' });
+    }
+    stat('Reputation', String(Math.round(n.reputation)), 'better seats open above 60',
+      { meter: n.reputation, band: band(n.reputation) });
+    stat('Fans', String(Math.round(n.fanRating)), 'what the sport thinks of you',
+      { meter: n.fanRating, band: band(n.fanRating) });
     // Pressure is the one figure where high is bad, so its band is inverted
-    // and a high number goes red rather than green.
-    stat('Pressure', String(Math.round(s.pressureLevel)), 'high is worse',
-      { meter: s.pressureLevel, band: band(s.pressureLevel, true) });
+    // and a high number goes red rather than green. It is not decoration: it is
+    // subtracted from consistency in the car the physics actually builds.
+    stat('Pressure', String(Math.round(n.pressure)), 'costs you consistency',
+      { meter: n.pressure, band: band(n.pressure, true) });
     stat('Pace', (s.player.skill * 100).toFixed(0),
       'consistency ' + (s.player.consistency * 100).toFixed(0),
       { meter: s.player.skill * 100, band: band(s.player.skill * 100) });
-    stat('Budget', '£' + (s.money / 1000).toFixed(0) + 'k',
-      s.contractYears + (s.contractYears === 1 ? ' year on the contract' : ' years on the contract'));
+    stat('Contract', s.contractYears + (s.contractYears === 1 ? ' year' : ' years'),
+      s.seasonsInTier + ' ' + (s.seasonsInTier === 1 ? 'season' : 'seasons') +
+      ' in ' + TIER_CAR[s.tier].shortName);
 
     // --- Form -------------------------------------------------------------
     // The rounds already run, as a timesheet. This is the most characteristic
     // data the career holds and it was previously thrown away — the hub knew
     // every finishing position of the season and printed none of them.
-    if (s.results.length > 0) {
+    if (ts.results.length > 0) {
       const formHead = this.el('div', 'section-title', body, 'Form');
-      this.el('span', 'section-count', formHead, s.results.length + ' rounds');
+      this.el('span', 'section-count', formHead, ts.results.length + ' rounds');
       const b = this.board(body, ['Rnd', 'Circuit', 'Finish', 'Points', '']);
       b.classList.add('tboard-form');
-      for (const [i, r] of s.results.entries()) {
+      const pointsTable = TIER_CAR[s.tier].points;
+      for (const [i, r] of ts.results.entries()) {
         const def = getCircuit(r.circuitId);
-        const p = r.playerPosition;
+        const idx = r.order.indexOf(s.playerDriverId);
+        const p = idx + 1;
+        const dnf = r.retired.includes(s.playerDriverId);
+        const pts = !dnf && idx >= 0 && idx < pointsTable.length ? pointsTable[idx] : 0;
         this.trow(b, {
           pos: String(r.round + 1),
           colour: hexColour(team.colour),
@@ -1003,26 +1067,34 @@ class Game {
           name: def.name,
           index: i,
           figs: [
-            { text: 'P' + p, cls: p === 1 ? 'best' : p <= 3 ? 'gain' : p <= 10 ? '' : 'dim' },
-            { text: String(r.playerPoints), cls: r.playerPoints > 0 ? '' : 'none' },
+            {
+              text: dnf ? 'DNF' : 'P' + p,
+              cls: dnf ? 'bad' : p === 1 ? 'best' : p <= 3 ? 'gain' : p <= 10 ? '' : 'dim',
+            },
+            { text: String(pts), cls: pts > 0 ? '' : 'none' },
           ],
-          tag: r.fastestLapDriverId === 'PLAYER'
+          tag: r.fastestLapDriverId === s.playerDriverId
             ? { text: 'FL', cls: 'best' }
             : r.wetRace ? { text: 'Wet', cls: 'warn' } : undefined,
-          state: p === 1 ? 'best' : undefined,
+          state: !dnf && p === 1 ? 'best' : undefined,
         });
       }
     }
 
-    if (s.titles.length > 0) {
+    // Honours: every championship the player has won, across every tier. Read
+    // from the career's own history rather than from a separate titles list, so
+    // it cannot disagree with what actually happened.
+    const titles = s.history.filter(
+      (h) => h.playerTier && h.championByTier[h.playerTier] === s.playerDriverId);
+    if (titles.length > 0) {
       this.el('div', 'section-title', body, 'Honours');
       const t = this.el('div', 'stat-grid', body);
-      for (const title of s.titles) {
+      for (const title of titles) {
         const c = this.el('div', 'stat hero', t);
         this.el('div', 'stat-label', c, String(title.year));
-        this.el('div', 'stat-value', c, TIER_INFO[title.tier].name);
-        this.el('div', 'stat-meta', c,
-          title.type === 'drivers' ? "Drivers' Champion" : "Constructors' Champion");
+        this.el('div', 'stat-value', c,
+          TIER_CAR[title.playerTier as keyof typeof TIER_CAR].shortName);
+        this.el('div', 'stat-meta', c, "Drivers' Champion");
       }
     }
 
@@ -1036,10 +1108,10 @@ class Game {
       this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
       this.spacer(actions);
       this.button('End Season', actions, () => {
+        const before = career.tier;
         const outcome = career.endSeason();
         this.saves.save(this.careerId, career.state);
-        alert(outcome.summary);
-        this.showCareerHub();
+        this.showOffSeason(before, outcome);
       }, 'btn primary');
       return;
     }
@@ -1075,8 +1147,8 @@ class Game {
     }, 'btn ghost');
     this.button('Simulate Race', actions, () => {
       const wet = Math.random() < circuit.rainChance;
-      const result = career.simulateRace(circuit.id, wet);
-      career.recordResult(result);
+      const result = career.simulatePlayerRound({ wet });
+      career.recordPlayerRound(result);
       this.saves.save(this.careerId, career.state);
       this.afterRace(result);
     }, 'btn ghost');
@@ -1089,20 +1161,21 @@ class Game {
     if (!career) { this.showMenu(); return; }
     this.setScreen('standings');
 
-    const rows = career.sortedStandings();
-    const leader = rows[0];
     const s = career.state;
+    const rows = sortedStandings(s.season.tiers[s.tier]);
+    const leader = rows[0];
+    const done = career.round;
     const { body } = this.page({
-      tab: TIER_INFO[s.tier].name,
+      tab: TIER_CAR[s.tier].shortName,
       where: 'Championship',
       title: 'Championship',
-      sub: s.seasonYear + ' · ' + (s.round === 0
+      sub: s.season.year + ' · ' + (done === 0
         ? 'before the first round'
-        : 'after ' + s.round + (s.round === 1 ? ' round' : ' rounds')),
+        : 'after ' + done + (done === 1 ? ' round' : ' rounds')),
       back: () => this.showCareerHub(),
-      meta: leader ? [['Leader', career.displayName(leader)]] : [],
+      meta: leader ? [['Leader', career.displayName(leader.driverId)]] : [],
       rule: {
-        parts: [Math.max(0, s.round), 1, Math.max(0, career.calendar.length - s.round - 1)],
+        parts: [Math.max(0, done), 1, Math.max(0, career.calendar.length - done - 1)],
         at: 1,
       },
     });
@@ -1114,15 +1187,15 @@ class Game {
     b.classList.add('tboard-champ');
     for (const [i, e] of rows.entries()) {
       const team = e.teamId ? getTeam(e.teamId) : null;
-      const me = e.driverId === 'PLAYER';
+      const me = e.driverId === s.playerDriverId;
       const gap = topPoints - e.points;
-      const name = splitName(career.displayName(e));
+      const name = splitName(career.displayName(e.driverId));
       this.trow(b, {
         pos: String(i + 1),
         colour: team ? hexColour(team.colour) : undefined,
         team: team ?? undefined,
-        code: career.displayCode(e),
-        name: career.displayName(e),
+        code: career.displayCode(e.driverId),
+        name: career.displayName(e.driverId),
         first: name.first,
         last: name.last,
         note: team ? team.name : undefined,
@@ -2069,7 +2142,7 @@ class Game {
       '<span class="nameplate-rank">' + (bNumber ?? '') + '</span>' +
       '<span class="nameplate-name">' + escapeHtml(bTeam.name) + '</span>';
     this.el('div', 'garagebay-line', bayInfo,
-      config.name + ' · ' + circuit.name + ' · ' + TIER_INFO[this.career?.state.tier ?? 'F1'].name);
+      config.name + ' · ' + circuit.name + ' · ' + TIER_CAR[this.career?.tier ?? 'F1'].shortName);
     this.mountStage('panel', {
       colour: bTeam.colour,
       accent: bTeam.accent,
@@ -2249,9 +2322,12 @@ class Game {
     // driver record, so the sim races the career driver rather than a stand-in.
     let field: Driver[] | undefined;
     if (this.career) {
-      const player = this.career.playerAsDriver();
-      const rivals = this.career.fieldForTier().filter((d) => d.teamId !== player.teamId).slice(0, 19);
-      field = [player, ...rivals];
+      // The whole championship's grid, in team order, with the player's own
+      // record in their seat. Team order matters: the pit geometry lays two
+      // boxes in front of each garage and builds the paddock from the same
+      // anchor, so a grid ordered any other way puts cars in front of somebody
+      // else's garage.
+      field = this.career.grid();
     }
 
     // A race that follows qualifying lines up in the order qualifying
@@ -2451,19 +2527,21 @@ class Game {
 
     const engine = session.engine;
     const fl = engine.fastestLap();
-    const playerId = this.playerDriverId();
-    const idOf = (d: string) => (d === playerId ? 'PLAYER' : d);
-    const result: SeasonResult = {
-      round: career.state.round,
+    const result: RoundResult = {
+      round: career.round,
       circuitId,
       order,
-      playerPosition: Math.max(1, order.indexOf('PLAYER') + 1),
-      playerPoints: 0,
-      poleDriverId: order[0] ?? 'PLAYER',
-      fastestLapDriverId: fl ? idOf(fl.car.driver.id) : 'PLAYER',
+      // Retirement and exclusion are separate outcomes under the 2026 rules and
+      // the engine models both, so the championship is told about both. A
+      // disqualified driver scores nothing but has not had a DNF.
+      retired: engine.cars.filter((c) => c.retired && !c.disqualified).map((c) => c.driver.id),
+      disqualified: engine.cars.filter((c) => c.disqualified).map((c) => c.driver.id),
+      poleDriverId: order[0] ?? career.state.playerDriverId,
+      fastestLapDriverId: fl ? fl.car.driver.id : (order[0] ?? ''),
       wetRace: engine.weather.hasRained,
+      driven: false,
     };
-    career.recordResult(result);
+    career.recordPlayerRound(result);
     this.saves.save(this.careerId, career.state);
     this.showSkipResult(circuitId, 'Grand Prix',
       { order, bestLaps: session.result().bestLaps, simSeconds: engine.time, wallMs: session.result().wallMs },
@@ -3035,19 +3113,27 @@ class Game {
 
     // A race result feeds the career; practice and qualifying do not.
     if (config.kind === 'race' && this.career && player) {
-      const order = engine.standings.map((c) => (c.isPlayer ? 'PLAYER' : c.driver.id));
+      // The player's own driver id is whatever the career gave them, and the
+      // engine already races them under it — so no translation is needed, and
+      // the previous version's 'PLAYER' remapping was a source of drift between
+      // the driven path and the simulated one.
+      const order = engine.standings.map((c) => c.driver.id);
       const fl = engine.fastestLap();
-      const result: SeasonResult = {
-        round: this.career.state.round,
+      const result: RoundResult = {
+        round: this.career.round,
         circuitId: engine.track.def.id,
         order,
-        playerPosition: player.position,
-        playerPoints: 0,
-        poleDriverId: order[0] ?? 'PLAYER',
-        fastestLapDriverId: fl ? (fl.car.isPlayer ? 'PLAYER' : fl.car.driver.id) : 'PLAYER',
+        // Retirement and exclusion are separate outcomes under the 2026 rules
+        // and the engine models both, so the championship is told about both. A
+        // disqualified driver scores nothing but has not had a DNF.
+        retired: engine.cars.filter((c) => c.retired && !c.disqualified).map((c) => c.driver.id),
+        disqualified: engine.cars.filter((c) => c.disqualified).map((c) => c.driver.id),
+        poleDriverId: this.qualifyingGrid[0] ?? order[0] ?? '',
+        fastestLapDriverId: fl ? fl.car.driver.id : (order[0] ?? ''),
         wetRace: engine.weather.hasRained,
+        driven: true,
       };
-      this.career.recordResult(result);
+      this.career.recordPlayerRound(result);
       this.saves.save(this.careerId, this.career.state);
       this.showResults(() => this.afterRace(result));
       return;
@@ -3301,15 +3387,192 @@ class Game {
     }, 'btn primary');
   }
 
+  /**
+   * The winter, as a sequence of beats rather than an alert box.
+   *
+   * This is the payoff for running three championships instead of one. The
+   * player does not just find out whether THEY were promoted — they find out who
+   * won Formula 3, which two drivers came up behind them, who retired, and who
+   * moved where. None of it is invented for the screen: every line is read from
+   * the report the off-season actually produced.
+   */
+  private showOffSeason(
+    fromTier: string,
+    outcome: { report: OffSeasonReport; summary: SeasonSummary; promoted: boolean },
+  ): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('career-hub');
+
+    const { report, summary, promoted } = outcome;
+    const wonTitle = summary.playerTier
+      && report.champions.find((c) => c.tier === summary.playerTier)?.driverId
+        === career.state.playerDriverId;
+
+    const { body, actions } = this.page({
+      tab: summary.year + ' season',
+      where: 'Off-season',
+      title: wonTitle ? 'Champion' : promoted ? 'Promoted' : 'Season over',
+      sub: 'P' + summary.playerPosition + ' in ' +
+        TIER_CAR[fromTier as keyof typeof TIER_CAR].shortName +
+        ' · ' + summary.playerPoints + ' points',
+      back: () => this.showCareerHub(),
+    });
+
+    // The player's own outcome, stated first and plainly.
+    const lead = this.el('div', 'notice', body);
+    lead.textContent = promoted
+      ? 'Top two. You move up to ' + TIER_CAR[career.tier].shortName + ' with ' +
+        career.teamNameOf(career.state.teamId) + ' next season.'
+      : career.state.endedReason
+        ? career.state.endedReason
+        : 'The top two moved up. You did not, so you stay in ' +
+          TIER_CAR[career.tier].shortName + ' for another year.';
+
+    // Champions, all three tiers.
+    this.el('div', 'section-title', body, 'Champions');
+    const champs = this.el('div', 'stat-grid', body);
+    for (const c of report.champions) {
+      const card = this.el('div', 'stat hero', champs);
+      this.el('div', 'stat-label', card, TIER_CAR[c.tier].shortName);
+      this.el('div', 'stat-value', card, career.displayName(c.driverId));
+      this.el('div', 'stat-meta', card, career.teamNameOf(c.teamId));
+    }
+
+    // Who came up, and from where.
+    const moves = report.promotions.filter((p) => p.to !== p.from);
+    if (moves.length > 0) {
+      const head = this.el('div', 'section-title', body, 'Promoted');
+      this.el('span', 'section-count', head, moves.length + ' drivers');
+      const b = this.board(body, ['', 'Driver', 'From', 'To', '']);
+      b.classList.add('tboard-form');
+      for (const [i, p] of moves.entries()) {
+        const mine = p.driverId === career.state.playerDriverId;
+        this.trow(b, {
+          pos: String(p.championshipPosition),
+          colour: hexColour(getTeam(p.toTeamId).colour),
+          code: TIER_CAR[p.to].shortName.replace('Formula ', 'F'),
+          name: career.displayName(p.driverId),
+          index: i,
+          figs: [
+            { text: TIER_CAR[p.from].shortName.replace('Formula ', 'F'), cls: 'dim' },
+            { text: career.teamNameOf(p.toTeamId), cls: '' },
+          ],
+          state: mine ? 'me' : undefined,
+        });
+      }
+    }
+
+    if (report.departures.length > 0) {
+      const head = this.el('div', 'section-title', body, 'Left the sport');
+      this.el('span', 'section-count', head, report.departures.length + ' drivers');
+      const list = this.el('div', 'notice', body);
+      list.textContent = report.departures
+        .map((d) => career.displayName(d.driverId) +
+          (d.reason === 'retired' ? ' (retired)' : ' (dropped)'))
+        .join(' · ');
+    }
+
+    if (report.signings.length > 0) {
+      const head = this.el('div', 'section-title', body, 'Silly season');
+      this.el('span', 'section-count', head, report.signings.length + ' moves');
+      const b = this.board(body, ['', 'Driver', 'From', 'To', '']);
+      b.classList.add('tboard-form');
+      for (const [i, sg] of report.signings.slice(0, 12).entries()) {
+        this.trow(b, {
+          pos: '',
+          colour: hexColour(getTeam(sg.teamId).colour),
+          code: TIER_CAR[sg.tier].shortName.replace('Formula ', 'F'),
+          name: career.displayName(sg.driverId),
+          index: i,
+          figs: [
+            { text: career.teamNameOf(sg.previousTeamId), cls: 'dim' },
+            { text: career.teamNameOf(sg.teamId), cls: '' },
+          ],
+        });
+      }
+    }
+
+    this.spacer(actions);
+    if (career.state.endedReason) {
+      this.button('Career over', actions, () => this.showCareerOver(), 'btn primary');
+    } else {
+      this.button('Start ' + career.state.season.year, actions,
+        () => this.showCareerHub(), 'btn primary');
+    }
+  }
+
+  /** The end of the road. Stated once, honestly, with the career's own numbers. */
+  private showCareerOver(): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('career-hub');
+
+    const s = career.state;
+    const wins = s.history.filter(
+      (h) => h.playerTier && h.championByTier[h.playerTier] === s.playerDriverId).length;
+
+    const { body, actions } = this.page({
+      tab: 'Career',
+      where: 'Career',
+      title: s.player.firstName + ' ' + s.player.lastName,
+      sub: s.history.length + ' seasons · ' + wins +
+        (wins === 1 ? ' championship' : ' championships'),
+      back: () => this.showMenu(),
+    });
+
+    this.el('div', 'notice', body, s.endedReason ?? 'The career has ended.');
+
+    if (s.history.length > 0) {
+      this.el('div', 'section-title', body, 'Every season');
+      const b = this.board(body, ['Year', 'Championship', 'Finish', 'Points', '']);
+      b.classList.add('tboard-form');
+      for (const [i, h] of s.history.entries()) {
+        const tier = h.playerTier ? TIER_CAR[h.playerTier].shortName : '—';
+        const champ = h.playerTier && h.championByTier[h.playerTier] === s.playerDriverId;
+        this.trow(b, {
+          pos: String(h.year),
+          colour: hexColour(getTeam(h.playerTeamId).colour),
+          code: tier.replace('Formula ', 'F'),
+          name: career.teamNameOf(h.playerTeamId),
+          index: i,
+          figs: [
+            {
+              text: 'P' + h.playerPosition,
+              cls: h.playerPosition === 1 ? 'best' : h.playerPosition <= 3 ? 'gain' : 'dim',
+            },
+            { text: String(h.playerPoints), cls: h.playerPoints > 0 ? '' : 'none' },
+          ],
+          tag: champ ? { text: 'WDC', cls: 'best' } : undefined,
+          state: champ ? 'best' : undefined,
+        });
+      }
+    }
+
+    this.spacer(actions);
+    this.button('New career', actions, () => this.showCareerCreate(), 'btn primary');
+  }
+
   /** After a race, offer a narrative event if one is eligible. */
-  private afterRace(result: SeasonResult): void {
+  private afterRace(result: RoundResult): void {
     const career = this.career;
     if (!career) { this.showMenu(); return; }
 
+    if (career.state.endedReason) { this.showCareerOver(); return; }
+
+    const me = career.state.playerDriverId;
+    const myIndex = result.order.indexOf(me);
+    // Whether the teammate finished ahead is a real condition several events
+    // read, and it used to be hard-coded false — so every event that asked
+    // about the teammate was unreachable.
+    const mateId = career.grid().find(
+      (d) => d.teamId === career.state.teamId && d.id !== me)?.id;
+    const mateIndex = mateId ? result.order.indexOf(mateId) : -1;
+
     const ev = career.drawEvent({
-      lastFinishPosition: result.playerPosition,
+      lastFinishPosition: myIndex >= 0 ? myIndex + 1 : undefined,
       wetRace: result.wetRace,
-      teammateAhead: false,
+      teammateAhead: mateIndex >= 0 && myIndex >= 0 && mateIndex < myIndex,
     });
 
     if (ev) {
@@ -3325,7 +3588,7 @@ class Game {
 
     this.setScreen('event');
     const { body } = this.page({
-      tab: 'Paddock · ' + career.state.seasonYear,
+      tab: 'Paddock · ' + career.state.season.year,
       where: 'Team radio',
       title: ev.title,
     });
@@ -3533,9 +3796,37 @@ function hexColour(colour: number): string {
   return '#' + colour.toString(16).padStart(6, '0');
 }
 
-/** A save slot records its tier as a plain string; this narrows it back. */
-function tierInfo(tier: string): (typeof TIER_INFO)[keyof typeof TIER_INFO] {
-  return TIER_INFO[tier as keyof typeof TIER_INFO] ?? TIER_INFO.F3;
+/**
+ * A save slot records its tier as a plain string; this names it.
+ *
+ * Tolerant of anything, because the slot index is written by whatever build made
+ * the save and the menu must not throw over a tier it has never heard of.
+ */
+function tierLabel(tier: string): string {
+  return TIER_CAR[tier as keyof typeof TIER_CAR]?.shortName ?? tier;
+}
+
+/**
+ * Why a career would not load, in words worth showing somebody.
+ *
+ * The distinction is the point. "This save is from a newer version of the game"
+ * asks the player to update; "this file is not a career" asks them to check what
+ * they imported. Collapsing both into "that save could not be loaded" — which is
+ * what this used to say, because `load` returned a bare null — leaves the one
+ * person whose career is entirely fine with no idea that it is.
+ */
+function loadFailureMessage(r: { reason: string; version?: number }): string {
+  switch (r.reason) {
+    case 'from-the-future':
+      return 'This career was saved by a newer version of the game (save format ' +
+        r.version + '). Update to open it — it has not been damaged.';
+    case 'unparseable':
+      return 'That save file is damaged and could not be read.';
+    case 'not-a-career':
+      return 'That file is not a career save.';
+    default:
+      return 'That save could not be found.';
+  }
 }
 
 function escapeHtml(s: string): string {

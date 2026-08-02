@@ -1,4 +1,5 @@
-import type { CareerState } from './CareerEngine';
+import type { CareerState } from './CareerState';
+import { decode, encode, type LoadResult } from './SaveCodec';
 import {
   DEFAULT_AI_DIFFICULTY, toDifficultyId, type AIDifficultyId,
 } from '../ai/AIVehicleController';
@@ -28,7 +29,11 @@ import { DEFAULT_WEEKEND_OPTIONS, type WeekendOptions } from '../race/WeekendFor
 const STORAGE_PREFIX = 'f1sim.career.';
 const INDEX_KEY = 'f1sim.saves';
 const SETTINGS_KEY = 'f1sim.settings';
-export const CURRENT_SAVE_VERSION = 1;
+/**
+ * Re-exported so callers do not need to know that versioning lives in the codec.
+ * See `src/career/SaveCodec.ts` for what a version actually means here.
+ */
+export { SAVE_VERSION as CURRENT_SAVE_VERSION } from './CareerState';
 
 export interface SaveSlotInfo {
   id: string;
@@ -172,15 +177,14 @@ export class SaveManager {
 
   /** Writes a career and updates the index. Returns false if only in memory. */
   save(id: string, state: CareerState): boolean {
-    state.saveVersion = CURRENT_SAVE_VERSION;
-    const ok = writeRaw(STORAGE_PREFIX + id, JSON.stringify(state));
+    const ok = writeRaw(STORAGE_PREFIX + id, encode(state));
 
     const info: SaveSlotInfo = {
       id,
       driverName: state.player.firstName + ' ' + state.player.lastName,
       tier: state.tier,
-      seasonYear: state.seasonYear,
-      round: state.round,
+      seasonYear: state.season?.year ?? 0,
+      round: state.season?.tiers?.[state.tier]?.round ?? 0,
       savedAt: new Date().toISOString(),
     };
 
@@ -192,33 +196,21 @@ export class SaveManager {
   }
 
   /**
-   * Loads a career.
-   * Returns null when the slot is missing, unparseable, or from a future version.
+   * Loads a career, with the reason attached when it cannot be loaded.
+   *
+   * The reason matters. "This save was written by a newer build" and "this file
+   * is not a save at all" want completely different things said to the player,
+   * and the previous version of this returned `null` for both — so the only
+   * message the game could show was the unhelpful one.
    */
+  loadResult(id: string): LoadResult {
+    return decode(readRaw(STORAGE_PREFIX + id));
+  }
+
+  /** Loads a career, or null. The convenience form, for callers with nothing to say. */
   load(id: string): CareerState | null {
-    const raw = readRaw(STORAGE_PREFIX + id);
-    if (!raw) return null;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-
-    if (!isCareerStateShape(parsed)) return null;
-    const state = parsed as CareerState;
-
-    if (state.saveVersion > CURRENT_SAVE_VERSION) {
-      // A save from a newer build. Refusing is correct: loading it would
-      // silently drop fields this build does not know about.
-      return null;
-    }
-    if (state.saveVersion < CURRENT_SAVE_VERSION) {
-      migrate(state);
-    }
-
-    return state;
+    const r = this.loadResult(id);
+    return r.ok ? r.state : null;
   }
 
   deleteSave(id: string): void {
@@ -271,60 +263,12 @@ export class SaveManager {
 
   /** Exports a career as a downloadable JSON string. */
   exportSave(state: CareerState): string {
-    return JSON.stringify(state, null, 2);
+    return JSON.stringify(JSON.parse(encode(state)), null, 2);
   }
 
-  /** Imports a career from JSON text. Returns null if it is not valid. */
+  /** Imports a career from JSON text. */
   importSave(text: string): CareerState | null {
-    try {
-      const parsed = JSON.parse(text);
-      if (!isCareerStateShape(parsed)) return null;
-      const state = parsed as CareerState;
-      if (state.saveVersion > CURRENT_SAVE_VERSION) return null;
-      if (state.saveVersion < CURRENT_SAVE_VERSION) migrate(state);
-      return state;
-    } catch {
-      return null;
-    }
+    const r = decode(text);
+    return r.ok ? r.state : null;
   }
-}
-
-/**
- * Structural check on a parsed save.
- *
- * Deliberately checks the fields the game will immediately dereference rather than
- * validating everything: the goal is to reject a corrupt or foreign file before it
- * causes a crash deep in the UI, not to be a schema validator.
- */
-function isCareerStateShape(v: unknown): boolean {
-  if (typeof v !== 'object' || v === null) return false;
-  const o = v as Record<string, unknown>;
-  if (typeof o.saveVersion !== 'number') return false;
-  if (typeof o.tier !== 'string') return false;
-  if (typeof o.teamId !== 'string') return false;
-  if (typeof o.round !== 'number') return false;
-  if (typeof o.player !== 'object' || o.player === null) return false;
-  const p = o.player as Record<string, unknown>;
-  if (typeof p.firstName !== 'string' || typeof p.skill !== 'number') return false;
-  if (!Array.isArray(o.standings)) return false;
-  return true;
-}
-
-/**
- * Brings an older save up to the current version.
- * Each step is written to be idempotent so a very old save can walk forward.
- */
-function migrate(state: CareerState): void {
-  // No migrations yet — version 1 is the first shipped format. The hook exists so
-  // that when the shape changes, old careers survive rather than being discarded.
-  state.saveVersion = CURRENT_SAVE_VERSION;
-
-  // Defensive backfills for fields that could be missing in a hand-edited save.
-  state.flags ??= {};
-  state.staff ??= [];
-  state.rivalries ??= [];
-  state.titles ??= [];
-  state.firedEvents ??= [];
-  state.results ??= [];
-  state.constructorPoints ??= {};
 }
