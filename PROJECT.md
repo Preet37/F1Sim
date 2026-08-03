@@ -187,6 +187,7 @@ Run `npm run` to list. The important ones:
 |---|---|
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
 | `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
+| `probe:grain` | **High-frequency energy ON THE ROAD, by depth.** Mean absolute Laplacian of luma — #29's metric — but masked to the mesh named `ROAD_MESH_NAME` by a second, occlusion-correct render of the same frame, banded over the road's own extent so band 0 is always the most distant asphalt and band 5 the nearest, and shot at the scale the resolution scaler settled on. 11 circuits × day/night × 3 tiers × 2 cameras, and it **asserts**. `GRAIN_VIEWPORT=390x844x2` measures at a phone's pixel count |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
