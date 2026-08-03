@@ -224,7 +224,7 @@ Run `npm run` to list. The important ones:
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
-| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
+| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
 - **`probe:handling` 1** (was 4). The steering-feel work took it to **10 ok / 1 failed** —
@@ -248,6 +248,8 @@ Run `npm run` to list. The important ones:
   failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
   hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
   .hud-notices over mirror[R1] by 26×72px`. Both pre-existing and untouched by that work.
+  **Re-confirmed byte-for-byte on 2026-08-03** by the #13/#38 routing branch, which touches
+  no HUD code: still 2 + 2, same two sentences.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
@@ -258,6 +260,25 @@ Run `npm run` to list. The important ones:
   the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
   cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
   in §7. **This is a probe that got stricter, not a feature that broke.**
+- ~~`shoot:frontend`~~ — **was red on `main` and nobody had recorded it, and the cause was
+  not the front end.** It exited 1 on every run with three identical lines, one per
+  viewport: `console Failed to load resource: the server responded with a status of 404`.
+  The text of a console error is the same for a missing icon as for a missing module, so
+  the report said nothing about which. Measured on 2026-08-03 by listening on `response`
+  and printing every non-2xx URL the front end produces: **exactly one, `404
+  /favicon.ico`.** `index.html` references no icon, `public/` holds only `textures/`, and
+  Chrome asks every document for one. Filtered on the URL — the same exclusion
+  `probe:smoke` has carried since #62 — and any surviving console error now prints its URL.
+  **Same species as `probe:fieldsize` below: a probe going red without anybody noticing.**
+  **NOT YET CONFIRMED GREEN**, and the reason is worth writing down: the confirming re-run
+  died at load average 47–72 on `TimeoutError: Waiting for selector '.mm' failed —
+  20000ms exceeded`, waiting for the main menu after `Start driving`, and it threw before
+  the error summary is printed. **That is a fixed 20-second deadline on a probe driving a
+  software rasteriser — issue #25's defect exactly, in a third harness.** `probe:smoke`
+  and `regress:career` both open that same menu happily on the same tree, so the menu is
+  fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
+  own job with its own measurement, and it is listed here rather than done badly.
+  **Nobody is on this.**
 - `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
   regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
@@ -1246,9 +1267,10 @@ controls (found: [])"* and *"every car that was still running set a time (0 of
   no code at all** — an F3 race was driven in a 1000hp F1 car. Now F2 +13.3%, F3 +19.6%
   against real ~13% and ~19%.
 - The **weekend itself was never saved** — qualify, close the tab, gone.
-- Intro sequence and podium built. **The user has never seen either**: the intro is
-  first-run-only via a flag set on their very first load, and the podium only fires after
-  finishing a career *race*.
+- ~~Intro sequence and podium built. **The user has never seen either**~~ — **routed, and
+  the routes are now held by `probe:smoke`'s required set.** See "Built, correct, and
+  nobody could get to it" below. This entry stood in this file for months as a note; the
+  thing that changed is that it is an assertion.
 
 ### The team radio — one radio, one switch, one voice (issue #21)
 
@@ -1352,6 +1374,78 @@ from WebKit's documented rule and from the same pattern `main.ts` uses to unlock
 `AudioContext`, and run on nothing but Chrome/macOS. If it is wrong, the symptom is a
 silent radio with a working card, which is the default experience anyway. Treat it as
 unverified.
+
+### Built, correct, and nobody could get to it (issues #13, #38, #25)
+
+Three issues, one defect. **Work that exists, is right, and has no route into it** — the
+pattern this file has recorded four separate times (`TIER_INFO.carPace` read by nothing,
+`alongsideLeft/Right` computed and read by nothing, `speakExchange` dead, the intro and the
+podium). What was different this time is that #62's rebuilt `probe:smoke` made it
+*measurable*: it parses the `Screen` union out of `main.ts` itself and enforces a required
+set of routes, so "you cannot get there" is a named failure rather than a note.
+
+| | before | now |
+|---|---|---|
+| Opening titles | first-run only, behind a flag set on the player's very first load | main menu, Settings › This device, and `?intro=1` |
+| Podium | only at the foot of a classification you had to drive a full race to reach | the rostrum after every simulated round, before the paddock; still inline on a driven race's classification |
+| Press conference | **no import, no screen id, no button** — 540 lines whose only executor was `npm run shoot:people` | offered from the rostrum and from a driven career race's classification |
+| Garage | **no import, no screen id, no button** — 236 lines, same | Paddock › Into the garage, with the real `CarStage` standing in the car-shaped hole it was drawn around |
+
+- **Three new screen ids** — `podium`, `presser`, `garage` — because a screen id is what
+  lets the probe name the thing that is missing. Measured, `SMOKE_FREE_S=0` at load average
+  22: **32 of 32 required routes reached** (from 28 of 28) and **19 of 23 declared screen
+  ids** (from 15 of 20). The four not reached are `racing`, `simulating`, `results` and
+  `event` — all of which need a running session or a narrative draw, all of which are other
+  probes' ground, and the probe prints them as such rather than counting them as holes.
+- **The order is the real Sunday.** `Simulate Race` on the career hub used to go from the
+  button straight to a narrative event, which is exactly why a player could run a whole
+  season and never once have the podium screen built. It now goes chequered flag → rostrum
+  → press room → paddock. The press room is **offered rather than imposed** on a driven
+  race, because a mandatory screen between the flag and the paddock every round is a screen
+  players learn to click through without reading.
+- **The press room asks about the race that was just run** — the panel is the top three
+  with the player substituted into third when they finished off the rostrum, and the
+  questions branch on whether they won, placed or did not see the flag. **What it does not
+  do is apply consequences.** `PressAnswer.effects` and `PressConferenceSpec.onAnswer`
+  exist and nothing reads them back; a reputation model behind them is the publicist and
+  the agencies that §7 records as not built. Routing the room is this work. Furnishing it
+  is not, and it is still open.
+- **Proved red by removing one route — and read the caveat.** Deleting the `Into the
+  garage` button from `showPaddock` and leaving everything else in place, the walk reaches
+  the paddock, cannot go on, and prints
+
+  ```
+  MISSING   Garage   [Paddock > Into the garage]
+  ```
+
+  which is the required-set check firing and naming the route. It is emitted on the same
+  branch that pushes `REQUIRED "Garage" is UNREACHABLE: the route [Paddock > Into the
+  garage] broke — a button on it is gone` onto the failure list, so observing it means the
+  failure was recorded. **What was NOT observed is the failure list itself**, because both
+  attempts at the broken run died before the end: the first to `probe:smoke`'s own
+  crash-recovery bug at load average 40 (found by this, and fixed — see the bullet below),
+  the second to a 120-second navigation timeout at load average **116**, which is a
+  statement about the machine and not about the probe. A third attempt was not affordable:
+  the box went to load 134–181 with other agents on it, which is §8's over-parallelising
+  note happening in real time. **The second half of the proof — that the coverage block
+  also reports `screen "garage" is in the required set and the walk never opened it` — is
+  therefore read off the code path rather than off a run, and is flagged here as such
+  rather than being written up as if it had been measured.**
+- **`regress:exit` was reporting a working pause menu as six failures — and the pause menu
+  was never the defect.** Full account under issue #25 in §7.
+- **The same defect was in `probe:smoke`'s own crash recovery, one level up, and it was
+  found by this work rather than reasoned about.** `noteCrash` was one `await boot()`, and
+  `boot()` starts by calling `page.url()` and `page.evaluate` on the tab that has just
+  died — so when the tab was genuinely gone rather than merely reloading, the recovery
+  threw `Attempted to use detached Frame` **from inside the catch block handling the first
+  crash**, and the exception escaped every handler. At load average 40 that killed the
+  break-verification run *after* it had printed its finding and *before* it could print
+  the failure list. The tab is now a factory, so a dead one is replaced by one carrying
+  the same viewport, error collectors, dialog handler and storage seed; and the top-level
+  catch calls `process.exit` rather than only setting `exitCode`, because the vite server
+  and the browser are both created inside `main` and neither is closed on the error path —
+  so a crashed run **hung** instead of failing, and had to be killed by hand. **A harness
+  that turns a result into a stack trace is the shape of bug this whole branch is about.**
 
 ### People (issues #18, #22)
 - **Every team principal was "Pit wall".** `Hud.PRINCIPALS` was a table keyed on the ten
@@ -1496,7 +1590,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Sparks/skid marks/brake lights/DRS flaps, remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
-| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
+| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### `probe:smoke` had never opened the front end it claimed to cover — issue #62
@@ -1722,21 +1816,62 @@ accident, and `probe:qualiretire` stages one.
   machinery to fix it exists — `Game.runOutToTheFlag` — and `runOutProgress`
   already declines to give a race an early exit, so a race would have to be run
   in full. **Nobody is on this.**
-- **`regress:exit` (issue #25) does not reproduce, but the harness is still
-  load-fragile.** Run three times on 2026-08-03: the first died on its warm-up
-  navigation at `page.goto: Timeout 120000ms exceeded` at load average 29,
-  before reaching an assertion; the second and third were **16 of 16 ok**,
-  including every one of the six failures the issue lists. The pause menu
-  (`src/ui/PauseMenu.ts` + `Game.setPaused`) shares no code path with the
-  retirement panel. The issue's `0.0666… → 0.0666…` is one physics step between
-  samples, which is a loaded machine rather than a broken Resume button. Left
-  open against the robustness problem rather than the logic one.
-- **`probe:qualiretire` needs a quiet machine.** It boots a dev server and drives
-  Chrome under swiftshader, where the simulation runs at roughly a tenth of
-  realtime, so the retirement delay alone is 20–40s of wall clock and the whole
-  probe is minutes. At load average 29 the *first* attempt at `regress:exit` on
-  2026-08-03 died on its warm-up navigation at 120s; the second passed all 16.
-  This is the same load sensitivity §8 records, not a flaky assertion.
+- **`regress:exit` (issue #25): the pause menu works. The harness was the bug, it
+  reproduces on demand, and the six failures in the issue are ONE cascade with a
+  stopwatch at the bottom of it. Closed.**
+
+  The previous entry here left #25 open against a robustness problem it could not
+  reproduce — 16 of 16 twice on a quiet box, one death on warm-up navigation at load 29.
+  Five consecutive runs on 2026-08-03 settle it. **The distribution, in order:**
+
+  | run | load average at start | outcome |
+  |---|---|---|
+  | 1 | 6.4 | **16 of 16** |
+  | 2 | 8.9 | **16 of 16** |
+  | 3 | 8.7 | died: `TypeError: Cannot read properties of undefined (reading 'screen')` |
+  | 4 | 10.8 | died: `Execution context was destroyed, most likely because of a navigation` |
+  | 5 | **27.6** | **the issue, verbatim: 6 failures, same wording, same order** |
+
+  **Two independent harness defects, and neither of them is in `src/`.**
+
+  **(a) The dev server was watching the files.** It spawned `npx vite` with the project's
+  ordinary configuration, so HMR was live: runs 3 and 4 died because `src/main.ts` was
+  edited *while they were running*, which full-reloaded the page under the test. They died
+  on an **uncaught exception with no assertion output and exit 1** — indistinguishable, in
+  a log, from a genuine regression. That is the mechanism most likely to have produced the
+  original report. `probe:smoke` has built its server with `hmr: false, watch: null` since
+  #62; this one now does the same, in-process, which also disposes of the free-port dance
+  and the "vite did not start in 60s" timeout.
+
+  **(b) Every wait was a fixed sleep sized for a quiet machine.** The probe drives Chrome
+  under swiftshader, where a frame of this game costs a large fraction of a second, and a
+  keyboard event is consumed on a frame boundary. Run 5 measured **the page painting 1
+  frame per ~1.5s**; the harness waited 3000ms after `Escape` and asserted. So the key had
+  not been through a frame — **not paused → no overlay → no Resume button → the click found
+  nothing → the clock never stopped.** All six failures, from one missed frame. The issue's
+  own `0.0666… → 0.0666…` is the same signature one notch worse: 0.0666s is exactly eight
+  120Hz steps, i.e. **one frame in the whole sample window.**
+
+  **The fix waits for the state it is about to assert on**, up to a deadline derived from
+  the frame period the harness *measures* on the machine it is running on (`40 × frameMs`,
+  floored at 8s, capped at 120s). **Nothing was loosened**: every assertion is the
+  assertion it always was, and a build where Resume genuinely does not work still fails —
+  at the deadline instead of instantly. One check got **stricter**: `paused time really
+  stands still` used to sleep 1500ms and compare two clock readings, which at one frame a
+  second is *less than one frame*, so it would have passed a build that had stopped
+  painting altogether — the exact hang this regression exists to rule out. It now counts
+  the frames the page painted during the window and requires several of them beside a
+  clock that did not move. **17 assertions, up from 16.** The run also prints the frame
+  rate it measured, so a log says what the machine was doing.
+
+  **The pause menu itself was not touched.** `src/ui/PauseMenu.ts` and `Game.setPaused` are
+  unmodified on this branch.
+- **`probe:qualiretire` needs a quiet machine**, and unlike `regress:exit` it has *not*
+  been rebuilt. It boots a dev server and drives Chrome under swiftshader, where the
+  simulation runs at roughly a tenth of realtime, so the retirement delay alone is 20–40s
+  of wall clock and the whole probe is minutes. **It is a `.mjs` of the same lineage as
+  `regress:exit` was, so assume it has the same two defects — a watching dev server and
+  fixed sleeps — until somebody looks.** Same for `regress:career`. **Nobody is on this.**
 - **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
   measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
   previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
@@ -1857,10 +1992,11 @@ measurement passes every version of it that is wrong.
   chamfered boxes rather than plain boxes, and the one `BoxGeometry` in `PitCrew.ts` is
   the light gantry's head, not a person's — so the line **may** already be stale. Nobody
   has measured it. `probe:pitcrew` and the pit-stop work own that question.
-- **`PressConference.ts` and `GarageScene.ts` are unreachable.** ~800 lines imported by
-  `audit/people.ts` and by nothing in `src/`. `src/main.ts` has no screen id, no route and
-  no key for either; the only way any human has seen them is `npm run shoot:people`. This
-  is §6's intro-and-podium failure repeating. **Issue #38.**
+- ~~**`PressConference.ts` and `GarageScene.ts` are unreachable.**~~ **Routed — issue #38,
+  closed.** Both have a screen id, a route and a button; `probe:smoke`'s required set holds
+  them. See §6. **What #38 asked for and did NOT get: consequences.** The press room's
+  `onAnswer` hook and its `effects` lists are display-only — nothing in the career reads an
+  answer back. That is the publicist/agencies layer below, and it is still not built.
 - **The figures are flat-vector illustrated people, not blocky — but the bodies are
   unfinished.** Heads read well and the eleven principals are plainly eleven people
   (`hud-out/people/desktop-principals.png`), and they survive down to 40px on hair colour,

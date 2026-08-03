@@ -21,10 +21,59 @@
  *
  *   npm i -D playwright && npx playwright install chromium
  *   npm run regress:exit
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE WAITS BELOW ARE CONDITIONS RATHER THAN DURATIONS — issue #25
+ * ---------------------------------------------------------------------------
+ *
+ * This file spent months reporting a working pause menu as six failures:
+ *
+ *     the simulation is paused / a pause menu is on screen ... /
+ *     the pause menu offers Resume / the pause menu offers a way out /
+ *     clicking Resume — no such button on the pause menu /
+ *     time is moving again (0.0666... -> 0.0666...)
+ *
+ * All six are ONE cascade and none of them is about pausing. It drives Chrome
+ * under a software rasteriser, where a frame of this game costs a large
+ * fraction of a second, and a keyboard event is consumed on a frame boundary.
+ * Every wait here used to be a fixed sleep sized for a quiet machine, so on a
+ * busy one the `Escape` had not been through a frame yet when the first
+ * assertion ran — not paused, therefore no overlay, therefore no Resume
+ * button, therefore the click failed, therefore the clock never stopped.
+ * Reproduced on demand on 2026-08-03: 16 of 16 at load average 6–9, and
+ * exactly the six failures above at load average 28, on the same commit.
+ *
+ * NOTHING HERE IS LOOSENED. Every assertion is the assertion it always was.
+ * What changed is that the harness now waits for the state it is about to
+ * assert on, up to a generous finite deadline derived from the frame period it
+ * MEASURES on the machine it is running on, instead of guessing at a number of
+ * milliseconds. A build with a broken Resume button still fails, and fails at
+ * the deadline rather than immediately — see `waitUntil`.
+ *
+ * The "paused time really stands still" check got STRICTER in the process. It
+ * used to sleep 1500ms and compare, which on a loaded machine is less than one
+ * frame — so it would have passed a build that had stopped drawing entirely,
+ * which is the exact hang this whole regression exists to rule out. It now
+ * counts the frames the page actually painted during the window and requires
+ * that several happened while the clock did not move.
+ *
+ * ---------------------------------------------------------------------------
+ * AND THE DEV SERVER NO LONGER WATCHES THE FILES
+ * ---------------------------------------------------------------------------
+ *
+ * It used to spawn `npx vite` with the project's ordinary configuration, which
+ * means HMR. An edit to anything under `src/` while the run was in flight
+ * full-reloaded the page and the run died on an UNCAUGHT exception —
+ * `Cannot read properties of undefined (reading 'screen')`, or `Execution
+ * context was destroyed` — with no assertion output and a non-zero exit that
+ * looks exactly like a real failure. Measured twice in five consecutive runs
+ * on 2026-08-03. `probe:smoke` already builds its server with `hmr: false,
+ * watch: null` for this reason; so does this one now, which also disposes of
+ * the free-port dance and the "vite did not start in 60s" timeout.
  */
 
-import { spawn } from 'node:child_process';
 import process from 'node:process';
+import { createServer } from 'vite';
 
 let chromium;
 try {
@@ -35,54 +84,25 @@ try {
   process.exit(0);
 }
 
-// A free port, chosen per run.
+// The dev server, in this process.
 //
-// This used to be a hardcoded 5391 with `--strictPort`, which meant exactly one
-// copy of this regression could run on a machine at a time. With several agents
-// working in parallel worktrees, the second and every subsequent run died at the
-// wait below with `vite did not start in 40s` — a message that says nothing
-// about the real cause and sent two separate investigations chasing machine
-// load instead.
-//
-// Vite does not accept `--port 0`, so the port is taken from the OS here: bind
-// a throwaway server to port 0, read what we were given, release it, and hand
-// that number to vite. There is a theoretical race between releasing and vite
-// binding; in practice nothing else on the machine is grabbing ephemeral ports
-// in that window, and `--strictPort` makes a collision fail loudly rather than
-// silently serving on a port the test is not looking at.
-//
-// `REGRESS_EXIT_PORT` overrides it.
-async function freePort() {
-  const net = await import('node:net');
-  return await new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.on('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
-}
-
-const PORT = Number(process.env.REGRESS_EXIT_PORT || await freePort());
-const server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], {
-  stdio: ['ignore', 'pipe', 'pipe'],
+// `port: 0` lets the OS pick, which is what makes several agents in parallel
+// worktrees able to run this at once — the old hardcoded 5391 with
+// `--strictPort` meant exactly one copy per machine, and every other copy died
+// with a message about vite not starting that sent two separate investigations
+// chasing machine load. Owning the server rather than spawning `npx vite` also
+// removes the port handover race, the "did it print `ready in`" sniffing, and
+// — the one that actually cost runs — the file watcher. See the header.
+const server = await createServer({
+  server: { port: 0, host: '127.0.0.1', hmr: false, watch: null },
+  logLevel: 'warn',
 });
-const shutdown = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } };
+await server.listen();
+const addr = server.httpServer?.address();
+if (!addr || typeof addr === 'string') throw new Error('vite gave no port');
+const PORT = addr.port;
+const shutdown = () => { try { void server.close(); } catch { /* already gone */ } };
 process.on('exit', shutdown);
-
-await new Promise((resolve, reject) => {
-  const timer = setTimeout(
-    () => reject(new Error(`vite did not start in 60s on port ${PORT}`)),
-    60000,
-  );
-  server.stdout.on('data', (b) => {
-    const s = String(b);
-    if (s.includes('ready in') || s.includes(`:${PORT}`)) { clearTimeout(timer); resolve(); }
-  });
-  server.on('error', reject);
-});
-await new Promise((r) => setTimeout(r, 800));
 
 const failures = [];
 const check = (ok, msg) => {
@@ -126,10 +146,22 @@ await page.goto(`http://localhost:${PORT}/?quality=low&circuit=spa&session=race&
   { waitUntil: 'load', timeout: 120_000 });
 await page.waitForTimeout(4500);
 
-const st = () => page.evaluate(() => {
+/**
+ * The state, read from the page, tolerant of the page not being there.
+ *
+ * Two separate things used to throw out of here and take the whole run with
+ * them: `window.__game` being undefined because the document had been replaced
+ * under us, and Playwright's own "Execution context was destroyed". Both are
+ * reported as a snapshot with `alive: false` so an assertion can fail on them
+ * with a sentence, instead of the process dying with a stack trace and an exit
+ * code indistinguishable from a real regression.
+ */
+const readState = () => page.evaluate(() => {
   const g = window.__game;
   const o = document.querySelector('.pause-overlay');
+  if (!g) return { alive: false, screen: '(no game on the page)', buttons: [], simTime: null };
   return {
+    alive: true,
     screen: g.screen,
     paused: g.clock.paused,
     hasEngine: !!g.engine,
@@ -144,26 +176,104 @@ const st = () => page.evaluate(() => {
   };
 });
 
+/** One read, retried, because a lost execution context is not a verdict. */
+const st = async () => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await readState();
+    } catch (e) {
+      if (attempt >= 2) {
+        return {
+          alive: false, screen: `(page unreachable: ${String(e).slice(0, 60)})`,
+          paused: false, hasEngine: false, overlayShown: false,
+          buttons: [], simTime: null,
+        };
+      }
+      await page.waitForTimeout(400);
+    }
+  }
+};
+
+/**
+ * How many frames the page paints in `ms`, and it is the unit everything here
+ * is measured in.
+ *
+ * A key press is consumed on a frame boundary and the simulation advances on
+ * one, so "how long should I wait" has exactly one honest answer on a machine
+ * whose frame period is unknown and swings by an order of magnitude with load:
+ * ask the machine. Under swiftshader on a quiet box this is 15–30 frames a
+ * second; at load average 28 it has been measured at barely one.
+ */
+const framesIn = (ms) => page.evaluate((d) => new Promise((res) => {
+  const t0 = performance.now();
+  let n = 0;
+  const tick = () => {
+    n++;
+    if (performance.now() - t0 >= d) res(n);
+    else requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}), ms).catch(() => 0);
+
+/**
+ * Waits for the state this test is about to assert on, up to a deadline.
+ *
+ * This is the whole of the issue #25 fix and it loosens nothing: the caller
+ * still asserts exactly what it always asserted, on the state as it stands
+ * when this returns. A build where Resume genuinely does not work reaches the
+ * deadline and fails, in `WAIT_MS` rather than instantly; a build that works
+ * on a machine painting one frame a second now passes, which it did not.
+ */
+const waitUntil = async (want, ms) => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const s = await st();
+    if (s.alive && want(s)) return s;
+    if (Date.now() >= deadline) return s;
+    await page.waitForTimeout(200);
+  }
+};
+
 console.log('\nA 44-LAP GRAND PRIX IS UNDER WAY');
-const running = await st();
+const running = await waitUntil((s) => s.screen === 'racing' && s.hasEngine, 60_000);
 check(running.screen === 'racing' && running.hasEngine, 'the session is running');
 check(!running.overlayShown, 'nothing is covering the track while racing');
 
+// THE MACHINE, MEASURED, before anything is asserted about it. Every deadline
+// below is derived from this and every one of them is also floored, so a fast
+// box still gets a sane wait and a crawling one gets the time it needs.
+const framesPerSecond = (await framesIn(2000)) / 2;
+const frameMs = framesPerSecond > 0 ? 1000 / framesPerSecond : 2000;
+console.log(`  the page is painting ${framesPerSecond.toFixed(1)} frames a second `
+  + `(${frameMs.toFixed(0)}ms a frame) under this machine's current load`);
+/** Generous, finite, and a multiple of a frame rather than a guess. */
+const WAIT_MS = Math.min(120_000, Math.max(8_000, frameMs * 40));
+
 console.log('\nPAUSE MUST SHOW ITSELF');
 await page.keyboard.press('Escape');
-// The software rasteriser runs a handful of frames a second, and the key is
-// consumed on a frame boundary.
-await page.waitForTimeout(3000);
-const paused = await st();
+// The key is consumed on a frame boundary, so this waits for the frame rather
+// than for a number of milliseconds somebody picked on a quiet machine.
+const paused = await waitUntil((s) => s.paused && s.overlayShown, WAIT_MS);
 check(paused.paused, 'the simulation is paused');
 check(paused.overlayShown, 'a pause menu is on screen, so the game does not look hung');
 check(paused.buttons.includes('Resume'), 'the pause menu offers Resume');
 check(paused.buttons.some((b) => /abandon|quit|exit/i.test(b)), 'the pause menu offers a way out');
 
+// STANDING STILL IS ONLY MEANINGFUL IF THE PAGE IS STILL DRAWING.
+//
+// This used to sleep 1500ms and compare two clock readings, which at one frame
+// a second is less than one frame — so it would have passed a build that had
+// stopped painting altogether, which is the hang this whole regression exists
+// to rule out. It now counts the frames the page actually painted during the
+// window and requires several of them alongside a clock that did not move.
 const t1 = (await st()).simTime;
-await page.waitForTimeout(1500);
+const stillWindow = Math.max(1500, frameMs * 6);
+const framesWhilePaused = await framesIn(stillWindow);
 const t2 = (await st()).simTime;
 check(t1 === t2, `paused time really stands still (${t1} -> ${t2})`);
+check(framesWhilePaused >= 3,
+  `the paused game is still being drawn (${framesWhilePaused} frames in `
+  + `${Math.round(stillWindow)}ms — a paused game that stops painting is a hang)`);
 
 /** Clicks a pause-menu button, reporting a failure rather than throwing when
  *  the button this whole test is about does not exist. */
@@ -182,21 +292,19 @@ const clickPauseButton = async (pattern, what) => {
 
 console.log('\nRESUME PUTS THE PLAYER BACK ON TRACK');
 await clickPauseButton('^resume$', 'clicking Resume');
-// Long enough for the clock to move on a software rasteriser that is sharing
-// the machine. 1200ms was a handful of frames on a quiet box and none at all on
-// a busy one, which made this assertion fail for reasons that had nothing to do
-// with pausing.
-await page.waitForTimeout(4000);
-const resumed = await st();
+// The clock moving again is the assertion; how long the machine takes to draw
+// the frame that moves it is not. Waits for the clock to pass the reading it
+// was frozen at, and fails at the deadline if it never does.
+const resumed = await waitUntil(
+  (s) => !s.paused && !s.overlayShown && s.simTime > t2, WAIT_MS);
 check(!resumed.paused && !resumed.overlayShown, 'the overlay is gone and the clock is running');
 check(resumed.simTime > t2, `time is moving again (${t2} -> ${resumed.simTime})`);
 
 console.log('\nABANDONING RETURNS TO THE MENUS AND CLEANS UP');
 await page.keyboard.press('Escape');
-await page.waitForTimeout(3000);
+await waitUntil((s) => s.paused && s.overlayShown, WAIT_MS);
 await clickPauseButton('abandon|quit|exit', 'clicking the way out');
-await page.waitForTimeout(2000);
-const quit = await st();
+const quit = await waitUntil((s) => s.screen !== 'racing' && !s.hasEngine, WAIT_MS);
 check(quit.screen !== 'racing', `the player is off the track (screen "${quit.screen}")`);
 check(!quit.hasEngine, 'the session engine has been released');
 check(!quit.overlayShown, 'the pause menu is not stranded over the menus');
@@ -241,8 +349,7 @@ await page.evaluate(() => {
   if (typeof start !== 'function') throw new Error('no launchSession/beginSession on the game');
   start.call(g, 'monza');
 });
-await page.waitForTimeout(4000);
-const again = await st();
+const again = await waitUntil((s) => s.screen === 'racing' && s.hasEngine, WAIT_MS);
 check(again.screen === 'racing' && again.hasEngine, 'a new session starts after abandoning one');
 check(again.simTime !== null && again.simTime < 30, `the new session starts from zero (t=${again.simTime})`);
 
