@@ -73,6 +73,7 @@ function runRace(trackId: string, laps: number, seedBase: number): RaceResult {
     laps,
     playerIndex: -1, // fully simulated: every car is an AI
     standingStart: true,
+    pitLaneStart: false,
     seed,
   };
 

@@ -74,7 +74,7 @@ for (const id of CIRCUITS_UNDER_TEST) {
   for (const seed of SEEDS) {
     const config: SessionConfig = {
       kind: 'race', name: 'attrition', durationS: 0, laps: LAPS,
-      playerIndex: -1, standingStart: true, seed,
+      playerIndex: -1, standingStart: true, pitLaneStart: false, seed,
     };
     const engine = new RaceEngine(def, config);
     const maxSteps = Math.round((LAPS * def.referencePoleTimeS * 3.2) / PHYSICS_DT);
@@ -182,7 +182,8 @@ console.log('\nCOMBINED LOAD — braking INTO a corner');
   };
   const controls = (over: Partial<VehicleControls> = {}): VehicleControls => ({
     throttle: 0, brake: 0, steer: 0, drsRequested: false,
-    ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0, ...over,
+    ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0, reverse: false,
+    ...over,
   });
 
   function turnIn(speedKph: number, radiusM: number, brake: number) {

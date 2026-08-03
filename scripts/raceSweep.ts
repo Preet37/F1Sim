@@ -37,6 +37,7 @@ function runRace(trackId: string, laps: number, seed: number): Row {
     laps,
     playerIndex: -1,
     standingStart: true,
+    pitLaneStart: false,
     seed,
   };
   const engine = new RaceEngine(def, config);
