@@ -58,7 +58,8 @@ console.log('\nATTRITION — 20 AI cars, ' + LAPS + ' laps, no player');
 // ===========================================================================
 console.log(
   '  ' + 'CIRCUIT'.padEnd(14) + 'SURVIVORS'.padStart(10) + 'LAP-1 LOSSES'.padStart(14) +
-  'ACCIDENT'.padStart(10) + 'MECH'.padStart(6) + 'BEACHED'.padStart(9),
+  'ACCIDENT'.padStart(10) + 'MECH'.padStart(6) + 'BEACHED'.padStart(9) +
+  'STOPPED'.padStart(9),
 );
 console.log('  ' + '-'.repeat(63));
 
@@ -125,11 +126,20 @@ for (const id of CIRCUITS_UNDER_TEST) {
   // crashing" — opposite diagnoses with opposite fixes. Measured at Spa: what
   // this reported as 2.0 mechanicals a race is beaching and accident damage,
   // and the genuine mechanical count there is zero.
+  //
+  // 'Stopped on track' is new and gets its OWN column rather than being folded
+  // into either of the others. Folded into MECH it would say the cars keep
+  // breaking; folded into BEACHED it would say they keep ending up in the
+  // gravel; it is neither, and telling them apart is the whole point of the
+  // paragraph above. It is also the column that answers whether the on-track
+  // stationary timeout is retiring cars that would have driven away.
   let accident = 0;
   let beached = 0;
+  let stopped = 0;
   let mech = 0;
   for (const [reason, n] of reasons) {
     if (reason.startsWith('Beached')) beached += n;
+    else if (reason.startsWith('Stopped')) stopped += n;
     else if (reason.startsWith('Accident')) accident += n;
     else mech += n;
   }
@@ -140,7 +150,8 @@ for (const id of CIRCUITS_UNDER_TEST) {
     (lap1Total / SEEDS.length).toFixed(1).padStart(14) +
     (accident / SEEDS.length).toFixed(1).padStart(10) +
     (mech / SEEDS.length).toFixed(1).padStart(6) +
-    (beached / SEEDS.length).toFixed(1).padStart(9),
+    (beached / SEEDS.length).toFixed(1).padStart(9) +
+    (stopped / SEEDS.length).toFixed(1).padStart(9),
   );
 
   if (meanSurvivors < MIN_SURVIVORS) {

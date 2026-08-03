@@ -273,8 +273,52 @@ const DISC_OFFSETS_M = [1.85, 0, -1.85] as const;
 /** Centre-to-centre distance beyond which no discs can possibly overlap. */
 const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
 
-/** Neighbour records kept per car: ahead, behind, left, right, hazard. */
-const NEIGHBOUR_SLOTS = 5;
+/**
+ * Neighbour records kept per car: ahead, behind, left, right, hazard, blockage.
+ */
+const NEIGHBOUR_SLOTS = 6;
+
+/**
+ * Speed below which a car counts as STOPPED rather than slow, m/s.
+ *
+ * 2.5 m/s is 9 km/h. Nothing on a racing circuit travels that slowly on
+ * purpose: the slowest corner on the calendar is Monaco's Grand Hotel hairpin
+ * and a Formula 3 car still takes it at three times this. So a car under it is
+ * not going round, it has stopped — which is the thing the marshals react to.
+ */
+const STRANDED_SPEED_MS = 2.5;
+
+/**
+ * Seconds a car may stand still ON the racing surface before it is retired.
+ *
+ * SHORTER THAN THE GRAVEL TIMEOUT, and deliberately, because the two are
+ * different hazards. A car buried in a gravel trap is out of the way and the
+ * only question is how long the crane takes. A car standing on the racing line
+ * is what Art. B1.8.4b / ISC Appendix H Art. 2.5.5b call a hazard "wholly or
+ * partly blocking the track": the field is arriving at it at racing speed, so
+ * race control does not wait.
+ *
+ * Not zero either. A driver who has spun and stalled gets the few seconds it
+ * takes to try the clutch, and a car nudged to a standstill in a first-lap
+ * concertina gets to drive out of it, before anyone declares the race over for
+ * them. Twelve seconds is long enough that neither of those is retired and
+ * short enough that the field is never queued behind a parked car for more than
+ * a corner's worth of running.
+ */
+const STOPPED_ON_TRACK_RETIRE_S = 12;
+
+/** Seconds a car may stand still off the road before it is retired. */
+const BEACHED_RETIRE_S = 9;
+
+/**
+ * Metres beyond the white line at which a stopped car stops being a blockage
+ * and becomes a car in the run-off.
+ *
+ * The same margin `Recovery` uses to decide whether marshals working on the car
+ * would be standing where the racing cars run, minus the road itself — one
+ * number for one question, as `RECOVERY_TRACKSIDE_M` says.
+ */
+const STRANDED_OFFROAD_M = 2;
 
 /**
  * Deceleration the perception sweep assumes when it RANKS hazards, m/s².
@@ -286,6 +330,33 @@ const NEIGHBOUR_SLOTS = 5;
  * does not smother a genuinely urgent hazard behind a merely close one.
  */
 const HAZARD_REFERENCE_DECEL_MS2 = 22;
+
+/**
+ * Seconds a car must have been stationary before the cars behind treat it as
+ * something on the road rather than as the car in front.
+ *
+ * The discriminator matters more than the number. Speed alone would fire on a
+ * standing grid — twenty cars at rest, each one deciding to swerve round the one
+ * in front on the step the lights go out — and on any car momentarily stopped in
+ * a first-lap concertina. A car that has been at a standstill for a whole second
+ * is not in a queue, it has stopped.
+ */
+const BLOCKAGE_SETTLE_S = 1.0;
+
+/**
+ * Seconds of travel ahead a car looks for a stationary obstacle, and the range
+ * that look is clamped to, metres.
+ *
+ * It has to be a TIME rather than a distance because the thing it buys is the
+ * time to move across the road: the lateral rate is a couple of metres a second
+ * and a pass needs three or four metres of it, so a car doing 80 m/s that first
+ * sees a stopped car sixty metres away has already arrived. The far cap is what
+ * a driver can see and what the marshals' boards would have told them anyway;
+ * beyond it this is not perception, it is clairvoyance.
+ */
+const BLOCKAGE_LOOK_S = 2.5;
+const BLOCKAGE_LOOK_MIN_M = 40;
+const BLOCKAGE_LOOK_MAX_M = 160;
 
 /** What race control calls each kind of solid object a car can hit. */
 const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
@@ -1292,7 +1363,7 @@ export class RaceEngine {
 
       if (crossedLine) this.onCrossLine(car);
       this.checkReliability(car, dt);
-      this.checkBeached(car, dt);
+      this.checkStranded(car, dt);
     }
 
     // 3. Contact resolution between cars.
@@ -1870,6 +1941,21 @@ export class RaceEngine {
     let roomRight = Infinity;
     const ourSpeed = car.physics.speedMs;
 
+    // The nearest car that has STOPPED on the road in front of us.
+    //
+    // A third picture, separate from both the racing one (`ahead`) and the
+    // collision one (`hazard`), because it answers a third question: is there
+    // something here that has to be driven ROUND. `hazard` cannot answer it —
+    // it is filtered to the corridor this car is already driving down, so it
+    // disappears the moment the avoidance starts working and the car steers
+    // straight back into what it was avoiding. This one has no corridor filter
+    // and carries the obstacle's own lateral position, which is the number the
+    // controller needs to pick a side.
+    let blockCar: CarEntry | null = null;
+    let blockGap = Infinity;
+    const blockLook = clamp(
+      ourSpeed * BLOCKAGE_LOOK_S, BLOCKAGE_LOOK_MIN_M, BLOCKAGE_LOOK_MAX_M);
+
     for (const other of this.cars) {
       if (other === car || other.retired) continue;
       // A car taking no part in this period is not on the road to be followed,
@@ -1909,8 +1995,33 @@ export class RaceEngine {
       if (other.inPitLane !== car.inPitLane) continue;
       const gap = loopDelta(car.s, other.s, len);
 
-      if (gap > 0 && gap < bestAhead) { bestAhead = gap; aheadCar = other; }
-      if (gap < 0 && gap > bestBehind) { bestBehind = gap; behindCar = other; }
+      // A car that has STOPPED on the road is excluded from the racing picture
+      // for exactly the reason `sittingOut` is, and the report above is the
+      // same report: everything that reads `ahead` holds station on it, and
+      // holding station on a car that is not moving means stopping.
+      //
+      // Three separate mechanisms were measured doing it. The follow-distance
+      // preference is `ahead.speedMs` times a shade under one, which is zero.
+      // Under a neutralisation the queue-gap rule holds this car off
+      // `queueAheadM`, and `queueAheadM` is built from `ahead` — so a field
+      // slowed down BECAUSE somebody stopped then formed up behind the car
+      // that stopped, at zero, for the rest of the race. And the third is the
+      // one the AI cannot see at all: the car behind holds station on THIS
+      // car, which is now also stationary, all the way back through the field.
+      // Measured at Monza in `probe:blockage`, sixteen of twenty cars queued
+      // up and were retired for stopping on track inside four minutes.
+      //
+      // It stays in the COLLISION picture below, which is what keeps this car
+      // out of the back of it, and it is published as `p.blockage`, which is
+      // what tells the driver to go round. Not being raced is not the same as
+      // not being there.
+      const stoppedOnRoad = other.stuckTimer > BLOCKAGE_SETTLE_S &&
+        Math.abs(other.lateral) < this.track.halfWidthAt(other.s) + 1.0;
+
+      if (!stoppedOnRoad) {
+        if (gap > 0 && gap < bestAhead) { bestAhead = gap; aheadCar = other; }
+        if (gap < 0 && gap > bestBehind) { bestBehind = gap; behindCar = other; }
+      }
 
       // Alongside: within a car length longitudinally and beside us laterally.
       if (Math.abs(gap) < 5.2) {
@@ -1939,6 +2050,15 @@ export class RaceEngine {
         if (safe < hazardScore) { hazardScore = safe; hazardCar = other; hazardGap = gap; }
       }
 
+      // ...and the same car, published as the thing to go ROUND. Restricted to
+      // the racing surface, because a car crawling through the run-off is not
+      // in anybody's way and dragging the field off line for it would be a new
+      // bug of the same shape.
+      if (stoppedOnRoad && gap > 0 && gap < blockGap && gap < blockLook) {
+        blockCar = other;
+        blockGap = gap;
+      }
+
       // Beside us, or close enough that a lateral move would put us beside them.
       if (lateralOverlap(gap, ourSpeed, theirSpeed)) {
         if (dLat > 0) roomLeft = Math.min(roomLeft, dLat - CONTACT_WIDTH_M);
@@ -1956,6 +2076,9 @@ export class RaceEngine {
       : null;
     p.hazard = hazardCar
       ? this.fillNeighbour(this.neighbourPool[base + 4], car, hazardCar, hazardGap)
+      : null;
+    p.blockage = blockCar
+      ? this.fillNeighbour(this.neighbourPool[base + 5], car, blockCar, blockGap)
       : null;
     p.roomLeftM = roomLeft;
     p.roomRightM = roomRight;
@@ -3858,40 +3981,77 @@ export class RaceEngine {
   }
 
   /**
-   * Retires a car that has been stationary off the road for too long.
+   * Retires a car that has stopped and is not going to start again.
    *
-   * Without this a beached car holds a local yellow forever, which keeps the
-   * safety car out, which stops the race ever finishing. Marshals recover a
-   * stranded car; so does this.
+   * WHAT THIS USED TO BE, and why it was the worst defect in the simulation. The
+   * test was `speedMs < 2.5 && Math.abs(lateral) > halfWidth + 2` — the car had
+   * to be OFF the road — and this method was the ONLY thing in the engine that
+   * ever cleared a stationary car. A car stopped ON the road was therefore never
+   * retired, never recovered, and raised no flag naming it. It stood where it
+   * stopped for the rest of the race. Measured by `probe:blockage` with one car
+   * pinned to the racing line ninety seconds into a race: at Monza the rest of
+   * the field completed 14 laps against 42 unblocked and 0 of 16 survivors were
+   * still moving four minutes later; at Monaco 10 against 41, and 0 of 20. The
+   * method's own comment said a car left in place "stops the race ever
+   * finishing" — it was describing the case it did not handle.
+   *
+   * The regulations do not have two categories here. They have one hazard in two
+   * places, and where it is decides how urgent it is:
+   *
+   *   ON THE RACING SURFACE the car is "wholly or partly blocking the track"
+   *   (ISC Appendix H Art. 2.5.5b; 2025 Art. 26.1b / 2026 Art. B1.8.4b). The
+   *   field is arriving at it at racing speed, so it is double waved yellows,
+   *   the race is neutralised to get somebody to it (Art. 56.1a / B5.12,
+   *   Art. 55.3 / B5.13.1) and the driver takes no further part. Race control
+   *   does not leave it there and neither does this: `STOPPED_ON_TRACK_RETIRE_S`.
+   *
+   *   IN THE RUN-OFF it is out of the way and the only question is whether it is
+   *   a push or a lift: `BEACHED_RETIRE_S`, unchanged at nine seconds.
+   *
+   * Both end in the same call. `RecoveryOperation` then reads the site and works
+   * out what the marshals actually have to do — and for a car on the road that is
+   * an operation inside the working clearance, so it neutralises the race until
+   * it is finished. Nothing about the recovery is declared here; that is
+   * `Recovery.ts`'s job and it does it from where the car is.
    */
-  private checkBeached(car: CarEntry, dt: number): void {
-    const offRoad = Math.abs(car.lateral) > this.track.halfWidthAt(car.s) + 2;
-    if (car.physics.speedMs < 2.5 && offRoad && !car.inPitLane) {
-      car.stuckTimer += dt;
-      if (car.stuckTimer > 9) {
-        // Intact, but deep enough into the run-off that it is a lift rather
-        // than a push. `Recovery` reads that off where the car actually is, so
-        // there is nothing to declare here beyond the retirement itself — and
-        // in particular this no longer claims the car has been recovered on the
-        // step it got stuck, which is what used to make the yellow vanish while
-        // a tractor would still have been on its way.
-        car.retire('Beached in the gravel', this.time);
-        this.raceControl.log(
-          car.driver.code + ' is out — stranded off track', 'critical', this.time, car.index,
-          {
-            feed: 'either',
-            notice: {
-              parties: [car.driver.code],
-              where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
-              offence: 'CAR STOPPED OFF TRACK', status: 'RECOVERY IN PROGRESS',
-            },
-            team: { kind: 'stranded' },
-          },
-        );
-      }
-    } else {
+  private checkStranded(car: CarEntry, dt: number): void {
+    // A car that has taken the chequered flag is not retired for stopping. It
+    // has finished; where it comes to rest on the slowing-down lap is between
+    // the driver and the marshals, and `retire` after the flag would rewrite a
+    // result that has already been earned.
+    if (car.physics.speedMs >= STRANDED_SPEED_MS || car.inPitLane || car.finished) {
       car.stuckTimer = 0;
+      return;
     }
+    // One timer for one condition — this car is not moving — with only the
+    // deadline depending on where it stopped. Running it everywhere rather than
+    // only in the gravel is also what lets race control read it
+    // (`updateIncidentFlags`) to get the boards out, which has to happen long
+    // before anybody is retired.
+    car.stuckTimer += dt;
+
+    const offRoad = Math.abs(car.lateral) > this.track.halfWidthAt(car.s) + STRANDED_OFFROAD_M;
+    if (car.stuckTimer <= (offRoad ? BEACHED_RETIRE_S : STOPPED_ON_TRACK_RETIRE_S)) return;
+
+    // Intact, but the site decides the method and `Recovery` reads the site. In
+    // particular this does not claim the car has been recovered on the step it
+    // stopped, which is what used to make the yellow vanish while a tractor
+    // would still have been on its way.
+    car.retire(offRoad ? 'Beached in the gravel' : 'Stopped on track', this.time);
+    this.raceControl.log(
+      car.driver.code + (offRoad ? ' is out — stranded off track' : ' is out — stopped on track'),
+      'critical', this.time, car.index,
+      {
+        feed: 'either',
+        notice: {
+          parties: [car.driver.code],
+          where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+          offence: offRoad ? 'CAR STOPPED OFF TRACK' : 'CAR STOPPED ON TRACK',
+          status: 'RECOVERY IN PROGRESS',
+        },
+        team: { kind: 'stranded', onTrack: !offRoad },
+      },
+    );
   }
 
   // =========================================================================
