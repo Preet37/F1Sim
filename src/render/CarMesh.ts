@@ -1715,10 +1715,20 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // UPPER FLICK: the small winglet folded over the top of the endplate's
     // trailing corner. It is what stops the endplate reading as a plain
     // rectangle in silhouette.
+    //
+    // IT ONLY MET THE PLATE AT THE HIGH TIER. Its outboard edge ran to 0.950
+    // against an endplate whose inboard skin at the same station is 0.947, so
+    // the two touched over 3mm of superellipse tip — which the high tier's
+    // polygon reaches and the low tier's does not. `probe:carrig`'s bolted
+    // section on the low tier: nearest surface 7.15mm, to `front wing element
+    // 4` rather than to the plate it is folded over. It now straddles the
+    // plate's swept top edge at every station and buries 16mm into it at the
+    // rear, still 5mm inside the Appendix 1 wing limit of 975 that
+    // `checkWidth` enforces.
     const flick = small([
-      section(2.78, 0.014, 0.386, 0.404, 0.70, { xc: s * 0.936 }),
-      section(2.64, 0.024, 0.418, 0.442, 0.70, { xc: s * 0.926 }),
-      section(2.50, 0.020, 0.408, 0.428, 0.70, { xc: s * 0.918 }),
+      section(2.78, 0.016, 0.360, 0.378, 0.70, { xc: s * 0.950 }),
+      section(2.64, 0.022, 0.400, 0.424, 0.70, { xc: s * 0.948 }),
+      section(2.50, 0.022, 0.396, 0.416, 0.70, { xc: s * 0.944 }),
     ], Math.max(6, t.detail - 4));
     p.tag(`front wing flick ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(flick, 'front wing flick'), 'carbon');
@@ -1988,20 +1998,33 @@ function buildShellParts(
   // --- Front wing ---------------------------------------------------------
   buildFrontWing(p, t);
 
-  // --- Front brake ducts / wheel-wake fins --------------------------------
-  // NOTE: the duct proper now lives on the STEER group so that it turns with the
-  // wheel — see `uprightParts`. What stays here is the inboard wake fin, which
-  // is bolted to the chassis and does not steer.
-  for (const side of [-1, 1] as const) {
-    const fin = small([
-      section(FRONT_AXLE_Z + 0.34, 0.016, 0.150, 0.360, 0.30),
-      section(FRONT_AXLE_Z + 0.06, 0.020, 0.126, 0.412, 0.25),
-      section(FRONT_AXLE_Z - 0.24, 0.015, 0.144, 0.366, 0.30),
-    ], Math.max(6, t.detail - 4));
-    p.tag(`front wake fin ${side < 0 ? 'L' : 'R'}`);
-    fin.translate(side * 0.480, 0, 0);
-    p.flat(fin, 'carbon');
-  }
+  // --- Front brake ducts --------------------------------------------------
+  // The duct proper lives on the STEER group so that it turns with the wheel —
+  // see `frontCornerParts`.
+  //
+  // THE "INBOARD WAKE FIN" THAT USED TO STAND HERE IS GONE, and this is the
+  // second half of issue #47's "phasing through the carbon".
+  //
+  // What it was: a 580mm-long, 262mm-tall vertical carbon blade at x = 0.480,
+  // spanning z 1.56 to 2.14 — inboard of the front tyre, ahead of the front
+  // axle. Its own comment said it was "bolted to the chassis". It was not
+  // bolted to anything. The floor's plan outline at those stations is 150mm of
+  // half width at z = 2.20 and 278mm at z = 1.56, so the fin stood 200mm
+  // outboard of the nearest floor and 140mm outboard of the monocoque, in open
+  // air. `probe:carrig` reported the car as one cluster anyway because the fin
+  // DID touch something: the front lower-front leg, the lower-rear leg and the
+  // trackrod all passed clean THROUGH it — 40mm, 38mm and 32mm respectively,
+  // both sides, both tiers. The interpenetration was what held it on. Lower it
+  // under the suspension, as the first attempt at this fix did, and the probe
+  // immediately reports it floating 21.6mm clear of the car at the high tier
+  // and 29.8mm at the low one, which is what it had been all along.
+  //
+  // Why it is deleted rather than restationed: it is a BARGEBOARD, and the
+  // regulation block at the top of this file already says what happened to
+  // those. "Bargeboards DELETED in 2022. Nothing between the front wheel and
+  // the sidepod but floor and fences." The floor and its four fences per side
+  // are modelled above and are the real parts; this was a pre-2022 shape
+  // standing in air where the current rules require empty space.
 
   // --- Airbox and roll hoop -----------------------------------------------
   // BEHIND the driver's head, not on top of it. Put the front of the airbox at
@@ -2484,7 +2507,14 @@ function buildShellParts(
     // surface at this station is y = 0.5495 and the winglet's lower surface was
     // at 0.567 — a gap invisible in a hero render and obvious from the low
     // three-quarter the complaint came from, because the sky shows through it.
-    winglet.translate(side * 0.654, 0.562, 0.600);
+    //
+    // AND IT WAS STILL NOT BEDDED IN — issue #47. "Bedded" was measured as a
+    // distance and set to zero-ish, which is not the same thing: the bolted
+    // section of `probe:carrig` reports the two solids never actually meeting,
+    // 0.64mm apart at the high tier and 4.09mm at the low one. 12mm inboard and
+    // 6mm down puts the winglet's root INSIDE the shoulder at both tiers, which
+    // is the only state that cannot open again when the loft is resampled.
+    winglet.translate(side * 0.642, 0.556, 0.600);
     p.flat(winglet, 'carbon');
 
     // Cooling louvres over the radiator exit. Their x now follows the pod's own
@@ -2784,8 +2814,37 @@ function buildShellParts(
  * scale, which three.js would render inside out.
  */
 function frontUprightGeometry(t: Tiers, side: 1 | -1): THREE.BufferGeometry {
+  return mergeParts(frontCornerParts(t, side).map((p) => p.geometry));
+}
+
+/**
+ * The same corner, NAMED, one entry per physical piece.
+ *
+ * WHY THIS IS SPLIT. `frontUprightGeometry` merges five separate objects — the
+ * upright column, the steering arm, the over-wheel cover, the vane that carries
+ * it and the brake drum — into one buffer, and for the renderer that is right:
+ * they all turn with the steering, so they are one draw call.
+ *
+ * For `probe:carrig` it was a hole big enough to lose a part in. The probe's
+ * connectivity check unions two PARTS when their surfaces touch, and the merged
+ * corner is one part: the upright column touches the wishbones, so the whole
+ * merge joined the car and everything inside it — including a cover hanging in
+ * clear air over the tyre — was carried along by association. Issue #47 is
+ * exactly that, and the probe reported "139 parts in 1 cluster" while the
+ * driver could see daylight under the cover.
+ *
+ * So the corner is authored as named pieces and merged at the end. Nothing the
+ * renderer draws changes; the probe gains five parts it can name and measure,
+ * and a floating cover now has to touch something on its own account.
+ */
+function frontCornerParts(t: Tiers, side: 1 | -1): { name: string; geometry: THREE.BufferGeometry }[] {
   const s = side;
-  const parts: THREE.BufferGeometry[] = [];
+  const sideTag = side < 0 ? 'L' : 'R';
+  const out: { name: string; geometry: THREE.BufferGeometry }[] = [];
+  let tag = 'front upright';
+  const parts = {
+    push(geo: THREE.BufferGeometry) { out.push({ name: `${tag} ${sideTag}`, geometry: geo }); },
+  };
   const flat = (geo: THREE.BufferGeometry, swatch: SwatchName) => {
     const [u, v] = swatchUV(swatch);
     parts.push(setFlatUV(geo, u, v));
@@ -2803,57 +2862,59 @@ function frontUprightGeometry(t: Tiers, side: 1 | -1): THREE.BufferGeometry {
   //
   // 190mm above the hub and 35mm below it: those are the regulation limits, not
   // a judgement. See the note on the front corner in `buildShellParts`.
+  tag = 'front upright';
   flat(aeroStrut(s * -0.066, 0.190, 0, s * -0.048, -0.035, 0, 0.086, 0.048, t.strut), 'carbon');
   // Steering arm: the short lever between the trackrod's ball joint and the
   // upright. This is the part that makes the linkage read as a linkage, because
   // it is the one member that visibly swings through an arc as the wheel turns.
   // Its inboard end sits on the steering axis — see the note on the trackrod in
   // `buildShellParts` for why that way round.
+  tag = 'front steering arm';
   flat(aeroStrut(s * -0.056, -0.026, -0.070, s * -0.050, -0.030, -0.174, 0.040, 0.024, t.strut), 'trim');
 
-  // THE OVER-WHEEL WINGLET, which was missing entirely.
+  // THE OVER-WHEEL WINGLET IS GONE, and the measurement that removed it is the
+  // whole of issue #47's first half.
   //
-  // A small curved fin standing above each front tyre, part of the mandated
-  // wheel-body assembly introduced with the 2022 rules and bolted to the drum,
-  // so it turns with the steering and does not spin. Nothing else on the car
-  // occupies that piece of sky, and its absence is one of the quiet reasons a
-  // model reads as pre-2022 even when everything else is right: from any
-  // three-quarter view the top of a current front wheel has a blade over it.
+  // WHAT IT WAS. A small carbon blade standing above each front tyre, part of
+  // the wheel-body assembly introduced with the 2022 rules, bolted to the drum
+  // so that it steers with the wheel and does not spin. It was added because a
+  // model without one reads as pre-2022, and it was reported as wrong twice:
+  // "not sure what that thing is on the front wheels still", and then, with a
+  // driver's-eye screenshot, "the wheel covers on the top are actually floating
+  // confirmed".
   //
-  // Built as three sections arcing over the tyre's crown at 0.360 — it sits
-  // 55mm clear of the rubber, and is deliberately narrow so it never fights
-  // the wheel for attention.
+  // THE SECOND REPORT WAS EXACTLY RIGHT. `probe:carrig`'s new bolted-joint
+  // section, run on the build the screenshot came from: the cover's nearest
+  // surface was its own support vane, 2.30mm away at the high tier and 8.56mm
+  // at the LOW one — the tier every phone runs. The vane's own nearest surface
+  // at the low tier was the TYRE, 5.40mm away, so at the low tier the cover and
+  // its vane were a two-part assembly bolted to nothing at all, hanging beside
+  // the wheel. Nothing had ever caught it because the whole corner was one
+  // merged part called "front upright" and the connectivity check unions parts
+  // at 10mm; see `frontCornerParts`.
   //
-  // IT LOOKED LIKE IT WAS FLOATING, and it was: "not sure what that thing is on
-  // the front wheels still." It is a legal part in the right piece of sky, but
-  // it was 138mm across on a 329mm tyre, it sat entirely over the tyre's
-  // INBOARD half, and nothing joined it to anything — a dark blade hanging 40mm
-  // above the rubber with clear air all round it. On the real car the winglet is
-  // carried on a vane that runs down the INBOARD side of the tyre to the brake
-  // drum, and that vane is what makes the thing read as bolted on rather than
-  // balanced there.
+  // AND IT CANNOT BE BOLTED ON. This is the part worth keeping. Any rigid
+  // support has to stand inboard of the tyre's inner wall at 0.1625 and rise
+  // past the upper wishbone to reach a blade over the crown, and the corner
+  // steers through +/-0.42 rad while the wishbone does not. In plan about the
+  // hub axis the two upper legs block a fixed pair of angular bands — at the
+  // radius a support would occupy, [-29.0, -7.0] and [+4.3, +25.9] degrees —
+  // leaving an 11.3 degree window between them and open ground only beyond
+  // +/-29. A support swept through both locks needs 48.1 degrees of clear
+  // angle. It does not fit between the legs at ANY radius (the window is 5.3
+  // degrees at r = 0.18 and still only 31.7 at r = 0.50), and going outside the
+  // pair puts the support at |theta| > 53 degrees, which at any radius where it
+  // clears the tyre at rest is 300mm or more ahead of the axle — a blade twice
+  // the length of the one it is supposed to carry.
   //
-  // 220mm across now, reaching inboard to x = -0.175 — ten millimetres clear of
-  // the tyre's inner wall at 0.1645 — which is where the vane can come up
-  // without passing through the rubber.
-  {
-    const wing = loft([
-      section(0.150, 0.098, 0.402, 0.418, 0.60, { xc: s * -0.062 }),
-      section(0.010, 0.110, 0.414, 0.432, 0.55, { xc: s * -0.065 }),
-      section(-0.150, 0.094, 0.400, 0.416, 0.60, { xc: s * -0.070 }),
-    ], Math.max(6, t.detail - 6), true, t.detailStep);
-    flat(wing, 'carbon');
-    // The vane that holds it up: down the inboard flank of the tyre, from the
-    // winglet's inboard edge to the top of the drum. Thin, because it is a
-    // support rather than an aerodynamic surface, and the whole point of it is
-    // that the eye can follow the load path.
-    const post = loft([
-      section(0.104, 0.007, 0.128, 0.406, 0.30, { xc: s * -0.176 }),
-      section(-0.010, 0.008, 0.120, 0.420, 0.26, { xc: s * -0.178 }),
-      section(-0.116, 0.007, 0.126, 0.404, 0.30, { xc: s * -0.176 }),
-    ], Math.max(6, t.detail - 8), true, t.detailStep);
-    flat(post, 'carbon');
-  }
+  // A support with a shaped aperture around the wishbone is how the real car
+  // does it, and none of the loft primitives in this file can express a hole.
+  // So the choice was a blade that floats, a blade that passes through the
+  // suspension between 12 and 24 degrees of lock — measured at 2 to 24mm of a
+  // leg, both corners, both tiers — or no blade. The first is the reported bug
+  // and the second is the same bug wearing a different hat. See PROJECT.md
+  // section 7: reinstating it needs the corner redesigned, not a number moved.
+
   // Brake duct: the carbon drum inboard of the wheel. Turns with the wheel,
   // because it is bolted to the upright. Deeper and taller than it was, so it
   // actually shrouds the disc now that the disc can be seen.
@@ -2862,9 +2923,10 @@ function frontUprightGeometry(t: Tiers, side: 1 | -1): THREE.BufferGeometry {
     section(0.02, 0.046, -0.226, 0.126, 0.24, { xc: s * -0.146 }),
     section(-0.26, 0.034, -0.204, 0.066, 0.32, { xc: s * -0.146 }),
   ], Math.max(6, t.detail - 4), true, t.detailStep);
+  tag = 'front brake duct';
   flat(duct, 'carbon');
 
-  return mergeParts(parts);
+  return out;
 }
 
 // ===========================================================================
@@ -3554,11 +3616,47 @@ export function carPartsForProbe(quality: CarTier): CarPart[] {
     if (x < 0) wheel.rotateY(Math.PI);
     out.push({ name: `${rear ? 'rear' : 'front'} wheel ${side}`, bucket: 'wheel', geometry: wheel, offset: at });
     if (!rear) {
-      out.push({
-        name: `front upright ${side}`, bucket: 'upright',
-        geometry: frontUprightGeometry(t, x < 0 ? -1 : 1), offset: at,
-      });
+      // NAMED PIECES, not the merged corner. See `frontCornerParts`: handing the
+      // probe one merged "front upright" is what let the over-wheel cover float
+      // for the length of issue #47 while the connectivity check reported the
+      // car as a single cluster.
+      for (const piece of frontCornerParts(t, x < 0 ? -1 : 1)) {
+        out.push({ name: piece.name, bucket: 'upright', geometry: piece.geometry, offset: at });
+      }
     }
+  }
+  return out;
+}
+
+/**
+ * One front corner, rebuilt at a STEERING ANGLE — for `probe:carrig`.
+ *
+ * The car has no ride-height degree of freedom: `Renderer` places the whole
+ * visual at `bankedCarGroundY` and nothing moves the body relative to the
+ * wheels, so every part above is in a fixed relationship with every other one.
+ * The one thing that genuinely articulates is the front corner. The upright,
+ * the steering arm, the brake drum, the wheel cover and its two posts all ride
+ * on the steer group and swing through `maxSteerRad` = 0.42 rad either way,
+ * while the six suspension members stay on the chassis and do not move at all.
+ *
+ * That is the real "extreme" for this assembly, and it is not a small one: a
+ * post 178mm inboard of the hub sweeps 145mm of arc between the two locks,
+ * across a pair of wishbone legs 78mm wide with a 21mm window between them.
+ * Straight-ahead clearance says nothing about it, so the probe rebuilds the
+ * corner at a sweep of angles and re-asks the interpenetration question there.
+ */
+export function frontCornerForProbe(quality: CarTier, side: 1 | -1, steerRad: number): CarPart[] {
+  const t = TIERS[quality];
+  const at = new THREE.Vector3(side * FRONT_HUB_X, TYRE_R, FRONT_AXLE_Z);
+  const out: CarPart[] = [];
+  const wheel = buildWheel(FRONT_TYRE_W, t, quality);
+  if (side < 0) wheel.rotateY(Math.PI);
+  // The renderer's own sign: `frontLeftSteer.rotation.y = -steer`.
+  wheel.rotateY(-steerRad);
+  out.push({ name: `front wheel ${side < 0 ? 'L' : 'R'}`, bucket: 'wheel', geometry: wheel, offset: at });
+  for (const piece of frontCornerParts(t, side)) {
+    piece.geometry.rotateY(-steerRad);
+    out.push({ name: piece.name, bucket: 'upright', geometry: piece.geometry, offset: at });
   }
   return out;
 }

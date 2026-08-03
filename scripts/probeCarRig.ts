@@ -4,10 +4,11 @@ installCanvasStub();
 
 import * as THREE from 'three';
 import {
-  carPartsForProbe, frontMembers, rearMembers, TYRE_RADIUS_M,
+  carPartsForProbe, frontCornerForProbe, frontMembers, rearMembers, TYRE_RADIUS_M,
   type CarPart, type CarTier, type SuspensionMember,
 } from '../src/render/CarMesh';
 import { ROAD_SURFACE_Y, carGroundY } from '../src/render/TrackMesh';
+import { BASE_F1_SPEC } from '../src/physics/VehicleSpec';
 
 /**
  * Whether the car is ONE OBJECT, measured rather than looked at.
@@ -365,6 +366,68 @@ function insideAny(prepared: readonly Prepared[], px: number, py: number, pz: nu
   return -1;
 }
 
+/**
+ * One part as a SOLID, so the question "is this point inside it" is cheap.
+ *
+ * `insideAny` above answers the same question by sweeping every triangle of
+ * every part, which is fine for the forty-eight suspension endpoints it was
+ * written for and hopeless for the hundreds of thousands of queries the
+ * bolted-joint and interpenetration sections make. This buckets each triangle
+ * by the (y, z) cells its projection covers, so a +x parity ray only has to
+ * look at the triangles that could possibly be in its way.
+ *
+ * Exact for the closed lofts the car is made of; an open surface reports
+ * "outside" everywhere, which is the conservative answer and the same one
+ * `insideAny` gives.
+ */
+const SOLID_CELL = 0.05;
+class Solid {
+  private readonly bins = new Map<number, number[]>();
+  constructor(private readonly p: Prepared) {
+    const t = p.tri;
+    for (let o = 0, f = 0; o < t.length; o += 9, f++) {
+      const y0 = Math.floor(Math.min(t[o + 1], t[o + 4], t[o + 7]) / SOLID_CELL);
+      const y1 = Math.floor(Math.max(t[o + 1], t[o + 4], t[o + 7]) / SOLID_CELL);
+      const z0 = Math.floor(Math.min(t[o + 2], t[o + 5], t[o + 8]) / SOLID_CELL);
+      const z1 = Math.floor(Math.max(t[o + 2], t[o + 5], t[o + 8]) / SOLID_CELL);
+      for (let iy = y0; iy <= y1; iy++) {
+        for (let iz = z0; iz <= z1; iz++) {
+          const k = (iy * 92837111) ^ (iz * 689287499);
+          const b = this.bins.get(k);
+          if (b) b.push(f); else this.bins.set(k, [f]);
+        }
+      }
+    }
+  }
+
+  contains(px: number, py: number, pz: number): boolean {
+    const b = this.p.box;
+    if (px < b.min.x - 1e-6 || px > b.max.x + 1e-6) return false;
+    if (py < b.min.y || py > b.max.y || pz < b.min.z || pz > b.max.z) return false;
+    const key = (Math.floor(py / SOLID_CELL) * 92837111) ^ (Math.floor(pz / SOLID_CELL) * 689287499);
+    const list = this.bins.get(key);
+    if (!list) return false;
+    const t = this.p.tri;
+    let crossings = 0;
+    for (const f of list) {
+      const o = f * 9;
+      const y0 = t[o + 1], z0 = t[o + 2];
+      const y1 = t[o + 4], z1 = t[o + 5];
+      const y2 = t[o + 7], z2 = t[o + 8];
+      const d = (z1 - z2) * (y0 - y2) + (y2 - y1) * (z0 - z2);
+      if (Math.abs(d) < 1e-12) continue;
+      const a = ((z1 - z2) * (py - y2) + (y2 - y1) * (pz - z2)) / d;
+      if (a < 0 || a > 1) continue;
+      const bb = ((z2 - z0) * (py - y2) + (y0 - y2) * (pz - z2)) / d;
+      if (bb < 0 || a + bb > 1) continue;
+      const c = 1 - a - bb;
+      const hitX = a * t[o] + bb * t[o + 3] + c * t[o + 6];
+      if (hitX > px) crossings++;
+    }
+    return crossings % 2 === 1;
+  }
+}
+
 class DisjointSet {
   private readonly up: number[];
   constructor(n: number) { this.up = Array.from({ length: n }, (_, i) => i); }
@@ -526,7 +589,259 @@ function run(tier: CarTier): void {
     if (!seeOk) fail(`slot ${i + 1}-${i + 2} shows daylight at only ${open} of ${tested} stations`);
   }
 
-  // --- 4. disjoint parts ---------------------------------------------------
+  // --- 4. bolted joints ----------------------------------------------------
+  //
+  // ISSUE #47. Section 5 below says whether a part TOUCHES the car within
+  // 10mm. That is not the same question as whether it is BOLTED to it, and the
+  // over-wheel cover is the proof: it sat 2.6mm off the vane that carries it at
+  // the high tier and 8.6mm off it at the low one, so the disjoint set joined
+  // it up and reported the car as a single cluster while the driver could see
+  // sky through the joint.
+  //
+  // The rule this asserts is the one this file's own tolerance note already
+  // states: "Parts of a car are authored to overlap — a strut ends INSIDE the
+  // tub it is bolted to ... so genuine joints measure zero." A joint that
+  // measures a POSITIVE number is not a joint, it is a gap, and a gap a couple
+  // of millimetres wide 300mm from the driver's eye is daylight.
+  //
+  // So: every part must INTERSECT at least one other part — a sampled point of
+  // one inside the solid of the other, tested both ways. That is a volumetric
+  // test with no tolerance in it at all, which is why it cannot be tuned.
+  //
+  // WHAT IS EXEMPT, AND WHY. Two kinds of part cannot satisfy it and are not
+  // defects. A part drawn as an OPEN surface has no inside, so nothing can be
+  // inside it and its own points cannot be inside a neighbour it merely rests
+  // against — the mirror pane is two triangles. And a part whose only
+  // neighbours are open surfaces has nothing to be inside. Both are listed by
+  // name rather than by rule, so adding one is a deliberate act.
+  console.log('\nbolted joints (every part must INTERSECT another, not merely come near one)');
+  const solids = prepared.map((p) => new Solid(p));
+  /** Parts drawn as open surfaces: no interior, so parity says nothing. */
+  const OPEN_SURFACE = new Set([
+    'mirror glass L', 'mirror glass R',
+  ]);
+  const boltedTo: (string | null)[] = prepared.map(() => null);
+  for (let i = 0; i < prepared.length; i++) {
+    if (boltedTo[i]) continue;
+    const bi = prepared[i].box;
+    for (let j = 0; j < prepared.length && !boltedTo[i]; j++) {
+      if (j === i) continue;
+      const bj = prepared[j].box;
+      if (bi.max.x < bj.min.x || bi.min.x > bj.max.x) continue;
+      if (bi.max.y < bj.min.y || bi.min.y > bj.max.y) continue;
+      if (bi.max.z < bj.min.z || bi.min.z > bj.max.z) continue;
+      const pi = prepared[i].probe, pj = prepared[j].probe;
+      let hit = false;
+      for (let q = 0; q < pi.length && !hit; q += 3) hit = solids[j].contains(pi[q], pi[q + 1], pi[q + 2]);
+      for (let q = 0; q < pj.length && !hit; q += 3) hit = solids[i].contains(pj[q], pj[q + 1], pj[q + 2]);
+      if (hit) {
+        boltedTo[i] = prepared[j].part.name;
+        if (!boltedTo[j]) boltedTo[j] = prepared[i].part.name;
+      }
+    }
+  }
+  const loose = prepared
+    .map((p, i) => [i, p] as const)
+    .filter(([i, p]) => !boltedTo[i] && !OPEN_SURFACE.has(p.part.name));
+  if (!loose.length) {
+    console.log(`  all ${prepared.length} parts intersect the part they are bolted to`);
+  }
+  for (const [i, p] of loose) {
+    // How wide the gap actually is, measured both ways so tessellation cannot
+    // flatter it: the closest either surface comes to the other.
+    let gap = Infinity, onto = '';
+    for (let q = 0; q < p.probe.length; q += 3) {
+      const hit = grid.nearest(p.probe[q], p.probe[q + 1], p.probe[q + 2], 0.10, (o) => o === i);
+      if (hit.dist < gap) { gap = hit.dist; onto = prepared[hit.part].part.name; }
+    }
+    for (let j = 0; j < prepared.length; j++) {
+      if (j === i) continue;
+      const pj = prepared[j].probe;
+      for (let q = 0; q < pj.length; q += 3) {
+        const hit = grid.nearest(pj[q], pj[q + 1], pj[q + 2], gap, (o) => o !== i);
+        if (hit.part === i && hit.dist < gap) { gap = hit.dist; onto = prepared[j].part.name; }
+      }
+    }
+    console.log(`  PERCHED   ${p.part.name} — nearest surface ${gap === Infinity ? '>100' : (gap * 1000).toFixed(2)}mm away (${onto || 'nothing within 100mm'})`);
+    fail(`${p.part.name} is bolted to nothing: ${gap === Infinity ? 'more than 100' : (gap * 1000).toFixed(2)}mm of daylight to ${onto || 'the nearest part'}`);
+  }
+
+  // --- 5. interpenetration -------------------------------------------------
+  //
+  // ISSUE #47, the other half: "phasing through the carbon". A part can be
+  // attached and still pass through what it is attached to, and every check
+  // above is blind to that — attachment and interpenetration are the SAME
+  // measurement with opposite signs, and sections 2, 4 and 5 all read it as
+  // good news. Section 2 explicitly does: `insideAny` returning a part is how
+  // a suspension endpoint PASSES.
+  //
+  // What a member is allowed to do is end inside the things it is bolted to.
+  // What it may not do is cross a piece of BODYWORK in mid-span — in one
+  // surface and out of the other — because from any camera that is a carbon
+  // leg crossing a carbon panel with no joint at either crossing.
+  //
+  // So the centreline is walked at 2mm and every run of it lying inside a body
+  // is found. A run that reaches an END of the member is a pickup; the
+  // allowance for "reaches" is `JOINT_TOL`, which is the same 25mm section 2
+  // already grants a member's centreline against the skin it bolts through,
+  // and it is not a new number. A run in the middle is a passage through
+  // somebody else's bodywork, and it is named with where along the member it
+  // happens.
+  //
+  // WHAT IS NOT TESTED, AND WHY. The RUNNING GEAR: the wheel, the upright,
+  // the brake drum, the steering arm, the driveshaft and the other five
+  // members of the same corner. Those are the parts a member is supposed to
+  // reach into — six legs converging on two ball joints overlap each other by
+  // construction — and the merged wheel is several shells deep, so a parity
+  // ray through it reports a string of runs that mean nothing. Testing them
+  // produced 171 reports of which none was a defect, and a check that cries
+  // that often is a check nobody reads. `probe:suspension` owns the members'
+  // geometry against each other; this owns them against the carbon.
+  console.log('\ninterpenetration (a member may END inside a body, never cross one in mid-span)');
+  const runningGear = new Set<string>();
+  for (const [corner, table] of corners) {
+    for (const side of [-1, 1] as const) {
+      const sfx = side < 0 ? 'L' : 'R';
+      for (const m of table(side)) runningGear.add(`${corner} ${m.name} ${sfx}`);
+      for (const n of ['front upright', 'rear upright', 'front brake duct', 'rear brake duct',
+        'front steering arm', 'driveshaft']) runningGear.add(`${n} ${sfx}`);
+    }
+  }
+  const isBody = prepared.map((p) => p.part.bucket !== 'wheel' && !runningGear.has(p.part.name));
+  const STEP = 0.002;
+  const beforePhase = failures;
+  for (const [corner, table] of corners) {
+    for (const side of [-1, 1] as const) {
+      for (const m of table(side)) {
+        const label = `${corner} ${m.name} ${side < 0 ? 'L' : 'R'}`;
+        const ax = m.a[0], ay = m.a[1], az = m.a[2];
+        const bx = m.b[0], by = m.b[1], bz = m.b[2];
+        const len = Math.hypot(bx - ax, by - ay, bz - az);
+        const n = Math.max(2, Math.round(len / STEP));
+        const near = Math.ceil(JOINT_TOL / STEP);
+        for (let j = 0; j < prepared.length; j++) {
+          if (!isBody[j]) continue;
+          let runStart = -1;
+          for (let k = 0; k <= n; k++) {
+            const u = k / n;
+            const inside = solids[j].contains(ax + (bx - ax) * u, ay + (by - ay) * u, az + (bz - az) * u);
+            if (inside && runStart < 0) runStart = k;
+            if ((!inside || k === n) && runStart >= 0) {
+              const runEnd = inside ? k : k - 1;
+              if (runStart > near && runEnd < n - near) {
+                const from = (runStart / n) * len, to = (runEnd / n) * len;
+                console.log(`  THROUGH   ${label.padEnd(22)} crosses ${prepared[j].part.name}`
+                  + `  from ${(from * 1000).toFixed(0)}mm to ${(to * 1000).toFixed(0)}mm of a ${(len * 1000).toFixed(0)}mm member`);
+                fail(`${label} passes clean through ${prepared[j].part.name} for ${((to - from) * 1000).toFixed(0)}mm in mid-span`);
+              }
+              runStart = -1;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (failures === beforePhase) console.log('  no member crosses a body it is not bolted to');
+
+  // --- 6. the corner, THROUGH THE STEERING RANGE ---------------------------
+  //
+  // Everything above is measured with the wheels straight, and for most of
+  // this car that is the whole story: `Renderer` places the visual at
+  // `bankedCarGroundY` and nothing moves the body relative to the wheels, so
+  // there is no ride-height freedom to sweep. The front corner is the one
+  // exception, and it is a large one.
+  //
+  // The upright, steering arm, brake drum, wheel cover and both cover posts
+  // ride on the steer group; the six suspension members do not. Between the
+  // two locks a post 178mm inboard of the hub sweeps 145mm of arc, across a
+  // pair of wishbone legs 78mm wide with a 21mm window between them — so
+  // clearance straight ahead says nothing at all about clearance on lock, and
+  // the wheel cover is exactly the part that has to survive it.
+  //
+  // TWO RULES, and neither is vacuous.
+  //
+  //  (a) Nothing on the steer group may enter a piece of CHASSIS bodywork at
+  //      any angle. The drum sweeps 122mm of arc and the tyre more; the floor's
+  //      leading edge, the floor fences, the nose and the front wing are all
+  //      within reach of it, and none of the checks above looks at the corner
+  //      anywhere but straight ahead.
+  //
+  //  (b) No steered BODY — an aero fairing rather than running gear — may
+  //      enter a suspension member at any angle. The members do not steer, so
+  //      a fairing that clears them straight ahead can still sweep through
+  //      them, and that is exactly what killed the over-wheel cover: measured
+  //      at 2 to 24mm of a leg between 12 and 24 degrees of lock. There is no
+  //      such fairing on the car today and the check says so by name, so if one
+  //      is put back it is measured from its first frame instead of after the
+  //      next screenshot.
+  console.log('\nsteering lock (the corner sweeps; the chassis does not)');
+  const LOCK = BASE_F1_SPEC.maxSteerRad;
+  const beforeLock = failures;
+  /** Running gear: the parts a member is SUPPOSED to reach into. */
+  const cornerRunningGear = (n: string) => /upright|steering arm|brake duct/.test(n);
+  const memberNames = new Set<string>();
+  for (const [corner, table] of corners) {
+    for (const side of [-1, 1] as const) {
+      for (const m of table(side)) memberNames.add(`${corner} ${m.name} ${side < 0 ? 'L' : 'R'}`);
+    }
+  }
+  /** Chassis bodywork: everything that does not steer and is not a member. */
+  const chassis = prepared
+    .map((p, i) => [i, p] as const)
+    .filter(([, p]) => p.part.bucket !== 'wheel' && p.part.bucket !== 'upright'
+      && !memberNames.has(p.part.name));
+  let steeredBodies = 0;
+  for (let step = -6; step <= 6; step++) {
+    const steer = (step / 6) * LOCK;
+    const deg = (steer * 180 / Math.PI).toFixed(1);
+    for (const side of [-1, 1] as const) {
+      const corner = frontCornerForProbe(tier, side, steer);
+      for (const p of corner) {
+        const pr = prepare(p);
+        // (a) into the chassis.
+        for (const [ci, cp] of chassis) {
+          let deep = 0;
+          for (let q = 0; q < pr.probe.length; q += 3) {
+            if (solids[ci].contains(pr.probe[q], pr.probe[q + 1], pr.probe[q + 2])) deep++;
+          }
+          if (deep > 0) {
+            console.log(`  FOULED    ${p.name.padEnd(22)} is inside ${cp.part.name} at ${deg} deg of lock`);
+            fail(`${p.name} is inside ${cp.part.name} at ${deg} deg of lock`);
+          }
+        }
+        // (b) a steered fairing into a member.
+        if (cornerRunningGear(p.name) || p.bucket === 'wheel') continue;
+        steeredBodies++;
+        const solid = new Solid(pr);
+        for (const m of frontMembers(side)) {
+          const label = `front ${m.name} ${side < 0 ? 'L' : 'R'}`;
+          const len = Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1], m.b[2] - m.a[2]);
+          const n = Math.max(2, Math.round(len / STEP));
+          let deep = 0;
+          for (let k = 0; k <= n; k++) {
+            const u = k / n;
+            if (solid.contains(
+              m.a[0] + (m.b[0] - m.a[0]) * u,
+              m.a[1] + (m.b[1] - m.a[1]) * u,
+              m.a[2] + (m.b[2] - m.a[2]) * u,
+            )) deep++;
+          }
+          if (deep > 0) {
+            console.log(`  FOULED    ${label.padEnd(22)} is ${(deep * STEP * 1000).toFixed(0)}mm inside`
+              + ` ${p.name} at ${deg} deg of lock`);
+            fail(`${label} is ${(deep * STEP * 1000).toFixed(0)}mm inside ${p.name} at ${deg} deg of lock`);
+          }
+        }
+      }
+    }
+  }
+  if (failures === beforeLock) {
+    console.log(`  13 angles from ${(-LOCK * 180 / Math.PI).toFixed(1)} to ${(LOCK * 180 / Math.PI).toFixed(1)} deg,`
+      + ` both corners: nothing on the steer group enters the chassis,`
+      + ` and the ${steeredBodies} steered fairing${steeredBodies === 1 ? '' : 's'} clear the suspension`);
+  }
+
+  // --- 7. disjoint parts ---------------------------------------------------
   console.log('\nconnectivity (every part must touch the car)');
   const dsu = new DisjointSet(prepared.length);
   for (let i = 0; i < prepared.length; i++) {

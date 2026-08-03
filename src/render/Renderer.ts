@@ -14,6 +14,12 @@ import { EffectsDirector } from './EffectsDirector';
 import { EnvProbe } from './EnvProbe';
 import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
+import {
+  AUTO_DEMOTE_MS, AUTO_PROMOTE_AFTER_S, AUTO_PROMOTE_MS, AUTO_VERDICT_S,
+  DEFAULT_GRAPHICS, applyOverrides, readDeviceSignals, resolveGraphics,
+  tierAbove, tierBelow,
+  type DeviceSignals, type GraphicsSettings, type QualityTier, type ResolvedGraphics,
+} from './QualityTiers';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
 import { buildPitCrew, PIT_JACK_LIFT_M, type PitCrewScene } from './PitCrew';
@@ -167,8 +173,10 @@ const CEILING_RELAX_S = 25;
 
 export interface RendererOptions {
   canvas: HTMLCanvasElement;
-  /** Force a quality tier, or leave undefined to detect. */
-  quality?: 'low' | 'high';
+  /** Force a quality tier, or leave undefined/'auto' to detect and measure. */
+  quality?: 'auto' | QualityTier;
+  /** Per-feature overrides. Omitted means every switch on `auto`. */
+  graphics?: GraphicsSettings;
 }
 
 export class Renderer {
@@ -182,8 +190,42 @@ export class Renderer {
 
   /** Current resolution scale, 0.5 .. 1.0. */
   resolutionScale = 1;
-  /** Detected quality tier. */
-  readonly quality: 'low' | 'high';
+  /**
+   * The tier in force right now.
+   *
+   * NOT `readonly` any more and no longer binary. `auto` moves it during a
+   * session — see `updateAutoTier` — and the Video tab can set it outright.
+   */
+  quality: QualityTier;
+  /**
+   * Everything the tier and the player's overrides resolved to.
+   *
+   * THE THING ISSUE #29 IS ABOUT. Every gate in this renderer used to read
+   * `this.quality === 'high'` directly, which made "the post chain",
+   * "shadows", "MSAA" and "how much geometry" a single indivisible decision
+   * that a phone always lost. They are four fields here and they move
+   * independently.
+   */
+  features: ResolvedGraphics;
+  /** What the player asked for, before the device had a say. */
+  private prefs: GraphicsSettings;
+  private tierPref: 'auto' | QualityTier;
+  private readonly signals: DeviceSignals;
+  /**
+   * The detail level the meshes in the scene were BUILT with.
+   *
+   * Separate from `features.detail` because geometry is not rebuildable in
+   * place: a tier change mid-session moves the post chain, the shadows and the
+   * resolution ceiling, and leaves the meshes exactly as they are. Rebuilding
+   * a circuit's road, kerbs, terrain, signage and twenty-two cars would cost
+   * seconds of stall, which is the opposite of what a promotion is for. The
+   * geometry follows at the next session load, and this field is what the
+   * readout uses to say so honestly rather than claiming a change that has
+   * only half happened.
+   */
+  private builtDetail: 'low' | 'high';
+  /** Fires when the tier moves on its own, so the UI can redraw. */
+  onQualityChange: ((r: ResolvedGraphics) => void) | null = null;
 
   /** Smoothed frame rate, exposed for the HUD's diagnostics. */
   fps = 60;
@@ -266,16 +308,29 @@ export class Renderer {
   constructor(opts: RendererOptions) {
     this.canvas = opts.canvas;
 
-    // Detect a low-power device. A hard device check is unreliable, so this uses
-    // the two signals that actually correlate: core count and whether the browser
-    // reports a touch-primary device.
-    const cores = navigator.hardwareConcurrency ?? 4;
-    const touchPrimary = matchMedia('(pointer: coarse)').matches;
-    this.quality = opts.quality ?? (touchPrimary || cores <= 4 ? 'low' : 'high');
+    // WHAT THIS DEVICE IS ALLOWED TO SPEND. See `QualityTiers.ts` — the whole
+    // decision, and the reasoning behind every threshold in it, lives there.
+    // What used to be here was `touchPrimary || cores <= 4 ? 'low' : 'high'`,
+    // which put every phone that has ever existed on the cheapest image the
+    // renderer can draw with no way to say otherwise (issue #29).
+    this.signals = readDeviceSignals();
+    this.tierPref = opts.quality ?? 'auto';
+    this.prefs = opts.graphics ?? { ...DEFAULT_GRAPHICS };
+    this.features = resolveGraphics(this.tierPref, this.prefs, this.signals);
+    this.quality = this.features.tier;
+    this.builtDetail = this.features.detail;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: opts.canvas,
-      antialias: this.quality === 'high',
+      // The context's own multisampling, which is what antialiases the frame
+      // when the post chain is OFF and does nothing at all when it is on — the
+      // chain draws the scene into its own target, and that target's samples
+      // are set in `PostFX`. Both follow `features.msaa`.
+      //
+      // This is the ONE switch that cannot move without a new GL context, and
+      // therefore the one thing on the Video tab that genuinely needs a
+      // reload. `Renderer.setGraphics` reports it rather than pretending.
+      antialias: this.features.msaa,
       powerPreference: 'high-performance',
       // The depth buffer is all we need; no stencil work here.
       stencil: false,
@@ -295,7 +350,7 @@ export class Renderer {
 
     // Real shadows on capable hardware; the cars also carry a cheap contact
     // shadow so they stay grounded when this is off.
-    this.renderer.shadowMap.enabled = this.quality === 'high';
+    this.renderer.shadowMap.enabled = this.features.shadows;
     // PCF, not PCFSoft: three deprecated the latter and silently substitutes
     // this one anyway, which meant the `shadow.radius` set below was being
     // applied to a mode that had already been swapped out from under it. Asking
@@ -310,18 +365,24 @@ export class Renderer {
 
     this.sun = new THREE.DirectionalLight(0xfff2dd, 2.6);
     this.sun.position.set(-220, 400, 180);
-    if (this.quality === 'high') {
-      this.sun.castShadow = true;
-      // A tight shadow frustum that follows the car. Trying to cover a whole 7km
-      // circuit with one shadow map gives about one texel per metre, which is
-      // worse than no shadow at all.
-      //
-      // 2048 over a 44m box is roughly 21 texels per metre, which is what it
-      // takes for a wishbone — a 22mm tube — to cast anything other than a
-      // dotted line. At the old 1024 over 68m the entire suspension, the halo
-      // and the wing elements were below the sampling limit and simply did not
-      // cast, which is a large part of why the car did not sit on the road.
-      this.sun.shadow.mapSize.set(2048, 2048);
+    // The shadow frustum is CONFIGURED UNCONDITIONALLY and only `castShadow`
+    // follows the tier. Configuring it inside the tier branch meant the shadow
+    // camera could never be turned on later without reproducing all of this,
+    // and `sun.target` — which `updateShadowFocus` moves onto the car every
+    // frame — was not even in the scene graph on a device that started low.
+    // Setting up a light rig costs nothing until something renders with it.
+    //
+    // A tight shadow frustum that follows the car. Trying to cover a whole 7km
+    // circuit with one shadow map gives about one texel per metre, which is
+    // worse than no shadow at all.
+    //
+    // 2048 over a 44m box is roughly 21 texels per metre, which is what it
+    // takes for a wishbone — a 22mm tube — to cast anything other than a
+    // dotted line. At the old 1024 over 68m the entire suspension, the halo
+    // and the wing elements were below the sampling limit and simply did not
+    // cast, which is a large part of why the car did not sit on the road.
+    this.sun.shadow.mapSize.set(2048, 2048);
+    {
       const c = this.sun.shadow.camera;
       c.near = 1;
       c.far = 200;
@@ -329,13 +390,14 @@ export class Renderer {
       c.right = 22;
       c.top = 22;
       c.bottom = -22;
-      this.sun.shadow.bias = -0.0006;
-      this.sun.shadow.normalBias = 0.018;
-      // PCF samples a fixed kernel; the radius widens it into a penumbra rather
-      // than a hard stencil edge.
-      this.sun.shadow.radius = 2.6;
-      this.scene.add(this.sun.target);
     }
+    this.sun.shadow.bias = -0.0006;
+    this.sun.shadow.normalBias = 0.018;
+    // PCF samples a fixed kernel; the radius widens it into a penumbra rather
+    // than a hard stencil edge.
+    this.sun.shadow.radius = 2.6;
+    this.sun.castShadow = this.features.shadows;
+    this.scene.add(this.sun.target);
     this.scene.add(this.sun);
 
     this.fill = new THREE.DirectionalLight(0xbcd2f2, 0.55);
@@ -350,7 +412,7 @@ export class Renderer {
     this.envProbe = new EnvProbe(this.renderer);
     this.envProbe.apply(this.scene, 'day', 0);
 
-    this.effects = new EffectsDirector(this.quality);
+    this.effects = new EffectsDirector(this.features.detail);
     this.scene.add(this.effects.root);
 
     // Capture the scene's real cost the instant it finishes drawing.
@@ -366,14 +428,118 @@ export class Renderer {
       this.sceneTriangles = this.renderer.info.render.triangles;
     };
 
-    this.post = new PostFX(this.renderer, this.scene, this.director.camera, this.quality);
+    this.post = new PostFX(this.renderer, this.scene, this.director.camera, {
+      post: this.features.post,
+      msaa: this.features.msaa,
+    });
 
+    // A stated resolution ceiling applies to the very first frame, not from
+    // the scaler's first decision two seconds in.
+    this.resolutionScale = Math.min(MAX_SCALE, this.features.maxResolutionScale);
+    this.climbCeiling = this.resolutionScale;
     this.applySize();
   }
 
   /** True when the frame goes through the post chain rather than straight out. */
   get postEnabled(): boolean {
     return this.post.enabled;
+  }
+
+  /**
+   * The binary tier handed to the menu's own renderers (`CarStage`, the intro).
+   *
+   * DELIBERATELY NOT `features.detail`. Those two build a SECOND GL context,
+   * with their own shadow map, their own MSAA and their own light rig, and
+   * they run on a screen the player is reading rather than racing on — so the
+   * question they are answering is "can this device afford a second renderer",
+   * not "how much geometry can it hold". `medium` says yes to geometry and
+   * nothing about a second context, and `probe:menucost` is what guards the
+   * menu's budget, so this stays exactly as conservative as it was before the
+   * middle tier existed. Widening it is a separate measurement.
+   */
+  get menuQuality(): 'low' | 'high' {
+    return this.quality === 'high' ? 'high' : 'low';
+  }
+
+  /**
+   * Applies a change made on the Video tab, mid-session where possible.
+   *
+   * WHAT MOVES NOW AND WHAT DOES NOT, and this is measured rather than
+   * assumed:
+   *
+   *   - **Post chain: now.** `PostFX.setEnabled` allocates or frees the
+   *     composer. Costs one frame.
+   *   - **Shadows: now.** `shadowMap.enabled` changes which shader variant
+   *     every material needs, so every material in the scene has to be told to
+   *     recompile — `needsUpdate` below. That costs a visible stall of a few
+   *     hundred milliseconds, which is why it is done here on a settings
+   *     screen and NOT from the adaptive pass mid-lap.
+   *   - **Resolution ceiling: now**, on the next scaler decision.
+   *   - **Mesh detail: at the next session.** Geometry is not editable in
+   *     place; see `builtDetail`.
+   *   - **MSAA: at the next page load.** It is an attribute of the GL context
+   *     and three cannot change it on a live one. Returned rather than
+   *     swallowed, so the screen can say so instead of lying.
+   *
+   * @returns what could not be applied without a reload or a new session.
+   */
+  setGraphics(tier: 'auto' | QualityTier, prefs: GraphicsSettings): {
+    needsReload: boolean; needsNewSession: boolean;
+  } {
+    this.tierPref = tier;
+    this.prefs = { ...prefs };
+    const next = resolveGraphics(tier, this.prefs, this.signals);
+    // A change made by hand clears the adaptive pass's latch, so a tier it
+    // had given up on can be tried again. Switching back to `auto` restarts
+    // from detection rather than from whatever the pass had measured — the
+    // measurement is better information, but it was taken under the tier the
+    // player has just changed, and carrying it forward would mean `auto` did
+    // something different depending on what you had it set to first.
+    this.autoLatchedCeiling = null;
+    this.applyResolved(next);
+    return {
+      needsReload: this.renderer.getContext().getContextAttributes()?.antialias !== next.msaa,
+      needsNewSession: this.builtDetail !== next.detail,
+    };
+  }
+
+  /** Puts a resolved configuration into effect. The only writer of `features`. */
+  private applyResolved(next: ResolvedGraphics): void {
+    const prev = this.features;
+    this.features = next;
+    this.quality = next.tier;
+
+    if (next.shadows !== prev.shadows) {
+      this.renderer.shadowMap.enabled = next.shadows;
+      this.sun.castShadow = next.shadows;
+      // Turning the shadow map on or off changes the `#define` set every
+      // material was compiled with. Without this the scene keeps drawing with
+      // the old program and the change appears to do nothing at all — which is
+      // exactly the failure mode issue #29 is about, so it is not left to
+      // chance.
+      this.scene.traverse((o) => {
+        const m = (o as THREE.Mesh).material;
+        if (!m) return;
+        if (Array.isArray(m)) for (const x of m) x.needsUpdate = true;
+        else m.needsUpdate = true;
+      });
+    }
+
+    if (next.post !== prev.post || next.msaa !== prev.msaa) {
+      this.post.setEnabled(next.post, next.msaa);
+      // The chain was rebuilt at the default size and has to be told the size
+      // the game is actually running at, including the scaler's current
+      // position. `applySize` is the one place that arithmetic lives.
+      this.post.setCamera(this.director.camera, this.scene);
+    }
+
+    if (next.maxResolutionScale < this.resolutionScale) {
+      this.resolutionScale = next.maxResolutionScale;
+      this.resetFrameWindow();
+    }
+    this.climbCeiling = Math.min(this.climbCeiling, next.maxResolutionScale);
+    this.applySize();
+    this.onQualityChange?.(next);
   }
 
   /**
@@ -560,14 +726,18 @@ export class Renderer {
     // these are the objects the simulation collides against, and the only way
     // for what you can see and what you can hit to be the same thing is for
     // both to read the same list.
-    this.trackMeshes = buildTrackMeshes(engine.track, this.quality, engine.world);
+    // The detail level this scene's geometry is being built at. A tier change
+    // made later in the session cannot alter it — see `builtDetail`.
+    this.builtDetail = this.features.detail;
+
+    this.trackMeshes = buildTrackMeshes(engine.track, this.features.detail, engine.world);
     this.scene.add(this.trackMeshes.root);
 
     // The pit garages, the paddock behind them and the main grandstand. Built
     // separately from the circuit because it is architecture rather than track
     // surface, and because every session that is not a race start opens looking
     // straight at it.
-    this.paddock = buildPaddock(engine.track, this.quality, engine.world);
+    this.paddock = buildPaddock(engine.track, this.features.detail, engine.world);
     this.scene.add(this.paddock.root);
 
     for (const car of engine.cars) {
@@ -580,7 +750,7 @@ export class Renderer {
       const visual = buildCar(car.team.colour, car.team.accent, {
         number: car.driver.raceNumber,
         code: car.driver.code,
-        quality: this.quality,
+        quality: this.features.detail,
         withCockpit: car === cockpitCar,
         compound: car.compound,
         // Per TEAM, not per car: a team's two cars run the same rear wing.
@@ -614,11 +784,11 @@ export class Renderer {
     // light. Exactly ONE crew exists — it follows whichever car is being
     // serviced and hides when none is — so a pit lane with nothing happening in
     // it costs a visibility test. See `PitCrew.ts`.
-    this.pitCrew = buildPitCrew(this.quality);
+    this.pitCrew = buildPitCrew(this.features.detail);
     this.scene.add(this.pitCrew.root);
 
     // The safety car, parked in its garage until race control sends it out.
-    this.safetyCar = buildSafetyCar(this.quality);
+    this.safetyCar = buildSafetyCar(this.features.detail);
     this.safetyCar.root.visible = false;
     this.scene.add(this.safetyCar.root);
 
@@ -1006,9 +1176,88 @@ export class Renderer {
     this.sessionTime = 0;
     this.graceLeft = SCALE_GRACE_S;
     this.scaleCooldown = 0;
-    this.climbCeiling = MAX_SCALE;
+    this.climbCeiling = Math.min(MAX_SCALE, this.features.maxResolutionScale);
     this.lastClimbAt = -1e9;
     this.lastDropAt = -1e9;
+    this.comfortableFor = 0;
+    this.lastTierMoveAt = -1e9;
+  }
+
+  /** Seconds the frame budget has been comfortable AT the scaler's ceiling. */
+  private comfortableFor = 0;
+  private lastTierMoveAt = -1e9;
+  /**
+   * A tier the adaptive pass tried and had to give back. Never retried.
+   *
+   * Unlike the resolution scaler's `climbCeiling`, this does NOT relax. A
+   * resolution that failed once may succeed later because the machine got less
+   * busy; a tier that failed cost the player a stall to find out — shadows
+   * recompile every material — and doing that to them every twenty-five
+   * seconds for the rest of the race would be worse than the tier they lost.
+   */
+  private autoLatchedCeiling: QualityTier | null = null;
+
+  /**
+   * MEASURES THE DEVICE AND MOVES THE TIER. The other half of `auto`.
+   *
+   * This exists because detection is a dead end. `hardwareConcurrency` is
+   * clamped on iOS and `deviceMemory` is absent there, so no static rule can
+   * separate a 2026 phone from a 2015 one — see the module note in
+   * `QualityTiers.ts`. What CAN be separated is a device that is holding its
+   * frame budget from one that is not, and the renderer already computes that
+   * every frame for the resolution scaler.
+   *
+   * The promotion test is deliberately conservative and has three parts,
+   * because a false promotion is expensive:
+   *
+   *   1. The frame cost is under `AUTO_PROMOTE_MS`, and
+   *   2. the resolution scaler is AT its ceiling — a device that is short of
+   *      frames spends its time below the ceiling, so this is what stops a
+   *      machine that only looks fast because it is rendering a quarter of the
+   *      pixels from asking for the post chain as well, and
+   *   3. both have been true continuously for `AUTO_PROMOTE_AFTER_S`.
+   *
+   * Demotion is the mirror image and is latched. Resolution moves first in
+   * both directions: `AUTO_DEMOTE_MS` sits above the scaler's `DROP_MS`, so a
+   * device in trouble gives up pixels before it gives up the picture.
+   */
+  private updateAutoTier(dt: number, med: number): void {
+    if (!this.features.adaptive) return;
+    if (this.sessionTime - this.lastTierMoveAt < AUTO_VERDICT_S) return;
+
+    const atCeiling = this.resolutionScale >= Math.min(this.climbCeiling, MAX_SCALE) - 1e-6;
+
+    if (med > AUTO_DEMOTE_MS && this.resolutionScale <= MIN_SCALE + 1e-6) {
+      const down = tierBelow(this.features.tier);
+      if (!down) return;
+      // What failed is the tier we are LEAVING, and it is never tried again.
+      this.autoLatchedCeiling = this.features.tier;
+      this.moveTier(down);
+      return;
+    }
+
+    if (med < AUTO_PROMOTE_MS && atCeiling) {
+      this.comfortableFor += dt;
+    } else {
+      this.comfortableFor = 0;
+      return;
+    }
+    if (this.comfortableFor < AUTO_PROMOTE_AFTER_S) return;
+
+    const up = tierAbove(this.features.tier);
+    if (!up || up === this.autoLatchedCeiling) return;
+    // A promotion that would turn the shadow map on recompiles every material
+    // in the scene, which is a stall of a few hundred milliseconds. It is
+    // taken once, on a device that has just proved it has eight seconds of
+    // headroom, and it is never taken twice because of the latch above.
+    this.moveTier(up);
+  }
+
+  private moveTier(t: QualityTier): void {
+    this.comfortableFor = 0;
+    this.lastTierMoveAt = this.sessionTime;
+    this.applyResolved(applyOverrides(t, this.features.detectedTier, true, this.prefs));
+    this.resetFrameWindow();
   }
 
   /**
@@ -1057,13 +1306,22 @@ export class Renderer {
     const med = this.frameCostMs();
     this.fps = 1000 / Math.max(med, 0.001);
 
+    // Whether the TIER should move is judged on the same window and before the
+    // cooldown, because the tier's own timers are far longer than the scaler's
+    // and it must not be starved by a scaler that is busy oscillating.
+    this.updateAutoTier(dt, med);
+
     if (this.scaleCooldown > 0) return;
+
+    // Whatever the tier or the player allows. `MAX_SCALE` is the renderer's
+    // hard limit; this is the one in force.
+    const ceiling = Math.min(MAX_SCALE, this.features.maxResolutionScale);
 
     // A ceiling learned from a failed climb is not permanent. Machines get
     // busy and then stop being busy — the whole point of this pass is that it
     // is allowed to change its mind in both directions.
-    if (this.climbCeiling < MAX_SCALE && this.sessionTime - this.lastDropAt > CEILING_RELAX_S) {
-      this.climbCeiling = Math.min(MAX_SCALE, this.climbCeiling + SCALE_STEP_UP);
+    if (this.climbCeiling < ceiling && this.sessionTime - this.lastDropAt > CEILING_RELAX_S) {
+      this.climbCeiling = Math.min(ceiling, this.climbCeiling + SCALE_STEP_UP);
       this.lastDropAt = this.sessionTime;
     }
 
@@ -1071,14 +1329,15 @@ export class Renderer {
     if (med > DROP_MS && this.resolutionScale > MIN_SCALE) {
       // If this arrives right after a climb, the climb is what caused it.
       if (this.sessionTime - this.lastClimbAt < CLIMB_VERDICT_S) {
-        this.climbCeiling = clamp(this.resolutionScale - SCALE_STEP_UP, MIN_SCALE, MAX_SCALE);
+        this.climbCeiling = clamp(this.resolutionScale - SCALE_STEP_UP, MIN_SCALE, ceiling);
       }
       const step = clamp(SCALE_STEP_DOWN * (med / DROP_MS), SCALE_STEP_DOWN, SCALE_STEP_DOWN_MAX);
-      this.resolutionScale = clamp(this.resolutionScale - step, MIN_SCALE, MAX_SCALE);
+      this.resolutionScale = clamp(this.resolutionScale - step, MIN_SCALE, ceiling);
       this.scaleCooldown = 1.2;
       this.lastDropAt = this.sessionTime;
-    } else if (med < CLIMB_MS && this.resolutionScale < Math.min(MAX_SCALE, this.climbCeiling)) {
-      this.resolutionScale = clamp(this.resolutionScale + SCALE_STEP_UP, MIN_SCALE, this.climbCeiling);
+    } else if (med < CLIMB_MS && this.resolutionScale < Math.min(ceiling, this.climbCeiling)) {
+      this.resolutionScale = clamp(this.resolutionScale + SCALE_STEP_UP, MIN_SCALE,
+        Math.min(ceiling, this.climbCeiling));
       this.scaleCooldown = 2.5;
       this.lastClimbAt = this.sessionTime;
     }
