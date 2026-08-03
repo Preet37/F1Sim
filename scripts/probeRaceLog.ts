@@ -144,6 +144,8 @@ interface RaceLog {
   /** Every penalty on every car at the flag. */
   penalties: number;
   penaltiesBySource: Map<PenaltySource, number>;
+  /** Verbatim reasons, numbers stripped, so the shape of them shows. */
+  penaltyReasons: Map<string, number>;
   /** How many separate cars carry at least one penalty badge at the flag. */
   carsWithPenalty: number;
   /**
@@ -157,6 +159,15 @@ interface RaceLog {
   strikes: number;
   /** Laps completed by the whole field, for a per-car-lap rate. */
   carLaps: number;
+  /**
+   * Where each contact happened, as a corner name.
+   *
+   * "Nineteen contacts a race at Spa" and "nineteen contacts a race, twelve of
+   * them at the same corner" are different bug reports and the total cannot
+   * tell them apart — the same reason `probe:attrition` clusters retirements by
+   * lap distance rather than counting them.
+   */
+  contactWhere: Map<string, number>;
   /** The player's car. */
   playerRetired: string;
   playerContacts: number;
@@ -204,6 +215,7 @@ function runRace(
   const player = engine.cars[gridSlot];
 
   const touching = new Set<number>();
+  const contactWhere = new Map<string, number>();
   let contacts = 0;
   let contactsLap1 = 0;
   let playerContacts = 0;
@@ -238,6 +250,11 @@ function runRace(
             contacts++;
             if (ca.lap < 1 || cb.lap < 1) contactsLap1++;
             if (a === gridSlot || b === gridSlot) playerContacts++;
+            // Named where possible; otherwise the 100m box it happened in, so
+            // contacts on a straight still cluster instead of scattering.
+            const where = engine.track.cornerNameAt(ca.s) ||
+              'straight @' + (Math.round(ca.s / 100) * 100) + 'm';
+            contactWhere.set(where, (contactWhere.get(where) ?? 0) + 1);
           }
         } else if (g > CLEAR_M) {
           touching.delete(key);
@@ -247,6 +264,7 @@ function runRace(
   }
 
   const penaltiesBySource = new Map<PenaltySource, number>();
+  const penaltyReasons = new Map<string, number>();
   let penalties = 0;
   let carsWithPenalty = 0;
   let strikes = 0;
@@ -260,6 +278,10 @@ function runRace(
     for (const p of real) {
       const s = sourceOf(p.reason);
       penaltiesBySource.set(s, (penaltiesBySource.get(s) ?? 0) + 1);
+      // Keep the shape of the reason, not its numbers — "Track limits xN at T"
+      // is one kind of penalty however many times it happened.
+      const shape = p.kind + ': ' + p.reason.replace(/[-0-9.]+/g, 'N');
+      penaltyReasons.set(shape, (penaltyReasons.get(shape) ?? 0) + 1);
     }
     if (wearsBadge(car)) carsWithPenalty++;
   }
@@ -273,9 +295,11 @@ function runRace(
     contactsLap1,
     penalties,
     penaltiesBySource,
+    penaltyReasons,
     carsWithPenalty,
     strikes,
     carLaps,
+    contactWhere,
     playerRetired: player.retired ? player.retirementReason : '',
     playerContacts,
     playerPenalties: player.penalties.filter((p) => p.kind !== 'track-limits-warning').length,
@@ -322,6 +346,9 @@ interface Agg {
   playerOut: number; playerContacts: number; playerPenalties: number;
   bySource: Map<PenaltySource, number>;
   byReason: Map<string, number>;
+  /** Verbatim penalty reasons, numbers stripped, so the shape of them shows. */
+  byPenaltyReason: Map<string, number>;
+  contactWhere: Map<string, number>;
   worstRetired: number; worstPenalisedCars: number;
 }
 
@@ -330,7 +357,8 @@ function emptyAgg(): Agg {
     races: 0, laps: 0, retired: 0, retiredLap1: 0, contacts: 0, contactsLap1: 0,
     penalties: 0, carsWithPenalty: 0, strikes: 0, carLaps: 0,
     playerOut: 0, playerContacts: 0, playerPenalties: 0,
-    bySource: new Map(), byReason: new Map(), worstRetired: 0, worstPenalisedCars: 0,
+    bySource: new Map(), byReason: new Map(), byPenaltyReason: new Map(),
+    contactWhere: new Map(), worstRetired: 0, worstPenalisedCars: 0,
   };
 }
 
@@ -360,7 +388,13 @@ for (const distance of DISTANCES) {
       agg.playerContacts += log.playerContacts;
       agg.playerPenalties += log.playerPenalties;
       for (const [s, n] of log.penaltiesBySource) agg.bySource.set(s, (agg.bySource.get(s) ?? 0) + n);
+      for (const [r, n] of log.penaltyReasons) {
+        agg.byPenaltyReason.set(r, (agg.byPenaltyReason.get(r) ?? 0) + n);
+      }
       for (const [r, n] of log.retiredBy) agg.byReason.set(r, (agg.byReason.get(r) ?? 0) + n);
+      for (const [w, n] of log.contactWhere) {
+        agg.contactWhere.set(w, (agg.contactWhere.get(w) ?? 0) + n);
+      }
       agg.worstRetired = Math.max(agg.worstRetired, log.retired);
       agg.worstPenalisedCars = Math.max(agg.worstPenalisedCars, log.carsWithPenalty);
 
@@ -414,8 +448,15 @@ for (const [distance, a] of perDistance) {
   for (const [source, n] of [...a.bySource].sort((x, y) => y[1] - x[1])) {
     console.log(`    ${String(n).padStart(4)}  ${source}   (${(n / a.races).toFixed(2)} a race)`);
   }
+  for (const [reason, n] of [...a.byPenaltyReason].sort((x, y) => y[1] - x[1]).slice(0, 8)) {
+    console.log(`        ${String(n).padStart(4)}  ${reason}`);
+  }
   console.log(`  ${distance.toUpperCase()} — contacts on the opening lap: ` +
     `${(a.contactsLap1 / a.races).toFixed(2)} of ${(a.contacts / a.races).toFixed(2)} a race`);
+  const where = [...a.contactWhere].sort((x, y) => y[1] - x[1]).slice(0, 8);
+  for (const [w, n] of where) {
+    console.log(`        ${String(n).padStart(4)}  ${w}   (${(n / a.races).toFixed(1)} a race)`);
+  }
   // The input to the penalty column. A real Grand Prix produces a handful of
   // sanctionable excursions across twenty cars over a whole race — well under
   // 0.02 a car-lap — and the number above about a tenth of that is what turns
