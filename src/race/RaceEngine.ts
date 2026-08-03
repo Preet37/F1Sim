@@ -1995,8 +1995,33 @@ export class RaceEngine {
       if (other.inPitLane !== car.inPitLane) continue;
       const gap = loopDelta(car.s, other.s, len);
 
-      if (gap > 0 && gap < bestAhead) { bestAhead = gap; aheadCar = other; }
-      if (gap < 0 && gap > bestBehind) { bestBehind = gap; behindCar = other; }
+      // A car that has STOPPED on the road is excluded from the racing picture
+      // for exactly the reason `sittingOut` is, and the report above is the
+      // same report: everything that reads `ahead` holds station on it, and
+      // holding station on a car that is not moving means stopping.
+      //
+      // Three separate mechanisms were measured doing it. The follow-distance
+      // preference is `ahead.speedMs` times a shade under one, which is zero.
+      // Under a neutralisation the queue-gap rule holds this car off
+      // `queueAheadM`, and `queueAheadM` is built from `ahead` — so a field
+      // slowed down BECAUSE somebody stopped then formed up behind the car
+      // that stopped, at zero, for the rest of the race. And the third is the
+      // one the AI cannot see at all: the car behind holds station on THIS
+      // car, which is now also stationary, all the way back through the field.
+      // Measured at Monza in `probe:blockage`, sixteen of twenty cars queued
+      // up and were retired for stopping on track inside four minutes.
+      //
+      // It stays in the COLLISION picture below, which is what keeps this car
+      // out of the back of it, and it is published as `p.blockage`, which is
+      // what tells the driver to go round. Not being raced is not the same as
+      // not being there.
+      const stoppedOnRoad = other.stuckTimer > BLOCKAGE_SETTLE_S &&
+        Math.abs(other.lateral) < this.track.halfWidthAt(other.s) + 1.0;
+
+      if (!stoppedOnRoad) {
+        if (gap > 0 && gap < bestAhead) { bestAhead = gap; aheadCar = other; }
+        if (gap < 0 && gap > bestBehind) { bestBehind = gap; behindCar = other; }
+      }
 
       // Alongside: within a car length longitudinally and beside us laterally.
       if (Math.abs(gap) < 5.2) {
@@ -2025,15 +2050,11 @@ export class RaceEngine {
         if (safe < hazardScore) { hazardScore = safe; hazardCar = other; hazardGap = gap; }
       }
 
-      // Stopped on the road in front: something to go round, not to queue
-      // behind. Qualified by how long it has been standing rather than by how
-      // slowly it is going — see `BLOCKAGE_SETTLE_S` — and restricted to cars
-      // on the racing surface, because a car crawling through the run-off is
-      // not in anybody's way and dragging the field off line for it would be a
-      // new bug of the same shape.
-      if (gap > 0 && gap < blockGap && gap < blockLook &&
-          other.stuckTimer > BLOCKAGE_SETTLE_S &&
-          Math.abs(other.lateral) < this.track.halfWidthAt(other.s) + 1.0) {
+      // ...and the same car, published as the thing to go ROUND. Restricted to
+      // the racing surface, because a car crawling through the run-off is not
+      // in anybody's way and dragging the field off line for it would be a new
+      // bug of the same shape.
+      if (stoppedOnRoad && gap > 0 && gap < blockGap && gap < blockLook) {
         blockCar = other;
         blockGap = gap;
       }
