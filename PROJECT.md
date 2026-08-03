@@ -189,6 +189,7 @@ Run `npm run` to list. The important ones:
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
 | `probe:qualiboard` | Knockout qualifying: board and grid agree |
 | `probe:identity` | Player's name reaches car, standings, save |
+| `probe:gearbox` | The gear a key press puts you in, and that you can get back out of it. The **only** probe that drives `KeyboardEvent → InputController → playerControls → VehiclePhysics` instead of hand-building a controls literal — which is exactly why `probe:drivability` and `probe:handling` could not have caught issue #45 |
 | `probe:season` | 100 career-years |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
@@ -408,6 +409,44 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - Text fields: `preventDefault` on every game key with no check on the event target, so the
   career name field silently ate `w a s d b h c p e l t f`, the digits, space and Enter.
 
+### The gearbox: one key press, locked in fourth for the session (issue #45)
+The player pressed a digit while *"trying to run something on the careers page"* and drove
+the rest of the session at **205 km/h in 4th of 8 at 15,000 rpm with every shift light red**,
+unable to upshift or downshift. Two independent latches, either of which alone was enough:
+
+- **`InputController.gearRequest` was a latch.** `4` set it; only `0` cleared it, and `0`
+  appeared in no menu, on no screen and in no help text. The controls overlay listed
+  fourteen keys and **not one of them was a gear**.
+- **`VehiclePhysics.updateGearbox` read that latch as a LEVEL.** It compared the request
+  against the current gear, shifted if they differed, and `return`ed. After the first shift
+  `want === this.gear` forever, so it returned having done nothing and **the automatic block
+  below it was unreachable for the rest of the session.** The arithmetic matches the
+  screenshot exactly: 205 km/h ÷ 0.36m = 158.2 rad/s × 11.42 (4th) × 9.5493 = 17,253 rpm,
+  clamped by `:1406` to the 15,000 redline.
+- **The route in.** `input.attach` runs once at startup and releases only on teardown, so the
+  window `keydown` listener is live on every menu and every career screen. The text-field
+  guard above was **intact and was never the hole** — the digit was pressed with a *button*
+  focused, where `isTextEntry` correctly returns false. `E` had the same reach and silently
+  changed the ERS mode of a session that had not started.
+- **Fixed four ways, deliberately overlapping.** The mode is split out of the number
+  (`gearMode`, published as 0 unless manual, toggled by `G`, printed as `AUTO`/`MANUAL`
+  under the gear disc); the physics reads the request as an **edge** against
+  `servedGearRequest`; a **limiter backstop upshifts in BOTH modes**, because `gearRequest`
+  is written by the AI, `RaceEngine` and a dozen harnesses as well as by the player; and an
+  over-revving downshift is raised to the lowest gear that survives. Keys are now driving
+  inputs only while a session is running.
+- **Measured, `probe:gearbox`, 25 checks.** On `main`: **gear 4 of 8, 26.42s of 30.00s
+  stranded at ≥98.5% of redline**. After: **gear 8, 0.15s stranded**, top speed within
+  **0.0%** of a reference car in the same run whose driver never touched a key. A fixed
+  "top speed ≥ 300 km/h" bar would have **passed the bug** — the rpm clamp means a car held
+  in 4th still crawls to 300.1 km/h in thirty seconds — so the bar is a reference run driven
+  in the same process, not a number.
+- **Proved it can go red, twice.** Restoring the original early-return latch in
+  `VehiclePhysics`: 6 of 25 red, §1 back to *"finished in gear 4, expected 8"* and
+  *"26.42s stranded"*. Deleting `input.enabled = inSession` from `main.ts`: 1 red on the
+  wiring check — added precisely because everything else in §7 tests the gate and nothing
+  tested that anything closes it.
+
 ### Race rules
 - **No DNF in qualifying.** Qualifying is a *Lap Time Classified Session*; Art. B2.4.3b
   gives the only three ways out of the classification and crashing is on none of them —
@@ -597,6 +636,37 @@ overrule it in either direction.**
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
   `probe:pitstop` §1 and §6.
+
+### The swerving (#46) is NOT the gearbox (#45), and it is NOT the frame-rate fix
+Reported in the same message as #45 — *"additionally, the car is swerving a lot I thought
+this was fixed al?"* — so the first job was to find out whether it was one bug or two.
+Both leading candidates are now eliminated by measurement, and **nobody is on what is left**.
+
+- **The frame-rate steering fix has not regressed.** `probe:framerate`, the `catch gentle`
+  case, on `main` today: peak steer input **0.6133 .. 0.6704 across 15–144fps, 9.3% spread**,
+  off-line deviation at 15fps **0.132m**. §6 records the post-fix numbers as 9.3% and 0.13m.
+  Identical. This was the cheapest candidate to check because it is the only one with a
+  recorded before/after, and it is clean.
+- **The gearbox lock does not cause the swerve.** `probe:gearbox` §9 flies the identical 2Hz
+  pulsed slalom, 220 km/h entry, 6.0s, twice — once in automatic, once with `physics.gear`
+  pinned to 4 every solver step (constructed directly, so the comparison survives the #45
+  fix instead of quietly becoming two identical runs). Automatic **8.685m** lateral, peak
+  rear slip 1.39°, peak yaw 0.4385 rad/s. Pinned in 4th: **7.572m**, 1.59°, 0.4797 rad/s —
+  a **0.872×** lateral excursion ratio. The stranded car yaws about 9% harder and wanders
+  **less**, not more. #45 is not what the player was feeling when they said "swerving".
+- **What that leaves, and the honest gap.** `probe:handling`, `probe:drivability`,
+  `probe:turnin` and `probe:racingline` all exit 0 on `main` while the player can see the
+  car swerving. Two of those four are **pure reporters with no assertions at all** —
+  `probe:handling` and `probe:drivability` print tables and cannot go red — so "they pass"
+  is much weaker evidence than it looks. Per §3.2 that gap is itself the finding.
+  Unexamined candidates, in the order the issue lists them: the track-surface and banking
+  work that landed 2026-08-03 (`TrackMesh.ts`, `TrackSpline.ts`), and whatever the player
+  means by swerving that a 6-second open-loop slalom does not reproduce. **#46 stays open.**
+- One thing seen in passing and not chased: `probe:racingline`'s driver-in-the-loop section
+  reports worst load **above 1.00** — the car leaves the road — at Monaco 1.042, Zandvoort
+  1.032, COTA 1.032, Spa 1.017, Suzuka 1.012, Interlagos 1.001, and that section is
+  explicitly *"reported, not asserted"*. It is a different complaint from swerving (*"if the
+  racing line is green how did i go off the track?"*), but it is sitting there unasserted.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not
