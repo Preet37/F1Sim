@@ -88,10 +88,13 @@ async function main(): Promise<void> {
   page.setDefaultTimeout(240_000);
 
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   page.on('console', (m) => {
     const t = m.text();
-    if (m.type() === 'error' || m.type() === 'warning') errors.push(`${m.type()}: ${t}`);
+    // 'warn', not 'warning' — puppeteer's ConsoleMessageType has no 'warning'
+    // member, so this comparison was constantly false and the audit has never
+    // recorded a single console warning in its life.
+    if (m.type() === 'error' || m.type() === 'warn') errors.push(`${m.type()}: ${t}`);
   });
 
   await page.goto(url, { waitUntil: 'load', timeout: 120_000 });

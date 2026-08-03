@@ -27,7 +27,7 @@ function run(trackId: string, laps: number, seed: number): Row {
   const def = getCircuit(trackId);
   const config: SessionConfig = {
     kind: 'race', name: 'Grand Prix', durationS: 0, laps,
-    playerIndex: -1, standingStart: true, seed,
+    playerIndex: -1, standingStart: true, pitLaneStart: false, seed,
   };
   const engine = new RaceEngine(def, config);
 

@@ -63,7 +63,7 @@ async function main(): Promise<void> {
 
   const page: Page = await browser.newPage();
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   // Chrome asks every document for a favicon it has not been offered, and the
   // resulting 404 made this sweep exit non-zero on every clean run. See the
   // same note in `shootHud.ts`.

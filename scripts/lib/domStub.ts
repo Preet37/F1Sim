@@ -55,9 +55,17 @@ function createElement(tag: string): StubElement {
 
 /** Installs the stub as the global `document`. Safe to call more than once. */
 export function installDomStub(): void {
-  const g = globalThis as unknown as { document?: { createElement?: unknown } };
+  const g = globalThis as unknown as {
+    document?: { createElement?: unknown; createElementNS?: unknown };
+  };
   if (g.document) return;
-  g.document = { createElementNS: (_ns: string, tag: string) => createElement(tag) };
+  // BOTH entry points. The type annotation used to name `createElement` while
+  // the object only supplied `createElementNS`, so the mismatch was invisible
+  // and the half that `src/main.ts` uses on every screen it builds was missing.
+  g.document = {
+    createElement: (tag: string) => createElement(tag),
+    createElementNS: (_ns: string, tag: string) => createElement(tag),
+  };
 }
 
 /**
