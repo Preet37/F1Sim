@@ -1,4 +1,5 @@
 import { SAVE_MINOR, SAVE_VERSION, type CareerState } from './CareerState';
+import { defaultDepartments, emptyLedger, type Ledger } from './MyTeam';
 
 /**
  * Reading and writing a career, across versions of the game.
@@ -253,6 +254,34 @@ function backfill(state: CareerState): void {
   n.rivalries ??= [];
   n.flags ??= {};
   n.firedEvents ??= [];
+
+  // THE MY TEAM BLOCK. `state.team ??= null` above only guarantees the block
+  // exists or does not; it says nothing about what is inside it, and everything
+  // inside it is arithmetic. `capSpent` sums three ledger lines and
+  // `ledgerExpenditure` sums four more, so ONE missing line turns a career's
+  // whole cost cap into NaN — a number that compares false against every
+  // threshold, so the cap silently stops binding rather than throwing. The mode
+  // is young and its state has already gained nine fields and lost two; this is
+  // what makes the next one survive contact with a save written yesterday.
+  const t = state.team;
+  if (t) {
+    t.cashUsd ??= 0;
+    t.ledger ??= emptyLedger();
+    for (const line of Object.keys(emptyLedger()) as (keyof Ledger)[]) {
+      t.ledger[line] ??= 0;
+    }
+    t.departments ??= defaultDepartments();
+    t.projects ??= [];
+    t.nextProjectId ??= t.projects.length + 1;
+    t.powerUnitYearsLeft ??= 0;
+    t.developmentBanRounds ??= 0;
+    t.pointsDeducted ??= 0;
+    t.trim ??= t.accent ?? 0xe8e0d0;
+    t.liveryFamily ??= 'halo';
+    t.liveryFinish ??= 'satin';
+    t.liveryMark ??= 0;
+    t.baseCountry ??= '';
+  }
 }
 
 /** True when a decoded save needs its world rebuilt — a version 1 career. */

@@ -428,6 +428,22 @@ export class VehiclePhysics {
   private shiftTimer = 0;
   /** True while the gearbox is between gears and torque is cut. */
   get isShifting(): boolean { return this.shiftTimer > 0; }
+  /**
+   * The manual request this gearbox has already acted on.
+   *
+   * `VehicleControls.gearRequest` is a LEVEL — whoever set it keeps setting it,
+   * every frame, until they set something else — and issue #45 was what happens
+   * when a level is read as though it were a command. The old code compared the
+   * level against the current gear and shifted whenever they differed, which
+   * means the level could never be obeyed and finished with: any shift the
+   * gearbox made on its own was undone on the very next step, and the automatic
+   * block after the early `return` was unreachable for the rest of the session.
+   *
+   * Remembering the last request turns the level back into an edge. A NEW number
+   * is a command and is acted on; the same number arriving again is the same
+   * command, already served, and the gearbox is free to protect itself.
+   */
+  private servedGearRequest = 0;
 
   // --- Tires ---------------------------------------------------------------
   readonly frontTires = new TireState();
@@ -692,6 +708,10 @@ export class VehiclePhysics {
     this.yawRate = 0;
     this.gear = speedMs > 5 ? 3 : 1;
     this.shiftTimer = 0;
+    // A placed car has not been given a gear by anybody, so the next request it
+    // sees is a new one. Leaving this set would mean a car re-gridded between
+    // sessions ignored the first gear its driver asked for.
+    this.servedGearRequest = 0;
     this.alphaFrontLag = 0;
     this.alphaRearLag = 0;
     this.boost = 0;
@@ -1405,18 +1425,62 @@ export class VehiclePhysics {
     const wheelRadPerS = Math.abs(vx) / spec.tireRadiusM;
     this.rpm = clamp(wheelRadPerS * gearRatio * 9.5493, spec.idleRpm, spec.redlineRpm);
 
-    if (c.gearRequest > 0) {
-      const want = clamp(Math.round(c.gearRequest), 1, spec.gearRatios.length);
+    const top = spec.gearRatios.length;
+    const frac = this.rpm / spec.redlineRpm;
+
+    // --- Manual ------------------------------------------------------------
+    //
+    // Read as an EDGE, not as a level. See `servedGearRequest`: the request is a
+    // field on a shared controls object that its writer keeps re-writing, so
+    // comparing it against the current gear every step means the gearbox can
+    // never finish obeying it — which is issue #45. A request the gearbox has
+    // already served is left alone, and the guards below are then free to act.
+    const request = c.gearRequest > 0 ? clamp(Math.round(c.gearRequest), 1, top) : 0;
+    const isNewRequest = request > 0 && request !== this.servedGearRequest;
+    this.servedGearRequest = request;
+
+    if (isNewRequest) {
+      // OVER-REV GUARD. A driver can ask for a gear the engine cannot survive —
+      // first at 300 km/h implies about 41,000 rpm against a 15,000 redline —
+      // and a real gearbox refuses it. Raising the request to the lowest gear
+      // that stays under the limiter is what a driver banging down the paddle
+      // actually gets, and it is also what makes an unqualified "go manual"
+      // (`InputController.toggleGearMode`) safe at any speed.
+      let want = request;
+      while (want < top && wheelRadPerS * spec.gearRatios[want - 1] * 9.5493 > spec.redlineRpm) {
+        want++;
+      }
       if (want !== this.gear) this.shiftTo(want);
       return;
     }
 
-    // Automatic shifting. Upshift near the limiter, downshift when the engine
-    // would fall below the torque peak, with hysteresis so it cannot hunt.
-    const frac = this.rpm / spec.redlineRpm;
-    if (frac > 0.985 && this.gear < spec.gearRatios.length) {
+    // --- The limiter backstop, which applies in BOTH modes ------------------
+    //
+    // Issue #45 point 4, and the reason this sits outside the mode branch: a car
+    // at the limiter with taller gears in hand is wrong whoever put it there.
+    // `gearRequest` is on the shared `VehicleControls`, written by the input
+    // layer, by `AIVehicleController`, by `RaceEngine.copyControls` and by a
+    // dozen harnesses in `scripts/`; a fix that only lives in `InputController`
+    // leaves every one of them able to strand the car on the rev limiter for a
+    // whole session, which is exactly what the player's screenshot showed —
+    // 205 km/h, fourth of eight, 15,000 rpm, every shift light red.
+    //
+    // In automatic this IS the upshift rule and always was. In manual it is
+    // engine protection: the gear has run out of revs, the driver is asking for
+    // more speed, and holding the ratio buys nothing but a rev limiter.
+    if (frac > 0.985 && this.gear < top) {
       this.shiftTo(this.gear + 1);
-    } else if (frac < 0.58 && this.gear > 1) {
+      return;
+    }
+
+    // --- Automatic downshifting --------------------------------------------
+    //
+    // Only in automatic. Downshifting a driver who chose a tall gear on purpose
+    // — short-shifting out of a slow corner, holding a gear over a kerb — would
+    // be taking the gearbox off them, and unlike the upshift above there is
+    // nothing being protected: an engine below its torque peak is merely slow.
+    if (request > 0) return;
+    if (frac < 0.58 && this.gear > 1) {
       // Check the lower gear would not immediately hit the limiter.
       const lower = spec.gearRatios[this.gear - 2];
       const projected = wheelRadPerS * lower * 9.5493;

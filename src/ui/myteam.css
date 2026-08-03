@@ -1,0 +1,422 @@
+/*
+ * MY TEAM — the cap gauge, the factory floor and the paint shop.
+ *
+ * A SEPARATE STYLESHEET, FOR THE SAME REASON `career.css` IS ONE. `styles.css`
+ * belongs to the HUD work and `career.css` to the driver-career work, both
+ * happening in parallel. Everything here is new surface — a cost-cap gauge,
+ * department plates, project rows, a paint shop — so it lives in its own file
+ * and overrides nothing that already exists.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO IS INVENT A SECOND LANGUAGE. The section
+ * headings, the fields, the pigment swatches, the family chips and the two
+ * column layout are `career.css`'s `.sg-*` classes, used as they are. A screen
+ * about owning a team should look like the screen about being a driver, and the
+ * cheapest way to guarantee that is to wear the same clothes rather than to
+ * copy them.
+ *
+ * THE ONE NEW IDEA IS THE CAP GAUGE. Every other screen in this game carries
+ * the sector rule under its header — three segments whose widths are the real
+ * proportions of something. My Team's equivalent fact is money: what the season
+ * has committed against the cost cap, and what is left. So the gauge is the
+ * same instrument reading a different quantity, in the same place, and it
+ * appears on every screen where money can be spent and on none where it cannot.
+ */
+
+/* ==========================================================================
+   THE COST CAP GAUGE
+   ==========================================================================
+
+   Three segments, in the five signal colours with their existing meanings:
+   what has been committed, what is left, and — only when it exists — what has
+   been spent past the cap. A career that never breaches never sees red here,
+   which is what makes the red mean something when it arrives. */
+
+.capgauge {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  box-shadow: var(--plate-lift);
+  padding: 12px 14px 13px;
+  margin-bottom: 14px;
+}
+.capgauge-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 9px;
+}
+.capgauge-label {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.capgauge-value {
+  font-family: var(--font-data);
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink);
+  transform: skewX(var(--lean));
+}
+.capgauge-of { font-size: 12.5px; color: var(--ink-3); }
+.capgauge-cash {
+  margin-left: auto;
+  font-family: var(--font-data);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.capgauge-cash b { color: var(--ink); font-weight: 700; }
+.capgauge-cash.broke b { color: var(--sig-red); }
+
+/* The bar. Square ends and a hairline between segments, like the sector rule,
+   because a rounded pill would read as a progress bar and this is a budget. */
+.capgauge-bar {
+  display: flex;
+  height: 8px;
+  gap: 2px;
+  background: rgba(150, 180, 214, 0.10);
+}
+.capgauge-bar span { display: block; min-width: 0; }
+.capgauge-bar .spent { background: var(--sig-white, #cdd6e2); }
+.capgauge-bar .free { background: rgba(150, 180, 214, 0.22); }
+.capgauge-bar .over { background: var(--sig-red); }
+
+.capgauge-note {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 8px;
+}
+.capgauge-note.warn { color: var(--sig-yellow); }
+.capgauge-note.bad { color: var(--sig-red); }
+
+/* ==========================================================================
+   THE LEDGER
+   ==========================================================================
+
+   Income above, expenditure below, with the cap-counted lines marked. Not a
+   table: a table of seven numbers is a table of seven numbers, and the only
+   thing anybody needs from it is which of their commitments is eating the cap. */
+
+.ledger {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.ledger-cell {
+  background: var(--carbon-1);
+  padding: 10px 12px 11px;
+  min-width: 0;
+}
+.ledger-label {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ledger-value {
+  font-family: var(--font-data);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-top: 3px;
+  transform: skewX(var(--lean));
+}
+.ledger-cell.income .ledger-value { color: var(--sig-green); }
+.ledger-cell.cost .ledger-value { color: var(--ink); }
+.ledger-cell.capped { border-top: 2px solid var(--sig-white, #cdd6e2); }
+.ledger-note { font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+
+/* ==========================================================================
+   THE DEPARTMENT PLATE
+   ==========================================================================
+
+   One per department, and each one is an instrument rather than a card: what it
+   is, how good the building is, how many people are in it, how they feel, and
+   what they are building right now with the number of rounds left. */
+
+.depts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+  gap: 12px;
+}
+
+.dept {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--dept, var(--ink-3));
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  box-shadow: var(--plate-lift);
+  padding: 13px 14px 14px;
+  min-width: 0;
+}
+.dept-head { display: flex; align-items: baseline; gap: 8px; }
+.dept-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+.dept-effect { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+
+/* The facility, as a five-step ladder. A level is a countable thing, so it is
+   counted rather than written as "3/5" — the shape reads before the digit. */
+.dept-facility { display: flex; align-items: center; gap: 8px; margin: 11px 0 9px; }
+.dept-steps { display: flex; gap: 3px; }
+.dept-steps i {
+  display: block;
+  width: 15px;
+  height: 5px;
+  background: rgba(150, 180, 214, 0.18);
+}
+.dept-steps i.on { background: var(--sig-white, #cdd6e2); }
+.dept-facility-label {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.dept-figs {
+  display: flex;
+  gap: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.dept-fig { min-width: 0; }
+.dept-fig-label {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.dept-fig-value {
+  font-family: var(--font-data);
+  font-size: 16px;
+  font-weight: 700;
+  margin-top: 2px;
+  transform: skewX(var(--lean));
+}
+.dept-meter { height: 4px; background: rgba(150, 180, 214, 0.16); margin-top: 5px; width: 62px; }
+.dept-meter span { display: block; height: 100%; background: var(--sig-white, #cdd6e2); }
+.dept-meter span.good { background: var(--sig-green); }
+.dept-meter span.warn { background: var(--sig-yellow); }
+.dept-meter span.bad { background: var(--sig-red); }
+
+/* What the department is building. A live countdown in rounds, because "in the
+   factory" is not an answer and "delivers at round 7" is. */
+.dept-project {
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.dept-project-name {
+  font-size: 13px;
+  color: var(--ink);
+}
+.dept-project-when {
+  font-family: var(--font-data);
+  font-size: 11px;
+  color: var(--sig-yellow);
+  margin-top: 3px;
+}
+.dept-project-idle { font-size: 12.5px; color: var(--ink-3); }
+
+.dept-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+
+/* A commission button carries its own price, because a button that opens a
+   dialog to tell you what it costs is a button you press to find out. */
+.mt-btn {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--carbon-3, #171c24);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  text-align: left;
+  padding: 7px 10px 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+.mt-btn:hover:not(:disabled) { border-color: var(--ink-3); }
+.mt-btn:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+.mt-btn:disabled { opacity: 0.42; cursor: default; }
+.mt-btn b { font-weight: 600; }
+.mt-btn i {
+  font-style: normal;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+.mt-btn.over i { color: var(--sig-yellow); }
+.mt-btn.small { flex: 0 0 auto; }
+
+.mt-reason { font-size: 12px; color: var(--sig-yellow); margin-top: 8px; min-height: 1.2em; }
+.mt-reason.ok { color: var(--sig-green); }
+
+/* ==========================================================================
+   THE PAINT SHOP
+   ==========================================================================
+
+   Two columns like the signing screen: the car on the left, live, and the
+   controls that change it on the right. The car is a real GL stage, so what is
+   being designed is the object that goes racing rather than a diagram of it. */
+
+.paintshop { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 380px); gap: 24px; align-items: start; }
+.ps-stage {
+  position: sticky;
+  top: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background:
+    radial-gradient(110% 70% at 50% 8%, rgba(var(--key), 0.12), transparent 66%),
+    linear-gradient(180deg, var(--carbon-2), var(--carbon-0));
+  box-shadow: var(--plate-lift-hi);
+  aspect-ratio: 16 / 10;
+  min-height: 240px;
+}
+.ps-stage .stage, .ps-stage canvas { width: 100%; height: 100%; display: block; }
+.ps-panel { min-width: 0; }
+
+/* The family chips are the real painter's output, cropped to the monocoque, so
+   the chip and the car cannot disagree about what a family looks like. */
+.ps-families {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+}
+.ps-family {
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 5px 4px;
+  cursor: pointer;
+  color: var(--ink-2);
+  display: block;
+  min-width: 0;
+}
+.ps-family:hover { border-color: var(--line-2); background: var(--carbon-2); }
+.ps-family.on {
+  border-color: var(--sig-white);
+  background: var(--carbon-3, #171c24);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--sig-white) inset;
+}
+.ps-family:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+.ps-family canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 3px;
+  image-rendering: auto;
+}
+.ps-family-name {
+  display: block;
+  font-family: var(--font-data);
+  font-size: 9px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The marks. Drawn, not downloaded, and the same ten devices the timing tower
+   puts beside every team's name. */
+.ps-marks { display: flex; flex-wrap: wrap; gap: 6px; }
+.ps-mark {
+  width: 38px;
+  height: 38px;
+  padding: 3px;
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.ps-mark canvas { display: block; width: 100%; height: 100%; }
+.ps-mark.on { box-shadow: 0 0 0 1px var(--sig-white) inset; border-color: var(--sig-white); }
+.ps-mark:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+
+@media (max-width: 900px) {
+  .paintshop { grid-template-columns: minmax(0, 1fr); }
+  .ps-stage { position: static; aspect-ratio: 16 / 9; }
+}
+
+/* ==========================================================================
+   A RANKED CHOICE — the engine deal and the driver market
+   ==========================================================================
+
+   Both are ranked orders, so both are `timingBoard` from `TimingRow.ts` rather
+   than a grid of cards. What is added here is only the state a choice has that
+   a classification does not: the one you are on, and the ones you cannot have. */
+
+.trow.is-current { background: rgba(120, 220, 160, 0.07); }
+.trow.is-locked { opacity: 0.45; }
+.trow.is-locked .t-tag .tag { background: transparent; color: var(--ink-3); }
+
+.mt-why { font-size: 12px; color: var(--ink-3); margin: 4px 0 14px; }
+
+/* ==========================================================================
+   THE TEAM IDENTITY BLOCK — creation
+   ========================================================================== */
+
+.mt-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--team, var(--ink-3));
+  border-radius: 6px;
+  background: var(--carbon-1);
+  box-shadow: var(--plate-lift);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.mt-identity-mark { width: 38px; height: 38px; flex: none; }
+.mt-identity-mark canvas { display: block; width: 100%; height: 100%; }
+.mt-identity-text { min-width: 0; }
+.mt-identity-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 19px;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+.mt-identity-sub { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.mt-identity-code {
+  margin-left: auto;
+  font-family: var(--font-data);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ink-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-family, .mt-btn { transition: none; }
+}

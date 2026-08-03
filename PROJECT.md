@@ -188,9 +188,14 @@ Run `npm run` to list. The important ones:
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
-| `probe:qualiboard` | Knockout qualifying: board and grid agree |
+| `probe:qualiboard` | Knockout qualifying: board and grid agree — and a player who stops at t=90s does not stop anybody else being classified |
+| `probe:qualiretire` | The Q1 accident, in a browser: nothing takes the screen over, nothing blurs the circuit, CONTINUE and SEE OUT are in the corner, every regulation string survives, and whichever way the player leaves the other nineteen have real times |
 | `probe:identity` | Player's name reaches car, standings, save |
+| `probe:gearbox` | The gear a key press puts you in, and that you can get back out of it. The **only** probe that drives `KeyboardEvent → InputController → playerControls → VehiclePhysics` instead of hand-building a controls literal — which is exactly why `probe:drivability` and `probe:handling` could not have caught issue #45 |
 | `probe:season` | 100 career-years |
+| `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
+| `probe:news` | Every headline checked against `simulateRound`'s own result, 100 career-years |
+| `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
@@ -215,6 +220,15 @@ Run `npm run` to list. The important ones:
   (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
   work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
   says the grip difference driving that is currently zero.
+- `probe:framing` — **56 failures, and they are new**, introduced deliberately by correcting
+  the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
+  cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
+  in §7. **This is a probe that got stricter, not a feature that broke.**
+- `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
+  racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
+  regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
+  **byte-identical** failure lists. Everything structural in the probe still passes at 20,
+  22 and 24 cars. Issue #44.
 
 ---
 
@@ -473,7 +487,34 @@ What landed:
 - Mirror housing was lofted **widest 30mm in front of the glass**. Pane 74×32mm →
   **150×46mm** (150 is the FIA minimum). Then the cap fix revealed the housing's rear cap
   was a solid disc the size of the aperture — once drawn, **it was the mirror.**
-- **Driver's-eye view** added, held to `probe:framing` like the others.
+- **Driver's-eye view** added — *"imagine from the perception of the driver's lenses"* —
+  and held to `probe:framing` like the others, on all eleven circuits in both frame shapes.
+  The eye is at car-local **(0, 0.770, 0.165)**, 0.58m forward and 0.21m below the roll-hoop
+  pod the `cockpit` mode uses, pitched 1.98° down. **The targets are geometry-derived, not
+  reference-derived** — see §9: there is no genuine F1 driver's-eye onboard on disk, so
+  every number is solved against the car's own modelled parts (the wheel rim's top bar at
+  y = 0.703, the halo crown at 0.812, the helmet crown at 0.828) rather than read off a
+  frame. What it measures: **halo crown 41–44% of frame height against a horizon at 46–48**
+  — crown *above* the horizon, the exact inverse of the two pod cameras, which carry it
+  below at 59–66; rails leaving through the **sides** rather than the bottom; panes at
+  **10–22% of frame width** against the cockpit's 7–10 and the T-cam's 5–7, with the hoop
+  across **0%** of them.
+- **The sky was clipped out of the mirror feed.** The sky is a dome of radius 3600 dropped
+  onto the main camera each frame; a mirror's far plane is `MIRROR_FAR` = 120, so every
+  triangle of it was clipped and what was left was the renderer's clear colour, `0x0a0c10`.
+  **The top half of both panes was solid black in daylight for as long as the feed had
+  existed.** Every earlier pass asked whether the feed *contained* anything — it did: a
+  strip of road under a black void. Now clears to `scene.fog.color`, which is already what
+  the far end of the pane fades into, so there is no seam. Two state changes, no draw calls.
+- **The mirror lens was 42° vertical, which on the feed's aspect is 91° across** — a rival
+  25m back was two and a half pixels of pane. Now **28° vertical = 78.2° across** on a pane
+  rebuilt to the FIA minimum 150×46mm: same horizontal angle, twice the glass, ~2.1× the
+  on-glass size of a car 25m back.
+- **`probe:framing` was reading the rig mid-lens-transition.** Every mode starts on the
+  chase camera's 39° lens and damps toward its own; twenty frames of settling caught the
+  driver's eye at **56.50° instead of 63.65°** (converged; 300 frames gives the same
+  number), the cockpit at 38.96 against 40.07 and the T-cam at 42.78 against 45.49. Now
+  settled for two seconds. **This made the probe stricter, not looser** — see §7.
 - Reverse-camera jitter: slip angle measured against the car's nose, so a reversing car
   sat on ±π and the sign flipped every time the wheel moved — a **66° lurch per frame.**
 
@@ -491,6 +532,44 @@ What landed:
   Peak-steer spread across 15–144fps: **47% → 9.3%**.
 - Text fields: `preventDefault` on every game key with no check on the event target, so the
   career name field silently ate `w a s d b h c p e l t f`, the digits, space and Enter.
+
+### The gearbox: one key press, locked in fourth for the session (issue #45)
+The player pressed a digit while *"trying to run something on the careers page"* and drove
+the rest of the session at **205 km/h in 4th of 8 at 15,000 rpm with every shift light red**,
+unable to upshift or downshift. Two independent latches, either of which alone was enough:
+
+- **`InputController.gearRequest` was a latch.** `4` set it; only `0` cleared it, and `0`
+  appeared in no menu, on no screen and in no help text. The controls overlay listed
+  fourteen keys and **not one of them was a gear**.
+- **`VehiclePhysics.updateGearbox` read that latch as a LEVEL.** It compared the request
+  against the current gear, shifted if they differed, and `return`ed. After the first shift
+  `want === this.gear` forever, so it returned having done nothing and **the automatic block
+  below it was unreachable for the rest of the session.** The arithmetic matches the
+  screenshot exactly: 205 km/h ÷ 0.36m = 158.2 rad/s × 11.42 (4th) × 9.5493 = 17,253 rpm,
+  clamped by `:1406` to the 15,000 redline.
+- **The route in.** `input.attach` runs once at startup and releases only on teardown, so the
+  window `keydown` listener is live on every menu and every career screen. The text-field
+  guard above was **intact and was never the hole** — the digit was pressed with a *button*
+  focused, where `isTextEntry` correctly returns false. `E` had the same reach and silently
+  changed the ERS mode of a session that had not started.
+- **Fixed four ways, deliberately overlapping.** The mode is split out of the number
+  (`gearMode`, published as 0 unless manual, toggled by `G`, printed as `AUTO`/`MANUAL`
+  under the gear disc); the physics reads the request as an **edge** against
+  `servedGearRequest`; a **limiter backstop upshifts in BOTH modes**, because `gearRequest`
+  is written by the AI, `RaceEngine` and a dozen harnesses as well as by the player; and an
+  over-revving downshift is raised to the lowest gear that survives. Keys are now driving
+  inputs only while a session is running.
+- **Measured, `probe:gearbox`, 25 checks.** On `main`: **gear 4 of 8, 26.42s of 30.00s
+  stranded at ≥98.5% of redline**. After: **gear 8, 0.15s stranded**, top speed within
+  **0.0%** of a reference car in the same run whose driver never touched a key. A fixed
+  "top speed ≥ 300 km/h" bar would have **passed the bug** — the rpm clamp means a car held
+  in 4th still crawls to 300.1 km/h in thirty seconds — so the bar is a reference run driven
+  in the same process, not a number.
+- **Proved it can go red, twice.** Restoring the original early-return latch in
+  `VehiclePhysics`: 6 of 25 red, §1 back to *"finished in gear 4, expected 8"* and
+  *"26.42s stranded"*. Deleting `input.enabled = inSession` from `main.ts`: 1 red on the
+  wiring check — added precisely because everything else in §7 tests the gate and nothing
+  tested that anything closes it.
 
 ### Race rules
 - **No DNF in qualifying.** Qualifying is a *Lap Time Classified Session*; Art. B2.4.3b
@@ -561,6 +640,79 @@ the driver's instruction in a different direction.
 The rule both fixes encode: **the PIT button is the driver's, and the wall does not get to
 overrule it in either direction.**
 
+### The retirement takeover, in qualifying (issues #33 and #16)
+
+Asked **five times**, most recently with a screenshot: *"why is this shit back I
+thought we said to not have this retirement bullshit??"* The race case had been
+moved to the radio in #16; qualifying was **deliberately left on the full-screen
+panel** because that panel had just been rewritten against the 2026 regulations
+and its content was right. #33 records that as a routing error, and it is the
+cleanest example in this project of *correct content in the wrong presentation
+surviving four requests to remove it.*
+
+**What went.** `.retire-overlay` — `inset: 0`, a radial scrim to 93% black,
+`backdrop-filter: blur(2px)` — plus `clock.paused = true` and
+`audio.setSuspended(true)` in the shell behind it. A blurred, world-stopping
+takeover 2.6 seconds after an accident the player was in.
+
+**What stayed, and where it went.** Every regulation string, all of it asserted
+by `probe:qualiretire`: Art. B4.3.2 ("no further part in qualifying") is now
+race control's ruling on the FIA strip *and* on the sheet; the provisional
+`P20 of 20 in Q1`, `Q2: Outside the cut`, `Rest of qualifying: No further part`,
+`Your best lap: No time set`, the worst-damage report and the corner it happened
+at are all on a 360px corner sheet that opens on `Continue` and covers **25% of
+a 1280×800 viewport with nothing behind it**. The principal speaks first on the
+radio, unchanged.
+
+**Race control no longer calls it a retirement.** `Hud.sayRetirement` gained an
+optional `ruling` that overrides the official half only. `CAR 87 RETIRED` is
+race language; qualifying is a Lap Time Classified Session and Art. B2.4.3b's
+three routes out of the classification do not include an accident. The strip now
+reads `CAR 87 — NO FURTHER PART` / `RECOVERED — ART. B4.3.2`. The race path
+passes no `ruling` and is byte-for-byte unchanged.
+
+**And the exit stopped truncating the session.** *"even tho I DNF doesn't mean
+that the rest weren't able to get a time classification, just make the
+simulation up or something, ykwim"* — `Skip to the result` called
+`finishSession` on the spot, which ranks `engine.participants` on their best lap
+**at that instant**. Measured, 720s Q1 at Bahrain, seed 4001, player retired at
+t=90s: **0 of 20 cars had a lap time**, so `rankSegment` fell through to its
+no-time ordering and the "classification" was garage release order. Step the
+same engine on to the flag instead and **19 of 20 have a time** off 4–5 timed
+laps each. `runOutToTheFlag` now steps the live engine, frame-sliced, with
+nothing drawn — measured at **27x realtime on a machine at load average 29** —
+and the button says what it does: `Run it out to the flag`.
+
+**The engine was never the problem, and that is a finding.** The new
+`probe:qualiboard` section (player stops at t=90s, Bahrain and Monaco) **passes
+on `main` as written**: `19/19` of the other cars leave the pits and set a lap,
+and the driver who stopped is classified P20 rather than deleted. Both halves of
+the defect were in `main.ts`.
+
+**A third bug the new probe found on its own: the principal's transmission was
+being dropped in qualifying.** `Hud.raiseCard` opens with
+`if (this.pitSheetOpen) return` — correctly, because *"the radio stuff is being
+covered by the pit options"* is one of the reported complaints the HUD was built
+to answer. But `updatePitPrompt` runs **after** `updateRetirement` in the frame
+loop, so on the frame the accident was announced the sheet was still open from
+the previous one and the radio card never appeared. It shows in qualifying and
+not in a race because every practice and qualifying session starts in the garage
+(`pitLaneStart`), so `pitDecisionPending` is true from the first frame and the
+sheet is genuinely up when a driver goes off on their out-lap.
+`retireOnTheRadio` now closes the sheet before anybody speaks, which is also
+simply right: a car in the gravel has no stop to make, and
+`pitDecisionPending` says so itself the moment `retired` is set.
+
+**Proved red on today's build**, then proved the probe's own first draft was
+worthless: the initial version used a fixed 9-second wait for the retirement to
+appear, reached the assertions with **1.0s of session time on the clock** and
+the panel not yet raised, and its two negatively-phrased checks ("nothing has
+taken the screen over", "race control did not call it a retirement") **passed on
+the very build it exists to fail.** It now polls the shell's own flag. Against
+pristine `main` it reports 12 failures including *"CONTINUE is one of the corner
+controls (found: [])"* and *"every car that was still running set a time (0 of
+20)"*.
+
 ### Career
 - **`SessionConfig.playerIndex` was hard-coded to `0`.** `Career.grid()` is the championship
   in *team order*, and a rookie starts at the weakest team, which sorts last — so the player's
@@ -614,6 +766,68 @@ overrule it in either direction.**
   journalists are invented people from invented name pools, deliberately so, because the
   press-conference system puts sentences in their mouths.
 
+### My Team (issue #23, landed on merged `main` 2026-08-03)
+
+The mode the user asked for in their own words: *"You act as both the team owner and the
+lead driver. You design the car livery, sign sponsors, choose an engine supplier, hire a
+teammate, and build a racing empire from the ground up."* Budget, a cost cap, a factory
+with three departments, an engine contract, a second driver, a livery editor, a newsroom.
+
+**The chain is `WorldTeam.upgrades` → `performanceOf` → `specForTeam` →
+`getTeam().performance`, and `TeamPerformance` is still the only channel.** `VehicleSpec.ts`
+is unmodified and `MyTeam.ts` imports nothing from `physics/` or `render/`. Every
+commission moves a field the simulation integrates: one concept project each moved
+`clBase 3.128 → 3.231`, `icePowerW 556644 → 570998`, `baseMu 1.6405 → 1.6927`.
+
+**What the merge nearly shipped.** The branch was cut before `ProfileStore` existed and
+founded careers by writing straight to `SaveManager`. On merged `main` that saves the
+bytes and files them under nobody: **a My Team career would have been absent from
+"Continue" and from the driver rack the moment you left the tab.** Re-plumbed by hand
+through `ProfileStore.saveCareer`; `main.ts` now makes no direct career write at all.
+`shoot:myteam` asserts it end-to-end and **goes red when the one-line textual resolution is
+restored** — three failures per viewport, "it was saved to disk and filed under nobody".
+
+**Three probes that could not fail, all found and fixed:**
+- **`probe:myteam` invariant 7 passed on a build with the factory disconnected from the
+  car.** `startProject` drew its quality-control roll from the world's RNG stream, so a
+  developing career and an idle one stopped racing the same championship and the check was
+  measuring RNG divergence. With upgrades hard-disabled it read "1.0 constructors' points
+  against 0.3" and **passed**. `Career.factoryRng` is now a separate stream: 3.4 vs 0.3
+  working, **0.3 vs 0.3 and RED** with the same break. Cost: `probe:news` moved
+  5595 → 5525 stories, attributed by reverting that single line and getting 5595 back.
+- **`probe:news` checked a superset it hardcoded itself.** `Decision.screen` declared
+  `'market'` and `'livery'`; `openDecisions` emitted neither, and both had a button label
+  and a route wired up for a decision that could not exist. `DECISION_SCREENS` is now a
+  runtime constant the union derives from, the probe reads it instead of restating it, and
+  asserts every entry was **actually emitted** across 100 career-years. `'market'` gained
+  the team-mate-out-of-contract decision its own doc comment had always promised;
+  `'livery'` was deleted.
+- **`audit:livery` could not go red.** It commented that its control shot "must be
+  identical to `audit:car`'s `day-high--hero`" and never compared them. It now sha256s all
+  three views and fails on a difference — proved by repainting the default livery and
+  watching all three go red.
+
+**Two real bugs the new coverage found:**
+- **The cost cap could be crossed without a confirmation.** `upgradeFacility` charged the
+  new level's upkeep to `ledger.facilityUsd` *after* the gate had approved the capital cost
+  alone. Approved at $28.0M of headroom, spent $31.4M: **$138.4M against a $135.0M cap.**
+  Now gated on `cost + extraUpkeep`.
+- **The cap fine left no ledger trace**, and neither it nor the prize was inside any
+  measurement window — both land inside `endSeason`, after invariant 2 closes and before
+  the ledger is emptied. `Ledger.fineUsd` added, `TeamSeasonReport.closingLedger` carries
+  the books across the audit, and the whole season now reconciles including the settle.
+
+**Dead code removed** (the pattern that shipped twice before as `TIER_INFO.carPace` and
+`alongsideLeft/Right`): `Career.renameTeam`, no callers; and `engineBreakFeeUsd`, which had
+no callers while `signPowerUnit` inlined the same formula **with a different one** —
+`Math.max(1, yearsLeft)` against raw `yearsLeft`. The exported copy was the wrong one: it
+charges 45% of a season for tearing up a contract that has already expired.
+
+`probe:save` gained a My Team case — 21 named fields and all 8 ledger lines, proved red by
+dropping `ledger` from the encoder — and `SaveCodec.backfill` now defends the My Team
+block, because one missing ledger line turns the cost cap into `NaN`, which compares false
+against every threshold and so stops binding silently rather than throwing.
+
 ### Tooling
 - **`scripts/` is now typechecked.** `tsconfig.scripts.json` covers `scripts` and `audit`
   as a *separate* project — separate so `@types/node` cannot leak into `src/` and let
@@ -649,13 +863,13 @@ overrule it in either direction.**
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
-| Radio/HUD | Square typewriter radio card, FIA banner, retirement flow, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals |
+| Radio/HUD | Square typewriter radio card, FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals. **The retirement flow has landed for every session kind — see §6.** |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
-| Career/story | My Team, facility, livery editor, press/morale/sponsors, rivalries, the full world |
+| Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### Measured, deferred, and still true
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
@@ -711,6 +925,95 @@ overrule it in either direction.**
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
   `probe:pitstop` §1 and §6.
+- **`probe:framing` now fails 56 assertions, and all 56 are new and true.** Correcting the
+  probe's settling time from 20 frames to 2 seconds (§6) opened every onboard lens to where
+  it actually sits in play, and that moved the picture:
+  - **54 are `MIRROR_PANES` keep-out escapes** in `src/ui/Hud.ts`, on all eleven circuits
+    in all three onboard modes. A wider lens carries a pane that sits below centre *up* the
+    frame by 1–2 points, and the keep-out rectangles were measured against the narrow lens
+    — the same rectangle 7f1f3da widened for banking. The HUD is laid out against it, and
+    `shoot:panels` is laid out against the HUD, so this belongs to the HUD owner. **Not a
+    reason to move the rectangle without re-running `shoot:panels`.**
+  - **1 is a real framing defect:** at Suzuka on 16:9 the cockpit camera's left halo rail
+    leaves through the **side** of the frame at 87% of frame height — the "black pipe
+    running off the edge of the screen" complaint. Only a settled lens shows it. It is also
+    the case that would have been *concealed* had the rails-exit threshold been moved from
+    the bottom eighth to the bottom fifth, which is why it was not moved.
+  - **1 is a driver's-eye pane reading 22.5% of frame width at Monaco** against a 22.0
+    bound. A band question, not a geometry question, but it has not been re-derived.
+- **A RACE that the player retires from is still classified from where it stood.
+  Issue #56.** Found while fixing the same defect in qualifying (§6) and
+  **deliberately not fixed there**. `Continue` on the race corner bar calls `finishSession`
+  immediately, which records `engine.standings` for a race that is still being
+  run — measured by `probe:qualiretire`, which prints the leader's lap against
+  the race distance at that moment and does not assert on it. It is the same
+  species of mistake as the qualifying truncation and the user's words cover it
+  just as well, but it feeds `recordPlayerRound` and a career championship, so
+  changing it is a career-data decision rather than a presentation one. The
+  machinery to fix it exists — `Game.runOutToTheFlag` — and `runOutProgress`
+  already declines to give a race an early exit, so a race would have to be run
+  in full. **Nobody is on this.**
+- **`regress:exit` (issue #25) does not reproduce, but the harness is still
+  load-fragile.** Run three times on 2026-08-03: the first died on its warm-up
+  navigation at `page.goto: Timeout 120000ms exceeded` at load average 29,
+  before reaching an assertion; the second and third were **16 of 16 ok**,
+  including every one of the six failures the issue lists. The pause menu
+  (`src/ui/PauseMenu.ts` + `Game.setPaused`) shares no code path with the
+  retirement panel. The issue's `0.0666… → 0.0666…` is one physics step between
+  samples, which is a loaded machine rather than a broken Resume button. Left
+  open against the robustness problem rather than the logic one.
+- **`probe:qualiretire` needs a quiet machine.** It boots a dev server and drives
+  Chrome under swiftshader, where the simulation runs at roughly a tenth of
+  realtime, so the retirement delay alone is 20–40s of wall clock and the whole
+  probe is minutes. At load average 29 the *first* attempt at `regress:exit` on
+  2026-08-03 died on its warm-up navigation at 120s; the second passed all 16.
+  This is the same load sensitivity §8 records, not a flaky assertion.
+- **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
+  measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
+  previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
+
+### Landed with My Team but deliberately not built
+- **Sponsors are not a system.** `commercialIncomePerRound` is the team's baseline revenue
+  and is labelled as such in the code. Named brands with minimum fan ratings, signing
+  bonuses, contract objectives and their names painted down the car are Layer 4 of
+  `docs/CAREER_MODE.md` and do not exist. The user asked for sponsors by name.
+- **No press conferences, publicist, marketer, PA, manager or agencies.** The newsroom
+  generates true statements about things that happened; nobody speaks to the player.
+- **A team-mate's contract can run out and be re-signed, but there is no wider transfer
+  negotiation** — no offers to the player, no rival teams bidding for their seat.
+- `Career.spendPrepSlot` is reachable now, but the preparation screen is the only place
+  the narrative layer is touched by the player.
+
+### The swerving (#46) is NOT the gearbox (#45), and it is NOT the frame-rate fix
+Reported in the same message as #45 — *"additionally, the car is swerving a lot I thought
+this was fixed al?"* — so the first job was to find out whether it was one bug or two.
+Both leading candidates are now eliminated by measurement, and **nobody is on what is left**.
+
+- **The frame-rate steering fix has not regressed.** `probe:framerate`, the `catch gentle`
+  case, on `main` today: peak steer input **0.6133 .. 0.6704 across 15–144fps, 9.3% spread**,
+  off-line deviation at 15fps **0.132m**. §6 records the post-fix numbers as 9.3% and 0.13m.
+  Identical. This was the cheapest candidate to check because it is the only one with a
+  recorded before/after, and it is clean.
+- **The gearbox lock does not cause the swerve.** `probe:gearbox` §9 flies the identical 2Hz
+  pulsed slalom, 220 km/h entry, 6.0s, twice — once in automatic, once with `physics.gear`
+  pinned to 4 every solver step (constructed directly, so the comparison survives the #45
+  fix instead of quietly becoming two identical runs). Automatic **8.685m** lateral, peak
+  rear slip 1.39°, peak yaw 0.4385 rad/s. Pinned in 4th: **7.572m**, 1.59°, 0.4797 rad/s —
+  a **0.872×** lateral excursion ratio. The stranded car yaws about 9% harder and wanders
+  **less**, not more. #45 is not what the player was feeling when they said "swerving".
+- **What that leaves, and the honest gap.** `probe:handling`, `probe:drivability`,
+  `probe:turnin` and `probe:racingline` all exit 0 on `main` while the player can see the
+  car swerving. Two of those four are **pure reporters with no assertions at all** —
+  `probe:handling` and `probe:drivability` print tables and cannot go red — so "they pass"
+  is much weaker evidence than it looks. Per §3.2 that gap is itself the finding.
+  Unexamined candidates, in the order the issue lists them: the track-surface and banking
+  work that landed 2026-08-03 (`TrackMesh.ts`, `TrackSpline.ts`), and whatever the player
+  means by swerving that a 6-second open-loop slalom does not reproduce. **#46 stays open.**
+- One thing seen in passing and not chased: `probe:racingline`'s driver-in-the-loop section
+  reports worst load **above 1.00** — the car leaves the road — at Monaco 1.042, Zandvoort
+  1.032, COTA 1.032, Spa 1.017, Suzuka 1.012, Interlagos 1.001, and that section is
+  explicitly *"reported, not asserted"*. It is a different complaint from swerving (*"if the
+  racing line is green how did i go off the track?"*), but it is sitting there unasserted.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not

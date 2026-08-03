@@ -22,6 +22,7 @@
     "validate:integrity": "tsx scripts/probeIntegrity.ts",
     "probe:curvature": "tsx scripts/probeCurvature.ts",
     "probe:handling": "tsx scripts/probeHandling.ts",
+    "probe:gearbox": "tsx scripts/probeGearbox.ts",
     "probe:framerate": "tsx scripts/probeFrameRate.ts",
     "validate:world": "tsx scripts/probeWorld.ts",
     "probe:racingline": "tsx scripts/probeRacingLine.ts",
@@ -75,7 +76,9 @@
     "probe:save": "tsx scripts/probeSave.ts",
     "probe:fieldsize": "tsx scripts/probeFieldSize.ts",
     "probe:identity": "tsx scripts/probeIdentity.ts",
-    "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize && npm run probe:identity && npm run probe:frontdoor",
+    "probe:myteam": "tsx scripts/probeMyTeam.ts",
+    "probe:news": "tsx scripts/probeNews.ts",
+    "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize && npm run probe:identity && npm run probe:frontdoor && npm run probe:myteam && npm run probe:news",
     "shoot:hud": "tsx scripts/shootHud.ts",
     "shoot:weather": "tsx scripts/shootWeather.ts",
     "shoot:panels": "tsx scripts/shootPanels.ts",
@@ -83,7 +86,9 @@
     "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:shoulders": "tsx scripts/auditShoulders.ts",
     "audit:car": "tsx scripts/auditCar.ts",
+    "audit:livery": "tsx scripts/auditLivery.ts",
     "shoot:career": "tsx scripts/shootCareer.ts",
+    "shoot:myteam": "tsx scripts/shootMyTeam.ts",
     "shoot:frontend": "tsx scripts/shootFrontEnd.ts",
     "probe:frontdoor": "tsx scripts/probeFrontDoor.ts",
     "probe:menucost": "tsx scripts/probeMenuCost.ts",
@@ -91,7 +96,8 @@
     "audit:pitlane": "tsx scripts/auditPitLane.ts",
     "diag:pitchoice": "tsx scripts/diagPitChoice.ts",
     "shoot:people": "tsx scripts/shootPeople.ts",
-    "probe:people": "tsx scripts/probePeople.ts"
+    "probe:qualiretire": "node scripts/probeQualiRetire.mjs",
+  "probe:people": "tsx scripts/probePeople.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

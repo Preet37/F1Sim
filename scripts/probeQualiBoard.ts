@@ -574,6 +574,86 @@ for (const circuitId of ['bahrain', 'silverstone', 'monaco', 'spa']) {
     `garages, closest approach ${closest.toFixed(0)}m`);
 }
 
+// ===========================================================================
+// The player stops EARLY, and the other nineteen carry on
+// ===========================================================================
+//
+//   "also like even tho I DNF doesn't mean that the rest weren't able to get a
+//    time classification, just make the simulation up or something, ykwim"
+//
+// The scenario above wrecks the hero at the END of the segment, once everybody
+// has run. This one wrecks them at t=90s of 720 — before a single car has a
+// lap — which is what a real gravel trap looks like and what the reported
+// screenshot showed (`YOUR BEST LAP: No time set`, `AS IT STANDS: P20 of 20`).
+//
+// WHAT THIS ASSERTION IS FOR. There are two ways the user's complaint could be
+// true, and they live in different files. The engine could freeze the field
+// behind a stopped car — which it demonstrably can, see the Q2 pit-lane
+// deadlock above — or the app shell could publish the classification before the
+// session had finished producing one. This pins the ENGINE half: whatever the
+// player's car does, the other nineteen must still get out, run, and set times.
+//
+// IT PASSES ON `main` AS WRITTEN, and that is the finding rather than a reason
+// not to write it. The defect was entirely in the shell: `Skip to the result`
+// called `finishSession` on the spot and ranked a field that had not driven
+// yet. The numbers below are the ones that established it — 0 of 20 with a lap
+// at the moment of the accident, 19 of 20 once the segment is allowed to
+// finish. `probe:qualiretire` holds the shell half in a browser; this holds the
+// engine, cheaply, in the suite that already runs everywhere.
+
+console.log('\nTHE PLAYER STOPS AT T=90s AND THE SEGMENT CARRIES ON');
+
+for (const circuitId of ['bahrain', 'monaco']) {
+  const def = getCircuit(circuitId);
+  const config: SessionConfig = {
+    kind: 'qualifying', name: 'Q1', durationS: 720, laps: 0, playerIndex: 0,
+    standingStart: false, pitLaneStart: true, seed: 4001,
+    qualifyingPhase: 1, advancing: 15,
+  };
+  const engine = new RaceEngine(def, config);
+  const stepsFor = (s: number) => Math.round(s / PHYSICS_DT);
+
+  for (let i = 0; i < stepsFor(90) && !engine.over; i++) engine.step();
+  const stopped = engine.playerCar;
+  check(stopped !== null, `${circuitId}: the scenario needs a player car`);
+  if (!stopped) continue;
+  stopped.retire('Beached in the gravel', engine.time, 0.85);
+
+  // What a classification published at this instant would have contained. Not
+  // an assertion — a measurement, printed, because it is the size of the bug.
+  const timedAtStop = engine.participants.filter((c) => c.bestLapTime > 0).length;
+
+  for (let i = 0; i < stepsFor(720) && !engine.over; i++) engine.step();
+
+  const others = engine.participants.filter((c) => c !== stopped);
+  const timed = others.filter((c) => c.bestLapTime > 0).length;
+  check(timed === others.length,
+    `${circuitId} Q1: the player stopped at 90s and only ${timed} of ${others.length} other ` +
+    `cars set a lap time — a driver's own accident has no bearing on whether anybody ` +
+    `else is classified`);
+
+  const out = others.filter((c) => c.leftThePits).length;
+  check(out === others.length,
+    `${circuitId} Q1: only ${out} of ${others.length} other cars left the pit lane after ` +
+    `the player stopped`);
+
+  // And the stopped driver is classified, at the back of the no-time group,
+  // rather than deleted. Art. B2.4.3a: classified on the lap set — there was
+  // none — and Art. B2.4.3b's three routes out do not include an accident.
+  const finalOrder = rankSegment(engine.participants);
+  check(finalOrder.length === engine.participants.length,
+    `${circuitId} Q1: the classification lost a car`);
+  check(finalOrder.includes(stopped),
+    `${circuitId} Q1: the driver who stopped is not in the classification at all`);
+  check(finalOrder.indexOf(stopped) === finalOrder.length - 1,
+    `${circuitId} Q1: the only driver without a time is classified ` +
+    `P${finalOrder.indexOf(stopped) + 1}, not last`);
+
+  console.log(`${circuitId.padEnd(12)} at the accident ${timedAtStop}/${engine.participants.length} ` +
+    `had a lap; at the flag ${timed}/${others.length} of the others did, ` +
+    `player classified P${finalOrder.indexOf(stopped) + 1}`);
+}
+
 if (failures.length > 0) {
   console.log('\nFAILURES:');
   for (const f of failures.slice(0, 25)) console.log('  ' + f);
