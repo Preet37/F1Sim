@@ -996,9 +996,10 @@ PASS — every reachable front-end screen renders and throws nothing.
 having opened **the first-run driver screen and thirteen helmet colours**.
 `grep -icE "setting|driver|career|garage|paddock"` over a full run's log returned **0**.
 Every front-end change merged since it was written had counted it as cover, and at its
-default depth it spent **35 minutes** re-photographing that one screen in permutations
-(`Dark > Gold`, `Plain > Starburst`, …). This is PROJECT.md §3.2 in its worst form: not a
-probe that *would* pass a broken feature, a probe that never looks at the code under test.
+default depth it spent **over half an hour** re-photographing that one screen in
+permutations — `Dark > Gold`, `Plain > Starburst`, and so on to ~197 of them. This is
+PROJECT.md §3.2 in its worst form: not a probe that *would* pass a broken feature, a probe
+that never looks at the code under test.
 
 **Three causes, and each needed its own fix.**
 
@@ -1027,7 +1028,8 @@ probe that *would* pass a broken feature, a probe that never looks at the code u
 | distinct screens | **15**, of which 14 are one screen | **35** |
 | screen ids reached, of 20 declared | **2** (`driver-create`, `menu`) | **15** |
 | Settings / drivers / career / paddock / Team HQ | none | all |
-| wall clock, default depth | **35 min** | **11.1 min** (665s; `SMOKE_FREE_S=0` gives the whole of the part that can go red in ~4 min) |
+| wall clock, default depth | **≥33.6 min** — 174 of its ~197 screens in 2015s before it was stopped to free the machine | **11.1 min** (665s, 53 cold boots; `SMOKE_FREE_S=0` gives the whole of the part that can go red in ~4 min) |
+| wall clock at `SMOKE_DEPTH=1`, the issue's own configuration | 97s for 15 screens | — |
 
 **Proved it goes red, and the contrast is the artefact.** `buildSettingsScreen` was made to
 throw on entry — a screen the old crawl had never opened. The old probe: `15 screens walked`
