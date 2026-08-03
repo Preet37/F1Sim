@@ -181,7 +181,7 @@ Run `npm run` to list. The important ones:
 |---|---|
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
-| `probe:carrig` | Every car part attached; wheels at y=0; nothing floating |
+| `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
@@ -388,6 +388,85 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   problem.
 - Front wing endplate was 25mm too far out (placed at the 1000mm *bodywork* limit; the
   wing's own limit is 975).
+
+### The front corner, and the two questions `probe:carrig` was not asking (issue #47)
+
+> *"phasing through the carbon and the wheel covers on the top are actually floating
+> confirmed"* — reported with a driver's-eye screenshot. `probe:carrig` was **green**.
+
+**The probe gap had two halves, and both are the same mistake in different clothes.**
+
+- **The wheel covers were not in the part list at all.** `frontUprightGeometry` merged the
+  upright column, the steering arm, the over-wheel cover, its support vane and the brake
+  drum into ONE buffer named `front upright`. The connectivity check unions *parts*, and
+  the upright column touches the wishbones, so the whole merge joined the car by
+  association and everything inside it was carried along — including a blade hanging in
+  clear air over the tyre. `carPartsForProbe` now takes the corner as five named pieces
+  from `frontCornerParts`. **139 parts → 147.** This is `mergeGeometries` hiding a part
+  exactly as §6 records it hiding "the black slab above the rear tyre", one level up.
+- **Attachment and interpenetration are the same measurement with opposite signs, and the
+  probe only read one sign.** Section 2 treats "inside another part" as a PASS — correct
+  for a pickup, blind to a leg crossing a panel.
+
+**And splitting it out was not enough**, which is the part worth remembering. With the
+cover as its own part the probe *still* passed, because `JOIN_TOL` is 10mm and the cover's
+nearest surface was its own vane **2.30mm** away at the high tier and **8.56mm** at the
+low one. The probe's own tolerance note already said what the rule should be — *"parts of
+a car are authored to overlap … so genuine joints measure zero"* — so a positive number is
+not a joint, it is daylight. Three new sections:
+
+- **Bolted joints.** Every part must *intersect* another: a sampled point of one inside
+  the solid of the other, tested both ways. Volumetric, no tolerance in it, cannot be tuned.
+- **Interpenetration.** Every member's centreline walked at 2mm; a run inside a piece of
+  bodywork reaching neither end is a passage clean through somebody else's carbon.
+- **Steering lock.** 13 angles across ±0.42 rad (`BASE_F1_SPEC.maxSteerRad`), both corners:
+  nothing on the steer group may enter the chassis, and no steered fairing may enter a
+  member. **There is no ride-height axis to sweep** — `Renderer` places the whole visual at
+  `bankedCarGroundY` and nothing moves the body relative to the wheels — so the corner is
+  the only articulation the car has, and it was measured nowhere.
+
+**On the build the screenshot came from: 33 defects.** What they were:
+
+- **The over-wheel cover was bolted to nothing.** 2.30/2.60mm off its vane at the high
+  tier, **8.56/8.64mm at the low tier — the tier every phone runs** — and at the low tier
+  the vane's own nearest surface was the *tyre*, 5.40mm away, so cover and vane were a
+  two-part assembly attached to the car by nothing at all. Its vane also passed through
+  **both upper wishbone legs, 14mm each, at every steering angle.**
+- **The "front wake fin" was a bargeboard**, deleted from the regulations in 2022 and
+  named as such in this file's own reference block. It stood at x = 0.480 where the floor
+  reaches 0.150–0.278, i.e. **200mm outboard of the nearest floor, in open air.** It read
+  as attached only because the lower-front leg, the lower-rear leg and the trackrod passed
+  clean **through** it — 40mm, 38mm and 32mm. Lower it clear of them, as the first attempt
+  did, and the probe immediately calls it floating **21.6mm** (high) / **29.8mm** (low).
+- **Front wing flick:** met the endplate over 3mm of superellipse tip, which the high
+  tier's polygon reaches and the low tier's does not — **7.15mm** at the low tier, to
+  `front wing element 4` rather than to the plate it is folded over.
+- **Sidepod winglet:** 0.64mm off the pod at the high tier, 4.09mm at the low. Its comment
+  already claimed it was "bedded into the pod's shoulder"; it was measured as a distance
+  and set to nearly-zero, which is not the same as inside.
+
+**Why the over-wheel cover was deleted rather than re-bolted, and this is the finding.**
+Any rigid support must stand inboard of the tyre's wall at 0.1625 and rise past the upper
+wishbone, while the corner steers ±24.1° and the wishbone does not. In plan about the hub
+axis the two upper legs block a fixed pair of angular bands — at a support's radius,
+**[−29.0°, −7.0°] and [+4.3°, +25.9°]** — leaving **11.3° between them against the 48.1°
+the sweep needs**. That window is 5.3° at r = 0.18 and still only 31.7° at r = 0.50, so it
+does not fit at *any* radius; going outside the pair needs |θ| > 53°, which puts the
+support 300mm or more ahead of the axle. The real car solves it with a shaped aperture
+around the wishbone and none of the loft primitives in `CarMesh` can express a hole. The
+choice was a blade that floats, a blade that passes through the suspension between 12° and
+24° of lock (measured: 2–24mm of a leg, both corners, both tiers), or no blade.
+
+**Proved red three ways.** Restoring the original cover and vane: **102 defects**, the
+same 2.30/2.60 and 8.56/8.64 numbers back, plus the lock fouls. Restoring the wake fin and
+un-bedding the sidepod winglet: **17 defects**, the same six THROUGH reports per tier.
+Widening the steered brake drum until it reaches the floor: **105 defects**, naming the
+monocoque, the floor and two floor fences at each angle — which is what makes the steering
+section load-bearing rather than decorative.
+
+**After: 141 parts, both tiers, every section green.** `probe:framing` unchanged at 56
+(54 `MIRROR_PANES`, 1 Suzuka rail, 1 Monaco band); `probe:suspension`, `probe:rideheight`,
+`probe:activeaero`, `audit:car` and `typecheck` all pass.
 
 ### Cameras and mirrors
 - **The halo:** the T-cam sat 0.40m *in front of* the hoop. Crown at **82% of frame
@@ -900,6 +979,22 @@ Both leading candidates are now eliminated by measurement, and **nobody is on wh
   1.032, COTA 1.032, Spa 1.017, Suzuka 1.012, Interlagos 1.001, and that section is
   explicitly *"reported, not asserted"*. It is a different complaint from swerving (*"if the
   racing line is green how did i go off the track?"*), but it is sitting there unasserted.
+
+### The car has no over-wheel winglet, and putting one back needs the corner redesigned
+Issue #47 closed by **removing** the 2022-style blade above each front tyre rather than
+bolting it on, because it cannot be bolted on: the two upper wishbone legs block
+[−29.0°, −7.0°] and [+4.3°, +25.9°] about the hub axis and a support swept through ±24.1°
+of lock needs 48.1° of clear angle, at every radius. Full arithmetic in §6. **The car
+therefore reads slightly pre-2022 from a three-quarter view**, which is the exact thing
+§6's original entry added the winglet to fix — so this is a real regression in fidelity
+traded for a real fix in assembly, deliberately and with the numbers written down.
+
+What would actually solve it: a support with an aperture around the wishbone (which is how
+the real part does it), which needs a loft primitive that can cut a hole, or a corner where
+the upper wishbone's outboard end sits high enough that a support can pass under it. Both
+are corner redesigns, not numbers. **Nobody is on this**, and it should not be reattempted
+without `probe:carrig`'s steering-lock section watching, because a straight-ahead
+measurement passes every version of it that is wrong.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not
