@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { buildCar, type CarVisual } from '../src/render/CarMesh';
+import { buildCar, type CarVisual, type ActuationId } from '../src/render/CarMesh';
 import { EnvProbe, type Ambience } from '../src/render/EnvProbe';
 
 /**
@@ -43,8 +43,12 @@ interface BuildOpts {
   compound?: 'soft' | 'medium' | 'hard' | 'intermediate' | 'wet';
   /** Steering angle in radians, applied to the front steer groups. */
   steer?: number;
-  /** 0 closed, 1 fully open: DRS flap and the front wing's X-mode together. */
+  /** 0 closed, 1 fully open: rear flap and front wing together (Straight Mode). */
   drs?: number;
+  /** Which team's rear-wing actuation to build. See `ACTUATION` in CarMesh. */
+  actuation?: ActuationId;
+  /** Light the three regulation rear lights, as wet tyres require. */
+  rainLight?: boolean;
 }
 
 /** Per-LOD-tier cost, measured off the built scene graph rather than declared. */
@@ -215,15 +219,21 @@ async function build(opts: BuildOpts): Promise<Stats> {
     number: 16,
     code: 'AUD',
     compound: opts.compound ?? 'soft',
+    actuation: opts.actuation ?? 'central',
   });
   scene.add(car.root);
   // The shell sits with its wheel centres at y = tyreRadius already.
   const steer = opts.steer ?? 0;
   car.frontLeftSteer.rotation.y = steer;
   car.frontRightSteer.rotation.y = steer;
+  // Through the car's OWN actuation, not a hard-coded angle. The travel is a
+  // per-team quantity now, so a fixed -0.62 here would photograph a wing no car
+  // on the grid actually has — and would silently keep photographing it after
+  // the real travel changed.
   const drs = opts.drs ?? 0;
-  car.drsFlap.rotation.x = -0.62 * drs;
-  car.frontFlaps.rotation.x = -0.20 * drs;
+  car.drsFlap.rotation.x = car.actuation.openRad * drs;
+  car.frontFlaps.rotation.x = car.actuation.frontOpenRad * drs;
+  car.setRainLight(opts.rainLight ?? false, 1);
   // Name the meshes so the cost breakdown is readable.
   let i = 0;
   car.root.traverse((o) => {

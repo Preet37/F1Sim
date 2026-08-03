@@ -76,6 +76,30 @@ export class CarEntry {
   /** Heading at the top of the step, so the swept footprint rotates with it. */
   prevHeading = 0;
 
+  // --- Render pose ---------------------------------------------------------
+  /**
+   * Where the car is DRAWN, as opposed to where the solver last put it.
+   *
+   * The physics is a fixed 120Hz staircase and the display is not, so the two
+   * do not line up: at 50fps a frame is worth 2.4 steps, which the accumulator
+   * delivers as 2, 2, 3, 2, 3... At 80 m/s a step is 0.67m, so a car drawn at
+   * the last completed step's position advances 1.33m on one frame and 2.00m on
+   * the next — a 50% swing in apparent speed, every frame, forever. That is the
+   * "one frame and then the next frame that car moves to another position"
+   * report, and it is why it was every car EXCEPT the player's: the camera
+   * rides the player, so the player's car is the one thing the error cancels
+   * against. See `Renderer.updateRenderPoses` and `probe:framerate`.
+   *
+   * These are written twice. The race engine sets them to the solver's state at
+   * the end of every step, so that anything running without a renderer — every
+   * probe that drives `CameraDirector` directly — sees the physics pose and
+   * behaves exactly as it did before. The renderer then overwrites them once
+   * per frame with the interpolated pose, before anything reads them.
+   */
+  renderX = 0;
+  renderZ = 0;
+  renderHeading = 0;
+
   // --- Timing --------------------------------------------------------------
   /** Completed laps. */
   lap = 0;
@@ -531,6 +555,14 @@ export class CarEntry {
     const p = track.tmpA;
     track.toWorld(s, lateralOffset, p);
     this.physics.placeAt(p.x, p.y, track.headingAt(s), speedMs);
+    // Both the swept-collision origin and the render pose, so the car is drawn
+    // where it was put on the frame it is put there rather than interpolating
+    // from wherever it happened to be last — see `renderX`. A placement is a
+    // teleport, and the one thing interpolation must never smear across is a
+    // teleport.
+    this.prevX = this.renderX = p.x;
+    this.prevZ = this.renderZ = p.y;
+    this.prevHeading = this.renderHeading = this.physics.heading;
     this.s = s;
     this.lastS = s;
     this.lateral = lateralOffset;

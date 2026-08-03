@@ -144,7 +144,7 @@ async function main(): Promise<void> {
       g.__spin = false;
       g.__draw = (n) => new Promise((res) => {
         const tick = () => {
-          g.renderer.render(1 / 60, g.engine, g.__focus);
+          g.renderer.render(1 / 60, 1, g.engine, g.__focus);
           if (n-- > 0 && !g.__stop) requestAnimationFrame(tick); else res();
         };
         requestAnimationFrame(tick);

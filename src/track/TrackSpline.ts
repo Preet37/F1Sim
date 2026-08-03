@@ -73,6 +73,40 @@ const WET_LINE_SHIFT_M = 2.4;
 const AUTO_CURB_RADIUS_M = 250;
 
 /**
+ * The tightest a node may turn no matter how narrow the road is, metres.
+ *
+ * A backstop under the width-derived limit in `easeCentrelineKinks`, so that a
+ * circuit authored unusually narrow cannot license a centreline that turns
+ * inside anything a car could drive. Monaco's Grand Hotel hairpin, the
+ * tightest corner in Formula One, is about ten metres of centreline radius;
+ * eight is comfortably inside that and every other corner on the calendar is
+ * looser than either.
+ */
+const CENTRELINE_FLOOR_R_M = 10;
+
+/**
+ * How much of the centreline's own rate the inner edge of the road must still
+ * make, at every node, on both sides.
+ *
+ * Zero is where the edge stops advancing and the ribbon folds. This is the
+ * margin above zero that `narrowWhereTheInnerEdgeFolds` holds, and
+ * `probe:shoulders` prints every node that is under it.
+ */
+export const MIN_EDGE_ADVANCE = 0.3;
+
+/**
+ * The narrowest a road may be made by the fold pass, metres.
+ *
+ * Twelve metres is the narrowest a modern Formula One circuit is built — the
+ * regulations ask for fifteen and the exceptions are the street circuits.
+ * Where a node is ALREADY narrower than this, because it is Monaco or because
+ * `narrowWhereTheLapOverlapsItself` has been there, the floor is that width
+ * instead: this pass may never be the thing that makes a road narrower than
+ * the circuit it belongs to already is.
+ */
+const FOLD_FLOOR_WIDTH_M = 12;
+
+/**
  * Everything needed to answer "how fast can THIS car go round THIS radius, and
  * how hard can it stop".
  *
@@ -325,6 +359,7 @@ export class TrackSpline {
 
     for (let i = 0; i < count; i++) this.dist[i] = (i * def.lengthM) / count;
 
+    this.easeCentrelineKinks();
     this.computeFrames();
     this.applyMetadata();
     this.solveRacingLine();
@@ -334,6 +369,281 @@ export class TrackSpline {
   // =========================================================================
   // Geometry
   // =========================================================================
+
+  /**
+   * Eases the centreline where it turns tighter than the road is wide.
+   *
+   * THE TRACES HAVE CORNERS IN THEM, not corner radii. `realGeometry` carries
+   * a control point about every twenty-five metres, so a hairpin arrives as a
+   * single vertex turning through eighty to a hundred and thirty degrees —
+   * Monaco's Grand Hotel is 130.4 degrees at one point, COTA's turn eleven
+   * 94.5, Bahrain's turn ten 85.8. Interpolating through a vertex like that
+   * and resampling at three metres puts almost all of the turn into one or two
+   * nodes: as authored, the tightest node-to-node radius on the calendar was
+   * 2.5m at Monaco, 5.1m at COTA, 6.3m at Bahrain, 6.9m at Monza and 7.0m at
+   * Spa. Centripetal parameterisation was tried and does not help, because
+   * this is not an interpolation artefact — the control polygon really does
+   * have a 130-degree vertex in it, and any curve through it turns sharply.
+   *
+   * That is not survivable, because the road is a ribbon `width` across:
+   * its INNER edge advances at `1 - halfWidth * curvature` of the centreline's
+   * rate, so at five metres of radius against seven and a half metres of
+   * half-width the factor is NEGATIVE. The edge reverses, the asphalt folds
+   * over itself, and there is no ground beside the road to draw, no pocket for
+   * a kerb, and a gap in the white line. `probe:shoulders` counts the first,
+   * `probe:kerbs` the second and `validate:limits` the third; on screen all
+   * three are one thing, the hole at the apex.
+   *
+   * SO THE LIMIT IS DERIVED, NOT CHOSEN. Each node's turn is held to the
+   * radius its own authored half-width needs to keep `MIN_EDGE_ADVANCE` of
+   * forward progress on the inside, which is the least easing that makes the
+   * ribbon sound. Nothing is smoothed for tidiness: a corner already wide
+   * enough for its road is left exactly as surveyed, and on the calendar that
+   * is 99% of nodes — Silverstone and Interlagos are not touched at all.
+   *
+   * A constrained Laplacian relaxation does the work, with two limits:
+   *
+   *   ONLY WHERE IT IS NEEDED. A node moves only if it, or a node within
+   *   `HALO` of it, is over its own limit, and the weight falls off linearly
+   *   across the halo so the easing blends into the surveyed trace rather than
+   *   stepping into it. The halo is what lets the turn SPREAD: a hundred and
+   *   thirty degrees at ten metres of radius needs twenty-three metres of arc,
+   *   which is eight node spacings, so a corner cannot be opened up without
+   *   borrowing from the approach and the exit. Five is not a free parameter —
+   *   at six or more Monaco stops converging and its hairpin comes out at a
+   *   1.7m radius, which `probe:shoulders` catches as a fold.
+   *
+   *   AND NEVER FAR. `MAX_SHIFT_M` is a hard leash back to where the trace put
+   *   each node. It is a safety net rather than a working limit and nothing on
+   *   the calendar reaches it. What actually moves, measured: Monaco 61 nodes,
+   *   worst 10.4m at the apex of the hairpin, where the trace's own control
+   *   polygon says the corner is a 9.7m-radius one and the resampled polyline
+   *   had made it a 2.5m cusp; COTA 81 nodes, worst 3.75m; Bahrain 61, worst
+   *   2.30m; Monza 28, worst 1.53m; Spa 40, worst 1.42m; Zandvoort 19, worst
+   *   0.16m. Jeddah, Silverstone, Red Bull Ring, Suzuka and Interlagos are not
+   *   touched at all — 290 nodes of 18,273 on the calendar move, 1.6%.
+   *
+   * `dist` stays uniform afterwards while the polyline it describes has got a
+   * little shorter — an eased corner is a shorter path. Measured against each
+   * circuit's official length: Monaco -0.55%, COTA -0.15%, Bahrain -0.07%, and
+   * under 0.05% everywhere else. The alternative is re-parameterising the
+   * whole lap, which would slide every distance-keyed thing on the circuit —
+   * corner names, DRS zones, elevation, banking, the pit lane — by up to the
+   * accumulated error, to fix a discrepancy of a fraction of a percent.
+   */
+  private easeCentrelineKinks(): void {
+    const { count, px, pz, def } = this;
+    /** Nodes either side of a spike that share in the easing. */
+    const HALO = 5;
+    /** Fraction of the way to the chord midpoint one pass may move a node. */
+    const RELAX = 0.35;
+    /** Most any node may end up from where the surveyed trace put it. */
+    const MAX_SHIFT_M = 12;
+    /**
+     * Extra advance asked of the centreline over what the ribbon needs.
+     *
+     * `narrowWhereTheInnerEdgeFolds` runs afterwards and holds the same
+     * `MIN_EDGE_ADVANCE` exactly; leaving the centreline sitting on the
+     * threshold would hand it every node of every hairpin to narrow. This is
+     * the daylight between the two so that the width pass has nothing to do
+     * except where the centreline genuinely could not be eased.
+     */
+    const HEADROOM = 0.08;
+
+    // The authored width, before `narrowWhereTheLapOverlapsItself` and before
+    // the fold pass — neither has run yet, and both only ever narrow, so this
+    // is the widest the road at a node will ever be and therefore the
+    // strictest limit it can ask of the centreline.
+    const authored = new Float64Array(count).fill(def.defaultWidthM);
+    if (def.widthOverrides) {
+      for (const seg of def.widthOverrides) {
+        this.forEachNodeInRange(seg.startS, seg.endS, (i) => { authored[i] = seg.widthM; });
+      }
+    }
+    /**
+     * How far the heading may swing per metre of centreline: a curvature.
+     *
+     * Per node, because the radius each node needs is the one its own road
+     * width asks for.
+     */
+    const nodeM = this.length / count;
+    const maxSwing = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      const need = (authored[i] * 0.5) / (1 - MIN_EDGE_ADVANCE - HEADROOM);
+      maxSwing[i] = 1 / Math.max(CENTRELINE_FLOOR_R_M, need);
+    }
+
+    const ox = Float64Array.from(px);
+    const oz = Float64Array.from(pz);
+    const weight = new Float64Array(count);
+    const nextX = new Float64Array(count);
+    const nextZ = new Float64Array(count);
+
+    for (let pass = 0; pass < 600; pass++) {
+      weight.fill(0);
+      let tightest = 0;
+
+      for (let i = 0; i < count; i++) {
+        const p = (i - 1 + count) % count;
+        const n = (i + 1) % count;
+        const a1 = Math.atan2(pz[i] - pz[p], px[i] - px[p]);
+        const a2 = Math.atan2(pz[n] - pz[i], px[n] - px[i]);
+        let turn = a2 - a1;
+        while (turn > Math.PI) turn -= 2 * Math.PI;
+        while (turn < -Math.PI) turn += 2 * Math.PI;
+        // Against the NOMINAL node spacing, not the local chord, and that is a
+        // deliberate choice with a measurement behind it. A radius is a turn
+        // per metre, so the chord is the honest denominator and it is what
+        // `narrowWhereTheInnerEdgeFolds` and `probe:shoulders` use. But a
+        // relaxation cannot be steered by it: easing a corner shortens the
+        // path it takes, the nodes in it close up, and a chord-normalised
+        // limit therefore tightens faster than the relaxation can satisfy it.
+        // Tried both ways — chord-normalised, with and without a floor under
+        // the chord and with the re-spacing widened to pull nodes in from the
+        // approach, Monaco's hairpin ran away to a 1.7m radius instead of
+        // easing; against the nominal spacing it converges on every circuit on
+        // the calendar. The price is that a corner whose nodes have closed up
+        // ends slightly tighter than asked, which is why Monaco lands at 8.8m
+        // against a 10m target and is reported rather than hidden.
+        const over = Math.abs(turn) - maxSwing[i] * nodeM;
+        if (over <= 0) continue;
+        if (over > tightest) tightest = over;
+        for (let k = -HALO; k <= HALO; k++) {
+          const j = (i + k + count) % count;
+          const w = 1 - Math.abs(k) / (HALO + 1);
+          if (w > weight[j]) weight[j] = w;
+        }
+      }
+
+      if (tightest === 0) break;
+
+      let moved = false;
+      for (let i = 0; i < count; i++) {
+        nextX[i] = px[i];
+        nextZ[i] = pz[i];
+        const w = weight[i];
+        if (w <= 0) continue;
+        const p = (i - 1 + count) % count;
+        const n = (i + 1) % count;
+        const mx = RELAX * w * ((px[p] + px[n]) * 0.5 - px[i]);
+        const mz = RELAX * w * ((pz[p] + pz[n]) * 0.5 - pz[i]);
+        let x = px[i] + mx;
+        let z = pz[i] + mz;
+        const dx = x - ox[i];
+        const dz = z - oz[i];
+        const d = Math.hypot(dx, dz);
+        if (d > MAX_SHIFT_M) {
+          x = ox[i] + (dx * MAX_SHIFT_M) / d;
+          z = oz[i] + (dz * MAX_SHIFT_M) / d;
+        }
+        if (x !== px[i] || z !== pz[i]) moved = true;
+        nextX[i] = x;
+        nextZ[i] = z;
+      }
+      if (!moved) break;
+      px.set(nextX);
+      pz.set(nextZ);
+      this.respaceRuns(weight, ox, oz, MAX_SHIFT_M);
+    }
+  }
+
+  /**
+   * Puts the nodes of each eased run back at uniform spacing along it.
+   *
+   * WITHOUT THIS THE EASING DOES NOT REACH ITS TARGET, and the reason took a
+   * measurement to find. The resampler places nodes at uniform ARCLENGTH along
+   * a dense curve, so where that curve cusps the chords between consecutive
+   * nodes are far shorter than the arc — 1.6m against a nominal 3m at Monaco.
+   * A relaxation that limits the turn per node to `nodeSpacing / R` therefore
+   * delivers `chord / turn`, which at Monaco is little more than half of R;
+   * and the Laplacian step makes it worse, because pulling a node towards the
+   * midpoint of its neighbours shortens both of its chords. Left alone, asking
+   * for a 10m hairpin produced a 7.4m one, the racing-line solver read the
+   * tighter radius, `validate:tracks` failed its curvature-spike check, and
+   * Monaco's apex speed came out at 25.6 km/h against a real 47.
+   *
+   * Re-spacing closes the loop: the run is walked at uniform arclength between
+   * two nodes outside it, so the chords come back towards nominal, the turn
+   * limit means what it says, and the relaxation converges on something near
+   * the radius it was asked for — 9.1m at Monaco, and above 14.9m everywhere
+   * else. The endpoints being fixed is what keeps this local: nothing outside
+   * an eased run and its padding is touched.
+   */
+  private respaceRuns(
+    weight: Float64Array, ox: Float64Array, oz: Float64Array, maxShiftM: number,
+  ): void {
+    const { count, px, pz } = this;
+    /**
+     * Nodes of untouched approach and exit taken into the re-spacing.
+     *
+     * The corner an eased run describes is genuinely SHORTER than the one that
+     * was surveyed — a hairpin opened from a cusp to a ten-metre arc loses
+     * eighteen metres of path at Monaco — and those metres have to come out of
+     * something. Re-spacing the run alone takes them all out of the run, which
+     * drops its chords to 2.1m against a nominal 3m; and since a node's
+     * curvature is read from the circumradius of its two chords, that alone
+     * reports a 10m corner as an 8.8m one and hands the speed solver a corner
+     * that is not there. `validate:tracks` fails it outright, at its 9m
+     * curvature-spike limit.
+     *
+     * Borrowing a few nodes of approach and exit spreads the loss and brings
+     * the worst chord on the calendar back to 2.25m and Monaco's tightest
+     * radius to 9.1m. FOUR, and this one is genuinely narrow: the padded nodes
+     * are also pulled out of the corner, which raises the turn each remaining
+     * node has to make, and past about six of them Monaco's relaxation stops
+     * converging altogether. The other ten circuits are indifferent to it.
+     */
+    const PAD = 4;
+    const touched = (i: number): boolean => weight[(i + count) % count] > 0;
+
+    for (let scan = 0; scan < count; scan++) {
+      if (!touched(scan) || touched(scan - 1)) continue;
+      let end = scan;
+      while (touched(end + 1) && end - scan < count - 3) end++;
+      if (end - scan + 2 * PAD + 3 > count) continue;
+      const from = scan - PAD;
+      end += PAD;
+
+      // The polyline from the last node before the padded run to the first
+      // after it. Both ends are fixed; everything between is redistributed.
+      const first = ((from - 1) % count + count) % count;
+      const n = end - from + 3;
+      const xs = new Float64Array(n);
+      const zs = new Float64Array(n);
+      for (let k = 0; k < n; k++) {
+        const i = (first + k) % count;
+        xs[k] = px[i];
+        zs[k] = pz[i];
+      }
+      const cum = new Float64Array(n);
+      for (let k = 1; k < n; k++) {
+        cum[k] = cum[k - 1] + Math.hypot(xs[k] - xs[k - 1], zs[k] - zs[k - 1]);
+      }
+      const total = cum[n - 1];
+      if (total < 1e-6) continue;
+
+      let cursor = 0;
+      for (let k = 1; k < n - 1; k++) {
+        const target = (k / (n - 1)) * total;
+        while (cursor < n - 2 && cum[cursor + 1] < target) cursor++;
+        const seg = cum[cursor + 1] - cum[cursor];
+        const f = seg > 1e-9 ? (target - cum[cursor]) / seg : 0;
+        let x = xs[cursor] + (xs[cursor + 1] - xs[cursor]) * f;
+        let z = zs[cursor] + (zs[cursor + 1] - zs[cursor]) * f;
+        const i = (first + k) % count;
+        const dx = x - ox[i];
+        const dz = z - oz[i];
+        const d = Math.hypot(dx, dz);
+        if (d > maxShiftM) {
+          x = ox[i] + (dx * maxShiftM) / d;
+          z = oz[i] + (dz * maxShiftM) / d;
+        }
+        px[i] = x;
+        pz[i] = z;
+      }
+      scan = end;
+    }
+  }
 
   private computeFrames(): void {
     const { count, px, pz, tx, tz, nx, nz, curvature } = this;
@@ -447,6 +757,111 @@ export class TrackSpline {
 
     // Last, because it needs the finished widths AND the finished elevation.
     this.narrowWhereTheLapOverlapsItself();
+    // And after that, because it is allowed to narrow further but never wider.
+    this.narrowWhereTheInnerEdgeFolds();
+  }
+
+  /**
+   * Narrows the road wherever the centreline still turns tighter than the road
+   * is wide, so the inside edge always advances.
+   *
+   * The road is swept as a ribbon: node i's edge on one side is at
+   * `p_i + n_i * side * halfWidth_i`, and the span to node i+1 is the quad
+   * between the two. How far that edge moves ALONG the road across the span,
+   * as a fraction of how far the centreline moves, is the advance factor. At 1
+   * the edge keeps pace with the centreline — a straight. Below 1 it is the
+   * inside of a corner. At 0 it has stopped, and the quad has collapsed to a
+   * triangle with a cusp at that corner. Below 0 the edge is running BACKWARDS
+   * and the quad is a bowtie: the asphalt is folded over itself, there is no
+   * pocket for a kerb, no strip of ground to draw beside it, and a gap in the
+   * white line where the paint crosses itself. COTA's turn eleven reached
+   * -0.201 and Bahrain's turn ten 0.007.
+   *
+   * The arithmetic is exact and needs no iteration, because of one
+   * cancellation: expanding the advance gives
+   *
+   *     (p_j - p_i)·t_i + side·h_j·(n_j·t_i) - side·h_i·(n_i·t_i)
+   *
+   * and `n_i·t_i` is zero by construction. A span's advance therefore depends
+   * on the half-width at its FAR end only, and each node's width is bounded by
+   * exactly two spans — the one arriving and the one leaving, the latter read
+   * backwards. Both are applied here.
+   *
+   * `easeCentrelineKinks` has already taken the sampling spikes out, so what
+   * this has left to do is small and it is meant to be: it exists as the
+   * guarantee, not as the mechanism. Anything it cannot fix within
+   * `FOLD_FLOOR_WIDTH_M` is a genuinely over-tight centreline and
+   * `probe:shoulders` prints it rather than letting a road be narrowed to a
+   * footpath to hide it.
+   */
+  private narrowWhereTheInnerEdgeFolds(): void {
+    const { count, px, pz, tx, tz, nx, nz, width } = this;
+    /** Most the half-width may change between adjacent nodes, metres. */
+    const WIDTH_SLOPE_M = 0.25;
+
+    const cap = new Float64Array(count);
+    for (let i = 0; i < count; i++) cap[i] = width[i] * 0.5;
+
+    /**
+     * Bounds the half-width at `k` from one span, traversed towards `k`.
+     *
+     * `f` is the node the span starts at, whose frame the advance is measured
+     * in, and `dir` is +1 when that is the lower-numbered node.
+     *
+     * Both distances are measured against the CENTRELINE's own step across
+     * this span, not against the nominal node spacing. The resampler puts the
+     * nodes at uniform ARCLENGTH along a dense curve, so at a hairpin, where
+     * that curve bends hard between two samples, the chord between them is
+     * shorter than the arc — 1.6m against a nominal 3m at Monaco's Grand
+     * Hotel. Dividing by the nominal figure there would report an inner edge
+     * doing 0.165 of the centreline's rate when it is doing 0.30 of it, and
+     * would then narrow a road to fix a defect that is in the denominator.
+     */
+    const bound = (k: number, f: number, dir: 1 | -1): void => {
+      const ux = tx[f] * dir;
+      const uz = tz[f] * dir;
+      const along = (px[k] - px[f]) * ux + (pz[k] - pz[f]) * uz;
+      const swing = nx[k] * ux + nz[k] * uz;
+      if (swing === 0 || along <= 0) return;
+      // Only one side is ever on the inside of a turn — the one where
+      // `side * swing` is negative. The other edge advances FASTER than the
+      // centreline and needs no bound, so the magnitude is all that is read
+      // and the answer is the same bound for whichever side that is.
+      const allow = ((1 - MIN_EDGE_ADVANCE) * along) / Math.abs(swing);
+      if (allow < cap[k]) cap[k] = allow;
+    };
+
+    for (let i = 0; i < count; i++) {
+      const j = (i + 1) % count;
+      bound(j, i, 1);
+      bound(i, j, -1);
+    }
+
+    for (let i = 0; i < count; i++) {
+      const half = width[i] * 0.5;
+      // Never wider than authored, and never narrower than the circuit is.
+      const floor = Math.min(half, FOLD_FLOOR_WIDTH_M * 0.5);
+      width[i] = Math.max(floor, Math.min(half, cap[i])) * 2;
+    }
+
+    // Ease it in and out. Slope-limited DOWNWARD only and wrapped, exactly as
+    // `narrowWhereTheLapOverlapsItself` does it: a symmetric smoothing pass
+    // would put the width back up on the very node that was just narrowed.
+    // Without this a node steps three metres narrower than its neighbour and
+    // the shoulder beside it steps with it, which is the defect `steps>0.3m`
+    // in `probe:shoulders` counts.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let k = 0; k < count; k++) {
+        const i = k % count;
+        const p = (i - 1 + count) % count;
+        if (width[i] > width[p] + WIDTH_SLOPE_M * 2) width[i] = width[p] + WIDTH_SLOPE_M * 2;
+      }
+      for (let k = count - 1; k >= 0; k--) {
+        const i = k % count;
+        const n = (i + 1) % count;
+        if (width[i] > width[n] + WIDTH_SLOPE_M * 2) width[i] = width[n] + WIDTH_SLOPE_M * 2;
+      }
+    }
   }
 
   /**
@@ -1446,6 +1861,31 @@ export class TrackSpline {
     const i = Math.floor(f) % this.count;
     const j = (i + 1) % this.count;
     return lerp(this.elevation[i], this.elevation[j], f - Math.floor(f));
+  }
+
+  /**
+   * Banking at `s`, radians, INTERPOLATED between nodes.
+   *
+   * Interpolated rather than read off the nearest node, and the difference is
+   * not academic. Anything standing on a banked road is lifted by
+   * `lateral * tan(bank)`; at Zandvoort's 18-degree banking that is 2.4m at the
+   * edge of the road, so a banking value that stepped from node to node would
+   * step the car's height with it — several centimetres every three metres of
+   * travel, which is a car visibly hopping through the corner.
+   */
+  bankingAt(s: number): number {
+    const f = (wrapDistance(s, this.length) / this.length) * this.count;
+    const i = Math.floor(f) % this.count;
+    const j = (i + 1) % this.count;
+    return lerp(this.banking[i], this.banking[j], f - Math.floor(f));
+  }
+
+  /** Road width at `s`, metres, interpolated between nodes. */
+  widthAt(s: number): number {
+    const f = (wrapDistance(s, this.length) / this.length) * this.count;
+    const i = Math.floor(f) % this.count;
+    const j = (i + 1) % this.count;
+    return lerp(this.width[i], this.width[j], f - Math.floor(f));
   }
 
   /** Longitudinal grade (rise over run) at `s`. Positive = uphill. */

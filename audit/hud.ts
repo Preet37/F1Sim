@@ -115,7 +115,7 @@ const config: SessionConfig = {
  * to do — but the compositor only has a frame if something keeps drawing one.
  */
 function loop(): void {
-  if (engine && player) renderer.render(1 / 60, engine, player);
+  if (engine && player) renderer.render(1 / 60, 1, engine, player);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);

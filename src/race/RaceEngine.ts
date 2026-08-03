@@ -1024,6 +1024,22 @@ export class RaceEngine {
     // 3. Contact resolution between cars.
     this.resolveContacts();
 
+    // 3b. The step's final pose, published as the render pose.
+    //
+    // Here rather than inside the loop because barriers, obstacles and contact
+    // resolution all move cars AFTER their own step, and a pose captured before
+    // those would draw a car inside the wall it was just pushed out of.
+    //
+    // The renderer overwrites these every frame with an interpolated pose (see
+    // `CarEntry.renderX`). This assignment is what everything that runs WITHOUT
+    // a renderer reads — every probe that drives `CameraDirector` directly — so
+    // those keep seeing the solver's own pose and are unaffected.
+    for (const car of this.cars) {
+      car.renderX = car.physics.position.x;
+      car.renderZ = car.physics.position.y;
+      car.renderHeading = car.physics.heading;
+    }
+
     // 4. Race control.
     this.raceControl.update(
       dt, this.cars, this.standings, this.time,
