@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { chamferBox } from './ChamferKit';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from '../race/CarEntry';
 import {
@@ -19,10 +18,13 @@ import {
  * distinguish theirs from the nineteen others they are about to drive past, so
  * the simulation was asking them to stop somewhere it had never shown them.
  *
- * This marks exactly one box — the player's — in their team's colours, with a
- * stop bar to bring the front wheels up to and a pair of pylons tall enough to
- * be seen over the pit wall from up the lane, rather than only once the car is
- * already level with the box and too late to stop.
+ * This marks exactly one box — the player's — in their team's colours, and it
+ * marks it in the four places a driver actually looks, in the order he looks at
+ * them: a mast and a number board standing above the pit wall line, visible
+ * from a hundred metres up the lane; chevrons on the ground leading in, picked
+ * up while there is still road to slow in; the driver's own race number painted
+ * across the box, which is the last confirmation before committing; and a stop
+ * bar to bring the front wheels up to.
  *
  * The box POSITION is not computed here. It comes from `PitGeometry.boxS`, the
  * same function the circuit builder paints the boxes with, the paddock lays its
@@ -38,11 +40,27 @@ export interface PitBoxMarker {
   dispose(): void;
 }
 
-/** How far the pylons stand above the apron, metres. */
-const PYLON_H = 4.2;
-const PYLON_R = 0.15;
-/** Height of the crossbar between them. */
-const BAR_H = 0.55;
+/**
+ * The board on its mast: how high it stands and how big it is.
+ *
+ * This replaced a pair of 4.2m pylons 300mm across standing at the two front
+ * corners of the box with a crossbar between them — a gate the car drove
+ * through. It read from up the lane, which was the point, and then it stood in
+ * the middle of the pit stop: the near pylon filled a third of the frame from
+ * the driver's seat, both of them were inside the space the wheel crew work in,
+ * and the crossbar was directly over the car. A marker that hides the thing it
+ * marks has stopped being a marker.
+ *
+ * One mast, on the FAST LANE side of the box and set back up the lane, is out
+ * of the working area entirely and is the first thing in view on the approach
+ * — which is where it is needed, because by the time the box is beside you the
+ * stop is already missed.
+ */
+const MAST_H = 3.6;
+const MAST_R = 0.055;
+/** The number board: metres wide and tall. */
+const BOARD_W = 1.05;
+const BOARD_H = 1.35;
 /** Chevrons laid up the working lane towards the box, and their spacing. */
 const CHEVRONS = 6;
 const CHEVRON_PITCH_M = 7;
@@ -171,40 +189,76 @@ export function buildPitBoxMarker(track: TrackSpline, player: CarEntry): PitBoxM
   }
   mkMesh(chevronVerts, accentMat);
 
-  // The gate: two posts and a crossbar over the mouth of the box.
+  // The driver's own race number, painted in the box.
   //
-  // A marking on the floor of a pit lane is invisible from a hundred metres up
-  // the lane at eighty km/h, which is precisely where the driver needs to start
-  // aiming for it. Something standing up, above the pit wall line, is not — and
-  // the posts were 2.6m of 8.5cm pole, which at that distance is a hair.
-  // Twenty sides, not ten. There is exactly one of this geometry in the scene
-  // — both pylons share it — so the extra thirty triangles are free, and a
-  // decagon 150mm across shows its flats at pit-lane speed.
-  const pylonGeo = new THREE.CylinderGeometry(PYLON_R, PYLON_R * 1.35, PYLON_H, 20);
-  disposables.push(pylonGeo);
-  const feet: THREE.Vector3[] = [];
-  for (const s of [boxS - half, boxS + half]) {
-    const base = W(s, inner - 0.15, PIT_APRON_HEIGHT_M);
-    const pylon = new THREE.Mesh(pylonGeo, accentMat);
-    pylon.position.set(base.x, base.y + PYLON_H * 0.5, base.z);
-    root.add(pylon);
-    feet.push(base);
+  // This is what a real pit box has and what the game did not: every box on the
+  // grid carries its car's number on the ground, big enough to read from the
+  // fast lane, because a driver arriving at eighty km/h is counting boxes and
+  // needs the last confirmation without turning his head. "I also dont really
+  // know where my pit is" is exactly that missing confirmation.
+  const numberTex = makeNumberTexture(player.driver.raceNumber, player.team.colour, player.team.accent);
+  const numberMat = new THREE.MeshStandardMaterial({
+    map: numberTex, transparent: true, roughness: 0.7, metalness: 0,
+    side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2,
+  });
+  disposables.push(numberTex, numberMat);
+  {
+    // Just UP-LANE of the box, and SQUARE.
+    //
+    // Both matter. Painted inside the box it spends the whole stop underneath
+    // the car, which is the only part of the stop when a driver might want to
+    // check it; and stretched to fill the box it is 8.6m long by 1.6m wide,
+    // which turns a two-digit number into an unreadable blue smear — that is
+    // exactly what the first attempt produced.
+    const size = Math.min(outer - inner - 0.9, 2.0);
+    const centre = boxS - half - size * 0.5 - 0.6;
+    const n0 = centre - size * 0.5;
+    const n1 = centre + size * 0.5;
+    const m0 = (inner + outer) * 0.5 - size * 0.5;
+    const m1 = (inner + outer) * 0.5 + size * 0.5;
+    const a = W(n1, m0, yPaint + 0.004);
+    const b = W(n1, m1, yPaint + 0.004);
+    const c = W(n0, m1, yPaint + 0.004);
+    const d = W(n0, m0, yPaint + 0.004);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute([
+      a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z,
+      a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z,
+    ], 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute([
+      0, 0, 1, 0, 1, 1,
+      0, 0, 1, 1, 0, 1,
+    ], 2));
+    geo.computeVertexNormals();
+    disposables.push(geo);
+    root.add(new THREE.Mesh(geo, numberMat));
   }
-  if (feet.length === 2) {
-    // Chamfered. This bar is deliberately the thing the driver's eye lands on
-    // from a hundred metres up the lane, and it was the one raw BoxGeometry in
-    // the scene with a spotlight on it.
-    const barGeo = chamferBox(feet[0].distanceTo(feet[1]), BAR_H, 0.16, 0.03);
-    disposables.push(barGeo);
-    const bar = new THREE.Mesh(barGeo, teamMat);
-    bar.position.set(
-      (feet[0].x + feet[1].x) * 0.5,
-      (feet[0].y + feet[1].y) * 0.5 + PYLON_H - BAR_H * 0.5,
-      (feet[0].z + feet[1].z) * 0.5,
-    );
-    bar.lookAt(feet[1].x, bar.position.y, feet[1].z);
-    bar.rotateY(Math.PI / 2);
-    root.add(bar);
+
+  // The mast, and the board on it.
+  //
+  // Paint on the floor of a pit lane is invisible from a hundred metres back at
+  // eighty km/h, which is precisely where the driver has to start aiming for the
+  // box. Something standing up, above the line of the pit wall, is not.
+  //
+  // It stands on the FAST LANE side and set back up the lane, clear of the
+  // twenty-one people who are about to be working in the box — see the note on
+  // `MAST_H` for what the previous arrangement did to the view.
+  {
+    const mastGeo = new THREE.CylinderGeometry(MAST_R, MAST_R * 1.3, MAST_H, 12);
+    disposables.push(mastGeo);
+    const base = W(boxS - half - 1.1, g.divider + 0.35, PIT_APRON_HEIGHT_M * 0.5);
+    const mast = new THREE.Mesh(mastGeo, accentMat);
+    mast.position.set(base.x, base.y + MAST_H * 0.5, base.z);
+    root.add(mast);
+
+    // The board faces back up the lane, at the driver.
+    const up = W(boxS - half - 1.1 - 0.5, g.divider + 0.35, 0);
+    const geo = new THREE.PlaneGeometry(BOARD_W, BOARD_H);
+    disposables.push(geo);
+    const board = new THREE.Mesh(geo, numberMat);
+    board.position.set(base.x, base.y + MAST_H - BOARD_H * 0.55, base.z);
+    board.lookAt(up.x, board.position.y, up.z);
+    root.add(board);
   }
 
   return {
@@ -215,4 +269,61 @@ export function buildPitBoxMarker(track: TrackSpline, player: CarEntry): PitBoxM
       root.clear();
     },
   };
+}
+
+/**
+ * The driver's race number, as a texture.
+ *
+ * Drawn rather than modelled because a numeral built from geometry is either
+ * unreadable or expensive, and this one has to be legible on the ground from
+ * fifty metres and on a board a metre across from a hundred. A 256x256 canvas
+ * is a few kilobytes and one material shared between the two.
+ *
+ * The number is set in the TEAM's accent on a field of its primary colour, with
+ * a hard outline — the same treatment a real pit box gets, and the reason the
+ * whole marker reads as "this box belongs to that team" rather than as a decal.
+ */
+function makeNumberTexture(number: number, colour: number, accent: number): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const primary = '#' + colour.toString(16).padStart(6, '0');
+  const acc = '#' + accent.toString(16).padStart(6, '0');
+
+  ctx.clearRect(0, 0, size, size);
+  // A rounded plate rather than a full square: a hard rectangle of team colour
+  // on the ground reads as a missing texture, a plate reads as paint.
+  const r = 26;
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.arcTo(size, 0, size, size, r);
+  ctx.arcTo(size, size, 0, size, r);
+  ctx.arcTo(0, size, 0, 0, r);
+  ctx.arcTo(0, 0, size, 0, r);
+  ctx.closePath();
+  ctx.fillStyle = primary;
+  ctx.fill();
+
+  const text = String(number);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  let px = 190;
+  ctx.font = '900 ' + px + 'px Helvetica, Arial, sans-serif';
+  while (ctx.measureText(text).width > size * 0.78 && px > 40) {
+    px -= 6;
+    ctx.font = '900 ' + px + 'px Helvetica, Arial, sans-serif';
+  }
+  ctx.lineWidth = px * 0.09;
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.strokeText(text, size / 2, size * 0.54);
+  ctx.fillStyle = acc;
+  ctx.fillText(text, size / 2, size * 0.54);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  tex.needsUpdate = true;
+  return tex;
 }

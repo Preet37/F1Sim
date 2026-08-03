@@ -40,16 +40,13 @@ const FRAMES: [string, number, number][] = [
 ];
 
 /**
- * Every view the driver's furniture is in shot for.
+ * The three views that are inside the car, driver's eye first.
  *
- * 'driver' is the eye itself — see DRIVER_EYE_* in CockpitMesh — and it is the
- * mode this harness matters most for. The other two are photographed from
- * outside the head and their mirrors are 1.4m away with a halo rail across
- * them; this one is 0.79m from the panes with nothing in the way, so it is
- * where "can you actually read the mirror" is answerable from a picture rather
- * than only from the feed behind it.
+ * It is the one the mirrors are readable in — the panes are 0.83m from the eye
+ * rather than 1.52m and the hoop does not lie across them — so it is the one
+ * whose mirror blow-ups are worth looking at first.
  */
-const MODES = ['cockpit', 'driver', 'onboard-t'] as const;
+const MODES = ['driver', 'cockpit', 'onboard-t'] as const;
 
 // The low tier writes somewhere else, so a phone-tier run and a desktop-tier
 // run of the same circuit can be put side by side rather than overwriting each
@@ -115,7 +112,7 @@ async function main(): Promise<void> {
   page.setDefaultTimeout(240_000);
 
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   page.on('console', (m) => {
     // The headless browser asks for a favicon the audit page does not have, on
     // every run, forever. A probe whose exit code is decided by that is a probe
@@ -199,10 +196,14 @@ async function main(): Promise<void> {
     // feed adds — does not vary from circuit to circuit in any way that eleven
     // measurements would reveal and four would not.
     if (id === CIRCUIT_IDS[0]) {
+      const driver = await page.evaluate(`window.__audit.costMode('driver', 6)`) as Cost;
       const cockpit = await page.evaluate(`window.__audit.costMode('cockpit', 6)`) as Cost;
       const onboard = await page.evaluate(`window.__audit.costMode('onboard-t', 6)`) as Cost;
       const chase = await page.evaluate(`window.__audit.costMode('chase', 6)`) as Cost;
-      for (const [name, c] of [['chase (no mirrors)', chase], ['cockpit', cockpit], ['onboard-t', onboard]] as const) {
+      for (const [name, c] of [
+        ['chase (no mirrors)', chase], ['driver', driver],
+        ['cockpit', cockpit], ['onboard-t', onboard],
+      ] as const) {
         rows.push(
           `${name.padEnd(20)} ${c.calls.toFixed(0).padStart(5)} draw calls  ` +
           `${(c.triangles / 1000).toFixed(0).padStart(5)}k triangles  ${c.ms.toFixed(0).padStart(5)}ms`,
@@ -212,6 +213,11 @@ async function main(): Promise<void> {
         `mirror feed adds     ${(cockpit.calls - chase.calls).toFixed(0).padStart(5)} draw calls  ` +
         `${((cockpit.triangles - chase.triangles) / 1000).toFixed(0).padStart(5)}k triangles  ` +
         `${(cockpit.ms - chase.ms).toFixed(0).padStart(5)}ms  (high tier, one pane per frame)`,
+      );
+      rows.push(
+        `driver's eye adds    ${(driver.calls - chase.calls).toFixed(0).padStart(5)} draw calls  ` +
+        `${((driver.triangles - chase.triangles) / 1000).toFixed(0).padStart(5)}k triangles  ` +
+        `${(driver.ms - chase.ms).toFixed(0).padStart(5)}ms  (mirrors AND cockpit interior)`,
       );
     }
     process.stdout.write('shot 8\n');

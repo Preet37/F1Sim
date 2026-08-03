@@ -82,6 +82,21 @@ export interface SurfaceProfile {
   patches?: number;
   patchScale?: number;
   /**
+   * How strongly this surface responds to water, 0..1. Defaults to 1.
+   *
+   * Not every material goes glossy when it rains. Asphalt does — a wet road is
+   * darker and near-mirror, which is the single most recognisable thing about
+   * a wet circuit. Grass does not: it gets darker and stays matte, because the
+   * water goes into it rather than onto it. Getting that wrong turns the
+   * verges into sheets of glass and the whole scene into a swimming pool, which
+   * is the failure mode a single global wetness term always has.
+   *
+   * A uniform rather than a compiled-in constant so that it does not have to
+   * appear in `customProgramCacheKey` and multiply the program count by the
+   * number of distinct values.
+   */
+  wetResponse?: number;
+  /**
    * How strongly this surface takes rubber from the racing line.
    *
    * See `setRubberLine`. Asphalt takes it fully, paint and kerbs partially
@@ -199,6 +214,7 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     normalStrength: 0.85,
     roughnessVariation: 0.15,
     roughness: 0.92, metalness: 0,
+    wetResponse: 0.85,
   },
   /** Grass: large-scale mottling, mowing variation, no sheen at all. */
   grass: {
@@ -207,6 +223,9 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     normalStrength: 0.8,
     roughnessVariation: 0.08,
     roughness: 0.97, metalness: 0,
+    // Water soaks in rather than sitting on top. Grass gets darker; it does
+    // not become a mirror, and a scene where it does looks flooded.
+    wetResponse: 0.3,
   },
   /** Concrete walls and barriers. Planar projection, so no bump. */
   wall: {
@@ -215,6 +234,9 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     normalStrength: 0,
     roughnessVariation: 0.1,
     roughness: 0.8, metalness: 0.04,
+    // Only the splash line at the bottom is ever really wet, and this shader
+    // has no way to know where that is.
+    wetResponse: 0.4,
   },
 };
 
@@ -442,6 +464,70 @@ function resizeRubberMap(res: number): void {
 /** World-to-map transform: (originX, originZ, 1/span, 1/span). */
 const RUBBER_XF = new THREE.Vector4(0, 0, 0, 0);
 
+// ---------------------------------------------------------------------------
+// Water
+// ---------------------------------------------------------------------------
+
+/**
+ * How much water is lying on the circuit, and where the dry line has got to.
+ *
+ *   x  mean water depth on the road, 0..1
+ *   y  how far the racing line has dried relative to the rest, 0..1
+ *   z  unused
+ *   w  unused
+ *
+ * A single shared `Vector4`, held by reference by every compiled program for
+ * the same reason `RUBBER_TEX` is: a session that starts dry and rains on lap
+ * ten has to reach shaders that were compiled on lap one. Nothing here is
+ * per-material, so writing to it once a frame updates the whole circuit.
+ */
+const WET = new THREE.Vector4(0, 0, 0, 0);
+
+/**
+ * Where water collects, rasterised once per session into a world-space map.
+ *
+ * WHY IT IS STATIC. The water field in the simulation evolves continuously, and
+ * the obvious implementation is to re-rasterise it and re-upload every second
+ * or two. That is the wrong trade. The part of the field that varies in SPACE —
+ * which dips hold water, which crests shed it — is fixed by the circuit's
+ * elevation and never changes; the part that varies in TIME is very nearly a
+ * single scalar multiplying it. So the map is built once and the scalar is a
+ * uniform, and the per-frame cost of standing water is one texture fetch and no
+ * uploads at all.
+ *
+ * 512 rather than the rubber map's 2048, because the drainage field is smoothed
+ * over about ninety metres in `TrackSurface` and there is nothing above that
+ * frequency in it to resolve. At Spa's 7km bounding box that is fourteen metres
+ * a pixel, which is four to seven pixels across a puddle — enough, with bilinear
+ * filtering, for a soft-edged pool rather than a hard-edged one, which is what
+ * a pool has.
+ */
+const POOL_RES = 512;
+const POOL_DATA = new Uint8Array(POOL_RES * POOL_RES);
+const POOL_TEX = new THREE.DataTexture(POOL_DATA, POOL_RES, POOL_RES, THREE.RedFormat);
+POOL_TEX.wrapS = POOL_TEX.wrapT = THREE.ClampToEdgeWrapping;
+POOL_TEX.magFilter = THREE.LinearFilter;
+POOL_TEX.minFilter = THREE.LinearFilter;
+POOL_TEX.generateMipmaps = false;
+POOL_TEX.needsUpdate = true;
+
+/**
+ * Tells the whole circuit how wet it is.
+ *
+ * `wetness` is the mean water depth and `dryLine` is how much further the
+ * racing line has dried than the road around it — 0 while it is raining, rising
+ * as the line comes back. Cheap enough to call every frame and intended to be.
+ */
+export function setSurfaceWetness(wetness: number, dryLine: number): void {
+  WET.x = wetness;
+  WET.y = dryLine;
+}
+
+/** What the circuit currently thinks it is. For probes. */
+export function surfaceWetness(): { wetness: number; dryLine: number } {
+  return { wetness: WET.x, dryLine: WET.y };
+}
+
 /**
  * Rasterises a circuit's racing line into the shared rubber map.
  *
@@ -452,15 +538,17 @@ const RUBBER_XF = new THREE.Vector4(0, 0, 0, 0);
  * Passing null clears the map, which is what the surfaces look like with no
  * rubber down: the state a brand new resurfacing is in.
  */
-export function setRubberLine(track: TrackSpline | null): void {
+export function setRubberLine(track: TrackSpline | null, drainage?: Float32Array): void {
   if (!track) {
     RUBBER_DATA.fill(0);
+    POOL_DATA.fill(0);
     RUBBER_XF.set(0, 0, 0, 0);
     RUBBER_TEX.needsUpdate = true;
+    POOL_TEX.needsUpdate = true;
     return;
   }
 
-  const { count, px, pz, nx, nz, lineOffset, width, lineCurvature } = track;
+  const { count, px, pz, nx, nz, lineOffset, lineCurvature } = track;
 
   // Square bounding box with a margin, so one metres-per-pixel figure covers
   // both axes and the band is not stretched on the long side of the circuit.
@@ -526,13 +614,14 @@ export function setRubberLine(track: TrackSpline | null): void {
     const bx = px[j] + nx[j] * lineOffset[j];
     const bz = pz[j] + nz[j] * lineOffset[j];
 
-    // The groove is wider where the cars are spread out and narrower where a
-    // corner funnels everyone onto one line. Curvature is the cheapest honest
-    // proxy for that, and it is what makes the band pinch at an apex and fan
-    // out down a straight — the shape the band has in every aerial photograph.
+    // The band's width comes from the track, not from here. `TrackSurface` in
+    // the simulation decides whether a car is on the rubber using the same
+    // rule, and if the two ever diverged the player would be aiming at a dark
+    // stripe that is not where the grip is — a discrepancy invisible from
+    // inside either file.
     const k = Math.abs(lineCurvature[i]);
     const tight = Math.min(1, k * 90);
-    const halfW = Math.max(1.4, width[i] * (0.19 - 0.07 * tight));
+    const halfW = track.rubberHalfWidthAt(i);
     // Heaviest where the cars are hardest on the tyres, which is the corners.
     const peak = 0.55 + 0.35 * tight;
 
@@ -545,6 +634,71 @@ export function setRubberLine(track: TrackSpline | null): void {
   }
 
   RUBBER_TEX.needsUpdate = true;
+  rasterisePool(track, drainage);
+}
+
+/**
+ * Rasterises the simulation's drainage field into the pooling map.
+ *
+ * Stamped across the FULL ROAD WIDTH rather than along the racing line, because
+ * a puddle does not care where the cars go — that is the point of it. The
+ * simulation's field is per node and the same one `TrackSurface` decides grip
+ * with, so the water the player can see and the water the car is driving
+ * through are the same water.
+ *
+ * With no field supplied the map is cleared and the shader falls back to a flat
+ * wetness, which is what a probe with no race engine gets.
+ */
+function rasterisePool(track: TrackSpline, drainage?: Float32Array): void {
+  POOL_DATA.fill(0);
+  if (!drainage || drainage.length !== track.count || RUBBER_XF.z <= 0) {
+    POOL_TEX.needsUpdate = true;
+    return;
+  }
+
+  const originX = RUBBER_XF.x, originZ = RUBBER_XF.y, inv = RUBBER_XF.z;
+  const { count, px, pz, nx, nz, width } = track;
+
+  const stampPool = (wx: number, wz: number, radiusM: number, value: number): void => {
+    const cx = (wx - originX) * inv * POOL_RES;
+    const cy = (wz - originZ) * inv * POOL_RES;
+    const r = radiusM * inv * POOL_RES;
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(POOL_RES - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(POOL_RES - 1, Math.ceil(cy + r));
+    const r2 = r * r;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        // Softened at the rim so pools do not have a stamped circular edge.
+        const fall = 1 - Math.sqrt(d2 / r2);
+        const v = Math.round(clamp01(value * (0.35 + 0.65 * fall)) * 255);
+        const at = y * POOL_RES + x;
+        if (v > POOL_DATA[at]) POOL_DATA[at] = v;
+      }
+    }
+  };
+
+  for (let i = 0; i < count; i++) {
+    const d = drainage[i];
+    if (d < 0.02) continue;
+    // Out to the edge of the road and a little beyond: the water that runs off
+    // the camber is lying against the kerb, which is where it is deepest.
+    const half = width[i] * 0.5 + 1.5;
+    // Three stamps across the width rather than one wide one, so the pool
+    // follows the road rather than bulging into the run-off on a tight corner.
+    for (let k = -1; k <= 1; k++) {
+      const lat = (k * half) * 0.62;
+      stampPool(px[i] + nx[i] * lat, pz[i] + nz[i] * lat, half * 0.55, d);
+    }
+  }
+
+  POOL_TEX.needsUpdate = true;
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
 /**
@@ -644,9 +798,35 @@ export class SurfaceDetail {
       dMix *= 1.0 - sdPatch * ${f(patches * 0.15)};
     `;
     const rubberCode = rubber <= 0 ? '' : /* glsl */`
-      if (uRubberXf.z > 0.0) {
-        vec2 rUv = (vDetailPos.xz - uRubberXf.xy) * uRubberXf.zw;
-        rub = texture2D(uRubber, rUv).r * ${f(rubber)};
+      rub = texture2D(uRubber, rUv).r * ${f(rubber)};
+    `;
+
+    /**
+     * Water, in three terms.
+     *
+     * DEPTH is the mean water scaled by the pooling map, so the dips flood and
+     * the crests stay merely damp. It is then taken back off wherever the
+     * rubber band is, in proportion to how far the line has dried — which is
+     * what draws the dry line, and draws it in the right place, because `rub`
+     * is the same band the simulation decides grip with.
+     *
+     * COLOUR: wet asphalt is dramatically darker, not slightly. A water film
+     * kills the diffuse bounce almost completely and what is left is specular.
+     * 0.42 is about right for asphalt photographed wet against the same asphalt
+     * dry, and it is most of what makes a rendered wet road read as wet.
+     *
+     * ROUGHNESS goes the other way and goes a long way: 0.06 is a smooth water
+     * surface. This is where the reflections come from — the environment probe
+     * is already wetness-aware and has a ground mirror term waiting for a
+     * surface smooth enough to use it.
+     */
+    const wetCode = /* glsl */`
+      float wetAmount = 0.0;
+      if (uWet.x > 0.002 && uWetResponse > 0.0) {
+        float pool = uRubberXf.z > 0.0 ? texture2D(uPool, rUv).r : 0.0;
+        float depth = clamp(uWet.x * (0.72 + 0.85 * pool), 0.0, 1.0);
+        depth *= 1.0 - rub * uWet.y * 0.9;
+        wetAmount = depth * uWetResponse;
       }
     `;
 
@@ -661,6 +841,12 @@ export class SurfaceDetail {
       // have already been compiled.
       shader.uniforms.uRubber = { value: RUBBER_TEX };
       shader.uniforms.uRubberXf = { value: RUBBER_XF };
+      shader.uniforms.uPool = { value: POOL_TEX };
+      // Shared by reference, like the rubber map above and for the same reason:
+      // a session that starts dry and rains on lap ten has to reach programs
+      // that were compiled on lap one.
+      shader.uniforms.uWet = { value: WET };
+      shader.uniforms.uWetResponse = { value: profile.wetResponse ?? 1 };
 
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vDetailPos;')
@@ -681,6 +867,9 @@ export class SurfaceDetail {
           uniform float uRoughVar;
           uniform sampler2D uRubber;
           uniform vec4 uRubberXf;
+          uniform sampler2D uPool;
+          uniform vec4 uWet;
+          uniform float uWetResponse;
           float detailGrain(out float coarse) {
             float a = texture2D(uGrain, vDetailPos.xz * uScale.x).r;
             coarse = texture2D(uGrain, vDetailPos.xz * uScale.y).r;
@@ -732,12 +921,25 @@ export class SurfaceDetail {
           // below. Computed here rather than in the normal block because the
           // roughness stage runs first and has to know about it too.
           float resolveA = detailResolve(uScale.x * 64.0);
+          // The shared world-space map coordinate. Hoisted out of the rubber
+          // block because the pooling map is sampled with it too, and because
+          // a surface with no rubber can still be under water.
+          vec2 rUv = uRubberXf.z > 0.0
+            ? (vDetailPos.xz - uRubberXf.xy) * uRubberXf.zw
+            : vec2(0.0);
           ${aggCode}
           ${seamCode}
           ${patchCode}
           ${rubberCode}
+          ${wetCode}
           diffuseColor.rgb *= dMix;
           diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.66, 0.655, 0.70), rub);
+          // Water last, over the rubber tint, because the water is on top of
+          // the rubber. Tinted very slightly toward blue as well as darkened:
+          // a wet road picks up the sky, and a purely neutral darkening reads
+          // as a shadow rather than as water.
+          diffuseColor.rgb = mix(
+            diffuseColor.rgb, diffuseColor.rgb * vec3(0.40, 0.42, 0.47), wetAmount);
         `)
         // Rougher where the grain is high. Gives the road patches of sheen that
         // slide across it as the car moves, which is most of what makes asphalt
@@ -764,6 +966,13 @@ export class SurfaceDetail {
               + (1.0 - resolveA) * uRoughVar * 0.5
               - rub * 0.26 + sdPatch * 0.07,
             0.04, 1.0);
+          // A film of water is a smooth dielectric sitting on top of whatever
+          // the surface was, so it does not modulate the roughness, it
+          // REPLACES it. 0.06 is a still water surface; the mix rather than a
+          // subtraction is what stops a wet run-off area — which starts at
+          // 0.92 — ending up rougher than wet asphalt, which would be exactly
+          // backwards.
+          roughnessFactor = mix(roughnessFactor, 0.06, wetAmount * 0.92);
         `)
         // Bump last, so it perturbs the normal three.js has already resolved.
         // The projection is planar in XZ, so the map's x and y drive world x
@@ -789,7 +998,12 @@ export class SurfaceDetail {
             `}
             // Rubber fills the surface texture in. Where the band is heaviest
             // the road is visibly smoother, not just darker.
-            normal = normalize(normal + bump * (1.0 - rub * 0.65));
+            // Water fills the surface in. Standing water is FLAT — that is what
+            // makes a puddle a mirror rather than a wet patch — so the bump has
+            // to go away as the depth comes up, or the reflection breaks into
+            // the same speckle the dry road has and the whole effect reads as
+            // a shiny road rather than a wet one.
+            normal = normalize(normal + bump * (1.0 - rub * 0.65) * (1.0 - wetAmount * 0.85));
           }
         `);
     };

@@ -99,6 +99,7 @@
 
 import * as THREE from 'three';
 import { installCanvasStub } from './lib/domStub';
+import { GROUND_MESH_NAME } from '../src/render/Terrain';
 import type { TrackSpline as TrackSplineT } from '../src/track/TrackSpline';
 import type { WorldModel } from '../src/track/WorldObstacles';
 import type { SessionConfig } from '../src/race/RaceEngine';
@@ -547,11 +548,17 @@ function scanTree(
 }
 
 /**
- * Names the direct children of `buildTrackMeshes`'s root from what they ARE,
- * not from what they are called — the source puts no names on them, and this
- * probe is not allowed to add any.
+ * Names the direct children of `buildTrackMeshes`'s root, from their own name
+ * where they have one and from what they ARE where they do not.
  *
  * Every discriminator is observable on the object:
+ *   * the ground carries `GROUND_MESH_NAME`. It used to be identified as "the
+ *     only mesh with four vertices", which was true while the world beyond the
+ *     circuit was a single quad and stopped being true the moment it became a
+ *     height field: the ground fell through to the last rule in the list and
+ *     was reported as BRAKING BOARDS standing on the racing surface, tens of
+ *     thousands of vertices of them. An identification that depends on a mesh
+ *     staying trivial is not an identification;
  *   * the only `Group` is the start/finish gantry;
  *   * the only `InstancedMesh`es are the set dressing;
  *   * the catch fence is the only alpha-tested material;
@@ -569,7 +576,6 @@ function scanTree(
  *     vertical skirt that closes it down to the ground plane, and
  *     `barrier/pit-wall` is the trackside armco, the street-circuit concrete
  *     and both pit walls;
- *   * the ground plane is the only mesh with four vertices;
  *   * of the two remaining textured meshes, the hoardings are added before the
  *     gantry and the braking boards after it.
  */
@@ -582,7 +588,9 @@ function labelCircuitChildren(root: THREE.Group): Map<string, string> {
     const isMesh = (mesh as unknown as { isMesh?: boolean }).isMesh === true;
     const mat = isMesh ? (mesh.material as THREE.MeshStandardMaterial) : null;
     let label: string;
-    if (!isMesh) {
+    if (child.name === GROUND_MESH_NAME) {
+      label = 'ground';
+    } else if (!isMesh) {
       label = 'gantry';
       seenGantry = true;
     } else if ((mesh as unknown as { isInstancedMesh?: boolean }).isInstancedMesh) {
@@ -593,8 +601,6 @@ function labelCircuitChildren(root: THREE.Group): Map<string, string> {
       label = mat.side === THREE.DoubleSide
         ? (doubleSidedStrips++ === 0 ? 'verge/skirt' : 'barrier/pit-wall')
         : 'track-surface';
-    } else if ((mesh.geometry.getAttribute('position')?.count ?? 0) <= 8) {
-      label = 'ground-plane';
     } else {
       label = seenGantry ? 'marker-boards' : 'hoardings';
     }
@@ -868,7 +874,7 @@ console.log(
   '        track-surface = road/kerbs/paint/run-off/pit lane, verge/skirt = the ground\n' +
   '        strip out to the barrier line and the vertical skirt under it,\n' +
   '        barrier/pit-wall = armco, street wall and pit walls, then catch-fence,\n' +
-  '        hoardings, gantry, marker-boards, ground-plane and scenery (instanced\n' +
+  '        hoardings, gantry, marker-boards, ground and scenery (instanced\n' +
   '        set dressing). Run with PROBE_WORLD_DUMP=<circuit> for every vertex.',
 );
 if (!pitBoxCovered) console.log('(pit box marker NOT covered — see note above)');

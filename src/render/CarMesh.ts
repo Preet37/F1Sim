@@ -5,7 +5,7 @@ import {
   wingElement, riseSpanwise, type OpenTop, type Section,
 } from './Loft';
 import {
-  buildLivery, disposeLiveryCache, swatchUV, PANEL,
+  buildLivery, disposeLiveryCache, suitColour, swatchUV, PANEL,
   type PanelName, type SwatchName,
 } from './Livery';
 import { buildDriverParts } from './DriverMesh';
@@ -14,12 +14,13 @@ import {
 } from '../race/DamageModel';
 import {
   wheelMaterial, wheelSwatchUV, disposeTyreCache, TYRE_BAND,
-  buildSidewallBands, sidewallMaterial, tyreProfile,
+  buildSidewallBands, sidewallMaterial, tyreProfile, wheelPhase,
   type WheelSwatch,
 } from './TyreTexture';
 import type { CompoundId } from '../data/tires';
 import {
-  buildCockpit, MIRROR_X, MIRROR_Y, MIRROR_Z, MIRROR_GLASS_Z,
+  buildCockpit, mirrorPaneBasis, MIRROR_Y, MIRROR_Z,
+  PANE_W as MIRROR_PANE_W, PANE_H as MIRROR_PANE_H,
   type CockpitVisual,
 } from './CockpitMesh';
 import { carbonWeaveMap, disposeDetailMaps } from './DetailMaps';
@@ -260,6 +261,23 @@ export interface CarVisual {
    */
   frontFlaps: THREE.Object3D;
   brakeGlow: THREE.Mesh[];
+  /**
+   * This car's active-aero actuation, so the renderer can drive the flaps to
+   * this team's own travel and rate rather than to one generic mechanism.
+   */
+  actuation: Actuation;
+  /**
+   * The three regulation rear lights: one central, two in the endplate bodies.
+   *
+   * NOT brake lights. An F1 car does not have brake lights and never has —
+   * "brake light" appears nowhere in the 2025 or 2026 Technical or Sporting
+   * Regulations. These are rain lights, and Sporting Art. B1.5.5(a) (2025:
+   * Art. 26.11) requires them lit "at all times when using intermediate or
+   * wet-weather tyres". See `setRainLight`.
+   */
+  rainLights: THREE.Mesh[];
+  /** Switches all three rear lights. `flashPhase` is 0..1, for the pulse. */
+  setRainLight(on: boolean, flashPhase: number): void;
   /** The bodywork that can be knocked off, by name. */
   bodyParts: Record<BodyPartId, BodyPart>;
   /** Rolling radius, so the renderer knows the wheel's resting height. */
@@ -350,6 +368,151 @@ export interface CarOptions {
   withCockpit?: boolean;
   /** Compound to fit at build time. Changed later via `setCompound`. */
   compound?: CompoundId;
+  /** Which rear-wing actuation this team runs. See `ACTUATION`. */
+  actuation?: ActuationId;
+}
+
+// --- Active aero, and how teams differ ------------------------------------
+//
+// "THE WINGS SHOULD HAVE THE FLAPS RIGHT, LIKE WHEN THEY GET THE EXTRA BOOST
+//  AND BATTERY THE FLAPS OPEN UP, AND RESEARCH ON THAT CUZ FERRARI OPENS UP
+//  DIFFERENTLY THAN MERCEDES DOES WHICH IS DIFFERENT THAN RED BULL ETC."
+//
+// This is right, but only for the season this game is set in, and it is worth
+// recording why — because for the four seasons BEFORE it, it was false, and
+// building visible per-team differences into a 2022-2025 car would have been
+// inventing them.
+//
+// UNDER THE DRS RULES (2022-2025) TEAMS COULD NOT DIFFER, BY REGULATION.
+// Technical Art. 3.10.10 required the actuator "inboard of Y=25" — a single
+// central unit, so no endplate actuators and no twin actuators. 3.10.10(b)
+// fixed the axis of rotation in the top-rear corner of the reference volume.
+// 3.10.10(c) forbade "relative movement between the constituent parts", so
+// designed spanwise twist was illegal. Every car opened to the same maximum
+// 85mm slot (3.10.10(g)), measured with the same spherical gauge. And the
+// actuator itself is an OPEN SOURCE COMPONENT — Appendix 5, row 2C, "Rear wing
+// adjuster (DRS)... DRS actuator including linkages" — whose design and IP
+// Art. 17.6 requires be "made available to all Competitors" on an FIA server.
+// The teams were running the same mechanism to the same limit.
+//
+// (Endplate-region packaging WAS legal once: the 2016-2021 rules allowed the
+// associated bodywork "either less than 25mm from the longitudinal centre line
+// or more than 350mm" — 450mm from 2018. 2022 closed it to the centreline.)
+//
+// UNDER THE 2026 RULES THEY GENUINELY DIVERGE, and that is what this models.
+// DRS is gone; the car has active aero at both ends, in two positions the
+// regulations name "Corner Mode" and "Straight Mode":
+//
+//   C3.11.6  Rear Wing Adjuster System: "(b) Adjustment of RW Flap is about a
+//            fixed axis of rotation, which must be aligned with the Y-Axis";
+//            "(c) ... a 'Corner Mode' position ... a 'Straight Mode' position
+//            that, when compared to the Corner Mode position, results in a
+//            decrease in incidence"; "(d) maximum transition time ... does not
+//            exceed 400ms"; "(e) be driven by a single actuator"; "(k)
+//            Physical stops must be provided."
+//   C3.10.10 Front Wing Adjuster System: the same two-mode architecture, but
+//            with up to two movable elements (FW Primary Flap and FW Secondary
+//            Flap, on the Primary and Secondary Axes) and, unlike the rear,
+//            "(p) be driven by up to two actuators".
+//
+// What the regulations DO NOT constrain any more is where along the chord the
+// axis sits or how far the flap travels — and that is exactly where the grid
+// has separated. Reported from 2026 testing: cars whose flap ends up BELOW the
+// endplate line, having rotated past vertical so the section inverts (the
+// "flip-flop" wing — because the flap's upper surface has less area than its
+// underside, inverting it opens a bigger gap than merely flattening it would);
+// cars whose flap instead rises ABOVE the endplates for the same reason; and a
+// real spread of pivot positions — trailing edge, central, and up at the
+// mainplane leading edge — which trades deployment speed against retraction
+// speed.
+//
+// So the four archetypes below are the four real solutions, mapped onto this
+// game's fictional teams. Each is legal under C3.11.6: one actuator, one fixed
+// Y-aligned axis, two positions, and a transition inside 400ms.
+// WHAT IS DELIBERATELY NOT MODELLED, having tried it and measured the result.
+//
+// The most striking 2026 solutions reported from testing are the "flip-flop"
+// wings, where the flap rotates PAST VERTICAL so the section turns over — one
+// team's finishing below the endplate line, another's rising above it. Both were
+// built here first, and `probe:activeaero` rejected both: at this car's flap
+// chord an inverting flap puts its leading edge at y = 1.025, which is 80mm
+// above the 0.945 ceiling the entire rear wing assembly is dimensioned backwards
+// from, and above the airbox. The flap would stand proud of the roll hoop.
+//
+// The ceiling is real but its provenance is 2022-2025: rear wing profiles capped
+// at Z=910. The 2026 rules govern bodywork by reference volumes instead, and a
+// deployed flap leaving the closed-position volume is precisely what makes those
+// wings possible — but I could not confirm which article grants the deployed
+// allowance or how much of one, and the honest response to an unconfirmed
+// allowance is not to spend it. So all four archetypes below stay inside the
+// authored box, and differentiate by axis position and travel within it. The
+// probe asserts the ceiling so this cannot regress silently.
+export type ActuationId = 'trailing' | 'forward' | 'leading' | 'central';
+
+export interface Actuation {
+  /**
+   * Where the axis sits along the flap chord: 0 at the leading edge, 1 at the
+   * trailing edge. The regulations fix the axis for a given car; they no longer
+   * say where it has to be.
+   */
+  pivotChordFrac: number;
+  /**
+   * Rotation from Corner Mode to Straight Mode, radians. Negative lays the flap
+   * down and forward. Past about -1.5 the section passes vertical and inverts,
+   * which is the "flip-flop" solution.
+   */
+  openRad: number;
+  /**
+   * Transition time, seconds. C3.11.6(d) caps this at 400ms for everyone; where
+   * a team lands inside that is a design choice, and a leading-edge pivot
+   * deploys fast and retracts slowly while a trailing-edge one is the reverse.
+   */
+  travelS: number;
+  /** Front wing travel, radians. Front and rear are commanded together. */
+  frontOpenRad: number;
+}
+
+// Slot gaps below are the measured output of `probe:activeaero`, not targets.
+export const ACTUATION: Record<ActuationId, Actuation> = {
+  // Axis at the flap's trailing edge, so the leading edge swings up and forward
+  // and the flap ends lying almost flat. The largest opening on the grid — 150mm
+  // against a 17mm closed slot — and the one that reads most clearly from
+  // behind. Slowest of the four, because the leading edge travels furthest.
+  trailing: { pivotChordFrac: 1.00, openRad: -0.85, travelS: 0.32, frontOpenRad: -0.20 },
+  // Axis mid-forward. The flap tips more than it lies down, and the opening is
+  // both smaller and further forward. 66mm.
+  forward: { pivotChordFrac: 0.35, openRad: -0.95, travelS: 0.25, frontOpenRad: -0.22 },
+  // Mid-chord: the balanced compromise, and the closest to the old DRS motion.
+  // 90mm.
+  central: { pivotChordFrac: 0.55, openRad: -0.88, travelS: 0.28, frontOpenRad: -0.18 },
+  // Axis right up at the mainplane's leading edge. Quickest to deploy of the
+  // four, and it buys the least: the flap pivots about its own nose, so the slot
+  // barely widens. 27mm. This is the trade the real solution makes — deployment
+  // speed against opening — and it is why it is not the obvious choice.
+  leading: { pivotChordFrac: 0.12, openRad: -0.72, travelS: 0.22, frontOpenRad: -0.15 },
+};
+
+/**
+ * Which team runs which. Ten teams over four solutions, which is roughly how a
+ * real grid distributes when a rule opens up: a couple of distinct extremes and
+ * a cluster in the middle.
+ */
+const TEAM_ACTUATION: Record<string, ActuationId> = {
+  'apex': 'trailing',
+  'scuderia-rosso': 'forward',
+  'meridian': 'central',
+  'albion': 'trailing',
+  'aurora': 'leading',
+  'vantage': 'central',
+  'northstar': 'forward',
+  'lumen': 'leading',
+  'kestrel': 'central',
+  'brava': 'trailing',
+};
+
+/** The actuation a team runs, defaulting to the mid-grid solution. */
+export function actuationForTeam(teamId: string): ActuationId {
+  return TEAM_ACTUATION[teamId] ?? 'central';
 }
 
 // --- Principal dimensions, in metres, from the current technical regulations --
@@ -471,7 +634,26 @@ const LOD_NEAR_M = 34;
  * and no bodywork may cross that line anywhere between REAR_AXLE_Z ± TYRE_R.
  * See `WHEEL_CLEARANCE` below, which the floor and sidepod are checked against.
  */
+/**
+ * The rear lights when they are off: a dark red lens, not black.
+ *
+ * An unlit lens is still a red plastic moulding in daylight, and drawing it
+ * black would make a dry car look like it had three holes in the back of it.
+ * `setRainLight` adds to these rather than replacing them, so the lit colour
+ * clears the bloom threshold (1.55) and the unlit one is nowhere near it.
+ */
+const RAIN_LIGHT_OFF_RGB: readonly [number, number, number] = [0.16, 0.020, 0.016];
+const RAIN_LIGHT_OFF = new THREE.Color(...RAIN_LIGHT_OFF_RGB);
+
 const TYRE_R = 0.36;
+/**
+ * The tyre's rolling radius, exported for `probe:carrig`.
+ *
+ * It is also the height of every wheel's centre in the car's own frame, which
+ * is the whole reason the contact patch is at y = 0 and the whole reason the
+ * probe can assert that it is.
+ */
+export const TYRE_RADIUS_M = TYRE_R;
 const FRONT_TYRE_W = 0.325;
 const REAR_TYRE_W = 0.425;
 const RIM_R = 0.229;
@@ -654,25 +836,109 @@ export function frontMembers(side: 1 | -1): SuspensionMember[] {
   // note in `buildShellParts` for why they sit as high as they do.
   const fUpX = s * 0.734, fUpY = 0.550;
   const fLoX = s * 0.752, fLoY = 0.325;
+  // EVERY INBOARD PICKUP BELOW IS INSIDE THE SURVIVAL CELL'S SKIN, and that is
+  // the correction `probe:carrig` was written to force. The four legs used to
+  // be authored against a chassis nobody had measured: the upper wishbone's
+  // front leg started at (0.216, 0.578) at z = 2.20, where the tub is 124mm of
+  // half width and tops out at 0.484 — so the leg began 92mm outboard and 94mm
+  // above the bodywork, 154mm of clear air, and the pair of them read exactly
+  // as the complaint described, as pipes flying beside the nose. The lower
+  // front leg was 104mm out. The probe now asserts that each end is inside
+  // another part or within 25mm of its skin, so this cannot come back.
+  //
+  // THE PICKUPS CAME BACK AS WELL AS DOWN. A wishbone leg cannot mount 400mm
+  // ahead of the front axle on this car, because that station is the NOSE — a
+  // 190mm blade — rather than the cell. Both front legs move onto the last
+  // stations that are genuinely survival cell, which still leaves the pairs
+  // 500mm and 600mm apart in z against the regulation minimum of 300.
   return [
-    // Upper wishbone. The FRONT leg's chassis pickup is 46mm higher than the
+    // Upper wishbone. The FRONT leg's chassis pickup is 12mm higher than the
     // rear leg's; that rake is the era's anti-dive geometry.
     { name: 'upper-front', chord: LEG_CHORD, thick: LEG_THICK,
-      a: [s * 0.216, 0.578, fz + 0.40], b: [fUpX, fUpY, fz + 0.012] },
+      a: [s * 0.132, 0.482, fz + 0.20], b: [fUpX, fUpY, fz + 0.012] },
     { name: 'upper-rear', chord: LEG_CHORD, thick: LEG_THICK,
-      a: [s * 0.196, 0.532, fz - 0.30], b: [fUpX, fUpY, fz + 0.012] },
+      a: [s * 0.190, 0.470, fz - 0.30], b: [fUpX, fUpY, fz + 0.012] },
     // Lower wishbone. Inboard pickups at the regulation floor of Z = 250.
     { name: 'lower-front', chord: LEG_CHORD, thick: LEG_THICK,
-      a: [s * 0.230, 0.302, fz + 0.38], b: [fLoX, fLoY, fz + 0.008] },
+      a: [s * 0.126, 0.300, fz + 0.28], b: [fLoX, fLoY, fz + 0.008] },
     { name: 'lower-rear', chord: LEG_CHORD, thick: LEG_THICK,
-      a: [s * 0.214, 0.286, fz - 0.32], b: [fLoX, fLoY, fz + 0.008] },
+      a: [s * 0.202, 0.288, fz - 0.32], b: [fLoX, fLoY, fz + 0.008] },
     // Trackrod, at the lower wishbone's height, out to a ball joint ON the
     // steering axis.
     { name: 'trackrod', chord: ROD_CHORD, thick: ROD_THICK,
-      a: [s * 0.190, 0.312, fz - 0.30], b: [s * 0.744, 0.334, fz - 0.070] },
+      a: [s * 0.186, 0.312, fz - 0.30], b: [s * 0.744, 0.334, fz - 0.070] },
     // Pushrod, up and inboard to the rocker inside the tub at about 35 degrees.
+    // Its top end is INSIDE the cell — a real pushrod disappears through the
+    // skin into the rocker, and this one used to stop 43mm above it.
     { name: 'pushrod', chord: ROD_CHORD, thick: ROD_THICK,
-      a: [s * 0.716, 0.318, fz + 0.020], b: [s * 0.206, 0.556, fz - 0.276] },
+      a: [s * 0.716, 0.318, fz + 0.020], b: [s * 0.196, 0.498, fz - 0.276] },
+  ];
+}
+
+/**
+ * The rear corner's two ball joints, right-hand side, as (x, y).
+ *
+ * Named because four things have to agree about them and did not: the two legs
+ * of each wishbone, the upright that bridges them, and the pullrod that hangs
+ * off the top one. The pullrod's upper end was authored at x = 0.686 against an
+ * upper ball at 0.700 and the toe link's outer end at 0.700 against a lower
+ * ball at 0.716 — small numbers, but a 14mm hole in a 56mm rod is a hole, and
+ * a rod that ends 14mm short of the upright reads from three metres as a rod
+ * that ends in mid-air. Everything now reads these.
+ */
+const REAR_UPPER_BALL: readonly [number, number] = [0.700, 0.512];
+const REAR_LOWER_BALL: readonly [number, number] = [0.716, 0.318];
+
+/**
+ * The six members of one rear corner, in car-local metres.
+ *
+ * The same table, for the same reason, as `frontMembers`: Article 10.3.2 gives
+ * a corner exactly six members, and `probeCarRig` measures the members the mesh
+ * is extruded along rather than a second copy of the same numbers. These were
+ * written inline until the rig probe went in, which is why the rear was the
+ * corner nobody had ever measured.
+ *
+ * @param side -1 for the left-hand corner, +1 for the right
+ */
+export function rearMembers(side: 1 | -1): SuspensionMember[] {
+  const s = side;
+  const rz = REAR_AXLE_Z;
+  const upX = s * REAR_UPPER_BALL[0], upY = REAR_UPPER_BALL[1];
+  const loX = s * REAR_LOWER_BALL[0], loY = REAR_LOWER_BALL[1];
+  return [
+    // Upper wishbone, off the gearbox casing. DEEP-CHORDED, because between
+    // 2022 and 2025 the regulations let a rear fairing that also shrouds the
+    // driveshaft run to 150mm of chord instead of 100 — which is exactly why
+    // the rear upper wishbones on cars of this era look so enormous next to
+    // the front ones. This is the one member on the car allowed to be fat.
+    //
+    // Both pickups are inside the tail's skin. The rear leg used to start at
+    // (0.150, 0.500) at z = -2.12, where the tail is 71mm of half width and
+    // 372mm tall — 128mm above the bodywork, hanging in the air and touching
+    // nothing but the leading edge of the beam wing, which is not a suspension
+    // mount on any car ever built.
+    { name: 'upper-front', chord: 0.140, thick: 0.042,
+      a: [s * 0.168, 0.515, rz + 0.40], b: [upX, upY, rz - 0.008] },
+    { name: 'upper-rear', chord: 0.140, thick: 0.042,
+      a: [s * 0.090, 0.412, rz - 0.06], b: [upX, upY, rz - 0.008] },
+    // Lower wishbone.
+    { name: 'lower-front', chord: LEG_CHORD, thick: LEG_THICK,
+      a: [s * 0.186, 0.292, rz + 0.38], b: [loX, loY, rz - 0.006] },
+    { name: 'lower-rear', chord: LEG_CHORD, thick: LEG_THICK,
+      a: [s * 0.080, 0.288, rz - 0.20], b: [loX, loY, rz - 0.006] },
+    // Toe link: the rear's equivalent of a trackrod, behind the axle line. Its
+    // outboard end lands ON the upright's own line between the two balls rather
+    // than 16mm inboard of it, which is where it used to stop.
+    { name: 'toelink', chord: ROD_CHORD, thick: ROD_THICK,
+      a: [s * 0.158, 0.386, rz - 0.34], b: [s * 0.710, 0.404, rz - 0.116] },
+    // PULLROD, not a pushrod: it runs from HIGH on the upright DOWN and
+    // inboard to a rocker at the bottom of the gearbox. Pushrod front and
+    // pullrod rear is what most of the current field runs, and the two being
+    // raked opposite ways is one of the details that reads as a real car.
+    // Shallower than the front rod — 25 degrees against 35 — which is also
+    // what the reference shows. Its top end is ON the upper ball joint.
+    { name: 'pullrod', chord: ROD_CHORD, thick: ROD_THICK,
+      a: [upX, upY - 0.020, rz + 0.030], b: [s * 0.170, 0.226, rz - 0.240] },
   ];
 }
 
@@ -709,14 +975,14 @@ export function frontMembers(side: 1 | -1): SuspensionMember[] {
  */
 const REAR_WING_Z = -2.076;
 const REAR_WING_Y = 0.781;
-const DRS_PIVOT_Y = 0.935;
-const DRS_PIVOT_Z = -2.320;
+export const DRS_PIVOT_Y = 0.935;
+export const DRS_PIVOT_Z = -2.320;
 /**
  * Top of the rear wing assembly, y. The regulation limit is 0.945; everything
  * up there is authored against this so the endplate, the tip roll and the flap
  * agree about where the ceiling is.
  */
-const REAR_WING_TOP_Y = 0.942;
+export const REAR_WING_TOP_Y = 0.942;
 /**
  * Half-span of the rear wing. The regulations put the profiles inboard of
  * Y = 480, so 960mm overall — which is a little over HALF the car's width, and
@@ -724,6 +990,15 @@ const REAR_WING_TOP_Y = 0.942;
  * built at 1020mm.
  */
 const REAR_WING_HALF_SPAN = 0.480;
+
+/**
+ * Mainplane trailing edge, in the car's frame — the near side of the slot.
+ *
+ * From the derivation above: a 14mm slot below the flap's leading edge puts it
+ * at (0.799, -2.192). Named here so `probe:activeaero` measures the slot
+ * against the same number the geometry was authored from rather than a copy.
+ */
+export const MAINPLANE_TRAILING = { y: 0.799, z: -2.192 };
 /**
  * Incidence the flap is BUILT at, radians.
  *
@@ -733,9 +1008,9 @@ const REAR_WING_HALF_SPAN = 0.480;
  * the right one to draw, because a steep closed flap is what makes the open
  * position read as a change.
  */
-const DRS_CLOSED_RAD = 0.80;
+export const DRS_CLOSED_RAD = 0.80;
 /** Flap chord, metres. Shared by the geometry and by the pivot offset. */
-const DRS_FLAP_CHORD = 0.170;
+export const DRS_FLAP_CHORD = 0.170;
 
 interface Tiers {
   /** Vertices around a ring on the main body lofts. */
@@ -874,6 +1149,24 @@ class Parts {
 
   private target: THREE.BufferGeometry[] = this.core;
 
+  /**
+   * A human name for everything added from here on, stamped into `userData`.
+   *
+   * It costs nothing at run time — the buckets are merged and `userData` is
+   * dropped on the way — and it is the difference between a rig probe that can
+   * say "the front upper-front wishbone is 21mm short of the tub" and one that
+   * can only say "a component with these bounds is disjoint". Every part that
+   * has ever been reported as floating was reported by its name, so the
+   * measurement has to be able to answer in the same words. See
+   * `carPartsForProbe`.
+   */
+  private tagName = 'unnamed';
+
+  /** Names everything added from here on. */
+  tag(name: string): void {
+    this.tagName = name;
+  }
+
   /** Directs everything added from here on into the named bucket. */
   into(bucket: 'core' | BodyPartId): void {
     this.target = this[bucket];
@@ -892,12 +1185,14 @@ class Parts {
   /** Adds a part that samples a single flat colour from the atlas. */
   flat(geo: THREE.BufferGeometry, swatch: SwatchName): void {
     const [u, v] = swatchUV(swatch);
+    geo.userData.tag = this.tagName;
     this.target.push(setFlatUV(geo, u, v));
   }
 
   /** Adds a lofted part that carries painted livery graphics. */
   painted(geo: THREE.BufferGeometry, panel: PanelName): void {
     const r = PANEL[panel];
+    geo.userData.tag = this.tagName;
     this.target.push(setPanelUV(geo, r.u0, r.v0, r.u1, r.v1));
   }
 }
@@ -1104,8 +1399,14 @@ function sidepod(side: 1 | -1): Section[] {
     // regulations forbid any rearward-facing surface behind XR = -300 — so the
     // taper from there back has to be continuous and hard. It now loses 60 per
     // cent of its width in the metre behind z = -0.08.
-    section(0.98, 0.196, 0.268, 0.540, 0.13, { undercut: 0.74, xc: s * 0.548 }),
-    section(0.76, 0.226, 0.262, 0.552, 0.17, { undercut: 0.50, xc: s * 0.552 }),
+    // The crown drops 12mm through the mirror's station. It used to peak at
+    // 0.552, which is 9mm under a mirror housing whose underside sits at 0.561
+    // — close enough that from any shallow angle the mirror read as a lump
+    // moulded into the pod's shoulder rather than as a mirror standing off it.
+    // `MIRROR_Y` cannot move (see the note in CockpitMesh), so the clearance
+    // comes out of the pod, which loses 4 per cent of a 284mm face for it.
+    section(0.98, 0.196, 0.268, 0.532, 0.13, { undercut: 0.74, xc: s * 0.548 }),
+    section(0.76, 0.226, 0.262, 0.540, 0.17, { undercut: 0.50, xc: s * 0.552 }),
     section(0.50, 0.246, 0.256, 0.548, 0.21, { undercut: 0.38, xc: s * 0.542 }),
     section(0.12, 0.244, 0.248, 0.524, 0.26, { undercut: 0.32, xc: s * 0.524 }),
     section(-0.30, 0.226, 0.240, 0.478, 0.30, { undercut: 0.30, xc: s * 0.498 }),
@@ -1174,9 +1475,9 @@ function roundedBar(
  *    See `riseSpanwise`, which is where that curve is applied and why it is
  *    applied where it is.
  *  - A LARGE CURVED ENDPLATE, growing from about 145mm tall at the leading edge
- *    to 320mm at the rear and flaring OUTBOARD as it goes, with a footplate
- *    rolling out along the bottom and a flick over the top. It is the widest
- *    thing on the car at this station and it is what frames the front wheels.
+ *    to 410mm at the rear quarter and flaring OUTBOARD as it goes, with a
+ *    footplate rolling out along the bottom and a flick over the top. It is the
+ *    widest thing on the car at this station and it frames the front wheels.
  *  - CLEAR-COATED CARBON, everywhere. Not team paint.
  *
  * Element geometry is authored as LEADING and TRAILING EDGE POINTS rather than
@@ -1186,6 +1487,22 @@ function roundedBar(
  * surface, and with a centre-and-angle parameterisation neither of those two
  * points is a number you typed — which is how the previous version ended up with
  * gaps that were negative.
+ *
+ * AND AUTHORING THEM IS STILL NOT MEASURING THEM. The version this replaces was
+ * authored exactly that way, with edge points chosen for 13 to 20mm of gap, and
+ * the gaps it actually built were 6.2, 10.1 and 4.2mm — the last of those below
+ * the regulation minimum of five. What the arithmetic left out was the camber
+ * line, which bows each section DOWNWARD by up to a tenth of its chord into the
+ * slot beneath it. `npm run probe:carrig` now measures the built surfaces
+ * instead: the closest approach between each pair, and whether a straight line
+ * runs from the middle of the slot to the head-on camera without touching the
+ * car. The second of those is what "the slot gaps do not read" was about — a
+ * 14mm slot that the element above overhangs by half its chord is a slot no eye
+ * in front of the car can see into.
+ *
+ * THE WHOLE ASSEMBLY ALSO SAT 139mm OUTSIDE THE CAR. Front overhang is capped
+ * at 1350mm ahead of the front axle, which is z = 3.15 here, and the mainplane's
+ * swept tips reached 3.289. Everything below is stationed against that limit.
  */
 
 /**
@@ -1199,8 +1516,8 @@ function roundedBar(
  * leading edge is how the real mechanism is arranged and it keeps the pair
  * rigid relative to each other, which is what the reference plan view shows.
  */
-const FRONT_FLAP_PIVOT_Y = 0.148;
-const FRONT_FLAP_PIVOT_Z = 3.086;
+const FRONT_FLAP_PIVOT_Y = 0.168;
+const FRONT_FLAP_PIVOT_Z = 2.850;
 
 /**
  * How far the upper front-wing elements rotate for X-mode, radians, negative
@@ -1271,11 +1588,24 @@ const FRONT_WING_ELEMENTS: {
   span: number; leZ: number; leY: number; teZ: number; teY: number;
   thick: number; rise: number; movable: boolean;
 }[] = [
-  { span: 1.900, leZ: 3.248, leY: 0.052, teZ: 3.140, teY: 0.062, thick: 0.013, rise: 1.00, movable: false },
-  { span: 1.918, leZ: 3.180, leY: 0.088, teZ: 3.026, teY: 0.122, thick: 0.013, rise: 0.93, movable: false },
-  { span: 1.936, leZ: 3.086, leY: 0.148, teZ: 2.888, teY: 0.210, thick: 0.014, rise: 0.84, movable: true },
-  { span: 1.954, leZ: 2.972, leY: 0.226, teZ: 2.720, teY: 0.314, thick: 0.015, rise: 0.72, movable: true },
+  { span: 1.900, leZ: 3.090, leY: 0.046, teZ: 2.946, teY: 0.066, thick: 0.013, rise: 1.00, movable: false },
+  { span: 1.916, leZ: 2.976, leY: 0.095, teZ: 2.806, teY: 0.143, thick: 0.013, rise: 0.93, movable: false },
+  { span: 1.932, leZ: 2.850, leY: 0.168, teZ: 2.654, teY: 0.246, thick: 0.014, rise: 0.84, movable: true },
+  { span: 1.948, leZ: 2.706, leY: 0.266, teZ: 2.472, teY: 0.382, thick: 0.015, rise: 0.72, movable: true },
 ];
+
+/**
+ * Camber as a fraction of chord, and why it came down from 0.10.
+ *
+ * The camber line bows the section DOWNWARD, and it does so into the slot above
+ * the element below. Measured by `probe:carrig`, the four elements were running
+ * gaps of 6.2, 10.1 and 4.2mm — the last of them BELOW the regulation minimum
+ * of 5 — while the code that set them claimed 13 to 20, because the arithmetic
+ * that chose the leading and trailing edge points took no account of the bow
+ * between them. The regulation range is 5 to 15mm and this wing is now built at
+ * the top of it, measured rather than asserted.
+ */
+const FRONT_WING_CAMBER = 0.07;
 
 function buildFrontWing(p: Parts, t: Tiers): void {
   p.into('frontWing');
@@ -1292,7 +1622,7 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // modest: the camber line bows the section DOWNWARD by its full amount at
     // 40 per cent chord, and at the 28 per cent of chord a really aggressive
     // front wing runs it eats the slot gap above the element below it.
-    const camber = -0.10 * chord;
+    const camber = -FRONT_WING_CAMBER * chord;
     // Sixteen interior stations. The W below is a curve across the span and a
     // curve drawn through two stations is a straight line; at six it came out
     // as a visible chevron either side of the nose.
@@ -1300,15 +1630,30 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     g.rotateX(angle);
     // The W is applied AFTER the incidence, in car-local Y. See `riseSpanwise`.
     riseSpanwise(g, e.span * 0.5, wingW(e.rise));
+    const index = FRONT_WING_ELEMENTS.indexOf(e) + 1;
+    // THE TOP FLAP IS PAINTED, and it is the only thing on this assembly that
+    // is. "The front wing and the front is so big versus the back wing is super
+    // tiny." Measured against Appendix 1 the wing is right — 1950mm of span and
+    // 689mm of chord, from XF -1331 to -642, which is the regulation volume
+    // almost exactly — so what is wrong is not its size but its MASS: 1.35
+    // square metres of near-black carbon at the front of a blue car, with the
+    // slots between the four elements invisible from above because each element
+    // is directly over the one behind it. Every real front wing on the grid
+    // carries the team's colour on its upper elements for exactly this reason.
+    // Painting the top one turns a black slab into a wing with a wing under it,
+    // for no triangles and no draw call.
+    const swatch: SwatchName = index === 4 ? 'body' : 'carbon';
     if (e.movable) {
       // Authored about the hinge, so the pivot group can simply be placed at it.
       g.translate(0, (e.leY + e.teY) * 0.5 - FRONT_FLAP_PIVOT_Y, (e.leZ + e.teZ) * 0.5 - FRONT_FLAP_PIVOT_Z);
+      p.tag(`front wing element ${index}`);
       p.intoFrontFlap();
-      p.flat(g, 'carbon');
+      p.flat(g, swatch);
       p.into('frontWing');
     } else {
+      p.tag(`front wing element ${index}`);
       g.translate(0, (e.leY + e.teY) * 0.5, (e.leZ + e.teZ) * 0.5);
-      p.flat(g, 'carbon');
+      p.flat(g, swatch);
     }
   }
 
@@ -1324,34 +1669,58 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // to 0.987, which with its 12mm half-thickness puts its outer skin at
     // x = 0.999: the widest thing on the car, as it should be, and 47mm outboard
     // of the front tyre.
+    // Six stations, not five, and the extra one buys the two things that
+    // separated a plain plate from a moulded one: a swept TOP EDGE that climbs
+    // continuously from a 144mm-tall leading edge to 410mm at the rear quarter,
+    // and a trailing corner that falls away again instead of being sawn off
+    // square. Its top is 64mm higher than before at 0.436, which is 74mm inside
+    // the regulation ceiling of 0.510 and is what puts the plate alongside the
+    // middle of the front tyre rather than under it — an endplate's whole job
+    // in the silhouette is to frame that wheel.
+    //
+    // IT WAS 25mm TOO FAR OUT, ON EACH SIDE. Appendix 1 puts the front wing
+    // endplate between Y 900 and Y 975; the note above put its outer skin at
+    // 0.999 and called that "the widest thing on the car, as it should be". It
+    // is not: 975 is the wing's own limit and 1000 is the BODYWORK limit, which
+    // the wing does not get to use. A real car's widest points are the front
+    // wing at 1950mm overall and the rear tyres at 1525 of track plus a 405
+    // tyre, which is 1930 — within twenty millimetres of each other, and the
+    // tyres are the wider of the two at the back. Ours had the wing 21mm wider
+    // than the rear tyres, which is a large part of "the front wing is so big".
+    // Pulled in 24mm a side: 1950mm overall, exactly the regulation span, and
+    // now 2.5mm inside the rear tyres rather than outside them.
     const ep = small([
-      section(3.235, 0.010, 0.055, 0.215, 0.28, { xc: s * 0.950 }),
-      section(3.080, 0.012, 0.038, 0.285, 0.24, { xc: s * 0.966 }),
-      section(2.900, 0.013, 0.028, 0.345, 0.22, { xc: s * 0.978 }),
-      section(2.720, 0.013, 0.026, 0.372, 0.22, { xc: s * 0.986 }),
-      section(2.600, 0.011, 0.034, 0.350, 0.30, { xc: s * 0.987 }),
+      section(3.100, 0.010, 0.052, 0.196, 0.30, { xc: s * 0.924 }),
+      section(2.980, 0.012, 0.036, 0.278, 0.24, { xc: s * 0.936 }),
+      section(2.840, 0.013, 0.028, 0.352, 0.22, { xc: s * 0.948 }),
+      section(2.690, 0.014, 0.026, 0.412, 0.20, { xc: s * 0.959 }),
+      section(2.540, 0.013, 0.030, 0.436, 0.24, { xc: s * 0.963 }),
+      section(2.440, 0.010, 0.042, 0.404, 0.34, { xc: s * 0.962 }),
     ], t.body - 8);
+    p.tag(`front wing endplate ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(ep, 'front wing endplate'), 'carbon');
 
     // FOOTPLATE: the outward curl along the bottom of the endplate. It sits at
     // ground level, it is the last thing to clear a kerb, and it is in every
     // head-on photograph as a bright horizontal line under the dark plate.
     const foot = small([
-      section(3.20, 0.026, 0.022, 0.052, 0.60, { xc: s * 0.952 }),
-      section(3.00, 0.032, 0.018, 0.050, 0.55, { xc: s * 0.962 }),
-      section(2.80, 0.034, 0.020, 0.052, 0.55, { xc: s * 0.964 }),
-      section(2.64, 0.026, 0.026, 0.056, 0.60, { xc: s * 0.968 }),
+      section(3.06, 0.026, 0.020, 0.050, 0.60, { xc: s * 0.926 }),
+      section(2.88, 0.032, 0.016, 0.048, 0.55, { xc: s * 0.936 }),
+      section(2.70, 0.034, 0.018, 0.050, 0.55, { xc: s * 0.940 }),
+      section(2.52, 0.026, 0.024, 0.054, 0.60, { xc: s * 0.944 }),
     ], Math.max(6, t.detail - 4));
+    p.tag(`front wing footplate ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(foot, 'front wing footplate'), 'carbon');
 
     // UPPER FLICK: the small winglet folded over the top of the endplate's
     // trailing corner. It is what stops the endplate reading as a plain
     // rectangle in silhouette.
     const flick = small([
-      section(2.94, 0.014, 0.322, 0.340, 0.70, { xc: s * 0.958 }),
-      section(2.80, 0.024, 0.352, 0.376, 0.70, { xc: s * 0.948 }),
-      section(2.66, 0.020, 0.344, 0.364, 0.70, { xc: s * 0.940 }),
+      section(2.78, 0.014, 0.386, 0.404, 0.70, { xc: s * 0.936 }),
+      section(2.64, 0.024, 0.418, 0.442, 0.70, { xc: s * 0.926 }),
+      section(2.50, 0.020, 0.408, 0.428, 0.70, { xc: s * 0.918 }),
     ], Math.max(6, t.detail - 4));
+    p.tag(`front wing flick ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(flick, 'front wing flick'), 'carbon');
 
     // DIVEPLANE on the endplate's outer face, and the one place the team's
@@ -1365,10 +1734,11 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // screenshots. A diveplane is a small plate ON the outer skin; built as a
     // three-station loft it can be exactly that, and `checkWidth` proves it.
     const dive = small([
-      section(2.980, 0.024, 0.208, 0.226, 0.60, { xc: s * 0.972 }),
-      section(2.860, 0.028, 0.220, 0.240, 0.60, { xc: s * 0.970 }),
-      section(2.760, 0.021, 0.228, 0.246, 0.60, { xc: s * 0.966 }),
+      section(2.850, 0.024, 0.196, 0.214, 0.60, { xc: s * 0.948 }),
+      section(2.730, 0.028, 0.210, 0.230, 0.60, { xc: s * 0.946 }),
+      section(2.630, 0.021, 0.218, 0.236, 0.60, { xc: s * 0.942 }),
     ], Math.max(6, t.detail - 4));
+    p.tag(`front wing diveplane ${s < 0 ? 'L' : 'R'}`);
     p.flat(checkWidth(dive, 'front wing diveplane'), 'accent');
   }
 
@@ -1390,6 +1760,7 @@ function buildShellParts(
   // --- Monocoque ---------------------------------------------------------
   // The one loft in the project with an open top. Everything else here is a
   // closed body; this one has a cockpit in it.
+  p.tag('monocoque');
   p.painted(
     loft(monocoque(), t.tub, true, t.bodyStep, COCKPIT_APERTURE),
     'body',
@@ -1413,6 +1784,7 @@ function buildShellParts(
   // half-width, and these x and y are that point on the tub's profile, station
   // by station. Tapered to nothing at both ends so the rail runs out into the
   // bodywork instead of stopping in a blunt cap.
+  p.tag('cockpit coaming');
   for (const side of [-1, 1] as const) {
     const rail = (z: number, x: number, y: number, w: number) =>
       section(z, w, y - 0.009, y + 0.009, 0.85, { xc: side * x });
@@ -1467,11 +1839,12 @@ function buildShellParts(
   // above the wing from behind and above, long after the geometry above was
   // written to close exactly that gap — the geometry was there and simply not
   // being drawn.
+  p.tag('nose-to-wing fairing');
   p.into('frontWing');
   p.flat(small([
-    section(3.16, 0.046, 0.046, 0.152, 0.68),
-    section(3.08, 0.052, 0.116, 0.238, 0.62),
-    section(2.94, 0.062, 0.212, 0.348, 0.62),
+    section(3.03, 0.046, 0.046, 0.152, 0.68),
+    section(2.96, 0.052, 0.116, 0.238, 0.62),
+    section(2.87, 0.062, 0.212, 0.348, 0.62),
     section(2.74, 0.074, 0.288, 0.458, 0.66),
   ], t.body - 6), 'carbon');
   p.into('core');
@@ -1479,6 +1852,7 @@ function buildShellParts(
   // --- Sidepods -----------------------------------------------------------
   for (const side of [-1, 1] as const) {
     p.into(side < 0 ? 'sidepodL' : 'sidepodR');
+    p.tag(`sidepod ${side < 0 ? 'L' : 'R'}`);
     p.painted(checkWheelClearance(big(sidepod(side), t.body - 4), 'sidepod'), 'pod');
 
     // Inlet: a dark duct standing proud of the pod face, so the mouth reads as a
@@ -1495,12 +1869,14 @@ function buildShellParts(
       section(0.86, 0.144, 0.316, 0.470, 0.20),
       section(0.66, 0.102, 0.338, 0.436, 0.35),
     ]);
+    p.tag(`sidepod inlet ${side < 0 ? 'L' : 'R'}`);
     mouth.translate(side * POD_X, 0, 0);
     p.flat(mouth, 'dark');
 
     // Splitter across the inlet. One bar is the difference between a duct and a
     // black rectangle.
     const splitter = roundedBar(0.324, 0.024, 0.050, 0.008, t);
+    p.tag(`inlet splitter ${side < 0 ? 'L' : 'R'}`);
     splitter.translate(side * POD_X, 0.396, 0.992);
     p.flat(splitter, 'body');
 
@@ -1513,6 +1889,7 @@ function buildShellParts(
       section(0.86, 0.108, 0.264, 0.306, 0.45),
       section(0.58, 0.098, 0.256, 0.296, 0.50),
     ], Math.max(6, t.detail - 4));
+    p.tag(`side impact blade ${side < 0 ? 'L' : 'R'}`);
     sis.translate(side * (POD_X + 0.104), 0, 0);
     p.flat(sis, 'carbon');
     p.into('core');
@@ -1524,6 +1901,7 @@ function buildShellParts(
   // 1050mm across (half-width 0.525) precisely because it has to pass between
   // two 405mm rear tyres whose inner walls are 1140mm apart, and the old floor
   // held 0.740 all the way to z = -1.45 and simply intersected them.
+  p.tag('floor');
   p.flat(checkWheelClearance(big([
     section(2.20, 0.150, 0.048, 0.096, 0.32, { flatTop: 0.78 }),
     section(1.56, 0.278, 0.046, 0.102, 0.25, { flatTop: 0.85 }),
@@ -1537,6 +1915,7 @@ function buildShellParts(
 
   // Diffuser: the floor ramping up under the rear crash structure, held inside
   // the 1050mm the rear tyres leave for it.
+  p.tag('diffuser');
   p.flat(checkWheelClearance(big([
     section(-1.70, 0.522, 0.056, 0.156, 0.22, { flatTop: 0.85 }),
     section(-1.96, 0.522, 0.096, 0.198, 0.26, { flatTop: 0.80 }),
@@ -1554,11 +1933,13 @@ function buildShellParts(
       section(-2.18, 0.492, 0.192, 0.292, 0.35),
       section(-2.355, 0.420, 0.250, 0.320, 0.42),
     ], t.body - 8);
+    p.tag('diffuser exit');
     p.flat(exit, 'dark');
     // Strakes sit INSIDE the diffuser throat. Hung off the back they read as a
     // comb bolted to the tail, which is what the first attempt looked like.
     for (const x of [-0.33, -0.12, 0.12, 0.33]) {
       const fin = roundedBar(0.013, 0.082, 0.30, 0.004, t);
+      p.tag('diffuser strake');
       fin.translate(x, 0.272, -2.26);
       p.flat(fin, 'carbon');
     }
@@ -1580,16 +1961,25 @@ function buildShellParts(
       section(-1.02, 0.020, 0.052, 0.162, 0.22, { xc: s * 0.756 }),
       section(-1.36, 0.016, 0.058, 0.150, 0.30, { xc: s * 0.572 }),
     ], t.detail - 4);
+    p.tag(`floor edge ${s < 0 ? 'L' : 'R'}`);
     p.flat(edge, 'carbon');
 
     // Floor fences: the row of vertical vanes ahead of the floor's leading edge
     // that every current car carries, and the thing a viewer sees through the
     // gap between the nose and the front tyre.
+    // RESTATIONED ONTO THE FLOOR THEY STAND ON. The outer two used to sit at
+    // x = 0.53 and 0.62 against a floor whose plan outline at their station is
+    // 0.42 and 0.46 wide, so they stood 25 and 26mm clear of every surface on
+    // the car — four black blades in the air beside the front wheels, which is
+    // most of what the close front three-quarter shot was showing. The floor
+    // grows from 278mm of half width at z = 1.56 to 556mm at z = 1.00, and each
+    // fence now crosses that outline somewhere along its own length.
     for (const [z, x, len] of [
-      [1.42, 0.30, 0.34], [1.36, 0.42, 0.30], [1.28, 0.53, 0.26], [1.20, 0.62, 0.22],
+      [1.42, 0.30, 0.34], [1.34, 0.38, 0.30], [1.24, 0.44, 0.26], [1.16, 0.50, 0.22],
     ] as const) {
       const fence = roundedBar(0.011, 0.088, len, 0.004, t);
       fence.rotateY(s * 0.13);
+      p.tag(`floor fence ${s < 0 ? 'L' : 'R'} z${z.toFixed(2)}`);
       fence.translate(s * x, 0.092, z);
       p.flat(fence, 'carbon');
     }
@@ -1608,6 +1998,7 @@ function buildShellParts(
       section(FRONT_AXLE_Z + 0.06, 0.020, 0.126, 0.412, 0.25),
       section(FRONT_AXLE_Z - 0.24, 0.015, 0.144, 0.366, 0.30),
     ], Math.max(6, t.detail - 4));
+    p.tag(`front wake fin ${side < 0 ? 'L' : 'R'}`);
     fin.translate(side * 0.480, 0, 0);
     p.flat(fin, 'carbon');
   }
@@ -1678,14 +2069,40 @@ function buildShellParts(
   // onboard frame and takes the helmet out of shot. Raising the crown does not
   // affect that; moving the lip does. It was briefly at -0.255 and this is the
   // note that put it back.
+  // THE INTAKE WAS INVISIBLE. Measured, by casting a ray at every vertex of the
+  // "airbox throat" part from a viewpoint in front of the car, from a front
+  // three-quarter and from side-on: 250 of 250, 100 per cent, hidden behind the
+  // airbox's own skin, from every direction. The roll hoop had NO mouth. What
+  // read as one in a screenshot was the dark band the livery paints across the
+  // front of the panel, and the whole recessed duct underneath it — some three
+  // hundred triangles of it — had never once been drawn.
+  //
+  // The cause is structural rather than a slip of a number. The old fairing
+  // ramped the crown from 0.700 at z = -0.196 to 0.912 at z = -0.300, a
+  // continuous 50-degree dome, and a closed loft has no holes: a dark tube
+  // inside a dome is inside it. For an intake to READ, the bodywork in front of
+  // the mouth has to be LOWER than the mouth — which is also what a real car
+  // is, because the fairing behind the driver's helmet is well below the
+  // intake's lower lip.
+  //
+  // So the fairing now tops out at 0.726 and the front face rises from there to
+  // the lip at 0.912 in the last 14mm of z: a near-vertical intake face, which
+  // is what the current generation's hoop actually presents. The mouth stands
+  // proud of it. Same idiom as the sidepod inlet, which is the one opening on
+  // this car that has always read: a dark letterbox in a coloured surround.
+  p.tag('airbox');
   p.painted(big([
     // A small, low forward fairing so the hoop GROWS out of the deck behind the
-    // headrest instead of starting as a wall. Without these two stations the
-    // loft's first ring is a flat 240 x 360mm cap, and painted with the dark
-    // mouth band over it that cap is the black carton the airbox was reported
-    // as. The mouth proper begins at the third station.
-    section(-0.196, 0.058, 0.586, 0.700, 0.90),
-    section(-0.248, 0.092, 0.572, 0.822, 0.76),
+    // headrest instead of starting as a wall. Without these stations the loft's
+    // first ring is a flat 240 x 360mm cap, and painted with the dark mouth
+    // band over it that cap is the black carton the airbox was reported as.
+    section(-0.184, 0.056, 0.588, 0.664, 0.92),
+    section(-0.232, 0.088, 0.576, 0.704, 0.82),
+    // The lower lip of the intake, and the top of everything ahead of it.
+    section(-0.286, 0.116, 0.564, 0.726, 0.70),
+    // The face. 186mm of rise in 14mm of z, so the ring-to-ring skin between
+    // this station and the one above IS the intake's front face, and the mouth
+    // in front of it has something to be a hole in.
     section(-0.300, 0.120, 0.560, 0.912, 0.62),
     section(-0.380, 0.150, 0.556, 0.968, 0.70),
     section(-0.500, 0.168, 0.552, 0.992, 0.74),
@@ -1696,27 +2113,50 @@ function buildShellParts(
     section(-1.760, 0.056, 0.520, 0.616, 1.00),
   ], t.body - 6), 'airbox');
 
-  // The intake. A recessed dark throat behind a lip, not a black rectangle
-  // stuck on the front: the mouth's first station sits slightly PROUD of the
-  // airbox skin so the lip catches light all the way round the opening, and the
-  // two behind it fall away and shrink, so from anywhere off-axis you see into
-  // a duct that gets darker rather than at a flat panel.
+  // The mouth. It sits 2mm in FRONT of the intake face's lower edge and its
+  // whole 196 x 160mm stands above the fairing ahead of it, so from the front
+  // it is a dark opening with a 22mm carbon margin down each side and 14mm over
+  // the top — the lip — and the fairing's own crown closing it underneath. The
+  // rings behind it fall away and shrink, so from anywhere off-axis you look
+  // into a duct that gets darker rather than at a flat panel.
+  //
+  // 196 by 160 against the 210 by 175 in the note above. The difference is the
+  // lip: a mouth cut to the full quoted size on a 240mm face leaves 15mm of
+  // bodywork round it, which at any distance is a hole with no surround, and a
+  // hole with no surround is a black rectangle glued to the front — which is
+  // the exact phrase this part was first rebuilt to get away from.
+  p.tag('airbox throat');
   p.flat(small([
-    section(-0.292, 0.100, 0.716, 0.892, 0.72),
-    section(-0.340, 0.092, 0.728, 0.882, 0.78),
-    section(-0.460, 0.070, 0.744, 0.858, 0.88),
-    section(-0.590, 0.046, 0.762, 0.832, 1.00),
+    section(-0.284, 0.098, 0.738, 0.898, 0.72),
+    section(-0.340, 0.090, 0.752, 0.884, 0.78),
+    section(-0.460, 0.070, 0.768, 0.860, 0.88),
+    section(-0.590, 0.046, 0.784, 0.834, 1.00),
   ], t.body - 8), 'dark');
 
-  // The two secondary inlets either side of the main mouth, feeding the
-  // radiators and the gearbox oil cooler. Small, dark, and on every current
-  // car; without them the hoop is a single hole in a smooth dome and reads as
-  // moulded rather than as engineered.
+  // The two secondary inlets on the hoop's shoulders, feeding the gearbox oil
+  // cooler. Small, dark, and on every current car; without them the hoop is a
+  // single hole in a smooth dome and reads as moulded rather than as engineered.
+  //
+  // THEY WERE BLACK WEDGES STANDING OUT OF THE FLANK. The old sections were
+  // centred at x = 0.126 with a 30mm half width, so the mouth's outer edge was
+  // at 0.156 against an airbox skin at 0.122 — thirty-four millimetres proud,
+  // with the inboard half of the duct buried and the outboard half hanging in
+  // clear air. Seventy-two per cent of their vertices were inside the bodywork
+  // and the visible remainder was a wedge, which is exactly how it was reported.
+  //
+  // What a shoulder inlet actually is: a scoop lying ALONG the flank, its mouth
+  // a few millimetres proud where the hoop flares out behind the lip, flush a
+  // little further back, and buried from there on. So the stations track the
+  // skin rather than ignoring it — 5.7mm proud at z = -0.306 where the skin is
+  // at 0.1223, flush at -0.360, and 8mm inside it by -0.430. What shows is a
+  // 46 x 64mm dark mouth and about fifty millimetres of duct shell behind it.
   for (const side of [-1, 1] as const) {
+    p.tag(`airbox side inlet ${side < 0 ? 'L' : 'R'}`);
     p.flat(small([
-      section(-0.306, 0.030, 0.648, 0.716, 0.55, { xc: side * 0.126 }),
-      section(-0.380, 0.026, 0.656, 0.710, 0.65, { xc: side * 0.130 }),
-      section(-0.470, 0.018, 0.666, 0.698, 0.85, { xc: side * 0.132 }),
+      section(-0.306, 0.023, 0.646, 0.710, 0.55, { xc: side * 0.105 }),
+      section(-0.360, 0.020, 0.652, 0.704, 0.65, { xc: side * 0.122 }),
+      section(-0.430, 0.014, 0.662, 0.694, 0.80, { xc: side * 0.134 }),
+      section(-0.510, 0.008, 0.670, 0.688, 1.00, { xc: side * 0.142 }),
     ], Math.max(6, t.detail - 6)), 'dark');
   }
 
@@ -1735,6 +2175,7 @@ function buildShellParts(
       section(-0.50, 0.034, 0.992, 1.052, 0.80),
       section(-0.64, 0.026, 0.960, 1.004, 0.90),
     ], Math.max(6, t.detail - 4));
+    p.tag('camera pod');
     p.flat(pod, 'trim');
     p.into('core');
   }
@@ -1749,6 +2190,7 @@ function buildShellParts(
   // 70mm inside it.
   // 25mm across, not 26: the regulations cap the fin at 50mm of total
   // thickness, and it is one of the parts where being fat is instantly wrong.
+  p.tag('shark fin');
   p.flat(small([
     section(-1.40, 0.0125, 0.640, 0.780, 0.30),
     section(-1.74, 0.0120, 0.520, 0.716, 0.30),
@@ -1777,6 +2219,7 @@ function buildShellParts(
     // limit the single slab was using all by itself.
     const main = wingElement(REAR_WING_HALF_SPAN * 2, 0.235, 0.036, -0.044, t.wing);
     main.rotateX(0.155);
+    p.tag('rear wing main plane');
     main.translate(0, REAR_WING_Y, REAR_WING_Z);
     p.flat(main, 'carbon');
 
@@ -1810,8 +2253,39 @@ function buildShellParts(
       const ep = small([
         // Forward foot: low and short, ahead of and under the plane, level with
         // the beam wing it braces against.
-        section(-1.88, 0.012, 0.372, 0.700, 0.30, { xc }),
-        section(-2.00, 0.015, 0.366, 0.842, 0.22, { xc }),
+        //
+        // IT WAS STILL A SLAB. The first station ran 0.372 to 0.700 — a 328mm
+        // wall standing in clear air 60mm ahead of the main plane's leading
+        // edge, with the rear tyre under it and nothing beside it — and from
+        // side-on that is a black rectangle hovering over the wheel, which is
+        // precisely how it was reported. Appendix 1 puts the endplate BODY
+        // between Z 325 and 660 and the rolled tip above that, and the real
+        // part reaches its full height only where the wing is: the leading edge
+        // is a 150mm-tall foot at beam-wing height that sweeps up over the next
+        // 240mm. Fifty-eight per cent of the forward area goes, and the wing
+        // stops reading as a billboard bolted to the air.
+        //
+        // A SECOND PASS OVER THE BOTTOM EDGE, and it is smaller than it looks
+        // like it should be, which is worth writing down. The forward foot was
+        // cut from a 328mm wall to 150mm last time and that is what stopped the
+        // plate reading as a slab hovering over the tyre. What was left was
+        // still carrying its full depth forward of the beam wing: the beam
+        // occupies z -2.08 to -2.25, and the plate ran down to y 0.372 and 0.366
+        // at z -1.95 and -2.04, which is 250mm of plate standing in clear air
+        // ahead of anything it braces. A real endplate's leading edge sweeps
+        // steeply back below the main plane and only the foot reaches forward.
+        // The trailing lower corner rises with it, the way a real one does.
+        //
+        // That is 0.2658 down to 0.2508 square metres of side-on silhouette per
+        // side — 5.6 per cent, measured off these stations. It is not more
+        // because there is not more to take: between the beam wing at 0.518 and
+        // the main plane at 0.745 a current endplate genuinely is a solid
+        // 227mm-tall panel across its whole chord, and the regulation volume
+        // (body Z 325..660, rolled tip 660..910) says so. The remaining dark
+        // area from side-on is the part that is supposed to be there.
+        section(-1.86, 0.010, 0.386, 0.536, 0.42, { xc: xc - s * 0.004 }),
+        section(-1.95, 0.013, 0.428, 0.688, 0.30, { xc }),
+        section(-2.04, 0.015, 0.396, 0.858, 0.22, { xc }),
         // Full height, where the main plane attaches.
         section(-2.12, 0.016, 0.362, REAR_WING_TOP_Y, 0.20, { xc }),
         // The rolled tip: over the last 150mm the top edge turns inboard, the
@@ -1819,23 +2293,25 @@ function buildShellParts(
         // is RV-RW-TIP, and it is the single most recognisable piece of 2022
         // bodywork after the wheel covers.
         section(-2.24, 0.015, 0.368, REAR_WING_TOP_Y, 0.36, { xc: xc - s * 0.020 }),
-        section(-2.34, 0.013, 0.392, REAR_WING_TOP_Y - 0.014, 0.60, { xc: xc - s * 0.048 }),
-        section(-2.42, 0.010, 0.436, REAR_WING_TOP_Y - 0.042, 0.88, { xc: xc - s * 0.082 }),
+        section(-2.34, 0.013, 0.436, REAR_WING_TOP_Y - 0.014, 0.60, { xc: xc - s * 0.048 }),
+        section(-2.42, 0.010, 0.520, REAR_WING_TOP_Y - 0.042, 0.88, { xc: xc - s * 0.082 }),
       ], t.body - 8);
       // Carbon, like the plane it holds. In the accent colour these were two
       // half-metre coloured boards standing above the rear tyres, and from
       // behind — which is where this car is seen from for most of a race — they
       // were the biggest and brightest object in the frame.
+      p.tag(`rear wing endplate ${s < 0 ? 'L' : 'R'}`);
       p.flat(ep, 'carbon');
 
       // The DRS actuator pod: the small fairing on the inboard face of the
       // endplate that houses the hydraulic ram. It is on every current car and
       // it is the thing that makes the flap above it read as a moving part
       // rather than as a second fixed wing.
+      p.tag(`DRS actuator pod ${s < 0 ? 'L' : 'R'}`);
       p.flat(small([
-        section(-2.06, 0.019, 0.884, 0.926, 0.75, { xc: s * 0.442 }),
-        section(-2.14, 0.023, 0.878, 0.932, 0.80, { xc: s * 0.442 }),
-        section(-2.22, 0.017, 0.886, 0.922, 0.90, { xc: s * 0.442 }),
+        section(-2.06, 0.019, 0.884, 0.926, 0.75, { xc: s * 0.458 }),
+        section(-2.14, 0.023, 0.878, 0.932, 0.80, { xc: s * 0.458 }),
+        section(-2.22, 0.017, 0.886, 0.922, 0.90, { xc: s * 0.458 }),
       ], Math.max(6, t.detail - 6)), 'trim');
     }
 
@@ -1848,6 +2324,7 @@ function buildShellParts(
     // Restationed onto the main plane's new height. 25mm thick in x, which is
     // the regulation maximum for a pylon outside the exhaust volume.
     for (const side of [-1, 1] as const) {
+      p.tag(`rear wing pylon ${side < 0 ? 'L' : 'R'}`);
       p.flat(small([
         section(-1.82, 0.024, 0.400, 0.474, 0.35, { xc: side * 0.146 }),
         section(-1.96, 0.022, 0.552, 0.630, 0.35, { xc: side * 0.146 }),
@@ -1862,10 +2339,12 @@ function buildShellParts(
     // XR 270..550 by Z 325..500, which is z -2.07..-2.35 and y 0.360..0.535.
     const beamA = wingElement(0.94, 0.148, 0.028, -0.026, Math.max(5, t.wing - 3));
     beamA.rotateX(0.12);
+    p.tag('beam wing lower');
     beamA.translate(0, 0.398, -2.16);
     p.flat(beamA, 'carbon');
     const beamB = wingElement(0.92, 0.122, 0.024, -0.022, Math.max(5, t.wing - 3));
     beamB.rotateX(0.16);
+    p.tag('beam wing upper');
     beamB.translate(0, 0.492, -2.19);
     p.flat(beamB, 'carbon');
 
@@ -1876,6 +2355,7 @@ function buildShellParts(
     // Z = 305 above the reference plane, which is y 0.330 to 0.340 here.
     p.into('core');
     const light = roundedBar(0.072, 0.100, 0.030, 0.012, t);
+    p.tag('rain light');
     light.translate(0, 0.335, -2.300);
     p.flat(light, 'light');
   }
@@ -1921,6 +2401,7 @@ function buildShellParts(
   // section is squashed to 0.58 of its height, so the 42mm at the mounts is
   // 42 wide by 24 tall and the crown is 26 by 15.
   {
+    p.tag('halo hoop');
     p.flat(tube(
       HALO_PATH, HALO_R, t.halo, t.haloRadial, haloRadiusAt,
       // Wider than tall, which is the whole difference between a blade and a pipe.
@@ -1936,9 +2417,52 @@ function buildShellParts(
     // 12mm across and 46mm front to back, which at the 0.7m it passes an eye is
     // one degree. Everything structural about the section is in the depth,
     // where nobody is looking down it.
+    p.tag('halo pillar');
     p.flat(strut(
       HALO_PILLAR[0][0], HALO_PILLAR[0][1], HALO_PILLAR[0][2],
       HALO_PILLAR[1][0], HALO_PILLAR[1][1], HALO_PILLAR[1][2],
+      HALO_PILLAR_R, t.haloRadial, false, HALO_PILLAR_SQUASH,
+    ), 'trim');
+
+    // THE THREE MOUNTS, which did not exist.
+    //
+    // A halo is bolted to the survival cell at exactly three points — one
+    // forward on the centreline and one either side at the cockpit sides —
+    // and this one was bolted to nothing at all. Measured: the hoop's two ends
+    // sit at (0.345, 0.612) at z = -0.30, where the tub's skin tops out at
+    // 0.592 and has already begun to turn in, and the forward pillar's foot at
+    // (0, 0.520) hangs 74mm above the floor of the cockpit trough. Nothing
+    // touched anything. `probe:carrig` put the whole assembly 66mm clear of the
+    // car, which is why from directly above it read as a ring lying over the
+    // airbox with no legs under it.
+    //
+    // NEITHER THE CENTRELINE NOR THE SECTION MOVES. `HALO_PATH`, `HALO_R`,
+    // `HALO_SQUASH` and `HALO_PILLAR` are what `probe:framing` projects through
+    // the real camera rig, the framing currently passes, and framing is not
+    // this pass's problem. These are three small parts added UNDER the hoop to
+    // carry it into the cell, which is what the real fittings are: a machined
+    // titanium block let into the tub side, not a weld.
+    for (const side of [-1, 1] as const) {
+      p.tag(`halo mount ${side < 0 ? 'L' : 'R'}`);
+      p.flat(aeroStrut(
+        side * 0.348, 0.610, -0.300,
+        side * 0.258, 0.540, -0.306,
+        // Slim. A real fitting is a bracket you can barely see, and at 78 by
+        // 44mm the first version read from the airbox camera as a black wedge
+        // standing out of the flank — trading a hoop that floated for a lump
+        // that did not belong. 62 by 32 is the hoop's own section carried down
+        // into the cell, which is what the eye expects a leg to be.
+        0.062, 0.032, t.strut,
+      ), 'trim');
+    }
+    // The forward pillar's root, down into the cockpit trough's floor. Built as
+    // its own short member rather than by lengthening `HALO_PILLAR`, because
+    // that array is the one `probe:framing` measures and a pillar that grows
+    // downward changes how much of the driver's picture the halo covers.
+    p.tag('halo pillar root');
+    p.flat(strut(
+      0, 0.436, 0.782,
+      HALO_PILLAR[0][0], HALO_PILLAR[0][1] + 0.006, HALO_PILLAR[0][2],
       HALO_PILLAR_R, t.haloRadial, false, HALO_PILLAR_SQUASH,
     ), 'trim');
   }
@@ -1955,7 +2479,12 @@ function buildShellParts(
     // the pod rather than sitting on it.
     const winglet = wingElement(0.250, 0.160, 0.018, -0.016, Math.max(4, t.wing - 5));
     winglet.rotateX(0.14);
-    winglet.translate(side * 0.654, 0.584, 0.600);
+    p.tag(`sidepod winglet ${side < 0 ? 'L' : 'R'}`);
+    // BEDDED INTO THE POD'S SHOULDER, not hovering 17mm over it. The pod's top
+    // surface at this station is y = 0.5495 and the winglet's lower surface was
+    // at 0.567 — a gap invisible in a hero render and obvious from the low
+    // three-quarter the complaint came from, because the sky shows through it.
+    winglet.translate(side * 0.654, 0.562, 0.600);
     p.flat(winglet, 'carbon');
 
     // Cooling louvres over the radiator exit. Their x now follows the pod's own
@@ -1969,6 +2498,7 @@ function buildShellParts(
     ] as const) {
       const slat = roundedBar(0.210, 0.009, 0.034, 0.004, t);
       slat.rotateX(0.30);
+      p.tag(`cooling louvre ${side < 0 ? 'L' : 'R'} z${z.toFixed(2)}`);
       slat.translate(side * x, y, z);
       p.flat(slat, 'dark');
     }
@@ -1986,32 +2516,113 @@ function buildShellParts(
   // entirely. Carried forward to the front of the cockpit opening — which is
   // where a real car mounts them, and for the same reason — they land inside
   // the frame.
+  //
+  // THEY WERE SUNK IN THE SIDEPOD, AND THE STALK CAME OUT OF THE DECK. Measured
+  // rather than argued: at z = 0.790 the pod's crown is at y = 0.5504 and the
+  // housing's underside was at 0.554, so the two were within four millimetres
+  // and the mirror read as a lump moulded into the pod's shoulder rather than
+  // as a mirror. Worse, the stalk ran from x = 0.300 at y = 0.548 — which is
+  // OUTSIDE a survival cell that is 310mm of half width and tops out at 0.5555
+  // at that station, so its inboard end stood proud of the deck as a black stub
+  // beside the cockpit, and its outboard end stopped 17mm short of the housing
+  // it was supposed to be holding. That stub is the "black piece sticking out".
+  //
+  // The mirror now sits 18mm higher, which clears the pod by 22mm, and the
+  // stalk runs from INSIDE the cell's flank up and outboard into the back of
+  // the housing, passing over the pod's inboard shoulder the way a real one
+  // does. `MIRROR_Y` is shared with the cockpit view, which hangs the live
+  // reflective pane on the front of this housing, so the two cannot disagree.
   for (const side of [-1, 1] as const) {
-    p.flat(strut(side * 0.300, 0.548, MIRROR_Z, side * 0.430, MIRROR_Y - 0.008, MIRROR_Z, 0.010, t.strut), 'trim');
-    // A moulded pod, not a brick: the housing tapers rearward and is rounded on
-    // every edge, which is what it looks like on the reference car and what
-    // makes the two of them read as aerodynamic parts rather than as luggage.
+    p.tag(`mirror stalk ${side < 0 ? 'L' : 'R'}`);
+    p.flat(strut(
+      side * 0.244, 0.516, MIRROR_Z,
+      side * 0.470, MIRROR_Y + 0.002, MIRROR_Z,
+      0.011, t.strut,
+    ), 'trim');
+    // A moulded pod, not a brick: rounded on every edge, which is what it looks
+    // like on the reference car and what makes the two of them read as
+    // aerodynamic parts rather than as luggage. In CARBON rather than in the
+    // team's paint, because on the onboard a mirror is 0.8m from the eye and
+    // therefore large whatever its real size: a body-coloured block that close
+    // reads as two bright slabs pushing in from the edges of the frame. Every
+    // reference frame has dark pods with only a slim lit top surface.
     //
-    // Wider and flatter than it was, and in CARBON rather than in the team's
-    // paint. Both changes are about the onboard view, where a mirror is 0.8m
-    // from the eye and therefore large whatever its real size: a body-coloured
-    // block that close reads as two bright slabs pushing in from the edges of
-    // the frame, which is exactly the complaint. Every reference frame has dark
-    // pods with only a slim lit top surface, so the eye files them with the
-    // cockpit surround instead of treating them as objects.
+    // IT TAPERED THE WRONG WAY, AND THAT IS WHY THE MIRRORS NEVER WORKED. The
+    // sections ran 117mm across at z = 0.794 down to 72mm at the back face —
+    // widest 30mm IN FRONT of the glass and narrowest AT it. Every millimetre of
+    // fairing was on the end nobody looks at, and the aperture presented to the
+    // one eye that has to look into it was 77 by 37, which capped the pane at
+    // 74 by 32 against a regulation minimum of 150 by 50. A driver looking in
+    // was looking down a funnel that opens AWAY from him.
+    //
+    // Now it is built the way a real mirror pod is, and in the PANE'S OWN
+    // FRAME rather than square to the car:
+    //
+    //  - the widest, flattest station IS the face the glass sits in, and it
+    //    tapers forward from there into a blunt rounded nose 108mm ahead of it.
+    //    172mm across the back, 38mm at the nose. The depth matters as much as
+    //    the direction: at the 62mm it was first rebuilt to, a pod 172 wide and
+    //    55 tall is a knife blade edge-on and read as one from the front;
+    //  - the whole loft is rotated by the pane's own quaternion, so the fairing
+    //    points where the mirror points. This is not cosmetic. The pane is
+    //    yawed 10.6 degrees inboard and pitched 8.2 degrees up, so a 150mm one
+    //    sweeps 34mm in z: mounted in a housing built square to the car its
+    //    inboard corner would hang 14mm out through the side of the pod, which
+    //    is the same "black piece sticking out" in a new place;
+    //  - the aperture is sized FROM `PANE_W`/`PANE_H` rather than guessed at,
+    //    with an 11mm surround around the glass, so the two cannot drift apart
+    //    again in either direction.
+    //
+    // WHAT SETS ITS HEIGHT. The sidepod's crown directly under the housing is at
+    // y = 0.540 — measured off the built geometry, not read off the sections —
+    // and `MIRROR_Y` is pinned at 0.578 by how much of the pane the halo's rear
+    // rail covers from each onboard camera (see CockpitMesh). The surround is
+    // therefore deliberately asymmetric: 2.5mm of it below the glass and 7.5mm
+    // above, which puts the underside at 0.5523 with 12.3mm of daylight over
+    // the pod. Split evenly it would be at 0.5475, and 7mm of gap closes up
+    // from any shallow angle into the "lump moulded into the pod's shoulder"
+    // this housing has twice been fixed for.
+    const { quaternion, position, normal } = mirrorPaneBasis(side);
+    const halfW = MIRROR_PANE_W * 0.5 + 0.011;
+    const below = MIRROR_PANE_H * 0.5 + 0.0025;
+    const above = MIRROR_PANE_H * 0.5 + 0.0075;
+    // Built about the glass: local +z is the mirror's normal, pointing back at
+    // the driver, and local z = 0 is the reflective surface.
+    // THE LAST STATION IS BEHIND THE GLASS, not in front of it, and that is not
+    // a detail. `loft` caps its ends, and a cap across the widest station of
+    // this pod is a solid carbon disc the exact size of the aperture — mounted
+    // 4mm proud of the pane it would BE the mirror, and the driver would look
+    // at a black oval. (It was harmless for as long as `loft` wound its caps
+    // inward and back-face culling deleted them; fixing that is what surfaced
+    // it, and it would have hidden the old 74mm pane just as thoroughly.)
+    //
+    // So the pane sits at local z = 0 and the pod's rear face 6mm behind it,
+    // which puts the glass slightly PROUD of a surround that is 11mm wider than
+    // it all round: a pane in a frame, seen from the one seat that matters.
     const housing = small([
-      section(MIRROR_Z + 0.021, 0.0580, MIRROR_Y - 0.023, MIRROR_Y + 0.023, 0.42),
-      section(MIRROR_Z + 0.004, 0.0585, MIRROR_Y - 0.024, MIRROR_Y + 0.024, 0.45),
-      section(MIRROR_Z - 0.014, 0.0520, MIRROR_Y - 0.022, MIRROR_Y + 0.023, 0.55),
-      section(MIRROR_Z - 0.026, 0.0360, MIRROR_Y - 0.017, MIRROR_Y + 0.019, 0.80),
+      section(-0.114, halfW * 0.22, -below * 0.40, above * 0.46, 0.95),
+      section(-0.096, halfW * 0.46, -below * 0.64, above * 0.70, 0.85),
+      section(-0.072, halfW * 0.70, -below * 0.82, above * 0.86, 0.72),
+      section(-0.046, halfW * 0.87, -below * 0.93, above * 0.95, 0.60),
+      section(-0.024, halfW * 0.97, -below * 0.99, above * 0.99, 0.48),
+      section(-0.006, halfW, -below, above, 0.42),
     ], t.detail);
-    housing.translate(side * MIRROR_X, 0, 0);
+    p.tag(`mirror housing ${side < 0 ? 'L' : 'R'}`);
+    housing.applyQuaternion(quaternion);
+    housing.translate(position.x, position.y, position.z);
     p.flat(housing, 'carbon');
     // A flat dark pane, so the mirrors read from outside too. The player's own
-    // car covers this with a reflective one; see CockpitMesh.
-    const glass = new THREE.PlaneGeometry(0.096, 0.036);
-    glass.rotateY(Math.PI);
-    glass.translate(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z);
+    // car covers this with a reflective one; see CockpitMesh. Same size, same
+    // basis, 2mm deeper into the housing so the live pane wins where there is
+    // one and there is nothing to z-fight where there is not.
+    const glass = new THREE.PlaneGeometry(MIRROR_PANE_W, MIRROR_PANE_H);
+    glass.applyQuaternion(quaternion);
+    p.tag(`mirror glass ${side < 0 ? 'L' : 'R'}`);
+    glass.translate(
+      position.x - normal.x * 0.002,
+      position.y - normal.y * 0.002,
+      position.z - normal.z * 0.002,
+    );
     p.flat(glass, 'glass');
   }
 
@@ -2059,10 +2670,6 @@ function buildShellParts(
   {
     const rz = REAR_AXLE_Z;
     const sg = t.strut;
-    /** Rear wishbone leg section. The front's live in `frontMembers`. */
-    const LEG_C = LEG_CHORD, LEG_T = LEG_THICK;
-    /** Toe link and pullrod. */
-    const ROD_C = ROD_CHORD, ROD_T = ROD_THICK;
 
     for (const s of [-1, 1] as const) {
       // --- Front corner ----------------------------------------------------
@@ -2077,6 +2684,7 @@ function buildShellParts(
       // screenshots before it was given the same treatment; this is that lesson
       // applied one part earlier.
       for (const m of frontMembers(s)) {
+        p.tag(`front ${m.name} ${s < 0 ? 'L' : 'R'}`);
         p.flat(aeroStrut(m.a[0], m.a[1], m.a[2], m.b[0], m.b[1], m.b[2], m.chord, m.thick, sg), 'trim');
       }
 
@@ -2107,40 +2715,36 @@ function buildShellParts(
       // is what Article 10.3.2 says a corner is and what the probe measures.
 
       // --- Rear corner -----------------------------------------------------
-      const rUpX = s * 0.700, rUpY = 0.512;
-      const rLoX = s * 0.716, rLoY = 0.318;
-      // Upper wishbone, off the gearbox casing. DEEP-CHORDED, because between
-      // 2022 and 2025 the regulations let a rear fairing that also shrouds the
-      // driveshaft run to 150mm of chord instead of 100 — which is exactly why
-      // the rear upper wishbones on cars of this era look so enormous next to
-      // the front ones. This is the one member on the car allowed to be fat.
-      p.flat(aeroStrut(s * 0.176, 0.522, rz + 0.40, rUpX, rUpY, rz - 0.008, 0.140, 0.042, sg), 'trim');
-      p.flat(aeroStrut(s * 0.150, 0.500, rz - 0.32, rUpX, rUpY, rz - 0.008, 0.140, 0.042, sg), 'trim');
-      // Lower wishbone.
-      p.flat(aeroStrut(s * 0.192, 0.292, rz + 0.38, rLoX, rLoY, rz - 0.006, LEG_C, LEG_T, sg), 'trim');
-      p.flat(aeroStrut(s * 0.164, 0.284, rz - 0.34, rLoX, rLoY, rz - 0.006, LEG_C, LEG_T, sg), 'trim');
-      // Toe link: the rear's equivalent of a trackrod, behind the axle line.
-      p.flat(aeroStrut(s * 0.158, 0.386, rz - 0.34, s * 0.700, 0.404, rz - 0.116, ROD_C, ROD_T, sg), 'trim');
-      // PULLROD, not a pushrod: it runs from HIGH on the upright DOWN and
-      // inboard to a rocker at the bottom of the gearbox. Pushrod front and
-      // pullrod rear is what most of the current field runs, and the two being
-      // raked opposite ways is one of the details that reads as a real car.
-      // Shallower than the front rod — 25 degrees against 35 — which is also
-      // what the reference shows.
-      p.flat(aeroStrut(s * 0.686, 0.492, rz + 0.030, s * 0.170, 0.238, rz - 0.240, ROD_C, ROD_T, sg), 'trim');
+      //
+      // From `rearMembers`, for exactly the reason the front comes from
+      // `frontMembers`: the probe has to be able to read the same six numbers
+      // the extrusion does. When these were written inline the rear corner was
+      // the only part of the suspension nothing could measure, and it was the
+      // corner carrying the detached member.
+      for (const m of rearMembers(s)) {
+        p.tag(`rear ${m.name} ${s < 0 ? 'L' : 'R'}`);
+        p.flat(aeroStrut(m.a[0], m.a[1], m.a[2], m.b[0], m.b[1], m.b[2], m.chord, m.thick, sg), 'trim');
+      }
 
       // Driveshaft: round, because it genuinely is — it is a shaft, the one
       // member on the car that turns. Steel, hollow, at wheel-centre height
       // between the gearbox output and the hub.
+      p.tag(`driveshaft ${s < 0 ? 'L' : 'R'}`);
       p.flat(strut(s * 0.128, 0.360, rz, s * 0.640, 0.360, rz, 0.026, sg), 'carbon');
       // The rear upright, bridging the two ball joints.
-      p.flat(aeroStrut(rLoX - s * 0.010, rLoY, rz - 0.004, rUpX, rUpY, rz - 0.006, 0.092, 0.052, sg), 'carbon');
+      p.tag(`rear upright ${s < 0 ? 'L' : 'R'}`);
+      p.flat(aeroStrut(
+        REAR_UPPER_BALL[0] * s, REAR_UPPER_BALL[1], rz - 0.006,
+        REAR_LOWER_BALL[0] * s - s * 0.010, REAR_LOWER_BALL[1], rz - 0.004,
+        0.092, 0.052, sg,
+      ), 'carbon');
       // Rear brake duct: the carbon drum inboard of the wheel, over the disc.
       const duct = small([
         section(rz + 0.28, 0.030, 0.196, 0.404, 0.34),
         section(rz + 0.02, 0.046, 0.166, 0.492, 0.26),
         section(rz - 0.26, 0.034, 0.188, 0.418, 0.34),
       ], Math.max(6, t.detail - 4));
+      p.tag(`rear brake duct ${s < 0 ? 'L' : 'R'}`);
       duct.translate(s * (REAR_HUB_X - 0.176), 0, 0);
       p.flat(duct, 'carbon');
     }
@@ -2219,13 +2823,36 @@ function frontUprightGeometry(t: Tiers, side: 1 | -1): THREE.BufferGeometry {
   // Built as three sections arcing over the tyre's crown at 0.360 — it sits
   // 55mm clear of the rubber, and is deliberately narrow so it never fights
   // the wheel for attention.
+  //
+  // IT LOOKED LIKE IT WAS FLOATING, and it was: "not sure what that thing is on
+  // the front wheels still." It is a legal part in the right piece of sky, but
+  // it was 138mm across on a 329mm tyre, it sat entirely over the tyre's
+  // INBOARD half, and nothing joined it to anything — a dark blade hanging 40mm
+  // above the rubber with clear air all round it. On the real car the winglet is
+  // carried on a vane that runs down the INBOARD side of the tyre to the brake
+  // drum, and that vane is what makes the thing read as bolted on rather than
+  // balanced there.
+  //
+  // 220mm across now, reaching inboard to x = -0.175 — ten millimetres clear of
+  // the tyre's inner wall at 0.1645 — which is where the vane can come up
+  // without passing through the rubber.
   {
     const wing = loft([
-      section(0.150, 0.052, 0.402, 0.418, 0.60, { xc: s * -0.052 }),
-      section(0.010, 0.062, 0.414, 0.432, 0.55, { xc: s * -0.060 }),
-      section(-0.150, 0.050, 0.400, 0.416, 0.60, { xc: s * -0.066 }),
+      section(0.150, 0.098, 0.402, 0.418, 0.60, { xc: s * -0.062 }),
+      section(0.010, 0.110, 0.414, 0.432, 0.55, { xc: s * -0.065 }),
+      section(-0.150, 0.094, 0.400, 0.416, 0.60, { xc: s * -0.070 }),
     ], Math.max(6, t.detail - 6), true, t.detailStep);
     flat(wing, 'carbon');
+    // The vane that holds it up: down the inboard flank of the tyre, from the
+    // winglet's inboard edge to the top of the drum. Thin, because it is a
+    // support rather than an aerodynamic surface, and the whole point of it is
+    // that the eye can follow the load path.
+    const post = loft([
+      section(0.104, 0.007, 0.128, 0.406, 0.30, { xc: s * -0.176 }),
+      section(-0.010, 0.008, 0.120, 0.420, 0.26, { xc: s * -0.178 }),
+      section(-0.116, 0.007, 0.126, 0.404, 0.30, { xc: s * -0.176 }),
+    ], Math.max(6, t.detail - 8), true, t.detailStep);
+    flat(post, 'carbon');
   }
   // Brake duct: the carbon drum inboard of the wheel. Turns with the wheel,
   // because it is bolted to the upright. Deeper and taller than it was, so it
@@ -2295,10 +2922,13 @@ function buildWheel(width: number, t: Tiers, quality: CarTier): THREE.BufferGeom
   const cols = radial + 1;
   const positions = new Float32Array(rings * cols * 3);
   const uvs = new Float32Array(rings * cols * 2);
+  // Phased so a vertex lands at the bottom of the wheel and the contact patch
+  // is where TYRE_R says it is. See `wheelPhase`; the compound band shares it.
+  const phase = wheelPhase(radial);
   for (let pi = 0; pi < rings; pi++) {
     const v = TYRE_BAND.v0 + profile[pi].v * (TYRE_BAND.v1 - TYRE_BAND.v0);
     for (let i = 0; i < cols; i++) {
-      const a = (i / radial) * Math.PI * 2;
+      const a = (i / radial) * Math.PI * 2 + phase;
       const o = (pi * cols + i) * 3;
       // Wheel axis along X so a rotation about X spins it.
       positions[o] = profile[pi].x;
@@ -2810,7 +3440,7 @@ function geometryFor(quality: CarTier): CachedGeometry {
       sidepodL: mergeParts(parts.sidepodL),
       sidepodR: mergeParts(parts.sidepodR),
     },
-    onboardHidden: mergeParts([...driver.grip, ...parts.onboardHidden]),
+    onboardHidden: mergeParts([...driver.grip, ...driver.arms, ...parts.onboardHidden]),
     frontWheel: buildWheel(FRONT_TYRE_W, t, quality),
     rearWheel: buildWheel(REAR_TYRE_W, t, quality),
     frontUprightL: frontUprightGeometry(t, -1),
@@ -2838,6 +3468,99 @@ function geometryFor(quality: CarTier): CachedGeometry {
   };
   geometryCache.set(quality, built);
   return built;
+}
+
+/** One named piece of the car, before the buckets are merged. */
+export interface CarPart {
+  /** What the part is, in the words a complaint about it would use. */
+  name: string;
+  /** Which mesh it ends up in: the shell, a detachable panel, a flap. */
+  bucket: string;
+  geometry: THREE.BufferGeometry;
+  /**
+   * Rigid transform the mesh carrying this part is drawn under, or null for
+   * the shell — which is drawn at the car's own origin.
+   *
+   * The movable front elements are authored about their hinge and the wheels
+   * about their hub, so a probe that reads the raw geometry of either is
+   * reading a part in the wrong place. Everything here is in the CAR's frame
+   * once this is applied.
+   */
+  offset: THREE.Vector3 | null;
+}
+
+/**
+ * Every part of the car, named, in the car's own frame — for `probe:carrig`.
+ *
+ * The car is drawn as a dozen merged meshes, which is the whole reason it fits
+ * in a frame twenty times over, and it is also why "the black slab above the
+ * rear tyre" went four rebuilds without anybody being able to say what it was:
+ * once `mergeGeometries` has run there is no such thing as a part any more,
+ * only a vertex buffer. This runs the REAL `buildShellParts` and hands back the
+ * pieces before they are merged, each carrying the name `Parts.tag` stamped on
+ * it, so a measurement can answer in the words the complaint was made in.
+ *
+ * It builds a second, throwaway copy of the geometry and is therefore for
+ * probes only. Nothing in the game calls it.
+ */
+export function carPartsForProbe(quality: CarTier): CarPart[] {
+  const t = TIERS[quality];
+  const driver = buildDriverParts(quality);
+  // The driver is added straight to the core bucket rather than through
+  // `Parts.flat`, so nothing has named him. Do it here.
+  for (const g of driver.body) g.userData.tag = 'driver body';
+  for (const g of driver.head) g.userData.tag = 'driver head';
+  for (const g of driver.grip) g.userData.tag = 'driver grip';
+  for (const g of driver.arms) g.userData.tag = 'driver arms';
+  const parts = buildShellParts(quality, [...driver.body, ...driver.head]);
+  parts.onboardHidden.push(...driver.arms);
+  const out: CarPart[] = [];
+  const take = (list: readonly THREE.BufferGeometry[], bucket: string, offset: THREE.Vector3 | null = null) => {
+    for (const g of list) {
+      out.push({ name: (g.userData.tag as string | undefined) ?? `(untagged ${bucket})`, bucket, geometry: g, offset });
+    }
+  };
+  take(parts.core, 'shell');
+  take(parts.frontWing, 'frontWing');
+  take(parts.rearWing, 'rearWing');
+  take(parts.sidepodL, 'sidepodL');
+  take(parts.sidepodR, 'sidepodR');
+  take(parts.onboardHidden, 'onboardHidden');
+  take(parts.frontFlap, 'frontFlap', new THREE.Vector3(0, FRONT_FLAP_PIVOT_Y, FRONT_FLAP_PIVOT_Z));
+
+  // The rear wing's flap, which is not in any bucket: it is built straight into
+  // the geometry cache because it hangs on the DRS pivot. Rebuilt here at the
+  // same incidence and placed at the same pivot the renderer places it at.
+  const flap = wingElement(REAR_WING_HALF_SPAN * 2, DRS_FLAP_CHORD, 0.032, -0.036, t.wing);
+  flap.rotateX(DRS_CLOSED_RAD);
+  flap.translate(
+    0,
+    DRS_PIVOT_Y - (DRS_FLAP_CHORD * 0.5) * Math.sin(DRS_CLOSED_RAD),
+    DRS_PIVOT_Z + (DRS_FLAP_CHORD * 0.5) * Math.cos(DRS_CLOSED_RAD),
+  );
+  out.push({ name: 'DRS flap', bucket: 'flap', geometry: flap, offset: null });
+
+  // The wheels and the parts that steer with them, at their hubs.
+  for (const [x, z, rear] of [
+    [-FRONT_HUB_X, FRONT_AXLE_Z, false], [FRONT_HUB_X, FRONT_AXLE_Z, false],
+    [-REAR_HUB_X, REAR_AXLE_Z, true], [REAR_HUB_X, REAR_AXLE_Z, true],
+  ] as [number, number, boolean][]) {
+    const side = x < 0 ? 'L' : 'R';
+    const at = new THREE.Vector3(x, TYRE_R, z);
+    const wheel = buildWheel(rear ? REAR_TYRE_W : FRONT_TYRE_W, t, quality);
+    // The left-hand wheels are turned about Y so their covered face points
+    // outboard. A tyre is a solid of revolution so this changes nothing about
+    // where its lowest vertex is, but the upright is emphatically not.
+    if (x < 0) wheel.rotateY(Math.PI);
+    out.push({ name: `${rear ? 'rear' : 'front'} wheel ${side}`, bucket: 'wheel', geometry: wheel, offset: at });
+    if (!rear) {
+      out.push({
+        name: `front upright ${side}`, bucket: 'upright',
+        geometry: frontUprightGeometry(t, x < 0 ? -1 : 1), offset: at,
+      });
+    }
+  }
+  return out;
 }
 
 let shadowTexture: THREE.CanvasTexture | null = null;
@@ -3047,7 +3770,12 @@ export function buildCar(
 
   // Everything only the driver can see. Parented to the car root, so it inherits
   // the chassis' position, heading, roll and pitch for free.
-  const cockpit = opts.withCockpit ? buildCockpit(accentColour) : null;
+  // The suit colour is the shell's own `suit` swatch — the body colour darkened
+  // by 0.4, see `swatchColour` in Livery — because the cockpit's articulated
+  // arms stand in for the shell's static pair and the camera swaps between them.
+  const cockpit = opts.withCockpit
+    ? buildCockpit(accentColour, suitColour(bodyColour))
+    : null;
   if (cockpit) root.add(cockpit.root);
 
   // Contact shadow: a cheap dark ellipse that grounds the car even with real
@@ -3063,19 +3791,53 @@ export function buildCar(
   shadow.renderOrder = -1;
   root.add(shadow);
 
-  // DRS flap on a pivot at its leading edge.
+  // The rear flap, on this team's axis. See `ACTUATION` for why the axis is a
+  // per-team quantity in 2026 and was not one under the DRS rules.
+  const act = ACTUATION[opts.actuation ?? 'central'];
   const flapPivot = new THREE.Group();
-  flapPivot.position.set(0, DRS_PIVOT_Y, DRS_PIVOT_Z);
+  // THE AXIS MOVES; THE CLOSED FLAP DOES NOT.
+  //
+  // This is the part that is easy to get wrong and would have been a real bug.
+  // Moving the hinge forward along the chord must change how the flap OPENS,
+  // not where it sits when shut — every car's wing is in the same place in
+  // Corner Mode, and `REAR_WING_Y`/`DRS_PIVOT_Y` are derived from the Z=910
+  // height limit, so a flap that drifted with the hinge would leave the
+  // regulation box on some cars and not others.
+  //
+  // So the pivot group is placed at the AXIS's world position, computed by
+  // walking back from the flap's trailing edge — which stays pinned at
+  // (DRS_PIVOT_Y, DRS_PIVOT_Z) — along the chord. With the flap built at
+  // incidence `DRS_CLOSED_RAD`, the unit vector from trailing edge to leading
+  // edge is (0, -sin, cos), and the axis sits (1-f) chords along it.
+  const backFromTrailing = DRS_FLAP_CHORD * (1 - act.pivotChordFrac);
+  flapPivot.position.set(
+    0,
+    DRS_PIVOT_Y - backFromTrailing * Math.sin(DRS_CLOSED_RAD),
+    DRS_PIVOT_Z + backFromTrailing * Math.cos(DRS_CLOSED_RAD),
+  );
   const flap = new THREE.Mesh(geo.flap, shellMat);
-  // Offset so the flap's TRAILING EDGE lands on the pivot. The element is
-  // centred by `wingElement`, so after `rotateX(DRS_CLOSED_RAD)` its trailing
-  // edge — local (0, 0, -chord/2) — sits at (0, +c/2 sin, -c/2 cos), and this
-  // is that vector negated. Hard-coding it as a magic -0.092 in z is what put
-  // the hinge at the leading edge and cost the car its DRS slot.
+  // Offset so the chosen point on the flap's chord lands on the pivot.
+  //
+  // `wingElement` centres the section, so its trailing edge is at local
+  // (0, 0, -chord/2) and its leading edge at (0, 0, +chord/2). A chord fraction
+  // f (0 = leading, 1 = trailing) is therefore at (0, 0, chord*(0.5 - f)), and
+  // after `rotateX(DRS_CLOSED_RAD)` that point sits at
+  // (0, -d sin, d cos) with d = chord*(0.5 - f). The offset below is that
+  // vector negated, so the axis passes through it.
+  //
+  // Checked at f = 1: d = -chord/2, giving (0, -c/2 sin, +c/2 cos), which is
+  // exactly the trailing-edge offset this replaces.
+  //
+  // Getting this wrong is not cosmetic and there is history: the hinge was once
+  // hard-coded at the flap's LEADING edge, from which a slot physically cannot
+  // open — the slot IS the gap between the mainplane's trailing edge and the
+  // flap's leading edge, so hinging there rotates the flap while leaving the
+  // one dimension that matters exactly where it was.
+  const pivotFromCentre = DRS_FLAP_CHORD * (0.5 - act.pivotChordFrac);
   flap.position.set(
     0,
-    -(DRS_FLAP_CHORD * 0.5) * Math.sin(DRS_CLOSED_RAD),
-    (DRS_FLAP_CHORD * 0.5) * Math.cos(DRS_CLOSED_RAD),
+    pivotFromCentre * Math.sin(DRS_CLOSED_RAD),
+    -pivotFromCentre * Math.cos(DRS_CLOSED_RAD),
   );
   flap.castShadow = true;
   flapPivot.add(flap);
@@ -3179,6 +3941,69 @@ export function buildCar(
   const rl = makeWheel(-REAR_HUB_X, REAR_AXLE_Z, true);
   const rr = makeWheel(REAR_HUB_X, REAR_AXLE_Z, true);
 
+  // --- Rear lights ---------------------------------------------------------
+  //
+  // THREE of them, because the regulations say three. F1 Technical Regulations
+  // 2026 Art. C14.3.1: "All cars must have three rear lights which... b. Are
+  // clearly visible from the rear. c. Can be switched on by the driver when
+  // seated normally in the car."
+  //
+  //   C14.3.2  the first light: rear face at least 750mm behind XDIF=0, its
+  //            centre on Y=0, and between Z=295 and Z=305. That is the one on
+  //            the crash structure, already modelled in the shell above.
+  //   C14.3.3  "Two further lights must be fitted, one on each side of the
+  //            car", within the rear wing endplate body, lying "in its entirety
+  //            between Z=700 and Z=870". (The 2025 band was Z=500..870; 2026
+  //            narrows it, and this car is a 2026 car.)
+  //
+  // These are NOT part of the merged livery shell, and they cannot be: the
+  // shell shares one material across the whole field, and a light has to be
+  // switchable per car. They are separate meshes with their own unlit material,
+  // exactly as the brake discs are, so `setRainLight` can drive them.
+  //
+  // Unlit, because a rain light in the spray is the brightest thing in the
+  // frame and a lit material would have it dim in its own shadow.
+  const rainLights: THREE.Mesh[] = [];
+  const rainLightMat = new THREE.MeshBasicMaterial({
+    color: RAIN_LIGHT_OFF,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  });
+  // One lens geometry for all three, disposed with the car. See `dispose`.
+  const rainLightLens = new THREE.PlaneGeometry(0.072, 0.030);
+  {
+    // The central lens sits on the crash structure at Z=300 -> y 0.300, on the
+    // same station as the shell's moulding so the two are one object to look at.
+    const lens = rainLightLens;
+    const centre = new THREE.Mesh(lens, rainLightMat);
+    centre.position.set(0, 0.335, -2.316);
+    centre.rotation.y = Math.PI;
+    root.add(centre);
+    rainLights.push(centre);
+    // The pair, on the endplates' TRAILING EDGE.
+    //
+    // Placed against the endplate loft rather than guessed: its last station is
+    // at z = -2.42 with its centreline pulled in to `xc - s*0.082`, which is
+    // 0.414, and it spans y 0.520 to 0.900 there. A first pass put these at
+    // z = -2.052 — 27cm forward of the trailing edge, which is INSIDE the
+    // plate, and the photographs showed no lights at all.
+    //
+    // The height is regulated and this is the middle of the band: C14.3.3(d)
+    // requires the light to lie "in its entirety between Z=700 and Z=870",
+    // which is y 0.735 to 0.905 in this frame. A 30mm lens centred at 0.785
+    // spans 0.770 to 0.800, comfortably inside. C14.3.3(c) additionally
+    // requires the lens normal within 5 degrees of the X axis; here it is
+    // exactly along it.
+    for (const side of [-1, 1]) {
+      const m = new THREE.Mesh(lens, rainLightMat);
+      m.position.set(side * 0.414, 0.785, -2.428);
+      m.rotation.y = Math.PI;
+      root.add(m);
+      rainLights.push(m);
+    }
+  }
+
   let detail: CarTier = quality;
 
   return {
@@ -3210,6 +4035,33 @@ export function buildCar(
     drsFlap: flapPivot,
     frontFlaps: frontFlapPivot,
     brakeGlow,
+    actuation: act,
+    rainLights,
+    setRainLight(on: boolean, flashPhase: number): void {
+      // One material, three lenses — they are one circuit on a real car too.
+      //
+      // FLASHING is a property of the light unit, not of the regulations: the
+      // rear light is a Standard Supply Component (C14.3.4) whose specification
+      // lives in FIA-F1-DOC-025 and is not published, and the words "flash" and
+      // "flashing" appear nowhere in the Technical or Sporting Regulations in
+      // connection with it. So this is modelled on what the units visibly do on
+      // track rather than cited to an article, and it is deliberately a slow
+      // pulse between bright and half rather than a hard blink.
+      const level = on ? 0.55 + 0.45 * flashPhase : 0;
+      // 2.2, not 3.4. The first pass drove red to 3.7, which is far enough past
+      // the tone mapper's shoulder that the lens clipped to white and the lights
+      // photographed as pale pink bars — a blown highlight rather than a red
+      // lamp. 2.4 peak still clears the 1.55 bloom threshold comfortably, so it
+      // glows and throws a halo, while staying on the red side of the clip. The
+      // green and blue terms are deliberately tiny: any real amount of either
+      // desaturates it towards the same white.
+      rainLightMat.color.setRGB(
+        RAIN_LIGHT_OFF_RGB[0] + level * 2.2,
+        RAIN_LIGHT_OFF_RGB[1] + level * 0.07,
+        RAIN_LIGHT_OFF_RGB[2] + level * 0.05,
+      );
+      rainLightMat.opacity = on ? 1 : 0.95;
+    },
     onboardHidden,
     shadow,
     cockpit,
@@ -3241,6 +4093,12 @@ export function buildCar(
     dispose(): void {
       cockpit?.dispose();
       for (const d of brakeGlow) (d.material as THREE.Material).dispose();
+      // The rear lights own both their lens geometry and their material — one
+      // of each per car, shared across that car's three lenses. `regress:exit`
+      // counts live geometries across a session teardown and caught this the
+      // moment it was added, which is exactly what it is for.
+      rainLightMat.dispose();
+      rainLightLens.dispose();
       // The band materials are shared across the whole field and owned by
       // TyreTexture's cache, so they are emphatically NOT disposed here.
     },

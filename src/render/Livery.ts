@@ -55,7 +55,7 @@ export interface LiveryTextures {
 /** A rectangle of the atlas, in UV space with v pointing up. */
 interface Rect { u0: number; v0: number; u1: number; v1: number }
 
-export type PanelName = 'body' | 'pod' | 'airbox';
+export type PanelName = 'body' | 'pod' | 'airbox' | 'helmet';
 
 /**
  * Unwrapped panels, laid out so each one's LENGTH runs along the atlas's u axis.
@@ -65,6 +65,11 @@ export const PANEL: Record<PanelName, Rect> = {
   body: { u0: 0.0, v0: 0.62, u1: 1.0, v1: 1.0 },
   pod: { u0: 0.0, v0: 0.40, u1: 1.0, v1: 0.60 },
   airbox: { u0: 0.0, v0: 0.20, u1: 0.62, v1: 0.38 },
+  // The one piece of unused atlas there was, beside the airbox. At 512 it is
+  // 184 by 97 pixels for a helmet whose circumference is about 600mm, which is
+  // 300 pixels per metre — the densest thing on the sheet, and it has to be:
+  // the helmet is 300mm across and the chase camera looks straight down onto it.
+  helmet: { u0: 0.640, v0: 0.195, u1: 1.0, v1: 0.385 },
 };
 
 /** Real extents of each panel: length along the car, girth round the section. */
@@ -72,6 +77,11 @@ const PANEL_SIZE: Record<PanelName, { lengthM: number; girthM: number }> = {
   body: { lengthM: 4.86, girthM: 1.85 },
   pod: { lengthM: 2.87, girthM: 1.40 },
   airbox: { lengthM: 1.31, girthM: 0.80 },
+  // Not a loft, so these are not a length and a girth: the helmet is unwrapped
+  // as a projection (see `helmetUV` in DriverMesh) and the numbers below are
+  // the circumference and the half-circumference of a 142mm shell, which is
+  // what makes text on it come out the size it is asked for.
+  helmet: { lengthM: 0.90, girthM: 0.45 },
 };
 
 const SWATCH_REGION: Rect = { u0: 0.0, v0: 0.0, u1: 1.0, v1: 0.18 };
@@ -140,6 +150,18 @@ function luminance(hex: number): number {
 /** White or near-black, whichever will actually be legible on the background. */
 function readable(hex: number): string {
   return luminance(hex) > 0.45 ? '#0b0e13' : '#f4f7fa';
+}
+
+/**
+ * The race suit's colour: the team's body colour, darkened.
+ *
+ * Exported because two modules paint the same driver. The shared shell puts it
+ * on the `suit` swatch for the whole field; `buildCockpit` needs the same value
+ * as a plain colour for the articulated arms it draws for the one car the
+ * onboard camera is inside, and those two arms are in the same place.
+ */
+export function suitColour(bodyColour: number): number {
+  return shade(bodyColour, -0.4);
 }
 
 /**
@@ -620,6 +642,118 @@ function paintAirbox(p: Panel, spec: LiverySpec, flash: number): void {
   });
 }
 
+/**
+ * The driver's helmet.
+ *
+ * A helmet is one of the most recognisable objects in the sport and ours was a
+ * flat-coloured egg with a dark band across it. The roster is real now, so these
+ * belong to named people — and for exactly that reason NONE of them reproduces
+ * any real driver's design. What they do is generate a distinct, plausible
+ * livery per driver out of the team's own palette plus black and white, which is
+ * where a real helmet's colours mostly come from anyway.
+ *
+ * THE UNWRAP. `helmetUV` in DriverMesh projects the shell and the jaw through a
+ * spherical map about the head centre, so in this painter:
+ *
+ *   l = 0.5 is the FRONT of the helmet, l = 0 and l = 1 are both the back, and
+ *       the seam between them is where the shell's own seam already is;
+ *   g = 0 is the CROWN and g = 1 is under the chin, so the equator is g = 0.5.
+ *
+ * Everything converges as g goes to zero, which is what a projection does at a
+ * pole: a shape drawn across the whole of l at small g is a cap on the crown,
+ * and a vertical bar is a ray running down from it. Both of those are how real
+ * helmet graphics are actually laid out, which is why this unwrap is the right
+ * one rather than merely the cheap one.
+ */
+function paintHelmet(p: Panel, spec: LiverySpec, flash: number): void {
+  // Deterministic per driver, so a driver's helmet is his for the whole career
+  // and two team-mates never turn up in the same one.
+  let h = (spec.number * 2654435761) >>> 0;
+  for (let i = 0; i < spec.code.length; i++) {
+    h = (Math.imul(h, 31) + spec.code.charCodeAt(i)) >>> 0;
+  }
+  const pick = <T>(list: readonly T[], salt: number): T => list[(h >>> salt) % list.length];
+
+  const white = 0xeef1f6;
+  const black = 0x14171d;
+  const palette = [spec.colour, flash, white, black, shade(spec.colour, 0.45)];
+  const base = pick(palette, 0);
+  // The mark has to be legible ON the base, which two colours out of the same
+  // team palette very often are not.
+  let mark = pick(palette, 5);
+  if (Math.abs(luminance(mark) - luminance(base)) < 0.22) {
+    mark = luminance(base) > 0.5 ? black : white;
+  }
+  const third = luminance(base) > 0.5 ? black : white;
+  const ink = readable(base);
+
+  p.fill(css(base));
+
+  switch ((h >>> 11) % 6) {
+    case 0:
+      // Crown cap over a ring: the commonest arrangement there is.
+      p.band(0, 1, 0, 0.30, css(mark));
+      p.band(0, 1, 0.30, 0.335, css(third));
+      p.band(0, 1, 0.46, 0.53, css(third));
+      break;
+    case 1:
+      // Rays down from the crown.
+      for (let i = 0; i < 6; i++) {
+        p.poly([
+          [i / 6 + 0.012, 0], [(i + 1) / 6 - 0.012, 0],
+          [(i + 1) / 6 - 0.055, 0.62], [i / 6 + 0.055, 0.62],
+        ], css(i % 2 === 0 ? mark : third));
+      }
+      break;
+    case 2:
+      // A blaze over the front, pointing down between the eyes.
+      p.poly([[0.28, 0], [0.72, 0], [0.62, 0.44], [0.5, 0.60], [0.38, 0.44]], css(mark));
+      p.band(0, 1, 0.62, 0.665, css(third));
+      break;
+    case 3:
+      // Diagonal split, which on a projection is a wave: the boundary has to
+      // meet itself at the seam or the back of the helmet shows a step.
+      p.poly([
+        [0, 0.18], [0.25, 0.42], [0.5, 0.20], [0.75, 0.42], [1, 0.18], [1, 0], [0, 0],
+      ], css(mark));
+      p.band(0, 1, 0.70, 0.74, css(third));
+      break;
+    case 4:
+      // Quartered. Reads as four panels of two colours from any angle.
+      for (let i = 0; i < 4; i++) {
+        if (i % 2 === 0) p.band(i / 4, (i + 1) / 4, 0, 0.58, css(mark));
+      }
+      p.band(0, 1, 0.58, 0.62, css(third));
+      break;
+    default:
+      // A chequered band round the shell, over a coloured crown.
+      p.band(0, 1, 0, 0.26, css(mark));
+      for (let i = 0; i < 12; i++) {
+        p.band(i / 12, (i + 0.5) / 12, 0.34, 0.44, css(third));
+        p.band((i + 0.5) / 12, (i + 1) / 12, 0.44, 0.54, css(third));
+      }
+      break;
+  }
+
+  // The visor aperture's shadow. The glass and its surround are separate
+  // geometry, but the paint under them is what stops a hard-edged black band
+  // from reading as a decal stuck on a ball.
+  p.shadeBand(0.30, 0.70, 0.72, 0.62, 0.45);
+
+  // The race number, on both sides. After the design itself this is the thing
+  // that identifies a helmet at any distance, and it is on every real one.
+  const num = String(spec.number);
+  p.text(0.25, 0.50, num, { face: 'right', heightM: 0.075, colour: ink, weight: 800, slant: 0.14 });
+  p.text(0.75, 0.50, num, { face: 'right', heightM: 0.075, colour: ink, weight: 800, slant: 0.14 });
+  // And the code across the back, where a real one carries the driver's name.
+  p.text(0.06, 0.40, spec.code, {
+    face: 'right', heightM: 0.045, colour: ink, weight: 700, tracking: 0.06,
+  });
+  p.text(0.94, 0.40, spec.code, {
+    face: 'right', heightM: 0.045, colour: ink, weight: 700, tracking: 0.06,
+  });
+}
+
 /** Colour for each flat swatch, derived from the team's two colours. */
 function swatchColour(name: SwatchName, spec: LiverySpec, flash: number): number {
   switch (name) {
@@ -634,7 +768,7 @@ function swatchColour(name: SwatchName, spec: LiverySpec, flash: number): number
     // A helmet in a lifted version of the accent reads as the driver's own
     // rather than as a second piece of bodywork.
     case 'helmet': return shade(flash, luminance(flash) > 0.5 ? -0.3 : 0.4);
-    case 'suit': return shade(spec.colour, -0.4);
+    case 'suit': return suitColour(spec.colour);
     case 'glove': return 0x15181e;
     case 'dark': return 0x04050a;
   }
@@ -739,6 +873,10 @@ function buildSurfaceMap(size: number): THREE.Texture {
   pod.band(0, 1, 0.88, 1.0, CARBON);
   pod.band(0.0, 0.05, 0.0, 1.0, set(0.85, 0.02));
 
+  // A painted helmet shell: the same clear-coated paint as the bodywork, a
+  // little glossier because a helmet is polished and a sidepod is not.
+  new Panel(ctx, PANEL.helmet, size).fill(set(0.24, 0.02));
+
   const air = new Panel(ctx, PANEL.airbox, size);
   air.fill(PAINT);
   air.band(0, 1, 0.42, 0.58, DECK);
@@ -828,6 +966,7 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   paintBody(mk('body'), spec, flash, ink);
   paintPod(mk('pod'), spec, flash);
   paintAirbox(mk('airbox'), spec, flash);
+  paintHelmet(mk('helmet'), spec, flash);
 
   for (const name of SWATCH_ORDER) {
     new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash)));

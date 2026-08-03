@@ -66,6 +66,8 @@ interface Api {
     shootEye(f: number): Promise<string>;
     shootEyeAids(f: number): Promise<string>;
     shootKerb(f: number, side: -1 | 1): Promise<string>;
+    shootShoulder(f: number, side: -1 | 1): Promise<string>;
+    shootAcross(f: number, side: -1 | 1): Promise<string>;
     shootDebris(f: number, h: number): Promise<string>;
     focusFraction(): number;
     debrisFraction(): number;
@@ -130,7 +132,7 @@ async function main(): Promise<void> {
     await p2.bringToFront();
     await p2.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
     p2.setDefaultTimeout(240_000);
-    p2.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    p2.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
     p2.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
     await p2.goto(url, { waitUntil: 'load', timeout: 120_000 });
     await p2.waitForFunction('!!window.__audit', { timeout: 120_000 });
@@ -201,6 +203,16 @@ async function main(): Promise<void> {
       await take(`${tag} kerb out`, await page.evaluate(
         (a: [number, -1 | 1]) => (window as never as Api).__audit.shootKerb(a[0], a[1]),
         [k.fraction, -k.side as -1 | 1] as [number, -1 | 1]) as string);
+      // The OUTSIDE of the corner, which is where the ground beside the road is
+      // widest and where the second round of screenshots was taken. `k.side` is
+      // the apex side; the outside is the other one.
+      const out = -k.side as -1 | 1;
+      await take(`${tag} shoulder`, await page.evaluate(
+        (a: [number, -1 | 1]) => (window as never as Api).__audit.shootShoulder(a[0], a[1]),
+        [k.fraction, out] as [number, -1 | 1]) as string);
+      await take(`${tag} across`, await page.evaluate(
+        (a: [number, -1 | 1]) => (window as never as Api).__audit.shootAcross(a[0], a[1]),
+        [k.fraction, out] as [number, -1 | 1]) as string);
     }
 
     rows.push(

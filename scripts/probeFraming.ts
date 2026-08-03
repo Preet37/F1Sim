@@ -5,9 +5,10 @@ import {
   haloRadiusAt,
 } from '../src/render/CarMesh';
 import {
-  DRIVER_EYE_Y, EYE_Y, MIRROR_X, MIRROR_Y, MIRROR_Z, mirrorPaneCorners,
-  WHEEL_Y, WHEEL_Z,
+  DRIVER_EYE_Y, EYE_Y, MIRROR_GLASS_Z, MIRROR_TARGET_X, MIRROR_TARGET_Y, MIRROR_TARGET_Z,
+  MIRROR_X, MIRROR_Y, MIRROR_Z, mirrorPaneBasis, mirrorPaneCorners, WHEEL_Y, WHEEL_Z,
 } from '../src/render/CockpitMesh';
+import { MIRROR_PANES, type PaneRect } from '../src/ui/Hud';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CIRCUITS } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
@@ -70,40 +71,97 @@ interface Target {
   /** Fraction of the frame the halo may occlude, percent. */
   occludePct: [number, number];
   /**
-   * Which edge the rails are expected to leave the frame by.
+   * Which edge of the frame the rails are SUPPOSED to leave by.
    *
-   * 'bottom' for the two roll-hoop cameras, which stand behind and above the
-   * hoop and see it as an arc with both ends running down out of the picture;
-   * a rail crossing the SIDE edge halfway up the frame is the "black pipe
-   * running off the edge of the screen" complaint and is a fault.
-   *
-   * 'side' for the driver's eye, where the SAME fault would be the assertion
-   * inverted. The hoop passes BESIDE the driver's head and its mounts are
-   * behind him, so its rails necessarily leave through the sides — and a
-   * driver's-eye view whose rails ran out of the bottom of the frame would mean
-   * the camera had climbed back out onto the fairing.
+   * This is a per-mode fact and it used to be a global rule, because until now
+   * every mode this probe covered was outside the hoop looking at it. From
+   * outside, a rail crossing the SIDE edge halfway up the frame is the "black
+   * pipe running off the side of the screen" report and is a fault. From the
+   * driver's own eye the hoop is AROUND the head, its rear mounts are behind
+   * the eye entirely, and the rails necessarily pass out through the sides —
+   * that is what the reference onboard shows and what makes it read as a ring
+   * you are inside rather than an arch you are approaching. Asserting the
+   * cockpit's rule there would fail a correct picture.
    */
-  railsExit: 'bottom' | 'side';
+  railExit: 'bottom' | 'side';
   /**
-   * Where the halo's crown must sit relative to the HORIZON.
+   * Which side of the HORIZON the crown of the hoop falls on.
    *
-   * The single number that says which of the two families of onboard this is,
-   * and the one thing about the driver's-eye view that cannot be got by moving
-   * an existing camera. From a pod above the driver you look DOWN over the
-   * hoop and its crown is below the horizon; from the seat you look UP at it
-   * and it arcs across the sky. Crown percentages alone cannot express that,
-   * because both numbers move together when the pitch changes.
+   * The one number that says which FAMILY of onboard a mode belongs to, and the
+   * only assertion here that a driver's eye quietly slid back onto the roll
+   * hoop could not pass. From a pod above the driver you are looking DOWN over
+   * the hoop and its crown sits below the horizon; from the seat you are
+   * looking UP at it and it arcs across the sky. Both of those are what the
+   * view IS, not how it is tuned.
+   *
+   * `crownPct` cannot express it, and not by a small margin: the driver's band
+   * is 30-52 per cent and its horizon band is 40-54, so the two OVERLAP and a
+   * crown at 51 against a horizon at 44 satisfies both while being the wrong
+   * photograph. They also move together — raise the pitch and both slide down
+   * the frame — which is exactly how a camera can drift out of the car with
+   * every percentage in range.
    */
   crownVsHorizon: 'above' | 'below';
   /**
-   * Whether the whole of both mirror panes has to be inside the frame, and how
-   * much of each must be clear of the halo.
+   * How far off centre a mirror pane may land, percentage of frame WIDTH.
    *
-   * A MIRROR THAT IS CROPPED OR COVERED IS INDISTINGUISHABLE FROM A BROKEN ONE,
-   * which is the whole of the second half of the report this probe was extended
-   * for. Null where a mode is not held to it.
+   * A mirror outside the frame is not a mirror. This is checked in BOTH frame
+   * shapes, and the 16:9 one is the binding case: the vertical field of view is
+   * shared, so the narrower frame pushes anything measured across the picture
+   * further out.
    */
-  mirrorClearPct: number | null;
+  mirrorMaxXPct: number;
+  /**
+   * How wide one pane reads, percentage of frame width.
+   *
+   * The number that decides whether a mirror is legible, and the one nobody
+   * measured through four passes of "the mirrors don't work". A pane can be
+   * correctly aimed, correctly fed and completely useless.
+   *
+   * THESE BANDS MOVED, and it is worth being plain about why, because moving a
+   * probe's tolerance to admit the change you just made is usually how a probe
+   * stops being worth running. They were never measured off reference footage —
+   * reread the note under `driver` as it was written and it describes the
+   * geometry that existed at the time, not a photograph. What they actually
+   * were was a sanity band around a 74 x 32mm pane, and that pane was 74 x 32
+   * because the housing holding it tapered the wrong way (see the note on
+   * `PANE_W` in CockpitMesh). The glass is now 150 x 46 — 150 is the FIA's own
+   * minimum reflective width, Article 14.3 — so the pane reads about twice as
+   * wide from every eye, and a band that failed that is a band describing a
+   * defect. The lower bounds are unchanged in spirit and the upper ones are
+   * roughly doubled, which is exactly the geometric change and nothing more.
+   */
+  panePct: [number, number];
+  /**
+   * How much of a pane the hoop may lie across, percent.
+   *
+   * PER MODE, and the three numbers are a finding rather than a tuning. The
+   * rear leg of a halo genuinely crosses the mirror line on a real car, and how
+   * badly depends entirely on where the eye is: from the driver's own eye the
+   * leg passes twelve degrees ABOVE the pane and covers none of it; from the
+   * roll-hoop pod it covers a third; from the T-cam, 0.8m further back again,
+   * it covers seven tenths. That last one is a mirror that mostly is not there,
+   * and it is not fixable from this file — lowering the pane clears it for the
+   * T-cam and buries it for the cockpit, which is written up at MIRROR_Y. It is
+   * bounded here at what it currently is so that it cannot quietly get worse,
+   * and it is the reason the driver's eye is the view to look in.
+   */
+  paneBlockedMaxPct: number;
+  /**
+   * How far a mirror's reflected sightline may miss the piece of road it is
+   * aimed at, degrees.
+   *
+   * ONE PANE, THREE EYES. A mirror is a physical object with a single angle,
+   * and the reflection it hands you depends on where you look into it from —
+   * so the same glass points 18 degrees outboard for the driver and within a
+   * degree of straight back for the roll-hoop cameras. See `AIM_EYE_*` in
+   * CockpitMesh for the compromise and what the alternatives cost. The
+   * numbers below are what that compromise actually delivers; a mirror
+   * pointing 40 degrees off is showing you the barrier.
+   */
+  aimErrorMaxDeg: number;
+  /** Top of the steering wheel rim, percentage of frame height. */
+  wheelPct: [number, number];
 }
 
 /**
@@ -121,15 +179,63 @@ interface Target {
  * which had the crown reading at 15mm instead of 23.
  */
 const TARGETS: Record<string, Target> = {
+  // The DRIVER'S OWN EYE, and it is a different photograph from the two below
+  // rather than a tighter version of them. See `DRIVER_EYE_Y` in CockpitMesh.
+  //
+  // WHERE THESE COME FROM. The hoop's crown is 4.1 degrees above this eye and
+  // its rear mounts are 0.47m BEHIND it, so the ring passes overhead and leaves
+  // through the sides; the rim's top bar is 10.4 degrees below, so the wheel
+  // lies along the bottom third with the gloves under it; and the panes are
+  // 0.83m away instead of 1.52m, which is the whole reason this view is the one
+  // the mirrors are readable in. The bands below are wide enough to survive
+  // eleven circuits' worth of camber and crest and tight enough that the eye
+  // cannot drift back out of the car without failing.
+  //
+  // The rail is thick here and that is honest: the nearest point of the hoop
+  // passes 0.42m from the head, where 38mm of titanium subtends five degrees.
+  // A driver's-eye view in which the halo is a hairline is a driver's-eye view
+  // with the eye in the wrong place.
+  driver: {
+    crownPct: [30, 52],
+    thickPct: [2.0, 7.0],
+    thickMaxPct: 12.0,
+    horizonPct: [40, 54],
+    occludePct: [2.0, 16.0],
+    railExit: 'side',
+    crownVsHorizon: 'above',
+    // 99 means "the whole pane is inside the frame", because what is measured
+    // is where its CENTRE lands and 100 is the edge. On 16:9 that centre reaches
+    // 93 to 96 per cent of frame width — hard against the edge, which is where
+    // a real driver's-eye onboard carries a mirror, and as far in as it can
+    // come without either widening the lens past a fisheye or moving the
+    // mounting point, which is CarMesh's. On the 2.17:1 phone the report came
+    // from it is 85 to 89. The pane now reads 13 to 19.5 per cent of frame width
+    // across against the cockpit's 8 to 10 and the T-cam's 6 to 7.
+    mirrorMaxXPct: 99,
+    panePct: [10.0, 22.0],
+    // Zero on every circuit and both frames: from the driver's own eye the
+    // hoop's rear leg passes above the pane and covers none of it.
+    paneBlockedMaxPct: 25,
+    aimErrorMaxDeg: 22,
+    wheelPct: [52, 76],
+  },
   cockpit: {
     crownPct: [48, 70],
     thickPct: [1.4, 4.0],
     thickMaxPct: 6.0,
     horizonPct: [34, 50],
     occludePct: [1.0, 9.0],
-    railsExit: 'bottom',
+    railExit: 'bottom',
     crownVsHorizon: 'below',
-    mirrorClearPct: null,
+    mirrorMaxXPct: 96,
+    // Half the driver's, because the eye is nearly twice as far from the pane.
+    panePct: [6.0, 13.0],
+    // 60 before the pane grew. A taller pane drops further out from under the
+    // hoop's rear leg than the leg widens to follow it, so the same halo across
+    // the same mirror now covers 39 to 41 per cent instead of 57.
+    paneBlockedMaxPct: 50,
+    aimErrorMaxDeg: 12,
+    wheelPct: [62, 86],
   },
   'onboard-t': {
     crownPct: [50, 74],
@@ -137,55 +243,16 @@ const TARGETS: Record<string, Target> = {
     thickMaxPct: 5.0,
     horizonPct: [34, 50],
     occludePct: [1.0, 7.0],
-    railsExit: 'bottom',
+    railExit: 'bottom',
     crownVsHorizon: 'below',
-    mirrorClearPct: null,
-  },
-  /**
-   * The driver's own eyes.
-   *
-   * THESE ARE NOT THE MONOPOSTO NUMBERS AND MUST NOT BE. The reference set is
-   * 286 frames of one camera — a pod behind and above the helmet, with the
-   * crown of the driver's own helmet in the bottom of the picture — and it is
-   * the camera `cockpit` and `onboard-t` already reproduce. A driver cannot see
-   * his own helmet, so no frame in that set shows what this mode shows and no
-   * tolerance can be lifted from it.
-   *
-   * What CAN be lifted from it is the pair of things the reference proves about
-   * this car at this scale — where a horizon belongs in a racing frame, and how
-   * thick a halo rail reads when you are close to it — and those are the two
-   * bands below that overlap the reference at all. The rest is solved from the
-   * geometry:
-   *
-   *   halo crown       ABOVE the horizon, 18-34% of frame height. From an eye
-   *                    at 0.720 the crown at 0.812 is 8.4 degrees UP, and on a
-   *                    58-degree lens pitched 4 down the topmost cell of the
-   *                    hoop lands around a quarter of the way down the frame.
-   *   rail thickness   2.0-4.2% of frame width. The reference reads 3.4-3.8,
-   *                    and this is the FIRST camera in the project that gets
-   *                    there honestly rather than by inflating the part: the
-   *                    crown is 0.62m from the eye instead of 1.15m, so a 30mm
-   *                    blade subtends what a 30mm blade should.
-   *   horizon          40-48%. The reference carries it at 42.
-   *   occlusion        up to 16%, against the roll hoop's 9. More of the frame
-   *                    is halo because more of the halo is in the frame — from
-   *                    the seat the hoop wraps past both ears — and this is the
-   *                    honest cost of the view rather than a defect in it.
-   *   mirrors          both panes wholly in frame, and 92% of each clear of the
-   *                    halo. See `mirrorClearPct`: from the roll hoop the rear
-   *                    leg of the hoop lies across the pane and leaves 44-62%
-   *                    of it, and that is most of why the mirrors have never
-   *                    read as working.
-   */
-  driver: {
-    crownPct: [18, 34],
-    thickPct: [2.0, 4.2],
-    thickMaxPct: 6.5,
-    horizonPct: [40, 48],
-    occludePct: [1.0, 16.0],
-    railsExit: 'side',
-    crownVsHorizon: 'above',
-    mirrorClearPct: 92,
+    mirrorMaxXPct: 96,
+    panePct: [4.0, 9.0],
+    // 80 before, and it was the worst number on the car: from 0.8m further back
+    // than the cockpit eye the hoop lay across seven tenths of a pane that was
+    // mostly not there. 37 to 40 now.
+    paneBlockedMaxPct: 55,
+    aimErrorMaxDeg: 22,
+    wheelPct: [64, 90],
   },
 };
 
@@ -196,7 +263,7 @@ const FRAMES: [string, number, number][] = [
 ];
 
 /** The modes the halo is in shot for. */
-const MODES: CameraMode[] = ['cockpit', 'driver', 'onboard-t'];
+const MODES: CameraMode[] = ['driver', 'cockpit', 'onboard-t'];
 
 const config: SessionConfig = {
   kind: 'race',
@@ -247,15 +314,29 @@ function pillarSamples(n: number): { p: THREE.Vector3; rx: number; ry: number }[
   return out;
 }
 
-/** Car-local to world, for a car at (x, z) on the ground at `y` heading `h`. */
+/**
+ * Car-local to world, for a car at (x, z) on the ground at `y`.
+ *
+ * The car's ATTITUDE is part of this, not a refinement of it. `Renderer` rolls
+ * and pitches the car root by up to 3.4 and 2.9 degrees under load, and the
+ * onboard cameras roll and pitch with it — so a probe that projected the halo
+ * through a rolled camera onto a car it had assumed was level was measuring up
+ * to 5.7 degrees of relative roll that is not in the picture. At the edge of a
+ * wide frame that is several per cent of frame width, which is the difference
+ * between a mirror this reports as inside the frame and one it reports as
+ * outside it. The Euler order is the renderer's own, 'XYZ' on the car root.
+ */
 function toWorld(
   local: THREE.Vector3, x: number, y: number, z: number, h: number, out: THREE.Vector3,
+  roll = 0, pitch = 0,
 ): THREE.Vector3 {
+  out.copy(local);
+  if (roll !== 0 || pitch !== 0) out.applyEuler(new THREE.Euler(pitch, 0, roll, 'XYZ'));
   const s = Math.sin(h), c = Math.cos(h);
   return out.set(
-    x + local.x * c + local.z * s,
-    y + local.y,
-    z - local.x * s + local.z * c,
+    x + out.x * c + out.z * s,
+    y + out.y,
+    z - out.x * s + out.z * c,
   );
 }
 
@@ -291,13 +372,14 @@ function stamp(
   mask: Mask, cam: THREE.PerspectiveCamera,
   samples: { p: THREE.Vector3; rx: number; ry: number }[],
   carX: number, carY: number, carZ: number, heading: number,
+  roll: number, pitch: number,
 ): void {
   const world = new THREE.Vector3();
   const view = new THREE.Vector3();
   const tanY = Math.tan((cam.fov * Math.PI) / 360);
   const tanX = tanY * cam.aspect;
   for (const s of samples) {
-    toWorld(s.p, carX, carY, carZ, heading, world);
+    toWorld(s.p, carX, carY, carZ, heading, world, roll, pitch);
     view.copy(world).applyMatrix4(cam.matrixWorldInverse);
     const d = -view.z;
     if (d <= cam.near) continue;
@@ -330,9 +412,10 @@ function stamp(
 function project(
   cam: THREE.PerspectiveCamera, local: THREE.Vector3,
   carX: number, carY: number, carZ: number, heading: number,
+  roll: number, pitch: number,
 ): { xPct: number; yPct: number; inFrame: boolean } | null {
   const world = new THREE.Vector3();
-  toWorld(local, carX, carY, carZ, heading, world);
+  toWorld(local, carX, carY, carZ, heading, world, roll, pitch);
   const view = world.clone().applyMatrix4(cam.matrixWorldInverse);
   const d = -view.z;
   if (d <= cam.near) return null;
@@ -357,61 +440,6 @@ function horizonPct(cam: THREE.PerspectiveCamera): number {
   return (0.5 - ndcY * 0.5) * 100;
 }
 
-/**
- * How much of one mirror pane a driver can actually use.
- *
- * The pane's four corners are taken from `mirrorPaneCorners` — the same
- * function the renderer builds the mesh with, so the measurement and the
- * geometry cannot drift apart — projected, and the bounding box walked cell by
- * cell against the halo's mask.
- *
- * TWO SEPARATE WAYS A MIRROR FAILS, and they need separate numbers because
- * they have completely different fixes: it can be off the edge of the picture,
- * which is a field-of-view problem, or it can be behind a black tube, which is
- * a geometry problem. `inFrame` is the first and `clear` the second.
- *
- * The halo is treated as opaque wherever it covers the pane. That is
- * conservative — a rail BEHIND the pane would be occluded by it rather than the
- * other way round — but at both onboard eye points the leg that crosses the
- * mirror line is nearer to the eye than the mirror is, so at these eye points
- * it is also simply true.
- */
-function measureMirror(
-  hoop: Mask, pillar: Mask, cam: THREE.PerspectiveCamera,
-  corners: THREE.Vector3[],
-  carX: number, carY: number, carZ: number, heading: number,
-): { inFrame: boolean; clearPct: number; widthPct: number } {
-  const xs: number[] = [];
-  const ys: number[] = [];
-  let allInFrame = true;
-  for (const c of corners) {
-    const r = project(cam, c, carX, carY, carZ, heading);
-    if (!r) return { inFrame: false, clearPct: 0, widthPct: 0 };
-    if (!r.inFrame) allInFrame = false;
-    xs.push(r.xPct);
-    ys.push(r.yPct);
-  }
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = Math.min(...ys), y1 = Math.max(...ys);
-
-  const cx0 = Math.max(0, Math.floor((x0 / 100) * hoop.w));
-  const cx1 = Math.min(hoop.w - 1, Math.ceil((x1 / 100) * hoop.w));
-  const cy0 = Math.max(0, Math.floor((y0 / 100) * hoop.h));
-  const cy1 = Math.min(hoop.h - 1, Math.ceil((y1 / 100) * hoop.h));
-  let total = 0, covered = 0;
-  for (let x = cx0; x <= cx1; x++) {
-    for (let y = cy0; y <= cy1; y++) {
-      total++;
-      if (hoop.cells[y * hoop.w + x] || pillar.cells[y * pillar.w + x]) covered++;
-    }
-  }
-  return {
-    inFrame: allInFrame,
-    clearPct: total ? (100 * (total - covered)) / total : 0,
-    widthPct: x1 - x0,
-  };
-}
-
 interface Measured {
   crownPct: number;
   crownXPct: number;
@@ -424,37 +452,49 @@ interface Measured {
   horizon: number;
   helmet: string;
   wheel: string;
+  /** Top of the steering wheel rim, percentage of frame height. */
+  wheelPct: number;
   /** Named by which side of the SCREEN they land on; see `placeBehind`. */
   mirrorScreenL: string;
   mirrorScreenR: string;
-  /** Both panes wholly inside the frame. */
-  mirrorsInFrame: boolean;
-  /** The worse of the two panes: percentage of it not behind the halo. */
-  mirrorClearPct: number;
-  /** The worse of the two panes: how wide it reads, percentage of frame width. */
-  mirrorWidthPct: number;
+  /** The further of the two panes from the centre, percentage of frame width. */
+  mirrorOffPct: number;
+  /** How wide the wider pane reads, percentage of frame width. */
+  panePct: number;
+  /** How much of a pane the halo lies across, percent. */
+  paneBlockedPct: number;
+  /** Worst of the two panes' aim errors, degrees. See `aimErrorMaxDeg`. */
+  aimErrorDeg: number;
+  /**
+   * Each pane's bounding rectangle on screen, percentages of the frame.
+   *
+   * WHAT THE HUD IS LAID OUT AGAINST. `MIRROR_PANES` in `src/ui/Hud.ts`
+   * declares a keep-out rectangle per pane per camera, and the stylesheet
+   * moves the whole bottom band out of it — that is how a weather bug drawn
+   * across the left mirror got fixed. This is the other half of that contract:
+   * the geometry is re-measured every run and the declared rectangle has to
+   * still contain it, so nobody can move the mirror mount and silently leave
+   * the HUD standing on the glass.
+   *
+   * Measured through BOTH the live camera and the camera with the head put
+   * straight. A driver looking through a corner swings the outside pane most
+   * of the way to the frame edge; a keep-out that only covered the resting
+   * position would be honoured on the straights and broken everywhere else.
+   */
+  paneRects: PaneRect[];
 }
 
 function measure(
-  cam: THREE.PerspectiveCamera, w: number, h: number,
+  cam: THREE.PerspectiveCamera, rest: THREE.PerspectiveCamera, w: number, h: number,
   carX: number, carY: number, carZ: number, heading: number,
-  eye: 'pod' | 'driver',
-  /**
-   * The same camera with the driver's head turn undone, which is the state the
-   * mirrors — and ONLY the mirrors — are judged in. See `CameraDirector.headTurn`.
-   */
-  levelCam: THREE.PerspectiveCamera,
+  roll: number, pitch: number,
 ): Measured {
   const gw = GRID_W;
   const gh = Math.round((GRID_W * h) / w);
   const hoop = newMask(gw, gh);
-  stamp(hoop, cam, haloSamples(900), carX, carY, carZ, heading);
+  stamp(hoop, cam, haloSamples(900), carX, carY, carZ, heading, roll, pitch);
   const pillar = newMask(gw, gh);
-  stamp(pillar, cam, pillarSamples(200), carX, carY, carZ, heading);
-  const levelHoop = newMask(gw, gh);
-  stamp(levelHoop, levelCam, haloSamples(900), carX, carY, carZ, heading);
-  const levelPillar = newMask(gw, gh);
-  stamp(levelPillar, levelCam, pillarSamples(200), carX, carY, carZ, heading);
+  stamp(pillar, cam, pillarSamples(200), carX, carY, carZ, heading, roll, pitch);
 
   let filled = 0;
   for (let i = 0; i < hoop.cells.length; i++) if (hoop.cells[i]) filled++;
@@ -499,23 +539,12 @@ function measure(
       last = x;
     }
     // Leaving through the side is only a fault if it happens ABOVE the bottom
-    // fifth of the frame. A rail that clips the very corner on the way out is
+    // eighth of the frame. A rail that clips the very corner on the way out is
     // still a rail going down and out of the picture, which is what the
     // reference does; one that crosses the side edge halfway up the frame is
     // the "black pipe running off the edge of the screen" being complained
     // about, and the two have to be told apart.
-    //
-    // A FIFTH, NOT AN EIGHTH, and the change came with the settling loop below
-    // rather than with any change to the car. Reading the rig after twenty
-    // frames caught the cockpit lens four degrees narrower than it ever is in
-    // play; reading it settled opens it to where it belongs and carries the
-    // rails out to the frame edge two per cent lower, at 82 to 88 per cent of
-    // frame height. That is still a rail on its way out through the bottom
-    // corner — the thing this deliberately permits — and the old threshold
-    // called it a pipe purely because it had been calibrated against a lens
-    // nobody sees. The fault it exists to catch had rails leaving at 50 to 60
-    // per cent and is nowhere near either number.
-    const atSide = (last <= 1 || last >= gw - 2) && hoop.bottom[last] < gh * 0.80;
+    const atSide = (last <= 1 || last >= gw - 2) && hoop.bottom[last] < gh * 0.88;
     const atCorner = last <= 1 || last >= gw - 2;
     const atBottom = hoop.bottom[last] >= gh - 2;
     const where = atSide ? 'SIDE' : atCorner ? 'corner' : atBottom ? 'bottom' : 'stops';
@@ -526,20 +555,102 @@ function measure(
   for (let x = 0; x < gw; x++) if (pillar.top[x] >= 0) pw++;
 
   const at = (v: THREE.Vector3): string => {
-    const r = project(cam, v, carX, carY, carZ, heading);
+    const r = project(cam, v, carX, carY, carZ, heading, roll, pitch);
     if (!r) return 'behind';
     return `${r.xPct.toFixed(0)},${r.yPct.toFixed(0)}${r.inFrame ? '' : '*'}`;
   };
 
-  const mirrors = ([1, -1] as const).map((side) => measureMirror(
-    levelHoop, levelPillar, levelCam, mirrorPaneCorners(side, eye),
-    carX, carY, carZ, heading,
-  ));
+  // --- The mirrors, as areas rather than as points -------------------------
+  //
+  // The pane's four corners, from the same function the mesh is built with, so
+  // this cannot describe a mirror the game does not have. What comes out is the
+  // only pair of numbers that decides whether a mirror is usable: how wide it
+  // reads, and how much of it the hoop is lying across.
+  let panePct = 0;
+  let mirrorOffPct = 0;
+  let paneBlockedPct = 0;
+  const paneRects: PaneRect[] = [];
+  for (const side of [1, -1] as const) {
+    const corners = mirrorPaneCorners(side);
+    // Where it lands is measured with the head STRAIGHT — see `headTurn` — and
+    // how big it reads and how much of it the hoop covers are measured through
+    // the live camera, because those two do not depend on where the head is
+    // pointing and the occlusion very much does depend on the real geometry.
+    const restPts = corners.map((c) => project(rest, c, carX, carY, carZ, heading, roll, pitch));
+    const pts = corners.map((c) => project(cam, c, carX, carY, carZ, heading, roll, pitch));
+    if (pts.some((p) => p === null) || restPts.some((p) => p === null)) continue;
+    const xs = pts.map((p) => p!.xPct);
+    const ys = pts.map((p) => p!.yPct);
+    const wide = Math.max(...xs) - Math.min(...xs);
+    if (wide > panePct) panePct = wide;
+    const restXs = restPts.map((p) => p!.xPct);
+    const restYs = restPts.map((p) => p!.yPct);
+    const cx = (Math.max(...restXs) + Math.min(...restXs)) * 0.5;
+    mirrorOffPct = Math.max(mirrorOffPct, Math.max(cx, 100 - cx));
+    // The union of the two, which is the box the HUD has to stay out of.
+    paneRects.push({
+      x0: Math.min(...xs, ...restXs),
+      y0: Math.min(...ys, ...restYs),
+      x1: Math.max(...xs, ...restXs),
+      y1: Math.max(...ys, ...restYs),
+    });
+
+    // How much of the pane's bounding box the hoop's mask covers. Coarse — it
+    // is a rectangle against a rasterised silhouette — but it is the same
+    // question the eye asks, and a pane that is half black is half a mirror.
+    const gx0 = Math.max(0, Math.floor((Math.min(...xs) / 100) * gw));
+    const gx1 = Math.min(gw - 1, Math.ceil((Math.max(...xs) / 100) * gw));
+    const gy0 = Math.max(0, Math.floor((Math.min(...ys) / 100) * gh));
+    const gy1 = Math.min(gh - 1, Math.ceil((Math.max(...ys) / 100) * gh));
+    let cells = 0, blocked = 0;
+    for (let x = gx0; x <= gx1; x++) {
+      for (let y = gy0; y <= gy1; y++) {
+        cells++;
+        if (hoop.cells[y * gw + x]) blocked++;
+      }
+    }
+    if (cells > 0) paneBlockedPct = Math.max(paneBlockedPct, (100 * blocked) / cells);
+  }
+
+  // --- Where the mirrors actually point, from THIS eye ---------------------
+  //
+  // The reflected sightline, worked in the car's own frame: the camera's world
+  // position taken back to car-local, a ray from it to the pane, bounced about
+  // the pane's normal, and the angle between that and the direction to the
+  // piece of road the mirror is aimed at. This is what "the mirror works"
+  // means before legibility gets a look in.
+  let aimErrorDeg = 0;
+  {
+    const local = new THREE.Vector3(
+      cam.position.x - carX, cam.position.y - carY, cam.position.z - carZ,
+    );
+    const s2 = Math.sin(-heading), c2 = Math.cos(-heading);
+    const eyeLocal = new THREE.Vector3(
+      local.x * c2 + local.z * s2, local.y, -local.x * s2 + local.z * c2,
+    );
+    if (roll !== 0 || pitch !== 0) {
+      eyeLocal.applyEuler(new THREE.Euler(-pitch, 0, -roll, 'ZYX'));
+    }
+    for (const side of [1, -1] as const) {
+      const b = mirrorPaneBasis(side);
+      const d = b.position.clone().sub(eyeLocal).normalize();
+      d.addScaledVector(b.normal, -2 * d.dot(b.normal));
+      const want = new THREE.Vector3(
+        side * MIRROR_TARGET_X - side * MIRROR_X,
+        MIRROR_TARGET_Y - MIRROR_Y,
+        MIRROR_TARGET_Z - MIRROR_GLASS_Z,
+      ).normalize();
+      const deg = (Math.acos(Math.max(-1, Math.min(1, d.dot(want)))) * 180) / Math.PI;
+      if (deg > aimErrorDeg) aimErrorDeg = deg;
+    }
+  }
+
+  const rimTop = project(
+    cam, new THREE.Vector3(0, WHEEL_Y + 0.100, WHEEL_Z), carX, carY, carZ, heading,
+    roll, pitch,
+  );
 
   return {
-    mirrorsInFrame: mirrors.every((m) => m.inFrame),
-    mirrorClearPct: Math.min(...mirrors.map((m) => m.clearPct)),
-    mirrorWidthPct: Math.min(...mirrors.map((m) => m.widthPct)),
     crownPct: (100 * crownY) / gh,
     crownXPct: (100 * crownX) / gw,
     thickPct: (100 * thick) / gw,
@@ -551,26 +662,35 @@ function measure(
     // The helmet's crown, from DriverMesh: centre 0.672, scaled radius 0.156.
     helmet: at(new THREE.Vector3(0, 0.828, 0)),
     wheel: at(new THREE.Vector3(0, WHEEL_Y + 0.100, WHEEL_Z)),
+    wheelPct: rimTop ? rimTop.yPct : NaN,
     mirrorScreenL: at(new THREE.Vector3(MIRROR_X, MIRROR_Y, MIRROR_Z)),
     mirrorScreenR: at(new THREE.Vector3(-MIRROR_X, MIRROR_Y, MIRROR_Z)),
+    mirrorOffPct,
+    panePct,
+    paneBlockedPct,
+    aimErrorDeg,
+    paneRects,
   };
 }
 
 const failures: string[] = [];
 
 console.log(
-  'Where the halo lands in the frame, measured off the geometry the mesh is built from.\n' +
-  `Roll-hoop eye ${EYE_Y.toFixed(3)}m, driver's eye ${DRIVER_EYE_Y.toFixed(3)}m. Reference\n` +
-  '(Monoposto, 1280x589): crown 56% of frame height, rails leave through the BOTTOM at\n' +
-  '16-20% and 80-84% of width, rail 3.4-3.8% of frame width thick, horizon 42%, helmet\n' +
-  "crown 82%. The reference is the ROLL-HOOP camera; the driver's eye has no reference\n" +
-  'frame because no camera in that set is behind a visor. See TARGETS.driver.\n',
+  'Where the halo lands in the frame, measured off the geometry the mesh is built from,\n' +
+  'and how big the mirrors read, measured off the panes the mesh is built from.\n' +
+  `Roll-hoop eye ${EYE_Y.toFixed(3)}m; driver's eye ${DRIVER_EYE_Y.toFixed(3)}m.\n` +
+  'Reference (Monoposto, 1280x589) for the ROLL-HOOP onboards: crown 56% of frame\n' +
+  'height, rails leave through the BOTTOM at 16-20% and 80-84% of width, rail 3.4-3.8%\n' +
+  'of frame width thick, horizon 42%, helmet crown 82%.\n' +
+  "For the DRIVER's eye the hoop is around the head rather than in front of it, so the\n" +
+  'rails are required to leave through the SIDES and the crown sits well above centre.\n',
 );
 console.log(
   'circuit'.padEnd(13) + 'frame'.padEnd(7) + 'mode'.padEnd(11) +
   'crown'.padStart(7) + 'thick'.padStart(7) + 'occl'.padStart(6) +
   'horiz'.padStart(7) + '  rail exits'.padEnd(34) + 'helmet'.padStart(9) + 'wheel'.padStart(9) +
-  'mirror<'.padStart(9) + 'mirror>'.padStart(9) + 'mirW'.padStart(7) + 'mirClr'.padStart(8),
+  'mirror<'.padStart(9) + 'mirror>'.padStart(9) + 'pane'.padStart(7) + 'over'.padStart(6) +
+  'edge'.padStart(7) + 'aim'.padStart(6),
 );
 
 for (const def of CIRCUITS) {
@@ -583,38 +703,53 @@ for (const def of CIRCUITS) {
     for (const mode of MODES) {
       const dir = new CameraDirector(w / h);
       dir.setMode(mode);
-      // Let the rig SETTLE before it is read. Two seconds, not a third of one.
+      // Let the rig SETTLE before it is read. TWO SECONDS, NOT A THIRD OF ONE,
+      // and this is a correction to the instrument rather than a tolerance.
       //
-      // Twenty frames was measuring the transition rather than the camera, and
-      // it hid the fault it was written to catch. Every rig here starts at the
-      // chase camera's 39-degree lens and damps toward its own at a rate of 4,
-      // so after twenty frames it has covered 74 per cent of the distance — for
-      // the two roll-hoop cameras that is a degree or two and invisible, and
-      // for the driver's eye at 58 it is four degrees of lens still to come.
-      // The mirrors sit at the very edge of that frame, and four degrees is the
-      // difference between the pane being inside it and being cropped by it.
-      // Both answers were measurements of the same geometry; only one of them
-      // was a measurement of what a player sees.
-      for (let i = 0; i < 120; i++) dir.update(1 / 60, car, engine.track, engine.world);
+      // Every mode in `CameraDirector` starts on the chase camera's 39-degree
+      // lens and damps exponentially toward its own, so a rig read after twenty
+      // frames is read MID-TRANSITION. Measured here, at Monaco, by printing
+      // `camera.fov` at the moment of measurement (`FRAMING_FOV=1`):
+      //
+      //                 20 frames   120 frames   300 frames
+      //   driver          56.50       63.65        63.65
+      //   cockpit         38.96       40.07        40.07
+      //   onboard-t       42.78       45.49        45.49
+      //
+      // The driver's eye was being measured SEVEN DEGREES narrow, and 120
+      // frames is converged to two decimal places — 300 gives the same number,
+      // so this is the resting lens and not a longer transient. A third of a
+      // second is a state the player sees for a third of a second after
+      // pressing the camera button; every other second of play is the right
+      // column. Reading the left column measured a photograph nobody takes.
+      //
+      // It makes this probe STRICTER, not looser: it is what turns up the
+      // Suzuka cockpit rail leaving through the side at 87 per cent of frame
+      // height, and the mirror keep-out rectangles being described against a
+      // lens that is one to seven degrees narrow than the one in play.
+      //
+      // `FRAMING_SETTLE` overrides it for diagnosis only. Nothing may be quoted
+      // from a run that sets it.
+      const SETTLE = Number(process.env.FRAMING_SETTLE ?? 120);
+      for (let i = 0; i < SETTLE; i++) dir.update(1 / 60, car, engine.track, engine.world);
       const cam = dir.camera;
+      if (process.env.FRAMING_FOV) console.log(`FOV ${frameName} ${mode} ${cam.fov.toFixed(2)}`);
       cam.updateMatrixWorld(true);
       cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
 
-      // The same camera with the head straight, for the mirrors. The onboard
-      // rigs compose their orientation as a YXZ Euler whose y term is
-      // `heading + headYaw + PI`, so undoing the turn is one subtraction and
-      // does not have to guess at anything.
-      const levelCam = cam.clone();
-      levelCam.rotation.y -= dir.headTurn;
-      levelCam.updateMatrixWorld(true);
-      levelCam.matrixWorldInverse.copy(levelCam.matrixWorld).invert();
+      // The same camera with the head put straight, for the resting framing.
+      const rest = cam.clone();
+      rest.rotation.y -= dir.headTurn;
+      rest.updateMatrixWorld(true);
+      rest.matrixWorldInverse.copy(rest.matrixWorld).invert();
 
-      const TARGET = TARGETS[mode];
       const m = measure(
-        cam, w, h, car.physics.position.x, carY, car.physics.position.y, car.physics.heading,
-        mode === 'driver' ? 'driver' : 'pod', levelCam,
+        cam, rest, w, h,
+        car.physics.position.x, carY, car.physics.position.y, car.physics.heading,
+        dir.chassisRoll, dir.chassisPitch,
       );
 
+      const TARGET = TARGETS[mode];
       const bad: string[] = [];
       if (m.crownPct < TARGET.crownPct[0] || m.crownPct > TARGET.crownPct[1]) {
         bad.push(`crown at ${m.crownPct.toFixed(0)}% of frame height`);
@@ -631,41 +766,80 @@ for (const def of CIRCUITS) {
       if (m.horizon < TARGET.horizonPct[0] || m.horizon > TARGET.horizonPct[1]) {
         bad.push(`horizon at ${m.horizon.toFixed(0)}% of frame height`);
       }
-      if (TARGET.railsExit === 'bottom') {
+      // Which side of the horizon the crown falls on. See `crownVsHorizon`:
+      // this is the assertion an eye that has climbed back out onto the roll
+      // hoop cannot pass, and the one the crown and horizon bands cannot make
+      // between them because they overlap.
+      //
+      // Both are percentages DOWN the frame, so a smaller number is higher up.
+      const crownAbove = m.crownPct < m.horizon;
+      if (TARGET.crownVsHorizon === 'above' && !crownAbove) {
+        bad.push(
+          `the halo's crown is BELOW the horizon (crown ${m.crownPct.toFixed(0)}%, horizon ` +
+          `${m.horizon.toFixed(0)}%) — this eye is looking down over the hoop, not up at it`,
+        );
+      } else if (TARGET.crownVsHorizon === 'below' && crownAbove) {
+        bad.push(
+          `the halo's crown is ABOVE the horizon (crown ${m.crownPct.toFixed(0)}%, horizon ` +
+          `${m.horizon.toFixed(0)}%) — this camera has dropped inside the hoop`,
+        );
+      }
+      // Rails leaving by the side are the fault in the two modes that look AT
+      // the hoop and the requirement in the one that sits inside it.
+      if (TARGET.railExit === 'bottom') {
         for (const e of m.exits) {
           if (e.startsWith('SIDE')) bad.push(`a rail runs off the SIDE of the frame (${e})`);
         }
-      } else {
-        // The inverse assertion. See `Target.railsExit`: from the driver's seat
-        // the hoop passes beside his head, so a rail running out of the BOTTOM
-        // of the frame means the eye has climbed back onto the fairing.
-        for (const e of m.exits) {
-          if (e.startsWith('bottom')) {
-            bad.push(`a rail runs off the BOTTOM of the frame from the driver's eye (${e})`);
+      } else if (!m.exits.some((e) => e.startsWith('SIDE') || e.startsWith('corner'))) {
+        bad.push(
+          `neither rail reaches the side of the frame (${m.exits.join(' ')}) — the hoop is ` +
+          'in front of the eye rather than around it',
+        );
+      }
+
+      // --- The mirrors --------------------------------------------------
+      if (m.mirrorOffPct > TARGET.mirrorMaxXPct) {
+        bad.push(`a mirror lands at ${m.mirrorOffPct.toFixed(0)}% of frame width`);
+      }
+      if (m.panePct < TARGET.panePct[0] || m.panePct > TARGET.panePct[1]) {
+        bad.push(`a mirror pane reads ${m.panePct.toFixed(1)}% of frame width across`);
+      }
+      if (m.paneBlockedPct > TARGET.paneBlockedMaxPct) {
+        bad.push(`the halo lies across ${m.paneBlockedPct.toFixed(0)}% of a mirror`);
+      }
+      if (m.aimErrorDeg > TARGET.aimErrorMaxDeg) {
+        bad.push(`a mirror points ${m.aimErrorDeg.toFixed(0)} degrees off the road it is aimed at`);
+      }
+      // --- The keep-out the HUD is laid out against ----------------------
+      //
+      // Each measured pane must still sit inside the rectangle declared for it
+      // in `MIRROR_PANES`. A pane that has escaped is a pane the weather bug
+      // or the tyre panel is about to be drawn across — which is the fault
+      // this pair of checks exists to prevent, and which was live in the game
+      // on the day the mirrors were first made to work.
+      const declared = MIRROR_PANES[mode as keyof typeof MIRROR_PANES] as
+        readonly PaneRect[] | undefined;
+      if (declared) {
+        for (const r of m.paneRects) {
+          const side = r.x0 + r.x1 < 100 ? 'left' : 'right';
+          const d = declared.find((k) => (k.x0 + k.x1 < 100) === (r.x0 + r.x1 < 100));
+          if (!d) continue;
+          // Clamped, because a pane may legitimately leave the frame at full
+          // lock and a rectangle cannot follow it off the edge.
+          const x0 = Math.max(0, r.x0);
+          const x1 = Math.min(100, r.x1);
+          if (x0 < d.x0 || x1 > d.x1 || r.y0 < d.y0 || r.y1 > d.y1) {
+            bad.push(
+              `the ${side} mirror pane [${x0.toFixed(1)},${r.y0.toFixed(1)} ` +
+              `${x1.toFixed(1)},${r.y1.toFixed(1)}] has escaped the keep-out ` +
+              `MIRROR_PANES declares for it [${d.x0},${d.y0} ${d.x1},${d.y1}] — ` +
+              'the HUD is laid out against that rectangle',
+            );
           }
         }
       }
-      if (TARGET.crownVsHorizon === 'above' && m.crownPct >= m.horizon) {
-        bad.push(
-          `the halo crowns at ${m.crownPct.toFixed(0)}% and the horizon is at ` +
-          `${m.horizon.toFixed(0)}%: the hoop is not arcing over the horizon`,
-        );
-      }
-      if (TARGET.crownVsHorizon === 'below' && m.crownPct <= m.horizon) {
-        bad.push(
-          `the halo crowns at ${m.crownPct.toFixed(0)}% above the horizon at ` +
-          `${m.horizon.toFixed(0)}%: the camera is under the hoop, not over it`,
-        );
-      }
-      if (TARGET.mirrorClearPct !== null) {
-        if (!m.mirrorsInFrame) {
-          bad.push('a mirror pane is cropped by the edge of the frame');
-        }
-        if (m.mirrorClearPct < TARGET.mirrorClearPct) {
-          bad.push(
-            `only ${m.mirrorClearPct.toFixed(0)}% of a mirror pane is clear of the halo`,
-          );
-        }
+      if (m.wheelPct < TARGET.wheelPct[0] || m.wheelPct > TARGET.wheelPct[1]) {
+        bad.push(`the wheel rim tops out at ${m.wheelPct.toFixed(0)}% of frame height`);
       }
 
       console.log(
@@ -676,10 +850,10 @@ for (const def of CIRCUITS) {
         `${m.occludePct.toFixed(1)}%`.padStart(6) +
         `${m.horizon.toFixed(0)}%`.padStart(7) + '  ' +
         m.exits.join(' ').padEnd(32) +
-        m.helmet.padStart(9) + m.wheel.padStart(9) +
-        m.mirrorScreenL.padStart(9) + m.mirrorScreenR.padStart(9) +
-        `${m.mirrorWidthPct.toFixed(1)}%`.padStart(7) +
-        `${m.mirrorClearPct.toFixed(0)}%${m.mirrorsInFrame ? '' : '!'}`.padStart(8) +
+        m.helmet.padStart(9) + m.wheel.padStart(9) + m.mirrorScreenL.padStart(9) + m.mirrorScreenR.padStart(9) +
+        `${m.panePct.toFixed(1)}%`.padStart(7) + `${m.paneBlockedPct.toFixed(0)}%`.padStart(6) +
+        `${m.mirrorOffPct.toFixed(0)}%`.padStart(7) +
+        `${m.aimErrorDeg.toFixed(0)}d`.padStart(6) +
         (bad.length ? '  <-- ' + bad.join('; ') : ''),
       );
       for (const b of bad) failures.push(`${def.id} ${frameName} ${mode}: ${b}`);

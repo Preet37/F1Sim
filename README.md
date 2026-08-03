@@ -301,6 +301,8 @@ its fix site.
 | The ground beside the road swept at the narrower of each span's two ends | The shoulder is a per-node width allowed to change 0.6m between neighbours, so its outer edge was a staircase and nothing joined the treads. Between the vertical skirts under two neighbouring spans was an open slot 0.6m wide and as deep as the circuit is high — a hole at the apex you could see through, at tight corners and nowhere else. `probe:shoulders` finds 3357 such steps on the calendar and puts the mean radius where the shoulder runs out entirely at 20-26m against a lap mean in the thousands |
 | Debris removed only when the car it came off was *recovered* | A car that loses a sidepod and keeps racing is never recovered, so its bodywork stayed on the circuit until the session ended. Six contact events in two laps left six permanent piles of flat, saturated team colour on the racing line |
 | Automatic kerbing at every radius under 400m | 400m is a curve these cars take flat. `probe:kerbs` measured 42.6% of the average lap kerbed on one side or the other, 59% at Monaco — a lap that is more kerb than road |
+| The world beyond the circuit was one flat quad at y = -0.62, and the circuit climbs to 58m | Everything beside the road is drawn at the ROAD's height, and a vertical skirt closed the gap down to that quad — so the skirt was as tall as the circuit was elevated, all the way round. `probe:shoulders` measured a mean face of 4.1m at Bahrain, 27.2m at Spa and a worst of 58.6m. What it looks like is a corner on a walled plateau with the ground several car-heights below, and it shows at corners because that is where the barrier stands far enough back to see past it. The ground is a height field driven by the circuit's own elevation now; the mean face is 0.97m on all eleven circuits |
+| Banking applied as `-lat * tan(bank)` with no limit on `lat` | `lat` runs out to the barrier. At Zandvoort's two 18-degree corners the ground beside the road is 16.8m wide, so its outer edge was drawn 7.4m above the racing surface on one side and 7.4m below on the other — a corner cut into a hillside, with the skirt under the raised side falling from 7.4m up. The camber runs out over five metres of shoulder now, so the worst is 1.6m |
 
 ---
 
@@ -386,7 +388,8 @@ src/
                 GPU particles, skid marks, surface detail, post-processing chain
   input/        unified keyboard / gamepad / touch / tilt
   ui/           telemetry HUD, wheel display, damage panel, sector board, paddock
-  career/       F3→F1 ladder, JSON narrative events, versioned saves
+  career/       three championships, the ladder, the transfer market, versioned saves
+  data/roster/  the real 2026 grids — the only module that names anything real
 scripts/        validation and calibration harnesses
 ```
 
@@ -396,7 +399,24 @@ is the only practical way to test whether the AI can actually race.
 
 ## Licence
 
-Code is provided as-is for personal use. Teams and drivers are original work and
-no Formula 1 intellectual property is included. Circuit centreline traces in
+Code is provided as-is for personal use.
+
+**Names, not marks.** Career mode uses the real 2026 Formula 1, Formula 2 and
+Formula 3 entry lists — team names, driver names, car numbers, nationalities and
+power-unit allocations. It reproduces **no** trademarked material: no team logo,
+badge or wordmark, no sponsor artwork, no driver likeness. Teams are identified
+the way a broadcast timing screen identifies them, by their real colours and by
+the geometric team marks this project generates. Sponsors on the cars are
+fictional and stay fictional, because a wordmark painted down a sidepod is
+reproduction rather than reference.
+
+All of it lives in `src/data/roster/`, behind generic `Team`, `Driver` and
+`PowerUnit` interfaces. Nothing else in the codebase names a real team or driver,
+so replacing the whole roster with a fictional grid — the original ten invented
+teams are still in `src/data/teams.ts` and are what Quick Race and every
+validation harness measure — is one module and one import. Driver ability ratings
+are this project's own estimates and come from no source.
+
+Circuit centreline traces in
 `data/circuits/` are vendored from bacinger/f1-circuits under the MIT licence —
 see `data/circuits/LICENSE-f1-circuits.md`.

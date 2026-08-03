@@ -218,6 +218,17 @@ export class InputController {
   /** Set for one frame when the player asks to pit. */
   pitRequestToggled = false;
   /**
+   * The pit sheet's three controls, each set for one frame.
+   *
+   * They live here rather than on the panel because a panel that listens to the
+   * keyboard itself is a panel that only works on a keyboard. Everything the
+   * car obeys already arrives through this class — profile-mapped gamepad,
+   * wheel, keyboard, touch — and the pit sheet is a control of the car.
+   */
+  pitTyreCyclePressed = false;
+  pitRepairTogglePressed = false;
+  pitConfirmPressed = false;
+  /**
    * Set for one frame on a paddle shift.
    *
    * Deliberately NOT turned into a `gearRequest` here. A paddle asks for "one
@@ -390,6 +401,21 @@ export class InputController {
   // =========================================================================
 
   private onKeyDown(e: KeyboardEvent): void {
+    // A key typed into a text field belongs to the text field.
+    //
+    // These listeners are on `window`, so they see every keystroke in the
+    // document including the ones aimed at an input. `GAME_KEYS` covers w, a,
+    // s, d, b, h, c, p, e, l, t, f, the digits, space and Enter — so with no
+    // guard here, typing a driver's name into the career screen silently lost
+    // more than half its letters, could not contain a space, and could not be
+    // submitted with Enter. The player sees some keys work and others do
+    // nothing, which is exactly how it was reported.
+    //
+    // Released as well as pressed: bailing out of keydown alone would leave a
+    // key stuck in `this.keys` if focus moved to a field mid-press, and the car
+    // would drive itself. `onKeyUp` runs unconditionally for the same reason.
+    if (isTextEntry(e.target)) return;
+
     const k = e.key.toLowerCase();
     // Only swallow keys the game actually uses, so browser shortcuts still work.
     if (GAME_KEYS.has(k) || GAME_KEYS.has(e.code)) e.preventDefault();
@@ -405,6 +431,12 @@ export class InputController {
       case 'p': case 'escape': this.pausePressed = true; break;
       case 'e': this.cycleErsMode(); break;
       case 'l': this.pitRequestToggled = true; break;
+      // The pit sheet, on three keys next to each other under the left hand,
+      // none of which does anything while the sheet is down. T for tyre, F for
+      // the front wing, Enter to send it.
+      case 't': this.pitTyreCyclePressed = true; break;
+      case 'f': this.pitRepairTogglePressed = true; break;
+      case 'enter': this.pitConfirmPressed = true; break;
       default: break;
     }
     // Manual gears on the number keys, for players who want them.
@@ -589,6 +621,9 @@ export class InputController {
           case 'camera': if (pressed) this.cameraCyclePressed = true; break;
           case 'ers': if (pressed) this.cycleErsMode(); break;
           case 'pit': if (pressed) this.pitRequestToggled = true; break;
+          case 'pitTyre': if (pressed) this.pitTyreCyclePressed = true; break;
+          case 'pitRepair': if (pressed) this.pitRepairTogglePressed = true; break;
+          case 'pitConfirm': if (pressed) this.pitConfirmPressed = true; break;
           case 'pause': if (pressed) this.pausePressed = true; break;
           case 'shiftUp': if (pressed) this.shiftUpPressed = true; break;
           case 'shiftDown': if (pressed) this.shiftDownPressed = true; break;
@@ -783,6 +818,9 @@ export class InputController {
     this.racingLineToggled = false;
     this.pausePressed = false;
     this.pitRequestToggled = false;
+    this.pitTyreCyclePressed = false;
+    this.pitRepairTogglePressed = false;
+    this.pitConfirmPressed = false;
     this.shiftUpPressed = false;
     this.shiftDownPressed = false;
   }
@@ -871,8 +909,67 @@ function stampOf(e: { timeStamp?: number }, fallback: () => number): number {
 }
 
 /** Keys the game consumes, so everything else reaches the browser. */
+/**
+ * Is this event aimed at somewhere the player is typing?
+ *
+ * `contentEditable` is checked as well as the tag, because an inline-edit field
+ * has no distinguishing tag name, and `<select>` counts too — it consumes
+ * letter keys to jump between options.
+ *
+ * Duck-typed rather than `instanceof HTMLElement`. This module is driven
+ * headlessly by `probe:framerate` and `validate:gamepad` against a DOM stub
+ * where the `HTMLElement` global does not exist, so an `instanceof` test throws
+ * a `ReferenceError` on the first synthetic keystroke and takes the probe with
+ * it. Reading the two fields we actually care about works in both worlds.
+ *
+ * Deliberately NOT keyed off `document.activeElement`: the event's own target
+ * is the element the browser is about to deliver the character to, and reading
+ * global focus instead would be a second source of truth that can disagree with
+ * it mid focus change.
+ */
+function isTextEntry(target: EventTarget | null): boolean {
+  const el = target as { tagName?: unknown; isContentEditable?: unknown } | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  const tag = el.tagName.toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    || el.isContentEditable === true;
+}
+
 const GAME_KEYS = new Set([
   'w', 'a', 's', 'd', 'b', 'h', ' ', 'c', 'p', 'e', 'l', 'shift', 'escape',
+  't', 'f', 'enter',
   'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
   '0', '1', '2', '3', '4', '5', '6', '7', '8',
 ]);
+
+/**
+ * What to print on the pit sheet so the controls are discoverable.
+ *
+ * Keyed off the device the player last actually used, because a hint that says
+ * `T` to somebody holding a controller is a hint that costs them the stop. The
+ * gamepad's labels come out of the live profile rather than out of a table, so
+ * a rebound button reads as the button it is now on.
+ */
+export interface PitBindingHints {
+  tyre: string;
+  repair: string;
+  confirm: string;
+  cancel: string;
+}
+
+export function pitBindingHints(
+  source: InputSource, describe: (a: ButtonAction) => string,
+): PitBindingHints {
+  if (source === 'gamepad') {
+    return {
+      tyre: describe('pitTyre'),
+      repair: describe('pitRepair'),
+      confirm: describe('pitConfirm'),
+      cancel: describe('pit'),
+    };
+  }
+  if (source === 'touch' || source === 'tilt') {
+    return { tyre: 'Tap', repair: 'Tap', confirm: 'Tap', cancel: 'PIT' };
+  }
+  return { tyre: 'T', repair: 'F', confirm: 'ENTER', cancel: 'L' };
+}

@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { ParticleSystem } from './ParticleSystem';
 import { SkidMarks } from './SkidMarks';
+import { RainCurtain } from './Rain';
+import { bankedCarGroundY } from './TrackMesh';
 import { clamp01 } from '../core/MathUtils';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -36,8 +38,14 @@ import type { CarEntry } from '../race/CarEntry';
 const SMOKE_SLIP_THRESHOLD = 3.2;
 /** Slip speed at which smoke is at full density. */
 const SMOKE_SLIP_FULL = 11;
-/** Slip speed at which a tyre starts leaving a mark. */
-const MARK_SLIP_THRESHOLD = 2.0;
+/**
+ * Wheelspin fraction above which a rear tyre starts laying rubber.
+ *
+ * `wheelSpin` is how far throttle exceeds the traction limit, so a few per cent
+ * is a driver feeding the power in properly and should leave nothing. 0.12 is
+ * the point at which the rear is genuinely lit up.
+ */
+const WHEELSPIN_MARK_THRESHOLD = 0.12;
 /** Beyond this distance from the camera, a car emits nothing. */
 const CULL_DISTANCE = 145;
 /** Within this distance, a car emits at full rate. */
@@ -63,19 +71,58 @@ export class EffectsDirector {
   private readonly fx: CarFx[] = [];
   private readonly quality: 'low' | 'high';
 
-  /** Set from the session's weather each load. */
-  private wetness = 0;
+  /**
+   * What is falling, and what is lying, refreshed EVERY FRAME.
+   *
+   * They used to be one latched field, set once in `loadSession`, and that
+   * single line is why a race that started dry and rained on lap ten never
+   * threw up a drop of spray for its whole duration. The spray code below was
+   * written, correct and unreachable.
+   *
+   * The spray itself reads the water at each CAR's own position rather than
+   * either of these — see `update` — because a car that has moved off the
+   * rubbered line onto the wetter part of the road throws more of it.
+   */
+  /** What is falling, as opposed to what is lying. Drives the rain, not the spray. */
+  private rainRate = 0;
+
+  private rain: RainCurtain;
+
+  /**
+   * Spray particles the whole field may emit in one frame.
+   *
+   * A HARD CAP, and the reason it exists is on the record in this file's own
+   * history: an effect whose per-car rate looked right for one car was set
+   * without measuring what twenty-two of them did, and it filled the pool in
+   * under a second and whited out the screen. Spray is the worst case for that
+   * failure by a distance — every car emits it, continuously, for the entire
+   * wet part of a race, rather than in the bursts smoke and sparks come in.
+   *
+   * 64 is measured against the pool rather than chosen: the soft pool holds
+   * 2400 particles and spray lives 0.8–1.7s, so a steady 64 a frame at 60fps
+   * is 3840 a second against a pool that can retire about 2000 a second. That
+   * is deliberately oversubscribed by about two to one — the ring buffer
+   * overwrites its oldest, so the practical effect is that spray's own lifetime
+   * is clipped to roughly half a second under a full field at full rate, which
+   * looks right and leaves smoke and dust their share. Raising it to 128
+   * measured at 0.9ms of extra GPU time and starved tyre smoke at a standing
+   * start in the wet; there is nothing to be gained above it.
+   */
+  private static readonly SPRAY_BUDGET_PER_FRAME = 64;
+  private sprayThisFrame = 0;
 
   constructor(quality: 'low' | 'high') {
     this.quality = quality;
     this.particles = new ParticleSystem(quality);
     this.root.add(this.particles.root);
+    this.rain = new RainCurtain(quality);
+    this.root.add(this.rain.mesh);
     this.root.matrixAutoUpdate = false;
   }
 
   loadSession(engine: RaceEngine): void {
     this.unload();
-    this.wetness = engine.weather.wetness;
+    this.rainRate = engine.weather.rainRate;
 
     this.skids = new SkidMarks(engine.cars.length * 4, this.quality);
     this.root.add(this.skids.mesh);
@@ -116,17 +163,31 @@ export class EffectsDirector {
   update(dt: number, engine: RaceEngine, cameraPos: THREE.Vector3): void {
     this.particles.advance(dt);
 
+    // Live, not latched. See the field's own comment.
+    this.rainRate = engine.weather.rainRate;
+    this.rain.update(dt, this.rainRate, cameraPos);
+    this.sprayThisFrame = 0;
+
     const track = engine.track;
+    const surface = engine.weather.surface;
     for (let i = 0; i < engine.cars.length; i++) {
       const car = engine.cars[i];
       const fx = this.fx[i];
       if (!fx) continue;
       if (car.retired && car.recovered) continue;
 
-      const p = car.physics;
-      const x = p.position.x;
-      const z = p.position.y;
-      const y = track.elevationAt(car.s);
+      // The DRAWN pose, not the solver's last step. Smoke leaves the contact
+      // patch and rubber is laid under it, so an emitter reading the stepped
+      // position puts both up to 0.7m from the tyre that is supposed to have
+      // made them — and staggers them frame to frame in exactly the way
+      // `Renderer.updateRenderPoses` exists to stop.
+      const x = car.renderX;
+      const z = car.renderZ;
+      // The DRAWN road, not the bare elevation: smoke, spray and plank sparks
+      // all leave from the contact patch, and the contact patch stands on the
+      // asphalt mesh. See `carGroundY` — the cars themselves had the same
+      // 20mm error and it put every tyre inside the tarmac.
+      const y = bankedCarGroundY(track, car.s, car.lateral);
 
       const dist = Math.hypot(x - cameraPos.x, z - cameraPos.z);
       if (!car.isPlayer && dist > CULL_DISTANCE) continue;
@@ -134,7 +195,12 @@ export class EffectsDirector {
       const lod = car.isPlayer ? 1 : clamp01((CULL_DISTANCE - dist) / (CULL_DISTANCE - FULL_RATE_DISTANCE));
       if (lod <= 0.001) continue;
 
-      this.updateCar(dt, car, fx, x, y, z, lod);
+      // The water THIS car is driving through, not the circuit's average. A
+      // car that has moved off the rubbered line onto the wetter part of the
+      // road throws more spray, which is both true and a useful signal to the
+      // driver behind about where the water is.
+      const localWet = surface.waterAt(track.indexAt(car.s), car.lateral);
+      this.updateCar(dt, car, fx, x, y, z, lod, localWet);
     }
 
     this.particles.flush();
@@ -143,7 +209,7 @@ export class EffectsDirector {
 
   private updateCar(
     dt: number, car: CarEntry, fx: CarFx,
-    x: number, y: number, z: number, lod: number,
+    x: number, y: number, z: number, lod: number, localWet: number,
   ): void {
     const p = car.physics;
     const spec = p.spec;
@@ -151,8 +217,8 @@ export class EffectsDirector {
 
     // Car axes in world space. The physics stores heading as a yaw about the
     // vertical, so forward and right fall straight out of it.
-    const cos = Math.cos(p.heading);
-    const sin = Math.sin(p.heading);
+    const cos = Math.cos(car.renderHeading);
+    const sin = Math.sin(car.renderHeading);
     const fwdX = sin, fwdZ = cos;
     const rightX = cos, rightZ = -sin;
 
@@ -171,9 +237,9 @@ export class EffectsDirector {
     // Fronts and rears are handled separately because they fail for different
     // reasons: fronts lock under braking, rears light up on the throttle. Both
     // read their own slip speed from the physics.
-    const axles: Array<{ slip: number; along: number; isRear: boolean }> = [
-      { slip: p.frontSlipSpeed, along: front, isRear: false },
-      { slip: p.rearSlipSpeed, along: -rear, isRear: true },
+    const axles: Array<{ slip: number; along: number; isRear: boolean; lock: number }> = [
+      { slip: p.frontSlipSpeed, along: front, isRear: false, lock: p.frontLockup },
+      { slip: p.rearSlipSpeed, along: -rear, isRear: true, lock: p.rearLockup },
     ];
 
     for (const axle of axles) {
@@ -184,11 +250,39 @@ export class EffectsDirector {
 
       // A locked wheel is a special case: it is not rotating at all, so it
       // smokes far harder than the slip number alone suggests.
-      const lockBoost = !axle.isRear && p.wheelsLocked ? 4 : 0;
+      const lockBoost = axle.lock > 0 ? 4 * axle.lock : 0;
       const effective = slip + lockBoost;
 
       const smokeAmount = clamp01((effective - SMOKE_SLIP_THRESHOLD) / (SMOKE_SLIP_FULL - SMOKE_SLIP_THRESHOLD));
-      const markAmount = clamp01((effective - MARK_SLIP_THRESHOLD) / 5);
+
+      // --- What actually lays rubber -----------------------------------------
+      //
+      // "F1 CARS DON'T LEAVE MARKS UNLESS THEY LOCK UP." Correct, and this used
+      // to be `clamp01((slipSpeed - 2.0) / 5)` — a plain ramp off contact-patch
+      // slip speed with a 2 m/s threshold. Every car exceeds 2 m/s of slip in
+      // every corner of every lap; that is what a slip angle IS, and it is how
+      // a tyre generates lateral force at all. So all twenty cars painted a
+      // black line through all twenty corners, continuously, and the circuit
+      // was solid rubber within a couple of laps.
+      //
+      // A tyre only leaves a visible mark when it is NOT ROLLING at the road's
+      // speed. There are exactly two ways for that to happen and neither of
+      // them is cornering:
+      //
+      //   LOCK-UP — the wheel has stopped and the contact patch is being ground
+      //     along the road. The fronts do this under braking and it is the
+      //     flat-spot everyone remembers. `frontLockup`/`rearLockup` are zero
+      //     unless the axle is genuinely past its grip on the brakes.
+      //   WHEELSPIN — the rear wheel is turning faster than the car is moving,
+      //     out of a slow corner or off the line. `wheelSpin` is already the
+      //     amount by which throttle exceeds the traction limit.
+      //
+      // An ordinary slide contributes NOTHING here now. Sliding scrubs rubber
+      // off the tyre, but at four-wheel-drift slip angles it does not deposit a
+      // line you can see from a helicopter — and the report is right that it
+      // should not.
+      const spinMark = axle.isRear ? clamp01((p.wheelSpin - WHEELSPIN_MARK_THRESHOLD) / 0.35) : 0;
+      const markAmount = Math.max(axle.lock, spinMark);
 
       for (const side of [-1, 1]) {
         const wx = x + fwdX * axle.along + rightX * halfTrack * side;
@@ -198,8 +292,8 @@ export class EffectsDirector {
         // Only on a hard surface, and heavily suppressed in the wet: rubber
         // does not transfer through a film of water.
         const id = car.index * 4 + (axle.isRear ? 2 : 0) + (side > 0 ? 1 : 0);
-        const markOpacity = onTrack && p.surface !== 'pitlane'
-          ? markAmount * (1 - this.wetness * 0.85) * clamp01(speed / 6)
+        const markOpacity = markAmount > 0 && onTrack && p.surface !== 'pitlane'
+          ? markAmount * (1 - localWet * 0.85) * clamp01(speed / 6)
           : 0;
         this.skids?.report(id, wx, wz, rightX, rightZ, spec.tireRadiusM * 0.62, markOpacity, y);
 
@@ -239,47 +333,100 @@ export class EffectsDirector {
     }
 
     // --- Rain spray ---------------------------------------------------------
-    // The rooster tail. Scales with both water depth and speed, because it is
-    // water being displaced by the contact patch and both terms feed that.
-    if (this.wetness > 0.08 && onTrack && speed > 8) {
-      const intensity = this.wetness * clamp01(speed / 55);
+    //
+    // The rooster tail: water displaced by the contact patch, so it scales with
+    // both depth and speed because both feed the volume being moved.
+    //
+    // FROM THE TWO REAR WHEELS, not from a point on the centreline. That is the
+    // one change here that costs nothing and buys everything: a real car throws
+    // two distinct plumes that merge a few metres back, and emitting the SAME
+    // total number of particles from two places instead of one gives the plume
+    // its width and its shape for no extra particles at all. Widening the
+    // emitter was the tempting alternative and it would have cost per-particle
+    // size, which is fill rate, which is the budget that matters.
+    if (localWet > 0.08 && onTrack && speed > 8) {
+      // A floating tyre is not gripping the road, it is displacing a wedge of
+      // water in front of itself, and the wall of spray that comes off a car
+      // aquaplaning is far bigger than the one off a car that is merely wet.
+      // Reading it off the tyre model means the visual and the grip loss are
+      // the same event.
+      const float = Math.max(p.frontTires.aquaplaning, p.rearTires.aquaplaning);
+      const intensity = localWet * clamp01(speed / 55) * (1 + float * 0.9);
       fx.sprayBudget += intensity * 42 * lod * dt;
       if (fx.sprayBudget >= 1) {
-        const n = Math.min(5, Math.floor(fx.sprayBudget));
-        fx.sprayBudget -= n;
-        this.particles.emitSpray(
-          x - fwdX * rear, y, z - fwdZ * rear,
-          vx, vz, speed, this.wetness, n,
-        );
+        const want = Math.min(6, Math.floor(fx.sprayBudget));
+        // The global cap. Twenty-two cars in the wet is the case that has to be
+        // right, and the per-car rate above is set for one car.
+        const room = EffectsDirector.SPRAY_BUDGET_PER_FRAME - this.sprayThisFrame;
+        const n = Math.max(0, Math.min(want, room));
+        fx.sprayBudget -= want;
+        if (n > 0) {
+          this.sprayThisFrame += n;
+          // Split across the two rear wheels, remainder to the left. An odd
+          // count arriving all on one side reads as a car with a puncture.
+          const perSide = n >> 1;
+          const extra = n - perSide * 2;
+          for (const side of [-1, 1]) {
+            const count = perSide + (side < 0 ? extra : 0);
+            if (count <= 0) continue;
+            this.particles.emitSpray(
+              x - fwdX * rear + rightX * halfTrack * side, y,
+              z - fwdZ * rear + rightZ * halfTrack * side,
+              vx, vz, speed, localWet, count,
+            );
+          }
+        }
       }
     }
 
     // --- Sparks -------------------------------------------------------------
-    // The plank grounds out when the floor is pushed down onto the road: high
-    // speed loads the car with downforce, and braking pitches it forward onto
-    // the front skids. Both terms are real numbers from the physics rather than
-    // a random sprinkle, which is why sparks show up in the right places — the
-    // end of a long straight and the bottom of a compression.
-    const aeroLoad = clamp01(p.currentDownforceN / Math.max(p.totalMassKg * 9.81, 1));
-    const pitch = clamp01(-p.longitudinalG / 3.2);
-    const bottoming = clamp01(aeroLoad * 0.75 + pitch * 0.5 - 0.55) * clamp01((speed - 45) / 40);
-    fx.compression = fx.compression * 0.86 + bottoming * 0.14;
+    //
+    // "SPARKS DON'T FLY UNTIL LIKE THE CAR IS BRAKING SO IDK WHY THEY ARE
+    // CONSTANTLY FLYING."
+    //
+    // They were constant, and the arithmetic says why. The trigger used to be
+    //
+    //   aeroLoad = clamp01(downforce / weight)
+    //   bottoming = clamp01(aeroLoad*0.75 + pitch*0.5 - 0.55) * clamp01((v-45)/40)
+    //
+    // and `aeroLoad` is a ratio that passes 1 at about 150km/h and is CLAMPED
+    // there, so from the first straight of the race onwards the first term was
+    // permanently 0.75. 0.75 - 0.55 = 0.20, which is greater than the 0.03 gate,
+    // for every car, on every straight, for the rest of the session — with or
+    // without the brake. The braking term could only ever add to something that
+    // was already firing, so braking made no visible difference and not braking
+    // did not stop it. It was a speed effect wearing a physics costume.
+    //
+    // Now it is contact. `plankLoad` is zero unless the skid blocks in the
+    // plank are actually on the road, and the ride-height model that decides
+    // that has downforce, fuel load, braking load transfer and kerb strikes in
+    // it — the four things that ground a real car. See `VehiclePhysics`.
+    //
+    // SPEED IS STILL REQUIRED, but as a separate and honest condition: sparks
+    // are struck by metal grinding along the road, so a car resting its floor
+    // on the ground in the pit lane does not make any. It is a plain ramp from
+    // 30 m/s rather than a term that can fire on its own.
+    const grinding = p.plankLoad * clamp01((speed - 30) / 25);
+    // Lightly low-passed, so the shower has some persistence over a crest
+    // rather than switching off between two steps. Much shorter than the old
+    // 0.86/0.14 filter, which took 13 frames to decay and smeared every strike
+    // into the next one.
+    fx.compression = fx.compression * 0.72 + grinding * 0.28;
 
-    if (fx.compression > 0.03 && onTrack) {
+    if (fx.compression > 0.02 && onTrack) {
       fx.sparkBudget += fx.compression * 90 * lod * dt;
       if (fx.sparkBudget >= 1) {
         const n = Math.min(6, Math.floor(fx.sparkBudget));
         fx.sparkBudget -= n;
+        // From the end that is actually down. A car on its front skids under
+        // braking throws sparks from under the nose; one bottoming at speed
+        // drags them from the back of the floor.
+        const along = p.frontPlankLoad > p.rearPlankLoad ? front * 0.5 : -rear * 0.4;
         this.particles.emitSparks(
-          x - fwdX * rear * 0.4, y, z - fwdZ * rear * 0.4,
+          x + fwdX * along, y, z + fwdZ * along,
           vx, vz, fx.compression, n,
         );
       }
-    }
-
-    // Kerbs kick the floor into the road hard enough to strike regardless.
-    if (p.surface === 'curb' && speed > 25 && Math.random() < dt * 14 * lod) {
-      this.particles.emitSparks(x - fwdX * rear * 0.5, y, z - fwdZ * rear * 0.5, vx, vz, 0.6, 3);
     }
 
     // --- Exhaust flame ------------------------------------------------------
@@ -295,8 +442,15 @@ export class EffectsDirector {
     fx.lastGear = p.gear;
   }
 
+  /** Rain drops currently drawn, for the perf probe. */
+  get rainDrops(): number {
+    return this.rain.activeDrops;
+  }
+
   dispose(): void {
     this.unload();
     this.particles.dispose();
+    this.root.remove(this.rain.mesh);
+    this.rain.dispose();
   }
 }

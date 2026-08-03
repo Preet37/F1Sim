@@ -4,6 +4,7 @@ import {
   DRIVER_EYE_PITCH, DRIVER_EYE_X, DRIVER_EYE_Y, DRIVER_EYE_Z,
   EYE_PITCH, EYE_X, EYE_Y, EYE_Z,
 } from './CockpitMesh';
+import { bankedCarGroundY } from './TrackMesh';
 import { nominalBarrierOffset, OBSTACLE_HEIGHT_M } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
@@ -24,8 +25,8 @@ import type { WorldModel } from '../track/WorldObstacles';
 
 export type CameraMode =
   | 'chase'
-  | 'cockpit'
   | 'driver'
+  | 'cockpit'
   | 'onboard-t'
   | 'bumper'
   | 'tv'
@@ -51,6 +52,19 @@ const MIN_CAMERA_HEIGHT_M = 0.35;
  */
 const NEAR_COCKPIT = 0.12;
 const NEAR_DEFAULT = 0.35;
+/**
+ * The driver's-eye camera's near plane, and it is doing a JOB rather than
+ * setting a limit.
+ *
+ * The eye sits 15mm in front of the visor, and the helmet is merged into the
+ * shared car shell so it cannot be hidden for one car in one view — see
+ * `DRIVER_EYE_Y` for why. Every part of that helmet is within 25mm of the eye
+ * plane, so a near plane anywhere above about 0.03 clips the whole head and
+ * nothing has to be hidden at all. 0.12 keeps it clipped through the full range
+ * of head movement below and still clears the nearest thing the driver is meant
+ * to SEE — the wheel rim, at 0.37m — by a factor of three.
+ */
+const NEAR_DRIVER = 0.12;
 
 /**
  * Field of view, per mode: the resting angle and how much it opens at speed.
@@ -86,30 +100,31 @@ const FOV: Record<CameraMode, { base: number; gain: number }> = {
   // the second button did nothing. A slightly longer lens on the closer camera
   // is also what makes it the tighter, more enclosed of the pair.
   cockpit: { base: 38, gain: 5 },
-  // The driver's own eyes, and the ONE camera in this file whose lens is not
-  // chosen for how it frames the car.
-  //
-  // 58 degrees vertical is 89 across on a 16:9 desktop and 101 on a 2.17:1
-  // phone in landscape. That is wider than anything else here, and it is wider
-  // on purpose: a human's binocular field is about 114 degrees across, so this
-  // is still NARROWER than what the eyes it is imitating actually take in, and
-  // the brief was a field of view that matches a person rather than a lens.
-  //
-  // It is also the number that decides whether the mirrors exist. From the
-  // driver's seat the panes sit 37 degrees off axis — where a real F1 car
-  // mounts them, and far outboard of the 20 degrees they subtend from the roll
-  // hoop. At 50 degrees vertical the outer edge of the pane is off a 16:9
-  // picture entirely; at 58 the whole pane is inside 94 per cent of frame width
-  // on both frame shapes with the head level, and `probe:framing` asserts it. A
-  // driver's-eye view with the mirrors cropped off the edge would have answered
-  // half of a request that asked for both halves. What no field of view can do
-  // is keep them there while the head is TURNED — see `headTurn`.
-  //
-  // The gain is the smallest here. Widening with speed is what sells speed
-  // everywhere else; from inside the helmet it pulls the halo down into the
-  // frame, and the halo is already the thing this view is most sensitive about.
-  driver: { base: 58, gain: 4 },
   'onboard-t': { base: 43, gain: 6 },
+  // The one lens in this file that is deliberately WIDE, and the one where wide
+  // is not a mistake.
+  //
+  // Every other mode here is a camera, and the note above is about camera
+  // lenses. This mode is an EYE. A human's attentive field is around ninety
+  // degrees across and their useful one far more; a driver picks a rival up in
+  // a mirror, reads a kerb at the edge of the road and looks through a corner
+  // without moving their head, and none of that survives being shot through a
+  // 63-degree broadcast lens. 62 vertical is 96 degrees across on 16:9 and 107
+  // on a 2.17:1 phone, which is the widest this file goes. It is a rectilinear
+  // projection, so straight things are still straight; what it costs is a
+  // little apparent scale, and what it buys is the peripheral field that is the
+  // entire difference between an eye and a lens.
+  //
+  // It is also load-bearing for the mirrors, which is a stronger constraint
+  // than taste, and it is what set the number. The panes sit 39 degrees off
+  // this eye's axis and their outboard corners 42.3; on 16:9 that corner is
+  // outside the frame at anything under about 57 vertical and still touching
+  // the edge at 60. `probe:framing` asserts it, in both frame shapes, on all
+  // eleven circuits — a driver's view whose mirrors are off the side of the
+  // screen answers the wrong half of the request. The 2.17:1 phone, which is
+  // the shape the report came from, is not the binding case: it carries them at
+  // 73 to 89 per cent of frame width.
+  driver: { base: 62, gain: 4 },
   // Lowest camera, so the widest: at 0.44m the ground shear does the work and a
   // wide lens amplifies it.
   bumper: { base: 47, gain: 7 },
@@ -122,69 +137,50 @@ const FOV: Record<CameraMode, { base: number; gain: number }> = {
 };
 
 /**
- * The driver's head, as three numbers.
+ * The driver's neck, and its budget.
  *
- * HEAD MOVEMENT IS THE PART OF THIS VIEW THAT CAN MAKE PEOPLE ILL, and it is
- * also the part that makes it read as a person rather than a tripod. The whole
- * budget is spent on two motions a real driver unambiguously has, both small,
- * both damped, and both measured — `probe:reverse` counts the worst
- * single-frame swing of every camera in this file and the driver's eye is held
- * to the same four degrees as everything else.
+ * Head movement is the one thing in this file that can make a player ill, and
+ * the failure mode is specific: a view that moves when the player did not ask
+ * it to, at a rate the inner ear expects to feel and does not. So every number
+ * here is bounded rather than merely damped, and the bounds are small enough
+ * that the whole rig can be at full deflection in both axes at once and still
+ * be inside what a real head does in a real car.
  *
- * WHAT IS DELIBERATELY NOT HERE: bob, sway from the engine, breathing, a
- * separate look-at-apex spline, and any coupling to STEERING INPUT. The last of
- * those is the one that matters: a head that turns with the wheel fights the
- * player, because the player is turning the wheel to point the car and the
- * camera then moves the target out from under them. The yaw below is driven by
- * where the ROAD goes, which the player is not holding, so it leads the car
- * into a corner instead of arguing with it.
+ * WHAT THE LIMITS COME TO, together, at 5g of lateral load and 5g of braking:
+ * 14 degrees of look-ahead yaw, 2.3 degrees of lean on top of 3.4 of chassis
+ * roll, and 18mm of translation. The translation is the one worth stating in
+ * angles, because that is how it is seen: 18mm at the steering wheel, 0.37m
+ * away, is 2.8 degrees of apparent shift, and at the halo crown 0.59m away it
+ * is 1.7. Both are under the 4-degree single-frame swing that `probe:reverse`
+ * calls jitter — and they are reached over a quarter of a second rather than in
+ * one frame, which is what `rate` is for.
+ *
+ * MEASURED, not asserted. `npm run probe:reverse` drives the real physics
+ * backwards and forwards through a standstill while sawing at the wheel and
+ * counts how often each camera reverses its yaw direction and how far it swings
+ * in a frame; the driver's eye is in `CAMERA_MODES`, so it is held to the same
+ * two-reversals-a-second and four-degrees-a-frame limits as everything else.
+ * `npm run probe:framerate` covers the other half — every term below goes
+ * through `damp`, so the head reaches the same place at 30fps and at 120.
  */
-/**
- * How much of the track's heading change a second or so ahead the head takes
- * up, and the most it may take up, radians.
- *
- * 12.6 degrees at full lock. A real driver's head turn into a corner is far
- * larger than this — they look at the apex, which can be sixty degrees off the
- * nose — but a real driver has a neck, a vestibular system and a hundred and
- * eighty degrees of peripheral vision, and a player has a rectangle. Past about
- * fifteen degrees the halo and the wheel slide bodily across that rectangle and
- * the car stops framing the shot.
- */
-const DRIVER_HEAD_YAW_GAIN = 0.32;
-const DRIVER_HEAD_YAW_MAX = 0.22;
-/** How fast the head follows, in exponential-decay units per second. */
-const DRIVER_HEAD_YAW_RATE = 2.2;
-/**
- * How far the head is thrown to the OUTSIDE of a corner, metres per radian of
- * chassis roll. 22mm at the roll limit.
- *
- * Tied to the chassis roll rather than to lateral g directly, which is what
- * makes the direction correct without a sign convention to get wrong: the tub
- * leans outward under load, the driver's head falls the same way, so the sway
- * is simply more of a displacement the rig is already computing. It is also
- * damped for free, because the roll it is scaled from is.
- *
- * 22mm is about two degrees of parallax against the wheel rim 0.4m away. That
- * is at the threshold of being noticed, which is the whole intent: it should
- * register as weight, not as a camera move.
- */
-const DRIVER_HEAD_SWAY_M_PER_RAD = 0.37;
-/**
- * How much of the chassis roll the camera keeps, 0 to 1.
- *
- * A driver's neck holds his eyes closer to level than the car is. Keeping 60
- * per cent of it means the horizon tips 2.1 degrees at full lateral load
- * against the tub's 3.4 — and, because the cockpit furniture is bolted to the
- * TUB and rolls the full amount, the remaining 1.3 degrees shows as the wheel
- * and the halo rolling slightly under a steadier horizon. That difference is
- * the head being held up, and it is visible without being a motion.
- *
- * It also happens to be the single most effective anti-nausea measure
- * available: roll about the view axis is the component of camera movement the
- * inner ear objects to most, and this is the only camera in the file that
- * reduces it rather than adding it.
- */
-const DRIVER_ROLL_KEEP = 0.6;
+const DRIVER_HEAD = {
+  /** Fraction of the road's heading change the head takes up. */
+  lookGain: 0.34,
+  /** Hard cap on that, radians. 14 degrees. */
+  lookMax: 0.245,
+  /** How fast the head turns toward where it wants to look, per second. */
+  lookRate: 2.4,
+  /** Extra roll per g of lateral load, radians. */
+  leanPerG: 0.008,
+  /** Hard cap on the lean, radians. 2.3 degrees. */
+  leanMax: 0.040,
+  /** Eye translation per g, metres. */
+  shiftPerG: 0.0045,
+  /** Hard cap on the translation, metres. */
+  shiftMax: 0.018,
+  /** Damping rate for the lean and the translation, per second. */
+  rate: 6,
+} as const;
 
 /**
  * Height of the frame the trackside camera tries to fill with the car, metres.
@@ -222,42 +218,31 @@ const SOLID_RELEASE_RATE = 2.2;
 const SOLID_MAX_PULL = 0.9;
 
 export const CAMERA_MODES: readonly CameraMode[] = [
-  'chase', 'cockpit', 'driver', 'onboard-t', 'bumper', 'tv', 'drone', 'trackside',
+  'chase', 'driver', 'cockpit', 'onboard-t', 'bumper', 'tv', 'drone', 'trackside',
 ];
 
 /**
- * The modes whose camera is ON the car, looking out over or through the driver.
+ * The modes whose camera is ON the car, looking out over the driver.
  *
- * All three are: the cockpit eye sits on the front of the roll-hoop fairing,
- * the T-cam on top of it, and the driver's eye behind the visor. That makes
+ * Three of them are: the driver's eye sits behind the visor, the cockpit eye on
+ * the front of the roll-hoop fairing and the T-cam on top of it. That makes
  * them the same case for three separate decisions that used to be written for
  * 'cockpit' alone, and the T-cam was wrong on all three — it drew the camera
  * pod it is itself mounted in, it had no cockpit interior so its mirrors were
  * dead swatches, and it used the far near-plane with the driver's helmet inside
- * it. Anything that asks "is the camera inside the car" asks this.
- *
- * The driver's eye needs every one of them and needs the near plane hardest:
- * it is INSIDE the helmet, whose front wall is 45mm away.
+ * it. Anything that asks "is the camera inside the car" asks this, and the
+ * driver's eye needs all three answers as much as either of them: it is the
+ * view with the most cockpit furniture in it and the one the mirrors are
+ * nearest to.
  */
 export function isOnboardMode(mode: CameraMode): boolean {
-  return mode === 'cockpit' || mode === 'driver' || mode === 'onboard-t';
-}
-
-/**
- * Is the camera at the driver's own eye, rather than on a pod above his head?
- *
- * Asked by the renderer, which has to aim the mirror panes at whichever eye is
- * actually looking — see `CockpitVisual.update`. The two eyes are 0.7m apart
- * and a pane angled for one of them shows the other the wrong piece of road.
- */
-export function isDriverEyeMode(mode: CameraMode): boolean {
-  return mode === 'driver';
+  return mode === 'driver' || mode === 'cockpit' || mode === 'onboard-t';
 }
 
 export const CAMERA_LABELS: Record<CameraMode, string> = {
   chase: 'Chase',
+  driver: 'Driver',
   cockpit: 'Cockpit',
-  driver: "Driver's Eye",
   'onboard-t': 'Onboard T-Cam',
   bumper: 'Bumper',
   tv: 'TV',
@@ -330,6 +315,17 @@ export class CameraDirector {
   private headYaw = 0;
   private rigRoll = 0;
   private rigPitch = 0;
+  /**
+   * Driver's-eye rig: how far the head has fallen away from the chassis.
+   *
+   * A neck, in three numbers. `headLean` is a roll, `headShiftX` and
+   * `headShiftZ` are the eye sliding in its socket under lateral and
+   * longitudinal load. All three are damped, all three are tiny, and the
+   * budget for all three together is in `DRIVER_HEAD` below.
+   */
+  private headLean = 0;
+  private headShiftX = 0;
+  private headShiftZ = 0;
   /** Chase camera bank, radians. See the chase case in `update`. */
   private bank = 0;
   /**
@@ -381,7 +377,8 @@ export class CameraDirector {
 
   /** An onboard camera sits inside its own bodywork and needs a closer near plane. */
   private applyNearPlane(): void {
-    const near = isOnboardMode(this.mode) ? NEAR_COCKPIT : NEAR_DEFAULT;
+    const near = this.mode === 'driver' ? NEAR_DRIVER
+      : isOnboardMode(this.mode) ? NEAR_COCKPIT : NEAR_DEFAULT;
     if (this.camera.near !== near) {
       this.camera.near = near;
       this.camera.updateProjectionMatrix();
@@ -400,10 +397,37 @@ export class CameraDirector {
     const speed = p.speedMs;
     this.smoothSpeed = damp(this.smoothSpeed, speed, 3, dt);
 
-    const heading = p.heading;
+    const heading = car.renderHeading;
     const sinH = Math.sin(heading);
     const cosH = Math.cos(heading);
-    const carY = track.elevationAt(car.s);
+
+    // Chassis attitude, every frame and in every mode.
+    //
+    // It used to be maintained only inside the cockpit rig, which was enough
+    // for the camera — the other modes do not ride the car — but not enough for
+    // anything that has to know how the CAR is lying, and `probe:framing` does.
+    // A probe that projects the halo through a rolled camera onto a car it has
+    // assumed is level measures up to 5.7 degrees of roll that is not in the
+    // picture, and 5.7 degrees at the edge of a wide frame is several per cent
+    // of frame width. These are the same numbers `Renderer.syncCars` applies to
+    // the car root, at the same damping rate, so the two cannot disagree.
+    this.rigRoll = damp(this.rigRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
+    this.rigPitch = damp(this.rigPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
+
+    // The car's own origin, which is the DRAWN road surface and not the bare
+    // elevation the simulation carries — see `carGroundY`. Every camera below
+    // is placed relative to this, and the onboard cameras in particular have to
+    // ride the car exactly: 20mm of disagreement between the eye and the
+    // chassis moves the halo three per cent of a frame height, which is what
+    // `probe:framing` is there to notice. This branch was cut before
+    // `carGroundY` existed and read the bare elevation; taking its attitude
+    // work without this line would have put every eye 20mm into the car.
+    // BANKED, not the centreline's height. On a banked corner the asphalt under
+    // the car is tilted, so a car `lateral` metres off the centreline stands
+    // `lateral * tan(bank)` above or below it — 1.63m at Zandvoort. The eye
+    // rides the car, so the camera has to use the same surface the car does or
+    // an onboard shot at Hugenholtz looks out from under the road.
+    const carY = bankedCarGroundY(track, car.s, car.lateral);
 
     // Reversing: the useful view is the one the car is going towards.
     //
@@ -468,7 +492,7 @@ export class CameraDirector {
     const slip = clamp(wrapAngle(travelHeading - viewHeading), -1.05, 1.05) * slipWeight;
 
     // The point every following camera is anchored to.
-    this.anchor.set(p.position.x, carY, p.position.y);
+    this.anchor.set(car.renderX, carY, car.renderZ);
 
     switch (this.mode) {
       case 'chase': {
@@ -519,9 +543,9 @@ export class CameraDirector {
         // backwards instead of being two terms that could disagree.
         const yaw = viewHeading - slip * 0.55;
         this.desired.set(
-          p.position.x - Math.sin(yaw) * dist,
+          car.renderX - Math.sin(yaw) * dist,
           carY + height,
-          p.position.y - Math.cos(yaw) * dist,
+          car.renderZ - Math.cos(yaw) * dist,
         );
         // Aim a short way ahead of the car, and low.
         //
@@ -532,9 +556,9 @@ export class CameraDirector {
         // the horizon. This pair puts the car around two thirds down and the
         // horizon around a third from the top, which is the broadcast framing.
         this.lookTarget.set(
-          p.position.x + sinR * 5.6,
+          car.renderX + sinR * 5.6,
           carY + 0.80,
-          p.position.y + cosR * 5.6,
+          car.renderZ + cosR * 5.6,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
         // Bank into the corner.
@@ -552,13 +576,13 @@ export class CameraDirector {
         break;
       }
 
-      case 'cockpit': {
-        this.updateCockpit(dt, car, track, carY);
+      case 'driver': {
+        this.updateDriverEye(dt, car, track, carY);
         break;
       }
 
-      case 'driver': {
-        this.updateDriverEye(dt, car, track, carY);
+      case 'cockpit': {
+        this.updateCockpit(dt, car, track, carY);
         break;
       }
 
@@ -590,9 +614,9 @@ export class CameraDirector {
         // helmet now subtends 23 per cent of frame width against the
         // reference's 21.
         this.desired.set(
-          p.position.x - sinH * 0.80,
+          car.renderX - sinH * 0.80,
           carY + 1.10,
-          p.position.y - cosH * 0.80,
+          car.renderZ - cosH * 0.80,
         );
         // Aim on the road twenty metres up, which is 3.4 degrees of nose-down
         // and puts the horizon at 42 per cent of frame height. Not further: the
@@ -600,9 +624,9 @@ export class CameraDirector {
         // flattens it until the shot is all sky and the hoop drops back out of
         // the bottom of the frame.
         this.lookTarget.set(
-          p.position.x + sinH * 20,
+          car.renderX + sinH * 20,
           carY - 0.10,
-          p.position.y + cosH * 20,
+          car.renderZ + cosH * 20,
         );
         this.applySmoothed(dt, 60, 20, this.anchor);
         break;
@@ -621,14 +645,14 @@ export class CameraDirector {
         // Being a metre ahead of the car's mass is not a defect here: it is why
         // a nose camera turns in early and feels quick.
         this.desired.set(
-          p.position.x + sinH * 3.20,
+          car.renderX + sinH * 3.20,
           carY + 0.46,
-          p.position.y + cosH * 3.20,
+          car.renderZ + cosH * 3.20,
         );
         this.lookTarget.set(
-          p.position.x + sinH * 40,
+          car.renderX + sinH * 40,
           carY + 0.62,
-          p.position.y + cosH * 40,
+          car.renderZ + cosH * 40,
         );
         this.applySmoothed(dt, 60, 22, this.anchor);
         break;
@@ -647,14 +671,14 @@ export class CameraDirector {
         const dist = lerp(12, 15, clamp01(this.smoothSpeed / 90));
         const yaw = viewHeading - slip * 0.3;
         this.desired.set(
-          p.position.x - Math.sin(yaw) * dist,
+          car.renderX - Math.sin(yaw) * dist,
           carY + 3.4,
-          p.position.y - Math.cos(yaw) * dist,
+          car.renderZ - Math.cos(yaw) * dist,
         );
         this.lookTarget.set(
-          p.position.x + sinR * 2.5,
+          car.renderX + sinR * 2.5,
           carY + 1.00,
-          p.position.y + cosR * 2.5,
+          car.renderZ + cosR * 2.5,
         );
         this.applySmoothed(dt, 4.5, 9, this.anchor);
         break;
@@ -675,11 +699,11 @@ export class CameraDirector {
         const orbit = this.dronePhase;
         const dist = 10.5;
         this.desired.set(
-          p.position.x + Math.sin(orbit) * dist,
+          car.renderX + Math.sin(orbit) * dist,
           carY + 4.6 + Math.sin(orbit * 0.7) * 1.5,
-          p.position.y + Math.cos(orbit) * dist,
+          car.renderZ + Math.cos(orbit) * dist,
         );
-        this.lookTarget.set(p.position.x, carY + 0.55, p.position.y);
+        this.lookTarget.set(car.renderX, carY + 0.55, car.renderZ);
         this.applySmoothed(dt, 3.0, 8, this.anchor);
         break;
       }
@@ -733,7 +757,7 @@ export class CameraDirector {
           track.elevation[i] + 2.1 + standoff * 0.22,
           track.pz[i] + track.nz[i] * off,
         );
-        this.lookTarget.set(p.position.x, carY + 0.55, p.position.y);
+        this.lookTarget.set(car.renderX, carY + 0.55, car.renderZ);
         // The camera position is static; only the aim tracks the car, and on a
         // long lens it has to track it briskly or the car leaves the frame.
         this.applySmoothed(dt, 100, 12);
@@ -752,8 +776,8 @@ export class CameraDirector {
       // A real trackside camera zooms to hold the car at a usable size as it
       // approaches and goes past. A fixed focal length either loses the car in
       // the distance or has it fill the frame for a tenth of a second.
-      const dx = this.camera.position.x - p.position.x;
-      const dz = this.camera.position.z - p.position.y;
+      const dx = this.camera.position.x - car.renderX;
+      const dz = this.camera.position.z - car.renderZ;
       const dist = Math.max(10, Math.hypot(dx, dz));
       // The long end has to be genuinely long. An 8-degree floor was already
       // biting at ninety metres, which is well inside the range this camera
@@ -795,7 +819,7 @@ export class CameraDirector {
     const minY = roadY + MIN_CAMERA_HEIGHT_M;
     if (this.camera.position.y < minY) this.camera.position.y = minY;
 
-    if (world) this.keepOutOfSolids(dt, world, p.position.x, p.position.y, roadY);
+    if (world) this.keepOutOfSolids(dt, world, car.renderX, car.renderZ, roadY);
   }
 
   /**
@@ -888,6 +912,105 @@ export class CameraDirector {
   }
 
   /**
+   * The driver's-eye rig.
+   *
+   * Same skeleton as `updateCockpit` — bolted to the chassis, oriented from
+   * Euler angles rather than a look-at, no positional smoothing — because those
+   * decisions are right for any camera that has the car's own furniture in
+   * shot, and the reasons are written out there.
+   *
+   * What is different is the NECK. The cockpit camera is a pod bolted to a roll
+   * hoop and it is honest for it to move exactly as the hoop does. This one is
+   * somebody's head, and a head does three things a bracket does not: it turns
+   * to look where the car is going, it falls toward the outside of a corner
+   * under lateral load, and it is thrown about on its neck under braking. All
+   * three are here and all three are deliberately SMALL. See `DRIVER_HEAD`.
+   */
+  private updateDriverEye(dt: number, car: CarEntry, track: TrackSpline, carY: number): void {
+    const p = car.physics;
+
+    // Chassis attitude is maintained in `update`; the eye rides on it.
+
+    // The neck.
+    //
+    // SIGNS, established by measurement rather than by argument: driving the
+    // real physics with a positive steer input turns the car RIGHT and reports
+    // `lateralG` NEGATIVE, and `longitudinalG` is positive under power. So a
+    // head thrown toward the outside of a corner moves along `+lateralG` — the
+    // car's own +x is its LEFT — and a head thrown forward under braking moves
+    // along `-longitudinalG`.
+    //
+    // The lean is ON TOP of the chassis roll and in the same direction, which
+    // is what makes it read as the head continuing past the car rather than as
+    // the horizon tilting on its own.
+    this.headLean = damp(
+      this.headLean,
+      clamp(-p.lateralG * DRIVER_HEAD.leanPerG, -DRIVER_HEAD.leanMax, DRIVER_HEAD.leanMax),
+      DRIVER_HEAD.rate, dt,
+    );
+    this.headShiftX = damp(
+      this.headShiftX,
+      clamp(p.lateralG * DRIVER_HEAD.shiftPerG, -DRIVER_HEAD.shiftMax, DRIVER_HEAD.shiftMax),
+      DRIVER_HEAD.rate, dt,
+    );
+    this.headShiftZ = damp(
+      this.headShiftZ,
+      clamp(-p.longitudinalG * DRIVER_HEAD.shiftPerG, -DRIVER_HEAD.shiftMax, DRIVER_HEAD.shiftMax),
+      DRIVER_HEAD.rate, dt,
+    );
+
+    // Eye point, car-local to world, riding the chassis attitude. The offset
+    // has to be rotated as well as the camera — see `updateCockpit`, where the
+    // same 42mm of unaccounted swing was the whole of the "everything swims"
+    // report.
+    this.eye.set(
+      DRIVER_EYE_X + this.headShiftX,
+      DRIVER_EYE_Y,
+      DRIVER_EYE_Z + this.headShiftZ,
+    );
+    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'XYZ');
+    this.eye.applyEuler(this.carEuler);
+    this.camera.position.set(
+      car.renderX + this.eye.x,
+      carY + this.eye.y,
+      car.renderZ + this.eye.z,
+    );
+
+    // Looking into the corner.
+    //
+    // Off the TRACK's heading a second or so ahead, not off the steering input,
+    // and that is the whole of "must not fight the player's steering". A head
+    // driven by the wheel turns the moment the player turns and turns back the
+    // moment they correct, so every stab of opposite lock swings the view — the
+    // player is then steering the camera as well as the car and the two argue.
+    // Driven by where the ROAD goes, the head is already pointing at the apex
+    // before the car is, which is what a driver does, and it is unaffected by
+    // anything the player does with their hands.
+    //
+    // Slightly more than the cockpit's eleven degrees, because this head is not
+    // carrying the car's own furniture across the frame with it: from the
+    // roll-hoop pod a head turn slides the halo, the rim and the mirrors bodily
+    // sideways, and from inside the driver's own skull it does what turning
+    // your head does. Fourteen degrees, damped at 2.4 per second so it leads
+    // the car into the corner instead of snapping to it.
+    const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
+    const aheadHeading = track.headingAt(car.s + lookAheadM);
+    const target = clamp(
+      wrapAngle(aheadHeading - car.renderHeading) * DRIVER_HEAD.lookGain,
+      -DRIVER_HEAD.lookMax, DRIVER_HEAD.lookMax,
+    );
+    this.headYaw = damp(this.headYaw, target, DRIVER_HEAD.lookRate, dt);
+
+    this.camera.rotation.set(
+      this.rigPitch - DRIVER_EYE_PITCH,
+      car.renderHeading + this.headYaw + Math.PI,
+      this.rigRoll + this.headLean,
+      'YXZ',
+    );
+    this.initialised = false;
+  }
+
+  /**
    * The cockpit rig.
    *
    * This is the one camera that is NOT a smoothed follow. It is bolted to the
@@ -906,11 +1029,10 @@ export class CameraDirector {
   private updateCockpit(dt: number, car: CarEntry, track: TrackSpline, carY: number): void {
     const p = car.physics;
 
-    // Chassis attitude, matching what the renderer applies to the car body so
-    // the modelled cockpit and the view stay locked together. Computed FIRST,
-    // because the eye point rides on it.
-    this.rigRoll = damp(this.rigRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
-    this.rigPitch = damp(this.rigPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
+    // Chassis attitude — matching what the renderer applies to the car body, so
+    // the modelled cockpit and the view stay locked together — is maintained in
+    // `update` before this runs, because the eye point rides on it and because
+    // every other mode needs to be able to report it too.
 
     // Eye point, car-local to world.
     //
@@ -924,12 +1046,12 @@ export class CameraDirector {
     // were floating rather than bolted down; the rotation angles were already
     // right, it was the position that was wrong.
     this.eye.set(EYE_X, EYE_Y, EYE_Z);
-    this.carEuler.set(this.rigPitch, p.heading, this.rigRoll, 'XYZ');
+    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'XYZ');
     this.eye.applyEuler(this.carEuler);
     this.camera.position.set(
-      p.position.x + this.eye.x,
+      car.renderX + this.eye.x,
       carY + this.eye.y,
-      p.position.y + this.eye.z,
+      car.renderZ + this.eye.z,
     );
 
     // Drivers look at the apex, not at the nose. Take the heading of the track
@@ -945,92 +1067,15 @@ export class CameraDirector {
     // still frames the shot.
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
     const aheadHeading = track.headingAt(car.s + lookAheadM);
-    const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.30, -0.20, 0.20);
+    const target = clamp(wrapAngle(aheadHeading - car.renderHeading) * 0.30, -0.20, 0.20);
     this.headYaw = damp(this.headYaw, target, 2.6, dt);
 
     // Nose-down bias. See EYE_PITCH: it is the other half of the roll-hoop
     // framing and belongs beside the eye point it goes with, not here.
     this.camera.rotation.set(
       this.rigPitch - EYE_PITCH,
-      p.heading + this.headYaw + Math.PI,
+      car.renderHeading + this.headYaw + Math.PI,
       this.rigRoll,
-      'YXZ',
-    );
-    this.initialised = false;
-  }
-
-  /**
-   * The driver's-eye rig: the view from behind the visor.
-   *
-   * "We need another view which is the driver view, imagine from the perception
-   * of the driver's lenses."
-   *
-   * Built on `updateCockpit` because it is the same KIND of camera — bolted to
-   * the skull, no positional smoothing at all, everything alive about it
-   * expressed as rotation — and it differs in the three ways that make it a
-   * different view rather than a different focal length:
-   *
-   *  - THE EYE IS THE DRIVER'S. `DRIVER_EYE_*` is inside the modelled helmet,
-   *    at the visor line, rather than on the roll-hoop fairing 0.42m higher and
-   *    0.72m further back. Everything downstream follows from that one move:
-   *    the halo arcs over the horizon instead of under it, the pillar is in the
-   *    middle of the picture where it really is, the wheel rim is at the
-   *    sightline, and the mirrors are 37 degrees off axis instead of 20;
-   *  - THE HEAD MOVES. See `DRIVER_HEAD_*`. Small, damped, and driven by the
-   *    road rather than by the player's hands;
-   *  - THE HEAD IS HELD LEVEL, partly. See `DRIVER_ROLL_KEEP`.
-   *
-   * Nothing had to be hidden to sit inside the helmet. Its shell, jaw and visor
-   * are closed front-facing surfaces, so from within them every triangle is
-   * back-facing and culled, and what little of them is in front of the eye at
-   * all is inside the 0.12m near plane.
-   */
-  private updateDriverEye(dt: number, car: CarEntry, track: TrackSpline, carY: number): void {
-    const p = car.physics;
-
-    // Chassis attitude first: the eye point rides on it, and so does the sway.
-    this.rigRoll = damp(this.rigRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
-    this.rigPitch = damp(this.rigPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
-
-    // Eye point, car-local to world, with the head thrown outward.
-    //
-    // The sway goes in BEFORE the chassis rotation rather than after it,
-    // because it is a displacement of the head within the cockpit — the driver
-    // sliding in the seat — and not a displacement of the car. Its sign comes
-    // out right for free: a positive roll already carries the eye toward local
-    // -x (it rotates the offset about the car's own z), so adding more of the
-    // same direction is more lean the way the tub is already leaning, which is
-    // outward.
-    this.eye.set(
-      DRIVER_EYE_X - this.rigRoll * DRIVER_HEAD_SWAY_M_PER_RAD,
-      DRIVER_EYE_Y,
-      DRIVER_EYE_Z,
-    );
-    this.carEuler.set(this.rigPitch, p.heading, this.rigRoll, 'XYZ');
-    this.eye.applyEuler(this.carEuler);
-    this.camera.position.set(
-      p.position.x + this.eye.x,
-      carY + this.eye.y,
-      p.position.y + this.eye.z,
-    );
-
-    // Look into the corner, not down the nose. Same construction as the cockpit
-    // rig — the heading of the track roughly a second ahead — and a slightly
-    // longer, slower reach, because from inside the helmet the head turn is the
-    // only thing that distinguishes this from a fixed camera and a cockpit that
-    // never moves relative to the frame reads as a photograph.
-    const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
-    const aheadHeading = track.headingAt(car.s + lookAheadM);
-    const target = clamp(
-      wrapAngle(aheadHeading - p.heading) * DRIVER_HEAD_YAW_GAIN,
-      -DRIVER_HEAD_YAW_MAX, DRIVER_HEAD_YAW_MAX,
-    );
-    this.headYaw = damp(this.headYaw, target, DRIVER_HEAD_YAW_RATE, dt);
-
-    this.camera.rotation.set(
-      this.rigPitch - DRIVER_EYE_PITCH,
-      p.heading + this.headYaw + Math.PI,
-      this.rigRoll * DRIVER_ROLL_KEEP,
       'YXZ',
     );
     this.initialised = false;
@@ -1123,26 +1168,34 @@ export class CameraDirector {
   /**
    * How far the driver's head is turned into the corner, radians.
    *
-   * Exposed for the same reason and in the same spirit as `reverseBlend`: a
-   * probe that has to tell a deliberate movement from a fault should ask the
-   * rig which it is doing rather than infer it.
+   * Exposed for `probe:framing`, on the same principle as `reverseBlend`: a
+   * framing target describes where things sit when the head is STRAIGHT, and a
+   * probe that samples wherever on the lap the car happens to be would
+   * otherwise measure a resting spec against a turned head and report a corner
+   * as a fault. Turning the head deliberately swings the outside mirror to the
+   * edge of the frame and eventually out of it, exactly as it does in a real
+   * car; that is the feature, not the thing being checked.
    *
-   * What `probe:framing` needs it for is narrower and worth stating, because it
-   * is the difference between a true assertion and a false one. The mirrors sit
-   * 37 degrees off a driver's axis, so turning his head eight degrees into a
-   * corner carries the outside pane off the edge of a 16:9 frame — and that is
-   * not a defect, it is what happens to a person who looks at an apex. No field
-   * of view under about 66 degrees vertical can prevent it and none should try.
-   * A driver checks his mirrors down a straight and into a braking zone, with
-   * his head level, so that is the case the probe holds the geometry to: with
-   * the head straight, both panes are wholly in frame and clear of the halo.
+   * Zero in every mode that is not built from Euler angles, because those have
+   * no head.
    */
+  /**
+   * The attitude the CAR is lying at: roll and pitch, radians.
+   *
+   * Exposed for `probe:framing`, which has to put the halo, the wheel and the
+   * mirror panes where they actually are before it projects them. Same values,
+   * same damping, as `Renderer.syncCars` puts on the car root.
+   */
+  get chassisRoll(): number {
+    return this.rigRoll;
+  }
+
+  get chassisPitch(): number {
+    return this.rigPitch;
+  }
+
   get headTurn(): number {
-    // The two rigs that are bolted to a head. The T-cam is a smoothed follow
-    // and never touches `headYaw`, so this must not report the value left in it
-    // by whichever mode ran last.
-    const turns = this.mode === 'cockpit' || this.mode === 'driver';
-    return turns ? this.headYaw : 0;
+    return this.mode === 'driver' || this.mode === 'cockpit' ? this.headYaw : 0;
   }
 
   /** Approximate lateral g for the HUD's g-meter, read off the camera's target. */

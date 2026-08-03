@@ -568,10 +568,112 @@ console.log('\n' + totalFalse + ' of the old rule\'s ' + totalOld + ' reported e
 console.log('circuits were of a car that never left the track, and it spent up to');
 console.log(worstOverlap.toFixed(2) + ' m of car still on the paint while calling one off.');
 
+// ===========================================================================
+// Which laps can be sanctioned at all
+// ===========================================================================
+//
+// Reported by a player: "the first lap is always the out lap ... idt there
+// should be penalties or limits for the first lap of qualifying."
+//
+// They are right, for a precise reason. Art. B1.8.6 defines leaving the track
+// geometrically and says nothing about which lap you are on, so the excursion
+// on an out-lap is a real excursion. But Art. B1.9.4 is the whole of what the
+// stewards may do about an incident in a Lap Time Classified Session — "the
+// Stewards may delete a driver's lap time (or lap times) or drop the driver
+// such number of grid positions as they consider appropriate" — and on a lap
+// that carries no time the first of those has nothing to act on. The game was
+// deleting a time that did not exist and telling the driver so, on the lap out
+// of the garage.
+//
+// Both halves of this are worth asserting, because suppressing too much would
+// be just as wrong: an out-lap must be untouchable and the flying lap that
+// follows it must not be.
+
+console.log('\n--- Which laps a track-limits excursion can be sanctioned on ---');
+console.log('Art. B1.9.4: in an LTCS the sanction IS the deletion of a lap time.');
+console.log('On a lap that carries no time there is nothing to delete.\n');
+console.log('circuit          session   lap            deleted  strikes  announced');
+
+/** Runs one excursion and reports everything race control did about it. */
+function excursion(
+  engine: RaceEngine, s: number, kind: 'race' | 'other',
+  lap: 'out' | 'in' | 'flying',
+): { deleted: boolean; strikes: number; announced: number } {
+  const car = engine.cars[0];
+  const before = engine.raceControl.messages.length;
+  car.currentLapInvalidated = false;
+  car.trackLimitStrikes = 0;
+  car.offTrackNow = false;
+  car.onOutLap = lap === 'out';
+  car.pitRequested = lap === 'in';
+  car.inPitLane = false;
+  car.retired = false;
+  // Well clear of the line, and at racing speed so it reads as a car that
+  // gained something rather than one that spun off and lost time.
+  car.placeOnTrack(engine.track, s,
+    centreFor(engine, s, -0.30, 0), engine.track.targetSpeed[engine.track.indexAt(s)]);
+  car.physics.heading = engine.track.headingAt(s);
+  engine.raceControl.update(1 / 120, engine.cars, engine.cars, 60, kind === 'race', 0);
+  const said = engine.raceControl.messages.slice(before)
+    .filter((m) => /track limits/i.test(m.text));
+  return { deleted: car.currentLapInvalidated, strikes: car.trackLimitStrikes, announced: said.length };
+}
+
+for (const def of CIRCUITS) {
+  const engine = soloEngine(def);
+  const s = probeS(engine);
+
+  const expectations: {
+    kind: 'race' | 'other'; lap: 'out' | 'in' | 'flying';
+    deleted: boolean; strikes: number; announced: number; why: string;
+  }[] = [
+    // The out-lap, which is the reported bug.
+    { kind: 'other', lap: 'out', deleted: false, strikes: 0, announced: 0,
+      why: 'an out-lap carries no time, so Art. B1.9.4 has nothing to delete' },
+    // The in-lap, for the same reason: the car turns off before the line and
+    // the lap is never completed, so its time is never classified either.
+    { kind: 'other', lap: 'in', deleted: false, strikes: 0, announced: 0,
+      why: 'an in-lap is never classified, so there is no time to delete' },
+    // ...and the lap that DOES count, which must still be deleted. Suppressing
+    // this one would be a worse bug than the one being fixed.
+    { kind: 'other', lap: 'flying', deleted: true, strikes: 1, announced: 1,
+      why: 'a flying lap in an LTCS is deleted for track limits (Art. B1.9.4)' },
+    // A race has no untimed laps and its own strike ladder, untouched.
+    { kind: 'race', lap: 'out', deleted: false, strikes: 1, announced: 1,
+      why: 'a race counts every excursion — there is no such thing as an ' +
+        'untimed lap in one' },
+    { kind: 'race', lap: 'flying', deleted: false, strikes: 1, announced: 1,
+      why: 'a race counts every excursion' },
+  ];
+
+  for (const e of expectations) {
+    const got = excursion(engine, s, e.kind, e.lap);
+    const label = e.kind === 'race' ? 'race' : 'quali';
+    console.log(
+      def.id.padEnd(15) + label.padEnd(10) + e.lap.padEnd(15) +
+      (got.deleted ? 'yes' : ' no').padStart(7) +
+      String(got.strikes).padStart(9) + String(got.announced).padStart(11));
+    if (got.deleted !== e.deleted) {
+      fail(def.id + ' ' + label + ' ' + e.lap + '-lap: the lap was ' +
+        (got.deleted ? '' : 'not ') + 'deleted — ' + e.why);
+    }
+    if (got.strikes !== e.strikes) {
+      fail(def.id + ' ' + label + ' ' + e.lap + '-lap: ' + got.strikes +
+        ' strike(s) recorded, expected ' + e.strikes + ' — ' + e.why);
+    }
+    if (got.announced !== e.announced) {
+      fail(def.id + ' ' + label + ' ' + e.lap + '-lap: race control said ' +
+        got.announced + ' thing(s) about track limits, expected ' + e.announced +
+        ' — ' + e.why);
+    }
+  }
+}
+
 console.log('');
 if (failures.length === 0) {
-  console.log('PASS — the line is on both sides everywhere, and the rule is');
-  console.log('applied at its outer edge.');
+  console.log('PASS — the line is on both sides everywhere, the rule is');
+  console.log('applied at its outer edge, and only a lap that carries a time');
+  console.log('can lose one.');
 } else {
   console.log('FAIL (' + failures.length + ')');
   for (const f of failures) console.log('  - ' + f);

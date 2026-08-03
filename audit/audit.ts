@@ -6,6 +6,7 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import type { CarEntry } from '../src/race/CarEntry';
+import { buildPitHarness, type PitHarness } from './pitshots';
 
 /**
  * The browser half of `npm run audit:circuits`.
@@ -51,6 +52,26 @@ interface AuditApi {
   shootEyeAids(fraction: number): Promise<string>;
   /** Low three-quarter view of one side of the road: the kerb in section. */
   shootKerb(fraction: number, side: -1 | 1): Promise<string>;
+  /**
+   * The GROUND beside a corner, seen from outside it and above.
+   *
+   * The kerb and eye shots both look ALONG the road, and neither can answer the
+   * question the second batch of screenshots asked: how far below the racing
+   * surface does the ground beside it sit. That is a question about a profile
+   * seen side on, from outside the barrier, with the horizon in frame — the
+   * run-off, whatever drops off the end of it, and the terrain it drops to, all
+   * in one picture.
+   *
+   * @param side which side to stand on; pass the OUTSIDE of the corner.
+   */
+  shootShoulder(fraction: number, side: -1 | 1): Promise<string>;
+  /**
+   * The same ground from a driver's eye, looking straight out across it.
+   *
+   * The oblique above shows the profile; this shows what the player sees out of
+   * the side of the car at the apex, which is the frame the complaint came in.
+   */
+  shootAcross(fraction: number, side: -1 | 1): Promise<string>;
   /** The tightest corners on the lap, as {fraction, radiusM, side}. */
   corners(n: number): CornerInfo[];
   /** Measurements of what is actually drawn beside the road, per lap. */
@@ -118,6 +139,11 @@ interface AuditApi {
   shootMirror(mode: CameraMode, side: 1 | -1, spanPx: number): Promise<string>;
   /** What one frame in the given mode costs. */
   costMode(mode: CameraMode, frames: number): Promise<FrameCost>;
+  /**
+   * The pit lane's own sweep: drive a car into its box, walk the stop, and
+   * photograph it. See `audit/pitshots.ts`.
+   */
+  pit: PitHarness;
   /**
    * The mirror's own feed, read straight off its render target and blown up.
    *
@@ -207,7 +233,7 @@ const freeCam = new THREE.PerspectiveCamera(55, SHOT_W / SHOT_H, 0.3, 8000);
 
 function frame(): void {
   if (!engine || !focus) return;
-  renderer.render(1 / 60, engine, focus);
+  renderer.render(1 / 60, 1, engine, focus);
 }
 
 /**
@@ -254,9 +280,26 @@ function renderFree(): void {
   renderer.post.render(renderer.scene, freeCam);
 }
 
-/** Waits for the browser to actually present the frame we just drew. */
+/**
+ * Waits for the browser to actually present the frame we just drew.
+ *
+ * With a TIMER RACING THE FRAME CALLBACK, and that is not belt and braces. A
+ * headless page whose tab is not frontmost has its `requestAnimationFrame`
+ * throttled to the point of never firing, and on a plain rAF wait that is not a
+ * slow sweep, it is a permanent hang: the harness sat on Bahrain for forty
+ * minutes with both the node process and the renderer at zero percent, having
+ * written nothing and reported nothing, which looks exactly like a slow
+ * circuit. Whichever of the two arrives first is enough — the draw has already
+ * been issued, and the only thing being waited on is a chance for the compositor
+ * to take it.
+ */
 function present(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 250);
+  });
 }
 
 /**
@@ -506,6 +549,74 @@ async function shootKerb(fraction: number, side: -1 | 1): Promise<string> {
     track.pz[j] + track.nz[j] * aim,
   );
   freeCam.fov = 45;
+  freeCam.updateProjectionMatrix();
+  return drawAndShoot(renderFree);
+}
+
+/**
+ * The ground beside a corner, from outside the circuit and above it.
+ *
+ * Stands 95m outboard of the road edge and 26m above it, looking back down at
+ * the run-off. That geometry is chosen so the frame contains three things at
+ * once: the racing surface, the outer edge of whatever is drawn beside it, and
+ * the terrain beyond — which is the only way to see that the second is a
+ * cliff rather than a slope. An eye-level shot from the road cannot: the
+ * barrier is in the way and the drop is behind it.
+ */
+async function shootShoulder(fraction: number, side: -1 | 1): Promise<string> {
+  const track = engine!.track;
+  const i = nodeAt(fraction);
+  const hw = track.width[i] * 0.5;
+  const lat = side * (hw + 95);
+  // Pulled back along the road as well as out, so a corner curves away across
+  // the frame instead of presenting one flat section.
+  freeCam.position.set(
+    track.px[i] + track.nx[i] * lat - track.tx[i] * 45,
+    track.elevation[i] + 26,
+    track.pz[i] + track.nz[i] * lat - track.tz[i] * 45,
+  );
+  const aim = side * (hw + 12);
+  freeCam.up.set(0, 1, 0);
+  freeCam.lookAt(
+    track.px[i] + track.nx[i] * aim,
+    track.elevation[i],
+    track.pz[i] + track.nz[i] * aim,
+  );
+  freeCam.fov = 55;
+  freeCam.updateProjectionMatrix();
+  return drawAndShoot(renderFree);
+}
+
+/**
+ * The same profile from close in and low down.
+ *
+ * `shootShoulder` is a survey: it shows the whole corner and how it sits in the
+ * landscape. This is the detail — 55m out and 7m up — where the join between
+ * the ground beside the road and the ground beyond it fills the frame, so a
+ * drop of half a metre and a drop of six can be told apart.
+ *
+ * From OUTSIDE the barrier rather than from the road. A driver's-eye shot
+ * pointed across the run-off photographs the hoarding on the armco and nothing
+ * else, which is what the first version of this did.
+ */
+async function shootAcross(fraction: number, side: -1 | 1): Promise<string> {
+  const track = engine!.track;
+  const i = nodeAt(fraction);
+  const hw = track.width[i] * 0.5;
+  const lat = side * (hw + 55);
+  freeCam.position.set(
+    track.px[i] + track.nx[i] * lat - track.tx[i] * 25,
+    track.elevation[i] + 7,
+    track.pz[i] + track.nz[i] * lat - track.tz[i] * 25,
+  );
+  const aim = side * (hw + 8);
+  freeCam.up.set(0, 1, 0);
+  freeCam.lookAt(
+    track.px[i] + track.nx[i] * aim,
+    track.elevation[i] - 1,
+    track.pz[i] + track.nz[i] * aim,
+  );
+  freeCam.fov = 50;
   freeCam.updateProjectionMatrix();
   return drawAndShoot(renderFree);
 }
@@ -911,9 +1022,24 @@ async function mirrorFeed(mode: CameraMode, side: 1 | -1): Promise<string> {
   });
 }
 
+/**
+ * The pit-lane sweep, wired to this page's renderer and camera plumbing so its
+ * shots go through the same post chain as every other shot here.
+ */
+const pit = buildPitHarness({
+  renderer,
+  freeCam,
+  frame,
+  present,
+  drawAndShoot,
+  renderFree,
+  adopt: (e, f) => { engine = e; focus = f; },
+  current: () => ({ engine, focus }),
+});
+
 window.__audit = {
-  load, shootMode, shootPlan, shootOverview, shootEye, contact,
-  shootEyeAids, shootKerb, shootDebris, corners, measure, crash, focusFraction, debrisFraction, shootPile, pileCount,
+  load, shootMode, shootPlan, shootOverview, shootEye, contact, pit,
+  shootEyeAids, shootKerb, shootShoulder, shootAcross, shootDebris, corners, measure, crash, focusFraction, debrisFraction, shootPile, pileCount,
   label: (t: string) => { labels.push(t); },
   setFrame, placeBehind, shootZoom, shootMirror, costMode, mirrorFeed,
   cameraModes: CAMERA_MODES,

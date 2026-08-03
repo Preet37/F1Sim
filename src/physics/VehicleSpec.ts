@@ -53,6 +53,26 @@ export interface VehicleSpec {
   /** Fractional downforce loss when DRS is open (the rear wing stalls). */
   drsDownforceLoss: number;
 
+  /**
+   * Ride height at the plank under each axle with the car dry and at rest, m.
+   *
+   * The plank is the 10mm wooden board under the floor (F1 Technical
+   * Regulations Art. 3.5.9) into which the titanium skid blocks are bolted, and
+   * it is the skids — not the bodywork — that touch the road and throw sparks.
+   * Rear is higher than front: that difference is the car's rake.
+   */
+  staticRideHeightFrontM: number;
+  staticRideHeightRearM: number;
+  /**
+   * Vertical stiffness at the axle in heave, N/m.
+   *
+   * What decides how far the floor sinks under load, and therefore when it
+   * touches the road. Front is stiffer than rear on a ground-effect car because
+   * the front of the floor is the part that must not be allowed to seal.
+   */
+  heaveStiffnessFrontNPerM: number;
+  heaveStiffnessRearNPerM: number;
+
   /** Peak tire friction coefficient before compound and thermal effects. */
   baseMu: number;
   /** Cornering stiffness coefficient for the magic-formula lateral model. */
@@ -147,6 +167,43 @@ export const BASE_F1_SPEC: VehicleSpec = {
   drsDragReduction: 0.22,
   drsDownforceLoss: 0.16,
 
+  // Ride height and heave. These four numbers exist to answer one question —
+  // when is the floor ON the road — because that is what makes sparks, and
+  // sparks were previously drawn from a speed term that never switched off.
+  //
+  // They are set so that the car grounds where a real one does, which is a
+  // stronger constraint than it sounds; the stiffnesses are not free once the
+  // ride heights are chosen, because downforce is already fixed by `clBase`.
+  //
+  //   At 250km/h in race trim: q = 4823, downforce ~17.5kN once `applySetup`
+  //   has scaled it, split 40/60 by `aeroBalanceFront`. Plus a full tank
+  //   (~1.08kN) split 45/55. Front sees ~7.5kN, which at 360kN/m is 20.8mm of
+  //   travel against 20mm of static height — so the front skid touches down at
+  //   about 250km/h with fuel in the car, and rather later without it.
+  //
+  //   Braking is the other half. Load transfer is `a*m*h/L` = 3.36kN at 5g,
+  //   all of it onto the front. At 200km/h that puts the front 3mm INTO the
+  //   road when it was 6mm clear a moment earlier — which is why the sparks a
+  //   television camera catches are almost always in a braking zone at the end
+  //   of a long straight, and why they stop as the car slows.
+  //
+  //   The rear is 60mm on softer springs and grounds later, above about
+  //   280km/h, which is the pure top-speed case rather than the braking one.
+  //
+  // CALIBRATION. The first pass at these numbers used 26mm and 70mm and was
+  // measurably too high: `probe:rideheight` put the floor on the road for
+  // 0.0-0.9% of a lap, which is a spark shower nobody would ever see. These
+  // give a few per cent, concentrated in the braking zones, which is what the
+  // report asked for and what a broadcast actually looks like. The point is
+  // that it is now a number that can be checked rather than a feel.
+  //
+  // Both together mean sparks are an EVENT with a cause, not a speed effect.
+  // Measured across the calendar by `npm run probe:rideheight`.
+  staticRideHeightFrontM: 0.020,
+  staticRideHeightRearM: 0.060,
+  heaveStiffnessFrontNPerM: 360_000,
+  heaveStiffnessRearNPerM: 210_000,
+
   baseMu: 1.70,
   // These two set BOTH the linear balance and the limit balance and cannot be
   // chosen independently: the magic formula peaks at alpha = 1.978 / stiffness,
@@ -239,6 +296,34 @@ export interface TeamPerformance {
   downforceMult: number;
   dragMult: number;
   mechanicalGripMult: number;
+  /**
+   * Scales the car's dry mass. Optional; 1.0, and absent, are the same car.
+   *
+   * This exists because `TeamPerformance` is the ENTIRE bandwidth between career
+   * mode and the simulation, and career mode now runs Formula 2 and Formula 3 by
+   * expressing them as teams. Without a mass term a Formula 3 car weighs what a
+   * Formula 1 car weighs, and no amount of power and downforce tuning can
+   * substitute for that, because mass and downforce do not act alike:
+   *
+   *   - downforce goes as v squared, so taking it away costs a car almost
+   *     nothing at 60km/h and everything at 250;
+   *   - mass is there at every speed, and what it costs is worst where the car
+   *     is slowest — traction out of a hairpin, and the transient before
+   *     downforce arrives.
+   *
+   * So a junior tier built only out of power and downforce comes out right at
+   * Monza and too slow at Zandvoort, which is exactly what `probe:tiers`
+   * measured: +12.7 and +20.1 per cent at Monza against +16.8 and +24.8 at
+   * Zandvoort, for targets of 13 and 19.
+   *
+   * OPTIONAL RATHER THAN REQUIRED, deliberately. Every existing caller builds
+   * this record by hand and none of them wanted a mass change; making the field
+   * required would have meant editing all of them to write `massMult: 1`, which
+   * is a lot of diff for no behaviour and one place to get it wrong. Absent
+   * means 798kg, and `probe:handling`, `probe:turnin` and `validate:physics` all
+   * report byte-identical numbers across this change.
+   */
+  massMult?: number;
   /** Scales tire wear — a car that is kind to its tires can run longer stints. */
   tireWearMult: number;
   /** Reliability: probability per race distance of a terminal failure. */
@@ -253,6 +338,7 @@ export interface TeamPerformance {
 export function specForTeam(perf: TeamPerformance, base: VehicleSpec = BASE_F1_SPEC): VehicleSpec {
   return {
     ...base,
+    dryMassKg: base.dryMassKg * (perf.massMult ?? 1),
     icePowerW: base.icePowerW * perf.powerMult,
     ersPowerW: base.ersPowerW * perf.ersMult,
     clBase: base.clBase * perf.downforceMult,

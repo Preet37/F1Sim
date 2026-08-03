@@ -1,0 +1,1062 @@
+/*
+ * THE FRONT OF HOUSE — the title, the driver, the menu and the settings.
+ *
+ * ===========================================================================
+ * THE DIRECTION, AND THE ONE RISK IT TAKES
+ * ===========================================================================
+ *
+ * `styles.css` sets this game in a REVEAL HALL and runs a strict colour law
+ * inside it: five signals with fixed meanings, no brand accent, nothing
+ * coloured for decoration. That law is right for a timing screen and it is
+ * exactly why the front page read flat — a menu with no accent at all is a
+ * table of contents, and the verdict on it was fair:
+ *
+ *   "the UI is still mid dude, this isn't how a game UI looks like."
+ *
+ * So the front of house gets an accent, and the risk is what the accent IS:
+ *
+ *              THE ACCENT IS THE PLAYER'S OWN HELMET COLOUR.
+ *
+ * `--me` and `--me-2` are the shell and the pattern of the helmet they
+ * designed. Every lit edge on the menu, the bars of light standing behind the
+ * car, the active settings tab, the fill in every slider and the glow under
+ * the primary action are that colour and no other. Two consequences, and both
+ * are the point:
+ *
+ *   1. NOTHING IS TAKEN FROM THE FIVE SIGNALS. `--me` never appears on a
+ *      timing surface, never states a fact, and never means anything except
+ *      "you". Purple is still the outright best and green is still go.
+ *
+ *   2. BEFORE THERE IS A DRIVER, THE ROOM IS UNLIT. On a first run `--me`
+ *      falls back to a cold tungsten grey, the hall is dark, and the light rig
+ *      behind the car is off. Making your driver is what turns the lights on.
+ *      That is not a loading state dressed up — it is the first-run experience
+ *      doing a job.
+ *
+ * ===========================================================================
+ * THE STRUCTURAL DEVICE: THE GRID SLOT
+ * ===========================================================================
+ *
+ * Every primary action is a sheared plate with a thick lit bar down its
+ * leading edge — a box on a starting grid, seen from above. The shear is the
+ * house `--lean`, already used on every nameplate in the game, so this is the
+ * existing language spoken louder rather than a second one. The bar is the
+ * light. Under each name is ONE FIGURE READ FROM THE SAVE — the round you are
+ * on, the number of circuits, how many drivers are on this device — because a
+ * button on a game's front page should tell you what is behind it.
+ *
+ * Nothing here is numbered 01 / 02 / 03. These four actions are not a sequence
+ * and pretending they are would be decoration.
+ *
+ * ===========================================================================
+ * WHAT THIS FILE MAY AND MAY NOT TOUCH
+ * ===========================================================================
+ *
+ * `styles.css` belongs to the HUD work and `Hud.ts` with it. Nothing below
+ * redefines a selector that file declares. Where an existing class has to look
+ * different inside a new screen — `.menu-item`, which the browser regression
+ * clicks by name and which must therefore keep its name — it is restyled
+ * through a scoped ancestor (`.mm-tiles .menu-item`) rather than by overriding
+ * the base rule.
+ */
+
+/* ==========================================================================
+   Shared front-of-house tokens
+   ========================================================================== */
+
+.screen {
+  /* The unlit hall. Overwritten with the player's own colours the moment there
+     is a player; see `applyIdentityColours`. */
+  --me: #9fb0c4;
+  --me-2: #5d6b7d;
+  /* The accent as a glow and as a wash. Derived once, so no rule below has to
+     write a colour-mix by hand and none of them can drift apart. */
+  --me-glow: 0 0 22px -2px color-mix(in srgb, var(--me) 55%, transparent);
+  --me-wash: color-mix(in srgb, var(--me) 14%, transparent);
+  --me-edge: color-mix(in srgb, var(--me) 62%, transparent);
+}
+
+/* ==========================================================================
+   Front-of-house corrections to the shared chassis
+   ==========================================================================
+
+   `page()` in `main.ts` builds every screen in the game on one chassis, and
+   three of its decisions are right for a working screen and wrong for the
+   front page. Scoped to `.frontdoor`, which only the menu, the drivers rack,
+   the driver editor and the settings carry — nothing in `styles.css` is
+   redefined and no other screen is touched. */
+
+/* THE FRONT PAGE DOES NOT SCROLL. Its whole argument is that it fits. */
+.frontdoor .page-body:has(.mm) {
+  overflow: hidden;
+  padding-top: calc(14px + env(safe-area-inset-top));
+  padding-bottom: 14px;
+}
+
+/* THE WORDMARK IS NOT SAID TWICE. The status rail exists to tell you where you
+   are on a screen that is somewhere; on the front page it printed "F1SIM /
+   MAIN MENU" four centimetres above a wordmark reading F1SIM. */
+.screen.is-menu .statusrail { display: none; }
+
+/* THE CAR IS A BAND OF THE COMPOSITION, so its box is the band and not the
+   viewport. `stage-hero` is mounted INTO `.mm-hero`, which means the camera
+   frames itself to whatever the layout gave it — the same code on a desktop,
+   on a phone held sideways and in portrait, with no breakpoint to keep in
+   step. It bleeds a little past the top and bottom so the reflection ends in
+   darkness rather than at a hard edge. */
+.stage.stage-hero { inset: 0 -2% -6% -2%; }
+/* The shared veil is a left-to-right ramp, for screens whose interface sits
+   in a column beside the car. Here the interface is above and below it, so the
+   ramp is vertical — heavier at the top, where the wordmark and the identity
+   chip have to hold their contrast against whatever the light rig is doing. */
+.mm-hero .stage-veil {
+  background:
+    linear-gradient(180deg, rgba(4, 6, 9, 0.86) 0%, rgba(4, 6, 9, 0.3) 12%,
+      rgba(4, 6, 9, 0) 30%, rgba(4, 6, 9, 0) 74%, rgba(4, 6, 9, 0.6) 100%);
+}
+
+/* SETTINGS FILLS THE PAGE. A tab rail eight tall beside a panel four rows deep
+   left two thirds of a desktop screen empty and made the panel look like a
+   dialog that had failed to load. */
+.frontdoor .page-body:has(.set) { display: flex; }
+.set { flex: 1 1 auto; }
+
+/* ==========================================================================
+   THE MAIN MENU
+   ==========================================================================
+
+   One screenful, never scrolling: the identity, the title, the car, the four
+   things you can do, and the three you occasionally need. A front page that
+   scrolls has already conceded that it could not decide what mattered. */
+
+.mm {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: clamp(8px, 1.4vh, 18px);
+}
+
+/* --- The top line: who you are, what this is, and the way out ------------ */
+
+.mm-top {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.mm-title {
+  justify-self: center;
+  text-align: center;
+  font-family: var(--font-display);
+  font-stretch: 122%;
+  font-weight: 800;
+  text-transform: uppercase;
+  line-height: 0.9;
+  font-size: clamp(26px, 4.6vw, 58px);
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  /* The shear, once, on the one wordmark. */
+  transform: skewX(var(--lean));
+  white-space: nowrap;
+}
+/* "SIM" is the qualifier, not the subject: same size, hollow, so the eye
+   lands on F1 and the word still reads whole. */
+.mm-title i {
+  font-style: normal;
+  font-weight: 800;
+  color: transparent;
+  -webkit-text-stroke: 1.4px var(--me-edge);
+  margin-left: 0.06em;
+}
+.mm-title u {
+  display: block;
+  text-decoration: none;
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: clamp(7px, 0.78vw, 9.5px);
+  letter-spacing: 0.62em;
+  text-indent: 0.62em;
+  color: var(--ink-3);
+  margin-top: 6px;
+}
+
+.mm-right {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mm-version {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* The gear. A real icon button, sized for a thumb on a phone. */
+.mm-gear {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: rgba(10, 14, 20, 0.62);
+  color: var(--ink-2);
+  cursor: pointer;
+  padding: 0;
+  transition: color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.mm-gear svg { width: 19px; height: 19px; display: block; }
+.mm-gear:hover { color: var(--ink); border-color: var(--me-edge); box-shadow: var(--me-glow); }
+.mm-gear:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+
+/* --- The identity chip --------------------------------------------------
+   Who is playing, in the corner the reference puts it in and every game since
+   has. It is a BUTTON: the whole point of the rebuild is that the name on the
+   front page is now a thing you can press to become somebody else. */
+
+.idchip {
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  max-width: 100%;
+  padding: 6px 14px 6px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(9, 13, 18, 0.66);
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.idchip:hover { border-color: var(--me-edge); background: rgba(14, 19, 26, 0.86); }
+.idchip:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+
+.idchip-art {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: radial-gradient(closest-side, var(--me-wash), transparent);
+  box-shadow: 0 0 0 1px var(--me-edge) inset;
+}
+.idchip-art svg { width: 132%; height: auto; display: block; margin-top: 12%; }
+
+.idchip-text { min-width: 0; }
+.idchip-name {
+  font-family: var(--font-display);
+  font-stretch: 116%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 14px;
+  line-height: 1.06;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.idchip-line {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.idchip-line b { color: var(--me); font-weight: 700; }
+.idchip-line .sep { color: var(--line-2); margin: 0 0.42em; }
+
+/* --- The hero space ------------------------------------------------------
+   Deliberately empty. The car is a GL canvas behind the whole screen and this
+   is the hole in the interface it shows through, so the composition is decided
+   by the layout rather than by the camera guessing. */
+
+.mm-hero {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding-bottom: 4px;
+}
+
+/* The one sentence on the page. It sits low and left, under the car's nose,
+   in the place a broadcast lower third goes. */
+/* Over the car, not under it: the stage is a positioned element inside this
+   band, so anything meant to read on top of it has to say so. */
+.mm-blurb, .mm-warn { position: relative; z-index: 2; }
+
+.mm-blurb {
+  max-width: 30ch;
+  font-size: clamp(11.5px, 1.15vw, 14px);
+  line-height: 1.45;
+  color: var(--ink-2);
+  border-left: 2px solid var(--me-edge);
+  padding-left: 12px;
+}
+.mm-blurb b {
+  display: block;
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--me);
+  margin-bottom: 4px;
+}
+
+/* --- The four grid slots ------------------------------------------------ */
+
+.mm-tiles {
+  flex: 0 0 auto;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: clamp(6px, 0.9vw, 12px);
+}
+
+/* `.menu-item` keeps its name because the browser regression clicks it by
+   name; everything it looks like is set here, scoped, so the base rule in
+   styles.css is untouched for anything else that uses it. */
+.mm-tiles .menu-item {
+  position: relative;
+  display: block;
+  min-width: 0;
+  border: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  isolation: isolate;
+  transform: skewX(var(--lean));
+  transition: transform 160ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+/* The plate. A separate layer so the shear can be undone on the type without
+   undoing it on the shape. */
+.mm-tiles .menu-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(24, 32, 42, 0.94), rgba(9, 13, 18, 0.94));
+  border: 1px solid var(--line);
+  box-shadow: var(--plate-lift);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+/* The lit leading edge — the bar down the left of a grid box. */
+.mm-tiles .menu-item::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  z-index: -1;
+  background: var(--ink-3);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+.mm-tiles .menu-item > span {
+  display: block;
+  transform: skewX(calc(-1 * var(--lean)));
+}
+.mm-tiles .menu-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: clamp(12px, 1.32vw, 17px);
+  letter-spacing: 0.015em;
+  line-height: 1.1;
+  color: var(--ink);
+  margin: 0 14px 0 20px;
+  padding-top: clamp(10px, 1.5vh, 16px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mm-tiles .menu-fig {
+  font-family: var(--font-data);
+  font-size: clamp(9px, 0.86vw, 11px);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: 5px 14px clamp(10px, 1.5vh, 16px) 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The description is written for the tile that needs it and hidden where the
+   row is too tight to carry three lines. Never deleted from the DOM — it is
+   what a screen reader announces. */
+.mm-tiles .menu-desc {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.mm-tiles .menu-item:hover,
+.mm-tiles .menu-item:focus-visible {
+  transform: skewX(var(--lean)) translateY(-3px);
+}
+.mm-tiles .menu-item:hover::before,
+.mm-tiles .menu-item:focus-visible::before {
+  border-color: var(--me-edge);
+  background: linear-gradient(180deg, rgba(32, 42, 55, 0.96), rgba(11, 16, 22, 0.96));
+}
+.mm-tiles .menu-item:hover::after,
+.mm-tiles .menu-item:focus-visible::after {
+  background: var(--me);
+  box-shadow: var(--me-glow);
+}
+.mm-tiles .menu-item:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 3px; }
+
+/* The lead action — Continue if there is a career, Start Career if there is
+   not — is lit from the start rather than on hover. Exactly one tile is ever
+   `lead`, so this is emphasis and not decoration. */
+.mm-tiles .menu-item.lead::after { background: var(--me); box-shadow: var(--me-glow); }
+.mm-tiles .menu-item.lead::before {
+  border-color: var(--me-edge);
+  background:
+    linear-gradient(100deg, var(--me-wash), transparent 58%),
+    linear-gradient(180deg, rgba(28, 37, 48, 0.95), rgba(10, 14, 20, 0.95));
+}
+.mm-tiles .menu-item.lead .menu-fig { color: var(--me); }
+/* The base rule paints a lead item's name green, because green is this game's
+   "go". On the front page that is one accent too many — the lit edge, the
+   wash and the figure are already saying which tile this is, in the player's
+   own colour — so the name stays ink and green is left to the one primary
+   button in the action bar, where the house rule put it. */
+.mm-tiles .menu-item.lead .menu-name { color: var(--ink); }
+
+/* --- The secondary row -------------------------------------------------- */
+
+.mm-second {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.mm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: rgba(9, 13, 18, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.mm-link:hover { color: var(--ink); border-color: var(--me-edge); background: rgba(16, 22, 30, 0.8); }
+.mm-link:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.mm-link svg { width: 13px; height: 13px; flex: none; }
+.mm-second .mm-spacer { flex: 1 1 auto; }
+
+.mm-warn {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--sig-yellow);
+  border-left: 2px solid var(--sig-yellow);
+  padding-left: 10px;
+  max-width: 46ch;
+}
+
+/* --- Small screens ------------------------------------------------------
+   A phone held sideways is 360 tall. The tiles go to two rows of two, the
+   blurb goes away, and the title comes down to something a 40px-tall band can
+   hold. Portrait keeps the same order and simply stacks. */
+
+@media (max-width: 720px), (max-height: 460px) {
+  .mm { gap: 7px; }
+  .mm-blurb { display: none; }
+  .mm-tiles {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mm-title { font-size: clamp(21px, 5.4vw, 34px); }
+  .mm-title u { letter-spacing: 0.42em; text-indent: 0.42em; margin-top: 3px; }
+  .idchip-art { width: 32px; height: 32px; }
+  .idchip { padding-right: 11px; }
+}
+
+@media (max-width: 560px) {
+  .mm-top { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
+  .mm-title { grid-column: 1 / -1; grid-row: 1; }
+  .idchip { grid-row: 2; }
+  .mm-right { grid-row: 2; }
+  .mm-version { display: none; }
+  /* A PORTRAIT PHONE HAS HEIGHT TO SPARE AND THE CAR CANNOT USE IT. The car is
+     framed to the WIDTH — that is the dimension a car occupies — so on a tall
+     narrow screen a hero band that takes every remaining pixel leaves a small
+     car floating in the middle of a large hole. Capped, the car band is tight
+     under the identity chip, the leftover goes above the grid slots, and the
+     one sentence on the page comes back because there is now room for it. */
+  .mm { justify-content: space-between; }
+  .mm-hero { flex: 0 1 46vh; min-height: 210px; }
+  .mm-blurb { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mm-tiles .menu-item,
+  .mm-tiles .menu-item::before,
+  .mm-tiles .menu-item::after,
+  .mm-link, .mm-gear, .idchip { transition: none; }
+  .mm-tiles .menu-item:hover,
+  .mm-tiles .menu-item:focus-visible { transform: skewX(var(--lean)); }
+}
+
+/* ==========================================================================
+   THE DRIVERS SCREEN — switching, making and deleting a driver
+   ==========================================================================
+
+   This is what "log out" means in a game with no server, and the screen says
+   so in those words rather than implying an account that does not exist. */
+
+.drv-note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  max-width: 62ch;
+  margin-bottom: 16px;
+}
+.drv-note b { color: var(--ink-2); font-weight: 700; }
+
+/* A rack, not a stretched row. `auto-fill` with a 1fr maximum turns two
+   drivers on a wide monitor into two cards a third of a metre across; capped,
+   they stay card-sized and the rack fills from the left the way a shelf does. */
+.drv-rack {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(326px, 380px));
+  justify-content: start;
+  gap: 12px;
+}
+
+.drv-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 14px;
+  /* Top, not centre. The card's height is set by the stats and the buttons,
+     and a portrait vertically centred in it floats away from the name it
+     belongs to. */
+  align-items: start;
+  padding: 14px 14px 14px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--card-me, var(--ink-3));
+  background:
+    radial-gradient(70% 130% at 8% 0%, var(--card-wash, transparent), transparent 64%),
+    linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  box-shadow: var(--plate-lift);
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  width: 100%;
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+.drv-card:hover { transform: translateY(-2px); border-color: var(--line-2); }
+.drv-card:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.drv-card.on { border-color: var(--card-me, var(--sig-white)); }
+.drv-card.on::after {
+  content: 'PLAYING';
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-family: var(--font-data);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--card-me, var(--ink));
+}
+/* The portrait runs off the bottom of its own column, the way the bust is
+   drawn to. The card clips it, which is what makes a rack of drivers read as
+   people standing in slots rather than as avatars in boxes. */
+.drv-art {
+  align-self: end;
+  position: relative;
+  height: 108px;
+}
+.drv-art svg {
+  display: block;
+  position: absolute;
+  left: -14%;
+  bottom: -14px;
+  width: 128%;
+  height: auto;
+}
+/* Two actions on one line. Left to the base button size they stack, which
+   makes every card in the rack forty pixels taller than it needs to be. */
+.drv-actions .btn { padding: 7px 12px; font-size: 11px; }
+.drv-code {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  color: var(--card-me, var(--ink-2));
+}
+.drv-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  line-height: 1.04;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.drv-name i { display: block; font-style: normal; font-weight: 400; font-size: 13px; color: var(--ink-2); }
+.drv-name b { display: block; font-weight: 800; font-size: 21px; text-transform: uppercase; }
+
+.drv-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.drv-stat { min-width: 0; }
+.drv-stat-label {
+  font-family: var(--font-data);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.drv-stat-value {
+  font-family: var(--font-data);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-top: 1px;
+}
+.drv-stat.none .drv-stat-value { color: var(--sig-grey); }
+
+.drv-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+/* The new-driver slot: the same footprint, drawn as an opening rather than as
+   a card, so a rack of one driver still reads as a rack. */
+.drv-new {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 150px;
+  border: 1px dashed var(--line-2);
+  background: rgba(9, 13, 18, 0.4);
+  color: var(--ink-2);
+  cursor: pointer;
+  padding: 18px;
+  font-family: var(--font-display);
+  font-stretch: 116%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.drv-new:hover { color: var(--ink); border-color: var(--me-edge); }
+.drv-new:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.drv-new span {
+  display: block;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-3);
+  max-width: 30ch;
+  text-align: center;
+}
+
+/* The careers inside one driver. */
+.drv-careers { display: grid; gap: 6px; margin-top: 12px; }
+.drv-career {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--carbon-1);
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.drv-career:hover { border-color: var(--line-2); color: var(--ink); }
+.drv-career:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+.drv-career b { color: var(--ink); font-weight: 700; }
+.drv-career .grow { flex: 1 1 auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .drv-card { transition: none; }
+  .drv-card:hover { transform: none; }
+}
+
+/* ==========================================================================
+   SETTINGS
+   ==========================================================================
+
+   A rail of tabs and a panel beside it, which is how every console game has
+   organised a settings screen for twenty years for the good reason that it
+   makes the SHAPE of the settings visible: eight subjects, one open. The
+   previous version was seven headings stacked down one scrolling page, so
+   nobody could tell whether there were three sections or thirty, and half of
+   what the game could do — the render quality, the weekend length, where the
+   saves live — had no screen at all. */
+
+.set {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  gap: 18px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.set-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* The tabs: sheared plates in a stack, the active one lit in the player's
+   colour. Same shape as the menu's grid slots — one device, used twice. */
+.set-tab {
+  position: relative;
+  display: block;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  isolation: isolate;
+  transform: skewX(var(--lean));
+}
+.set-tab::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgba(13, 18, 24, 0.72);
+  border: 1px solid var(--line);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.set-tab::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  z-index: -1;
+  background: transparent;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+.set-tab span {
+  display: block;
+  transform: skewX(calc(-1 * var(--lean)));
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  padding: 11px 12px 11px 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 140ms ease;
+}
+.set-tab:hover span { color: var(--ink); }
+.set-tab:hover::before { border-color: var(--line-2); }
+.set-tab:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.set-tab.on span { color: var(--ink); }
+.set-tab.on::before {
+  background: linear-gradient(100deg, var(--me-wash), rgba(20, 27, 35, 0.9) 62%);
+  border-color: var(--me-edge);
+}
+.set-tab.on::after { background: var(--me); box-shadow: var(--me-glow); }
+
+.set-rail { align-self: start; }
+
+.set-panel {
+  min-width: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(16, 21, 28, 0.82), rgba(8, 11, 16, 0.86));
+  box-shadow: var(--plate-lift);
+  padding: 16px 18px 20px;
+}
+.set-panel-head {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+.set-panel-note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  margin: 4px 0 16px;
+  max-width: 68ch;
+}
+
+/* --- A row of settings --------------------------------------------------
+   Label on the left, control on the right, one hairline between each. The
+   reference's own layout, and it is the right one: the eye runs down the
+   labels to find the thing, then across once. */
+
+.opt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 40%);
+  gap: 10px 18px;
+  align-items: center;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+.opt:first-of-type { border-top: 0; padding-top: 2px; }
+.opt-label { min-width: 0; }
+.opt-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.25;
+}
+.opt-note {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.opt-control { justify-self: end; display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* The switch. A radio pip, lit, exactly as the reference draws it — because a
+   pip that glows when it is on is readable at arm's length on a phone and a
+   grey checkbox is not. */
+.opt-pip {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-2);
+  background: rgba(6, 9, 13, 0.7);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.opt-pip::after {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: transparent;
+  transition: background 140ms ease;
+}
+.opt-pip[aria-checked='true'] { border-color: var(--me); box-shadow: var(--me-glow); }
+.opt-pip[aria-checked='true']::after { background: var(--me); }
+.opt-pip:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 3px; }
+.opt-state {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  min-width: 3.4em;
+  text-align: right;
+}
+.opt-pip[aria-checked='true'] + .opt-state,
+.opt-state.on { color: var(--me); }
+
+/* The choice strip: two to four mutually exclusive values, side by side. Used
+   where the options have names rather than a magnitude. */
+.opt-choices { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.opt-choice {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: rgba(6, 9, 13, 0.6);
+  border: 1px solid var(--line);
+  padding: 8px 11px;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.opt-choice:hover { color: var(--ink); border-color: var(--line-2); }
+.opt-choice:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.opt-choice.on {
+  color: var(--ink);
+  border-color: var(--me);
+  background: var(--me-wash);
+  box-shadow: var(--me-glow);
+}
+
+/* The slider, with the value INSIDE the handle.
+   The reference does this and it is simply correct: a number floating beside a
+   track has to be hunted for, and a number in the thing your thumb is on top
+   of is the one place it cannot be missed. Built on a real <input type=range>
+   so the keyboard, the screen reader and the touch target all come for free. */
+.opt-slider {
+  /* Where the handle is, 0 to 1. Unitless so it can be multiplied by a length
+     in `calc` — see `optSlider` in frontendKit.ts. */
+  --pct: 0.5;
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 110px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+}
+.opt-slider input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 34px;
+  margin: 0;
+  background: none;
+  cursor: pointer;
+}
+.opt-slider::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg,
+    var(--me) 0, var(--me) calc(var(--pct) * 100%),
+    rgba(150, 180, 214, 0.2) calc(var(--pct) * 100%));
+  pointer-events: none;
+}
+.opt-slider input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #080b10;
+  border: 2px solid var(--me);
+  box-shadow: var(--me-glow);
+  cursor: pointer;
+}
+.opt-slider input::-moz-range-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #080b10;
+  border: 2px solid var(--me);
+  box-shadow: var(--me-glow);
+  cursor: pointer;
+}
+.opt-slider input:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+/* The number, painted over the handle and inert to the pointer so the drag
+   still belongs to the input underneath. */
+.opt-slider b {
+  position: absolute;
+  /* The handle is 32px across, so its centre travels between 16px and
+     (100% - 16px) rather than between 0 and 100%. */
+  left: calc(var(--pct) * 100% + 16px - 32px * var(--pct));
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1;
+}
+
+/* A block of prose or a device readout inside a panel. */
+.opt-block {
+  border: 1px solid var(--line);
+  background: rgba(6, 9, 13, 0.55);
+  padding: 12px 14px;
+  margin-top: 14px;
+}
+.opt-block-head {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.opt-block-line { font-size: 13px; color: var(--ink); margin-top: 5px; line-height: 1.45; }
+.opt-block-note { font-size: 12px; color: var(--ink-3); margin-top: 5px; line-height: 1.5; }
+
+/* The key map, as a plain two-column list. */
+.opt-keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 3px 16px; }
+.opt-key { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--line); }
+.opt-key kbd {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--carbon-3);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 3px 6px;
+  white-space: nowrap;
+  flex: none;
+  min-width: 74px;
+  text-align: center;
+}
+.opt-key span { font-size: 12px; color: var(--ink-2); }
+
+/* A phone held sideways is 390 tall. A vertical rail of eight tabs eats half
+   of that and leaves two rows of settings visible under it, so the rail lies
+   down whenever the screen is SHORT as well as when it is narrow. */
+@media (max-width: 760px), (max-height: 520px) {
+  .set { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  /* The rail becomes a strip that scrolls sideways, which is the only honest
+     way to fit eight tabs across a phone. */
+  .set-rail {
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .set-rail::-webkit-scrollbar { display: none; }
+  .set-tab { width: auto; flex: none; }
+  .set-tab span { padding: 9px 14px 9px 18px; }
+  .opt { grid-template-columns: minmax(0, 1fr); }
+  .opt-control { justify-self: stretch; }
+  .opt-choices { justify-content: flex-start; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .set-tab::before, .set-tab::after, .set-tab span,
+  .opt-pip, .opt-pip::after, .opt-choice { transition: none; }
+}

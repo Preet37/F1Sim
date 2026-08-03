@@ -82,6 +82,7 @@ const ENV: EnvironmentState = {
   trackTempC: 38,
   airTempC: 25,
   wetness: 0,
+  surfaceGrip: 1,
   airDensityRatio: 1,
   abrasion: 1,
 };

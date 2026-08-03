@@ -2,18 +2,28 @@ import { clamp, clamp01, damp, loopDelta, Rng, wrapDistance, MS_TO_KPH } from '.
 import { PHYSICS_DT } from '../core/SimClock';
 import { TrackSpline } from '../track/TrackSpline';
 import { CarEntry } from './CarEntry';
-import { stintLife } from './Strategy';
+import {
+  compoundsAvailableTo, crossoverCandidates, crossoverCase, isWetCompound, stintLife,
+} from './Strategy';
+import {
+  PitWall, Weather, wetCompoundFor, type PitWallContext, type RadioAnswer,
+} from './Weather';
 import { RaceControlManager } from './RaceControlManager';
+import { RaceEngineer } from './RaceEngineer';
 import {
   bandOf, COMPONENT_NAMES, BODY_PART_IDS, PART_DETACH_HEALTH, PART_REPAIR_HEALTH,
   PART_SIZE_M, type BodyPartId, type ImpactZone,
 } from './DamageModel';
 import { DebrisField } from './DebrisField';
+import { classificationTier } from './Classification';
 import { DRIVERS, getTeam, type Driver } from '../data/teams';
 import { DRY_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
 import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/VehiclePhysics';
 import type { Neighbour, AIDifficultyId } from '../ai/AIVehicleController';
 import { corneringSpeedLimitMs, createNeighbour } from '../ai/AIVehicleController';
+import {
+  CONTACT_WIDTH_M, HAZARD_CORRIDOR_M, lateralOverlap, safeFollowSpeedMs,
+} from '../ai/TrafficAwareness';
 import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
@@ -25,6 +35,10 @@ import {
 import {
   NEUTRAL_COMMITMENT, UNLAP_PACE_MULT, neutralisedLimit, neutralisedPlan, queueHoldMs,
 } from '../physics/NeutralisedLimiter';
+import {
+  makePitStopProgress, pitStopProgress, resolvePitStop,
+  type PitStopProgress, type PitStopResult,
+} from './PitStopChoreography';
 
 /**
  * The simulation. Owns the track, the cars, race control, timing and the
@@ -75,6 +89,15 @@ export interface SessionConfig {
    */
   participants?: readonly number[];
   /**
+   * Car indices that are entered in this segment but may not run in it.
+   *
+   * Art. B4.3.2 — a car the marshals had to recover during qualifying takes no
+   * further part in the session. These cars stay in `participants`, so they are
+   * counted and classified, and are simply never released from the garage. They
+   * set no time and Art. B2.4.3a.v(C) ranks them accordingly.
+   */
+  withdrawn?: readonly number[];
+  /**
    * How hard the AI field is to race against. Defaults to the medium level.
    *
    * Applies to the opposition only — the player's car has no AI to scale — and
@@ -85,58 +108,17 @@ export interface SessionConfig {
   seed: number;
 }
 
-/** Weather that evolves over a session. */
-export class Weather {
-  /** 0 dry .. 1 standing water. */
-  wetness = 0;
-  /** Target the wetness is drifting toward. */
-  private targetWetness = 0;
-  airTempC = 24;
-  trackTempC = 38;
-  /** True once any rain has fallen — suspends the two-compound rule. */
-  hasRained = false;
-  /** Human-readable state for the HUD. */
-  get label(): string {
-    if (this.wetness < 0.05) return 'Dry';
-    if (this.wetness < 0.35) return 'Damp';
-    if (this.wetness < 0.7) return 'Wet';
-    return 'Heavy Rain';
-  }
-
-  private rng: Rng;
-  private nextEventIn: number;
-
-  constructor(def: TrackDefinition, seed: number) {
-    this.rng = new Rng(seed ^ 0x5bf03635);
-    this.airTempC = def.baseAirTempC + this.rng.range(-3, 3);
-    this.trackTempC = def.baseTrackTempC + this.rng.range(-4, 4);
-    this.nextEventIn = this.rng.range(300, 1400);
-    // Decide up front whether it rains at all this session.
-    if (this.rng.chance(def.rainChance)) {
-      this.targetWetness = this.rng.range(0.25, 0.95);
-    }
-  }
-
-  update(dt: number): void {
-    this.nextEventIn -= dt;
-    if (this.nextEventIn <= 0) {
-      this.nextEventIn = this.rng.range(420, 1600);
-      // Rain arrives, intensifies, or clears.
-      if (this.wetness > 0.1) this.targetWetness = this.rng.chance(0.55) ? 0 : this.rng.range(0.2, 1);
-      else if (this.rng.chance(0.35)) this.targetWetness = this.rng.range(0.3, 0.9);
-    }
-
-    // Rain arrives faster than a track dries — a wet track takes many laps to
-    // come back, which is what makes the crossover call so difficult.
-    const rate = this.targetWetness > this.wetness ? 0.055 : 0.016;
-    this.wetness = damp(this.wetness, this.targetWetness, rate, dt);
-    if (this.wetness > 0.08) this.hasRained = true;
-
-    // Rain cools the track sharply.
-    const tempTarget = this.trackTempC - this.wetness * 12;
-    this.trackTempC = damp(this.trackTempC, tempTarget, 0.02, dt);
-  }
-}
+/**
+ * `Weather` used to be defined here, inline, in forty lines that drifted one
+ * number between 0 and 1. It now lives in `./Weather` along with the water it
+ * puts on the road and the pit wall that can see it coming — see that file's
+ * header for why. Re-exported because a good deal of code says
+ * `import { Weather } from './RaceEngine'` and there is nothing wrong with it.
+ */
+export { Weather, PitWall, TrackSurface, Forecast } from './Weather';
+export type {
+  RadioCall, RadioAnswer, ForecastReading, PitWallContext, Precipitation,
+} from './Weather';
 
 /**
  * Gap between successive cars being released from the garage, seconds.
@@ -165,6 +147,27 @@ const PIT_EXIT_BLEND_M = 260;
  */
 const PIT_BOX_WINDOW_M = 3.2;
 /**
+ * How far outside that window the crew will still take the car, metres.
+ *
+ * A crew does not wave a driver round for stopping a metre and a half long.
+ * They shuffle: the jack man walks the jack forward, the gunmen step, the whole
+ * box moves to the car — and it costs time, which is what `PIT_BOX_SHUFFLE_S`
+ * charges for. Beyond this, though, the car is somewhere the equipment cannot
+ * reach and the crew's own hand signal is to go round.
+ *
+ * Without a band like this the box was pass/fail on a 6.4m window at 80 km/h,
+ * so a driver who braked a tenth late was sent round a whole lap for an error
+ * a real crew absorbs without comment.
+ */
+const PIT_BOX_REACH_M = 7.5;
+/**
+ * What stopping off the marks costs, seconds per metre of error beyond the box.
+ *
+ * The crew has to physically move to the car, and everything downstream of the
+ * jack waits for the jack.
+ */
+const PIT_BOX_SHUFFLE_S = 0.55;
+/**
  * How far before its box a car pulls out of the fast lane and across into the
  * working lane — a car's length, plus the room to make the move in.
  */
@@ -179,6 +182,49 @@ const PIT_LANE_SHIFT_MS = 3.5;
  * it does not.
  */
 const PIT_BOX_STOP_SPEED_MS = 1.6;
+/**
+ * How near the marks counts as "arrived", metres.
+ *
+ * Inside this the car is on its marks and walking pace counts as stopped;
+ * outside it, the car is still rolling in and has to be genuinely stationary
+ * before the crew take it. See the note at the service test in `updatePitLane`.
+ */
+const PIT_BOX_SETTLE_M = 2.0;
+
+/**
+ * How near a car in the fast lane has to be for the release light to be held,
+ * metres ahead of and behind the box.
+ *
+ * The spotter's whole job. A car released across the nose of one already in the
+ * fast lane is an unsafe release, and in this simulation it is also a collision
+ * with a car doing 80 km/h that has nowhere to go. The window is asymmetric
+ * because the danger is not: something already level with the box is a problem
+ * for the next tenth of a second, while something 30m back is a problem for the
+ * whole of the pull-away.
+ */
+const PIT_RELEASE_LOOK_BACK_M = 32;
+const PIT_RELEASE_LOOK_AHEAD_M = 6;
+/**
+ * The longest the light will be held for traffic, seconds.
+ *
+ * A cap and nothing more: a pit lane in which a car can be held indefinitely is
+ * one in which a queue of cars deadlocks itself, and by this point the car
+ * ahead has moved or the release is being taken anyway.
+ */
+const PIT_RELEASE_MAX_HOLD_S = 6;
+
+/**
+ * The chance that a stop's release is delayed by traffic the model does not
+ * simulate, for a race and for a session where the lane is empty.
+ *
+ * `resolvePitStop` takes this as its `trafficRisk`. The simulation DOES hold
+ * the light for cars it can actually see (`PIT_RELEASE_LOOK_BACK_M` above), so
+ * this covers only what it cannot: a car about to leave the box two bays down,
+ * a crew still crossing the lane, the fast lane momentarily blocked further up.
+ * In practice and qualifying the lane is quiet and the figure is near zero.
+ */
+const PIT_TRAFFIC_RISK_RACE = 0.03;
+const PIT_TRAFFIC_RISK_QUIET = 0.008;
 
 /**
  * How late the strategist will leave the mandatory second compound, in laps.
@@ -191,6 +237,31 @@ const PIT_BOX_STOP_SPEED_MS = 1.6;
 const MANDATORY_COMPOUND_MARGIN_LAPS = 4;
 
 /**
+ * How many laps early a strategist will pull a planned stop forward to take
+ * advantage of a neutralisation.
+ *
+ * ONE. The saving on offer is the pit loss you were going to pay anyway, so it
+ * only exists if you were going to pay it very soon; pulled further forward the
+ * "cheap" stop costs a set of tyres with most of its life left and leaves a final
+ * stint too long for the one that replaces it. A neutralisation lasts several
+ * laps, so a lap of reach is enough for any car whose window opens while it is
+ * running — and it is short enough that the plan the player was shown is still
+ * recognisably the plan the race executed. See the note at the call site for
+ * what a generous version of this did to the field.
+ */
+const NEUTRALISED_PULL_FORWARD_LAPS = 1;
+
+/**
+ * Tyre life at which a stop is due on its own merits, 0..1.
+ *
+ * Deliberately the same number `pitAdvice` uses for "TYRES WORN — PIT WINDOW
+ * OPEN". The player is given that radio call and the AI acts on it; if the two
+ * were different constants the strategist would be recommending one thing and
+ * doing another, which is the failure this whole area exists to avoid.
+ */
+const TYRE_PIT_WINDOW = 0.45;
+
+/**
  * Car collision shape: three discs strung along the car's centreline.
  *
  * Radius is the car's half-width, and the offsets span its length, so together
@@ -201,6 +272,20 @@ const DISC_RADIUS_M = 1.0;
 const DISC_OFFSETS_M = [1.85, 0, -1.85] as const;
 /** Centre-to-centre distance beyond which no discs can possibly overlap. */
 const BROAD_PHASE_M = 2 * (1.85 + DISC_RADIUS_M);
+
+/** Neighbour records kept per car: ahead, behind, left, right, hazard. */
+const NEIGHBOUR_SLOTS = 5;
+
+/**
+ * Deceleration the perception sweep assumes when it RANKS hazards, m/s².
+ *
+ * Only a scoring constant. The engine's job here is to decide which of the cars
+ * in front is the one worth reporting; the controller then recomputes the answer
+ * from its own live grip, downforce and tyre state, which is the number that
+ * actually decides the pedal. Deliberately on the optimistic side so the ranking
+ * does not smother a genuinely urgent hazard behind a merely close one.
+ */
+const HAZARD_REFERENCE_DECEL_MS2 = 22;
 
 /** What race control calls each kind of solid object a car can hit. */
 const OBSTACLE_NAMES: Record<Obstacle['kind'], string> = {
@@ -239,10 +324,87 @@ const IMPACT_SHED_SEVERITY = 0.55;
  */
 const IMPACT_SHARD_SIZE_M = [0.45, 0.12, 0.35] as const;
 
+/**
+ * How close behind the beneficiary has to be before a car ordered to give a
+ * position back actually lifts, metres.
+ *
+ * Two car lengths and a bit. Close enough that coming off the throttle hands the
+ * place over within a corner, far enough that the instruction is not carried out
+ * by parking on the racing line while the other car is still half a straight
+ * away — which loses time to the rest of the field for no benefit to anyone.
+ */
+const CEDE_LIFT_RANGE_M = 14;
+/** How hard. Enough to be decisive, not enough to invite a rear-end shunt. */
+const CEDE_BRAKE = 0.2;
+
 /** How far above the road each part is mounted, metres. */
 const PART_MOUNT_HEIGHT_M: Record<BodyPartId, number> = {
   frontWing: 0.16, rearWing: 0.85, sidepodL: 0.42, sidepodR: 0.42,
 };
+
+/**
+ * One car's pit stop, live.
+ *
+ * The `result` is decided the instant the car comes to rest and does not change
+ * afterwards — see `resolvePitStop` for why the whole stop is settled up front
+ * — and `elapsedS` walks through it. `holdS` is added on top by the release
+ * light when there is a car in the fast lane, which is the one part of a stop
+ * that genuinely cannot be known in advance.
+ */
+interface PitBoxState {
+  result: PitStopResult | null;
+  /** Seconds since the car came to rest in the box. */
+  elapsedS: number;
+  /** Seconds the release light has been held for traffic, on top of the plan. */
+  holdS: number;
+  /** How far off the painted marks the car stopped, metres. */
+  offMarksM: number;
+  /** True once this visit's box has been driven past without stopping. */
+  missedBox: boolean;
+  /**
+   * The pit request standing on this car was made by the PIT WALL, not by the
+   * driver. Only a call the wall made is a call the wall may take back.
+   */
+  wallCalledIn: boolean;
+  /** Stationary time of this car's most recent completed stop, or 0. */
+  lastStationaryS: number;
+  progress: PitStopProgress;
+  /** The object `pitStopOf` hands out. Reused; never reallocated. */
+  view: PitStopView;
+}
+
+/** What a stop that went wrong is called on the radio. */
+const PIT_PROBLEM_TEXT: Record<NonNullable<PitStopResult['problem']>, string> = {
+  'gun-slip': 'slow gun',
+  'cross-thread': 'cross-threaded nut',
+  'wheel-late': 'wheel not ready',
+  jack: 'jack trouble',
+  held: 'held for traffic',
+};
+
+/**
+ * A pit stop, as everything outside the engine sees it.
+ *
+ * The renderer animates from this, the probe measures it, and the career will
+ * read `stationaryS` off it. It is a live view of the engine's own state rather
+ * than a copy, so reading it every frame costs nothing.
+ */
+export interface PitStopView {
+  /** True while the car is stationary in its box being worked on. */
+  active: boolean;
+  /** Seconds since it came to rest. */
+  elapsedS: number;
+  /** The resolved stop, or null when there is not one. */
+  result: PitStopResult | null;
+  /** Where the choreography has got to. */
+  progress: PitStopProgress;
+  /** Seconds the release has been held for traffic in the fast lane. */
+  heldForTrafficS: number;
+  /** How far off the marks the car stopped, metres. */
+  offMarksM: number;
+  /** Stationary time of this car's last completed stop, or 0 if it has none. */
+  lastStationaryS: number;
+}
 
 export class RaceEngine {
   readonly track: TrackSpline;
@@ -266,6 +428,17 @@ export class RaceEngine {
    * distance the paint is at, rather than at one arbitrary point on the lap.
    */
   readonly pitGeom: PitLaneGeometry;
+
+  /**
+   * The live pit stop, per car, indexed by `car.index`.
+   *
+   * Held here rather than on `CarEntry` because it is a wholly derived thing —
+   * resolved when the car stops, discarded when it leaves — and because the
+   * renderer needs the SHAPE of the stop (which corner is doing what, right
+   * now) rather than a countdown. `car.pitBoxTimer` remains the countdown the
+   * timing screen reads; this is the choreography behind it.
+   */
+  private readonly pitBox: PitBoxState[] = [];
 
   /**
    * Whether the player's neutralised speed limit is applied for them.
@@ -318,12 +491,44 @@ export class RaceEngine {
    */
   readonly debris = new DebrisField();
 
+  /**
+   * The environment the physics reads, rewritten PER CAR before that car steps.
+   *
+   * It used to be written once per step and shared, which was correct while
+   * `wetness` was a session-wide scalar. It is not one any more: the water on a
+   * wet circuit is deeper in the dips and shallower on the line the cars have
+   * been clearing, and a car that moves two metres sideways is driving on a
+   * different surface. So this is now scratch space — filled in from
+   * `weather.surface` at the position the car occupies, immediately before
+   * `physics.step` reads it — and nothing may hold a reference to it expecting
+   * the values to still be about their own car.
+   */
   readonly environment: EnvironmentState = {
-    trackTempC: 38, airTempC: 24, wetness: 0, airDensityRatio: 1, abrasion: 1,
+    trackTempC: 38, airTempC: 24, wetness: 0, surfaceGrip: 1,
+    airDensityRatio: 1, abrasion: 1,
   };
 
+  /**
+   * The pit wall, one per car, keyed by car index.
+   *
+   * Every car gets one because the decision is per car — a leader and a
+   * backmarker on different tyres get different calls at different moments —
+   * but only the player's is ever asked a question. See `updatePitWall`.
+   */
+  readonly pitWalls: PitWall[] = [];
+
+  /**
+   * The player's race engineer — the thing that decides when the wall speaks.
+   *
+   * One, not one per car, because it exists to fill the PLAYER's radio and the
+   * AI has no radio to fill. See `src/race/RaceEngineer.ts` for why the team
+   * channel needed something that watches an ordinary lap rather than only an
+   * accident.
+   */
+  private readonly engineer = new RaceEngineer();
+
   private readonly rng: Rng;
-  /** Reused neighbour records, two per car, so perception never allocates. */
+  /** Reused neighbour records, five per car, so perception never allocates. */
   private readonly neighbourPool: Neighbour[] = [];
   /** Player control input, written by the input layer each frame. */
   readonly playerControls: VehicleControls = {
@@ -347,7 +552,9 @@ export class RaceEngine {
     // race has to neutralise identically.
     const rcRng = new Rng(config.seed ^ 0x7a3b1d95);
     this.raceControl = new RaceControlManager(this.track, () => rcRng.next());
-    this.weather = new Weather(def, config.seed);
+    // The track goes in, so the weather can put water on it where the circuit's
+    // own elevation says water would go.
+    this.weather = new Weather(def, config.seed, this.track);
 
     const field = entries ?? DRIVERS;
     // Race fuel: enough for the distance plus a small margin. Qualifying runs
@@ -376,9 +583,24 @@ export class RaceEngine {
       // Monaco is 60 km/h and everywhere else is 80; the physics used to assume
       // 80 everywhere and penalise the Monaco cars for obeying it.
       car.physics.pitSpeedLimitKph = def.pitLane.speedLimitKph;
+      this.pitBox.push({
+        result: null,
+        elapsedS: 0,
+        holdS: 0,
+        offMarksM: 0,
+        missedBox: false,
+        wallCalledIn: false,
+        lastStationaryS: 0,
+        progress: makePitStopProgress(),
+        view: {
+          active: false, elapsedS: 0, result: null, progress: makePitStopProgress(),
+          heldForTrafficS: 0, offMarksM: 0, lastStationaryS: 0,
+        },
+      });
       this.cars.push(car);
       this.standings.push(car);
-      this.neighbourPool.push(createNeighbour(), createNeighbour(), createNeighbour(), createNeighbour());
+      this.pitWalls.push(new PitWall());
+      for (let n = 0; n < NEIGHBOUR_SLOTS; n++) this.neighbourPool.push(createNeighbour());
     }
 
     // Cars outside this session's participant list are already knocked out.
@@ -389,6 +611,21 @@ export class RaceEngine {
         if (!config.participants.includes(car.index)) {
           car.eliminated = true;
           car.eliminatedInPhase = (config.qualifyingPhase ?? 1) - 1;
+        }
+      }
+    }
+
+    // Art. B4.3.2 cars: entered, classified, and going nowhere. Marked here
+    // rather than filtered out of `participants`, because filtering them out
+    // would make them `eliminated` — which would hand them the grid slot of the
+    // segment they were knocked out of instead of the one they are about to be
+    // classified last in. The regulation bars the driver from running; it does
+    // not strike the entry.
+    if (config.withdrawn) {
+      for (const car of this.cars) {
+        if (config.withdrawn.includes(car.index)) {
+          car.withdrawn = true;
+          car.withdrawnReason = 'Recovered by the marshals in an earlier segment';
         }
       }
     }
@@ -477,6 +714,65 @@ export class RaceEngine {
    * Grid order is the current standings order (set by qualifying).
    */
   private placeGrid(): void {
+    this.placeRunners();
+    // ...and then everybody who is not running. Last, so that it overrides the
+    // pit-lane placement a withdrawn car picks up from `placeRunners` — a
+    // withdrawn car is a participant and is released with the rest of them,
+    // which is precisely what it must not be.
+    this.parkSittingOut();
+  }
+
+  /**
+   * Puts every car sitting this period out in its own garage.
+   *
+   * WHY THIS EXISTS. `placeRunners` places the cars taking part and nothing
+   * else, and a `CarEntry` is constructed at the world origin — so a car
+   * knocked out of Q1 spent the whole of Q2 and Q3 sitting at (0, 0) with its
+   * `s` still reading zero. Two things followed from that, and both of them
+   * were reported from a real session at Bahrain.
+   *
+   * It was SOLID. `resolveContacts` skipped retired cars and cars in their box,
+   * and an eliminated car is neither, so all five Q1 casualties were a single
+   * stack of collision discs standing on the circuit.
+   *
+   * And it was INVISIBLE, because the renderer takes a car's height from
+   * `elevationAt(car.s)` and `s` was zero. At Bahrain the origin lies 5.0m from
+   * the centreline at s = 1948m — inside the 7.5m half-width, on the exit of
+   * Turn 4 — where the road is about four metres higher than it is at the Line.
+   * The cars were drawn, correctly, four metres underneath the asphalt.
+   *
+   * So the player was hit and knocked out of Q2 by a car that was not there, at
+   * the same corner on two separate runs, which is exactly how a deterministic
+   * fixed obstacle behaves. Parking the car where it actually is — in its own
+   * box, under its own garage — makes the collision solver, the AI's
+   * perception and the renderer all tell the same truth without any of them
+   * needing a special case. `npm run probe:qualiboard` measures it.
+   */
+  private parkSittingOut(): void {
+    const pit = this.track.def.pitLane;
+    for (const car of this.cars) {
+      if (!car.sittingOut) continue;
+      car.placeOnTrack(this.track, car.pitBoxS, pit.lateralOffsetM, 0);
+      car.lap = 0;
+      car.lapStartTime = 0;
+      // Behind the pit wall AND stopped in the box. Either alone would keep the
+      // car out of `resolveContacts`, and both are true of a car in a garage,
+      // but the honest reason it cannot be hit is `sittingOut` — these two say
+      // where it is, not whether it exists.
+      car.inPitLane = true;
+      car.inPitBox = true;
+      // It is not queuing to be released and it is not on an out-lap; it is
+      // not going anywhere. Leaving `onOutLap` set would be a claim about a lap
+      // this car is never going to start.
+      car.releaseTimer = 0;
+      car.onOutLap = false;
+      car.servicedThisVisit = true;
+      car.physics.velocity.set(0, 0);
+      car.physics.yawRate = 0;
+    }
+  }
+
+  private placeRunners(): void {
     const startS = 0;
 
     // Only cars taking part. Q2 and Q3 run a reduced field; everyone else is
@@ -549,19 +845,306 @@ export class RaceEngine {
     this.startLights = 0;
   }
 
-  /** Cars taking part in this session. */
+  /**
+   * Cars taking part in this session, in the order the last segment classified
+   * them.
+   *
+   * The ORDER is load-bearing and used to be accidental. This mapped over
+   * `this.cars` and filtered, which returns car-number order however the
+   * entry list was written. Art. B2.4.3a.v ends "the relative classification of
+   * drivers in each of the categories (A), (B), or (C) above shall be
+   * determined in accordance with the order they were classified in the
+   * previous period of Qualifying" — so when several drivers set no time, the
+   * previous period's order is the tie-break, and `rankSegment`'s stable sort
+   * can only preserve an order it is actually given. `config.participants` is
+   * written from the previous segment's classification, so mapping over it in
+   * its own order is what makes that regulation come out right.
+   */
   get participants(): CarEntry[] {
     const allowed = this.config.participants;
     if (!allowed) return this.cars;
-    return this.cars.filter((c) => allowed.includes(c.index));
+    const byIndex = new Map(this.cars.map((c) => [c.index, c]));
+    return allowed
+      .map((i) => byIndex.get(i))
+      .filter((c): c is CarEntry => c !== undefined);
   }
 
+  /**
+   * The parts of the environment that are the same everywhere on the circuit.
+   * Called once per step; `applyLocalSurface` finishes the job per car.
+   */
   private updateEnvironment(): void {
     this.environment.trackTempC = this.weather.trackTempC;
     this.environment.airTempC = this.weather.airTempC;
     this.environment.wetness = this.weather.wetness;
+    this.environment.surfaceGrip = 1;
     this.environment.abrasion = this.track.def.surfaceAbrasion;
     this.environment.airDensityRatio = 1;
+  }
+
+  /**
+   * Writes the water depth and surface condition at THIS car's position.
+   *
+   * Called immediately before `physics.step`, and it is the whole reason a wet
+   * race is now something a driver can do anything about. Two cars a car's
+   * width apart on a soaked circuit are on measurably different surfaces: one
+   * on the rubbered groove that has gone slick, one beside it on abrasive
+   * asphalt with more water on it and more grip in it. Neither is simply
+   * "better" — which is the point, and which is what makes the wet line a
+   * decision rather than a setting.
+   *
+   * Off the racing surface entirely — grass, gravel, the pit lane — the water
+   * field does not apply and `SURFACE_GRIP` in the physics is already the
+   * dominant term, so this leaves those cases alone.
+   */
+  private applyLocalSurface(car: CarEntry): void {
+    const surf = car.physics.surface;
+    if (surf !== 'track' && surf !== 'curb') {
+      this.environment.wetness = this.weather.wetness;
+      this.environment.surfaceGrip = 1;
+      return;
+    }
+    const i = this.track.indexAt(car.s);
+    this.environment.wetness = this.weather.surface.waterAt(i, car.lateral);
+    this.environment.surfaceGrip = this.weather.surface.surfaceGripAt(i, car.lateral);
+  }
+
+  // =========================================================================
+  // The pit wall
+  // =========================================================================
+
+  /**
+   * The player's pit wall — the one that asks questions.
+   *
+   * Exposed as its own accessor because it is the whole of the API the HUD
+   * needs: `engine.pitWall.pending` is the call to draw and
+   * `engine.pitWall.answer(id, yes)` is the button. Everything else on this
+   * class stays where it is.
+   */
+  get pitWall(): PitWall | null {
+    const car = this.playerCar;
+    return car ? this.pitWalls[car.index] ?? null : null;
+  }
+
+  /**
+   * How far ahead the wall reasons, in laps.
+   *
+   * Three laps is roughly the distance over which a tyre decision is still a
+   * decision. Shorter, and the wall is reacting rather than planning; longer,
+   * and it is projecting a forecast well past the point at which the forecast
+   * means anything, which is a confident way to be wrong.
+   */
+  private static readonly WALL_HORIZON_LAPS = 3;
+
+  private updatePitWalls(dt: number): void {
+    // Only in a race. There is no crossover call in a practice session — the
+    // car comes in when the run plan says so — and asking one in qualifying
+    // would be asking the driver to decide something the format has already
+    // decided.
+    if (this.config.kind !== 'race') return;
+
+    const refLap = this.track.def.referencePoleTimeS;
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const horizonS = RaceEngine.WALL_HORIZON_LAPS * refLap;
+    const projected = this.weather.projectedWetness(horizonS);
+
+    for (const car of this.cars) {
+      const wall = this.pitWalls[car.index];
+      if (!wall) continue;
+      // Only the player is asked. The AI's own strategist is `shouldPit`, which
+      // reads the same crossover model — see `wetCrossoverWantsStop` — so the
+      // two halves of the field are making the same call from the same numbers
+      // and the AI simply does not need to be asked out loud.
+      if (!car.isPlayer) continue;
+
+      if (car.retired) { wall.reset(); this.engineer.reset(); continue; }
+
+      const i = this.track.indexAt(car.s);
+      const ctx: PitWallContext = {
+        timeS: this.time,
+        compound: car.compound,
+        dryPreference: this.plannedDryCompound(car),
+        wetness: this.weather.surface.waterAt(i, car.lateral),
+        trackTempC: this.weather.trackTempC,
+        lapsRemaining: Math.max(0, totalLaps - car.lap),
+        refLapS: refLap,
+        pitCostS: this.track.def.pitLane.transitLossS + car.team.performance.pitCrewTimeS,
+        usedDryCompounds: car.usedCompounds.filter((c) => !getCompound(c).isWetWeather),
+        hasRained: this.weather.hasRained,
+        racing: this.started && !car.inPitLane && !car.retired && car.lap > 0,
+        projectedWetness: projected,
+        horizonLaps: RaceEngine.WALL_HORIZON_LAPS,
+        forecast: this.weather.forecast.reading,
+      };
+      wall.update(dt, ctx);
+
+      // A yes on the radio is the same thing as pressing the pit-request
+      // button, and it goes through the same field so there is exactly one way
+      // for a player's car to be called in.
+      const box = this.pitBox[car.index];
+      if (wall.boxRequested && !car.pitRequested && !car.inPitLane) {
+        car.pitRequested = true;
+        car.pitCompoundRequest = wall.requestedCompound;
+        // Remember that this call came from the WALL. See below.
+        box.wallCalledIn = true;
+      }
+      // "Stay out", answered yes after having agreed to box, cancels the stop.
+      //
+      // THE TEST IS THE FALLING EDGE, and it has to be. This used to be a
+      // static conjunction — the wall is not asking, AND the driver has a pit
+      // request, AND the wall has no compound, AND the driver has picked one —
+      // and that is exactly the state of a driver who pressed PIT and then
+      // chose a tyre on the panel. Nobody had said "stay out"; the four
+      // conditions simply happened to line up.
+      //
+      // So a manual pit call plus a manual tyre choice cancelled itself on the
+      // very next step, silently, before the car had moved: press PIT, pick
+      // hard, and the request was gone 8ms later. `probe:pitstop` catches it —
+      // six of its seven cases fail on it, all six of the ones that choose a
+      // compound — and it is the same defect in kind as the stop this branch
+      // was sent to fix, arriving down a different road.
+      //
+      // A request the DRIVER made is not the wall's to withdraw. Only one it
+      // made itself is, and only when it actually takes it back.
+      if (box.wallCalledIn && !wall.boxRequested && car.pitRequested && !car.inPitLane) {
+        car.pitRequested = false;
+        car.pitCompoundRequest = null;
+        box.wallCalledIn = false;
+      }
+      if (!car.pitRequested) box.wallCalledIn = false;
+
+      this.fileTeamRadio(car, wall, ctx);
+    }
+  }
+
+  /**
+   * Puts the pit wall's traffic on the team feed.
+   *
+   * WHY THE ENGINE FILES THIS AND NOT THE HUD. `probe:hudtext` asserts that a
+   * twenty-minute race produces at least one team-owned bulletin, and it read
+   * the engine's own log to do it — correctly, because the log IS the record of
+   * what was said and a conversation that only exists in the DOM cannot be
+   * replayed, tested or saved. The team channel was silent not because the wire
+   * was broken but because everything on it hung off an accident. See
+   * `RaceEngineer` for the rest of that argument.
+   *
+   * The wall's own strategy call goes on last and separately, because it is the
+   * one message in the game the driver can answer and it must not be buried
+   * under a gap update filed on the same step.
+   */
+  private fileTeamRadio(car: CarEntry, wall: PitWall, ctx: PitWallContext): void {
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const mate = this.cars.find((c) => c !== car && c.team.id === car.team.id) ?? null;
+    const f = this.weather.forecast.reading;
+    const perLap = car.lap > 0
+      ? (car.setup.fuelLoadL - car.physics.fuelRemaining) / car.lap : 0;
+    const lapsRemaining = Math.max(0, totalLaps - car.lap);
+
+    const notes = this.engineer.update({
+      timeS: this.time,
+      car,
+      mate,
+      standings: this.standings,
+      lapsRemaining,
+      refLapS: this.track.def.referencePoleTimeS,
+      wetness: ctx.wetness,
+      projectedWetness: ctx.projectedWetness,
+      weatherEtaS: f ? f.etaS : null,
+      weatherConfidence: f ? f.confidence : 0,
+      fuelMarginLaps: perLap > 0.05 && lapsRemaining > 0
+        ? car.physics.fuelRemaining / perLap - lapsRemaining : 99,
+      racing: ctx.racing,
+    });
+
+    for (const team of notes) {
+      this.raceControl.log(
+        car.driver.code + ': ' + team.kind, 'info', this.time, car.index,
+        { feed: 'team', team },
+      );
+    }
+
+    const call = this.engineer.callNote(wall.pending);
+    if (call) {
+      this.raceControl.log(
+        car.driver.code + ': ' + (call.kind === 'call' ? call.message : call.kind),
+        call.kind === 'call' && call.urgent ? 'warning' : 'info',
+        this.time, car.index, { feed: 'team', team: call },
+      );
+    }
+  }
+
+  /**
+   * The driver's answer to the pit wall, and the wall's reply to it.
+   *
+   * Routed through the engine rather than left to the HUD so that the reply
+   * lands on the same log as the question — which is what makes the exchange a
+   * conversation with a record rather than two unrelated pieces of UI. The
+   * answer may lapse under the player's finger; that outcome is a reply too, and
+   * saying nothing when it happens is the case that reads as a bug.
+   */
+  answerPitWall(id: number, yes: boolean): RadioAnswer {
+    const wall = this.pitWall;
+    const car = this.playerCar;
+    if (!wall || !car) return 'lapsed';
+    const compound = wall.pending?.compound ?? null;
+    const outcome = wall.answer(id, yes);
+    const team = this.engineer.replyNote(
+      outcome, compound ? getCompound(compound).name : '',
+    );
+    this.raceControl.log(
+      car.driver.code + ': ' + outcome, 'info', this.time, car.index,
+      { feed: 'team', team },
+    );
+    return outcome;
+  }
+
+  /**
+   * Whether the weather alone justifies a stop for this car.
+   *
+   * The AI's half of the same decision the pit wall makes for the player, and
+   * it calls into the same `crossoverCase` — which is the whole reason that
+   * function is in `Strategy` rather than here. Before this, the engine decided
+   * it with two inline thresholds (`wetness > 0.4`, `wetness < 0.12`) that
+   * nothing else could see, and the strategy screen's recommendation and the
+   * race's behaviour had no way of agreeing except by coincidence.
+   */
+  /**
+   * The slick this car's plan wants next — what it goes back to when the track
+   * dries. Falls back to the medium for a car whose plan has run out, which is
+   * the same default `compoundForStint` has always used.
+   */
+  private plannedDryCompound(car: CarEntry): CompoundId {
+    const planned = car.plan[Math.min(car.pitStops + 1, car.plan.length - 1)];
+    const c = planned ? planned.compound : 'medium';
+    return isWetCompound(c) ? 'medium' : c;
+  }
+
+  private wetCrossoverWantsStop(car: CarEntry): boolean {
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const lapsLeft = Math.max(0, totalLaps - car.lap);
+    if (lapsLeft <= 1) return false;
+    const i = this.track.indexAt(car.s);
+    const wetness = this.weather.surface.waterAt(i, car.lateral);
+    const available = compoundsAvailableTo(
+      car.usedCompounds.filter((c) => !getCompound(c).isWetWeather),
+      this.weather.hasRained, lapsLeft, MANDATORY_COMPOUND_MARGIN_LAPS,
+    );
+    // Restricted to the tyre on the car and the tyre the conditions want. Not
+    // restricting it asks "is there a faster tyre", to which the answer on a
+    // dry track is always "a new soft" — see `crossoverCandidates`.
+    const candidates = crossoverCandidates(
+      car.compound, wetness, this.weather.trackTempC, this.plannedDryCompound(car), available,
+    );
+    const c = crossoverCase(
+      car.compound, wetness, this.weather.trackTempC, this.track.def.referencePoleTimeS,
+      this.track.def.pitLane.transitLossS + car.team.performance.pitCrewTimeS,
+      lapsLeft, candidates,
+    );
+    // A tyre that has only just been fitted does not come straight back off for
+    // a marginal gain. Without this a car crossing a puddle on its out-lap
+    // decides it is on the wrong tyre and pits again.
+    if (car.physics.rearTires.lapsOnSet < 2 && c.lossPerLapS < 3) return false;
+    return c.worthIt;
   }
 
   // =========================================================================
@@ -587,8 +1170,15 @@ export class RaceEngine {
     const dt = PHYSICS_DT;
 
     this.time += dt;
+    // How many cars are actually circulating, which is most of why a racing
+    // line dries first. A red-flagged circuit dries at the rate the sun dries
+    // it and no faster.
+    let running = 0;
+    for (const c of this.cars) if (!c.retired && !c.eliminated && !c.inPitLane) running++;
+    this.weather.setTraffic(running);
     this.weather.update(dt);
     this.updateEnvironment();
+    this.updatePitWalls(dt);
 
     // Start lights.
     if (!this.started) {
@@ -622,8 +1212,12 @@ export class RaceEngine {
     for (let i = 0; i < this.cars.length; i++) {
       const car = this.cars[i];
       if (car.retired) continue;
-      // Cars knocked out of qualifying take no further part in the session.
-      if (car.eliminated) continue;
+      // Cars taking no part in this period: knocked out of an earlier segment
+      // (Art. B2.4.2a-b), or entered and barred from running by Art. B4.3.2.
+      // Both stay parked in their garage for the whole period, and both are
+      // held by the same branch on purpose — see `CarEntry.sittingOut`. Testing
+      // them separately here is how the two drifted apart in the first place.
+      if (car.sittingOut) { this.holdOnGrid(car); continue; }
 
       // Held in the garage until this car's release slot comes round.
       if (car.releaseTimer > 0) {
@@ -659,6 +1253,8 @@ export class RaceEngine {
       if (car.isPlayer) {
         this.applyNeutralisationAssist(car, car.appliedControls);
         this.applyPitLaneAssist(car, car.appliedControls);
+      } else {
+        this.applyCedeInstruction(car, car.appliedControls);
       }
       car.physics.drsAvailable = this.isDrsAllowed(car);
       // Where the car is BEFORE it moves, for the swept test against the solid
@@ -669,6 +1265,8 @@ export class RaceEngine {
       car.prevX = car.physics.position.x;
       car.prevZ = car.physics.position.y;
       car.prevHeading = car.physics.heading;
+      // Last thing before the step: the water and the surface under THIS car.
+      this.applyLocalSurface(car);
       car.physics.step(dt, car.appliedControls, this.environment);
 
       // Attrition from riding kerbs, running through gravel and holding the
@@ -699,6 +1297,22 @@ export class RaceEngine {
 
     // 3. Contact resolution between cars.
     this.resolveContacts();
+
+    // 3b. The step's final pose, published as the render pose.
+    //
+    // Here rather than inside the loop because barriers, obstacles and contact
+    // resolution all move cars AFTER their own step, and a pose captured before
+    // those would draw a car inside the wall it was just pushed out of.
+    //
+    // The renderer overwrites these every frame with an interpolated pose (see
+    // `CarEntry.renderX`). This assignment is what everything that runs WITHOUT
+    // a renderer reads — every probe that drives `CameraDirector` directly — so
+    // those keep seeing the solver's own pose and are unaffected.
+    for (const car of this.cars) {
+      car.renderX = car.physics.position.x;
+      car.renderZ = car.physics.position.y;
+      car.renderHeading = car.physics.heading;
+    }
 
     // 4. Race control.
     this.raceControl.update(
@@ -893,10 +1507,18 @@ export class RaceEngine {
     const writeOff = severity > 0.72;
     if (severity > 0.25) {
       this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz), writeOff);
+      const where = this.track.cornerNameAt(car.s) || 'the exit';
       this.raceControl.log(
-        car.driver.code + ' into ' + what + ' at ' +
-        (this.track.cornerNameAt(car.s) || 'the exit'),
+        car.driver.code + ' into ' + what + ' at ' + where,
         severity > 0.6 ? 'critical' : 'warning', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: where.toUpperCase(),
+            offence: 'CONTACT WITH ' + what.toUpperCase(), status: 'NOTED',
+          },
+          team: { kind: 'off', corner: where, hit: what, heavy: severity > 0.6 },
+        },
       );
     }
     if (writeOff) {
@@ -911,6 +1533,14 @@ export class RaceEngine {
       this.raceControl.log(
         car.driver.code + ' is out on the spot — heavy impact',
         'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+            offence: 'CAR STOPPED', status: 'RECOVERY IN PROGRESS',
+          },
+          team: { kind: 'retired', reason: 'heavy impact' },
+        },
       );
     }
   }
@@ -1215,7 +1845,7 @@ export class RaceEngine {
    */
   private buildPerception(car: CarEntry): void {
     const p = car.perception;
-    const base = car.index * 4;
+    const base = car.index * NEIGHBOUR_SLOTS;
     const len = this.track.length;
 
     let bestAhead = Infinity;
@@ -1225,8 +1855,43 @@ export class RaceEngine {
     let leftCar: CarEntry | null = null;
     let rightCar: CarEntry | null = null;
 
+    // The collision picture, which is a different question to the racing one.
+    //
+    // `hazardCar` is whatever imposes the LOWEST safe speed rather than whatever
+    // is nearest — a stopped car sixty metres away is a bigger problem than a
+    // fast one at twenty, and picking by distance gets that backwards. Scored
+    // with a reference deceleration here because the engine is choosing between
+    // candidates, not deciding how hard to brake; the controller redoes the
+    // arithmetic with its own live grip.
+    let hazardCar: CarEntry | null = null;
+    let hazardGap = 0;
+    let hazardScore = Infinity;
+    let roomLeft = Infinity;
+    let roomRight = Infinity;
+    const ourSpeed = car.physics.speedMs;
+
     for (const other of this.cars) {
       if (other === car || other.retired) continue;
+      // A car taking no part in this period is not on the road to be followed,
+      // and this has to be here — at the top, before `ahead` is chosen — rather
+      // than down with the collision picture.
+      //
+      // THE BUG THIS CLOSES, which is the second half of the Bahrain Q2 report.
+      // The garages are laid out with slot 0 nearest the pit exit, so the car
+      // in box 0 is at the head of the queue leaving the lane. Park a car there
+      // that never moves — a driver barred by Art. B4.3.2, or before it was
+      // parked at all, one of the Q1 casualties standing on the circuit — and
+      // it is still `p.ahead` for the car behind it. The follow logic holds
+      // station on it, the car behind that holds station on THAT, and the whole
+      // lane deadlocks: measured at Bahrain, none of the fifteen Q2 runners
+      // left the pits in twelve minutes and the segment was classified with
+      // nobody having set a time. Which is exactly what the player was shown —
+      // "P1 of 15 in Q2" with no lap.
+      //
+      // The collision picture below already skipped it. Skipping it there and
+      // not here made it a car that could not be hit but had to be queued
+      // behind, which is the worst of both.
+      if (other.sittingOut) continue;
       // The pit lane is a different road. It shares this spline — it is modelled
       // as a lateral offset on it — so a car in the lane has an `s` that reads
       // as "just ahead" to a car on the circuit passing the pits, and it was
@@ -1253,6 +1918,32 @@ export class RaceEngine {
         if (dLat > 0.9 && dLat < 4.2) leftCar = other;
         else if (dLat < -0.9 && dLat > -4.2) rightCar = other;
       }
+
+      // --- Collision picture ---------------------------------------------
+      //
+      // A car sitting in its box is excluded from both halves, and that is the
+      // engine's own rule rather than a new one: `resolveContacts` skips
+      // `inPitBox` cars, so it is not something another car can hit. Treating it
+      // as solid anyway would be worse than useless — every car whose box is
+      // further down the lane would queue behind the one being serviced and the
+      // pit lane would deadlock, which is precisely the failure the comment on
+      // `isSolidWreck` describes for wrecks on the racing line.
+      if (other.inPitBox) continue;
+
+      const theirSpeed = other.physics.speedMs;
+      const dLat = other.lateral - car.lateral;
+
+      // In front, and in the corridor this car is driving down.
+      if (gap > 0 && Math.abs(dLat) < HAZARD_CORRIDOR_M) {
+        const safe = safeFollowSpeedMs(gap, theirSpeed, HAZARD_REFERENCE_DECEL_MS2, 1.1);
+        if (safe < hazardScore) { hazardScore = safe; hazardCar = other; hazardGap = gap; }
+      }
+
+      // Beside us, or close enough that a lateral move would put us beside them.
+      if (lateralOverlap(gap, ourSpeed, theirSpeed)) {
+        if (dLat > 0) roomLeft = Math.min(roomLeft, dLat - CONTACT_WIDTH_M);
+        if (dLat < 0) roomRight = Math.min(roomRight, -dLat - CONTACT_WIDTH_M);
+      }
     }
 
     p.ahead = aheadCar ? this.fillNeighbour(this.neighbourPool[base], car, aheadCar, bestAhead) : null;
@@ -1263,6 +1954,11 @@ export class RaceEngine {
     p.alongsideRight = rightCar
       ? this.fillNeighbour(this.neighbourPool[base + 3], car, rightCar, loopDelta(car.s, rightCar.s, len))
       : null;
+    p.hazard = hazardCar
+      ? this.fillNeighbour(this.neighbourPool[base + 4], car, hazardCar, hazardGap)
+      : null;
+    p.roomLeftM = roomLeft;
+    p.roomRightM = roomRight;
 
     const rc = this.raceControl;
     // The ban starts at the BOARD, not at the sector line.
@@ -1329,7 +2025,14 @@ export class RaceEngine {
     p.mustUnlap = car.mustUnlap;
     p.holdRacingLine = car.holdRacingLine;
     p.holdUntilLine = car.holdUntilLine;
-    p.wetness = this.weather.wetness;
+    // Both of these are LOCAL: the water this car is driving through, and how
+    // much better it would be off the groove where this car is. A car two
+    // metres away gets different numbers, which is the point.
+    const wi = this.track.indexAt(car.s);
+    p.wetness = this.weather.surface.waterAt(wi, car.lateral);
+    p.lineAvoidance = this.weather.surface.lineAvoidance(
+      wi, this.track.wetLineOffset[wi],
+    );
     p.blendRemainingM = car.blendRemainingM;
     p.pitThisLap = this.shouldPit(car);
 
@@ -1435,9 +2138,16 @@ export class RaceEngine {
   }
 
   private ordersBefore(a: CarEntry, b: CarEntry, isRace: boolean): boolean {
-    // Retired and disqualified cars sort to the back.
-    if (a.disqualified !== b.disqualified) return b.disqualified;
-    if (a.retired !== b.retired) return b.retired;
+    // Disqualified cars sort to the back of any session; retired cars sort to
+    // the back of a RACE only. `classificationTier` owns that rule and cites
+    // the articles — the short version is that a Lap Time Classified Session is
+    // classified on a lap time (Art. B2.4.3a) and putting the car in a barrier
+    // afterwards does not delete the lap. This test used to demote a retired
+    // car in every session type, which is how the fastest driver in Q1 ended up
+    // sorted twentieth by their own accident and was then shown "P20 — DNF".
+    const at = classificationTier(a, isRace);
+    const bt = classificationTier(b, isRace);
+    if (at !== bt) return at < bt;
 
     if (isRace) {
       if (a.finished !== b.finished) return a.finished;
@@ -1584,8 +2294,49 @@ export class RaceEngine {
     return afterStart >= 0 && beforeEnd >= 0;
   }
 
+  /**
+   * The lap the RACE is on. Never goes down.
+   *
+   * "Each lap completed while the Safety Car is deployed will be counted as a
+   * lap of the TTCS" (2026 Section B Art. B5.13.7 / 2025 Sporting Regs
+   * Art. 55.16), and identically for the VSC (B5.12.5 / Art. 56.8). The counter
+   * is not suspended by a neutralisation and it does not run backwards.
+   *
+   * WHAT WAS MEASURED, AND WHAT WAS NOT. The report is:
+   *
+   *   "when there is a safety car, doesn't mean that the lap isn't continued —
+   *    like they crossed the line but were still on lap 6 for some reason. it
+   *    should've updated right to the next lap."
+   *
+   * The counter itself is not the fault and never was. Instrumented against
+   * every geometric crossing of the Line over full races at Monza with a staged
+   * safety car, the two counts agreed exactly: a hundred crossings under a
+   * neutralisation, a hundred laps credited, none missed. `updateProjection`
+   * reads no flag and no neutralisation state, and there is no gate anywhere on
+   * the path from a crossing to `lap++`. `regress:laps` now asserts that, in
+   * both directions, so it stays true.
+   *
+   * WHAT THIS FIXES IS THE OTHER HALF: the number is DERIVED, and it was derived
+   * live from `standings[0].lap`. The standings are sorted on `totalDistance`
+   * with no hysteresis (see `ordersBefore`) and a bunched field puts twenty cars
+   * nose to tail inside a kilometre, so two cars either side of the Line sit
+   * metres apart in distance and a whole lap apart on the counter. Whenever that
+   * sort resolves the other way at 20Hz, the published lap goes down. It is
+   * seed-dependent — a nine-hundred-second run at seed 5 does not produce it —
+   * which is exactly the kind of fault that is reported from a race clip and
+   * cannot be reproduced on demand.
+   *
+   * A lap is a thing that has happened. Once any car has completed one, the race
+   * is on the next one, and nothing afterwards un-completes it. A latch says
+   * that; a live read of an unstable sort does not, whatever the counter
+   * underneath it is doing.
+   */
+  private raceLapLatch = 0;
+
   private leaderLap(): number {
-    return this.standings.length > 0 ? this.standings[0].lap : 0;
+    const live = this.standings.length > 0 ? this.standings[0].lap : 0;
+    if (live > this.raceLapLatch) this.raceLapLatch = live;
+    return this.raceLapLatch;
   }
 
   // =========================================================================
@@ -1614,7 +2365,6 @@ export class RaceEngine {
    * call the driver would already have had.
    */
   pitAdvice(car: CarEntry): string | null {
-    if (this.config.kind !== 'race') return null;
     if (car.inPitLane || car.retired || car.finished || car.disqualified) return null;
 
     const pen = car.pendingServePenalty();
@@ -1623,10 +2373,24 @@ export class RaceEngine {
     }
     if (car.damage.worst().health < 0.7) return 'DAMAGE — PIT FOR REPAIRS';
 
-    const onSlicks = !getCompound(car.compound).isWetWeather;
-    if (this.weather.wetness > 0.4 && onSlicks) return 'RAIN — WET TYRES';
-    if (this.weather.wetness < 0.12 && !onSlicks && car.physics.rearTires.lapsOnSet > 2) {
-      return 'TRACK DRY — SLICKS';
+    // The crossover, from the shared model rather than from a pair of
+    // thresholds written here. The reason is the same one the strategy file
+    // exists for: a reason string that disagrees with the stop the car then
+    // makes is worse than no reason string.
+    if (this.wetCrossoverWantsStop(car)) {
+      const onSlicks = !isWetCompound(car.compound);
+      return onSlicks ? 'RAIN — WET TYRES' : 'TRACK DRY — SLICKS';
+    }
+
+    // Practice and qualifying are not races, and past the crossover above the
+    // reasons to come in are not race reasons — there is no strategy to serve
+    // and no mandatory second compound. They are still real stops with real
+    // choices, though: a driver on a scrubbed set at the end of a long run in
+    // FP2 comes in for a new one and goes back out, which is most of what a
+    // practice session IS, and the panel that offers that choice is raised by
+    // `pitDecisionPending` in every session kind.
+    if (this.config.kind !== 'race') {
+      return car.physics.rearTires.wear < 0.5 ? 'TYRES SCRUBBED — BOX FOR A NEW SET' : null;
     }
 
     const wear = car.physics.rearTires.wear;
@@ -1638,7 +2402,7 @@ export class RaceEngine {
       const dryUsed = new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather));
       if (dryUsed.size < 2) return 'SECOND COMPOUND REQUIRED';
     }
-    if (wear < 0.45) return 'TYRES WORN — PIT WINDOW OPEN';
+    if (wear < TYRE_PIT_WINDOW) return 'TYRES WORN — PIT WINDOW OPEN';
     return null;
   }
 
@@ -1648,8 +2412,8 @@ export class RaceEngine {
    *
    * Everything here is read from the same functions that run the stop, so the
    * screen cannot describe a stop the engine would not perform. `compound` is
-   * literally `chooseCompoundForStint`'s answer with the driver's own override
-   * removed, which is what makes it honest to label it "the engineers' call".
+   * literally `compoundForStint`'s answer with the driver's own instruction
+   * excluded, which is what makes it honest to label it "the engineers' call".
    */
   pitBriefing(car: CarEntry): {
     compound: CompoundId;
@@ -1666,10 +2430,16 @@ export class RaceEngine {
     baseStopS: number;
     lapsRemaining: number;
   } {
-    const held = car.pitCompoundRequest;
-    car.pitCompoundRequest = null;
-    const compound = this.chooseCompoundForStint(car);
-    car.pitCompoundRequest = held;
+    // The engineers' own answer: the same function the stop runs, asked to
+    // ignore the driver's instruction rather than having it temporarily deleted
+    // off the car. The previous version wrote `null` onto `pitCompoundRequest`,
+    // called the chooser, and wrote the value back — a read-only query that
+    // mutated the one piece of state the whole pit sheet is derived from. Any
+    // throw between the two writes, and any read taken in between, saw a driver
+    // who had asked for nothing. That is exactly the shape of "I chose hard and
+    // it gave me softs", and no amount of care at the call sites fixes a getter
+    // that edits the model.
+    const compound = this.compoundForStint(car, true);
 
     const totalLaps = this.config.laps || this.track.def.raceLaps;
     const dryUsed = [...new Set(car.usedCompounds.filter((c) => !getCompound(c).isWetWeather))];
@@ -1688,6 +2458,50 @@ export class RaceEngine {
     };
   }
 
+  /**
+   * Is this driver being asked what they want from their stop?
+   *
+   * THE ONE PLACE that answers "should the pit options panel be open". It is a
+   * question about the SIMULATION — is a stop about to happen to this car, and
+   * is it the kind of stop with choices in it — so it is answered here rather
+   * than in the UI, where it was previously answered by a condition that began
+   * `config.kind === 'race'`.
+   *
+   * That test was the whole of the second reported defect: "whenever I am
+   * pitting no matter what session is I should be asked". A stop in practice is
+   * the most consequential stop of the weekend — it is where the tyre you are
+   * going to qualify on gets chosen and where a damaged wing gets replaced —
+   * and the panel simply never appeared. The player pressed PIT in FP2, drove
+   * down the lane, and had a compound chosen for them by the race strategist's
+   * function in a session that has no strategy.
+   *
+   * There is exactly one stop with no choices in it, and it is not a session
+   * kind: a drive-through penalty, which is served by driving through without
+   * stopping. There is nothing to fit and nothing to ask.
+   */
+  pitDecisionPending(car: CarEntry): boolean {
+    if (car.retired || car.finished || car.disqualified) return false;
+    if (car.pitTransitOnly) return false;
+    // Either the driver has called for a stop, or they are already in the lane
+    // on their way to one. The second half matters because a stop can begin
+    // without the button: a penalty served in the box, or a lane entry that
+    // started before the panel was open.
+    return car.pitRequested || (car.inPitLane && !car.servicedThisVisit);
+  }
+
+  /**
+   * Will the crew take the nose off at this car's next stop?
+   *
+   * The crew's own rule is "below 70%", and a driver who has been asked
+   * overrules it in either direction. Public for the same reason
+   * `compoundForStint` is: the sheet that offers the choice and the stop that
+   * performs it have to be reading one function.
+   */
+  noseChangeForStop(car: CarEntry): boolean {
+    const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
+    return car.pitNoseChangeRequest ?? (frontWing < 0.7);
+  }
+
   private shouldPit(car: CarEntry): boolean {
     // The player is called in by the player, not by the strategist. Their
     // request is a latch that survives until it is served or cancelled.
@@ -1699,11 +2513,11 @@ export class RaceEngine {
     // Serving a drive-through is not optional.
     if (car.pendingServePenalty() !== null) return true;
 
-    // Wet-weather crossover: if the track is wet and we are on slicks, the tyre
-    // is worth many seconds a lap. This overrides any planned stop.
-    const onSlicks = !getCompound(car.compound).isWetWeather;
-    if (this.weather.wetness > 0.4 && onSlicks) return true;
-    if (this.weather.wetness < 0.12 && !onSlicks && car.physics.rearTires.lapsOnSet > 2) return true;
+    // Wet-weather crossover. Worth many seconds a lap in either direction, so
+    // it overrides any planned stop — and it is now the same arithmetic the
+    // player's pit wall reasons with rather than a threshold that happened to
+    // be in the same neighbourhood.
+    if (this.wetCrossoverWantsStop(car)) return true;
 
     // Planned stop, or an emergency stop because the tyres are gone.
     // targetPitLap is -1 once the plan has no further stops, and `lap >= -1` is
@@ -1742,13 +2556,77 @@ export class RaceEngine {
     // Car may enter the pits whilst the Safety Car is deployed unless it is for
     // the purpose of changing tyres" (2025 Art. 55.12 / 2026 Art. B5.13.3, and
     // identically for the VSC at Art. 56.4 / B5.12.3).
+    //
+    // WHAT MAKES IT CHEAP IS THAT IT IS A STOP YOU WERE GOING TO MAKE ANYWAY.
+    // The saving is the pit loss you would otherwise have paid later, and if you
+    // were not going to pay it later then there is no saving — there is a
+    // twenty-second stop, a set of tyres binned with ninety-six percent of its
+    // life left, and a stint at the far end that is now too long for the tyre
+    // that has to cover it.
+    //
+    // The test used to be "more than six laps on this set", which on a
+    // thirty-lap race is most of the field most of the time. Measured at
+    // Silverstone, seed 7: a safety car came out on lap nine and sixteen of the
+    // twenty cars dived in on lap nine or ten, against plans that named laps
+    // sixteen to twenty-two, on tyres reading 0.965 of full life. That single
+    // branch was the whole of the strategy defect `probe:strategy` reports — not
+    // worn tyres and not the mandatory-compound rule, both of which were
+    // measured firing far later or not at all. The plan was not being overridden
+    // by an emergency; it was being thrown away for a bargain that was not one.
+    //
+    // A real strategist pulls a stop forward under a safety car by a couple of
+    // laps, not by twelve. Either the stop is nearly due, or the tyre is in the
+    // window the driver would be told about anyway (`pitAdvice` says "TYRES WORN
+    // — PIT WINDOW OPEN" at the same number, so the AI and the player's radio
+    // call now agree), or it is not a cheap stop and the plan stands.
     if (this.raceControl.neutralisation !== 'none') {
-      const worthIt = car.physics.rearTires.lapsOnSet > 6 &&
+      const nearlyDue = car.lap >= car.targetPitLap - NEUTRALISED_PULL_FORWARD_LAPS;
+      const inTheWindow = car.physics.rearTires.wear < TYRE_PIT_WINDOW;
+      const worthIt = (nearlyDue || inTheWindow) &&
         car.targetPitLap > 0 &&
         this.raceControl.mayEnterPitLane(true, false);
       if (worthIt) return true;
     }
     return false;
+  }
+
+  /**
+   * Makes an AI car actually give a position back.
+   *
+   * The stewards can instruct a driver to hand a place back under Art. B1.8.6,
+   * and the instruction turns into a five-second penalty if it is not obeyed.
+   * A rule that only bound the player would be worse than no rule at all — the
+   * player would be the only driver on the circuit who could be penalised for
+   * something nineteen other cars simply ignore — so this is the AI's half of
+   * obedience.
+   *
+   * WHY IT IS HERE AND NOT IN `AIVehicleController`. Because it is not racecraft.
+   * The AI decides where to place the car and how hard to attack; this is a
+   * legal obligation imposed from outside, and it belongs with the other two
+   * obligations the engine already imposes on a driver's own controls — the
+   * neutralisation limiter and the pit lane limiter. Putting it in the AI would
+   * also mean nineteen separate copies of a decision that has exactly one right
+   * answer.
+   *
+   * The behaviour is deliberately the smallest thing that works: come off the
+   * throttle and brush the brakes while the beneficiary is close enough behind
+   * to take the place, and stop the moment they have it. No line change, because
+   * moving off the racing line to concede is a choice a driver makes about a
+   * specific corner and getting it wrong puts the two cars back together.
+   */
+  private applyCedeInstruction(car: CarEntry, c: VehicleControls): void {
+    if (car.cedePositionTo < 0 || car.retired || car.inPitLane) return;
+    const to = this.cars[car.cedePositionTo];
+    if (to.retired || to.inPitLane) return;
+    // Already done.
+    if (to.totalDistance > car.totalDistance) return;
+    // Only lift when the other car is actually there to take the place. Braking
+    // for a car eighty metres back concedes nothing and loses time to everybody
+    // else, which is not what the instruction asks for.
+    const gapM = car.totalDistance - to.totalDistance;
+    if (gapM > CEDE_LIFT_RANGE_M) return;
+    c.throttle = 0;
+    c.brake = Math.max(c.brake, CEDE_BRAKE);
   }
 
   /**
@@ -1783,10 +2661,16 @@ export class RaceEngine {
    */
   private applyNeutralisationAssist(car: CarEntry, c: VehicleControls): void {
     const rc = this.raceControl;
-    if (!this.neutralisationAssist ||
+    // `vscTargetMs` and not `neutralisation !== 'none'`: once the safety car has
+    // entered the Pit Entry Road there is no cap left to hold — the leader
+    // dictates the pace (Art. 55.15 / B5.13.6) — even though the race is still
+    // neutralised in every other sense. A limiter armed with a cap of zero would
+    // stop the car dead.
+    if (!this.neutralisationAssist || rc.vscTargetMs <= 0 ||
         rc.neutralisation === 'none' || car.inPitLane || car.retired || !this.started) {
       c.speedLimitMs = 0;
       car.neutralLimitMs = 0;
+      car.neutralAssist.reset();
       return;
     }
 
@@ -1825,10 +2709,25 @@ export class RaceEngine {
       return Math.min(line, grip);
     }, limit);
 
-    c.speedLimitMs = Math.min(plan.ceilingMs, hold);
+    // Both halves of the assist are rate-limited, and neither used to be. See
+    // `NeutralisedAssistState` for the measurement: a pedal that moved half its
+    // travel in one 8ms step, fourteen hundred times a race, and a setpoint that
+    // moved 22 m/s between two consecutive steps. That is the swerve.
+    //
+    // The pedal is also capped by the grip the tyres have left after cornering,
+    // which is `brakeLimitFraction` — the friction circle's own answer, and the
+    // same number the AI brakes just underneath. A demand above it does not brake
+    // the car harder; it saturates an axle, and the axle it saturates takes its
+    // lateral force with it.
+    car.neutralAssist.advance(
+      PHYSICS_DT, plan.brake, Math.min(plan.ceilingMs, hold),
+      car.physics.brakeLimitFraction,
+    );
+
+    c.speedLimitMs = car.neutralAssist.ceilingMs;
     car.neutralLimitMs = c.speedLimitMs;
-    if (plan.brake > c.brake) {
-      c.brake = plan.brake;
+    if (car.neutralAssist.brake > c.brake) {
+      c.brake = car.neutralAssist.brake;
       c.throttle = 0;
     }
   }
@@ -1965,6 +2864,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' — pit entry closed, stay out',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-closed' } },
         );
       }
       if (!wantsPit) car.pitEntryRefused = false;
@@ -1988,6 +2888,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' missed the pit entry — round again',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-missed' } },
         );
       }
       // And is the car SLOW ENOUGH to be let in?
@@ -2008,6 +2909,7 @@ export class RaceEngine {
         this.raceControl.log(
           car.driver.code + ' — too fast for the pit entry, round again',
           'warning', this.time, car.index,
+          { feed: 'team', team: { kind: 'pit-fast' } },
         );
       }
       if (!geometricallyInLane) car.pitEntryMissed = false;
@@ -2027,6 +2929,13 @@ export class RaceEngine {
         car.inPitBox = false;
         car.pitBoxTimer = 0;
         car.pitSpeedingFlagged = false;
+        // Including the overshoot: a car that sailed past its box last time is
+        // entitled to a clean attempt at it this time.
+        const box = this.pitBox[car.index];
+        box.missedBox = false;
+        box.result = null;
+        box.elapsedS = 0;
+        box.holdS = 0;
         // A drive-through is served by transiting the lane without stopping.
         // A stop-go is not — that one is served stationary in the box.
         const pen = car.pendingServePenalty();
@@ -2059,12 +2968,37 @@ export class RaceEngine {
       // an out-lap and its time must not be classified.
       car.inPitLane = false;
       car.onOutLap = true;
+      // Art. B2.4.3a.v(C) is about drivers who never got out of the garage;
+      // this latch is the record that this one did.
+      car.leftThePits = true;
       car.blendRemainingM = PIT_EXIT_BLEND_M;
       car.pitSpeedingFlagged = false;
+      const served = car.servicedThisVisit;
       car.servicedThisVisit = false;
-      // The call has been answered. Leaving it latched would send the car
-      // straight back down the pit lane on the next lap, for ever.
-      car.pitRequested = false;
+      // The call has been answered — IF the car was actually served.
+      //
+      // It used to be cleared unconditionally, which is the second half of the
+      // reported bug. A car that overshot its box, or was waved through, left
+      // the lane with the pit request wiped and nothing said: from the driver's
+      // side the stop had simply evaporated. Now the call stands until the
+      // wheels are actually changed, so an overshoot costs a lap and a fresh
+      // run at the entry, which is what it costs in a race.
+      //
+      // A transit — a drive-through penalty — IS answered by the transit, so it
+      // clears either way.
+      if (served || car.pitTransitOnly) {
+        car.pitRequested = false;
+        // ...and the pit wall's own latch with it, or it would keep
+        // re-requesting a stop that has already happened.
+        this.pitWalls[car.index]?.onServed();
+      } else if (car.isPlayer) {
+        this.raceControl.log(
+          'No stop — you are still due in. Box again next lap.',
+          'warning', this.time, car.index,
+        );
+      }
+      // The wall is deliberately NOT told when the stop was MISSED: the car
+      // still owes one, so the strategist should still be calling it in.
       // A drive-through is discharged by the transit itself, and it has just
       // been completed.
       if (car.pitTransitOnly) {
@@ -2074,6 +3008,14 @@ export class RaceEngine {
           this.raceControl.log(
             car.driver.code + ' has served the drive-through penalty',
             'info', this.time, car.index,
+            {
+              feed: 'either',
+              notice: {
+                parties: [car.driver.code], where: 'PIT LANE',
+                offence: 'DRIVE-THROUGH PENALTY', status: 'SERVED',
+              },
+              team: { kind: 'penalty-served' },
+            },
           );
         }
         car.pitTransitOnly = false;
@@ -2158,15 +3100,63 @@ export class RaceEngine {
     //
     // One service per visit: without the guard a car that is still within the
     // box window after being serviced simply gets serviced again.
+    const box = this.pitBox[car.index];
     const toBox = loopDelta(car.s, car.pitBoxS, len);
-    const inBoxWindow = toBox > -PIT_BOX_WINDOW_M && toBox <= PIT_BOX_WINDOW_M;
-    if (!car.inPitBox && !car.servicedThisVisit && !car.pitTransitOnly && inBoxWindow &&
-        car.physics.speedMs < PIT_BOX_STOP_SPEED_MS) {
+    // Signed distance to the marks: positive still to come, negative past them.
+    // `loopDelta` wraps, so anything most of a lap ahead is really behind.
+    const boxDelta = toBox > len * 0.5 ? toBox - len : toBox;
+    const offMarks = Math.abs(boxDelta);
+    const withinReach = offMarks <= PIT_BOX_REACH_M;
+
+    // Driven past the box without stopping.
+    //
+    // This is the reported bug — "sometimes if I don't brake the car just goes
+    // through the barrier and skips the pitstop" — and it is exactly what used
+    // to happen. There was no test here at all: a car that sailed past its own
+    // box at the 80 km/h limit simply carried on down the lane, out the far
+    // end, and the exit path below then cleared `pitRequested` as though the
+    // call had been answered. The stop was silently deleted. The driver was
+    // never told, the tyres were never changed, and on a two-stop strategy the
+    // car went to the flag on one set and was disqualified under the
+    // two-compound rule for a stop it had asked for and been quietly refused.
+    //
+    // What happens in a race is that you overshoot, the crew waves you on
+    // because they cannot reach the car, and you go round again. So that is
+    // what happens here — announced, once, and with the pit call left standing
+    // so the driver is still coming in.
+    if (!car.inPitBox && !car.servicedThisVisit && !car.pitTransitOnly && !box.missedBox &&
+        boxDelta < -PIT_BOX_REACH_M && boxDelta > -len * 0.25) {
+      box.missedBox = true;
+      this.raceControl.log(
+        car.driver.code + ' overshot the box — round again',
+        'warning', this.time, car.index,
+      );
+    }
+
+    // Stopped, and the crew can reach it.
+    //
+    // "Stopped" is a speed test ON the marks and a stricter one well short of
+    // them. A car rolling up the last few metres at walking pace is not
+    // stopped — it is still arriving — and grabbing it there would charge a
+    // driver who was about to put the car perfectly on its marks for the four
+    // metres they had not covered yet.
+    //
+    // But the band has to be generous, because a car that HAS arrived does not
+    // sit at exactly zero: the AI's own rule is to hold the brake once the box
+    // is within 0.4m, and the car settles at a few tenths of a metre a second
+    // against it. Requiring near-zero everywhere short of the marks meant every
+    // AI stop in the field was refused — `probe:pitstop` went from six stops to
+    // none — which is the same class of fault as the 22 m/s threshold in a
+    // lane limited to 22.2 documented below, and just as invisible.
+    const stopped = boxDelta <= PIT_BOX_SETTLE_M
+      ? car.physics.speedMs < PIT_BOX_STOP_SPEED_MS
+      : car.physics.speedMs < 0.4;
+    if (!car.inPitBox && !car.servicedThisVisit && !car.pitTransitOnly && !box.missedBox &&
+        withinReach && stopped) {
       car.inPitBox = true;
-      const crewTime = car.team.performance.pitCrewTimeS;
-      // Occasional slow stop — a sticking wheel gun is part of racing.
-      const fumble = this.rng.chance(0.06) ? this.rng.range(1.2, 5.5) : 0;
-      car.pitBoxTimer = crewTime + this.rng.range(-0.15, 0.35) + fumble;
+      box.elapsedS = 0;
+      box.holdS = 0;
+      box.offMarksM = offMarks;
 
       // A damaged nose costs real time to change: the crew has to remove the
       // old assembly and fit a new one, and that is why a driver with a broken
@@ -2179,31 +3169,103 @@ export class RaceEngine {
       // who changed their mind mid-stop would be billed for a wing they did not
       // get, or get one they did not pay for.
       const frontWing = Math.min(car.damage.health.frontWingL, car.damage.health.frontWingR);
-      car.pitNoseChanging = car.pitNoseChangeRequest ?? (frontWing < 0.7);
-      if (car.pitNoseChanging && frontWing < 0.999) {
-        car.pitBoxTimer += 9 + (1 - frontWing) * 5;
-      }
+      // `noseChangeForStop` and not a rule written out again here: the sheet
+      // that offers the driver the choice and the stop that performs it have to
+      // be reading one function, which is the whole point of that method.
+      car.pitNoseChanging = this.noseChangeForStop(car);
+      const noseS = car.pitNoseChanging && frontWing < 0.999 ? 9 + (1 - frontWing) * 5 : 0;
 
       // Serve a drive-through by simply passing through without stopping; a
       // stop-go adds its time to the stationary period.
       const pen = car.pendingServePenalty();
+      let penaltyS = 0;
       if (pen) {
-        if (pen.kind === 'stop-go-10s') car.pitBoxTimer += 10;
+        if (pen.kind === 'stop-go-10s') penaltyS = 10;
         pen.served = true;
       }
+
+      // Stopping off the marks costs the crew the time it takes them to move to
+      // the car. Charged as extra work rather than folded into the crew's own
+      // time, because it is not the crew's mistake and a career that reads
+      // `stationaryS` back as a judgement of the pit crew should not be told
+      // the crew was slow when the driver was long.
+      const shuffleS = Math.max(offMarks - PIT_BOX_WINDOW_M, 0) * PIT_BOX_SHUFFLE_S;
+
+      // A five or ten second time penalty is served HERE, at the driver's next
+      // stop, and the crew has to stand back for it: "it may not be worked on
+      // until the Car has been stationary for the duration of the penalty. In
+      // this context, touching the Car or driver by hand or tools or equipment
+      // will all constitute working" (Art. B1.9.5c).
+      //
+      // Which is why a five-second penalty is not worth five seconds. The stop
+      // still has to happen afterwards, at full length, so the driver pays the
+      // penalty AND the stop — and that is the whole reason a driver carrying
+      // one weighs staying out against coming in. `servePenaltyInBox` takes the
+      // seconds back off the end-of-race total so they are not charged twice.
+      //
+      // It goes in as `holdBeforeWorkS`, which is a state at the FRONT of the
+      // choreography and not an addition to the end of it — exactly as the
+      // stewards' coordination note asked. The whole stop shifts back by it:
+      // the jacks do not go in, no gun touches a nut, and the crew visibly
+      // stand off the car for the duration, because that is what the regulation
+      // describes and it is the only version of it a player can see happening.
+      const holdS = car.penaltyHoldS();
+      if (holdS > 0) car.servePenaltyInBox();
+
+      box.result = resolvePitStop({
+        crewTimeS: car.team.performance.pitCrewTimeS,
+        extraWorkS: noseS + shuffleS,
+        penaltyS,
+        holdBeforeWorkS: holdS,
+        noseChange: car.pitNoseChanging && frontWing < 0.999,
+        trafficRisk: this.config.kind === 'race' ? PIT_TRAFFIC_RISK_RACE : PIT_TRAFFIC_RISK_QUIET,
+      }, this.rng);
+      car.pitBoxTimer = box.result.stationaryS;
     }
 
     if (car.inPitBox) {
       car.physics.velocity.set(0, 0);
       car.physics.localVelX = 0;
       car.physics.localVelY = 0;
-      car.pitBoxTimer -= dt;
-      if (car.pitBoxTimer <= 0) {
+      box.elapsedS += dt;
+
+      const result = box.result;
+      const planned = result ? result.stationaryS : car.pitBoxTimer;
+
+      // THE RELEASE LIGHT.
+      //
+      // A modern stop is released by a light and not by a person: each gun
+      // reports when its nut is tight, the system goes green when all four have
+      // and the front jack is down, and the driver is looking at the light
+      // rather than at a man with a board. So the driver is gated here, on the
+      // light, and the light has one thing that can still hold it — the fast
+      // lane. Releasing a car across the nose of one already coming down the
+      // lane is an unsafe release; the crew hold it, and so does this.
+      let held = false;
+      if (box.elapsedS >= planned && box.holdS < PIT_RELEASE_MAX_HOLD_S) {
+        held = this.fastLaneBlocked(car);
+        if (held) box.holdS += dt;
+      }
+      car.pitBoxTimer = Math.max(planned - box.elapsedS, 0) + (held ? dt : 0);
+
+      if (result) {
+        pitStopProgress(result, box.elapsedS, box.progress);
+        // The resolved stop knows nothing about the car that turned up in the
+        // fast lane while the wheels were being changed, so the light it
+        // computed is overruled by the one the spotter is actually holding.
+        if (held) {
+          box.progress.green = false;
+          box.progress.phase = 'held';
+        }
+      }
+
+      if (box.elapsedS >= planned && !held) {
         car.inPitBox = false;
+        car.pitBoxTimer = 0;
         car.servicedThisVisit = true;
         // The lap out of the garage is an out-lap and must not be timed.
         car.onOutLap = true;
-        const compound = this.chooseCompoundForStint(car);
+        const compound = this.compoundForStint(car);
         car.serviceInBox(compound, 0, this.weather.trackTempC + 40);
 
         // The crew replaces the nose and the bodywork they can reach. Floor,
@@ -2225,25 +3287,102 @@ export class RaceEngine {
         const next = car.plan[Math.min(car.pitStops, car.plan.length - 1)];
         car.targetPitLap = next ? next.pitOnLap : -1;
         if (car.ai) car.ai.onPitStopComplete();
+        // The stationary time is reported because it is the number the career
+        // is going to be judged on, and because a stop that went wrong should
+        // say so on the radio rather than only in the lap chart.
+        const stopped = box.elapsedS;
+        const trouble = box.result?.problem ?? null;
         this.raceControl.log(
-          car.driver.code + ' pit stop — ' + getCompound(compound).name,
-          'info', this.time, car.index,
+          car.driver.code + ' pit stop — ' + getCompound(compound).name +
+          ', ' + stopped.toFixed(1) + 's' + (trouble ? ' (' + PIT_PROBLEM_TEXT[trouble] + ')' : ''),
+          trouble && stopped > car.team.performance.pitCrewTimeS + 1.5 ? 'warning' : 'info',
+          this.time, car.index,
+          { feed: 'team', team: { kind: 'stop', compound: getCompound(compound).name } },
         );
+        box.lastStationaryS = stopped;
+        box.result = null;
+        box.elapsedS = 0;
+        box.holdS = 0;
+        box.progress.phase = 'waiting';
+        box.progress.green = false;
+        box.progress.jack = 0;
       }
     }
   }
 
-  /** Picks the compound for the next stint, honouring the two-compound rule. */
-  private chooseCompoundForStint(car: CarEntry): CompoundId {
+  /**
+   * The view of one car's stop that everything outside the engine reads.
+   *
+   * Live, not a copy: the renderer calls this every frame for the car it is
+   * drawing a crew around, and the returned object is the engine's own state.
+   */
+  pitStopOf(car: CarEntry): PitStopView {
+    const box = this.pitBox[car.index];
+    // Written into the car's own view object rather than returned as a fresh
+    // one. The renderer asks this for every car in a box on every frame and the
+    // crew asks it again, and a stop is the one moment in a race when the
+    // frame budget is already being spent on twenty-one animated figures.
+    const v = box.view;
+    v.active = car.inPitBox;
+    v.elapsedS = box.elapsedS;
+    v.result = box.result;
+    v.progress = box.progress;
+    v.heldForTrafficS = box.holdS;
+    v.offMarksM = box.offMarksM;
+    v.lastStationaryS = box.lastStationaryS;
+    return v;
+  }
+
+  /**
+   * Is there a car in the fast lane that this one would be released into?
+   *
+   * The spotter's question. Only cars actually IN the pit lane count, and only
+   * ones that are moving — a car stationary in the next box is not traffic, it
+   * is a car being worked on, and holding for it would deadlock two crews
+   * waiting on each other for ever.
+   *
+   * The window is measured along the lane rather than in world space because
+   * the pit lane is a lateral offset on the main spline: two cars at the same
+   * `s` are alongside each other whatever the circuit is doing underneath.
+   */
+  private fastLaneBlocked(car: CarEntry): boolean {
+    const len = this.track.length;
+    for (const other of this.cars) {
+      if (other === car || other.retired || other.eliminated) continue;
+      if (!other.inPitLane || other.inPitBox) continue;
+      if (other.physics.speedMs < 2) continue;
+      const gap = loopDelta(other.s, car.s, len);
+      // Positive `gap` is the other car still short of us; negative is past.
+      const behind = gap > 0 && gap < len * 0.5 ? gap : -1;
+      const ahead = gap > len * 0.5 ? len - gap : -1;
+      if (behind >= 0 && behind < PIT_RELEASE_LOOK_BACK_M) return true;
+      if (ahead >= 0 && ahead < PIT_RELEASE_LOOK_AHEAD_M) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The compound this car's next stop will fit. THE value, not a copy of it.
+   *
+   * Public and pure — it reads the car and the session and writes nothing — so
+   * the pit sheet, the status line, the briefing and the stop itself are all
+   * one function call rather than four re-derivations that drift.
+   *
+   * @param ignoreDriverRequest asks what the CREW would do, for the line that
+   *        says so. It does not, and must not, disturb the driver's own call.
+   */
+  compoundForStint(car: CarEntry, ignoreDriverRequest = false): CompoundId {
     // A driver who has told the crew what to fit gets what they asked for,
     // including when it is a mistake. The pit screen states the mandatory
     // second-compound position and the weather in plain terms before the choice
     // is made; overriding it here would make the screen a suggestion box.
-    if (car.pitCompoundRequest) return car.pitCompoundRequest;
+    if (!ignoreDriverRequest && car.pitCompoundRequest) return car.pitCompoundRequest;
 
-    // Weather first: the right tyre for the conditions beats any plan.
-    if (this.weather.wetness > 0.6) return 'wet';
-    if (this.weather.wetness > 0.3) return 'intermediate';
+    // Weather first: the right tyre for the conditions beats any plan. Solved
+    // from the tyre model at this track temperature rather than read off two
+    // constants, so the crew fits what the strategist recommended.
+    const wetChoice = wetCompoundFor(this.weather.wetness, this.weather.trackTempC);
+    if (wetChoice) return wetChoice;
 
     const planned = car.plan[Math.min(car.pitStops + 1, car.plan.length - 1)];
     let choice: CompoundId = planned ? planned.compound : 'hard';
@@ -2327,10 +3466,15 @@ export class RaceEngine {
 
     for (let i = 0; i < cars.length; i++) {
       const a = cars[i];
-      if (a.inPitBox || (a.retired && !this.isSolidWreck(a))) continue;
+      // A car taking no part in this period is not on the circuit to be hit.
+      // This is the first test rather than a corollary of `inPitBox`, because
+      // the reason it cannot be hit is that it is not in the session — not that
+      // it happens to be parked somewhere. See `CarEntry.sittingOut` for the
+      // Bahrain Q2 report this closes.
+      if (a.sittingOut || a.inPitBox || (a.retired && !this.isSolidWreck(a))) continue;
       for (let j = i + 1; j < cars.length; j++) {
         const b = cars[j];
-        if (b.inPitBox || (b.retired && !this.isSolidWreck(b))) continue;
+        if (b.sittingOut || b.inPitBox || (b.retired && !this.isSolidWreck(b))) continue;
         // Two wrecks lying against each other have nothing left to resolve.
         if (a.retired && b.retired) continue;
         // A car in the pit lane and a car on the circuit are separated by the
@@ -2412,6 +3556,13 @@ export class RaceEngine {
           b.physics.yawRate -= severity * 0.55 * (nx * 0.4 + 0.2) * (bShare * 2);
           this.reportImpact(a.retired ? b : a, severity);
 
+          // Reported before the damage gate, not inside it. The stewards keep
+          // their own threshold (`JUDGED_SEVERITY`) and it is a calibrated
+          // number, so they have to be able to see the contacts BELOW it to
+          // know whether it is still in the right place. Two gates on the same
+          // quantity in two files is how one of them goes stale unnoticed.
+          this.raceControl.reportContact(a, b, severity, this.time);
+
           if (severity > 0.35) {
             // Work out which face of each car was struck. The contact normal
             // points from a to b, so a is hit on the side facing b and b on the
@@ -2420,10 +3571,6 @@ export class RaceEngine {
             // damage wings and gearboxes.
             this.applyContactDamage(a, severity, zoneFor(a.physics.heading, nx, nz));
             this.applyContactDamage(b, severity, zoneFor(b.physics.heading, -nx, -nz));
-            this.raceControl.log(
-              'Contact between ' + a.driver.code + ' and ' + b.driver.code,
-              'warning', this.time,
-            );
           }
         }
       }
@@ -2587,9 +3734,14 @@ export class RaceEngine {
     for (const id of broken) {
       const h = car.damage.health[id];
       if (bandOf(h) === 'ok') continue;
+      // Team only, and this is the line the user pointed at: "nobody will ever
+      // say this person's suspension broke ... that is a team only
+      // conversation". A rival's floor damage is not race control's business
+      // and it is certainly not the player's principal's.
       this.raceControl.log(
         car.driver.code + ': ' + COMPONENT_NAMES[id].toLowerCase() + ' damage',
         bandOf(h) === 'critical' ? 'critical' : 'warning', this.time, car.index,
+        { feed: 'team', team: { kind: 'damage', part: COMPONENT_NAMES[id], health: h } },
       );
     }
 
@@ -2602,7 +3754,17 @@ export class RaceEngine {
       // precede it — otherwise every hard racing contact would strip the car.
       car.damage.applyImpact(zone, severity, true);
       car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
-      this.raceControl.log(car.driver.code + ' is out of the race', 'critical', this.time, car.index);
+      this.raceControl.log(
+        car.driver.code + ' is out of the race', 'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'CAR RETIRED', status: 'OUT OF THE RACE',
+          },
+          team: { kind: 'retired', reason: 'terminal damage' },
+        },
+      );
     }
   }
 
@@ -2656,6 +3818,16 @@ export class RaceEngine {
           (this.track.cornerNameAt(car.s) || 'sector ' + (rc.sectorIndexAt(car.s) + 1)) +
           ' is clear',
           'info', this.time, car.index,
+          {
+            feed: 'either',
+            notice: {
+              parties: [car.driver.code],
+              where: (this.track.cornerNameAt(car.s) ||
+                'sector ' + (rc.sectorIndexAt(car.s) + 1)).toUpperCase(),
+              offence: 'CAR RECOVERED', status: 'TRACK CLEAR',
+            },
+            team: { kind: 'recovered' },
+          },
         );
       }
       car.recoveryTimer = op.elapsedS;
@@ -2685,6 +3857,15 @@ export class RaceEngine {
         car.retire('Beached in the gravel', this.time);
         this.raceControl.log(
           car.driver.code + ' is out — stranded off track', 'critical', this.time, car.index,
+          {
+            feed: 'either',
+            notice: {
+              parties: [car.driver.code],
+              where: (this.track.cornerNameAt(car.s) || '').toUpperCase(),
+              offence: 'CAR STOPPED OFF TRACK', status: 'RECOVERY IN PROGRESS',
+            },
+            team: { kind: 'stranded' },
+          },
         );
       }
     } else {
@@ -2696,16 +3877,63 @@ export class RaceEngine {
   // Reliability
   // =========================================================================
 
+  /**
+   * The chance that this car's machinery lets go, this step.
+   *
+   * `TeamPerformance.failureRate` is documented as a probability PER RACE
+   * DISTANCE — 0.03 for the best-prepared car on the grid to 0.085 for the
+   * worst — and the job here is to spread it over the running. It used to be
+   * spread over TIME:
+   *
+   *     raceSeconds = laps * referenceLapTime
+   *     perSecond   = failureRate / raceSeconds
+   *
+   * and both halves of that were wrong in the same direction, which is why the
+   * field was losing two cars a race to mechanicals when a Grand Prix loses
+   * about one.
+   *
+   * TIME IS THE WRONG DENOMINATOR. `referenceLapTime` is the theoretical lap
+   * from the solved speed profile — a perfect lap, in a Formula 1 car, with no
+   * traffic and no fuel. Nothing ever laps that quickly, so a race always ran
+   * longer than the `raceSeconds` its hazard had been normalised against and
+   * always produced more failures than `failureRate` promised. A junior car is
+   * a fifth slower than the reference and was therefore a fifth more likely to
+   * break, having done exactly the same mileage; and a race neutralised twice
+   * spent a quarter of an hour at safety-car pace manufacturing failures out of
+   * wall-clock, which is the opposite of how a gearbox wears. Distance is the
+   * denominator the quantity actually has.
+   *
+   * AND THE DISTANCE IS THE GRAND PRIX'S, not this session's. `config.laps`
+   * meant a 14-lap quarter-distance race carried a full Grand Prix's worth of
+   * reliability risk, packed into a quarter of the running — which is precisely
+   * the "way too many accidents" the short-race player was looking at, arriving
+   * four times as often per race as the sport's own figure. Choose 25% distance
+   * and you take 25% of the risk, which is both what a player means by a
+   * quarter-distance race and what the number in the roster claims.
+   */
   private checkReliability(car: CarEntry, dt: number): void {
     if (this.config.kind !== 'race') return;
-    // Failure rate is per race distance, converted to a per-second hazard.
-    const raceSeconds = (this.config.laps || this.track.def.raceLaps) * this.track.referenceLapTime;
-    const perSecond = car.team.performance.failureRate / Math.max(raceSeconds, 1);
-    if (this.rng.next() < perSecond * dt) {
+    const gpMetres = this.track.def.raceLaps * this.track.length;
+    const perMetre = car.team.performance.failureRate / Math.max(gpMetres, 1);
+    // Mileage covered this step. A car stationary in its box is not wearing
+    // anything out, and one circulating behind a safety car is wearing it out
+    // at the rate it is actually travelling.
+    const metres = car.physics.speedMs * dt;
+    if (this.rng.next() < perMetre * metres) {
       const causes = ['Power unit failure', 'Gearbox failure', 'Hydraulics', 'Overheating', 'Loss of drive'];
       const cause = this.rng.pick(causes);
       car.retire(cause, this.time);
-      this.raceControl.log(car.driver.code + ' — ' + cause, 'critical', this.time, car.index);
+      this.raceControl.log(
+        car.driver.code + ' — ' + cause, 'critical', this.time, car.index,
+        {
+          feed: 'either',
+          notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'CAR RETIRED', status: cause.toUpperCase(),
+          },
+          team: { kind: 'failure', cause },
+        },
+      );
     }
   }
 
@@ -2722,12 +3950,30 @@ export class RaceEngine {
       for (const car of this.cars) {
         if (!car.retired && !car.finished) anyRunning = true;
       }
+      // STAMP THE FLAG BEFORE TESTING THE WINDOW, not after.
+      //
+      // These two blocks used to be the other way round, and the order was the
+      // whole bug. `raceFinishedAt` starts at 0, so on the step the leader
+      // crossed the line the window test read `time > 0 + 180` — true for any
+      // race longer than three minutes — and `finishSession()` fired
+      // immediately, stamping `finished` and the winner's `finishTime` on every
+      // car still circulating.
+      //
+      // Measured on a 5-lap race before the fix: 1 of 19 classified finishers
+      // had actually completed the distance, all 19 carried the winner's time
+      // to the microsecond, the finish-time spread was 0.000s, and the race
+      // ended 0.00s after the leader crossed. The 180-second backmarker window
+      // this line exists to provide had never once elapsed.
+      //
+      // It also quietly truncated the final lap of every car except the leader
+      // in every probe that drives a race, which depressed penalty counts and
+      // inflated lap-time spread across the whole suite. See `probe:finish`.
+      if (this.raceControl.raceFinished && this.raceFinishedAt === 0) {
+        this.raceFinishedAt = this.time;
+      }
       // Give backmarkers a window to complete their final lap after the leader.
       if (!anyRunning || (this.raceControl.raceFinished && this.time > this.raceFinishedAt + 180)) {
         this.finishSession();
-      }
-      if (this.raceControl.raceFinished && this.raceFinishedAt === 0) {
-        this.raceFinishedAt = this.time;
       }
       return;
     }
@@ -2749,6 +3995,12 @@ export class RaceEngine {
       }
     }
     if (this.config.kind === 'race') {
+      // Order matters: the unserved penalties are converted to elapsed time
+      // BEFORE the field is re-sorted, because that conversion is exactly what
+      // decides who finished where. A driver carrying five seconds only loses a
+      // place if somebody is within five seconds of them, and that comparison
+      // happens in `updateStandings` through `classifiedTime`.
+      this.raceControl.convertUnservedPenalties(this.cars, this.time);
       this.raceControl.checkMandatoryCompounds(this.cars, this.weather.hasRained, this.time);
     }
     this.updateStandings();

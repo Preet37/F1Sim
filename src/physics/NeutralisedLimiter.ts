@@ -343,3 +343,100 @@ export function neutralisedPlan(
   plan.brake = pedal;
   return plan;
 }
+
+/**
+ * How fast the assist's brake pedal may move, pedal travel per second.
+ *
+ * THE SWERVE. The player's report is "there is a glitch that when the safety car
+ * happened, I was supposed to be limited and in that case my car swerved", and
+ * measured — `npm run probe:neutralsteer`, which records the car's heading every
+ * physics step — the assist was slamming the pedal from nothing to more than
+ * half its travel in a SINGLE 8ms step, fourteen hundred times in one race at
+ * Monaco, against zero times with the assist switched off.
+ *
+ * That is not a limiter, it is a kick. The plan behind it is computed afresh
+ * every step from a two-hundred-metre lookahead, and the pedal it asks for is
+ * the MAXIMUM over that window (see `neutralisedPlan`): a corner entering the
+ * window from two hundred metres away arrives whole, at whatever pedal it needs,
+ * between one step and the next. In a straight line that is merely abrupt. In a
+ * corner it puts a large longitudinal demand through tyres that are already
+ * spending their grip laterally, the friction circle takes the difference out of
+ * the lateral force, and the car changes direction. The pit lane has exactly the
+ * same machinery and never showed it, because a pit entry is a straight line.
+ *
+ * So the pedal moves at a rate a foot moves at. Three per second is a third of a
+ * second from nothing to everything, which is quick, and it is the same order as
+ * the keyboard pedal rates the input layer uses for the player's own foot.
+ */
+export const NEUTRAL_PEDAL_RATE = 3;
+
+/**
+ * How fast the held ceiling may move, m/s per second.
+ *
+ * The second half of the same problem, and the reason it is separate. The
+ * setpoint is `min(plan.ceilingMs, queueHoldMs(...))` and the second term is
+ * DISCONTINUOUS by construction: `queueHoldMs` returns the speed of the car in
+ * front while inside the target gap and `Infinity` outside it, so a car drifting
+ * across the target gap sees its ceiling step by the whole difference between
+ * its own plan and the speed of whatever is in front. Measured at Zandvoort the
+ * setpoint moved 22 m/s between two consecutive steps — eighty km/h in eight
+ * milliseconds — and the limiter, which is bounded to a g, spends the next
+ * second trying to catch a number that has already moved again.
+ *
+ * Falling is allowed to be quicker than rising and both are bounded by what the
+ * car could actually do: `NEUTRAL_DECEL_MS2` is the rate the plan is built at, so
+ * a ceiling that falls at that rate is a ceiling the planning profile has already
+ * arranged for the car to meet.
+ */
+export const NEUTRAL_CEILING_FALL_MS2 = NEUTRAL_DECEL_MS2;
+export const NEUTRAL_CEILING_RISE_MS2 = 6;
+
+/**
+ * The assist's own memory, one per car.
+ *
+ * It exists because a limiter with no memory cannot be rate-limited, and a
+ * limiter that cannot be rate-limited is the defect above. Long-lived and
+ * mutable, like everything else hanging off a `CarEntry`.
+ */
+export class NeutralisedAssistState {
+  /** Pedal the assist is currently asking for, 0..1. */
+  brake = 0;
+  /** Ceiling the assist is currently holding, m/s. 0 when not armed. */
+  ceilingMs = 0;
+
+  reset(): void {
+    this.brake = 0;
+    this.ceilingMs = 0;
+  }
+
+  /**
+   * Moves the assist toward what the plan wants, at a rate a car can absorb.
+   *
+   * @param wantBrake   the plan's pedal
+   * @param wantCeiling the setpoint the plan and the queue between them ask for
+   * @param brakeCeiling the most pedal the tyres have left after cornering —
+   *        `VehiclePhysics.brakeLimitFraction`, which is the friction circle's
+   *        own answer and already knows how much lateral force is committed
+   */
+  advance(dt: number, wantBrake: number, wantCeiling: number, brakeCeiling: number): void {
+    // Never more pedal than there is grip to take it. Asking for more does not
+    // produce more braking — the friction circle clamps it — it produces the
+    // clamp, and the clamp is applied per axle, which is what steps the back of
+    // the car out. Just inside the limit, exactly as the AI drives it.
+    const target = Math.min(wantBrake, brakeCeiling * 0.95);
+    const dp = target - this.brake;
+    const maxDp = NEUTRAL_PEDAL_RATE * dt;
+    this.brake = Math.abs(dp) <= maxDp ? target : this.brake + Math.sign(dp) * maxDp;
+    if (this.brake < 0) this.brake = 0;
+
+    // The ceiling. Armed from wherever the car currently is rather than from
+    // zero, so the first step of a neutralisation is not a wall.
+    if (this.ceilingMs <= 0) {
+      this.ceilingMs = wantCeiling;
+      return;
+    }
+    const dv = wantCeiling - this.ceilingMs;
+    const rate = (dv < 0 ? NEUTRAL_CEILING_FALL_MS2 : NEUTRAL_CEILING_RISE_MS2) * dt;
+    this.ceilingMs = Math.abs(dv) <= rate ? wantCeiling : this.ceilingMs + Math.sign(dv) * rate;
+  }
+}

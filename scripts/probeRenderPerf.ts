@@ -238,7 +238,7 @@ async function gpuInfo(page: Page): Promise<string> {
 }
 
 async function runOnce(page: Page, url: string, id: string, tweak?: string): Promise<Stats> {
-  await page.goto(`${url}?circuit=${id}&session=race&rolling=1&laps=5&seed=7`, {
+  await page.goto(`${url}?circuit=${id}&session=race&rolling=1&laps=5&seed=7${WET_QUERY}`, {
     waitUntil: 'load', timeout: 180_000,
   });
   await page.waitForFunction(
@@ -279,12 +279,6 @@ function row(label: string, s: Stats): string {
     `tris ${(s.trisMean / 1000).toFixed(0)}k`,
   ].join('  ');
 }
-
-/** Freezes the scaler so an ablation is not confounded by it moving. */
-const PIN = (v: number): string =>
-  `(() => { const r = window.__game.renderer;
-     Object.getPrototypeOf(r).updateResolutionScale = function () {};
-     r.resolutionScale = ${v}; r.resize(); })()`;
 
 /**
  * Paired A/B factors, toggled INSIDE one running session.
@@ -389,6 +383,16 @@ const FACTORS: Record<string, Factor> = {
   },
 };
 
+/**
+ * `PERF_WET=0.95` soaks the circuit before measuring.
+ *
+ * Rain is the most expensive weather this renderer draws — spray from
+ * twenty-two cars, a rain volume, and a road that has stopped being matte —
+ * and it is stochastic, so measuring it by waiting for a seed to rain measures
+ * the seed. The deep link forces it; see `?wet=` in `main.ts`.
+ */
+const WET_QUERY = process.env.PERF_WET ? `&wet=${Number(process.env.PERF_WET)}` : '';
+
 const PHASE_MS = Number(process.env.PERF_PHASE ?? 1500);
 const CYCLES = Number(process.env.PERF_CYCLES ?? 12);
 
@@ -396,7 +400,7 @@ const CYCLES = Number(process.env.PERF_CYCLES ?? 12);
 function median(a: number[]): number { return pct(a, 0.5); }
 
 async function pairedRun(page: Page, url: string, id: string, f: Factor): Promise<string> {
-  await page.goto(`${url}?circuit=${id}&session=race&rolling=1&laps=5&seed=7`, {
+  await page.goto(`${url}?circuit=${id}&session=race&rolling=1&laps=5&seed=7${WET_QUERY}`, {
     waitUntil: 'load', timeout: 180_000,
   });
   await page.waitForFunction(
@@ -501,7 +505,7 @@ async function main(): Promise<void> {
   await page.bringToFront();
 
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   // Chrome asks every document for `/favicon.ico` whether one is referenced or
   // not, and this probe has no icon to give it — so a clean run reported a page
   // error every time. Matched on the failing URL rather than the message: the

@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { apertureEdge, loft, section, setFlatUV, strut, type OpenTop } from './Loft';
-import { swatchUV, type SwatchName } from './Livery';
+import { apertureEdge, limb, loft, section, setFlatUV, type OpenTop } from './Loft';
+import { swatchUV, PANEL, type SwatchName } from './Livery';
 import {
-  buildHandParts, mirroredX, GRIP_X, HAND_X, HAND_Y,
+  buildHandParts, mirroredX, ARM_SHOULDER, ARM_ELBOW, ARM_WRIST,
+  UPPER_ARM_R, FOREARM_R, GRIP_X, HAND_X, HAND_Y,
   WHEEL_TILT, WHEEL_Y, WHEEL_Z,
 } from './CockpitMesh';
 
@@ -56,6 +57,21 @@ export interface DriverParts {
    * by the detailed cockpit wheel; see the note above.
    */
   grip: THREE.BufferGeometry[];
+  /**
+   * The arms, shoulder to wrist. Hidden with the grip, and for the same reason.
+   *
+   * These used to ride in `body` and be merged into the shell, which was safe
+   * for exactly as long as nothing could get close to them. The driver's-eye
+   * camera ended that: it puts the player's own upper arms 0.3m from the lens,
+   * across the bottom of every frame, where a pair of straight untapered tubes
+   * that CANNOT MOVE reads as "blue lego blocks connected to nothing" — the
+   * hands turn with the rim and the arms do not follow, which is the whole
+   * complaint. CockpitMesh draws an articulated pair in the same place for that
+   * one car, so these come out for it exactly the way the coarse wheel does.
+   *
+   * Nineteen other cars still get them, still for free, still merged.
+   */
+  arms: THREE.BufferGeometry[];
 }
 
 /** Seated position: eye point is a little forward of the roll hoop, low down. */
@@ -322,32 +338,96 @@ function figure(d: DriverTier): THREE.BufferGeometry[] {
   hans.translate(0, SHOULDER_Y + 0.030, HEAD_Z - 0.055);
   parts.push(tag(hans, 'carbon'));
 
-  // Arms: shoulder to elbow to hand. Two tapered members each, which is enough
-  // for the eye to read a bent arm reaching to a wheel.
-  // The elbow used to swing out to x 0.196 with a 44mm arm on it — 240mm from
-  // the centreline, through a survival cell wall that is at 214mm. Under a
-  // closed deck nobody could see it happen. Pulled in to 0.158 the forearm runs
-  // INSIDE the tub, which is both correct and the only way the arms read as
-  // going down into the car rather than over the side of it.
-  for (const side of [-1, 1] as const) {
-    const sx = side * 0.150, sy = SHOULDER_Y - 0.005, sz = -0.045;
-    const ex = side * 0.158, ey = SHOULDER_Y - 0.055, ez = 0.195;
-    // The hand end is the grip point, so the arm still lands on the wheel when
-    // the coarse glove is swapped for the detailed cockpit hand.
-    const hx = side * GRIP_X, hy = WHEEL_Y - 0.008, hz = WHEEL_Z - 0.035;
-
-    const upper = strut(sx, sy, sz, ex, ey, ez, 0.052, d.limb, true);
-    parts.push(tag(upper, 'suit'));
-    const fore = strut(ex, ey, ez, hx, hy, hz, 0.044, d.limb, true);
-    parts.push(tag(fore, 'suit'));
-
-    // Shoulder cap, so the arm does not meet the torso in a visible stump.
-    const cap = new THREE.SphereGeometry(0.056, d.limb, Math.round(d.limb * 0.7));
-    cap.translate(sx, sy, sz);
-    parts.push(tag(cap, 'suit'));
-  }
-
   return parts;
+}
+
+/**
+ * Arms: shoulder to elbow to wrist, two tapered members each.
+ *
+ * WHAT WAS WRONG. They were two untapered tubes — 104mm across all the way from
+ * the shoulder to the elbow, 88mm from the elbow to the glove — and the elbow
+ * sat at z = 0.195, thirty millimetres in front of the driver's eye. From
+ * outside the car that was invisible; from the driver's-eye camera it is two
+ * blue cylinders across the bottom of the frame with a hard step where each
+ * meets a glove half its diameter. Tapering them, and narrowing the wrist end
+ * to 68mm so the glove is the widest thing at that joint, is most of the fix.
+ *
+ * The other half is that they have to MOVE, and geometry merged into a shared
+ * shell cannot. See `DriverParts.arms`: these are hidden for the car the onboard
+ * camera is inside, and CockpitMesh articulates a pair in the same place.
+ *
+ * The elbow used to swing out to x 0.196 with a 44mm arm on it — 240mm from the
+ * centreline, through a survival cell wall that is at 214mm. 0.163 keeps the
+ * forearm INSIDE the tub, which is both correct and the only way the arms read
+ * as going down into the car rather than over the side of it.
+ */
+function arms(d: DriverTier): THREE.BufferGeometry[] {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const side of [-1, 1] as const) {
+    const sh = [side * ARM_SHOULDER[0], ARM_SHOULDER[1], ARM_SHOULDER[2]] as const;
+    const el = [side * ARM_ELBOW[0], ARM_ELBOW[1], ARM_ELBOW[2]] as const;
+    const wr = [side * ARM_WRIST[0], ARM_WRIST[1], ARM_WRIST[2]] as const;
+    parts.push(tag(limb(sh, el, UPPER_ARM_R[0], UPPER_ARM_R[1], d.limb), 'suit'));
+    parts.push(tag(limb(el, wr, FOREARM_R[0], FOREARM_R[1], d.limb), 'suit'));
+    // Elbow and shoulder, so the two segments do not meet in a visible mitre.
+    const cap = new THREE.SphereGeometry(0.056, d.limb, Math.round(d.limb * 0.7));
+    cap.translate(sh[0], sh[1], sh[2]);
+    parts.push(tag(cap, 'suit'));
+    const joint = new THREE.SphereGeometry(0.047, d.limb, Math.round(d.limb * 0.7));
+    joint.translate(el[0], el[1], el[2]);
+    parts.push(tag(joint, 'suit'));
+  }
+  return parts;
+}
+
+/** How much taller and longer than wide the shell is. See `helmet`. */
+const HELMET_SCALE = [1.0, 1.10, 1.16] as const;
+
+/**
+ * Unwraps a helmet part into the livery atlas's helmet panel.
+ *
+ * A SPHERICAL PROJECTION about the head centre, not the part's own
+ * parameterisation, and that is what lets the shell and the jaw — a sphere and a
+ * four-station loft — carry ONE continuous graphic across the joint between
+ * them. Undoing the egg scale first is what keeps the projection even: without
+ * it the crown, which is stretched 1.10, would take a tenth less of the panel
+ * than it covers on the helmet.
+ *
+ *   u = 0.5 at the FRONT, 0 and 1 at the back
+ *   v = 1 at the crown, 0.5 at the equator, 0 under the chin
+ *
+ * THE SEAM. Any projection round a closed shape has one, and it has to fall on
+ * vertices that are already duplicated or the triangle that spans it smears the
+ * whole texture across the back of the head. The shell is therefore built with
+ * `phiStart` at -90 degrees so its OWN seam lands at the back, and its own
+ * uv.x — which already carries the duplicate — is used rather than recomputed.
+ * The jaw needs no such care: it covers the front and the sides and never
+ * reaches round to the back at all.
+ */
+function helmetUV(geo: THREE.BufferGeometry, fromSphereUV: boolean): THREE.BufferGeometry {
+  const r = PANEL.helmet;
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const existing = geo.attributes.uv as THREE.BufferAttribute | undefined;
+  const uvs = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    let u: number;
+    let v: number;
+    if (fromSphereUV && existing) {
+      u = existing.getX(i);
+      v = existing.getY(i);
+    } else {
+      const x = pos.getX(i) / HELMET_SCALE[0];
+      const y = (pos.getY(i) - HEAD_Y) / HELMET_SCALE[1];
+      const z = (pos.getZ(i) - HEAD_Z) / HELMET_SCALE[2];
+      const len = Math.hypot(x, y, z) || 1e-6;
+      u = 0.5 + Math.atan2(x, z) / (Math.PI * 2);
+      v = 0.5 + Math.asin(Math.max(-1, Math.min(1, y / len))) / Math.PI;
+    }
+    uvs[i * 2] = r.u0 + u * (r.u1 - r.u0);
+    uvs[i * 2 + 1] = r.v0 + v * (r.v1 - r.v0);
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  return geo;
 }
 
 /** Helmet, visor and crown fin. */
@@ -363,19 +443,25 @@ function helmet(d: DriverTier): THREE.BufferGeometry[] {
   // alone, an egg lit with a sphere's normals is subtly but consistently wrong
   // at the crown, which is the part of the driver a chase camera looks straight
   // down onto.
-  const shell = scaled(new THREE.SphereGeometry(R, wSeg, d.shellH), 1.0, 1.10, 1.16);
+  //
+  // `phiStart` is -90 degrees so the sphere's seam falls at the BACK of the
+  // head, which is where the paint's seam has to be. See `helmetUV`.
+  const shell = scaled(
+    new THREE.SphereGeometry(R, wSeg, d.shellH, -Math.PI / 2, Math.PI * 2),
+    HELMET_SCALE[0], HELMET_SCALE[1], HELMET_SCALE[2],
+  );
   shell.translate(0, HEAD_Y, HEAD_Z);
-  parts.push(tag(shell, 'helmet'));
+  parts.push(helmetUV(shell, true));
 
   // Jaw: the squared-off lower front that a modern helmet has and a sphere does
   // not. Lofted rather than boxed — a box here reads as a brick glued to a ball,
   // which is exactly how the first attempt looked from the chase camera.
-  parts.push(tag(loft([
+  parts.push(helmetUV(loft([
     section(HEAD_Z + 0.150, 0.056, HEAD_Y - 0.120, HEAD_Y - 0.032, 0.50),
     section(HEAD_Z + 0.100, 0.080, HEAD_Y - 0.142, HEAD_Y + 0.004, 0.40),
     section(HEAD_Z + 0.010, 0.094, HEAD_Y - 0.152, HEAD_Y + 0.020, 0.50),
     section(HEAD_Z - 0.070, 0.082, HEAD_Y - 0.132, HEAD_Y + 0.010, 0.70),
-  ], wSeg - 4, true, d.step * 0.5), 'helmet'));
+  ], wSeg - 4, true, d.step * 0.5), false));
 
   // Visor aperture. A band of dark glass wrapped round the front of the shell,
   // slightly proud of it so it never z-fights.
@@ -393,7 +479,7 @@ function helmet(d: DriverTier): THREE.BufferGeometry[] {
     R * 1.012, wSeg, d.visorH,
     Math.PI / 2 - 1.32, 2.64,
     0.99, 0.62,
-  ), 1.0, 1.10, 1.16);
+  ), HELMET_SCALE[0], HELMET_SCALE[1], HELMET_SCALE[2]);
   visor.translate(0, HEAD_Y, HEAD_Z);
   parts.push(tag(visor, 'glass'));
 
@@ -403,7 +489,7 @@ function helmet(d: DriverTier): THREE.BufferGeometry[] {
     R * 1.004, wSeg, d.visorH,
     Math.PI / 2 - 1.42, 2.84,
     0.93, 0.78,
-  ), 1.0, 1.10, 1.16);
+  ), HELMET_SCALE[0], HELMET_SCALE[1], HELMET_SCALE[2]);
   surround.translate(0, HEAD_Y, HEAD_Z);
   parts.push(tag(surround, 'carbon'));
 
@@ -437,5 +523,6 @@ export function buildDriverParts(quality: 'low' | 'high'): DriverParts {
     body: [...cockpitInterior(d), ...figure(d)],
     head: helmet(d),
     grip: wheelAndGloves(d),
+    arms: arms(d),
   };
 }

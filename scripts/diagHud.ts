@@ -97,3 +97,5 @@ console.log('');
 console.log('standings order changed on', standingsChanges, 'sampled frames');
 console.log('tower text changed on     ', towerChanges, 'sampled frames');
 console.log('frames where the tower disagreed with the standings:', mismatches);
+
+export {};

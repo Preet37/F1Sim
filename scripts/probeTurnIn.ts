@@ -35,7 +35,7 @@ import { PHYSICS_DT } from '../src/core/SimClock';
  * more than its share, and `balance` (positive = rear closer to its limit) says
  * the same thing directly.
  */
-const env = { trackTempC: 40, airTempC: 25, wetness: 0, airDensityRatio: 1, abrasion: 1 };
+const env = { trackTempC: 40, airTempC: 25, wetness: 0, surfaceGrip: 1, airDensityRatio: 1, abrasion: 1 };
 
 /** Slip angle at which the magic formula peaks: sin(C*atan(B*a)) maxes at B*a = 1.978. */
 const peakSlipDeg = (1.978 / BASE_F1_SPEC.corneringStiffnessFront) * 57.3;
@@ -46,7 +46,13 @@ console.log('speed  steer  steerAng  yawKinematic  yawActual  ratio  frontSlip  
 
 for (const kph of [80, 140, 200, 260]) {
   for (const steer of [0.2, 0.35, 0.5, 0.7, 1.0]) {
-    const p = new VehiclePhysics(BASE_F1_SPEC, 'medium', 40);
+    // The constructor takes (spec, startCompound). A third argument — a track
+    // temperature of 40 — used to be passed here and has been silently dropped
+    // by JavaScript ever since the signature changed. The temperature the tyre
+    // model actually reads is the one in `env` above, which is already 40, so
+    // removing it changes no number; leaving it in place hides the next
+    // signature change the same way.
+    const p = new VehiclePhysics(BASE_F1_SPEC, 'medium');
     p.frontTires.fit('medium', 95);
     p.rearTires.fit('medium', 95);
     const v = kph / 3.6;

@@ -3,6 +3,9 @@ import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from './CarEntry';
 import { RECOVERY_FAST_SECTION_MS, RECOVERY_TRACKSIDE_M } from './Recovery';
 import type { DebrisField } from './DebrisField';
+import { Stewards, type StewardsNotice } from './Stewards';
+import { SafetyCar } from './SafetyCar';
+import type { Offence } from './DrivingStandards';
 
 /**
  * Race Control: flags, track limits, and penalties.
@@ -94,22 +97,55 @@ export function worseSignal(a: FlagSignal, b: FlagSignal): FlagSignal {
  * it as one boolean is what makes a simulated safety car feel like a speed limit
  * rather than like a safety car.
  *
- *   BUNCHING      Field forming up behind the car, ten car lengths apart.
- *                 2025 Sporting Regs Art. 55.7 / 2026 Section B Art. B5.13.2b.
+ *   DEPLOYING     The order has been given. The message, the "SC" panels and the
+ *                 waved yellows at every post are already out, and the car is
+ *                 running down the pit lane to join. 2026 Section B Art. B5.13.1
+ *                 / 2025 Sporting Regs Art. 55.4 and 55.6.
+ *   PICKING_UP    On the circuit with its orange lights on, gathering the field.
+ *                 It "will join the track ... regardless of where the leader is"
+ *                 (B5.13.1 / Art. 55.6), so what it picks up may not be the
+ *                 leader; the green light orders the cars between it and the
+ *                 leader past until it is (B5.13.4a / Art. 55.9).
+ *   BUNCHING      Leader behind it, field forming up, ten car lengths apart.
+ *                 B5.13.2b and B5.13.5a / Art. 55.7 and 55.10.
  *   WAVING_LAPPED "LAPPED CARS MAY NOW OVERTAKE": every car lapped by the
  *                 leader is REQUIRED to pass the cars on the lead lap and the
- *                 safety car itself. Art. 55.14 / B5.13.4c.
+ *                 safety car itself. B5.13.4c / Art. 55.14.
  *   IN_THIS_LAP   "SAFETY CAR IN THIS LAP", orange lights extinguished. The
  *                 leader now dictates the pace and may fall back beyond the
- *                 maximum gap. Art. 55.15 / B5.13.6.
- *   RESTART       Green at the Line. Overtaking is still forbidden until each
- *                 car has itself passed the Line. Art. 55.8 / B5.13.2c.
+ *                 maximum gap. B5.13.6 / Art. 55.15.
+ *   ENDING        The safety car has entered the Pit Entry Road and the SC
+ *                 boards have been withdrawn — but the race is NOT green yet.
+ *                 The yellow flags stay out until the leader reaches the Line,
+ *                 and it is there that the green is shown. B5.13.6, final
+ *                 paragraph / Art. 55.15, final paragraph.
+ *   RESTART       Green shown at the Line. Overtaking is still forbidden for
+ *                 each car until it has itself passed the Line. B5.13.2c /
+ *                 Art. 55.8.
+ *
+ * THE PHASE THAT WAS MISSING IS `ENDING`, and it is the whole of the difference
+ * between the two neutralisations. A VSC ends wherever the cars happen to be:
+ * the panels go green "at any time between 10 and 15 seconds" after the warning
+ * and "drivers may continue racing immediately" (B5.12.4 / Art. 56.7). A safety
+ * car period does not. It ends at a PLACE — "as the leader approaches the Line
+ * the yellow flags will be withdrawn and a green flag and/or green light panel
+ * will be displayed at the Line" — and the player is right that the game had
+ * them the same:
+ *
+ *   "the vsc ending can happen whenever but safety car ends at the end of the
+ *    lap"
+ *
+ * Before this, the race went green the instant the safety car reached the pit
+ * entry, wherever on the lap the leader was.
  */
 export type SafetyCarPhase =
   | 'none'
+  | 'deploying'
+  | 'picking-up'
   | 'bunching'
   | 'waving-lapped'
   | 'in-this-lap'
+  | 'ending'
   | 'restart';
 
 export type PenaltyKind =
@@ -131,6 +167,168 @@ export interface Penalty {
   served: boolean;
 }
 
+/**
+ * Which feed a bulletin belongs on.
+ *
+ * THE SPORT HAS TWO VOICES AND THIS GAME WAS USING ONE. Every message in this
+ * log was being read out by the player's own team principal, so a driver on
+ * another team going off at sector 2 arrived as `MARCO VIDAL · TEAM PRINCIPAL
+ * — "Yellow flag — HAL off at sector 2"`, and so did a stranger's track-limits
+ * warning. Neither is a team matter and neither driver is on the player's team.
+ *
+ *   "the FIA will say stuff like racing incident noted, and then if someone got
+ *    a penalty ... nobody will ever say this person's suspension broke or this
+ *    broke, that is a team only conversation so if they are not part of the
+ *    users team then they shouldn't be getting those notifs."
+ *
+ * So a message declares who owns it:
+ *
+ *   `race-control`  Official and impersonal. Sessions, flags, the safety car,
+ *                   incidents noted and investigated, penalties, track limits,
+ *                   the chequered flag. Everyone sees it, about anyone.
+ *   `team`          The player's own car and their own team-mate. Damage,
+ *                   tyres, fuel, pit calls, the gap to the car being raced.
+ *                   Shown only when the car it names is on the player's team,
+ *                   and DROPPED otherwise. A third party's suspension failure
+ *                   never reaches this feed.
+ *   `either`        An event both would remark on, from opposite sides: an
+ *                   accident, a retirement, a car stranded. Race control notes
+ *                   it when it is somebody else's car; the pit wall reacts to
+ *                   it when it is one of yours. One event, one card, the right
+ *                   voice — never both at once, because the rail is 60 pixels
+ *                   tall on a landscape phone and the second card evicts the
+ *                   first.
+ *
+ * The filter is OWNERSHIP, and it is applied by the HUD, which is the only
+ * layer that knows which car the player is in.
+ */
+export type MessageFeed = 'race-control' | 'team' | 'either';
+
+/**
+ * An incident as race control words it.
+ *
+ * Four fields because that is what an official bulletin is: who, where, what,
+ * and what is being done about it. A broadcast draws them as a banner reading
+ * `RACE CONTROL: <DRIVER>, <DRIVER> INCIDENT` over `TURN 1 · IMPEDING · NOTED`,
+ * and keeping them apart rather than pre-baking a sentence is what lets the HUD
+ * draw that shape instead of a paragraph.
+ */
+export interface RaceNotice {
+  /** Driver codes named, in the order race control names them. */
+  parties: string[];
+  /** `TURN 4`, `SECTOR 2`, `PIT LANE`, or '' for a session-wide notice. */
+  where: string;
+  /** `CONTACT`, `TRACK LIMITS`, `CAR STOPPED`, `PIT LANE SPEEDING`. */
+  offence: string;
+  /** `NOTED`, `UNDER INVESTIGATION`, `5 SECOND TIME PENALTY`, `LAP DELETED`. */
+  status: string;
+}
+
+/**
+ * A team event, as facts rather than as a sentence.
+ *
+ * The principal's line is written at the display, from these, because a line
+ * written here would be a string in the physics — and because the same event
+ * is said differently about your own car and about your team-mate's.
+ */
+/**
+ * THE GOVERNING RULE FOR EVERY FIELD BELOW: it carries something the driver
+ * cannot already see.
+ *
+ * The notes above the rule are events — things that happened to a car. The ones
+ * below it are the pit wall's own traffic, and they exist because of a reported
+ * fault that was really an architectural one:
+ *
+ *   "whats this bullshit of holding the minimum every sector. make the radios
+ *    legit and smart, think of it like a genuine interaction."
+ *
+ * "Hold the minimum in every sector" is correct information formatted as a rule
+ * restatement. It is what the regulation says, and it is therefore the one thing
+ * the driver definitely knows — they are obeying it. What they cannot see is
+ * their own number. Real neutralisation radio is "delta positive", "you're plus
+ * one-two, that's good", "you're negative, lift".
+ *
+ * So every note here is a MEASUREMENT or a DECISION, never a category. A field
+ * called `gapS` produces a person; a field called `severity` produces a status
+ * string. That is the whole difference, and it is enforced by the shape of the
+ * data rather than by the discipline of whoever writes the next line.
+ */
+export type TeamNote =
+  // --- Things that happened to a car -------------------------------------
+  | { kind: 'off'; corner: string; hit: string; heavy: boolean }
+  | { kind: 'damage'; part: string; health: number }
+  | { kind: 'retired'; reason: string }
+  | { kind: 'failure'; cause: string }
+  | { kind: 'stranded' }
+  | { kind: 'recovered' }
+  | { kind: 'stop'; compound: string }
+  | { kind: 'pit-closed' }
+  | { kind: 'pit-missed' }
+  | { kind: 'pit-fast' }
+  | { kind: 'penalty-served' }
+
+  // --- The pit wall's own traffic ----------------------------------------
+  /**
+   * A car the driver is racing, and the rate it is moving at.
+   *
+   * `gapS` is the fact; `perLapS` is the one the driver genuinely cannot have —
+   * a gap is visible in a mirror, a closing RATE is three laps of arithmetic.
+   * Negative `perLapS` means they are coming to you.
+   */
+  | { kind: 'gap'; who: string; gapS: number; perLapS: number; behind: boolean }
+  /**
+   * A penalty, at the moment the stewards hand it down.
+   *
+   * `whenServed` is why this note exists rather than leaving it to race control:
+   * the official bulletin says what the penalty is, and the pit wall says what
+   * the team is going to do about it, which is the half the driver is asking for.
+   */
+  | { kind: 'penalty'; seconds: number; offence: string; whenServed: string }
+  /** A place the stewards want handed back, and the deadline for doing it. */
+  | { kind: 'cede'; who: string; withinS: number }
+  /**
+   * Weather that has not arrived yet, with the laps it lands on.
+   *
+   * A forecast is the purest case of the rule: the driver is inside the car and
+   * can see the sky, but they cannot see the radar and they cannot see the lap
+   * numbers the strategist has already mapped it onto.
+   */
+  | {
+    kind: 'weather'; wet: boolean; minutes: number;
+    fromLap: number; toLap: number; confidence: number; plan: string;
+  }
+  /**
+   * The strategist's call, with its question, if it has one.
+   *
+   * `callId` is the `PitWall`'s own id, carried through so the HUD's answer
+   * buttons can be matched back to the call that was actually asked. The offer
+   * and the button are two independent clocks and they will race; see
+   * `PitWall.answer`.
+   */
+  | {
+    kind: 'call'; message: string; reason: string; compound: string;
+    question: string | null; callId: number; urgent: boolean;
+  }
+  /** What the wall said back once the driver answered — or did not. */
+  | { kind: 'reply'; outcome: 'yes' | 'no' | 'lapsed'; compound: string }
+  /**
+   * The tyre, as laps rather than as a percentage.
+   *
+   * The wear bar is on the driver's own screen. How many laps are left in it,
+   * and what each of those laps is costing, is not.
+   */
+  | { kind: 'tyres'; lapsLeft: number; dropOffS: number; axle: 'front' | 'rear' }
+  /**
+   * A place changing hands, and whether it was to the other side of the garage.
+   *
+   * `teammate` is the whole reason this is a team note. Losing a place to a
+   * stranger is racing; losing it to the car the same people built is politics,
+   * and the two cannot be said in the same words.
+   */
+  | { kind: 'position'; gained: boolean; position: number; who: string; teammate: boolean }
+  /** Fuel, as the margin in laps — the number the readout does not give. */
+  | { kind: 'fuel'; marginLaps: number };
+
 export interface RaceControlMessage {
   /** Session time the message was issued. */
   time: number;
@@ -138,6 +336,19 @@ export interface RaceControlMessage {
   severity: 'info' | 'warning' | 'critical';
   /** Car this concerns, or -1 for a session-wide message. */
   carIndex: number;
+  /** Which voice owns it. */
+  feed: MessageFeed;
+  /** Structured incident detail, when race control has any. */
+  notice?: RaceNotice;
+  /** Structured team detail, when the pit wall has any. */
+  team?: TeamNote;
+}
+
+/** The optional half of `log`, so thirty existing call sites stay as they are. */
+export interface MessageDetail {
+  feed?: MessageFeed;
+  notice?: RaceNotice;
+  team?: TeamNote;
 }
 
 /** Number of marshalling sectors the track is divided into. */
@@ -245,26 +456,82 @@ const VSC_PACE_SCALE = 0.5;
 const SC_BUNCHING_PACE_SHARE = 0.38;
 
 /**
- * How far ahead of the leader the safety car joins the circuit, metres.
+ * How far short of the pit exit the leader has to be for the car to be released,
+ * metres.
  *
- * Enough road that a leader arriving at racing speed cannot get past it while
- * it slows down. A car doing 85 m/s braking to a 35 m/s safety car pace covers
- * about 130m more than the safety car does over the same period; 250 gives that
- * a wide margin at every circuit and is still close enough that the pick-up
- * happens within a few seconds rather than over a lap.
+ * The safety car sits at the end of the pit lane with its lights on and is let
+ * go when the leader is close enough behind that it will come out in front of
+ * them and be caught within a few seconds. That is a judgement the Race Director
+ * makes — B1.3.3e gives them "the use of the Safety Car" — and this number is
+ * what makes it: enough road that a leader arriving at racing speed cannot get
+ * past before it has pulled out and slowed down, and little enough that the
+ * pick-up happens on this lap rather than the next one.
+ *
+ * A car doing 85 m/s braking to a 35 m/s safety car pace covers about 130m more
+ * than the safety car does over the same period, so anything under that is a
+ * release into the leader's braking zone.
+ *
+ * Nine hundred metres, not four. Measured at Monza a four-hundred-metre window
+ * is about thirteen seconds of opportunity in a hundred-and-fifteen-second
+ * neutralised lap, so on a random deployment the car sat in the lane for most of
+ * a minute waiting for a chance that the backstop usually took first. A real
+ * safety car is released a long way ahead of the leader — it has to get up to
+ * speed, and the field is closing on it at a hundred km/h of closing speed while
+ * it does.
  */
-const SC_PICKUP_LEAD_M = 250;
+const SC_RELEASE_WINDOW_M = 900;
 
 /**
- * How much quicker than the neutralised pace a car catching the queue may run.
+ * The longest the order to deploy may go unexecuted, seconds.
  *
- * Deliberately just under `DELTA_REFERENCE_MARGIN`: a car closing a gap must be
- * able to close it without earning a penalty for doing so, and the regulation
- * requires it to close (ten car lengths, Art. 55.7 / B5.13.2b) while also
- * requiring it to stay above the minimum time. The only value that satisfies
- * both is one just inside the threshold.
+ * The car has a pit lane to run down and then a leader to wait for, and the wait
+ * is a judgement that can be wrong. The regulation's own position is that it
+ * does not wait at all — it "will join the track ... regardless of where the
+ * leader is" (B5.13.1 / Art. 55.6) — so a wait that has gone on longer than the
+ * car would have taken to reach the leader anyway is not a wait any more, and it
+ * goes.
  */
-const SC_CATCHUP_MULT = 1.4;
+const SC_SCRAMBLE_BACKSTOP_S = 30;
+
+/**
+ * The longest the safety car may spend gathering the leader, seconds.
+ *
+ * Longer than a neutralised lap at every circuit in the game, so a pick-up that
+ * is going to happen has happened. See the `picking-up` case for what happened
+ * without it.
+ */
+const SC_MAX_PICKUP_S = 90;
+
+/**
+ * How close to the Line the leader has to be for the green to be shown, metres.
+ *
+ * "as the leader APPROACHES the Line ... a green flag and/or green light panel
+ * will be displayed at the Line" (B5.13.6 / Art. 55.15). Approaching, not on:
+ * the flag is out before the leader gets there, which is what makes it possible
+ * to see it and go. A hundred metres is about two seconds at the pace the leader
+ * is winding up to.
+ */
+const SC_GREEN_AT_LINE_M = 100;
+
+/**
+ * How far clear one car must be of another before the pass is confirmed, metres.
+ *
+ * Half a car length. Under a safety car two cars run within a car length of each
+ * other for minutes at a time and the classification between them flickers; a
+ * deadband is what turns that flicker into nothing. See
+ * `checkNeutralisedOvertaking`.
+ */
+const NEUTRAL_PASS_CLEAR_M = CAR_LENGTH_M * 0.5;
+
+/**
+ * How close on the ROAD two cars must be for a change of order to be an
+ * overtake at all, metres.
+ *
+ * Two cars on the same lap can be half a circuit apart, and one pulling away
+ * from the other shows up as a change of classification without anybody having
+ * passed anybody. An overtake happens between cars that are next to each other.
+ */
+const NEUTRAL_PASS_PROXIMITY_M = 60;
 
 /**
  * How long the safety car may keep bunching before it gives up and comes in.
@@ -326,8 +593,89 @@ const SC_QUEUE_TAIL_M = 1200;
  * Setting the threshold at the cruising pace instead made the safety car's own
  * ten-car-length rule illegal to obey: a car told to close up to the queue was
  * penalised five seconds for doing so, repeatedly, every lap.
+ *
+ * THIS IS THE ONE NUMBER. `SC_CATCHUP_MULT` — what a car closing the queue is
+ * told to run at — is derived from it rather than chosen beside it, because two
+ * numbers that must not cross will eventually cross.
  */
-const DELTA_REFERENCE_MARGIN = 1.45;
+export const DELTA_REFERENCE_MARGIN = 1.45;
+
+/**
+ * How far inside the penalty threshold the catch-up allowance must sit.
+ *
+ * A SPEED TARGET IS NOT A SPEED. The AI folds the catch-up cap into a target
+ * speed and then drives to it with a controller that overshoots — measured, by
+ * about 4% on the straights where the cap binds — and the player's limiter is
+ * bounded to a g and cannot hold a setpoint that is falling faster than that.
+ * So the gap between "what a car closing a gap is aimed at" and "what earns it a
+ * penalty" has to be bigger than the error of the thing doing the aiming, or the
+ * penalty is not for speeding, it is for having a controller.
+ *
+ * Fifteen per cent is roughly three times the measured overshoot. It costs some
+ * closing rate — a catching car now runs at x1.26 the queue pace rather than
+ * x1.4 — and the safety car's own crawl is what closes the queue now anyway (see
+ * `safetyCarPaceMs`), so that is a cost worth paying to make the rule obeyable.
+ */
+export const CATCHUP_HEADROOM = 1.15;
+
+/**
+ * The margin the AI's own controller is measured to overshoot a speed cap by.
+ *
+ * Not a tuning knob — an observation, recorded here so the invariant below can
+ * be stated in terms of it. Cars aimed at a 56 m/s cap were measured at 58.3.
+ */
+export const MEASURED_CONTROLLER_OVERSHOOT = 1.05;
+
+/**
+ * How much quicker than the neutralised pace a car catching the queue may run.
+ *
+ * DERIVED, NOT CHOSEN, and the reason is that choosing it independently is what
+ * produced two hundred and fifty-six penalties in two races at Monza. This was
+ * 1.4 and `DELTA_REFERENCE_MARGIN` was 1.45: the controller aimed every catching
+ * car at 3.5% under the threshold that penalises it. Measured, the cars sat at
+ * 57.8-58.3 m/s against a limit of 58 — the target was inside the penalty band
+ * once the car's own overshoot was added, so the field spent every safety car
+ * period collecting five-second penalties for tracking the speed it had been
+ * told to track. Fifteen of twenty cars carried one. The player's report is
+ * "it seems like every driver there had a penalty", and it was not an
+ * exaggeration.
+ *
+ * Two constants that must not cross cannot be maintained by hand. So there is
+ * one number — the threshold — and this is what is left of it after the headroom
+ * below, which `assertDeltaConstants` checks at load and `validate:flags`
+ * asserts against.
+ */
+const SC_CATCHUP_MULT = DELTA_REFERENCE_MARGIN / CATCHUP_HEADROOM;
+
+/**
+ * The invariant, checked rather than described.
+ *
+ * A comment saying "keep this under that" is not a constraint; it is a wish, and
+ * this pair of numbers is what happens when the wish is not granted. The rule is
+ * simple and it has to hold for the simulation to be self-consistent: the
+ * fastest a car obeying the catch-up instruction can actually end up going,
+ * INCLUDING the error of the controller doing the obeying, must still be under
+ * the speed that earns it a penalty. If it is not, the game is issuing penalties
+ * for compliance.
+ *
+ * Thrown rather than logged, and at module load rather than in a session,
+ * because these are compile-time constants: it can only ever fire for whoever is
+ * editing them, and it fires the first time they run anything at all.
+ * `validate:flags` asserts the same relation from the outside.
+ */
+function assertDeltaConstants(): void {
+  const fastest = SC_CATCHUP_MULT * MEASURED_CONTROLLER_OVERSHOOT;
+  if (fastest >= DELTA_REFERENCE_MARGIN) {
+    throw new Error(
+      'Neutralisation constants are set against each other: a car obeying the ' +
+      `catch-up instruction reaches x${fastest.toFixed(3)} the queue pace, and the ` +
+      `delta penalty threshold is x${DELTA_REFERENCE_MARGIN.toFixed(3)}. Every car ` +
+      'closing a gap would be penalised for closing it. Raise CATCHUP_HEADROOM.',
+    );
+  }
+}
+assertDeltaConstants();
+
 
 export class RaceControlManager {
   private readonly track: TrackSpline;
@@ -356,20 +704,29 @@ export class RaceControlManager {
   // --- Safety car ----------------------------------------------------------
   /** Which step of the safety car procedure is in force. */
   scPhase: SafetyCarPhase = 'none';
+
   /**
-   * The safety car itself, as a position on the lap.
+   * The safety car itself.
    *
    * A safety car period is a car on the circuit that the field queues behind,
    * not a global speed limit, and the difference shows: the leader has to catch
    * it, everyone else has to catch the leader, and the concertina that produces
-   * is most of what a safety car does to a race.
+   * is most of what a safety car does to a race. See `src/race/SafetyCar.ts` for
+   * why it is not a `CarEntry`.
+   *
+   * Public because the render layer draws it and the probes measure it. It is
+   * read-only to both: every order it takes comes from this file.
    */
-  scS = 0;
-  scLap = 0;
+  readonly safetyCar: SafetyCar;
+
+  /** Where the safety car is on the lap, metres. */
+  get scS(): number { return this.safetyCar.s; }
+  /** Which lap of the circuit the safety car is on. */
+  get scLap(): number { return this.safetyCar.lap; }
   /** How fast it is going, m/s. See `safetyCarPaceMs`. */
-  scSpeedMs = 0;
-  /** True while the safety car is physically on the circuit. */
-  scOnTrack = false;
+  get scSpeedMs(): number { return this.safetyCar.onTrack ? this.safetyCar.speedMs : 0; }
+  /** True while the safety car is physically on the racing surface. */
+  get scOnTrack(): boolean { return this.safetyCar.onTrack; }
   /**
    * Maximum gap to the car ahead, metres. Ten car lengths, or twenty when the
    * Race Director has declared low visibility.
@@ -402,6 +759,22 @@ export class RaceControlManager {
   private scTimer = 0;
   /** Road left before the safety car reaches the pit entry, metres. */
   private scToEntryM = 0;
+  /**
+   * Seconds the order to deploy has been outstanding.
+   *
+   * The car has to get out of the pit lane, and the pit lane is a real distance
+   * at a real speed. This is only a backstop against a lane so long, or an exit
+   * so placed, that it never arrives.
+   */
+  private scScrambleS = 0;
+  /**
+   * The lap the leader was on when the safety car entered the Pit Entry Road.
+   *
+   * The green comes out when the leader next reaches the Line, and "reaches the
+   * Line" has to survive the leader changing identity between two steps in a
+   * bunched field — so it is held as a lap number rather than as a car.
+   */
+  private scGreenLap = -1;
   /** Seconds until the VSC panels go green. Negative when not ending. */
   private vscGreenIn = -1;
   /** Track wetness, supplied by the engine. Drives the low-visibility call. */
@@ -415,14 +788,100 @@ export class RaceControlManager {
   /** True once the leader has taken the chequered flag. */
   raceFinished = false;
 
+  /**
+   * The bench.
+   *
+   * Race control notes an incident; the stewards decide what it was. Kept as a
+   * separate object with a two-method interface between them because the
+   * decision has to be testable on its own — see `npm run probe:stewards`, which
+   * stages a squeeze and a corner-priority dispute and asserts the verdict.
+   *
+   * Created on the first `update` because the field size is not known until the
+   * cars arrive.
+   */
+  private stewardsBench: Stewards | null = null;
+
+  /**
+   * How a neutralisation is going to END, as a phase the HUD can announce.
+   *
+   * "when there is an end to the VSC or SC there has to be a notification up top
+   *  saying vsc ending green flag next lap etc etc. follow the rules."
+   *
+   * The rules are specific and the two procedures are different, which is why
+   * this is one accessor with named phases rather than a countdown:
+   *
+   *   `vsc-ending`   Art. 56.7 / B5.12.4. "The message 'VSC ENDING' will be sent
+   *                  to all Competitors and, at any time between 10 and 15
+   *                  seconds later, 'VSC' on the FIA light panels will change to
+   *                  green." The window is drawn at random INSIDE that range on
+   *                  purpose — a driver must not be able to time the restart —
+   *                  so the announcement may say a green is coming and must not
+   *                  say when.
+   *   `unlapping`    Art. 55.14 / B5.13.4c. "LAPPED CARS MAY NOW OVERTAKE", and
+   *                  the safety car returns to the pits at the end of the
+   *                  FOLLOWING lap — so this phase is itself an announcement
+   *                  that the restart is one lap away.
+   *   `sc-in`        Art. 55.12 / B5.13.5c. "SAFETY CAR IN THIS LAP". From the
+   *                  moment its lights go out the leader dictates the pace
+   *                  (Art. 55.15 / B5.13.6).
+   *   `hold-line`    Art. 55.8 / B5.13.2c. Green has been shown but no car may
+   *                  overtake "until they pass the Line for the first time after
+   *                  the Safety Car has entered the Pit Entry Road" — which is
+   *                  per-car, so `CarEntry.holdUntilLine` is the individual
+   *                  truth and this is the session-wide one.
+   *
+   * `none` covers both a green track and a neutralisation that is still running
+   * with no end called yet.
+   */
+  get endingPhase(): 'none' | 'vsc-ending' | 'unlapping' | 'sc-in' | 'hold-line' {
+    if (this.neutralisation === 'vsc') {
+      return this.vscGreenIn >= 0 ? 'vsc-ending' : 'none';
+    }
+    if (this.neutralisation === 'safety-car') {
+      if (this.scPhase === 'waving-lapped') return 'unlapping';
+      if (this.scPhase === 'in-this-lap') return 'sc-in';
+      return 'none';
+    }
+    // Green, but the field is still under Art. 55.8 until each car has crossed
+    // the Line. `scPhase` stays at `restart` until the next deployment resets it,
+    // so the hold has to be read off the cars rather than off the phase alone.
+    return this.scPhase === 'restart' && this.holdingLine ? 'hold-line' : 'none';
+  }
+
+  /**
+   * Whether any car is still under the Art. 55.8 no-overtaking obligation.
+   *
+   * Written by `update` rather than derived on read, because deriving it means
+   * walking the field and this is read by the HUD every frame.
+   */
+  private holdingLine = false;
+
+  /** The stewards, once a session has started. */
+  get stewards(): Stewards | null {
+    return this.stewardsBench;
+  }
+
   constructor(track: TrackSpline, rng?: () => number) {
     this.track = track;
+    this.safetyCar = new SafetyCar(track);
     // Deterministic by default: a replayed race must neutralise identically.
     this.rng = rng ?? (() => 0.5);
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags.push('green');
   }
 
+  /**
+   * Reports a car-to-car contact to the stewards.
+   *
+   * The engine's contact solver calls this at the moment of the hit. It is a
+   * report and not a decision: nothing is judged until the bench has had the
+   * better part of a lap to look at it.
+   */
+  reportContact(a: CarEntry, b: CarEntry, severity: number, sessionTime: number): void {
+    this.stewardsBench?.reportContact(a, b, severity, sessionTime);
+  }
+
   reset(): void {
+    this.stewardsBench?.reset();
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags[i] = 'green';
     this.sessionFlag = 'green';
     this.neutralisation = 'none';
@@ -432,8 +891,8 @@ export class RaceControlManager {
     this.raceFinished = false;
     this.messages.length = 0;
     this.scPhase = 'none';
-    this.scOnTrack = false;
-    this.scSpeedMs = 0;
+    this.safetyCar.reset();
+    this.scScrambleS = 0;
     this.lappedCarsWaved = false;
     this.pitExitClosed = false;
     this.pitEntryClosed = false;
@@ -467,6 +926,12 @@ export class RaceControlManager {
     if (local === 'yellow' || local === 'double-yellow' || local === 'red') return local;
     if (this.neutralisation === 'safety-car') return 'safety-car';
     if (this.neutralisation === 'vsc') return 'vsc';
+    // The safety car has gone in but the race is not green yet. "As the Safety
+    // Car is approaching the Pit Entry Road the SC boards will be withdrawn
+    // and ... as the leader approaches the Line the yellow flags will be
+    // withdrawn" — B5.13.6 / Art. 55.15. Two withdrawals, and between them the
+    // posts show a yellow and no SC board, which is this line.
+    if (this.neutralisation === 'sc-ending') return 'yellow';
     if (this.sessionFlag === 'chequered') return 'chequered';
     return 'green';
   }
@@ -570,8 +1035,24 @@ export class RaceControlManager {
     return true;
   }
 
-  log(text: string, severity: RaceControlMessage['severity'], time: number, carIndex = -1): void {
-    this.messages.push({ time, text, severity, carIndex });
+  /**
+   * Files a bulletin.
+   *
+   * `detail` is optional and defaults to the official feed, which is what every
+   * session-wide flag and neutralisation message is. Anything the pit wall owns
+   * has to say so, and anything race control would word as an incident carries
+   * the four fields it words it with.
+   */
+  log(
+    text: string, severity: RaceControlMessage['severity'], time: number, carIndex = -1,
+    detail: MessageDetail = {},
+  ): void {
+    this.messages.push({
+      time, text, severity, carIndex,
+      feed: detail.feed ?? 'race-control',
+      notice: detail.notice,
+      team: detail.team,
+    });
     if (this.messages.length > RaceControlManager.MAX_MESSAGES) this.messages.shift();
   }
 
@@ -598,14 +1079,90 @@ export class RaceControlManager {
     this.wetness = wetness;
     this.updateIncidentFlags(cars, sessionTime, debris);
     this.updateNeutralisation(dt, cars, standings, sessionTime, isRace);
+    if (isRace) this.checkNeutralisedOvertaking(cars, sessionTime);
 
+    let holding = false;
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i];
       if (car.retired) continue;
+      if (car.holdUntilLine) holding = true;
       this.checkTrackLimits(car, i, sessionTime, isRace);
       this.checkPitLaneSpeed(car, i, sessionTime);
       this.checkNeutralisationDelta(car, i, dt, sessionTime);
     }
+    // Art. 55.8 / B5.13.2c, folded once per step so `endingPhase` — which the
+    // HUD reads every frame — is a field read rather than a walk of the field.
+    this.holdingLine = holding;
+
+    // LAST, and after the per-car loop on purpose: `offTrackNow` is written by
+    // `checkTrackLimits` and the stewards read it as their definition of having
+    // left the track, so the two must be looking at the same step.
+    if (this.stewardsBench === null) {
+      this.stewardsBench = new Stewards(this.track, cars.length, this.stewardsWire);
+    }
+    this.stewardsBench.update(cars, sessionTime, isRace, this.neutralisation !== 'none');
+  }
+
+  // =========================================================================
+  // The stewards' end of the wire
+  // =========================================================================
+
+  /**
+   * How the bench speaks to the outside world.
+   *
+   * Two methods, and both of them end in machinery that already existed: a
+   * bulletin on the race-control feed, and a penalty on a car. There is
+   * deliberately no new channel to the HUD — a verdict is a `RaceNotice` with a
+   * `status` the alert renderer already recognises as a decision, so it reaches
+   * the segmented penalty banner without a line of presentation code being
+   * touched.
+   *
+   * The one requirement that is easy to get wrong: `carIndex` must be the car
+   * the decision is ABOUT. The old contact bulletin passed -1, which is why it
+   * could never render as anything but a note.
+   */
+  private readonly stewardsWire = {
+    file: (
+      text: string, severity: RaceControlMessage['severity'], time: number,
+      carIndex: number, notice: StewardsNotice,
+    ): void => {
+      this.log(text, severity, time, carIndex, { notice });
+    },
+    penalise: (
+      car: CarEntry, seconds: 5 | 10, offence: Offence, where: string, time: number,
+    ): void => {
+      this.issueTimePenalty(car, seconds, offence, where, time);
+    },
+  };
+
+  /**
+   * Imposes a time penalty and announces it.
+   *
+   * Art. B1.9.5a and B1.9.5b. The seconds go onto `penaltySeconds` here, at the
+   * moment of the decision, rather than at the flag — because that is when the
+   * driver starts carrying them, and because the timing tower has to be able to
+   * show a held penalty against a car that is still on the road. Serving the
+   * penalty in the pit lane takes them off again (`CarEntry.servePenaltyInBox`);
+   * not serving it leaves them on, and `classifiedTime` charges them at the end.
+   */
+  issueTimePenalty(
+    car: CarEntry, seconds: 5 | 10, offence: Offence, where: string, sessionTime: number,
+  ): void {
+    const kind: PenaltyKind = seconds === 10 ? 'time-10s' : 'time-5s';
+    car.penalties.push({
+      kind,
+      reason: offence + (where ? ' at ' + where : ''),
+      lap: car.lap, timeS: seconds, served: false,
+    });
+    car.penaltySeconds += seconds;
+    this.log(
+      car.driver.code + ' — ' + seconds + ' second time penalty, ' + offence.toLowerCase(),
+      'critical', sessionTime, car.index,
+      { notice: {
+        parties: [car.driver.code], where,
+        offence, status: seconds + ' SECOND TIME PENALTY',
+      } },
+    );
   }
 
   /**
@@ -675,10 +1232,24 @@ export class RaceControlManager {
 
         if (!car.yellowRaised) {
           car.yellowRaised = true;
+          const where = (this.track.cornerNameAt(car.s) || 'sector ' + (sec + 1));
+          // `either`: race control notes a stranger's excursion and raises the
+          // flag; the pit wall reacts when the car in the gravel is one of
+          // yours. The player's own principal has no business narrating a
+          // rival's off, and that is exactly what he was doing.
           this.log(
-            'Yellow flag — ' + car.driver.code + ' off at ' +
-            (this.track.cornerNameAt(car.s) || 'sector ' + (sec + 1)),
+            'Yellow flag — ' + car.driver.code + ' off at ' + where,
             'warning', sessionTime, car.index,
+            {
+              feed: 'either',
+              notice: {
+                parties: [car.driver.code],
+                where: where.toUpperCase(),
+                offence: 'CAR OFF TRACK',
+                status: 'YELLOW FLAG',
+              },
+              team: { kind: 'off', corner: where, hit: '', heavy: severity !== 'yellow' },
+            },
           );
         }
       } else if (car.yellowRaised) {
@@ -750,13 +1321,18 @@ export class RaceControlManager {
       // safety car — sessions are red-flagged instead.
       this.neutralisation = 'none';
       this.scPhase = 'none';
-      this.scOnTrack = false;
+      this.safetyCar.reset();
       return;
     }
 
-    if (this.neutralisation === 'safety-car') {
+    if (this.neutralisation === 'safety-car' || this.neutralisation === 'sc-ending') {
       this.runSafetyCar(dt, cars, standings, sessionTime);
       return;
+    }
+    // Still driving itself back down the pit lane after the period has ended.
+    // The renderer is drawing it, so it has to keep moving.
+    if (this.safetyCar.visible) {
+      this.safetyCar.advance(dt, 0, this.track.def.pitLane.lateralOffsetM);
     }
     if (this.neutralisation === 'vsc') {
       this.runVirtualSafetyCar(dt, sessionTime);
@@ -792,9 +1368,9 @@ export class RaceControlManager {
     // often spent a third of the race behind a safety car that the regulations
     // would never have deployed.
     if (dangerous || this.activeIncidents >= 3) {
-      this.deploySafetyCar(standings, sessionTime);
+      this.deploySafetyCar(cars, sessionTime);
     } else {
-      this.deployVirtualSafetyCar(sessionTime);
+      this.deployVirtualSafetyCar(cars, sessionTime);
     }
   }
 
@@ -802,7 +1378,8 @@ export class RaceControlManager {
   // Virtual safety car — Art. 56 / B5.12
   // -------------------------------------------------------------------------
 
-  private deployVirtualSafetyCar(sessionTime: number): void {
+  private deployVirtualSafetyCar(cars: CarEntry[], sessionTime: number): void {
+    this.beginNeutralisationPeriod(cars);
     this.neutralisation = 'vsc';
     this.vscTargetMs = VSC_PACE_MS;
     this.neutralisedScale = VSC_PACE_SCALE;
@@ -844,33 +1421,45 @@ export class RaceControlManager {
   // Safety car — Art. 55 / B5.13
   // -------------------------------------------------------------------------
 
-  private deploySafetyCar(standings: readonly CarEntry[], sessionTime: number): void {
+  /**
+   * A new neutralisation. Everything that is counted per period starts again.
+   *
+   * A driver's delta record does NOT start again — `deltaBreaches` and
+   * `deltaPeriodsPenalised` are the history the escalation is chosen from, and a
+   * driver who was under the delta in the last safety car period and is under it
+   * again in this one is precisely the case the article's four-item menu is for.
+   * What starts again is the once-per-period cap.
+   */
+  private beginNeutralisationPeriod(cars: CarEntry[]): void {
+    for (const car of cars) {
+      car.deltaPenalisedThisPeriod = false;
+      car.deltaSectorTime = 0;
+      car.deltaSectorIndex = -1;
+      car.deltaSectorPartial = true;
+    }
+  }
+
+  private deploySafetyCar(cars: CarEntry[], sessionTime: number): void {
+    this.beginNeutralisationPeriod(cars);
     this.neutralisation = 'safety-car';
-    this.scPhase = 'bunching';
+    this.scPhase = 'deploying';
     this.vscTargetMs = SC_PACE_MS;
     this.neutralisedScale = SC_PACE_SCALE;
-    this.scOnTrack = true;
     this.scTimer = SC_MIN_BUNCH_S;
+    this.scScrambleS = 0;
     this.lappedCarsWaved = false;
     this.scWaveLap = -1;
     this.pitExitClosed = false;
-
-    // The car joins the circuit "regardless of where the leader is"
-    // (Art. 55.4 / B5.13.1). Modelled as joining just ahead of the leader,
-    // which is where it ends up once it has picked the leader up and is the
-    // only part of that the field can observe.
-    //
-    // AHEAD, with room. It used to join exactly ON the leader, and a leader
-    // arriving at 300 km/h needs a couple of hundred metres to come down to
-    // safety car pace — so it was past the safety car before it had slowed, and
-    // the "queue" then formed up behind a car that was itself in front of the
-    // thing it was supposed to be queueing behind. `SC_PICKUP_LEAD_M` is more
-    // road than that deceleration can eat.
-    const leader = standings.length > 0 ? standings[0] : null;
-    this.scS = leader ? (leader.s + SC_PICKUP_LEAD_M) % this.track.length : 0;
-    this.scLap = leader ? leader.lap : 0;
-    this.scSpeedMs = SC_PACE_MS;
     this.scToEntryM = Infinity;
+
+    // The car leaves its garage and runs down the pit lane. Everything the
+    // drivers see happens NOW and not when it arrives: "the message 'SAFETY CAR
+    // DEPLOYED' will be sent to all Competitors, all FIA light panels will
+    // display 'SC', all marshal's posts will display waved yellow flags and 'SC'
+    // boards, and the Safety Car will join the track with its orange lights
+    // illuminated regardless of where the leader is" — B5.13.1 / Art. 55.4 and
+    // 55.6. One sentence, and the order inside it is the order here.
+    this.safetyCar.scramble();
 
     this.log('SAFETY CAR DEPLOYED', 'critical', sessionTime);
 
@@ -905,22 +1494,95 @@ export class RaceControlManager {
     this.scTimer -= dt;
 
     const leader = standings.length > 0 ? standings[0] : null;
+    const sc = this.safetyCar;
 
-    // The safety car itself circulates at the neutralised pace.
-    if (this.scOnTrack) {
-      this.scSpeedMs = this.safetyCarPaceMs(leader);
-      const travelled = this.scSpeedMs * dt;
-      this.scS += travelled;
+    // Where it runs: off the racing line, on the pit-lane side of the road, so
+    // the queue behind it is legible and so it is already on the correct side
+    // when it peels into the entry road.
+    const pitSign = Math.sign(this.track.def.pitLane.lateralOffsetM) || -1;
+    const before = sc.s;
+    sc.advance(
+      dt,
+      this.safetyCarPaceMs(leader, standings),
+      SafetyCar.runningLine(this.track.halfWidthAt(sc.s), pitSign),
+    );
+    if (sc.onTrack) {
+      let travelled = sc.s - before;
+      if (travelled < -this.track.length * 0.5) travelled += this.track.length;
       this.scToEntryM -= travelled;
-      if (this.scS >= this.track.length) {
-        this.scS -= this.track.length;
-        this.scLap++;
-      }
-    } else {
-      this.scSpeedMs = 0;
     }
 
     switch (this.scPhase) {
+      case 'deploying': {
+        // The car is running down the pit lane. The field is already
+        // neutralised — the boards and the message went out with the order, and
+        // that is the sentence's own order in B5.13.1 — so nothing here is
+        // waiting for the car to arrive.
+        //
+        // WHEN IT PULLS OUT. It is released so that it picks the leader up:
+        // held at the exit line with its lights on until the leader is close
+        // enough behind that it will come out in front of them and be caught
+        // within a few seconds. That timing is the Race Director's — B1.3.3e
+        // gives them authority over "the use of the Safety Car" and B1.2.1j
+        // appoints a driver to execute it — and it is what actually happens on
+        // television.
+        //
+        // It is a MODELLING CHOICE and the regulation admits the other case:
+        // the car "will join the track ... regardless of where the leader is"
+        // (B5.13.1 / Art. 55.6), and when that picks up the wrong car the green
+        // light on the safety car orders the cars between it and the leader past
+        // (B5.13.4a / Art. 55.9). That remedy exists precisely because the
+        // release is a judgement that can be got wrong. Simulating the judgement
+        // being got RIGHT is both the common case and the one the player is
+        // asking for — "the safety car should be in front of the leader" — and
+        // it avoids inventing a second overtaking exemption to correct a mistake
+        // this simulation need not make.
+        //
+        // The backstop is the regulation's own case, and it is why the phase
+        // that follows still has to pick the leader up rather than assume it.
+        this.scScrambleS += dt;
+        const ready = sc.readyToJoin;
+        const gapToExit = leader
+          ? loopDelta(leader.s, this.track.def.pitLane.exitS, this.track.length)
+          : -1;
+        const leaderArriving = gapToExit >= 0 && gapToExit < SC_RELEASE_WINDOW_M;
+        if ((ready && leaderArriving) || this.scScrambleS > SC_SCRAMBLE_BACKSTOP_S) {
+          sc.join(leader ? leader.lap : 0);
+          this.scPhase = 'picking-up';
+        }
+        return;
+      }
+
+      case 'picking-up': {
+        // On the circuit with the orange lights on, waiting to be caught. The
+        // phase ends when the leader is actually behind it — which is the first
+        // half of the condition the regulation puts on the whole deployment:
+        // "the Safety Car shall be used at least until the leader is behind it
+        // and all remaining F1 Cars are queued behind them" (B5.13.5a /
+        // Art. 55.10). The second half is `bunching`.
+        if (!leader) return;
+        const toSafetyCar = loopDelta(leader.s, sc.s, this.track.length);
+        // Bounded, and it has to be. If the backstop released the car with the
+        // leader already past the pit exit, the leader has to come the whole way
+        // round to get behind it — at a closing rate of a fraction of the
+        // neutralised pace, because the safety car is crawling to be caught.
+        // Measured at Bahrain with no bound at all, a safety car deployed on lap
+        // five was still picking the leader up at the chequered flag: it ate
+        // sixteen minutes of a twenty-eight minute race and never came in.
+        //
+        // A minute and a half is longer than a neutralised lap at every circuit
+        // in the game. Past it the next phase takes over, and the next phase
+        // wants the same thing — B5.13.5a's condition is "the leader is behind
+        // it AND all remaining F1 Cars are queued behind them", and `bunching`
+        // tests both with an escape of its own.
+        if ((toSafetyCar >= 0 && toSafetyCar <= this.maxQueueGapM * 3) ||
+            sc.stationS > SC_MAX_PICKUP_S) {
+          this.scPhase = 'bunching';
+          this.scTimer = SC_MIN_BUNCH_S;
+        }
+        return;
+      }
+
       case 'bunching': {
         // "The Safety Car ... shall be used at least until the leader is behind
         // it and all remaining cars are lined up behind them" —
@@ -933,6 +1595,18 @@ export class RaceControlManager {
         // fifty seconds bunching a field that needed two laps, and then come in
         // and restarted a race that had never formed up. The condition below is
         // the sentence the regulation actually contains.
+        //
+        // AND IT LEAVES WHEN THE HAZARD HAS GONE, NOT WHEN A CLOCK SAYS SO.
+        // `activeIncidents` is a count of `RecoveryOperation.warrantsNeutralisation`
+        // — an operation that is not finished AND puts people or a recovery
+        // vehicle where the racing cars run (see `src/race/Recovery.ts`). So the
+        // safety car is called in by the marshals finishing, which is the direct
+        // reading of the article that put it out there: it is deployed because
+        // "Competitors or officials are in immediate physical danger on or near
+        // the track" (B5.13.1 / Art. 55.3), and the moment nobody is, the reason
+        // has gone. A crane that takes three minutes holds it for three minutes
+        // and a car pushed behind a barrier in twenty seconds does not hold it
+        // at all, and neither number is written down anywhere in this file.
         if (this.scTimer > 0 || this.activeIncidents > 0) return;
         if (!leader) return;
         if (!this.fieldFormedUp(standings) && this.scTimer > -SC_MAX_BUNCH_EXTRA_S) return;
@@ -974,22 +1648,68 @@ export class RaceControlManager {
       }
 
       case 'in-this-lap': {
-        // The safety car peels into the pit entry road at the end of this lap.
+        // The safety car peels into the Pit Entry Road at the end of this lap.
         // From the moment the orange lights go out the leader dictates the pace
-        // (Art. 55.15 / B5.13.6) — modelled by taking the car off the circuit,
-        // which releases the queue's speed cap and hands the pace to the leader.
+        // (Art. 55.15 / B5.13.6), which is what `queueGapLimitM` reads.
+        //
+        // WHAT THIS DOES NOT DO ANY MORE IS GO GREEN. It used to, right here,
+        // the instant the safety car reached the pit entry — wherever on the lap
+        // the leader happened to be. That is the VSC's rule applied to the
+        // safety car, and it is exactly the difference the player reported:
+        //
+        //   "the vsc ending can happen whenever but safety car ends at the end
+        //    of the lap"
+        //
+        // The regulation puts the green at a PLACE. "As the Safety Car is
+        // approaching the Pit Entry Road the SC boards will be withdrawn and,
+        // other than on the last lap of the TTCS, as the leader approaches the
+        // Line the yellow flags will be withdrawn and a green flag and/or green
+        // light panel will be displayed at the Line" (B5.13.6 final paragraph /
+        // Art. 55.15 final paragraph). Two events, in that order, at two
+        // different points on the lap — and the second one is at the Line.
         if (this.scToEntryM <= 0) {
-          this.scOnTrack = false;
-          this.scPhase = 'restart';
-          this.neutralisation = 'none';
+          sc.returnToPits();
+          this.scPhase = 'ending';
+          // The SC boards come down with the car. The speed cap goes with them:
+          // the thing the field was queued behind has gone and the leader is
+          // now setting the pace, so there is nothing left to hold them to.
+          //
+          // `neutralisation` does NOT go to 'none'. The race is not green: the
+          // yellows are still out, overtaking is still forbidden, and the pit
+          // lane is still restricted to tyres. `'sc-ending'` is that state, and
+          // it is why the enumeration has always had a fourth member.
+          this.neutralisation = 'sc-ending';
           this.vscTargetMs = 0;
           this.neutralisedScale = 0;
           // "no driver may overtake another F1 Car on the track ... until they
           // pass the Line for the first time after the Safety Car has entered
           // the Pit Entry Road" — Art. 55.8 / B5.13.2c. Each car carries the
-          // obligation individually until it has itself crossed the Line.
+          // obligation individually until it has itself crossed the Line, and
+          // this is the moment the article names.
           for (const car of cars) car.holdUntilLine = !car.retired;
-          this.log('GREEN FLAG — track clear at the Line', 'info', sessionTime);
+          this.scGreenLap = leader ? leader.lap : -1;
+          this.log('SAFETY CAR IN — track clear', 'warning', sessionTime);
+        }
+        return;
+      }
+
+      case 'ending': {
+        // Waiting for the leader to reach the Line, which is where the green is
+        // shown. "as the leader approaches the Line the yellow flags will be
+        // withdrawn and a green flag and/or green light panel will be displayed
+        // at the Line" — B5.13.6 / Art. 55.15.
+        //
+        // The backstop is the field being gone: with nobody circulating there is
+        // no leader to approach anything, and a race cannot be left neutralised
+        // for ever because the last car retired on the lap the safety car came
+        // in.
+        if (!leader) {
+          this.greenAtTheLine(sessionTime);
+          return;
+        }
+        const toLine = this.track.length - leader.s;
+        if (toLine <= SC_GREEN_AT_LINE_M || leader.lap > this.scGreenLap) {
+          this.greenAtTheLine(sessionTime);
         }
         return;
       }
@@ -997,6 +1717,24 @@ export class RaceControlManager {
       default:
         return;
     }
+  }
+
+  /**
+   * The green flag at the Line, and the end of the safety car period.
+   *
+   * Not the end of every obligation: `holdUntilLine` is still set on every car
+   * and is cleared individually as each one crosses, because "no driver may
+   * overtake ... until they pass the Line for the first time" is a per-car
+   * requirement (B5.13.2c / Art. 55.8). The leader is racing while a car half a
+   * lap back still is not.
+   */
+  private greenAtTheLine(sessionTime: number): void {
+    this.scPhase = 'restart';
+    this.neutralisation = 'none';
+    this.vscTargetMs = 0;
+    this.neutralisedScale = 0;
+    this.scGreenLap = -1;
+    this.log('GREEN FLAG — green at the Line', 'info', sessionTime);
   }
 
   /**
@@ -1023,24 +1761,55 @@ export class RaceControlManager {
    * the field is still bunching it backs off toward a crawl until the leader
    * has closed onto it. That is exactly what the real car does, and it is why
    * the first lap behind a safety car is the slowest one.
+   *
+   * IT WAITS FOR THE WHOLE FIELD, NOT FOR THE LEADER. That is the third bug and
+   * the one that kept `validate:flags` red for as long as it has been. The crawl
+   * used to end the moment the LEADER was within a few car lengths — but the
+   * regulation's condition has two halves, and the second is "and all remaining
+   * F1 Cars are queued behind them". Once the leader was aboard, the safety car
+   * went to full pace, the leader went with it, and the nineteen cars strung out
+   * over the rest of the lap were left to close a kilometre of road at the only
+   * margin they are allowed — `SC_CATCHUP_MULT`, forty per cent over the queue
+   * pace, which is about ten metres a second of closing speed. Measured at
+   * Monza: a median form-up gap of 219m against a 56m limit, 88% of samples
+   * over it, and a bunching phase that ran for 185 seconds and then gave up on
+   * its own escape hatch without ever forming a queue.
+   *
+   * A real safety car does the opposite: it drives slowly for as long as it
+   * takes, and the whole field concertinas onto it. So the crawl is now driven
+   * by the LAST car in the queue rather than the first, and it lifts only as
+   * that car closes. Slowing the front of a queue is the only thing that
+   * shortens the back of it.
    */
-  private safetyCarPaceMs(leader: CarEntry | null): number {
-    const line = this.track.targetSpeed[this.track.indexAt(this.scS)];
+  private safetyCarPaceMs(leader: CarEntry | null, standings: readonly CarEntry[]): number {
+    const sc = this.safetyCar;
+    if (!sc.onTrack) return 0;
+    const line = this.track.targetSpeed[this.track.indexAt(sc.s)];
     const pace = Math.min(line * SC_PACE_SCALE, SC_PACE_MS);
 
     // Only while the queue is still forming. Once it has, the safety car sets
     // the pace and the field holds station on it.
-    if (this.scPhase !== 'bunching' || !leader) return pace;
-    const behind = loopDelta(leader.s, this.scS, this.track.length);
-    // Leader ahead of the safety car, or far enough back that slowing down
-    // would take a whole extra lap to help — neither is a gap to close this
-    // way. A quarter of a lap rather than a half, because at a half the test
-    // cannot tell "the leader is a long way behind" from "the leader is a long
-    // way in front", and it answered the wrong one.
-    if (behind < 0 || behind > this.track.length * 0.25) return pace;
-    // Full pace once the leader is within a few car lengths; a slow cruise
-    // while it is a long way off, so the gap actually closes.
-    const t = clamp01((behind - this.maxQueueGapM) / (this.maxQueueGapM * 4));
+    if (!leader) return pace;
+    if (this.scPhase !== 'bunching' && this.scPhase !== 'picking-up') return pace;
+
+    // How far back the queue reaches. Measured from the safety car to the car
+    // furthest behind it that is still expected to join — which is every
+    // running car except the ones a lap down, who are the next phase's problem
+    // and are explicitly not required to be here (see `fieldFormedUp`).
+    const len = this.track.length;
+    let tail = 0;
+    for (const car of standings) {
+      if (car.retired || car.inPitLane) continue;
+      if (car !== leader && this.isLapped(car, leader)) continue;
+      let behind = loopDelta(car.s, sc.s, len);
+      if (behind < 0) behind += len;
+      if (behind > tail) tail = behind;
+    }
+
+    // The queue as it should be: every car within the limit of the one ahead.
+    // While the real one is longer than that, the safety car slows down.
+    const want = this.maxQueueGapM * Math.max(standings.length, 2);
+    const t = clamp01((tail - want) / (len * 0.35));
     return pace * (1 - t * (1 - SC_BUNCHING_PACE_SHARE));
   }
 
@@ -1171,6 +1940,195 @@ export class RaceControlManager {
   }
 
   /**
+   * Overtaking under a neutralisation, and the place being handed back.
+   *
+   * THE BAN. "no driver may overtake another F1 Car on the track, including the
+   * Safety Car, until they pass the Line for the first time after the Safety Car
+   * has entered the Pit Entry Road" (2026 Section B Art. B5.13.2c / 2025
+   * Sporting Regs Art. 55.8), and under the VSC "no driver may overtake another
+   * F1 Car on the track whilst the VSC procedure is in use" (B5.12.2c /
+   * Art. 56.6). Both articles then list their exceptions, and the exceptions are
+   * most of the rule — every one of them is implemented below.
+   *
+   * THE REMEDY IS THE PLACE, NOT A PENALTY. That is how this is actually
+   * refereed: a driver who gains a position under a neutralisation is told to
+   * hand it back, and only a driver who does not hand it back is penalised. The
+   * machinery for exactly that already exists — `CarEntry.cedePositionTo`, the
+   * stewards' `runCedeLoop` which watches it and fines five seconds if the
+   * deadline passes, and `RaceEngine.applyCedeInstruction` which makes an AI car
+   * obey it. Nothing here is new; this is a second source of the same
+   * instruction, and the reason it has to live in this file is that
+   * `Stewards.drainContacts` explicitly declines to judge anything under a
+   * neutralisation: "a contact under a neutralisation is a different offence
+   * (Art. B5.13/B5.12) that this module does not own".
+   *
+   * IT IS A CONFIRMED ORDER, NOT A COMPARISON OF CONSECUTIVE STEPS. Under a
+   * safety car two cars sit within a car length of each other for minutes and
+   * the classification flickers between them dozens of times a lap. Comparing
+   * one step against the last would issue a give-back order for every flicker.
+   * A car is only recorded as having passed another once it is clear of it by
+   * more than half a car length, which is the same deadband `validate:flags`
+   * uses to count the same event from the outside.
+   */
+  private checkNeutralisedOvertaking(cars: CarEntry[], sessionTime: number): void {
+    if (this.confirmedOrder.length !== cars.length) {
+      this.confirmedOrder = cars.map((c) => c.index);
+    }
+    const order = this.confirmedOrder;
+    const len = this.track.length;
+
+    // One bubble pass per step. A pass takes a second or two to complete and
+    // this runs at 120Hz, so a single pass per step keeps the order current at
+    // a cost of nineteen comparisons rather than a full sort.
+    for (let i = 0; i + 1 < order.length; i++) {
+      const b = cars[order[i]];
+      const a = cars[order[i + 1]];
+      if (a.totalDistance - b.totalDistance <= NEUTRAL_PASS_CLEAR_M) continue;
+
+      order[i] = a.index;
+      order[i + 1] = b.index;
+
+      // Not an overtake at all: a retirement, a pit stop, or two cars a long way
+      // apart on the road whose classification happened to cross.
+      if (a.retired || b.retired || a.inPitLane || b.inPitLane) continue;
+      const roadGap = loopDelta(b.s, a.s, len);
+      if (roadGap < 0 || roadGap > NEUTRAL_PASS_PROXIMITY_M) continue;
+
+      // Is the ban even in force for this car? `overtakingBannedAt` covers both
+      // neutralisations and the local yellows; `holdUntilLine` is the tail of a
+      // safety car period, where the race is green but this particular car has
+      // not yet reached the Line (B5.13.2c / Art. 55.8).
+      if (!this.overtakingBannedAt(a.s) && !a.holdUntilLine) continue;
+
+      // --- The exceptions -------------------------------------------------
+      // B5.13.2c-i and B5.13.4c / Art. 55.8a and 55.14: a car shown the green
+      // light is REQUIRED to pass. Ordering the place back would be punishing
+      // compliance with the instruction race control has just given.
+      if (a.mustUnlap) continue;
+      // B5.13.2c-viii and B5.12.2c-iv / Art. 55.8h and 56.6d: "if any F1 Car
+      // slows with an obvious problem". You cannot be required to queue behind a
+      // car that is no longer racing, and no steward has ever asked anyone to.
+      // The floor is the same one the AI uses to decide the car in front has
+      // stopped racing.
+      const bLine = this.track.targetSpeed[this.track.indexAt(b.s)];
+      const neutralFloor = this.neutralisation !== 'none' ? this.vscTargetMs * 0.5 : 0;
+      if (b.physics.speedMs < bLine * 0.45 || b.physics.speedMs < 14 ||
+          b.physics.speedMs < neutralFloor ||
+          Math.abs(b.lateral) > this.track.halfWidthAt(b.s)) {
+        continue;
+      }
+      // Already under an instruction about this car, or about anyone.
+      if (a.cedePositionTo >= 0) continue;
+
+      // --- The instruction ------------------------------------------------
+      a.cedePositionTo = b.index;
+      // A lap to do it in. The same window the stewards use for a give-back
+      // ordered after a contact, and for the same reason: a place is handed back
+      // at a sensible point on the circuit, not at the first corner.
+      a.cedeDeadline = sessionTime + Math.max(30, this.track.referenceLapTime);
+      this.log(
+        a.driver.code + ' — give the position back to ' + b.driver.code,
+        'warning', sessionTime, a.index,
+        {
+          feed: 'race-control',
+          notice: {
+            parties: [a.driver.code, b.driver.code],
+            where: 'SECTOR ' + (this.sectorIndexAt(a.s) + 1),
+            offence: this.neutralisation === 'vsc'
+              ? 'OVERTAKING UNDER VSC' : 'OVERTAKING UNDER SAFETY CAR',
+            status: 'POSITION TO BE GIVEN BACK',
+          },
+        },
+      );
+    }
+  }
+
+  /**
+   * What a driver gets for being under the delta.
+   *
+   * ONE DECISION PER NEUTRALISATION, ESCALATING. The regulation's own remedy is
+   * a menu, not a tariff: "the stewards may impose either a 5-Second Penalty, a
+   * 10-Second Penalty, a Drive-Through Penalty or a Stop-and-Go Penalty on any
+   * driver who fails to stay above the minimum time" (2026 Section B
+   * Art. B5.13.2b and B5.12.2b / 2025 Sporting Regs Art. 55.7 and 56.5, both
+   * cross-referring to Art. 54.3a-d). Four options in ascending severity, and
+   * the stewards pick ONE — that is what "either ... or" means, and it is what
+   * happens in practice: a driver who is under the delta is told, and if they go
+   * on doing it they are penalised once, harder.
+   *
+   * WHAT IT USED TO DO. It issued a fresh five-second penalty for every
+   * marshalling sector, of which there are twenty a lap, with no cap of any kind.
+   * Measured over two races at Monza: 262 penalties, 256 of them from here, none
+   * at all from the stewards or from track limits, and fifteen of twenty cars
+   * carrying one. The player's car collected twelve in a single race. The
+   * player's report is "it seems like every driver there had a penalty", and a
+   * rule that fines a car a hundred seconds for one lap of misjudged pace is not
+   * a rule anybody wrote down.
+   *
+   * So: the first breach in a neutralisation is a warning, the second is the
+   * penalty, and that is the end of it for that neutralisation. The severity is
+   * chosen from the article's own list by how many neutralisations the driver
+   * has now offended in — a driver who does it in three separate safety car
+   * periods is a different case from a driver who did it once, and the list
+   * exists to say so.
+   */
+  private penaliseDelta(
+    car: CarEntry, index: number, sector: number, sessionTime: number,
+  ): void {
+    const where = 'SECTOR ' + (sector + 1);
+    const under = this.neutralisation === 'vsc' ? 'VSC' : 'the safety car';
+
+    // The first one is a warning, always. It is also the only thing that
+    // happens if the driver corrects it, which is what a warning is for.
+    if (car.deltaBreaches < 2) {
+      this.log(
+        car.driver.code + ' — warning, below the delta', 'warning', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where, offence: 'BELOW THE DELTA', status: 'WARNING',
+        } },
+      );
+      return;
+    }
+    // Already dealt with in this neutralisation. Race control has said its
+    // piece; saying it again nineteen more times before the lap is out is not
+    // an escalation, it is a bug.
+    if (car.deltaPenalisedThisPeriod) return;
+    car.deltaPenalisedThisPeriod = true;
+    car.deltaPeriodsPenalised++;
+
+    // The article's own menu, in the article's own order.
+    const step = Math.min(car.deltaPeriodsPenalised, 4);
+    const kind: PenaltyKind =
+      step === 1 ? 'time-5s' : step === 2 ? 'time-10s'
+        : step === 3 ? 'drive-through' : 'stop-go-10s';
+    const timeS = kind === 'time-5s' ? 5 : kind === 'time-10s' ? 10 : 0;
+    const label =
+      kind === 'time-5s' ? '5 SECOND TIME PENALTY'
+        : kind === 'time-10s' ? '10 SECOND TIME PENALTY'
+          : kind === 'drive-through' ? 'DRIVE-THROUGH PENALTY' : 'STOP AND GO PENALTY';
+
+    car.penalties.push({
+      kind, reason: 'Below the delta under ' + under,
+      lap: car.lap, timeS, served: false,
+    });
+    car.penaltySeconds += timeS;
+    this.log(
+      car.driver.code + ' — ' + label.toLowerCase() + ', below the delta',
+      'critical', sessionTime, index,
+      { notice: { parties: [car.driver.code], where, offence: 'BELOW THE DELTA', status: label } },
+    );
+  }
+
+  /**
+   * The confirmed running order, by car index, with a deadband.
+   *
+   * Held here rather than derived from `standings` because `standings` is
+   * re-sorted at 20Hz with no hysteresis, and it is the hysteresis that is the
+   * whole point — see `checkNeutralisedOvertaking`.
+   */
+  private confirmedOrder: number[] = [];
+
+  /**
    * Enforces the minimum time under a neutralisation.
    *
    * "drivers must stay above the minimum time set by the FIA ECU at least once
@@ -1201,7 +2159,47 @@ export class RaceControlManager {
       car.deltaSectorPartial = true;
       return;
     }
-    if (this.neutralisation === 'none' || car.inPitLane) {
+    // ...and neither is a car closing the queue. THE SAME ARTICLE CONTAINS BOTH
+    // OBLIGATIONS: B5.13.2b / Art. 55.7 requires cars to "form up in a queue
+    // behind the Safety Car no more than the maximum allowable gap of ten (10)
+    // car lengths apart" and, in the very next paragraph, to "stay above the
+    // minimum time set by the FIA ECU at least once in each marshalling sector".
+    // A car half a kilometre adrift of the queue cannot satisfy the first at the
+    // second's pace, and the wording of the second is what resolves it: AT LEAST
+    // ONCE in each sector, which explicitly tolerates being quick for part of
+    // one. A car spending a whole sector closing is doing what it was told.
+    //
+    // Measured: making the safety car crawl until the WHOLE field had formed up
+    // — which is what fixed the form-up — left cars out of the queue for longer,
+    // and the delta penalties issued in one Bahrain race went from five to
+    // thirty-four. Every one of them was a car closing a gap it is required to
+    // close.
+    //
+    // Safety car only. Under a VSC there is no queue and no closing up: the gaps
+    // are held as they were (Art. 56.5 / B5.12.2b asks for the delta and for
+    // nothing else), so there is no other article to be caught between.
+    if (this.neutralisation === 'safety-car') {
+      const limit = this.queueGapLimitM(car, false);
+      const gap = car.perception.queueAheadM;
+      if (limit > 0 && gap > limit) {
+        car.deltaSectorTime = 0;
+        car.deltaSectorIndex = -1;
+        car.deltaSectorPartial = true;
+        return;
+      }
+    }
+    // The delta obligation has an end, and the regulation states it: drivers
+    // must stay above the minimum time "from the time at which all Competitors
+    // have been sent the 'SAFETY CAR DEPLOYED' message until the time that each
+    // F1 Car crosses the first safety car line for the second time"
+    // (B5.13.2b / Art. 55.7). Once the safety car has gone in, what governs is
+    // a different sentence with no number in it — "drivers must proceed at a
+    // pace which involves no erratic acceleration or braking" (B5.13.6 /
+    // Art. 55.15) — and timing the leader against a minimum while it is winding
+    // the field up for the restart penalises it for doing what that sentence
+    // asks. There is also nothing left to time against: the cap is zero.
+    if (this.neutralisation === 'none' || this.neutralisation === 'sc-ending' ||
+        car.inPitLane) {
       car.deltaSectorTime = 0;
       car.deltaSectorIndex = -1;
       car.deltaSectorPartial = true;
@@ -1223,23 +2221,7 @@ export class RaceControlManager {
       if (!car.deltaSectorPartial && car.deltaSectorTime > 0.5 &&
           car.deltaSectorTime < minimum) {
         car.deltaBreaches++;
-        // First one is a warning; a driver who keeps ignoring the delta is
-        // gaining a real advantage and takes the time penalty.
-        if (car.deltaBreaches >= 2) {
-          car.penalties.push({
-            kind: 'time-5s',
-            reason: 'Below the delta under ' +
-              (this.neutralisation === 'vsc' ? 'VSC' : 'the safety car'),
-            lap: car.lap, timeS: 5, served: false,
-          });
-          car.penaltySeconds += 5;
-          this.log(
-            car.driver.code + ' — 5 second penalty, below the delta',
-            'critical', sessionTime, index,
-          );
-        } else {
-          this.log(car.driver.code + ' — warning, below the delta', 'warning', sessionTime, index);
-        }
+        this.penaliseDelta(car, index, sector, sessionTime);
       }
       // Only a sector entered cleanly at its boundary is judged in full.
       car.deltaSectorPartial = car.deltaSectorIndex < 0;
@@ -1336,7 +2318,9 @@ export class RaceControlManager {
         // control at a corner exit counts, spinning off into a gravel trap and
         // losing four seconds does not, and stewards apply the same logic.
         const lostTime = car.physics.speedMs < this.track.targetSpeed[this.track.indexAt(car.s)] * 0.72;
-        if (!lostTime) {
+        // ...and, outside a race, only if there is a lap time to lose. See
+        // `sanctionableLap`.
+        if (!lostTime && this.sanctionableLap(car, isRace)) {
           car.trackLimitStrikes++;
           this.onTrackLimitInfraction(car, index, sessionTime, isRace);
         }
@@ -1346,15 +2330,72 @@ export class RaceControlManager {
     }
   }
 
+  /**
+   * Is there anything the stewards could actually do about an excursion here?
+   *
+   * The driver has still left the track — Art. B1.8.6 defines that by where the
+   * car is and says nothing about which lap it is on, so the excursion is real
+   * and the physics of running through the gravel are unchanged. The question
+   * this answers is narrower: whether the offence carries a sanction.
+   *
+   * In a Lap Time Classified Session it does not, on a lap that will not be
+   * timed. Art. B1.9.4 is the whole of what the stewards may do about an
+   * incident in an LTCS — "the Stewards may delete a driver's lap time (or lap
+   * times) or drop the driver such number of grid positions as they consider
+   * appropriate" — and on an out-lap the first of those has no object. There is
+   * no lap time to delete. The game was deleting one anyway and announcing it:
+   * "lap time deleted — track limits at Turn 4", on the lap out of the garage,
+   * about a time that was never going to be classified. Reported by a player,
+   * who was right about it: "idt there should be penalties or limits for the
+   * first lap of qualifying."
+   *
+   * It also stopped the strike counter running away. The 3-strike black-and-
+   * white flag and the 5-second penalty above it are race machinery — Art.
+   * B1.9.5's penalties are all TTCS penalties, and an LTCS has no accumulating
+   * ladder at all — so a strike recorded in practice or qualifying exists only
+   * to be printed beside the driver's name on the timesheet. Counting one for
+   * an offence that carried no sanction made that column say something untrue.
+   *
+   * WHAT THIS DELIBERATELY DOES NOT SUPPRESS. Art. B1.9.4's second remedy, the
+   * grid drop, applies perfectly well to an out-lap, and the offence it is most
+   * often used for — impeding a driver who is on a flying lap while you crawl
+   * on the racing line — is an out-lap offence almost by definition. This game
+   * does not model impeding at all today. That is a gap in it, not something
+   * this function is closing: when impeding arrives it belongs on the out-lap
+   * and must not be gated on this.
+   *
+   * A race has no untimed laps, so `isRace` short-circuits the whole question.
+   */
+  private sanctionableLap(car: CarEntry, isRace: boolean): boolean {
+    if (isRace) return true;
+    // The lap out of the garage or out of the pit box. `RaceEngine` already
+    // throws its time away at the line, so there is nothing here to delete.
+    if (car.onOutLap) return false;
+    // The lap in. Its time is never classified either — the car turns off
+    // before the line and `completeLap` never runs — so a deletion notice for
+    // it is noise about a time that does not exist.
+    if (car.pitRequested) return false;
+    return true;
+  }
+
   private onTrackLimitInfraction(car: CarEntry, index: number, sessionTime: number, isRace: boolean): void {
     const n = car.trackLimitStrikes;
     const corner = this.track.cornerNameAt(car.s) || 'turn';
 
     // In qualifying and practice, an off-track lap is simply deleted — there is
-    // no strike system, because the penalty is losing the lap time.
+    // no strike system, because the penalty is losing the lap time (Art.
+    // B1.9.4). `sanctionableLap` has already established that there IS a lap
+    // time here to lose.
     if (!isRace) {
       car.currentLapInvalidated = true;
-      this.log(car.driver.code + ' lap time deleted — track limits at ' + corner, 'warning', sessionTime, index);
+      this.log(
+        car.driver.code + ' lap time deleted — track limits at ' + corner,
+        'warning', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS', status: 'LAP TIME DELETED',
+        } },
+      );
       return;
     }
 
@@ -1367,6 +2408,10 @@ export class RaceControlManager {
       this.log(
         car.driver.code + ' — black and white flag, track limits',
         'warning', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS x3', status: 'BLACK AND WHITE FLAG',
+        } },
       );
     } else if (n >= TRACK_LIMIT_PENALTY_AT) {
       car.penalties.push({
@@ -1378,11 +2423,19 @@ export class RaceControlManager {
       this.log(
         car.driver.code + ' — 5 second time penalty, track limits',
         'critical', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS x' + n, status: '5 SECOND TIME PENALTY',
+        } },
       );
     } else {
       this.log(
         car.driver.code + ' — track limits warning ' + n + '/3 at ' + corner,
         'info', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS', status: 'WARNING ' + n + ' OF 3',
+        } },
       );
     }
   }
@@ -1410,6 +2463,10 @@ export class RaceControlManager {
       this.log(
         car.driver.code + ' — DRIVE THROUGH PENALTY, pit lane speeding',
         'critical', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: 'PIT LANE',
+          offence: 'SPEEDING IN THE PIT LANE', status: 'DRIVE-THROUGH PENALTY',
+        } },
       );
     }
   }
@@ -1452,6 +2509,65 @@ export class RaceControlManager {
         this.log(
           car.driver.code + ' DISQUALIFIED — mandatory tyre rule not satisfied',
           'critical', sessionTime, car.index,
+          { notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'MANDATORY TYRE RULE', status: 'DISQUALIFIED',
+          } },
+        );
+      }
+    }
+  }
+
+  /**
+   * Converts penalties nobody ever came in to serve.
+   *
+   * A penalty is not waived by the flag falling. Art. B1.9.5 closes off both
+   * escapes:
+   *
+   *   - A five or ten second penalty may be taken in the pit lane OR paid at the
+   *     end — "The relevant driver may however elect not to stop, provided he
+   *     carries out no further pit stop before the end of the TTCS. In such
+   *     cases five (5) seconds will be added to the elapsed TTCS time of the
+   *     driver concerned." Nothing is needed here for those: the seconds went
+   *     onto `penaltySeconds` when the penalty was imposed and stayed there
+   *     unless a pit stop took them off.
+   *
+   *   - A drive-through or a stop-and-go has no such election, so the regulation
+   *     supplies a conversion for the case where there was no time to serve it:
+   *     "If any of the four (4) penalties above are imposed during the last
+   *     three (3) laps, or after the end of a TTCS ... twenty seconds will be
+   *     added ... in the case of (c) and thirty seconds in the case of (d)."
+   *     Twenty and thirty rather than the nominal cost of the penalty, because a
+   *     penalty that cannot be served is worth more than one that can.
+   *
+   * A car that retired never had the opportunity either, and for that case the
+   * regulation reaches for a grid penalty at the next race instead — which this
+   * game has no machinery for. It is left alone rather than converted, because
+   * adding thirty seconds to a DNF changes nothing and would put a number on the
+   * results screen that means nothing.
+   */
+  convertUnservedPenalties(cars: readonly CarEntry[], sessionTime: number): void {
+    // The bench first. An incident on the last lap has to be decided before its
+    // penalty can be converted, and a decision after the flag is a real thing —
+    // Art. B1.9.5 has a clause for exactly it.
+    this.stewardsBench?.closeOutstanding(cars, sessionTime);
+
+    for (const car of cars) {
+      if (car.retired) continue;
+      for (const p of car.penalties) {
+        if (p.served) continue;
+        const add = p.kind === 'drive-through' ? 20 : p.kind === 'stop-go-10s' ? 30 : 0;
+        if (add === 0) continue;
+        p.served = true;
+        p.timeS = add;
+        car.penaltySeconds += add;
+        this.log(
+          car.driver.code + ' — ' + add + ' seconds added, penalty not served',
+          'critical', sessionTime, car.index,
+          { notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'PENALTY NOT SERVED', status: add + ' SECOND TIME PENALTY',
+          } },
         );
       }
     }
@@ -1528,6 +2644,8 @@ export class RaceControlManager {
     if (this.neutralisation !== 'safety-car') return 0;
     // A car in the pit lane is not in the queue.
     if (car.inPitLane || car.retired) return 0;
+    // Nothing to queue behind yet: the safety car is still in the pit lane.
+    if (this.scPhase === 'deploying') return 0;
     if (isLeader && this.scPhase === 'in-this-lap') return 0;
     return this.maxQueueGapM;
   }
@@ -1552,10 +2670,52 @@ export class RaceControlManager {
       (this.vscTargetMs * DELTA_REFERENCE_MARGIN);
   }
 
+  // =========================================================================
+  // What the display layer reads
+  // =========================================================================
+  //
+  // The announcements a safety car period produces are the HUD's to word — it
+  // owns the rail, the timing and the voice. What it cannot do is derive the
+  // sequence, because the sequence is a state machine and the state machine is
+  // here. So this is the whole of the surface it needs, and it is deliberately
+  // small:
+  //
+  //   `neutralisation`      'none' | 'vsc' | 'safety-car' | 'sc-ending'
+  //   `scPhase`             the seven-step procedure, see `SafetyCarPhase`
+  //   `safetyCar`           the vehicle: `.station`, `.orangeLights`,
+  //                         `.greenLight`, `.visible`, `.onTrack`, `.s`, `.lap`
+  //   `lappedCarsWaved`     "LAPPED CARS MAY NOW OVERTAKE" has been sent
+  //   `lowVisibility`       "LOW VISIBILITY — MAXIMUM GAP TWENTY CAR LENGTHS"
+  //   `maxQueueGapM`        ten car lengths, or twenty
+  //   `pitExitClosed`       the exit is shut while unlapped cars rejoin
+  //   `minimumSectorTimeS`  the FIA ECU delta, the number a driver cannot read
+  //                         off a speedometer
+  //   `restartImminent`     the safety car has gone in and the green is coming
+  //                         at the Line
+  //
+  // Each maps to exactly one message in the regulations, and the mapping is in
+  // the doc comment of the thing it maps to.
+
+  /**
+   * The safety car has entered the Pit Entry Road and the green will be shown at
+   * the Line.
+   *
+   * The state that has no VSC equivalent, and the one the display most needs:
+   * between these two events the race is neither neutralised in the sense of a
+   * speed limit nor green, and the driver's obligation is a sentence rather than
+   * a number — "drivers must proceed at a pace which involves no erratic
+   * acceleration or braking nor any other manoeuvre which is likely to endanger
+   * other drivers or impede the restart" (B5.13.6 / Art. 55.15).
+   */
+  get restartImminent(): boolean {
+    return this.neutralisation === 'sc-ending';
+  }
+
   /** 0..1 severity used to tint the HUD flag banner. */
   get flagSeverity(): number {
     if (this.sessionFlag === 'red') return 1;
     if (this.neutralisation === 'safety-car') return 0.85;
+    if (this.neutralisation === 'sc-ending') return 0.55;
     if (this.neutralisation === 'vsc') return 0.6;
     let worst = 0;
     for (const f of this.sectorFlags) {

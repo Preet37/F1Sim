@@ -25,6 +25,7 @@ const ENV: EnvironmentState = {
   trackTempC: 38,
   airTempC: 25,
   wetness: 0,
+  surfaceGrip: 1,
   airDensityRatio: 1,
   abrasion: 1,
 };
@@ -33,6 +34,7 @@ function controls(over: Partial<VehicleControls> = {}): VehicleControls {
   return {
     throttle: 0, brake: 0, steer: 0,
     drsRequested: false, ersMode: 'push', gearRequest: 0, pitLimiter: false, speedLimitMs: 0,
+    reverse: false,
     ...over,
   };
 }

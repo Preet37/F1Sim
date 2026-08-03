@@ -40,17 +40,21 @@ import { clamp01 } from '../core/MathUtils';
  *    fraction of the screen and the road ahead looks identical; smearing the
  *    periphery towards a vanishing point is what the eye actually uses to judge
  *    velocity, and it is why 200 km/h feels dangerous rather than brisk.
- *  - CHROMATIC ABERRATION on the same radial axis, scaled by the same term.
- *    Kept subtle, and gated entirely behind speed.
  *  - VIGNETTE, which darkens the corners and pushes attention to the apex.
  *  - DITHER, sub-perceptual, purely to break 8-bit banding.
  *
- * The last three are all capable of turning a clean picture into what looks like
- * archive footage, and had between them done exactly that: a heavy vignette, a
- * lens fringe present at a standstill, and a linear-space grain that the output
+ * These are all capable of turning a clean picture into what looks like archive
+ * footage, and had between them done exactly that: a heavy vignette, a lens
+ * fringe present at a standstill, and a linear-space grain that the output
  * transform amplified into visible striping across every shadow. The rule they
  * are now tuned to is that none of them should be identifiable as an effect. If
  * you can point at the vignette, it is too strong.
+ *
+ * THERE IS NO LONGER ANY CHROMATIC ABERRATION, and there should not be. It was
+ * reported as "purple almost holo imaging ... when they sped up", which is an
+ * accurate description of what a radial R/B channel split does to a periphery
+ * that is also being smeared. It had already been halved once for the same
+ * complaint. See the grade shader for why amplitude was never the fix.
  *
  * On the low quality tier the whole composer is skipped and the scene renders
  * straight to the canvas. Bloom on a phone GPU is five extra full-screen passes
@@ -224,6 +228,11 @@ const GRADE_SHADER = {
     uFocus: { value: new THREE.Vector2(0.5, 0.5) },
     uVignette: { value: 0.14 },
     /**
+     * How wet the world is, 0..1. Drives the desaturation and the lifted black
+     * point that are most of what "it is raining" looks like on a screen.
+     */
+    uWet: { value: 0 },
+    /**
      * Dither amplitude, as a FRACTION of the pixel. See the shader for why it
      * is relative rather than absolute, and why it is this small.
      */
@@ -266,6 +275,7 @@ const GRADE_SHADER = {
     uniform float uSpeed;
     uniform vec2 uFocus;
     uniform float uVignette;
+    uniform float uWet;
     uniform float uGrain;
     uniform float uTime;
     uniform float uFlash;
@@ -417,7 +427,28 @@ const GRADE_SHADER = {
       // Blur only the periphery. The centre of the screen is where the driver
       // is looking and where the apex is; smearing it would just look broken.
       float falloff = smoothstep(0.06, 0.75, dist);
-      float amount = uSpeed * falloff * 0.055;
+
+      // "WHEN THEY SPED UP THERE WAS THIS PURPLE ALMOST HOLO IMAGING, I THINK
+      // THAT WAS TRYING TO SHOW THAT THE CARS WERE GOING REALLY FAST."
+      //
+      // It was, and it was this line and the chromatic aberration under it.
+      // Two separate mistakes stacked into one artefact:
+      //
+      // THE GHOSTING. The coefficient was 0.055. dir runs to about 0.7 at a
+      // screen corner, so the smear reached 0.0385 in UV — 3.85% of the frame,
+      // which is 74 pixels across a 1920 buffer. Spread over EIGHT taps that is
+      // 9 pixels between samples, and eight copies of a car spaced 9 pixels
+      // apart is not a motion blur. It is eight copies of a car. That is the
+      // "holo imaging" exactly: a ghosted multiple image, appearing on whatever
+      // is in the periphery, which at racing speed is every other car.
+      //
+      // A radial blur only reads as blur when consecutive taps land within a
+      // pixel or two of each other. 0.012 puts the worst case at 0.0084 UV = 16
+      // pixels over 8 taps, so 2 pixels between samples, and the taps merge into
+      // a smear instead of resolving as copies. It is also strictly CHEAPER
+      // than what it replaces — same tap count, shorter reads, better cache
+      // coherence — so the fix costs nothing.
+      float amount = uSpeed * falloff * 0.012;
 
       vec3 colour;
       if (amount > 0.0008) {
@@ -435,26 +466,27 @@ const GRADE_SHADER = {
         colour = texture2D(tDiffuse, vUv).rgb;
       }
 
-      // Chromatic aberration along the same radial axis. Red and blue are
-      // displaced in opposite directions, which is how a real lens fails.
+      // CHROMATIC ABERRATION: REMOVED, and this is where the PURPLE came from.
       //
-      // Gated entirely behind speed. The constant term that used to sit
-      // alongside it fringed the edge of every frame including a stationary
-      // one, which is a description of a cheap lens rather than of going fast,
-      // and it is part of what made the picture look like old footage. What is
-      // left is a speed cue: at rest there is none, and at 300 km/h it is a
-      // fraction of a pixel at the very edge of the frame.
-      // 0.0009, not 0.0016. Fringing is only invisible on a smooth image: split
-      // the channels of a surface that already has per-pixel variation in it
-      // and the variation acquires colour, which reads as much worse noise than
-      // the same amplitude in luminance would. The road it runs over is far
-      // cleaner than it was, but the very near field still has real texture in
-      // it and this was tinting it green and magenta.
-      float ca = uSpeed * falloff * 0.0009;
-      if (ca > 0.00005) {
-        colour.r = texture2D(tDiffuse, vUv - dir * ca).r;
-        colour.b = texture2D(tDiffuse, vUv + dir * ca).b;
-      }
+      // It displaced the red channel one way along the radius and the blue
+      // channel the other, which is what a real lens does — and on this image it
+      // was the wrong effect at any amplitude. Splitting R and B in opposite
+      // directions puts magenta on one side of every high-contrast edge and
+      // green on the other, and against a grey road under a blue-grey sky the
+      // green side is invisible while the magenta side is not. What reaches the
+      // eye is a one-sided purple fringe, on the periphery, appearing as speed
+      // rises. Stacked on the eight ghost images the blur above was producing,
+      // that is precisely "purple almost holo imaging ... when they sped up".
+      //
+      // This is the SECOND time it was reduced rather than removed: it went
+      // 0.0016 -> 0.0009 for tinting the near field "green and magenta". The
+      // amplitude was never the problem. The effect is a lens artefact, this is
+      // not footage of a lens, and it is being used as a speed cue when the
+      // radial blur above already is one and is honest about it. Two texture
+      // fetches per pixel come back with it.
+      //
+      // Do not reintroduce it. If a speed cue needs to be stronger, the blur is
+      // the term to reach for, subject to the tap-spacing constraint above.
 
       // Bloom, added here rather than in a pass of its own.
       //
@@ -491,6 +523,41 @@ const GRADE_SHADER = {
       // the corners rather than dimming the whole frame.
       float v = 1.0 - uVignette * dist * dist * 2.2;
       colour *= clamp(v, 0.0, 1.0);
+
+      // --- Weather -----------------------------------------------------------
+      //
+      // What rain does to an image, in the two terms that actually carry it.
+      //
+      // SATURATION. Overcast light has no colour temperature to speak of and
+      // water on every surface kills the diffuse bounce that carries most of a
+      // scene's colour. A wet circuit photographs nearly monochrome, and pulling
+      // saturation is the single strongest cue that it is raining — stronger
+      // than anything drawn in the world, because it affects every pixel.
+      //
+      // CONTRAST, downward and only in the shadows. Spray and low cloud lift
+      // the black point: there is no true black in a rainstorm because the
+      // whole volume between the camera and the subject is scattering. Lifting
+      // it is what makes distance read as murk rather than as fog with a colour.
+      //
+      // Both are done here rather than as another pass because this shader is
+      // already sampling and already writing, and an extra full-screen pass for
+      // eight instructions would cost more than the effect.
+      //
+      // BOTH TERMS ARE HALF WHAT THEY FIRST WERE. At 0.42 desaturation and a
+      // 0.045 black lift, a screenshot of Bahrain in heavy rain came back with
+      // no black anywhere in the frame and the whole image sitting in a narrow
+      // band of grey — which is a photograph of a rainstorm through a dirty
+      // lens, not a photograph of a wet circuit. The scene ALREADY has three
+      // other things pulling in the same direction: fog that closes from 1700m
+      // to 800m, cloud cover that rises with the water, and an environment
+      // probe that flattens the sun. Stacking a heavy grade on top of those
+      // triple-counted the effect. What is left is enough to read and little
+      // enough to leave the picture some contrast.
+      if (uWet > 0.002) {
+        float lum = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+        colour = mix(colour, vec3(lum), uWet * 0.22);
+        colour = mix(colour, colour * 0.92 + vec3(0.022), uWet);
+      }
 
       // Dither, not grain.
       //
@@ -757,6 +824,7 @@ export class PostFX {
    * @param speedMs   car speed, for the radial blur
    * @param focus     vanishing point in normalised screen space
    * @param nightBias more bloom at night, where the lights are the subject
+   * @param wetness   0..1, how much water is on the world
    */
   update(
     dt: number,
@@ -765,11 +833,13 @@ export class PostFX {
     focusY: number,
     nightBias: number,
     camera?: THREE.PerspectiveCamera,
+    wetness = 0,
   ): void {
     this.time += dt;
     if (!this.grade) return;
 
     const u = this.grade.uniforms;
+    u.uWet.value = clamp01(wetness);
 
     // The AO's world-space radius depends on the projection, and the camera
     // director changes the field of view continuously with speed. Reading it

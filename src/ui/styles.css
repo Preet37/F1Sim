@@ -307,7 +307,28 @@ canvas#view {
   z-index: 10;
   font-size: 13px;
   line-height: 1.25;
+
+  /* THE MIRROR FLOOR.
+     Three of the eight cameras have the car's own mirrors in shot, and a
+     mirror is not decoration — it is the only way to see a car that is about
+     to be alongside. So the panes are treated exactly as the racing surface
+     is: part of the frame the HUD is not allowed to stand on. The mirrors had
+     been mounted 78.6 degrees out of roll since they were written, and on the
+     frame they were fixed the weather bug was lying across the left pane in
+     the driver's eye and the tyre panel across it in the cockpit.
+
+     `Hud.setCameraMode` writes the three properties below off `MIRROR_PANES`,
+     which is measured by `probe:framing` off the geometry the mesh is built
+     from. Everything anchored to the bottom edge is offset by `--floor`, so
+     one number moves the whole bottom band clear; `--mirror-l` and
+     `--mirror-r` are the corridor between the two panes, for the few things
+     that go sideways instead of up. `shoot:panels` fails on any intersection.
+
+     Zero in the five cameras that see no glass, where the HUD has the whole
+     frame back. */
+  --floor: 0px;
 }
+.hud[data-mirrors] { --floor: var(--mirror-bottom); }
 
 .hud-panel {
   position: absolute;
@@ -352,50 +373,397 @@ canvas#view {
    left rail, and a tower sized to "as many as fit" grows straight down
    through the pit instruction. See `towerFit`. */
 .hud-tower {
-  --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 12px;
+  --tower-cols: 3px 22px 20px minmax(0, 1fr) 0 52px 12px 32px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
-  width: 336px;
+  width: 300px;
   padding: 8px 9px 8px;
   border-radius: var(--card-r);
-  background: var(--card-bg);
-  border: 1px solid var(--card-line);
+  /* Dark navy and translucent, not the neutral carbon the instrument panels
+     are drawn on. This is the one graphic on screen that is ABOUT the race
+     rather than about the car, and it is the one a broadcast leaves up
+     permanently; giving it its own ground is what separates the two systems
+     at a glance. */
+  background: linear-gradient(180deg, rgba(9, 17, 33, 0.9), rgba(6, 11, 22, 0.86));
+  border: 1px solid rgba(120, 160, 214, 0.16);
+  box-shadow: var(--plate-lift);
 }
 .hud-tower .hud-stripe { top: 12px; bottom: 12px; border-radius: 0 2px 2px 0; }
+/* --- The header -------------------------------------------------------
+   The series mark, the circuit, and the lap. A broadcast tower header says
+   which championship you are watching and how far through the race it is,
+   and little else — so those are the only things here, with the lap number
+   set at the size it is read at from across a room and the total set small
+   beside it. The mark is this game's own and is the only wordmark in the
+   HUD; no real series mark is reproduced. */
+.tower-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 0 4px 7px;
+}
+.tower-series {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 500;
+  font-stretch: 118%;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.tower-series b { font-weight: 900; color: var(--ink); }
 .tower-session {
   font-family: var(--font-data);
   font-size: 8px;
   font-weight: 800;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   color: var(--ink-3);
-  padding: 0 3px 3px;
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tower-head {
+.tower-lapblock {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  padding: 0 3px 6px;
+  gap: 3px;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
+.tower-lapword {
+  font-family: var(--font-display);
+  font-size: 8px;
+  font-weight: 850;
+  font-stretch: 116%;
+  letter-spacing: 0.15em;
+  color: var(--ink-3);
+}
+.tower-lapnow {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 900;
+  font-stretch: 120%;
+  letter-spacing: 0.01em;
+  line-height: 0.9;
+  color: var(--ink);
+}
+.tower-lapbar { font-size: 11px; color: var(--ink-3); }
+.tower-laptotal {
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+/* A practice or qualifying session is a clock, not a lap count. Same slot,
+   figure face — the big number is always the one that matters. */
+.tower-lapblock.is-clock .tower-lapbar,
+.tower-lapblock.is-clock .tower-laptotal { display: none; }
+.tower-lapblock.is-clock .tower-lapnow {
+  font-family: var(--font-data);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+/* --- The flag band ----------------------------------------------------
+   WHERE FLAG STATE BELONGS, and it took two complaints to get here. A yellow
+   used to be a strip across the top centre of the picture — the one place
+   every camera in this game is pointed — and a flag is not a thing that
+   happens for a second and goes. It stands for as long as the hazard does,
+   so it stood on the road for as long as the hazard did.
+
+   A flag is race control talking about the SESSION, and the panel that says
+   what the session is doing is this one. Full width, the flag's own colour,
+   its name in heavy black caps, and a second line naming the cause — because
+   a driver shown a yellow wants to know what is round the corner, and
+   `YELLOW FLAG` on its own does not say. */
+.tower-flagband {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  margin: 0 0 7px;
+  padding: 4px 8px 5px;
+  border-radius: 3px;
+  text-align: center;
+}
+.flagband-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 900;
+  font-stretch: 118%;
+  letter-spacing: 0.09em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.flagband-cause {
+  font-family: var(--font-data);
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+.fb-yellow { background: var(--sig-yellow); color: #14100a; }
+.fb-red { background: var(--sig-red); color: #fff2f3; }
+.fb-blue { background: #1668e3; color: #eef4ff; }
+/* A black flag is the only one whose own colour is the panel's colour, so it
+   is the only one that needs an outline to read as a band at all. */
+.fb-black {
+  background: #06080b;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.55);
+}
+/* The chequer goes on a strip along the top rather than under the words: a
+   name set over a chequerboard is a name nobody reads. */
+.fb-chequered { background: #eef2f8; color: #06080b; padding-top: 8px; }
+.fb-chequered::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: repeating-conic-gradient(#06080b 0% 25%, #eef2f8 0% 50%) 0 0 / 10px 10px;
+}
+
+/* --- The order --------------------------------------------------------- */
+.tower-cols,
+.tower-row {
+  display: grid;
+  grid-template-columns: var(--tower-cols);
+  align-items: center;
+  gap: 0 7px;
+  padding: 0 5px;
+}
+.tower-cols {
+  padding-bottom: 5px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+.tower-col {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  overflow: hidden;
+}
+/* Each header cell carries the name of its column rather than a position in
+   the row, so hiding a column at a breakpoint hides its label with it and the
+   two cannot come apart. */
+.c-gap { text-align: right; }
+.c-time { text-align: right; }
+
+.tower-row {
+  height: 20px;
+  border-radius: 5px;
+  margin-bottom: 1px;
+}
+
+/* --- The lap time column ----------------------------------------------
+   "if other cars have completed their lap and I haven't, you should still be
+    showing their times?? why are you waiting on me to display their times
+    that they did at other laps?"
+
+   THE DATA WAS NEVER THE PROBLEM AND IT IS WORTH SAYING SO, because the
+   obvious diagnosis is wrong. `standingsCells` has always returned a `best`
+   for every car that has set a lap, computed from that car's own
+   `bestLapTime` and owing nothing to the player's; a probe now drives a
+   qualifying session in which the player never moves and asserts all
+   nineteen rivals' times are produced. They always were.
+
+   The row simply never drew them. It drew a GAP — a deficit to the quickest
+   lap — and a deficit is not a time. So a player watching qualifying saw
+   `+0.412` beside a driver and no lap anywhere on the panel, and read that,
+   correctly, as the tower refusing to show what everybody had done.
+
+   A column, then, in the sessions that are ABOUT lap times: practice and
+   qualifying, where a broadcast tower shows the time and the deficit side by
+   side. In a race it collapses to zero width — a race's tower is intervals,
+   and a column of best laps down the side of one is a different graphic
+   about a different question. `is-timed` is written by `updateTower` from
+   the session kind, so the header and the cells cannot come apart. */
+.hud-tower.is-timed { --tower-cols: 3px 20px 18px minmax(0, 1fr) 56px 46px 12px 30px; }
+.tower-time {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: right;
+  color: var(--ink);
+  overflow: hidden;
+}
+/* The quickest lap of the session is purple, here and everywhere else in this
+   game, because that is the sport's own rule and it means the column needs no
+   legend. */
+.tower-row.is-best .tower-time { color: var(--violet); }
+.hud-tower:not(.is-timed) .tower-time,
+.hud-tower:not(.is-timed) .c-time { display: none; }
+/* THE LEADER'S NUMBER IN A FILLED RED CELL. This is the one place in this
+   game red does not mean "stopped", and it is deliberate: it is what a
+   broadcast tower does, and it is the fastest way to find the front of the
+   order in peripheral vision. The clash is real and it is paid for elsewhere
+   — a retired car says so in words (`Out`) and by being dimmed to two fifths,
+   not by being red. */
+.tower-row.is-leader .tower-pos {
+  background: var(--sig-red);
+  color: #fff;
+}
+/* White means "the thing happening now", and the driver's own row is exactly
+   that. It is an outline rather than a fill so the team colour beside it is
+   not tinted by the highlight. */
+.tower-row.is-player {
+  background: rgba(242, 246, 251, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
+}
+/* The leader is pinned above a window that has scrolled past them, so the row
+   under it is not the car behind it. The break says so. */
+.tower-row.is-pinned {
+  margin-bottom: 5px;
+  position: relative;
+}
+.tower-row.is-pinned::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: -3px;
+  border-bottom: 1px dashed rgba(150, 180, 214, 0.3);
+}
+.tower-row.is-out { opacity: 0.4; }
+.tower-row.is-out .tower-gap { color: var(--ink-3); }
+
+/* WHILE A STOP IS BEING CHOSEN the order gives up more than its rows. The
+   sheet is a decision with a deadline measured in corners, the rail it stands
+   in reaches from the foot of this panel to the mirrors, and on a landscape
+   phone that band is only wide enough for the sheet if the panel above it is
+   down to its header and its flag. The column rule and the fastest lap are
+   both reference; neither is being read in the two seconds this lasts. */
+.hud.pit-open .tower-cols,
+.hud.pit-open .tower-fastest { display: none; }
+
+.tower-bar { width: 3px; height: 18px; border-radius: 2px; background: var(--ink-3); }
+.tower-pos {
+  text-align: center;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink-2);
+  border-radius: 3px;
+  padding: 2px 0;
+  line-height: 1;
+}
+.tower-mark { width: 20px; height: 20px; }
+.tower-mark svg { display: block; width: 100%; height: 100%; }
+
+/* The code, in heavy white caps: the identification a timing tower uses, with
+   the team's own mark beside it in the team's own colour carrying the second
+   axis. Between them they say which car this is without a word of prose. */
+.tower-code {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 850;
+  font-stretch: 112%;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  text-transform: uppercase;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.tower-gap {
+  text-align: right;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* The leader's cell names the column instead of restating the position the
+   number beside it already gives. A word among figures reads as the heading
+   it is. */
+.tower-row.is-leader .tower-gap {
+  font-family: var(--font-display);
+  font-size: 7.5px;
+  font-weight: 850;
+  font-stretch: 114%;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+/* The compound, in its own colour — soft red, medium yellow, hard white. One
+   character, because that is what the sport calls them. */
+.tower-tyre {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 800;
+  text-align: center;
+}
+
+/* --- The status column -------------------------------------------------
+   "You can see who has set the fastest lap, who's got a penalty, who's out,
+   what tire compounds etc." Four facts about twenty cars on one panel, three
+   of them in this column and none of them needing a word.
+
+   The exclamation is the same glyph the penalty banner ends with. That is not
+   a coincidence and it is not decoration: the banner announces the decision
+   once and this says which car is still carrying it, and a driver should be
+   able to see that they are the same statement. */
+.tower-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+}
+.tbadge {
+  display: none;
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 2px;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.tbadge svg { display: block; width: 9px; height: 9px; }
+.tower-badges.has-fast .tb-fast {
+  display: flex;
+  background: var(--sig-purple);
+  color: #fff;
+}
+.tower-badges.has-pen .tb-pen {
+  display: flex;
+  background: var(--sig-red);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 900;
+}
+.tower-badges.has-fin .tb-fin {
+  display: flex;
+  background: #eef2f8;
+  color: #06080b;
+}
+
 /* --- The fastest lap ---------------------------------------------------
-   The one fact a broadcast keeps permanently on screen that this game had
-   nowhere at all: the purple was on the player's own sector tiles and said
-   nothing about the other nineteen cars. An outlined capsule rather than
-   another table row, because it is about somebody who may not be in the
-   visible window of the order — and it is drawn in the purple the holder's
-   own name is drawn in below, so the two are obviously the same fact. */
+   The badge in the order above says WHO holds it, which is what the eye wants
+   mid-corner. This says what it is, which is the number read on the straight.
+   Along the foot of the panel, under a hairline, in the purple that means
+   outright best everywhere else in this game. */
 .tower-fastest {
   display: flex;
   align-items: baseline;
   overflow: hidden;
   gap: 6px;
-  margin: 0 1px 7px;
-  padding: 3px 9px;
-  border-radius: var(--pill-r);
-  border: 1px solid rgba(192, 77, 255, 0.45);
-  background: rgba(192, 77, 255, 0.12);
+  margin: 6px 1px 0;
+  padding: 5px 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
   min-width: 0;
 }
 .fastest-label {
@@ -408,14 +776,13 @@ canvas#view {
   color: var(--sig-purple);
   flex: 0 0 auto;
 }
-.fastest-dot { color: var(--ink-3); font-size: 9px; flex: 0 0 auto; }
-/* The given name is the first thing to go when the capsule is narrow — a
-   surname identifies a driver, "NIA…" identifies nobody. */
+/* The given name is the first thing to go when the strip is narrow — a
+   surname identifies a driver, "NIA..." identifies nobody. */
 .fastest-first {
   font-family: var(--font-ui);
   font-size: 9px;
   font-weight: 400;
-  color: var(--ink-2);
+  color: var(--ink-3);
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -443,181 +810,6 @@ canvas#view {
   margin-left: auto;
   flex: 0 0 auto;
   padding-left: 6px;
-}
-.tower-position {
-  font-family: var(--font-display);
-  font-size: 21px;
-  font-weight: 850;
-  font-stretch: 120%;
-  letter-spacing: 0.02em;
-  line-height: 1;
-}
-.tower-lapcount {
-  font-family: var(--font-data);
-  font-size: 10px;
-  color: var(--hud-dim);
-  letter-spacing: 0.08em;
-  font-weight: 700;
-}
-.tower-cols,
-.tower-row {
-  display: grid;
-  grid-template-columns: var(--tower-cols);
-  align-items: center;
-  gap: 0 7px;
-  padding: 0 5px;
-}
-.tower-cols {
-  padding-bottom: 5px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
-}
-.tower-col {
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  overflow: hidden;
-}
-/* Each header cell carries the name of its column rather than a position in
-   the row, so hiding a column at a breakpoint hides its label with it and the
-   two cannot come apart. */
-.c-gap, .c-best, .c-lap { text-align: right; }
-.tower-lastlap, .c-lap { display: none; }
-
-.tower-row {
-  height: 29px;
-  border-radius: 8px;
-  margin-bottom: 1px;
-}
-/* Purple is the outright best in this system, and both of these are one: the
-   position at the head of the order, and the quickest lap anyone has set.
-   The leader used to be picked out in gold, which is a hair from the yellow
-   that means CAUTION twelve pixels away on the same panel. */
-.tower-row.is-leader { background: rgba(192, 77, 255, 0.1); }
-.tower-row.is-leader .tower-pos { color: var(--sig-purple); }
-.tower-row.is-fastest .tower-best,
-.tower-row.is-fastest .tower-surname { color: var(--sig-purple); }
-/* White means "the thing happening now", and the driver's own row is exactly
-   that. It is an outline rather than a fill so the team colour beside it is
-   not tinted by the highlight. */
-.tower-row.is-player {
-  background: rgba(242, 246, 251, 0.11);
-  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
-}
-/* The leader is pinned above a window that has scrolled past them, so the row
-   under it is not the car behind it. The break says so. */
-.tower-row.is-pinned {
-  margin-bottom: 5px;
-  position: relative;
-}
-.tower-row.is-pinned::after {
-  content: '';
-  position: absolute;
-  left: 5px;
-  right: 5px;
-  bottom: -3px;
-  border-bottom: 1px dashed rgba(150, 180, 214, 0.3);
-}
-.tower-row.is-out { opacity: 0.4; }
-.tower-row.is-out .tower-gap { color: var(--sig-red); }
-
-.tower-bar { width: 3px; height: 20px; border-radius: 2px; background: var(--ink-3); }
-.tower-pos {
-  text-align: right;
-  font-family: var(--font-data);
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--ink-2);
-}
-.tower-mark { width: 20px; height: 20px; }
-.tower-mark svg { display: block; width: 100%; height: 100%; }
-
-.tower-who { min-width: 0; overflow: hidden; }
-/* The surname does not shrink — see below — so the LINE has to clip, or a long
-   one pushes the gap column out of the panel and lands on top of the compound.
-   Clipping "MARCHETTI" is a legible row; overlapping it with "LEADER" is not. */
-.tower-name {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-/* The first name yields first. A surname identifies a driver and a given name
-   decorates one, so when the column is short it is "Vik… HALVORSEN" that has
-   to be avoided and "V… HALVORSEN" that is acceptable. */
-.tower-first {
-  font-family: var(--font-ui);
-  font-size: 9px;
-  font-weight: 400;
-  color: var(--ink-3);
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tower-surname {
-  font-family: var(--font-display);
-  font-size: 11.5px;
-  font-weight: 800;
-  font-stretch: 110%;
-  letter-spacing: 0.03em;
-  color: var(--ink);
-  flex: 0 0 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tower-sub {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  min-width: 0;
-  white-space: nowrap;
-  margin-top: 1px;
-}
-.tower-team {
-  font-family: var(--font-ui);
-  font-size: 8.5px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  color: var(--ink-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tower-gap,
-.tower-best,
-.tower-lastlap {
-  text-align: right;
-  font-family: var(--font-data);
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--ink-2);
-  overflow: hidden;
-}
-/* The gap is the live number and the best lap is the reference, so they are
-   not the same weight of grey. The last lap is louder than either: it is the
-   one that has just changed. */
-.tower-best { color: var(--ink-3); font-weight: 600; }
-.tower-lastlap { color: var(--ink); }
-.tower-row.is-leader .tower-gap {
-  font-family: var(--font-display);
-  font-size: 8px;
-  font-weight: 850;
-  font-stretch: 114%;
-  letter-spacing: 0.1em;
-  color: var(--sig-purple);
-}
-/* The compound, in its own colour, at the end of the row — the last thing on
-   a broadcast timing line and the only one-character column here. */
-.tower-tyre {
-  font-family: var(--font-data);
-  font-size: 9px;
-  font-weight: 800;
-  text-align: center;
 }
 
 /* --- Top right: sectors and lap times ---------------------------------
@@ -677,6 +869,20 @@ canvas#view {
   letter-spacing: -0.02em;
   line-height: 1.05;
   margin-top: 6px;
+}
+/* OUT LAP / IN LAP / PIT LANE, where the stopwatch would be.
+   A running clock is a claim that the lap is being timed, and on an out-lap it
+   is not — the engine discards the crossing. So the words go in the clock's
+   place rather than beside it, set smaller and in the name face, because a
+   28px monospace `OUT LAP` reads as a broken readout rather than a state. */
+.timing-lap.is-untimed {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+  line-height: 1.55;
 }
 .timing-small {
   display: flex;
@@ -785,11 +991,44 @@ canvas#view {
 .hud-ersbar { height: 5px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; }
 .hud-ersfill { height: 100%; width: 100%; background: var(--violet); }
 
-/* --- Bottom left: tyres and fuel ------------------------------------- */
+/* --- Tyres and fuel: the CAR column, on the right --------------------
+   "this information should be to the right with the rest of the car
+    information."
+
+   Correct, and it is the organising principle of the whole HUD rather than a
+   preference. The left column is the TEAM — the running order, the pit wall,
+   race control, the decisions somebody else is making about your race. The
+   right column is the CAR — the wheel, the gaps, the damage, and now the
+   tyres and the fuel, which are the two most car-shaped numbers on the
+   screen. They had been bottom-left since the first version and the reason
+   was layout convenience, not meaning.
+
+   It buys something as well as meaning it. The left column had the tower,
+   the rail, the weather and the car state stacked in it on a 900px screen,
+   and the tower and the radio card were competing for the same pixels — the
+   running order could show twelve cars or the radio card could be a square,
+   not both. Moving the car's own readouts to the car's own column is what
+   pays for both of the things that were reported:
+
+     "why can I only see like 4 cars on the leaderboard"
+     "that text box i told u to make it a square and make it bigger"
+
+   THE COLUMN HAS A FLOOR AND IT IS THE MIRRORS. In the driver's eye the right
+   pane reaches from 68.5% to 93% of frame height — on a 900px screen that is
+   y=616 downwards — so every panel in this column has to finish above it. The
+   column is therefore laid out as a stack that ends by 615, not as things
+   hung off the bottom edge, and `shoot:panels` measures it every run. See
+   `MIRROR_PANES`.
+
+   Beside the damage diagram rather than under it: the diagram is 92px of a
+   244px column and the 142 left over is exactly a tyre panel. */
 .hud-carstate {
-  bottom: calc(10px + var(--safe-b));
-  left: calc(10px + var(--safe-l));
-  min-width: 158px;
+  top: calc(446px + var(--safe-t));
+  right: calc(96px + var(--safe-r));
+  left: auto;
+  bottom: auto;
+  width: 148px;
+  min-width: 0;
 }
 .hud-tyreheader { display: flex; justify-content: space-between; align-items: center; }
 .hud-compound { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; }
@@ -924,8 +1163,13 @@ canvas#view {
      moment clips the OLDEST card off the top instead, which is the one you
      have already read. The top is the deepest the tower can ever reach; see
      `towerFit`. */
-  top: max(300px, 50vh);
-  bottom: calc(172px + var(--safe-b));
+  top: var(--rail-top, max(300px, 50vh));
+  /* 172 down to 86. The car state and the weather bug used to be stacked
+     under this band in the same column and the rail stopped above them; both
+     have moved to the CAR column on the right, which is where they mean
+     something. The 86 that remains is the mirror band's own clearance — see
+     `MIRROR_PANES` — and it is checked by `shoot:panels`, not guessed. */
+  bottom: calc(86px + var(--safe-b));
   /* Flush with the tower above it: the rail is one column, not two. */
   --rail-w: 336px;
   /* Room to slide in from. `overflow: hidden` above clips BOTH axes, so a card
@@ -1047,20 +1291,267 @@ canvas#view {
   color: #ffc9ce;
 }
 
-/* --- The radio card ---------------------------------------------------
-   A driver-to-pit exchange, in the shape a broadcast uses for one: the
-   channel's owner named at the top right with RADIO under it, the team's
-   mark at the left, a rule, then the two halves of the exchange set on
-   opposite sides — the driver's own words flush right and heavy, the pit
-   wall's answer flush left, smaller and quieter. The alignment IS the
-   attribution, which is why neither line needs a label.
+/* --- Race control -----------------------------------------------------
+   THE OTHER VOICE, and it must not be mistakable for the first one.
 
-   Deliberately rare: four engine events fire it, and each one is a moment a
-   real broadcast would actually play. See `updateRadioCard`. */
+   The principal's card has a face, a name, a role and a sentence. This has
+   none of those, because an official notice is not a person: a hard label,
+   the parties, and the four facts of the bulletin — where, what, and what is
+   being done about it — set in the figure face, in capitals, on a flat
+   square-cornered plate. The reference broadcast draws exactly this shape:
+   `RACE CONTROL: <DRIVER>, <DRIVER> INCIDENT` over `TURN 1 · IMPEDING ·
+   NOTED`. It shares the rail and the entry animation with the pit wall's
+   card and shares nothing else, which is the point.
+
+   No sanctioning body's mark appears anywhere in it. The words are the
+   authority. */
+/* THE OFFICIAL STRIP.
+
+     "this doesn't look good, I showed you an image of the FIA, you should
+      replicate that font and color and completely."
+
+   What was here was a dark ROUNDED card with a yellow bar down its left
+   edge and three stacked blocks in it — the shape of a notification. The
+   reference is a horizontal strip:
+
+     ┌──────┬─────────────────────────────────────────────┐
+     │  ⬤   │ RACE CONTROL: TURN 8 INCIDENT INVOLVING …   │
+     │ mark │ NOTED - IMPEDING                            │
+     └──────┴─────────────────────────────────────────────┘
+
+   Squared corners everywhere — no radius on the plate, none on the mark
+   block. A darker navy block at the left carrying the governing body's
+   mark, then the message. `RACE CONTROL:` bold and the incident CONTINUING
+   ON THE SAME LINE, with the facts smaller beneath. White on navy,
+   condensed, tight, uppercase. No accent bar of any colour: the tone is
+   carried by the words, which is how an official notice works.
+
+   The mark is the game's own device, not the FIA roundel — see
+   `governingMarkSvg`. */
+.hud-control {
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  border-radius: 0;
+  /* The reference navy, and it is a NAVY rather than the neutral near-black
+     everything else in this HUD is plated on. That difference is most of
+     what identifies the strip at a glance. */
+  background: #0a1738;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: var(--plate-lift);
+  transform: translateX(0);
+  opacity: 1;
+  overflow: hidden;
+  transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.16, 0.9, 0.3, 1);
+}
+/* The mark block: a darker panel at the left, square, the full height of the
+   strip. */
+.control-badge {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  padding: 0 8px;
+  background: #061029;
+  color: #fff;
+}
+.control-badge svg { display: block; width: 22px; height: 22px; }
+.control-body { flex: 1 1 auto; min-width: 0; padding: 7px 11px 8px; }
+/* It drops in from above rather than sliding in from the left. The rail's
+   cards come from the edge they live on; the noticeboard's come down from the
+   top of the frame, which is where a broadcast banner comes from and is the
+   second thing that tells the two channels apart before a word is read. */
+.hud-control.entering { transform: translateY(-14px); opacity: 0; }
+.hud-control.leaving { transform: translateY(-8px); opacity: 0; }
+/* Except in the rail, where it comes from the edge it lives on like everything
+   else there. See `Hud.mountControl` for when that happens. */
+.hud-alerts .hud-control.entering { transform: translateX(-30px); }
+.hud-alerts .hud-control.leaving { transform: translateX(-16px); }
+
+/* One line, opening bold and running straight on. The chip that used to sit
+   above this is gone: the reference sets `RACE CONTROL:` as the first words
+   of the sentence, not as a label over it, and that is most of why the strip
+   reads as an announcement rather than as a card with a title. */
+.control-headline {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-stretch: 88%;
+  letter-spacing: 0.015em;
+  line-height: 1.16;
+  color: #fff;
+  text-transform: uppercase;
+}
+.control-label { font-weight: 900; }
+.control-detail {
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  font-stretch: 88%;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.72);
+  text-transform: uppercase;
+  line-height: 1.25;
+}
+
+/* --- A decision, rather than a note -----------------------------------
+   Race control has two states and a broadcast draws them differently. The
+   banner above is an INVESTIGATION: facts, quiet, `NOTED`. This is a
+   DECISION, and it is a horizontal strip of butted segments — the
+   authority, the sentence itself set large in red, the driver it is
+   against, and a narrow red end cap carrying the same `!` the running
+   order puts against a penalised car. That shared glyph is what ties the
+   banner to the tower.
+
+   It is loud because it has changed the result. Nothing else in this rail
+   is allowed to be. */
+.hud-control.is-penalty {
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  border-left-width: 1px;
+  border-left-color: var(--card-line);
+  overflow: hidden;
+}
+.control-seg { display: flex; align-items: center; padding: 7px 9px; min-width: 0; }
+/* The same mark block as the note, so an investigation and a decision read as
+   one system rather than as two graphics that happen to share a rail. */
+.control-seg.control-badge { padding: 0 8px; }
+.control-penalty {
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  background: var(--sig-red);
+  padding: 6px 10px;
+}
+.control-penline {
+  font-family: var(--font-display);
+  font-size: 11.5px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.05em;
+  line-height: 1.06;
+  color: #fff;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.control-driver { flex: 1; gap: 6px; min-width: 0; }
+.control-first {
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: #fff;
+  white-space: nowrap;
+}
+.control-last {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 850;
+  font-stretch: 118%;
+  letter-spacing: 0.03em;
+  color: var(--team, var(--ink));
+  text-transform: uppercase;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.control-teammark { flex: 0 0 auto; width: 18px; height: 18px; margin-left: auto; }
+.control-teammark svg { display: block; width: 100%; height: 100%; }
+.control-bang {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  background: var(--sig-red);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 850;
+  color: #fff;
+}
+
+/* --- The radio card ---------------------------------------------------
+   THE BROADCAST PLATE, built as:
+
+     SURNAME        heavy caps, right-aligned, in the TEAM'S COLOUR
+     RADIO          heavy white caps under it, team mark beside it
+     ─────────      a rule in the team's colour
+     "…"            the words, quoted, heavy caps
+
+   THE COLOUR IS THE ATTRIBUTION, and it is the only one there is: the
+   DRIVER speaks in his team's colour, the PIT WALL speaks in white. That
+   holds across every team — orange for one, red for another, whatever the
+   roster says — because every coloured thing on this card reads one custom
+   property, `--team`, written by `showRadioCard` from `team.colour`. A
+   change of roster changes the card with no change to this file.
+
+   Nothing is labelled "driver" or "engineer". A broadcast never labels
+   them, and if the colour is doing its job it does not need to.
+
+   The mark is this game's own generated geometry, keyed to the team and
+   drawn in the team's colour. No real badge is reproduced.
+
+   WHY IT IS A SQUARE NOW.
+
+     "this has to be a square man, its gotta be slightly better"
+
+   Correct, and the reason is structural rather than aesthetic. The card was
+   the rail's full 336px wide and three lines tall — a letterbox — and a
+   letterbox has room for two turns. Two turns can only ever be the END of
+   an argument, so the card could show a driver being overruled but never
+   the push-back that earned it. A square carries four, which is the whole
+   exchange, and it carries the answer buttons underneath without the
+   question and the reply being on different screens.
+
+   `aspect-ratio` with a `min-height` rather than a fixed height: the
+   content is text of unknown length in an unknown font, and a card that
+   clips its last line to stay square is a card that has chosen its own
+   proportions over what it was built to say. The square is the floor.
+
+   It is NOT square on a landscape phone, and that is deliberate. The rail's
+   band there is under a hundred pixels tall between the running order and
+   the safe area, and a 250px card in it would be clipped — which is exactly
+   what `shoot:panels` measures and fails on. See the media queries at the
+   foot of this file. */
 .hud-radiocard {
-  padding: 10px 13px 13px;
-  border-radius: var(--card-r);
-  background: var(--card-bg);
+  --team: var(--sig-white);
+  padding: 9px 12px 11px;
+  /* The near-right-angle is what says "clip" rather than "graphic" beside
+     the broadcast radii on everything around it. */
+  border-radius: 4px;
+  /* Square, floor not ceiling, and MEASURED against the band rather than
+     chosen. `align-self` keeps it off the rail's full width, because a square
+     336px across is 336px tall and there is no viewport in this game with
+     that much rail in it: on a 1400x900 desktop under a safety car the band
+     between the running order and the live cues is about 262 pixels, and the
+     cue takes thirty of them. A 238px card measured 276 with the cue and
+     `fitRail` threw it out — correctly, and silently, which is how a card
+     ends up never appearing at all. 216 is what fits. */
+  align-self: flex-start;
+  width: 208px;
+  /* A FIXED HEIGHT, not a minimum, and this is the part that was wrong twice.
+
+     MEASURED AGAINST THE WORST BAND rather than chosen: on a 1400x900 desktop
+     under a safety car the rail's band is 248px and the neutralisation cue in
+     it takes 45, so the card has 195 to live in. A 198px card was thrown out by
+     `fitRail` for three pixels, silently.
+
+     But a MINIMUM height was the deeper fault. The card is measured by
+     `fitRail` at the moment it is raised — when the typewriter has written
+     nothing and every row is empty — and then it GROWS for the next two seconds
+     as the words arrive. By the time the fourth turn had wrapped to two lines
+     the plate was 9px taller than the band that had just accepted it, and
+     nothing re-measures. A broadcast plate is a fixed size; the words are cut
+     to it (`.radio-turn` clamps to two lines) rather than the plate stretching
+     to them, so what `fitRail` measures is what ends up on screen. */
+  height: 176px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 12, 22, 0.95);
   border: 1px solid var(--card-line);
   backdrop-filter: blur(14px) saturate(1.2);
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
@@ -1071,48 +1562,184 @@ canvas#view {
 }
 .hud-radiocard.entering { transform: translateX(-30px); opacity: 0; }
 .hud-radiocard.leaving { transform: translateX(-16px); opacity: 0; }
-.radio-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.radio-mark { flex: 0 0 auto; width: 26px; height: 26px; }
+
+/* Mark at the left, the two title lines hard right. */
+.radio-head { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+.radio-mark { flex: 0 0 auto; width: 22px; height: 22px; }
 .radio-mark svg { display: block; width: 100%; height: 100%; }
 .radio-who { text-align: right; min-width: 0; }
 .radio-driver {
   font-family: var(--font-display);
-  font-size: 10.5px;
-  font-weight: 800;
-  font-stretch: 116%;
-  letter-spacing: 0.11em;
+  font-size: 14px;
+  font-weight: 850;
+  font-stretch: 120%;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--ink-2);
-  line-height: 1.15;
+  color: var(--team);
+  line-height: 1.02;
+  overflow-wrap: break-word;
 }
 .radio-title {
   font-family: var(--font-display);
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 850;
-  font-stretch: 122%;
-  letter-spacing: 0.14em;
+  font-stretch: 120%;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
   color: #fff;
-  line-height: 1.05;
+  line-height: 1.02;
 }
-.radio-rule { height: 1px; background: rgba(255, 255, 255, 0.55); margin: 9px 0 10px; }
-.radio-said {
-  font-family: var(--font-ui);
-  font-size: 12.5px;
-  font-weight: 700;
-  line-height: 1.34;
-  color: #fff;
-  text-align: right;
+/* The accent rule, in the team's colour, dividing the header from the words. */
+.radio-rule { height: 2px; background: var(--team); margin: 7px 0 7px; }
+
+/* The waveform, behind the words, in the team's colour. Low enough that the
+   text sits cleanly on it and present enough that the card reads as a
+   recording rather than as a caption — which is the one thing it is for. */
+.radio-wave {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 26%;
+  height: 44px;
+  fill: var(--team);
+  opacity: 0.13;
+  pointer-events: none;
 }
-.radio-reply {
-  margin-top: 8px;
-  font-family: var(--font-ui);
+
+/* The words fill the square and the answer row sits under them, so a card
+   with three short turns in it does not leave the buttons floating in the
+   middle of the plate. Above the waveform. */
+.radio-turns {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+  /* The plate is a fixed size and the words are cut to it. A turn that would
+     push the card taller than the band it was measured into is a turn that
+     gets clipped instead — see the note on `.hud-radiocard`'s height. */
+  overflow: hidden;
+}
+.radio-head, .radio-rule, .radio-choice { position: relative; z-index: 1; }
+
+/* The tone, as a hairline along the top edge rather than a bar down the side.
+   The card is one channel now, so the accent cannot be doing attribution —
+   only urgency. `info` gets nothing at all, because most of what a pit wall
+   says is not urgent and a card that is always flagged flags nothing. */
+.hud-radiocard { position: relative; overflow: hidden; }
+.hud-radiocard::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: transparent;
+}
+.hud-radiocard.tone-warn::before { background: var(--sig-yellow); }
+.hud-radiocard.tone-urgent::before { background: var(--sig-red); }
+.hud-radiocard.tone-go::before { background: var(--sig-green); }
+
+.radio-turn {
+  font-family: var(--font-display);
+  font-size: 10.8px;
+  font-weight: 800;
+  font-stretch: 108%;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  text-wrap: pretty;
+  /* Two lines a turn, and then it stops. Four turns of unbounded length is a
+     card of unbounded height, and an unbounded card on this rail is a card
+     `fitRail` throws away — so the shape that carries the whole exchange has
+     to be the shape that guarantees it fits. `radioExchange` is written to
+     this budget; `probe:hudtext` fails any line over 110 characters. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* The typewriter's cursor: a caret in the speaker's own colour on the row
+     currently being written. It is one pseudo-element and it disappears the
+     moment the row is complete, which is what a transmission arriving
+     actually looks like — see `typeExchange`. */
+  position: relative;
+}
+.radio-turn + .radio-turn { margin-top: 5px; }
+.radio-turn.is-driver { color: var(--team); }
+.radio-turn.is-wall { color: #fff; }
+
+/* --- The answer -------------------------------------------------------
+   "the conversation between the team and me should go two ways right not
+    just one?"
+
+   The one place in the HUD where the driver replies. Two buttons that say
+   what will HAPPEN rather than yes and no — a driver reading this in
+   peripheral vision at 300km/h should not have to reconstruct which way
+   round the question was phrased — and a rule under them that drains as
+   the offer runs out.
+
+   The drain is a WIDTH on a solid bar rather than a number counting down,
+   because a countdown reads as a quiz and this is a man asking a question.
+   It is written once a second at most; see `updateQuestion`. */
+.radio-choice { flex: 0 0 auto; margin-top: 9px; }
+.radio-ask {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+.radio-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.radio-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  text-align: center;
+  padding: 7px 4px;
+  border-radius: 3px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 850;
+  font-stretch: 110%;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--card-line);
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+/* The affirmative takes the team's colour, because saying yes to the wall is
+   the team's own decision being carried out. Declining is a neutral outline:
+   it is a legitimate answer, not a warning. */
+.radio-btn.is-yes {
+  background: var(--team);
+  border-color: var(--team);
+  color: #06090f;
+}
+.radio-btn.is-no { background: transparent; color: #fff; }
+.radio-btn:active { transform: translateY(1px); }
+.radio-btn.is-no:hover { border-color: #fff; }
+/* The keyboard has to be able to reach a decision with a deadline on it. */
+.radio-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+.radio-clock {
+  height: 2px;
+  margin-top: 7px;
+  background: var(--team);
+  width: 100%;
+  transition: width 0.9s linear;
+}
+
+/* The voice switch. Small, unlabelled and in the header, because the moment
+   somebody wants the radio to stop talking is the moment it is talking —
+   which is a bad moment to be told to open a settings screen. */
+.radio-mute {
+  pointer-events: auto;
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin-left: 2px;
   font-size: 11px;
-  font-weight: 400;
-  line-height: 1.34;
-  color: var(--ink-2);
-  text-align: left;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
 }
+.radio-mute:hover { opacity: 1; }
+.radio-mute:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 /* --- The two live cards, pinned to the bottom of the stack ------------
    Everything above them is transient. These are not: they carry numbers that
@@ -1161,16 +1788,51 @@ canvas#view {
 }
 .hud-pit-cue.cue-box .cue-tag { color: #9dffc4; }
 
+/* --- The noticeboard, top centre ---------------------------------------
+   TWO VOICES, TWO PLACES. "The FIA doesn't say shit but give notifications,
+   the rest of the stuff happens between the team principal and the driver."
+   Race control is a noticeboard — flags, incidents, verdicts, session state —
+   impersonal, terse, addressed to nobody. The pit wall is a person who knows
+   this driver. The two were already drawn as different systems; they are now
+   in different parts of the frame, which is where a broadcast puts them and is
+   the difference between a split you can see and a split you have to read.
+
+   The top centre is free because the flag left it for the tower's own band.
+   It is the one strip of the picture every camera in this game is pointing at
+   sky in, and a bulletin is the one thing that has to be seen by somebody who
+   is looking at the road. It is bounded away from the running order on the
+   left and the timing panel on the right, so a wide bulletin cannot reach
+   either. */
+.hud-controls {
+  position: absolute;
+  top: calc(8px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 720px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  pointer-events: none;
+}
+
 /* --- The weather bug --------------------------------------------------
    It replaces a line of grey monospace across the top centre that read
    `Dry AIR 18° TRACK 28°`: every fact present, none of them legible at
    speed, and standing in the middle of the frame while it failed. Same three
    facts, in the shape a broadcast uses — a drawn sky, the condition in a
    solid pill, the two temperatures under it. */
+/* It goes with the car for the same reason the tyres do: air and track
+   temperature are read against tyre temperature and against nothing else, and
+   the two were in different columns. That also empties the left column below
+   the running order, which is what lets the rail carry a square radio card and
+   the tower carry the whole field at once. */
 .hud-weather {
   position: absolute;
-  left: calc(10px + var(--safe-l));
-  bottom: calc(116px + var(--safe-b));
+  right: calc(10px + var(--safe-r));
+  left: auto;
+  top: calc(388px + var(--safe-t));
+  bottom: auto;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1520,11 +2182,20 @@ canvas#view {
    instruction now has to live. */
 .hud-damage {
   position: absolute;
-  top: calc(400px + var(--safe-t));
+  /* Down 52px to make room for the weather bug, which came across from the
+     left column with the tyres. The stack in this column runs timing, wheel,
+     gaps, buttons, conditions, then the car's physical state — and it has to
+     finish above the mirror band at 68.5% of frame height. */
+  top: calc(446px + var(--safe-t));
   right: calc(10px + var(--safe-r));
   left: auto;
   bottom: auto;
-  width: 92px;
+  /* 84 rather than 92, and the eight pixels are load-bearing: the diagram is
+     drawn to a 100x170 viewBox, so its height is 1.7x whatever width it is
+     given, and at 92 the panel finished at y=634 on a 900px screen — eighteen
+     pixels into the driver's right mirror pane, which starts at 68.5%. The
+     column has a hard floor and this is the panel that sits on it. */
+  width: 84px;
   padding: 7px 8px 8px;
   display: flex;
   flex-direction: column;
@@ -1580,8 +2251,6 @@ canvas#view {
   .hud { font-size: 11px; }
 
   .hud-tower { width: calc(50% - 14px); max-width: 176px; }
-  .tower-position { font-size: 17px; }
-  .tower-lapcount { font-size: 9px; }
 
   .hud-timing {
     width: calc(50% - 14px);
@@ -1607,18 +2276,35 @@ canvas#view {
     gap: 6px;
   }
   .hud-alert { padding: 7px 10px 8px 8px; gap: 8px; }
+  .hud-control { padding: 7px 10px 8px; }
+  .control-headline { font-size: 11.5px; }
   .alert-portrait { width: 32px; height: 32px; }
   .alert-line { font-size: 11.5px; }
-  .hud-radiocard { padding: 8px 10px 10px; }
-  .radio-title { font-size: 15px; }
-  .radio-said { font-size: 11.5px; }
-  .radio-reply { font-size: 10px; }
+  /* Portrait keeps the square — the rail's band here is the full height
+     between the two top panels and the car state, which is comfortably more
+     than the card needs. Slightly smaller, because everything is. */
+  .hud-radiocard {
+    padding: 7px 10px 9px;
+    width: 232px;
+    height: 214px;
+  }
+  .radio-driver, .radio-title { font-size: 13px; }
+  .radio-turn { font-size: 11px; }
+  .radio-btn { font-size: 11.5px; padding: 6px 4px; }
   .hud-pit-cue, .hud-neutral-cue { font-size: 10px; padding: 6px 10px; gap: 7px; }
   .hud-pit-cue.cue-box { font-size: 12.5px; }
 
   /* Where the conditions strip used to be dropped to, and for the same
      reason: the top centre is fully occupied in portrait. */
   .hud-weather {
+    /* Back to the bottom edge on a phone. The desktop stack has it fifth in
+       the right-hand column; in portrait that column is 176px wide and already
+       full, so the base rule's `top` has to be undone explicitly — an element
+       with both `top` and `bottom` set stretches, and that is what put the
+       weather bug through the notice rail. */
+    top: auto;
+    right: auto;
+    left: calc(10px + var(--safe-l));
     bottom: calc(150px + var(--safe-b));
     padding: 6px 12px 6px 9px;
     gap: 9px;
@@ -1638,6 +2324,8 @@ canvas#view {
   }
 
   .hud-carstate {
+    top: auto;
+    right: auto;
     bottom: calc(10px + var(--safe-b));
     left: calc(10px + var(--safe-l));
     width: calc(50% - 16px);
@@ -1705,6 +2393,11 @@ canvas#view {
 
   .hud-camera, .hud-diag { display: none; }
 
+  /* No top centre on this shape at all — see `Hud.mountControl`, which puts
+     the board back into the rail here. The stack stays in the tree so nothing
+     has to be rebuilt on a rotation; it simply never has a card in it. */
+  .hud-controls { display: none; }
+
   /* Nothing between the two top panels in portrait, so the flag takes the
      strip immediately under them rather than the top edge. */
   .hud-flag {
@@ -1727,10 +2420,7 @@ canvas#view {
 @media (max-height: 470px) {
   .hud { font-size: 11px; }
 
-  .hud-tower { width: 196px; }
-  .tower-head { padding: 0 3px 5px; }
-  .tower-position { font-size: 16px; }
-  .tower-lapcount { font-size: 8.5px; }
+  .hud-tower { width: 214px; }
 
   .hud-timing { width: 180px; padding: 5px 6px 6px; }
   .timing-lap { font-size: 20px; margin-top: 4px; }
@@ -1750,29 +2440,97 @@ canvas#view {
     --rail-w: 262px;
     left: calc(8px + var(--safe-l) - var(--slide));
     top: calc(216px + var(--safe-t));
-    bottom: calc(118px + var(--safe-b));
+    /* Down to the top of the tyre panel, which is the first thing under it
+       once the weather bug has moved out of the column. That takes the band
+       from 48 pixels to 94, which is what a principal's card needs. */
+    bottom: calc(80px + var(--safe-b));
     gap: 5px;
   }
+  /* THE COMPACT CARD. 390 pixels of height leaves the rail a 94-pixel band
+     between the running order and the tyre panel, and the two live cues want
+     half of it — so a pop-up here is a name and two lines and nothing else.
+     The portrait goes first: it is the most expensive 28 pixels on the card
+     and it says who is speaking, which the name already says. Measured at 52,
+     against the 54 `Hud.maxAlerts` divides the band by. */
   .hud-alert { padding: 6px 9px 7px 7px; gap: 8px; }
-  .alert-portrait { width: 28px; height: 28px; }
-  .alert-name { font-size: 9.5px; }
-  .alert-role { font-size: 7.5px; }
-  .alert-line { font-size: 11px; line-height: 1.28; }
-  .alert-chip { margin-top: 4px; font-size: 8px; }
-  .hud-radiocard { padding: 7px 10px 9px; }
-  .radio-mark { width: 22px; height: 22px; }
-  .radio-driver { font-size: 9.5px; }
-  .radio-title { font-size: 14px; }
-  .radio-rule { margin: 6px 0 7px; }
-  .radio-said { font-size: 11px; }
-  .radio-reply { font-size: 9.5px; margin-top: 5px; }
-  .hud-pit-cue, .hud-neutral-cue { font-size: 9.5px; padding: 5px 9px; gap: 7px; }
+  .hud-alert .alert-portrait { display: none; }
+  .hud-alert .alert-role { display: none; }
+  .hud-alert .alert-chip { display: none; }
+  .hud-control { padding: 6px 9px 7px; }
+  .control-headline { font-size: 11px; }
+  .control-detail {
+    font-size: 8.5px;
+    margin-top: 3px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .alert-name { font-size: 9px; }
+  .alert-who { margin-bottom: 2px; }
+  .alert-line {
+    font-size: 10.5px;
+    line-height: 1.22;
+    /* Two lines, then it stops. A third line is 13 pixels the band does not
+       have, and the first two carry the instruction in every one of them. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  /* THE SQUARE IS OFF HERE, and this is the honest limit of the shape.
+
+     390 pixels of height leaves the rail a 94-pixel band between the running
+     order and the tyre panel. A 238-pixel square in it is not a square, it is
+     a card with two thirds of itself outside the band — and `shoot:panels`
+     measures exactly that and fails the sweep on it. So on a landscape phone
+     the card goes back to the broadcast letterbox it was: the header, the
+     rule, and the two turns that carry the push-back and the answer.
+
+     Rows three and four are hidden rather than not built, so the same
+     `typeExchange` runs on every viewport and nothing in the script has to
+     know what shape it is being read on. */
+  .hud-radiocard {
+    padding: 6px 9px 8px;
+    width: 100%;
+    /* The letterbox again on a landscape phone, and its height is its content:
+       two turns and a header is short enough that it cannot outgrow the band
+       the way the square could. */
+    height: auto;
+    align-self: stretch;
+  }
+  .radio-mark { width: 18px; height: 18px; }
+  .radio-driver, .radio-title { font-size: 12px; }
+  .radio-rule { margin: 5px 0; }
+  .radio-turn { font-size: 10px; }
+  .radio-turn:nth-child(n+3) { display: none !important; }
+  /* The answer survives the compression, because a question the driver
+     cannot answer on a phone is worse than no question. The prompt line goes
+     — the buttons say what they do. */
+  .radio-ask { display: none; }
+  .radio-choice { margin-top: 5px; }
+  .radio-btn { padding: 5px 4px; font-size: 10.5px; }
+  .radio-clock { margin-top: 4px; }
+  /* One line each, as tight as they read. Every pixel taken here is a pixel
+     the pop-up above them does not get — see `Hud.maxAlerts`, which divides
+     what is left rather than guessing from the viewport. */
+  .hud-pit-cue, .hud-neutral-cue { font-size: 9.5px; padding: 3px 9px; gap: 7px; }
   .cue-tag { font-size: 7.5px; }
   .hud-pit-cue.cue-box { font-size: 12px; }
 
+  /* Out from under the notice rail.
+     390 pixels of height is the tightest case in the game and the bottom-left
+     corner had three things stacked in it: the rail, the weather bug and the
+     tyre panel. The bug in the middle of that stack was costing the rail 46
+     pixels of band — enough that a single principal's card did not fit and
+     overflowed straight up through the running order. Moved to the right of
+     the tyre panel it costs the rail nothing, and it is still in the bottom
+     band where a broadcast puts it. */
   .hud-weather {
-    left: calc(8px + var(--safe-l));
-    bottom: calc(80px + var(--safe-b));
+    top: auto;
+    right: auto;
+    left: calc(276px + var(--safe-l));
+    bottom: calc(74px + var(--safe-b));
     padding: 5px 11px 5px 8px;
     gap: 8px;
   }
@@ -1807,14 +2565,28 @@ canvas#view {
   .hud-ersrow .hud-ersbar { height: 6px; }
   .hud-erslabel { font-size: 8px; }
 
-  .hud-carstate { bottom: calc(6px + var(--safe-b)); min-width: 0; width: 138px; padding: 5px 7px; }
+  .hud-carstate {
+    top: auto;
+    right: auto;
+    left: calc(10px + var(--safe-l));
+    bottom: calc(6px + var(--safe-b));
+    min-width: 0;
+    width: 138px;
+    padding: 5px 7px;
+  }
   .hud-tyrelabel { width: 26px; font-size: 8px; }
   .hud-tyretemp { width: 30px; font-size: 9px; }
   .hud-fuelrow { font-size: 9px; }
 
+  /* Clear of the weather bug and of the notice rail above it, both of which
+     reach x=270 on this screen. It used to sit at x=152 and overlap both — a
+     fault the eye forgives at 58px wide and the measurement in
+     `shoot:panels` does not. Its neighbours here are the camera buttons at
+     x=216, so it goes to the right of them, on the one strip of floor in the
+     bottom band that nothing else wants. */
   .hud-damage {
     top: auto; right: auto;
-    left: calc(152px + var(--safe-l)); bottom: calc(6px + var(--safe-b));
+    left: calc(440px + var(--safe-l)); bottom: calc(6px + var(--safe-b));
     width: 58px; padding: 4px 5px 5px;
   }
   .hud-damagetitle { font-size: 7.5px; }
@@ -1849,7 +2621,12 @@ canvas#view {
   .hud-camera, .hud-diag { display: none; }
 
   /* The strip between the two top panels is all the width there is: 844px
-     less a 196px tower and a 180px timing panel. */
+     less a 214px tower and a 180px timing panel. The noticeboard has the same
+     strip and the same reason. */
+  .hud-controls { width: min(300px, calc(100vw - 560px)); top: calc(6px + var(--safe-t)); }
+
+  /* The strip between the two top panels is all the width there is: 844px
+     less a 214px tower and a 180px timing panel. */
   .hud-flag {
     font-size: 15px;
     padding: 5px 14px;
@@ -1896,27 +2673,40 @@ canvas#view {
    colour and its surname — standing until the end. */
 @media (max-width: 900px), (max-height: 470px) {
   .hud-tower {
-    --tower-cols: 3px 15px 15px minmax(0, 1fr) 42px 11px;
+    --tower-cols: 3px 17px 15px minmax(0, 1fr) 44px 10px 26px;
+    width: 232px;
     padding: 6px 6px 5px;
   }
   .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 5px; }
   .tower-cols { gap: 0 5px; padding: 0 3px 4px; margin-bottom: 3px; }
-  /* The column rule goes too. Five columns, two of them a colour bar and a
-     badge, do not need labelling — and fifteen pixels of header is most of a
-     row on a screen 390 pixels tall. */
-  .c-best, .c-lap, .tower-best, .tower-lastlap,
-  .tower-first, .tower-sub, .tower-session, .tower-cols { display: none; }
+  /* The column rule goes, and so does the circuit name. Six columns, three of
+     them a colour bar, a badge and a single letter, do not need labelling —
+     and fifteen pixels of header is most of a row on a screen 390 pixels
+     tall. The circuit is on the timing panel and in the driver's windscreen. */
+  .tower-session, .tower-cols { display: none; }
+  .tower-head { padding: 0 3px 5px; gap: 5px; }
+  .tower-series { font-size: 10px; }
+  .tower-lapnow { font-size: 16px; }
+  .tower-lapword { font-size: 7px; letter-spacing: 0.12em; }
+  .tower-laptotal, .tower-lapbar { font-size: 9.5px; }
+  .tower-lapblock.is-clock .tower-lapnow { font-size: 12.5px; }
+  .tower-flagband { margin-bottom: 5px; padding: 3px 6px 4px; }
+  .flagband-label { font-size: 10.5px; letter-spacing: 0.07em; }
+  .flagband-cause { font-size: 6.5px; letter-spacing: 0.1em; }
+  .fb-chequered { padding-top: 6px; }
+  .fb-chequered::before { height: 4px; background-size: 8px 8px; }
   .tower-bar { height: 12px; }
-  .tower-pos { font-size: 10px; }
+  .tower-pos { font-size: 9.5px; padding: 1px 0; }
   .tower-mark { width: 15px; height: 15px; }
-  /* With the first name gone there is nothing for the surname to compete
-     with, so here it may shrink — and an ellipsis is a better cut than the
-     hard clip the line would otherwise take mid-letter. */
-  .tower-surname { font-size: 10.5px; flex: 0 1 auto; min-width: 0; }
+  .tower-code { font-size: 10.5px; letter-spacing: 0.04em; }
   .tower-gap { font-size: 9.5px; }
-  .tower-row.is-leader .tower-gap { font-size: 7.5px; }
+  .tower-row.is-leader .tower-gap { font-size: 6.5px; letter-spacing: 0.06em; }
   .tower-tyre { font-size: 8px; }
-  .tower-fastest { padding: 2px 7px; gap: 5px; margin-bottom: 5px; }
+  .tbadge { width: 11px; height: 11px; border-radius: 2px; }
+  .tbadge svg { width: 7.5px; height: 7.5px; }
+  .tower-badges { gap: 2px; }
+  .tower-badges.has-pen .tb-pen { font-size: 8.5px; }
+  .tower-fastest { padding: 4px 3px 0; gap: 5px; margin-top: 4px; }
   .fastest-label { font-size: 7px; }
   .fastest-first { display: none; }
   .fastest-who { font-size: 8.5px; flex: 0 1 auto; min-width: 0; }
@@ -1930,11 +2720,177 @@ canvas#view {
    graphic with three times this width to spend. */
 @media (min-width: 1500px) {
   .hud-tower {
-    --tower-cols: 3px 20px 20px minmax(0, 1fr) 48px 50px 50px 12px;
-    width: 392px;
+    --tower-cols: 3px 24px 22px minmax(0, 1fr) 58px 14px 36px;
+    width: 340px;
   }
-  .hud-notices { --rail-w: 392px; }
-  .tower-lastlap, .c-lap { display: block; }
+  .hud-notices { --rail-w: 340px; }
+  .tower-code { font-size: 13.5px; }
+  .tower-row { height: 28px; }
+}
+
+/* ==========================================================================
+   HUD — the mirror band
+
+   LAST IN THE FILE ON PURPOSE. These rules have to beat the three media
+   queries above them, and they are the same specificity as the rules inside
+   them, so source order is what decides it. They are also the only place in
+   the HUD that changes with the CAMERA rather than with the viewport.
+
+   WHAT THIS IS FOR. Three of the eight cameras have the car's own mirrors in
+   shot. The mirrors had been mounted 78.6 degrees out of roll since the day
+   they were written; on the frame they were finally made to work, the weather
+   bug was drawn across the left pane in the driver's eye and the tyre panel
+   across it in the cockpit — so on a landscape phone the player could not see
+   one of their own mirrors in either roll-hoop view, and the fix that had just
+   landed was invisible. A mirror is the only way to see a car that is about to
+   be alongside. It is part of the frame the HUD keeps clear, in exactly the
+   sense the racing surface is.
+
+   THE RULE, in one line: below `--mirror-top` the HUD may use the corridor
+   between the two panes and nothing else, so everything anchored to the bottom
+   edge lifts by `--floor` and the few panels that cannot be lifted go sideways
+   into the corridor or stand down. The numbers come from `MIRROR_PANES` in
+   `Hud.ts`, which `probe:framing` re-measures off the mesh geometry every run;
+   `shoot:panels` measures the real DOM against them in every viewport and
+   every onboard camera and fails on any intersection.
+
+   WHAT PAYS FOR IT. The running order — see `towerFit`, which takes the floor
+   as a parameter and drops to four rows under it — and the circuit map, which
+   stands down. The map is a plan view of the track the driver is looking
+   through the windscreen at, and it was the panel sitting on the right pane in
+   all three onboard cameras. It comes back the moment the camera does.
+   ========================================================================== */
+
+.hud[data-mirrors] .hud-map { display: none; }
+
+/* The left column, lifted whole. The rail's top comes up with it, because a
+   band whose foot has risen 274 pixels and whose head has not is a band with
+   nothing in it.
+
+   The tyre panel, the weather bug and the damage diagram are NOT lifted any
+   more: they are anchored to the top of the right-hand column now rather than
+   hung off the bottom edge, and a top-anchored stack that already finishes
+   above 68.5% of frame height has nothing to lift clear of. Lifting them by
+   the band's height was what put the weather bug through the damage diagram
+   under the T-cam. */
+.hud[data-mirrors] .hud-notices {
+  bottom: calc(86px + var(--safe-b) + var(--floor));
+}
+/* The camera name and the frame counter sit under the right-hand column and
+   are the only two things in the bottom-right corner that survive. */
+.hud[data-mirrors] .hud-camera { bottom: calc(10px + var(--safe-b) + var(--floor)); }
+.hud[data-mirrors] .hud-diag { bottom: calc(28px + var(--safe-b) + var(--floor)); }
+
+/* --- Portrait -------------------------------------------------------- */
+@media (max-width: 620px) and (orientation: portrait) {
+  .hud[data-mirrors] .hud-carstate {
+    top: auto;
+    bottom: calc(10px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-damage { top: auto; bottom: calc(10px + var(--safe-b) + var(--floor)); }
+  .hud[data-mirrors] .hud-weather {
+    top: auto;
+    bottom: calc(150px + var(--safe-b) + var(--floor));
+  }
+  /* Never above the gap readout, which holds the strip under the wheel panel
+     in portrait — so here the measured tower bottom is a floor rather than the
+     answer. The exception is a stop being chosen: the tower has already given
+     up its rows for that, and the gap to the car ahead is not the number being
+     read while a tyre is being picked. */
+  .hud[data-mirrors] .hud-notices {
+    top: max(var(--rail-top, 300px), calc(300px + var(--safe-t)));
+    bottom: calc(196px + var(--safe-b) + var(--floor));
+  }
+  .hud.pit-open[data-mirrors] .hud-notices { top: var(--rail-top, 300px); }
+  .hud.pit-open[data-mirrors] .hud-gaps { display: none; }
+  /* Already clear: the buttons sit 300px up in portrait, which is above the
+     band in all three cameras. Lifting them again would put them through the
+     wheel panel. */
+  .hud[data-mirrors] .hud-buttons { bottom: calc(300px + var(--safe-b)); }
+}
+
+/* --- Landscape phones -------------------------------------------------
+   The tightest case in the game and the only one where the band does not
+   simply lift: 390 pixels of height less a 119-pixel band leaves 271, and the
+   left column alone wants more than that. So the rail keeps the left edge and
+   takes the whole of what is left of it, and the four panels that used to
+   share the bottom strip with it move right — into the corridor between the
+   two panes, which is 434 pixels wide in the driver's eye and 261 in the
+   cockpit. The weather bug is the one that does not fit and stands down; it is
+   the only panel here whose fact is also legible out of the windscreen. */
+@media (max-height: 470px) {
+  .hud[data-mirrors] .hud-weather { display: none; }
+  /* The last 27 pixels, and they come from the flag band. On a landscape phone
+     under a mirror camera with a stop being chosen, the rail runs from the foot
+     of the running order to the top of the glass and the sheet does not fit in
+     it by ten pixels. The band is the thing to give up here and only here: the
+     neutralisation cue pinned at the foot of that same rail already says
+     SAFETY CAR in words, with the limiter speed and the gap to the queue,
+     which is strictly more than the band says.
+     `!important` because `Hud.updateFlag` writes the band's `display` inline,
+     and an inline style beats any selector a stylesheet can offer. The
+     alternative is a second class toggled from TypeScript, which puts half of
+     one layout decision in each file. */
+  .hud.pit-open[data-mirrors] .tower-flagband { display: none !important; }
+  /* And the header with it, which leaves the panel as a sliver. That is the
+     honest end of this trade: on a 390-pixel screen, in a camera whose bottom
+     third belongs to the mirrors, with a decision on the rail that has a
+     deadline measured in corners, there is no running order. The pit cue at
+     the foot of the rail carries the lap. */
+  .hud.pit-open[data-mirrors] .tower-head { display: none; }
+  .hud.pit-open[data-mirrors] .hud-tower { padding: 3px 6px; }
+
+  /* AND THE RAIL GOES INTO THE CORRIDOR. Even with the running order down to a
+     sliver, a pit sheet does not fit in the 181 pixels left between the tower
+     and the top of the glass — it is 191 tall. Lifting it clear of the mirrors
+     is not negotiable and shrinking the sheet is not this file's to do, so the
+     rail moves sideways instead: into the 388-pixel gap between the two panes
+     in the driver's eye, 227 in the cockpit, where it has the whole height of
+     the frame again. The cockpit is what sizes it — 227 pixels less the 44 the
+     cards slide in from is 183, and the sheet is laid out in 176.
+
+     Everything that was sharing the bottom strip with it stands down for the
+     two seconds this lasts. The tyre panel goes because the sheet IS the tyre
+     choice; the gap readout and the car diagram go because neither is the
+     question being answered. The camera buttons move right of the rail and
+     stay, because a player who cannot reach them is stuck. */
+  .hud.pit-open[data-mirrors] .hud-notices {
+    --rail-w: 176px;
+    left: calc(var(--mirror-l) + var(--safe-l));
+    width: calc(var(--rail-w) + var(--slide));
+    bottom: calc(6px + var(--safe-b));
+  }
+  .hud.pit-open[data-mirrors] .hud-carstate,
+  .hud.pit-open[data-mirrors] .hud-gaps,
+  .hud.pit-open[data-mirrors] .hud-damage { display: none; }
+  .hud.pit-open[data-mirrors] .hud-buttons {
+    left: max(520px, calc(var(--mirror-l) + 260px));
+  }
+  .hud[data-mirrors] .hud-notices {
+    top: var(--rail-top, calc(150px + var(--safe-t)));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-carstate {
+    top: auto;
+    right: auto;
+    left: max(280px, calc(var(--mirror-l) + 6px));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
+  /* Each of the four is placed against the corridor's left edge plus the width
+     of everything already standing on it, so they stay in the same order and
+     the same relationship to each other in all three cameras. */
+  .hud[data-mirrors] .hud-gaps {
+    left: max(448px, calc(var(--mirror-l) + 154px));
+    bottom: calc(48px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-buttons {
+    left: max(448px, calc(var(--mirror-l) + 154px));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-damage {
+    left: max(600px, calc(var(--mirror-l) + 306px));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
+  }
 }
 
 /* ===================================================================== */
@@ -3954,94 +4910,258 @@ table.standings tr.me td.who { font-weight: 700; }
 /* ======================================================================
    Pit stop sheet
    ----------------------------------------------------------------------
-   Lives inside the HUD, on the left, above the tyre and fuel panel. The
-   race keeps running behind it: see PitStopPrompt for why it must.
+   A CHILD OF THE NOTICE RAIL, not a panel floating over it. It used to be
+   `position: absolute; left: 10px; bottom: 150px`, which is a coordinate
+   and not a relationship — and it landed square on the top-left corner of
+   the radio card, over the portrait and half the principal's name. Two
+   boxes pinned to the same edge by hand will eventually collide. Two flex
+   children of one column cannot, on any viewport, ever.
+
+   It is the only panel in this game the driver OPERATES rather than reads,
+   and it is styled to say so: pit-wall chrome — square-ish corners, hairline
+   rules, an amber edge — inside a rail that is otherwise broadcast graphics.
+   The race keeps running behind it; see PitStopPrompt for why it must.
    ====================================================================== */
 .pitprompt {
-  position: absolute;
-  left: calc(10px + var(--safe-l));
-  bottom: calc(150px + var(--safe-b));
-  width: 250px;
-  background: var(--hud-bg);
-  border: 1px solid rgba(255, 176, 46, 0.5);
-  border-radius: 10px;
-  padding: 9px 10px 10px;
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
-  z-index: 20;
+  background: var(--card-bg);
+  border: 1px solid rgba(255, 210, 31, 0.42);
+  /* The amber edge is the identity: this is the pit lane talking, and amber
+     is this game's caution signal everywhere else too. */
+  border-left: 3px solid var(--sig-yellow);
+  border-radius: var(--card-r);
+  padding: 8px 11px 9px;
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--plate-lift-hi);
+  /* Its own children opt into the pointer; the card does not, so the sky
+     around a chip is still the driving surface. */
+  pointer-events: none;
 }
 .pitprompt.hidden { display: none; }
+
+/* The confirm acknowledgement. Two hundred milliseconds of the amber edge
+   going bright, and nothing else — a driver at 300km/h needs to know the
+   instruction landed, and does not need a dialog to close. */
+.pitprompt.confirmed { animation: pit-confirmed 0.5s ease-out; }
+@keyframes pit-confirmed {
+  0% { border-left-color: var(--sig-white); box-shadow: var(--plate-lift-hi), 0 0 0 2px rgba(255, 210, 31, 0.55); }
+  100% { border-left-color: var(--sig-yellow); box-shadow: var(--plate-lift-hi), 0 0 0 0 rgba(255, 210, 31, 0); }
+}
+
+.pitprompt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .pitprompt-title {
+  font-family: var(--font-display);
   font-size: 10px;
   font-weight: 800;
+  font-stretch: 116%;
   letter-spacing: 0.18em;
-  color: var(--warn);
+  color: var(--sig-yellow);
 }
+.pitprompt-wave {
+  font-family: var(--font-display);
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+  border: 1px solid var(--card-line);
+  border-radius: 5px;
+  padding: 3px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pitprompt-wave:hover { color: var(--ink-2); border-color: rgba(255, 255, 255, 0.2); }
+
 .pitprompt-note {
-  font-size: 9.5px;
-  color: var(--hud-dim);
+  font-size: 10.5px;
+  color: var(--ink-2);
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.32;
   margin: 4px 0 7px;
 }
-.pitprompt-tyres { display: flex; gap: 4px; }
+
+/* --- The tyres -------------------------------------------------------
+   One tile is filled and the rest are outlines, and the filled one is
+   ALWAYS what the engine says is going on the car — see `pitSheet`. There
+   is no second highlight for "what you clicked", because the two used to
+   be able to differ and that is precisely the bug. */
+.pitprompt-tyres { display: flex; gap: 5px; }
 .pitchip {
   flex: 1;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--hud-border);
-  border-radius: 7px;
+  position: relative;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
   padding: 6px 2px 5px;
   cursor: pointer;
   font-family: inherit;
-  color: var(--hud-text);
+  color: var(--ink);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
   /* Big enough to hit with a thumb at 300 km/h. */
   min-height: 46px;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.pitchip.selected { border-color: var(--chip); background: color-mix(in srgb, var(--chip) 22%, transparent); }
+/* The crew's own recommendation, when it is not what is going on. A hairline,
+   not a fill: it is a second opinion, not a second selection. */
+.pitchip.is-crew { border-style: dashed; border-color: rgba(255, 255, 255, 0.28); }
+.pitchip.selected {
+  border-style: solid;
+  border-color: var(--chip);
+  background: color-mix(in srgb, var(--chip) 26%, transparent);
+  box-shadow: 0 0 0 1px var(--chip) inset;
+}
 .pitchip-code {
-  font-size: 13px;
+  font-family: var(--font-display);
+  font-size: 14px;
   font-weight: 800;
   color: var(--chip);
   line-height: 1;
 }
-.pitchip-name { font-size: 7.5px; font-weight: 700; letter-spacing: 0.05em; color: var(--hud-dim); }
-.pitchip-used { font-size: 7px; font-weight: 700; color: var(--warn); letter-spacing: 0.06em; }
+.pitchip-name {
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+}
+/* Only drawn on a compound already run. The element is always built so the
+   row never reflows when the rule state changes mid-race. */
+.pitchip-used { display: none; font-size: 7px; font-weight: 800; color: var(--sig-yellow); letter-spacing: 0.06em; }
+.pitchip.is-used .pitchip-used { display: block; }
 
-.pitprompt-nose { display: flex; gap: 4px; align-items: center; margin-top: 7px; flex-wrap: wrap; }
+/* --- The front wing --------------------------------------------------- */
 .pitprompt-noselabel {
-  width: 100%;
+  margin-top: 8px;
+  font-family: var(--font-display);
   font-size: 8px;
   font-weight: 800;
   letter-spacing: 0.14em;
-  color: var(--hud-dim);
+  color: var(--ink-3);
 }
+.pitprompt-nose { display: flex; gap: 5px; margin-top: 4px; }
 .pitnose {
   flex: 1;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--hud-border);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--card-line);
   border-radius: 6px;
-  color: var(--hud-text);
-  font-family: inherit;
+  color: var(--ink-2);
+  font-family: var(--font-display);
   font-size: 8.5px;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   padding: 7px 2px;
   cursor: pointer;
   white-space: nowrap;
+  min-height: 28px;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
-.pitnose.selected { border-color: var(--accent); background: rgba(53, 208, 224, 0.18); }
+.pitnose.selected {
+  border-color: var(--sig-yellow);
+  background: rgba(255, 210, 31, 0.16);
+  color: var(--ink);
+}
+
+/* The only thing on the panel that can lose the race. Set exactly when
+   reaching the flag on the current instruction is a disqualification, and
+   blank otherwise — a warning that is always there is wallpaper. */
+.pitprompt-warn {
+  margin-top: 7px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(255, 45, 60, 0.14);
+  border-left: 2px solid var(--sig-red);
+  font-size: 9.5px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
 .pitprompt-status {
   margin-top: 8px;
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--sig-yellow);
+  text-transform: uppercase;
+}
+
+/* --- The bindings ----------------------------------------------------
+   Printed on the panel because a control nobody can find is not a control,
+   and rebuilt only when the last-used device changes — the keycaps say `T`
+   to a keyboard and `Button 15` to whatever the pad's tyre button is
+   actually bound to now. */
+.pitprompt-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--card-line);
+}
+.pitprompt-hints { display: flex; gap: 9px; flex-wrap: wrap; min-width: 0; }
+.pithint { display: flex; align-items: center; gap: 4px; }
+.pithint-key {
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--card-line);
+  border-radius: 4px;
+  padding: 2px 4px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.pithint-what { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-3); text-transform: uppercase; }
+.pitprompt-confirm {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
   font-size: 9px;
   font-weight: 800;
-  letter-spacing: 0.08em;
-  color: var(--warn);
+  letter-spacing: 0.12em;
+  color: #0b0f14;
+  background: var(--sig-yellow);
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* --- The rail, while the sheet is up ---------------------------------
+   `has-pit` is set by `Hud.setPitSheetOpen`. On a short screen the band the
+   rail owns is about sixty pixels tall and the sheet needs all of them, so
+   the live cues stand down: the sheet's own status line already says where
+   the box is, which is the only thing the pit cue was carrying. */
+.hud-notices.has-pit .hud-pit-cue { display: none !important; }
+@media (max-height: 470px) {
+  .hud-notices.has-pit .hud-neutral-cue { display: none !important; }
+  /* THE TOWER GIVES WAY — see `Hud.updateTower`, which drops the ROWS while a
+     stop is being chosen. Only the column header is hidden here, because that
+     one has no inline style fighting it. */
+  .hud.pit-open .tower-cols { display: none; }
+  .hud-notices.has-pit { top: calc(96px + var(--safe-t)); }
+  /* The recommendation line is the first thing to go: the selected tile and
+     the status line under it both already say what is being fitted. */
+  .hud-notices.has-pit .pitprompt-note { display: none; }
+  .pitprompt { padding: 6px 9px 7px; border-radius: 10px; }
+  .pitprompt-note { font-size: 9.5px; margin: 3px 0 5px; }
+  .pitchip { min-height: 36px; padding: 4px 2px 4px; }
+  .pitchip-code { font-size: 12px; }
+  .pitchip-name { font-size: 6.5px; }
+  /* The wing controls keep their labels but lose a row of padding: they are
+     still the second half of the decision and cannot be dropped. */
+  .pitprompt-noselabel { margin-top: 5px; }
+  .pitprompt-nose { margin-top: 3px; }
+  .pitnose { min-height: 22px; padding: 4px 2px; font-size: 8px; }
+  .pitprompt-status { margin-top: 5px; font-size: 9px; }
+  .pitprompt-foot { margin-top: 5px; padding-top: 4px; }
+  .pitprompt-warn { margin-top: 5px; font-size: 9px; padding: 4px 6px; }
 }
 
 /* ======================================================================
@@ -4092,20 +5212,65 @@ table.standings tr.me td.who { font-weight: 700; }
 .sim-label { font-size: 34px; font-weight: 800; margin-top: 12px; letter-spacing: -0.02em; }
 .sim-detail { font-size: 11px; color: var(--hud-dim); font-weight: 600; letter-spacing: 0.04em; margin-top: 3px; }
 
-@media (max-width: 820px) {
-  .pitprompt { width: 200px; bottom: calc(120px + var(--safe-b)); }
+/* The sheet no longer carries a width or an offset of its own — it is as wide
+   as the rail, wherever the rail is. What is left to say at this breakpoint is
+   only how big a thumb target has to be. */
+@media (max-width: 820px) and (min-height: 471px) {
   .pitchip { min-height: 42px; }
 }
 
-/* === Retirement ========================================================
-   Shown over the track when the player's own race ends in an accident.
+/* === Retirement: the corner bar ========================================
+   THE RACE CASE, and it is two buttons.
 
-   It is a full-bleed overlay rather than a card in the corner because a
-   retirement is not a notification — it is the end of the session, and the
-   player needs to be told so plainly that there is no ambiguity about what
-   just happened. The previous behaviour said nothing at all: the car stopped
-   being drawn and the player was left looking at an empty circuit trying to
-   work out whether the game had crashed.
+     "why do we still have this thing, I thought we talked about, remove the
+      retired. its just a radio message about you having to retire and then
+      top right continue or watch the race, and once the user presses
+      continue the stats show up."
+
+   Asked three times. What it replaces is the full-bleed panel below — cause,
+   worst component, corner, lap, classification and a bar chart of twelve
+   damaged parts, filed at the player two seconds after an accident they were
+   in, over the top of the car they most wanted to be looking at. Every number
+   on it is correct and none of it was asked for.
+
+   So: the principal says it on the radio, these two sit in the top-right
+   corner, and the numbers wait. Top right specifically, and the HUD's timing
+   panel stands down to make room (`.hud.is-retired`) — lap time, delta and
+   sector times for a car in a barrier are three readouts of nothing.
+
+   Above the HUD's z-index and pointer-events:auto, because the HUD is
+   transparent to the pointer by construction and these are the only two
+   things on screen the player can now do.
+   ==================================================================== */
+.retirebar {
+  position: absolute;
+  top: calc(12px + var(--safe-t));
+  right: calc(12px + var(--safe-r));
+  z-index: 46;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.16, 0.9, 0.3, 1);
+}
+.retirebar.shown { opacity: 1; transform: translateY(0); }
+.retirebar .btn { min-height: 34px; padding: 0 14px; font-size: 11px; }
+
+/* The timing panel goes while the player is out. It occupies the corner the
+   decision is now in, and everything on it reads zero. */
+.hud.is-retired .hud-timing { display: none; }
+
+@media (max-height: 470px) {
+  .retirebar { top: calc(8px + var(--safe-t)); right: calc(8px + var(--safe-r)); gap: 6px; }
+  .retirebar .btn { min-height: 28px; padding: 0 10px; font-size: 10px; }
+}
+
+/* === Retirement: the standing-session panel ============================
+   Practice and qualifying only, now. A driver whose car is in the barrier in
+   Q1 has NOT had their session's result decided — Art. B2.4.3a classifies
+   them on the lap they set — and that is a genuinely complicated thing to be
+   told, so it is still told at length.
 
    It fades in over the live scene rather than replacing it, so the wreck and
    the debris stay visible behind the words explaining them. That is the whole
@@ -4170,6 +5335,12 @@ table.standings tr.me td.who { font-weight: 700; }
   text-transform: uppercase;
   color: var(--race-red-hi);
 }
+/* A practice or qualifying session that ends in the barrier is not a
+   retirement — there is no such thing to retire from, the lap already counts
+   and the driver is still in the weekend. Red is the colour this game uses for
+   something being lost, so the headline that says nothing WAS lost cannot wear
+   it. Amber: the car is damaged, and that is the whole of the bad news. */
+.retire-title.is-standing { color: var(--amber); }
 
 .retire-lede {
   margin-top: 12px;
@@ -4218,6 +5389,16 @@ table.standings tr.me td.who { font-weight: 700; }
 }
 .retire-fact-value.is-bad { color: var(--race-red-hi); }
 .retire-fact-value.is-warn { color: var(--amber); }
+/* Green for a place kept, purple for the quickest lap of the session — the same
+   two signals the timing tower and the results tiles already use, so a driver
+   reading this card reads it with the vocabulary the rest of the game taught
+   them. The purple one is the point: it is the lap the old card deleted. */
+.retire-fact-value.is-good { color: var(--mint); }
+.retire-fact-value.is-hero {
+  color: var(--purple);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Every component that took damage, worst first. Bars rather than numbers:
    the shape of the damage is the readable thing, not the percentages. */
@@ -5016,6 +6197,51 @@ table.standings tr.me td.who { font-weight: 700; }
   text-transform: uppercase;
   color: var(--ink);
 }
+/* The team-mate's column is INFORMATION, and the whole column says so before
+   a word of it is read: it is quieter, its tag is hollow rather than filled,
+   and its one card does not lift under the cursor because it is not a target.
+   The player is not running two cars — they are being told what the other one
+   is doing, which is worth a column because it decides whether that car is in
+   the way on lap thirty. */
+.strat-col.is-mate { opacity: 0.9; }
+.strat-mate-tag {
+  padding: 2px 9px;
+  border-radius: var(--pill-r);
+  border: 1px solid var(--line-2);
+  font-family: var(--font-data);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+/* The strategist, stating it. Quoted because somebody said it. */
+.strat-said {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--ink);
+  margin-bottom: 12px;
+  text-wrap: pretty;
+}
+.strat-card.is-stated { cursor: default; }
+.strat-card.is-stated:hover { transform: none; border-color: var(--sig-white); }
+
+/* The line that closes the loop the briefing page used to open: the grid tyre,
+   named, with the fact that this is the only place it is chosen. */
+.strat-grid-tyre {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ink-2);
+  border-left: 2px solid var(--sig-white);
+  padding: 2px 0 2px 10px;
+  margin: 0 0 14px;
+}
+
 .strat-label {
   font-family: var(--font-data);
   font-size: 9px;
