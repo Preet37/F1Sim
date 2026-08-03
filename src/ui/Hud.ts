@@ -1,5 +1,6 @@
 import { clamp01, formatDelta, formatGap, formatLapTime, MS_TO_KPH } from '../core/MathUtils';
 import { getCompound } from '../data/tires';
+import { liveGapCell } from '../race/Classification';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
@@ -183,6 +184,10 @@ export class Hud {
   private weatherPill!: HTMLElement;
   private weatherTemps!: HTMLElement;
 
+  /** The noticeboard, top centre. Race control and nothing else. */
+  private controlStack!: HTMLElement;
+  /** Bulletins on the noticeboard, oldest first. */
+  private controlCards: HTMLElement[] = [];
   /** Cards on screen, oldest first. */
   private alertCards: HTMLElement[] = [];
   /** The pit advice the pop-up last spoke, so it speaks once per change. */
@@ -506,6 +511,24 @@ export class Hud {
     // the `flag` token now. This element is the countdown and nothing else.
     this.flagBanner.dataset.probe = 'start';
     this.flagBanner.style.display = 'none';
+
+    // --- The noticeboard, top centre --------------------------------------
+    //
+    // TWO VOICES, TWO PLACES. "The FIA doesn't say shit but give notifications,
+    // the rest of the stuff happens between the team principal and the driver."
+    // Race control is a noticeboard — flags, incidents, verdicts, session state
+    // — impersonal, terse, addressed to nobody. The pit wall is a person who
+    // knows this driver. They were already drawn as two different systems; they
+    // are now in two different parts of the frame, which is where a broadcast
+    // puts them and is the difference between a split you can see and a split
+    // you have to read.
+    //
+    // The top centre is free because the flag left it: see `updateFlag`. It is
+    // the one band of the picture every camera in this game is pointing at sky
+    // in, and a bulletin is the one thing that has to be seen by somebody who
+    // is looking at the road.
+    this.controlStack = this.el('hud-controls', this.root);
+    this.controlStack.dataset.probe = 'controls';
 
     // --- The left rail -----------------------------------------------------
     this.buildNotices();
@@ -965,6 +988,7 @@ export class Hud {
       this.radioPitShown = false;
       this.hideRadioCard(true);
       for (const c of this.alertCards.slice()) this.dismissAlert(c, true);
+      for (const c of this.controlCards.slice()) this.dismissControl(c, true);
       // The field's driver codes, so `relayed` knows which three-letter words
       // are people. Built once per session; the field does not change inside
       // one, and guessing instead turns "the" into a driver.
@@ -1691,7 +1715,7 @@ export class Hud {
       const mark = this.el('control-teammark', who);
       mark.appendChild(teamMarkSvg(about.team));
       this.el('control-bang', card, '!');
-      this.mountCard(card);
+      this.mountControl(card);
       return;
     }
 
@@ -1701,7 +1725,44 @@ export class Hud {
     this.el('control-mark', head, 'RACE CONTROL');
     this.el('control-headline', card, c.headline);
     if (c.detail) this.el('control-detail', card, c.detail);
-    this.mountCard(card);
+    this.mountControl(card);
+  }
+
+  /**
+   * Puts a bulletin on the noticeboard.
+   *
+   * Its own stack, its own budget and its own dwell. Two at a time, because the
+   * board is over the road and a third card is a third of the picture — and
+   * because two is what race control ever has running at once in practice: an
+   * incident and the decision that follows it.
+   */
+  private mountControl(card: HTMLElement): void {
+    // IN PORTRAIT THERE IS NO TOP CENTRE. The running order and the timing
+    // panel take a 390-pixel frame between them, the wheel dash and the gap
+    // readout take the strip under them, and what is left at the top of the
+    // picture is a 38-pixel gutter. So on that one shape the board goes back
+    // into the rail where it was, and the two voices stay apart by look — no
+    // face, a hard official label, capitals — rather than by place.
+    if (window.innerWidth <= 620 && window.innerHeight > window.innerWidth) {
+      this.mountCard(card);
+      return;
+    }
+    this.controlStack.appendChild(card);
+    this.controlCards.push(card);
+    enterNextFrame(card);
+    window.setTimeout(() => this.dismissControl(card), this.alertDwellMs);
+    while (this.controlCards.length > MAX_CONTROL_CARDS) {
+      this.dismissControl(this.controlCards[0], true);
+    }
+  }
+
+  private dismissControl(card: HTMLElement, now = false): void {
+    const i = this.controlCards.indexOf(card);
+    if (i < 0) return;
+    this.controlCards.splice(i, 1);
+    if (now) { card.remove(); return; }
+    card.classList.add('leaving');
+    window.setTimeout(() => card.remove(), 420);
   }
 
   /** Shared entry animation, dwell and eviction for both kinds of card. */
@@ -2226,6 +2287,15 @@ export function mirrorPaneBoxes(
 // THE RUNNING ORDER
 // ===========================================================================
 
+/**
+ * How many bulletins the noticeboard carries at once.
+ *
+ * Two. The board sits over the road, so a third card is a third of the picture
+ * — and two is what race control ever has running in practice: an incident, and
+ * the decision that follows it.
+ */
+const MAX_CONTROL_CARDS = 2;
+
 /** How long a pop-up and a radio card stand before they leave, ms. */
 const ALERT_LIFE_MS = 7200;
 const RADIO_LIFE_MS = 8000;
@@ -2342,21 +2412,23 @@ export function standingsCells(
   pos: string; code: string; first: string; surname: string; team: string;
   tyre: string; gap: string; best: string; lastLap: string;
 } {
-  const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
-  // `Out`, not `DNF`. The row is already dimmed and already at the foot of the
-  // order; three capitals of jargon on top of that is the panel saying the same
-  // thing three times. A broadcast tower says the car is out and moves on.
-  const gap = car.retired ? 'Out'
-    : car.disqualified ? 'DSQ'
-    // The leader's cell names the COLUMN rather than restating the position the
-    // number beside it already gives. Every other row is a figure, so a word
-    // there reads as the heading it is.
-    : car.position === 1 ? 'Interval'
-    : engine.config.kind !== 'race'
-      ? (car.bestLapTime > 0 && leader.bestLapTime > 0
-        ? formatGap(car.bestLapTime - leader.bestLapTime) : '—')
-    : lapsBehind > 0 ? '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS')
-    : formatGap(car.interval);
+  // THE RULE COMES FROM `liveGapCell` AND IS NOT REIMPLEMENTED HERE. It carries
+  // the distinction between a race and a Lap Time Classified Session — there is
+  // no leader in qualifying, only a fastest lap and everybody's deficit to it —
+  // and it cites the articles for both. The tower had its own copy of that
+  // arithmetic and the two disagreed, which is how `LEADER` came to be printed
+  // during a qualifying session.
+  //
+  // What is left here is PRESENTATION, and it is two words. `Interval` because
+  // the leader's cell names the column rather than restating a position the
+  // number beside it already gives — every other row in that column is a
+  // figure, so a word there reads as the heading it is. `Out` because the row
+  // is already dimmed and already at the foot of the order, and three capitals
+  // of jargon on top of that is the panel saying the same thing three times.
+  const ruled = liveGapCell(car, ahead, leader, engine.config.kind === 'race');
+  const gap = ruled === 'LEADER' ? 'Interval'
+    : ruled === 'DNF' || ruled === 'OUT' ? 'Out'
+    : ruled;
 
   return {
     pos: String(car.position),

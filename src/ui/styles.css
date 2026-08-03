@@ -1239,8 +1239,16 @@ canvas#view {
   opacity: 1;
   transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.16, 0.9, 0.3, 1);
 }
-.hud-control.entering { transform: translateX(-30px); opacity: 0; }
-.hud-control.leaving { transform: translateX(-16px); opacity: 0; }
+/* It drops in from above rather than sliding in from the left. The rail's
+   cards come from the edge they live on; the noticeboard's come down from the
+   top of the frame, which is where a broadcast banner comes from and is the
+   second thing that tells the two channels apart before a word is read. */
+.hud-control.entering { transform: translateY(-14px); opacity: 0; }
+.hud-control.leaving { transform: translateY(-8px); opacity: 0; }
+/* Except in the rail, where it comes from the edge it lives on like everything
+   else there. See `Hud.mountControl` for when that happens. */
+.hud-alerts .hud-control.entering { transform: translateX(-30px); }
+.hud-alerts .hud-control.leaving { transform: translateX(-16px); }
 .hud-control.tone-warn { border-left-color: var(--sig-yellow); }
 .hud-control.tone-urgent { border-left-color: var(--sig-red); }
 
@@ -1497,6 +1505,34 @@ canvas#view {
   font-size: 14px;
 }
 .hud-pit-cue.cue-box .cue-tag { color: #9dffc4; }
+
+/* --- The noticeboard, top centre ---------------------------------------
+   TWO VOICES, TWO PLACES. "The FIA doesn't say shit but give notifications,
+   the rest of the stuff happens between the team principal and the driver."
+   Race control is a noticeboard — flags, incidents, verdicts, session state —
+   impersonal, terse, addressed to nobody. The pit wall is a person who knows
+   this driver. The two were already drawn as different systems; they are now
+   in different parts of the frame, which is where a broadcast puts them and is
+   the difference between a split you can see and a split you have to read.
+
+   The top centre is free because the flag left it for the tower's own band.
+   It is the one strip of the picture every camera in this game is pointing at
+   sky in, and a bulletin is the one thing that has to be seen by somebody who
+   is looking at the road. It is bounded away from the running order on the
+   left and the timing panel on the right, so a wide bulletin cannot reach
+   either. */
+.hud-controls {
+  position: absolute;
+  top: calc(8px + var(--safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 720px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  pointer-events: none;
+}
 
 /* --- The weather bug --------------------------------------------------
    It replaces a line of grey monospace across the top centre that read
@@ -2041,6 +2077,11 @@ canvas#view {
 
   .hud-camera, .hud-diag { display: none; }
 
+  /* No top centre on this shape at all — see `Hud.mountControl`, which puts
+     the board back into the rail here. The stack stays in the tree so nothing
+     has to be rebuilt on a rotation; it simply never has a card in it. */
+  .hud-controls { display: none; }
+
   /* Nothing between the two top panels in portrait, so the flag takes the
      strip immediately under them rather than the top edge. */
   .hud-flag {
@@ -2229,7 +2270,12 @@ canvas#view {
   .hud-camera, .hud-diag { display: none; }
 
   /* The strip between the two top panels is all the width there is: 844px
-     less a 196px tower and a 180px timing panel. */
+     less a 214px tower and a 180px timing panel. The noticeboard has the same
+     strip and the same reason. */
+  .hud-controls { width: min(300px, calc(100vw - 560px)); top: calc(6px + var(--safe-t)); }
+
+  /* The strip between the two top panels is all the width there is: 844px
+     less a 214px tower and a 180px timing panel. */
   .hud-flag {
     font-size: 15px;
     padding: 5px 14px;
