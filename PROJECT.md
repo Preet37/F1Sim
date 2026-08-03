@@ -190,6 +190,8 @@ Run `npm run` to list. The important ones:
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:season` | 100 career-years |
 | `validate:world` | Nothing built on the racing surface |
+| `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
+| `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
 | `shoot:panels` | Measures HUD boxes; fails on overlap |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
@@ -307,6 +309,26 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   construction.
 - **Banking** was applied with no limit on lateral distance: Zandvoort's run-off edge was
   drawn **7.4m above** the racing surface.
+- **`carGroundY` ignored the banking**, so a car displaced sideways on a banked corner was
+  placed at the CENTRELINE's height. Against the drawn triangles, at 80% of half-width:
+  **1.560m at Zandvoort** (s=4127, 18° through Hugenholtz and the final turn), 0.392m at
+  Spa, zero on the other nine. `bankedCarGroundY` now sweeps the car with the same
+  `bankHeight` the road mesh is swept with, bounded the same way, so the two cannot
+  disagree: **0.000m on all eleven circuits, 17,220 rays.** Every renderer-side placement
+  goes through it and `probe:banking` fails if anything in `src/` outside `TrackMesh.ts`
+  calls the flat rule. (Issue #3, closed 2026-08-03.)
+- **The centreline turned tighter than the road is wide** at ten nodes, so the inside edge
+  of the ribbon ran backwards and the asphalt folded over itself — COTA s=3431 at **−0.203**
+  of the centreline's advance, Bahrain s=2544 at −0.009, six folded spans and 28 under the
+  margin. Fixed by easing the CENTRELINE, not by narrowing the road: `realGeometry` carries
+  a control point every ~25m, so a hairpin arrives as one vertex turning through 130°, and
+  the fold is a sampling artefact of the trace rather than a road that is too wide.
+  Narrowing alone was measured and does not work — it takes Bahrain, Spa, Monza and COTA to
+  the 12m floor (from 15m, below the FIA-recommended width) and still leaves Monaco folded
+  at −0.072. After easing, the worst span on the calendar advances **0.342** (Monaco s=336)
+  against a 0.30 margin and **nothing folds**; the width pass now narrows nothing at all and
+  stands as the guarantee. Lap times did not move: `validate:tracks` worst error 5.7%, mean
+  bias +1.7%, identical to before. (Issue #4, closed 2026-08-03.)
 - **Divots:** `computeShoulders` tested a probe **disc as long as the road is wide**, so on
   corners it read the road's own asphalt as an obstruction — 162 false zeros, **134 of them
   self-blocked**, each dragging 84m of shoulder to nothing. Bahrain's Turn 1 had asphalt
@@ -488,6 +510,15 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   grid, the stopped-car bug freezes the whole field, and nothing happens that would file a
   bulletin. **An agent sent to that call site will find nothing wrong.** Confirmation that
   fixing #28 turns the probe green is pending on the #28 branch.
+- **Two probes were passing a broken feature, and one of them still would be.** `probe:banking`
+  computed the asphalt height as `elevation + bankHeight(lat) + ROAD_SURFACE_Y` and compared it
+  against `bankedCarGroundY` — both sides of that comparison are the placement rule, so it was
+  green with the banking taken out of the road *mesh*, green with every car placed by the flat
+  rule, and green with `bankHeight` stubbed to return zero. It now raycasts the drawn triangles,
+  reads the drawn cross-slope against the surveyed banking datum, and forbids the flat rule
+  outside `TrackMesh.ts`; all three breaks were performed and all three now report. **When an
+  item in §7 is closed, check the probe named in it can still fail** — a fix that lands with a
+  tautological probe is a fix nothing is holding.
 
 ---
 
@@ -500,7 +531,7 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
 | Radio/HUD | Square typewriter radio card, FIA banner, retirement flow, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
-| Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots, `carGroundY` banking |
+| Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
@@ -511,11 +542,10 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
-- **`carGroundY` ignores banking**: 1.63m of error at Zandvoort, 0.42m at Spa. Cars float or
-  sink through the road there.
-- **10 nodes where the centreline turns tighter than the road is wide.** COTA s=3431 has a
-  6.3m radius against a 7.5m half-width — the asphalt folds over itself. Fixing it means
-  narrowing the road, which moves the speed solver, `validate:limits` and `probe:racingline`.
+- **Suzuka's crossover draws two roads on top of each other.** Twelve sample points between
+  s=2280–2298 and s=4649–4667 have two pieces of asphalt within 0.159m; neither leg of the
+  figure-of-eight is a bridge, so a car on the lower one sinks into the upper one. Found by
+  `probe:banking` while measuring something else, counted and printed there, issue #37.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
 - `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
