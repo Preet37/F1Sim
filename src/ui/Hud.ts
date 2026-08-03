@@ -2846,7 +2846,15 @@ export function raceControlCard(m: RaceControlMessage): {
 
 /** A status that has changed the result, as opposed to one that is a note. */
 function isDecision(status: string): boolean {
-  return /PENALTY|DISQUALIFIED|DELETED|BLACK AND WHITE/.test(status);
+  // GIVE THE POSITION BACK is a decision even though it is not a penalty.
+  //
+  // It is the stewards' remedy under Art. B1.8.6 — the driver hands the place
+  // back and the matter ends, and if they do not it becomes five seconds. So it
+  // is the single most consequential thing race control can say to a driver
+  // mid-race, and without it here the banner never raised for it: the notice
+  // appeared as an ordinary line and the player had no reason to read it as an
+  // instruction they had a deadline to obey.
+  return /PENALTY|DISQUALIFIED|DELETED|BLACK AND WHITE|GIVE THE POSITION BACK/.test(status);
 }
 
 /**
