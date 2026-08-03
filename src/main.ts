@@ -248,6 +248,25 @@ class Game {
     watching: boolean;
   } | null = null;
 
+  /**
+   * A session the player has stopped in, being run out to its flag.
+   *
+   * The sibling of `skipping`, and deliberately not the same thing. A skip
+   * builds a fresh `HeadlessSession` because there is nothing to carry over;
+   * this one steps THE LIVE ENGINE, because half the session has already
+   * happened and the times already on the board are the ones that count.
+   */
+  private runningOut: {
+    label: HTMLElement;
+    bar: HTMLElement;
+    detail: HTMLElement;
+    startedAt: number;
+    /** Session time when the player stopped, for the progress bar's origin. */
+    fromTime: number;
+    then: () => void;
+    cancelled: boolean;
+  } | null = null;
+
   constructor() {
     this.canvas = document.getElementById('view') as HTMLCanvasElement;
     this.loading = document.getElementById('loading') as HTMLElement;
@@ -459,10 +478,10 @@ class Game {
       this.pauseMenu.hide();
       this.clock.paused = false;
     }
-    // The retirement screen belongs to the track for the same reason, and it
-    // pauses the clock, so it has to unpause it on the way out or the next
-    // session opens frozen.
-    if (!inSession && this.retireOverlay) this.dismissRetirement();
+    // The retirement controls belong to the track for the same reason. They no
+    // longer pause the clock, but `dismissRetirement` still puts it back to
+    // running, which is the state a screen change has to leave behind.
+    if (!inSession && (this.retireOverlay || this.retireStatus)) this.dismissRetirement();
     // Leaving the track cuts the car but keeps the context alive, so returning
     // to a session does not have to rebuild the whole graph.
     // A stage rendering behind a hidden menu is a GL context and a render loop
@@ -3717,6 +3736,136 @@ class Game {
     this.button('Continue', actions, () => this.advanceWeekend(circuitId), 'btn primary');
   }
 
+  // =======================================================================
+  // Running a session out after the player has stopped in it
+  // =======================================================================
+
+  /**
+   * Runs the session the player is out of on to its flag, then classifies it.
+   *
+   *   "also like even tho I DNF doesn't mean that the rest weren't able to get
+   *    a time classification, just make the simulation up or something, ykwim"
+   *
+   * THE BUG. `Skip to the result` used to call `finishSession` on the spot,
+   * which ranks `engine.participants` on their best lap *at that instant*. A
+   * driver who stops early therefore published a classification of a session
+   * that had not happened yet. Measured, 720s Q1 at Bahrain, seed 4001, player
+   * retired at t=90s: **0 of 20 cars had a lap time**, so `rankSegment` fell
+   * through to its no-time ordering and the grid was garage release order.
+   * Stepping that same engine on to the flag instead gives **19 of the 20 a
+   * time** — everyone bar the driver who stopped — off 4 to 5 timed laps each.
+   * Nothing about the other cars was ever broken; the button simply did not let
+   * them finish.
+   *
+   * WHAT "MAKE THE SIMULATION UP" IS AND IS NOT. It is permission to not sit
+   * through the remaining nine minutes. It is not permission to invent times:
+   * the simulation already knows how fast every car is, so the honest reading
+   * is to let it finish. This steps the real engine with the real cars and
+   * draws nothing, which is the same trade `SessionSimulator` documents and
+   * measured here at ~27x realtime on a loaded machine.
+   *
+   * Frame-sliced rather than run in one burst for the reason given there: five
+   * seconds of a frozen tab with nothing on screen is indistinguishable from a
+   * crash.
+   */
+  private runOutToTheFlag(then: () => void): void {
+    const engine = this.engine;
+    if (!engine) { then(); return; }
+    // Already at the flag — a player who watched the clock down and then asked
+    // for the result should not be shown a progress bar that is instantly full.
+    if (engine.over) { then(); return; }
+
+    const def = engine.track.def;
+    this.setScreen('simulating');
+    const { body, actions } = this.page({
+      tab: def.name,
+      title: 'Running out ' + engine.config.name,
+      // Said plainly, because it is the thing the player asked to be told: you
+      // are out, they are not, and the result waits for them.
+      sub: 'You are out of this one, the other cars are not. The rest of ' +
+        engine.config.name + ' is being run at full simulation — the same cars ' +
+        'on the same circuit, with nothing drawn — so the classification you ' +
+        'get is the one they really produce.',
+    });
+
+    const bar = this.el('div', 'sim-bar', body);
+    const fill = this.el('div', 'sim-fill', bar);
+    const label = this.el('div', 'sim-label', body, '0%');
+    const detail = this.el('div', 'sim-detail', body, '');
+
+    // Cancelling puts the player back on track rather than into the menus: they
+    // asked for the result, not to leave the weekend.
+    this.button('Watch it instead', actions, () => {
+      if (this.runningOut) this.runningOut.cancelled = true;
+      this.runningOut = null;
+      this.spectating = true;
+      this.setScreen('racing');
+    }, 'btn ghost');
+
+    this.runningOut = {
+      label, bar: fill, detail,
+      startedAt: performance.now(),
+      fromTime: engine.time,
+      then,
+      cancelled: false,
+    };
+  }
+
+  /**
+   * How much of what this session exists to decide has been decided, 0..1.
+   *
+   * The same two conditions `HeadlessSession` uses, against the live engine:
+   * the clock, or every runner having a time and enough laps behind it. A
+   * qualifying segment exists to rank cars on their best lap, and once everyone
+   * has had their runs another six minutes of circulating almost never changes
+   * the order — so the run-out stops there rather than grinding the clock down.
+   * A race has to reach its own end and gets no early exit.
+   */
+  private runOutProgress(engine: RaceEngine): number {
+    const byClock = engine.config.durationS > 0 ? engine.time / engine.config.durationS : 0;
+    if (engine.config.kind === 'race') return clamp(byClock, 0, 1);
+    const cars = engine.participants;
+    if (cars.length === 0) return 1;
+    let ready = 0;
+    for (const c of cars) {
+      // A car that has stopped or been withdrawn (Art. B4.3.2) is never going
+      // to set another lap, so waiting for it would hold the exit open for the
+      // whole segment — including, always, the player's own.
+      if (c.retired || c.withdrawn || (c.bestLapTime > 0 && c.lap >= 3)) ready++;
+    }
+    return clamp(Math.max(byClock, ready / cars.length), 0, 1);
+  }
+
+  /** One animation frame's worth of running the session out. */
+  private stepRunOut(): void {
+    const run = this.runningOut;
+    const engine = this.engine;
+    if (!run || run.cancelled || !engine) return;
+
+    // The same 26ms slice `stepSkip` uses, and for the same reason: this screen
+    // is a progress bar and nothing else, so spending most of the frame
+    // simulating is the right trade.
+    const t0 = performance.now();
+    let done = engine.over;
+    while (!done && performance.now() - t0 < 26) {
+      for (let i = 0; i < 240 && !engine.over; i++) engine.step();
+      done = engine.over || this.runOutProgress(engine) >= 1;
+    }
+
+    const p = this.runOutProgress(engine);
+    run.bar.style.width = (p * 100).toFixed(1) + '%';
+    run.label.textContent = Math.round(p * 100) + '%';
+    const elapsed = (performance.now() - run.startedAt) / 1000;
+    const simmed = engine.time - run.fromTime;
+    run.detail.textContent =
+      simmed.toFixed(0) + 's of ' + engine.config.name + ' run in ' + elapsed.toFixed(1) + 's' +
+      (elapsed > 0.5 ? ' · ' + (simmed / elapsed).toFixed(0) + 'x realtime' : '');
+
+    if (!done) return;
+    this.runningOut = null;
+    run.then();
+  }
+
   /** Feeds a skipped race into the career the same way a driven one is. */
   private recordSimulatedRace(circuitId: string, order: string[], session: HeadlessSession): void {
     const career = this.career;
@@ -3760,6 +3909,13 @@ class Game {
   private launchSession(circuitId: string): void {
     const config = this.weekend[this.weekendIndex];
     if (!config) { this.afterWeekend(); return; }
+
+    // `Restart session` is reachable from the retirement sheet and from the
+    // pause menu, and either can be pressed while the previous session is being
+    // run out. The frame after this one would otherwise step the new engine
+    // under the old session's progress bar.
+    if (this.runningOut) this.runningOut.cancelled = true;
+    this.runningOut = null;
 
     this.setLoading(true, getCircuit(circuitId).name + ' — ' + config.name, circuitId);
 
@@ -4028,6 +4184,15 @@ class Game {
    * take the session again, or stay and watch the race you are no longer in.
    */
   private retireOverlay: HTMLElement | null = null;
+  /**
+   * The numbers, when the player has asked for them.
+   *
+   * Separate from `retireOverlay` because they are two different things with
+   * two different lifetimes: the corner bar stands from the accident until the
+   * player decides, and this appears and disappears underneath it as often as
+   * they press `Continue`.
+   */
+  private retireStatus: HTMLElement | null = null;
   /** True once the overlay has been raised for the current session. */
   private retirementShown = false;
   /** Set when the player dismisses the overlay to keep watching. */
@@ -4061,8 +4226,7 @@ class Game {
     if (engine.time - this.retiredAt < Game.RETIREMENT_DELAY_S) return;
 
     this.retirementShown = true;
-    if (engine.config.kind === 'race') this.retireOnTheRadio(player);
-    else this.showRetirement(engine, player);
+    this.retireOnTheRadio(engine, player);
   }
 
   /**
@@ -4088,20 +4252,68 @@ class Game {
    * THE CLOCK IS NOT PAUSED. The modal paused it, which froze nineteen cars
    * mid-race behind a card about the twentieth. `Watch the race` was offered by
    * a screen that had already stopped the race.
+   *
+   * QUALIFYING AND PRACTICE COME THROUGH HERE TOO, as of issue #33. They were
+   * deliberately left on the full-screen panel because that panel had just been
+   * rewritten against the 2026 regulations and the content was right. Issue #33
+   * records that as a routing error rather than a decision: the user asked five
+   * times for the takeover to go, and they meant everywhere. Not one word of the
+   * regulation content was dropped — it moved. The principal says it, race
+   * control rules on it (Art. B4.3.2, worded for a Lap Time Classified Session
+   * rather than for a race), and every number waits in a corner sheet until
+   * `Continue` is pressed. See `showRetirementStatus`.
    */
-  private retireOnTheRadio(player: CarEntry): void {
+  private retireOnTheRadio(engine: RaceEngine, player: CarEntry): void {
     this.retireOverlay?.remove();
+    this.retireStatus?.remove();
+    this.retireStatus = null;
+
+    // THE PIT SHEET GOES BEFORE ANYBODY SPEAKS, and this is a real bug rather
+    // than tidiness. `Hud.raiseCard` opens with `if (this.pitSheetOpen) return`
+    // — correctly, because "the radio stuff is being covered by the pit
+    // options" is one of the reported complaints this HUD was built to answer.
+    // But `updatePitPrompt` runs AFTER `updateRetirement` in the frame loop, so
+    // on the frame the accident is announced the sheet is still open from the
+    // previous one, and the principal's transmission was dropped on the floor.
+    //
+    // Measured: `probe:qualiretire` went red on "the principal has spoken — a
+    // radio card is up" with everything else about the corner controls green.
+    // It shows up in qualifying and not in a race because every practice and
+    // qualifying session STARTS IN THE GARAGE — `pitLaneStart` — so
+    // `pitDecisionPending` is true from the first frame and the sheet is
+    // genuinely up when a driver goes off on their out-lap.
+    //
+    // Closing it is also simply right. A car in the gravel has no stop to make,
+    // and `pitDecisionPending` says so itself the moment `retired` is set.
+    this.pitPrompt.close();
+    this.hud.setPitSheetOpen(false);
     this.hud.setRetired(true);
+
+    const isRace = engine.config.kind === 'race';
+    const phase = engine.config.qualifyingPhase;
+    const isQualifying = engine.config.kind === 'qualifying' && !!phase;
+    const reason = player.retirementReason || 'the car is beyond use';
+
     this.hud.sayRetirement(
-      player,
-      player.retirementReason || 'the car is beyond use',
-      player.lap + 1,
+      player, reason, player.lap + 1,
+      // Race control's own words, and they are not the race's words. A driver
+      // who stops in Q1 is not retired from anything: Art. B2.4.3a classifies
+      // them on the lap they set and Art. B2.4.3b's three routes out of the
+      // classification are the 107% rule, no time in Q1 and disqualification.
+      // What the recovery costs them is Art. B4.3.2 — no further part in THE
+      // SESSION, and Q1/Q2/Q3 are three periods of one session (Art. B2.4.2).
+      isRace ? undefined : {
+        text: 'CAR ' + player.driver.raceNumber + ' — NO FURTHER PART',
+        offence: isQualifying ? 'RECOVERED — ART. B4.3.2' : 'CAR RECOVERED',
+        status: (isQualifying ? 'NO FURTHER PART IN QUALIFYING' : 'SESSION OVER')
+          + ' · ' + reason.toUpperCase(),
+      },
     );
 
     const bar = this.el('div', 'retirebar', document.getElementById('app') as HTMLElement);
     // The two answers a driver in a barrier actually has. Named as the thing
-    // that happens: `Continue` goes to the result, watching keeps the cameras
-    // running on the race that is still going on around them.
+    // that happens: `Continue` goes to the numbers, watching keeps the cameras
+    // running on the session that is still going on around them.
     const act = (label: string, cls: string, onClick: () => void) => {
       const b = document.createElement('button');
       b.className = 'btn ' + cls;
@@ -4109,21 +4321,61 @@ class Game {
       b.addEventListener('click', onClick);
       bar.appendChild(b);
     };
-    act('Continue', 'primary', () => {
-      this.dismissRetirement();
-      this.finishSession();
-    });
-    act('Watch the race', 'ghost', () => {
-      this.spectating = true;
-      this.dismissRetirement();
-    });
+    if (isRace) {
+      act('Continue', 'primary', () => {
+        this.dismissRetirement();
+        this.finishSession();
+      });
+      act('Watch the race', 'ghost', () => {
+        this.spectating = true;
+        this.dismissRetirement();
+      });
+    } else {
+      // "once the user presses continue you can check the stats and shit" —
+      // so Continue opens the numbers rather than ending anything. In an LTCS
+      // there is nothing to end: nineteen other cars are still setting times
+      // and the classification is provisional until they stop.
+      act('Continue', 'primary', () => this.showRetirementStatus(engine, player));
+      act(isQualifying ? 'See out ' + engine.config.name : 'See out the session',
+        'ghost', () => {
+          this.spectating = true;
+          this.dismissRetirement();
+        });
+    }
 
     this.retireOverlay = bar;
     window.requestAnimationFrame(() => bar.classList.add('shown'));
   }
 
-  private showRetirement(engine: RaceEngine, player: CarEntry): void {
-    this.retireOverlay?.remove();
+  /**
+   * The numbers, on request, in the corner — never over the top of the game.
+   *
+   *   "why is this shit back I thought we said to not have this retirement
+   *    bullshit??"
+   *
+   * Asked five times. What this replaces is a full-bleed, blurred, CLOCK-PAUSING
+   * takeover headed SESSION OVER, filed at the player two seconds after an
+   * accident they were in. Every fact on it was correct — that is the trap this
+   * screen kept falling into, and why it survived four previous requests to
+   * remove it. Correct content in a presentation nobody asked for is still the
+   * wrong screen.
+   *
+   * So EVERY STRING SURVIVES and the frame around them does not. No overlay
+   * element, no backdrop, no blur, no pause: a sheet pinned under the corner
+   * controls, the width of a phone's short edge, with the session running
+   * behind it. That last part is not cosmetic. In an LTCS the session is NOT
+   * over — only the player's part in it is — and the old panel proved it by
+   * freezing nineteen other cars mid-run behind a card about the twentieth.
+   */
+  private showRetirementStatus(engine: RaceEngine, player: CarEntry): void {
+    // Second press closes it. The corner control is the only way in and out, so
+    // it has to work in both directions or `Continue` becomes a one-way door
+    // onto a sheet with no obvious dismissal.
+    if (this.retireStatus) {
+      this.retireStatus.remove();
+      this.retireStatus = null;
+      return;
+    }
 
     // WHICH SESSION THIS IS, which is the whole of what this screen got wrong.
     //
@@ -4135,7 +4387,12 @@ class Game {
     // deleted, they were not classified twentieth, they were not out of the
     // weekend, and there was nothing to wish them better luck about — they were
     // provisionally quickest of the twenty.
-    const isRace = engine.config.kind === 'race';
+    //
+    // A race never reaches this sheet — `retireOnTheRadio` answers the race on
+    // the radio and sends `Continue` straight to the classification — so the
+    // race's own words are not restated here. They were, in an `isRace` branch
+    // that had been unreachable since issue #16, which is the `TIER_INFO.carPace`
+    // pattern §6 has caught twice.
     const phase = engine.config.qualifyingPhase;
     const isQualifying = engine.config.kind === 'qualifying' && !!phase;
 
@@ -4150,32 +4407,30 @@ class Game {
     const fastestOfAll = engine.fastestLap();
     const mineIsFastest = hasLap && !!fastestOfAll && fastestOfAll.car === player;
 
-    const o = document.createElement('div');
-    o.className = 'retire-overlay';
-    const card = this.el('div', 'retire-card', o);
+    // THE SHEET IS THE CARD, with no overlay wrapping it. The element that used
+    // to sit around this one was `inset: 0` with a radial scrim and a 2px
+    // backdrop blur, and it is the whole of what the user has been asking to
+    // remove — the card inside it was never the complaint.
+    const card = document.createElement('div');
+    card.className = 'retire-sheet';
     this.el('div', 'retire-flag', card);
     const body = this.el('div', 'retire-body', card);
 
     this.el('div', 'retire-tag', body, engine.config.name + ' · ' + engine.track.def.name);
     // The headline is the fact the driver most needs and, in a practice or
     // qualifying session, it is not the accident. The accident is on the screen
-    // behind this one. What they cannot see is whether the lap survived it.
-    this.el('div',
-      'retire-title' + (isRace ? '' : ' is-standing'), body,
-      isRace ? 'Retired'
-        : hasLap ? 'Your lap stands'
-        : 'Session over');
+    // behind this one — which is now literally true, because there is nothing
+    // between this sheet and the circuit. What they cannot see is whether the
+    // lap survived it.
+    this.el('div', 'retire-title is-standing', body,
+      hasLap ? 'Your lap stands' : 'Session over');
 
     // The player's own words for what this screen should say. It acknowledges
     // the accident before it explains it, because that is the order a person
     // needs those two things in.
     const lede = this.el('div', 'retire-lede', body);
     const reason = escapeHtml(player.retirementReason || 'the car is beyond use');
-    if (isRace) {
-      lede.innerHTML =
-        'Unfortunately you have to retire — <strong>' + reason +
-        '</strong>. Better luck next time.';
-    } else if (hasLap) {
+    if (hasLap) {
       // Qualifying is not a race and has no DNF in it: Art. B2.4.3a classifies
       // a driver on the best time they set, and Art. B2.4.3b's three routes out
       // of the classification are the 107% rule, no time in Q1 and
@@ -4194,26 +4449,20 @@ class Game {
     }
 
     const worst = player.damage.worst();
-    const accident = /accident/i.test(player.retirementReason);
     // What happens NEXT, which for a practice or qualifying session is the
     // interesting part and used to be missing entirely.
     this.el('div', 'retire-sub', body,
-      isRace
-        ? (accident
-          ? 'The car is in the barrier and the marshals are on their way to it. ' +
-            'The damage is beyond anything the crew could put right in the pit lane.'
-          : 'The car cannot continue. The crew will look at it back in the garage.')
-        : isQualifying
-          // Art. B4.3.2: a car that stops away from the pit lane and receives
-          // physical assistance takes no further part in THE SESSION — and Q1,
-          // Q2 and Q3 are three periods of one session (Art. B2.4.2), so the
-          // rest of qualifying is gone however quickly the crew work.
-          ? 'The marshals have to recover the car, so under the regulations you take ' +
-            'no further part in qualifying — but you keep every place your lap earned. ' +
-            'The crew have until the race to rebuild it.'
-          : 'The crew take the car back to the garage and start rebuilding it. ' +
-            'Nothing downstream depends on a practice result; what this costs you is ' +
-            'the running, not a grid slot.');
+      isQualifying
+        // Art. B4.3.2: a car that stops away from the pit lane and receives
+        // physical assistance takes no further part in THE SESSION — and Q1,
+        // Q2 and Q3 are three periods of one session (Art. B2.4.2), so the
+        // rest of qualifying is gone however quickly the crew work.
+        ? 'The marshals have to recover the car, so under the regulations you take ' +
+          'no further part in qualifying — but you keep every place your lap earned. ' +
+          'The crew have until the race to rebuild it.'
+        : 'The crew take the car back to the garage and start rebuilding it. ' +
+          'Nothing downstream depends on a practice result; what this costs you is ' +
+          'the running, not a grid slot.');
 
     // --- The facts ---------------------------------------------------------
     const facts = this.el('div', 'retire-facts', body);
@@ -4230,35 +4479,30 @@ class Game {
     fact('Where', engine.track.cornerNameAt(player.s)
       || 'Sector ' + (player.currentSectorIndex + 1));
 
-    if (isRace) {
-      fact('Lap', String(player.lap + 1) + (engine.config.laps ? ' of ' + engine.config.laps : ''));
-      fact('Classified', player.position > 0 ? 'P' + player.position + ' — DNF' : 'DNF');
-      if (hasLap) fact('Your best lap', formatLapTime(player.bestLapTime));
-    } else {
-      // The lap first, because it is the thing that survived.
-      fact(mineIsFastest ? 'Fastest lap of the session' : 'Your best lap',
-        hasLap ? formatLapTime(player.bestLapTime) : 'No time set',
-        hasLap ? (mineIsFastest ? 'is-hero' : '') : 'is-warn');
-      // "As it stands", not "Classified": the session is still running behind
-      // this card and cars still on the circuit can take the place off them.
-      // Claiming a final position here would be the same species of lie as
-      // claiming a DNF.
-      fact('As it stands',
-        row > 0 ? 'P' + row + ' of ' + segment.length + ' in ' + engine.config.name
-          : engine.config.name,
-        row === 1 ? 'is-hero' : '');
-      if (isQualifying && advancing !== undefined && phase) {
-        fact('Q' + (phase + 1),
-          inTheCut ? 'Through, on this order' : 'Outside the cut',
-          inTheCut ? 'is-good' : 'is-warn');
-      }
-      // The cost of the accident, stated as the one thing it actually costs
-      // (Art. B4.3.2) — and only where there is something left to be barred
-      // from. In Q3 there is no rest of qualifying, so saying the driver takes
-      // no further part in it would be technically true and completely useless.
-      if (isQualifying && phase && phase < 3) {
-        fact('Rest of qualifying', 'No further part', 'is-warn');
-      }
+    // The lap first, because it is the thing that survived.
+    fact(mineIsFastest ? 'Fastest lap of the session' : 'Your best lap',
+      hasLap ? formatLapTime(player.bestLapTime) : 'No time set',
+      hasLap ? (mineIsFastest ? 'is-hero' : '') : 'is-warn');
+    // "As it stands", not "Classified": the session is still running behind
+    // this card and cars still on the circuit can take the place off them.
+    // Claiming a final position here would be the same species of lie as
+    // claiming a DNF. It is now literally running — this sheet no longer
+    // pauses the clock — so the wording and the behaviour finally agree.
+    fact('As it stands',
+      row > 0 ? 'P' + row + ' of ' + segment.length + ' in ' + engine.config.name
+        : engine.config.name,
+      row === 1 ? 'is-hero' : '');
+    if (isQualifying && advancing !== undefined && phase) {
+      fact('Q' + (phase + 1),
+        inTheCut ? 'Through, on this order' : 'Outside the cut',
+        inTheCut ? 'is-good' : 'is-warn');
+    }
+    // The cost of the accident, stated as the one thing it actually costs
+    // (Art. B4.3.2) — and only where there is something left to be barred
+    // from. In Q3 there is no rest of qualifying, so saying the driver takes
+    // no further part in it would be technically true and completely useless.
+    if (isQualifying && phase && phase < 3) {
+      fact('Rest of qualifying', 'No further part', 'is-warn');
     }
 
     // --- What broke --------------------------------------------------------
@@ -4296,78 +4540,77 @@ class Game {
       actions.appendChild(b);
     };
 
-    const seeItOut = () => {
-      this.spectating = true;
-      this.dismissRetirement();
-    };
-    const skipToResult = () => {
-      this.dismissRetirement();
-      this.finishSession();
-    };
+    // In an LTCS the session is NOT over — only the player's part in it is.
+    // Nineteen other cars are still setting times, and the classification this
+    // sheet has just quoted is provisional until they stop. So the primary
+    // action is to let the session reach its flag, which is both what really
+    // happens to a driver watching from the garage and the only path that
+    // produces an honest result.
+    //
+    // "End session" as a primary action was race language, and it was worse
+    // than wrong here: it froze the other cars' running mid-run and then
+    // published the truncated order as the segment's classification.
+    act(isQualifying ? 'See out ' + engine.config.name : 'See out the session',
+      'primary', () => {
+        this.spectating = true;
+        this.dismissRetirement();
+      });
 
-    if (isRace) {
-      // Ending the session is the primary action, because a retirement IS the
-      // end of the session and pretending otherwise would be the coy version of
-      // the bug this screen is fixing.
-      act('End session', 'primary', skipToResult);
-      act('Restart session', 'secondary', () => {
-        const id = engine.track.def.id;
-        this.dismissRetirement();
-        this.launchSession(id);
-      });
-      act('Watch the rest', 'secondary', seeItOut);
-    } else {
-      // In an LTCS the session is NOT over — only the player's part in it is.
-      // Nineteen other cars are still setting times, and the classification
-      // this card has just quoted is provisional until they stop. So the
-      // primary action is to let the session reach its flag, which is both what
-      // really happens to a driver watching from the garage and the only path
-      // that produces an honest result.
-      //
-      // "End session" as a primary action was race language, and it was worse
-      // than wrong here: it froze the other cars' running mid-run and then
-      // published the truncated order as the segment's classification.
-      act(isQualifying ? 'See out ' + engine.config.name : 'See out the session',
-        'primary', seeItOut);
-      // Short on purpose: these sit two-up in a 520px card and "Skip to the
-      // classification" wraps in the half-width column.
-      act('Skip to the result', 'secondary', skipToResult);
-      act('Restart session', 'secondary', () => {
-        const id = engine.track.def.id;
-        this.dismissRetirement();
-        this.launchSession(id);
-      });
-    }
+    // AND SO IS THIS ONE, NOW.
+    //
+    //   "also like even tho I DNF doesn't mean that the rest weren't able to
+    //    get a time classification, just make the simulation up or something,
+    //    ykwim"
+    //
+    // Which is simply true of the sport, and this button used to deny it. It
+    // called `finishSession` on the spot, so the order it published was
+    // whatever the board happened to read at the moment of the accident.
+    // Measured on a 720s Q1 at Bahrain with the player retired at t=90s:
+    // **0 of 20 cars had set a lap**, so the grid it produced was garage
+    // release order wearing a classification's clothes. Run on to the flag from
+    // that same state and 19 of the 20 have a time — everyone except the driver
+    // who stopped. The other cars were never the problem.
+    //
+    // So it runs the remainder rather than truncating it. Not invented numbers:
+    // the same engine, the same twenty cars, stepped with nothing drawn. See
+    // `runOutToTheFlag`.
+    act('Run it out to the flag', 'secondary', () => {
+      this.dismissRetirement();
+      this.runOutToTheFlag(() => this.finishSession());
+    });
+    act('Restart session', 'secondary', () => {
+      const id = engine.track.def.id;
+      this.dismissRetirement();
+      this.launchSession(id);
+    });
     act(this.career ? 'Back to the paddock' : 'Back to the menu', 'ghost', () => {
       this.dismissRetirement();
       this.abandonSession();
     });
 
     this.el('div', 'retire-hint', body,
-      isRace
-        ? 'Watching keeps the session running to the flag, with the cameras following the leaders.'
-        : 'Seeing it out runs the session to the flag with the cameras on the leaders, and ' +
-          'gives everyone still out there their last runs. Skipping stops the clock now, so ' +
-          'any lap not yet completed will not count.');
+      'The other nineteen keep running either way. Seeing it out watches them do it with ' +
+      'the cameras on the leaders; running it out simulates the rest of ' +
+      engine.config.name + ' at full speed. Both publish the same classification.');
 
-    (document.getElementById('app') as HTMLElement).appendChild(o);
-    this.retireOverlay = o;
+    (document.getElementById('app') as HTMLElement).appendChild(card);
+    this.retireStatus = card;
     // One frame before the class goes on, so the transition has a start state
     // to run from rather than being applied to an element that was born visible.
-    window.requestAnimationFrame(() => o.classList.add('shown'));
-
-    this.clock.paused = true;
-    this.audio.setSuspended(true);
+    window.requestAnimationFrame(() => card.classList.add('shown'));
   }
 
   private dismissRetirement(): void {
     this.retireOverlay?.remove();
     this.retireOverlay = null;
+    this.retireStatus?.remove();
+    this.retireStatus = null;
     this.hud.setRetired(false);
-    // Only the practice/qualifying card ever pauses; the race path deliberately
-    // does not, so the field carries on behind the radio message. Unpausing
-    // unconditionally is still right — it is the state this leaves in either
-    // case, and a session resumed frozen is the failure this guards.
+    // NOTHING ON THIS PATH PAUSES ANY MORE. The practice/qualifying card used
+    // to, and unpausing here was the counterweight to it. Both are gone: a
+    // retirement stops the player, not the session. Left in place because it is
+    // still the state this has to leave — a session resumed frozen is the
+    // failure this guards, and the pause menu is reachable from a corner bar.
     this.clock.paused = false;
     this.audio.setSuspended(false);
   }
@@ -4382,6 +4625,9 @@ class Game {
    */
   private abandonSession(): void {
     this.dismissRetirement();
+    // A run-out in flight is stepping the engine this is about to release.
+    if (this.runningOut) this.runningOut.cancelled = true;
+    this.runningOut = null;
     this.retirementShown = false;
     this.spectating = false;
     this.setPaused(false);
@@ -5119,6 +5365,10 @@ class Game {
     if (this.skipping && this.screen === 'simulating') {
       this.stepSkip(this.skipping.session.engine.track.def.id);
     }
+    // ...and so does one the player has stopped in and asked to see the end of.
+    // Distinct from the branch above because that one steps a session that was
+    // never driven and this one steps the one on the canvas.
+    if (this.runningOut && this.screen === 'simulating') this.stepRunOut();
 
     this.input.endFrame();
   };
