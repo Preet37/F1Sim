@@ -2633,6 +2633,18 @@ class Game {
       const field = this.fieldFor(config);
 
       this.engine = new RaceEngine(def, config, field);
+      // `?wet=0.8` forces the sky and soaks the road before the lights go out.
+      //
+      // Weather is stochastic, and a screenshot, a frame-time measurement or a
+      // bug report that depends on it raining is otherwise a matter of hunting
+      // for a seed — which measures the seed. The road still responds through
+      // the ordinary drying model from that starting point, so what is shot or
+      // timed is the real thing and not a special case. Only read from a deep
+      // link, so nothing in the game can reach it.
+      const wetParam = Number(new URLSearchParams(window.location.search).get('wet'));
+      if (Number.isFinite(wetParam) && wetParam > 0) {
+        this.engine.weather.forceRain(clamp(wetParam, 0, 1), true);
+      }
       this.applyStrategy(this.engine);
       this.applyPlayerSetup(this.engine);
       // A fresh session is a fresh chance to crash.

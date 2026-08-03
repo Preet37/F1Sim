@@ -65,6 +65,7 @@
     "probe:fieldsize": "tsx scripts/probeFieldSize.ts",
     "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize",
     "shoot:hud": "tsx scripts/shootHud.ts",
+    "shoot:weather": "tsx scripts/shootWeather.ts",
     "shoot:panels": "tsx scripts/shootPanels.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",

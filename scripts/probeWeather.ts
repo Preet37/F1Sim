@@ -433,12 +433,26 @@ console.log('\n=== 4. drying, and the dry line ===\n');
 
   // And with nobody running, it takes far longer. That asymmetry is what makes
   // a red flag in a drying race a strategic disaster.
+  //
+  // COMPARED AT FOUR MINUTES, not at fifteen. The first version of this check
+  // ran both cases the full fifteen and compared the endpoints, by which time
+  // both are at exactly zero and the comparison is between two dry tracks — it
+  // failed while the model was working perfectly. A rate has to be measured
+  // while something is still happening.
+  const AT_S = 240;
   const empty = new TrackSurface(track);
   empty.soak(0.95);
-  for (let t = 0; t < 900; t++) empty.update(1, 0, REF_TEMP, 0);
-  console.log(`  after the same 15 minutes with an EMPTY track: line ${empty.meanLineWater.toFixed(3)}`);
-  check(empty.meanLineWater > surf.meanLineWater + 0.15,
-    'an empty circuit dries as fast as one with twenty-two cars on it — traffic is not doing anything');
+  const busy = new TrackSurface(track);
+  busy.soak(0.95);
+  for (let t = 0; t < AT_S; t++) {
+    empty.update(1, 0, REF_TEMP, 0);
+    busy.update(1, 0, REF_TEMP, 22);
+  }
+  console.log(`  at ${AT_S / 60} minutes: line water is ${busy.meanLineWater.toFixed(3)} with a full ` +
+    `field, ${empty.meanLineWater.toFixed(3)} on an empty circuit`);
+  check(empty.meanLineWater > busy.meanLineWater + 0.15,
+    `an empty circuit dries as fast as one with twenty-two cars on it ` +
+    `(${empty.meanLineWater.toFixed(3)} vs ${busy.meanLineWater.toFixed(3)}) — traffic is not doing anything`);
 
   // Wetting is much faster than drying: the asymmetry that makes a stop for
   // inters a commitment.
@@ -497,22 +511,38 @@ console.log('\n=== 5. grip on the line vs beside it ===\n');
     `on a soaked track the rubbered line has grip ${soaked.on.toFixed(3)} against ${soaked.off.toFixed(3)} beside it — ` +
     'not enough of a difference for a driver to bother moving');
 
-  // And on a DRYING track, where the line has less water on it, the tyre's own
-  // wet curve puts the grip back on the line. Measured end to end: surface
-  // grip times the tyre's wet factor is what the car actually gets.
+  // And on a DRYING track, where the line has less water on it, the grip comes
+  // back to the line. Measured end to end — surface grip times the tyre's own
+  // steady grip at the water it is actually in — and measured on BOTH tyres,
+  // because they give opposite answers and both answers are right.
   surf.soak(0.9);
   for (let t = 0; t < 420; t++) surf.update(1, 0, REF_TEMP, 22);
-  const inter = getCompound('intermediate');
   const onWater = surf.waterAt(corner, onLat);
   const offWater = surf.waterAt(corner, offLat);
-  const onTotal = surf.surfaceGripAt(corner, onLat) * steadyGrip(inter, REF_TEMP, onWater);
-  const offTotal = surf.surfaceGripAt(corner, offLat) * steadyGrip(inter, REF_TEMP, offWater);
-  console.log(`\n  seven minutes into drying, on an intermediate:`);
-  console.log(`    on the line  : water ${onWater.toFixed(3)}, total grip ${onTotal.toFixed(4)}`);
-  console.log(`    off the line : water ${offWater.toFixed(3)}, total grip ${offTotal.toFixed(4)}`);
-  check(onTotal > offTotal,
-    'as the track dries the racing line does not become the fast line again — ' +
-    'the dry line is not paying off');
+  console.log(`\n  seven minutes into drying: line has ${onWater.toFixed(3)} water, ` +
+    `off-line ${offWater.toFixed(3)}`);
+  for (const id of ['medium', 'intermediate'] as CompoundId[]) {
+    const c = getCompound(id);
+    const on = surf.surfaceGripAt(corner, onLat) * steadyGrip(c, REF_TEMP, onWater);
+    const off = surf.surfaceGripAt(corner, offLat) * steadyGrip(c, REF_TEMP, offWater);
+    console.log(`    on ${id.padEnd(13)}: line ${on.toFixed(4)}, off-line ${off.toFixed(4)}` +
+      `  -> ${on > off ? 'the line' : 'off the line'}`);
+    if (id === 'medium') {
+      // The claim that matters. Once a driver has committed to slicks the dry
+      // line is the ONLY place the car works, and that is what makes the
+      // crossover to slicks a commitment rather than a free option.
+      check(on > off,
+        'on a drying track a car on slicks is no faster on the dry line than beside it — ' +
+        'the dry line is not paying off, and there is no reason to fight over it');
+    } else {
+      // ...and the opposite, which is not a defect. An intermediate wants water
+      // in it: `wetGripCurve` peaks at damp and the tread overheats on dry
+      // asphalt. Drivers genuinely do run through the wet parts to cool inters
+      // on a drying circuit, and this model reproduces it without being told to.
+      console.log('      (expected: an inter prefers the damp part — its wet curve peaks there,');
+      console.log('       which is why drivers hunt for water on a drying track)');
+    }
+  }
 }
 
 // ===========================================================================
@@ -587,15 +617,24 @@ console.log('\n=== 7. standing water, derived from real circuit elevation ===\n'
       hi = Math.max(hi, track.elevation[i]);
     }
     const mean = sum / track.count;
+    void pooling;
     console.log(`  ${def.id.padEnd(13)} ${String(track.count).padStart(5)}  ` +
       `${mean.toFixed(3).padStart(10)}  ${max.toFixed(3).padStart(9)}  ` +
       `${String(pooling).padStart(13)}  ${(hi - lo).toFixed(1).padStart(6)}m`);
 
-    // Nothing should be uniformly one thing. A circuit whose drainage field is
-    // flat has had its elevation ignored.
-    check(max > 0.15,
-      `${def.id} has no place on it where water collects (max drainage ${max.toFixed(3)}) — ` +
-      'the elevation data is not reaching the water model');
+    // The assertion is conditioned on the circuit having elevation to speak of,
+    // and that is not a way of excusing the flat ones — it is the correct
+    // claim. Jeddah's surveyed profile varies by 3m over 6.2km and its deepest
+    // point sits 3cm below the road ninety metres either side of it. There is
+    // no pooling to derive there, and a model that manufactured some would be
+    // amplifying survey noise into a puddle. A flat circuit floods uniformly,
+    // which is what this returns.
+    if (hi - lo > 15) {
+      check(max > 0.4,
+        `${def.id} has ${(hi - lo).toFixed(0)}m of elevation change and still no place where ` +
+        `water collects (max drainage ${max.toFixed(3)}) — the elevation data is not reaching ` +
+        'the water model');
+    }
     check(mean < 0.6,
       `${def.id} pools everywhere (mean drainage ${mean.toFixed(3)}) — the whole circuit is a lake`);
   }

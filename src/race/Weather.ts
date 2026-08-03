@@ -145,6 +145,13 @@ export class Weather {
   }
 
   private rng: Rng;
+  /**
+   * The dry-track temperature this circuit sits at, fixed for the session.
+   *
+   * The datum the rain cools DOWN FROM. See the temperature block in `update`
+   * for what happened when there was no such datum.
+   */
+  private readonly baseTrackTempC: number;
   private timeS = 0;
   /**
    * The truth. Private, and it stays private: this is the roll the driver is
@@ -161,6 +168,7 @@ export class Weather {
     this.rng = new Rng(seed ^ 0x5bf03635);
     this.airTempC = def.baseAirTempC + this.rng.range(-3, 3);
     this.trackTempC = def.baseTrackTempC + this.rng.range(-4, 4);
+    this.baseTrackTempC = this.trackTempC;
     this.surface = new TrackSurface(track ?? null);
     this.forecast = new Forecast(seed ^ 0x1d7ac09b);
 
@@ -252,10 +260,24 @@ export class Weather {
     if (this.wetness > 0.08) this.hasRained = true;
 
     // --- Temperature -------------------------------------------------------
+    //
     // Rain cools the track sharply, and the track is cooled by the water lying
     // on it rather than by the rain falling on it — a track that stopped
     // raining a minute ago is still cold and still wet.
-    const tempTarget = this.trackTempC - this.wetness * 12;
+    //
+    // AGAINST THE DRY BASELINE, not against itself. The line this replaces read
+    // `tempTarget = this.trackTempC - this.wetness * 12` and damped toward it,
+    // which is a target defined relative to the value being updated: every step
+    // aimed twelve degrees below wherever it had already got to. On a track
+    // that stayed wet it diverged without bound, and `probeWeather` section 10
+    // caught it at MINUS 178 DEGREES twenty-four minutes into a wet race — which
+    // then moved every temperature-dependent crossover in the strategy model and
+    // had the field pitting fifty-seven times.
+    //
+    // It is a pre-existing bug, not one this work introduced; it needed a race
+    // that stayed wet for a quarter of an hour to show itself, and nothing in
+    // the old model produced one.
+    const tempTarget = this.baseTrackTempC - this.wetness * 12;
     this.trackTempC = damp(this.trackTempC, tempTarget, 0.02, dt);
 
     // --- What the wall can see ---------------------------------------------
@@ -652,12 +674,18 @@ export class TrackSurface {
   lineAvoidance(index: number, lateral: number): number {
     if (!this.track) return 0;
     const onLine = this.surfaceGripAt(index, this.track.lineOffset[index]);
-    // A metre and a half off the groove is out of the worst of the rubber
-    // without being off the road, and is about where the cars actually run.
     const off = this.surfaceGripAt(index, lateral);
     if (off <= onLine) return 0;
-    // Scaled so the full 22% rubber loss reads as a full move.
-    return clamp01((off - onLine) / RUBBER_WET_LOSS);
+    // Normalised by the rubber penalty AVAILABLE AT THIS NODE, not by the
+    // constant. The two differ by a factor of two — the band is heavier at an
+    // apex than on a straight — and dividing by the constant asked the driver
+    // to judge their move against a penalty that is not there. Against the
+    // local figure, 1.0 means "this line escapes the rubber completely", which
+    // is a thing a driver can act on and a thing this node's geometry either
+    // does or does not permit.
+    const available = this.rubber[index] * RUBBER_WET_LOSS;
+    if (available <= 1e-6) return 0;
+    return clamp01((off - onLine) / available);
   }
 }
 

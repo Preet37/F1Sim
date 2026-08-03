@@ -36,17 +36,21 @@ const LINE_RESPONSE_RADIUS = 2;
 /**
  * How far off the dry line a car runs on a soaked circuit, metres.
  *
- * Set against the width of the rubber band rather than by taste. The groove is
- * `rubberHalfWidthAt` wide either side of the line and pinches to about 1.4m at
- * an apex, so a shift of 1.8m puts the car's inside wheels clear of the worst
- * of it at the place it matters most while leaving it comfortably inside the
- * white line — the corridor at a tight corner is only about 2.5m either side of
- * the ideal line once the car's own width and the tracking margin are taken
- * out. Larger shifts run out of road at exactly the corners the driver most
- * wants to avoid the rubber at, and get clamped back to nothing, which is
- * worse than a smaller shift that fits everywhere.
+ * MEASURED AGAINST THE BAND IT HAS TO ESCAPE, and the first attempt got it
+ * wrong by not doing that. At 1.8m — chosen as "about a car's width, which must
+ * be enough" — `probeWeather` measured a car on the wet line at Spa's tightest
+ * corner as still 56% inside the rubber groove, because the groove there is
+ * 1.68m of half-width and `TrackSurface` fades it out over 1.35 times that. The
+ * cars moved 0.4m on a soaked circuit and the whole effect was invisible.
+ *
+ * 2.4m clears it. It is the distance at which `TrackSurface.onLineFraction`
+ * reaches zero at a tight corner, which is the only number that matters: a
+ * shift that leaves the car on the rubber has bought a longer lap for nothing.
+ * There is room — the corridor at Spa's tightest point is 5.05m either side of
+ * the ideal line once the car's width and the tracking margin are taken out —
+ * and where there is not, the clamp below handles it.
  */
-const WET_LINE_SHIFT_M = 1.8;
+const WET_LINE_SHIFT_M = 2.4;
 
 /**
  * Corner radius below which a kerb is laid on the inside automatically, metres.

@@ -516,10 +516,21 @@ const GRADE_SHADER = {
       // Both are done here rather than as another pass because this shader is
       // already sampling and already writing, and an extra full-screen pass for
       // eight instructions would cost more than the effect.
+      //
+      // BOTH TERMS ARE HALF WHAT THEY FIRST WERE. At 0.42 desaturation and a
+      // 0.045 black lift, a screenshot of Bahrain in heavy rain came back with
+      // no black anywhere in the frame and the whole image sitting in a narrow
+      // band of grey — which is a photograph of a rainstorm through a dirty
+      // lens, not a photograph of a wet circuit. The scene ALREADY has three
+      // other things pulling in the same direction: fog that closes from 1700m
+      // to 800m, cloud cover that rises with the water, and an environment
+      // probe that flattens the sun. Stacking a heavy grade on top of those
+      // triple-counted the effect. What is left is enough to read and little
+      // enough to leave the picture some contrast.
       if (uWet > 0.002) {
         float lum = dot(colour, vec3(0.2126, 0.7152, 0.0722));
-        colour = mix(colour, vec3(lum), uWet * 0.42);
-        colour = mix(colour, colour * 0.86 + vec3(0.045), uWet);
+        colour = mix(colour, vec3(lum), uWet * 0.22);
+        colour = mix(colour, colour * 0.92 + vec3(0.022), uWet);
       }
 
       // Dither, not grain.
