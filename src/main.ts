@@ -32,6 +32,7 @@ import {
 } from './career/Season';
 import type { CareerEvent } from './career/Events';
 import { needsWorldRebuild } from './career/SaveCodec';
+import { playerIndexIn } from './career/Seat';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
@@ -2441,6 +2442,35 @@ class Game {
     return field;
   }
 
+  /**
+   * Puts the player in their OWN car.
+   *
+   * `SessionConfig.playerIndex` is the index into the entry list of the car the
+   * human drives, and every config in this file was built with it hard-coded to
+   * zero. Outside a career that is right by construction: the quick-race field
+   * is the static grid and the player is `DRIVERS[0]`, entry zero.
+   *
+   * Inside a career it was wrong, and it was the bug behind "I can change my
+   * name on the front page, but that doesn't change anything else". A career
+   * field is `Career.grid()` — every seat in the championship, IN TEAM ORDER,
+   * because the pit boxes are laid out from that order. A rookie starts at the
+   * weakest team, which is the last team in that order, so the player's own
+   * entry is index NINETEEN of twenty. Index zero is the first driver of the
+   * strongest team. The human was therefore driving somebody else's car, under
+   * somebody else's name, number, nationality and colours, while their own
+   * driver record sat at the back being driven by the AI — and both cars
+   * reported themselves to qualifying as 'PLAYER', because one was flagged
+   * `isPlayer` and the other genuinely had that id.
+   *
+   * Called after `fieldFor`, never before: a race sorts the field into
+   * qualifying order, which moves the player again. The search itself lives in
+   * `src/career/Seat.ts` so `probe:identity` asserts the shipped function
+   * rather than a copy of it.
+   */
+  private seatPlayer(config: SessionConfig, field: readonly Driver[] | undefined): void {
+    config.playerIndex = playerIndexIn(field, this.playerDriverId());
+  }
+
   /** The driver id the player is racing under, career or not. */
   private playerDriverId(): string {
     return this.career ? this.career.playerAsDriver().id : DRIVERS[0].id;
@@ -2691,6 +2721,7 @@ class Game {
     window.requestAnimationFrame(() => {
       const def = getCircuit(circuitId);
       const field = this.fieldFor(config);
+      this.seatPlayer(config, field);
 
       this.engine = new RaceEngine(def, config, field);
       this.applyStrategy(this.engine);
