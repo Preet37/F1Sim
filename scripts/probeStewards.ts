@@ -797,7 +797,7 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
     declined: new Map(),
   };
 
-  for (const def of CIRCUITS) {
+  for (const def of CIRCUITS.slice(0, SWEEP_CIRCUITS)) {
     for (const seed of seeds) {
       const config = raceConfig({
         laps, seed, standingStart: true, playerIndex: PLAYER_INDEX,
@@ -861,7 +861,8 @@ function checkCalendar(): void {
   const perRace = (n: number) => (n / Math.max(1, t.races)).toFixed(2);
 
   console.log('');
-  console.log(`WHAT A SEASON LOOKS LIKE (${t.races} races of ${LAPS} laps, 20 cars)`);
+  console.log(`WHAT A SEASON LOOKS LIKE (${t.races} races of ${LAPS} laps, 20 cars` +
+    `${SWEEP_CIRCUITS < CIRCUITS.length ? ', PARTIAL calendar' : ''})`);
   console.log(`  incidents noted                       ${t.noted}  (${perRace(t.noted)} a race)`);
   console.log(`  no further action                     ${t.nfa}  (${perRace(t.nfa)} a race)`);
   console.log(`  positions ordered back                ${t.giveBack}  (${perRace(t.giveBack)} a race)`);
@@ -1021,6 +1022,8 @@ const STAGED_ONLY = process.env.STEWARDS_PROBE === 'staged';
 const SWEEP_LAPS = Number(process.env.STEWARDS_LAPS ?? 5);
 const SWEEP_SEEDS = (process.env.STEWARDS_SEEDS ?? '20260729')
   .split(',').map((s) => Number(s.trim()));
+/** `STEWARDS_CIRCUITS=4` sweeps the first four only, for a quick directional read. */
+const SWEEP_CIRCUITS = Number(process.env.STEWARDS_CIRCUITS ?? CIRCUITS.length);
 
 console.log('THE STEWARDS');
 console.log('');

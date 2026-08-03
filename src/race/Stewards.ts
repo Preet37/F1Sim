@@ -330,11 +330,42 @@ function nfa(because: string): Verdict {
 export interface CornerFrame {
   name: string;
   apexS: number;
+  /** Where the road starts turning. */
   entryS: number;
   exitS: number;
+  /**
+   * Where the fight for this corner starts — the braking zone, not the turn.
+   *
+   * `entryS` is where the CURVATURE comes up, which on most corners is thirty
+   * or forty metres before the apex. That is where the road turns; it is not
+   * where the overtake happens. A driver commits to the inside under braking,
+   * a hundred metres earlier, and DSG Point A(i) says so in as many words —
+   * the front axle must be alongside the mirror "PRIOR TO AND AT THE APEX".
+   *
+   * Judging only between `entryS` and `exitS` therefore missed most of the
+   * racing. Over a calendar, ten of thirteen declined incidents fell through to
+   * the following-car test, which exists for contacts that have no corner in
+   * them, and reported that two cars fighting into a braking zone were "not on
+   * the same line" — an answer to a question nobody asked.
+   *
+   * The tests are still evaluated AT THE APEX. This only decides which contacts
+   * are about a corner at all.
+   */
+  approachS: number;
   hand: CornerHand;
   peakCurvature: number;
 }
+
+/**
+ * How far before the road turns the fight for the corner begins, metres.
+ *
+ * A 2026 car brakes at about 45 m/s^2, so shedding 40 m/s takes a little over
+ * fifty metres; positioning for the move starts before that again. A hundred
+ * metres ahead of `entryS` covers the braking zone on every circuit in the
+ * calendar without reaching back so far that two cars touching halfway down a
+ * straight are held to have been disputing the corner at the end of it.
+ */
+const BRAKING_APPROACH_M = 100;
 
 /** Below this the "corner" is a flat-out kink and has no meaningful apex. */
 const MIN_CORNER_CURVATURE = 1 / 600;
@@ -390,11 +421,13 @@ export function buildCornerTable(track: TrackSpline): CornerFrame[] {
     }
 
     const apexS = track.dist[peakIdx];
+    const entryS = (apexS - back * step + len) % len;
     out.push({
       name: marker.name,
       apexS,
-      entryS: (apexS - back * step + len) % len,
+      entryS,
       exitS: (apexS + fwd * step) % len,
+      approachS: (entryS - BRAKING_APPROACH_M + len) % len,
       hand,
       peakCurvature: peak,
     });
@@ -403,15 +436,44 @@ export function buildCornerTable(track: TrackSpline): CornerFrame[] {
 }
 
 /** The corner a point on the lap belongs to, or null on a straight. */
+/**
+ * The corner a point on the lap belongs to, or null out on a straight.
+ *
+ * Spans the braking zone as well as the turn — see `CornerFrame.approachS`.
+ *
+ * Returns the corner whose APEX IS NEAREST AHEAD rather than the first match in
+ * the list, because on a circuit with corners close together the approach to one
+ * overlaps the exit of the last, and the corner a contact is about is the one
+ * the cars are heading into.
+ */
 export function cornerAt(corners: readonly CornerFrame[], s: number, len: number): CornerFrame | null {
+  // FIRST the turn itself. A car on the road between turn-in and track-out is
+  // in THAT corner, and nothing about a later one can outrank it.
+  //
+  // This pass has to come first, and the reason is a bug it was written to fix.
+  // Ranking every candidate by "nearest apex ahead" reads correctly until you
+  // notice what it does to a car a metre PAST an apex: the distance to that
+  // apex wraps to very nearly a full lap, the next corner's braking zone wins,
+  // and the contact is judged against a corner that turns the other way. A
+  // staged case that should have been decided under Point B — a car on the
+  // outside, ahead at the apex — came back decided under Point A with inside
+  // and outside the wrong way round. It reached the right verdict by luck.
   for (const c of corners) {
-    // Distance from entry to exit going forwards, and from entry to s going
-    // forwards. Inside the corner iff the second is no more than the first.
     const span = (c.exitS - c.entryS + len) % len;
-    const into = (s - c.entryS + len) % len;
-    if (into <= span) return c;
+    if ((s - c.entryS + len) % len <= span) return c;
   }
-  return null;
+  // OTHERWISE the braking zone of whichever corner is nearest ahead. Here the
+  // ranking is safe, because a point in an approach zone is by construction
+  // before that corner's turn-in and cannot be past its apex.
+  let best: CornerFrame | null = null;
+  let bestToApex = Infinity;
+  for (const c of corners) {
+    const span = (c.entryS - c.approachS + len) % len;
+    if ((s - c.approachS + len) % len > span) continue;
+    const toApex = (c.apexS - s + len) % len;
+    if (toApex < bestToApex) { bestToApex = toApex; best = c; }
+  }
+  return best;
 }
 
 // ===========================================================================
