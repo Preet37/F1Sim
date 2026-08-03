@@ -1661,13 +1661,6 @@ export class AIVehicleController {
      * for a corner it is already turning into, and a driver planning against the
      * speed it is doing on the way in has planned to arrive where it used to be.
      *
-     * Measured at Spa, where 63% of all the contact in a race happened at La
-     * Source and on the two hundred metres of braking in front of it — every
-     * lap, in a race whose opening lap was clean. That is not a start-line
-     * accident and it is not two cars racing for an apex; it is the field
-     * arriving at a hairpin at the end of a straight having each planned against
-     * the last car's straight-line speed.
-     *
      * So take the lower of what the car ahead is doing and what the road allows
      * where it is. This is the same `speedTargetAt` the corner-braking scan uses
      * one block below, asked at the other car's position rather than at our own,
@@ -1675,6 +1668,22 @@ export class AIVehicleController {
      * do". It binds nowhere else: on a straight the road allows far more than
      * anybody is doing, the minimum is the other car's own speed, and the bound
      * is the enormous number it has always been in clean air.
+     *
+     * WHAT THIS FIXED, AND WHAT IT DID NOT. It was written to close a specific
+     * finding — 63% of all car-to-car contact in a race at Spa happened at La
+     * Source and on the two hundred metres of braking in front of it, every lap,
+     * in races whose opening lap was clean. It did not close it. Two seeds at
+     * Spa, before and after: contacts 46 then 51, retirements 7 then 7. The
+     * contact rate at that hairpin is not explained by this error and is still
+     * open.
+     *
+     * What it did do is halve the off-track excursions, 22 to 10 over the same
+     * two races, at no cost anywhere: Bahrain's fastest race lap is identical to
+     * the digit before and after (1:56.917) with the same 197 overtakes, and
+     * `validate:difficulty` keeps its full spread. That is worth having on its
+     * own — excursions are what beach cars, and a beached car is what deploys
+     * the safety car — but it is not the contact fix, and the comment above must
+     * not be read as claiming it is.
      */
     const leadPlanMs = hz === null ? 0 : (inLane
       ? hz.speedMs
