@@ -2267,8 +2267,20 @@ export class Hud {
    * driver and asks for it to be said. `hold` keeps the card up rather than
    * dwelling it away, because a transmission that vanishes leaves a player
    * looking at a corner control with no idea why it appeared.
+   *
+   * `ruling` overrides the OFFICIAL half only, and exists because "RETIRED" is
+   * race language. Qualifying is a Lap Time Classified Session and has no DNF
+   * in it — Art. B2.4.3b lists the only three routes out of the classification
+   * and an accident is on none of them. What actually happens to that driver is
+   * Art. B4.3.2: no further part in the session, every place their lap earned
+   * intact. Race control would not word those two the same way, so the caller
+   * that knows which session this is supplies the wording. Omitted, the race's
+   * own ruling stands and nothing on the race path changes.
    */
-  sayRetirement(player: CarEntry, reason: string, lap: number): void {
+  sayRetirement(
+    player: CarEntry, reason: string, lap: number,
+    ruling?: { text: string; offence: string; status: string },
+  ): void {
     // 1. THE PRINCIPAL, FIRST, AS A PERSON. "Are you okay?" — before the cause,
     //    before the classification, before anything. See the `retired` case in
     //    `radioExchange`.
@@ -2290,17 +2302,17 @@ export class Hud {
     //    same event on the log twice.
     this.pushControlCard({
       time: 0,
-      text: 'CAR ' + player.driver.raceNumber + ' RETIRED',
+      text: ruling ? ruling.text : 'CAR ' + player.driver.raceNumber + ' RETIRED',
       severity: 'critical',
       carIndex: player.index,
       feed: 'race-control',
       notice: {
         parties: [player.driver.code],
         where: 'LAP ' + lap,
-        offence: 'CAR RETIRED',
+        offence: ruling ? ruling.offence : 'CAR RETIRED',
         // Not a penalty, so it does not take the segmented decision strip —
         // `isDecision` reads this and correctly says no. It is a note.
-        status: reason.toUpperCase(),
+        status: ruling ? ruling.status : reason.toUpperCase(),
       },
     }, player);
   }

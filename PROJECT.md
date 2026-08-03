@@ -187,7 +187,8 @@ Run `npm run` to list. The important ones:
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
-| `probe:qualiboard` | Knockout qualifying: board and grid agree |
+| `probe:qualiboard` | Knockout qualifying: board and grid agree — and a player who stops at t=90s does not stop anybody else being classified |
+| `probe:qualiretire` | The Q1 accident, in a browser: nothing takes the screen over, nothing blurs the circuit, CONTINUE and SEE OUT are in the corner, every regulation string survives, and whichever way the player leaves the other nineteen have real times |
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:season` | 100 career-years |
 | `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
@@ -516,6 +517,79 @@ the driver's instruction in a different direction.
 The rule both fixes encode: **the PIT button is the driver's, and the wall does not get to
 overrule it in either direction.**
 
+### The retirement takeover, in qualifying (issues #33 and #16)
+
+Asked **five times**, most recently with a screenshot: *"why is this shit back I
+thought we said to not have this retirement bullshit??"* The race case had been
+moved to the radio in #16; qualifying was **deliberately left on the full-screen
+panel** because that panel had just been rewritten against the 2026 regulations
+and its content was right. #33 records that as a routing error, and it is the
+cleanest example in this project of *correct content in the wrong presentation
+surviving four requests to remove it.*
+
+**What went.** `.retire-overlay` — `inset: 0`, a radial scrim to 93% black,
+`backdrop-filter: blur(2px)` — plus `clock.paused = true` and
+`audio.setSuspended(true)` in the shell behind it. A blurred, world-stopping
+takeover 2.6 seconds after an accident the player was in.
+
+**What stayed, and where it went.** Every regulation string, all of it asserted
+by `probe:qualiretire`: Art. B4.3.2 ("no further part in qualifying") is now
+race control's ruling on the FIA strip *and* on the sheet; the provisional
+`P20 of 20 in Q1`, `Q2: Outside the cut`, `Rest of qualifying: No further part`,
+`Your best lap: No time set`, the worst-damage report and the corner it happened
+at are all on a 360px corner sheet that opens on `Continue` and covers **25% of
+a 1280×800 viewport with nothing behind it**. The principal speaks first on the
+radio, unchanged.
+
+**Race control no longer calls it a retirement.** `Hud.sayRetirement` gained an
+optional `ruling` that overrides the official half only. `CAR 87 RETIRED` is
+race language; qualifying is a Lap Time Classified Session and Art. B2.4.3b's
+three routes out of the classification do not include an accident. The strip now
+reads `CAR 87 — NO FURTHER PART` / `RECOVERED — ART. B4.3.2`. The race path
+passes no `ruling` and is byte-for-byte unchanged.
+
+**And the exit stopped truncating the session.** *"even tho I DNF doesn't mean
+that the rest weren't able to get a time classification, just make the
+simulation up or something, ykwim"* — `Skip to the result` called
+`finishSession` on the spot, which ranks `engine.participants` on their best lap
+**at that instant**. Measured, 720s Q1 at Bahrain, seed 4001, player retired at
+t=90s: **0 of 20 cars had a lap time**, so `rankSegment` fell through to its
+no-time ordering and the "classification" was garage release order. Step the
+same engine on to the flag instead and **19 of 20 have a time** off 4–5 timed
+laps each. `runOutToTheFlag` now steps the live engine, frame-sliced, with
+nothing drawn — measured at **27x realtime on a machine at load average 29** —
+and the button says what it does: `Run it out to the flag`.
+
+**The engine was never the problem, and that is a finding.** The new
+`probe:qualiboard` section (player stops at t=90s, Bahrain and Monaco) **passes
+on `main` as written**: `19/19` of the other cars leave the pits and set a lap,
+and the driver who stopped is classified P20 rather than deleted. Both halves of
+the defect were in `main.ts`.
+
+**A third bug the new probe found on its own: the principal's transmission was
+being dropped in qualifying.** `Hud.raiseCard` opens with
+`if (this.pitSheetOpen) return` — correctly, because *"the radio stuff is being
+covered by the pit options"* is one of the reported complaints the HUD was built
+to answer. But `updatePitPrompt` runs **after** `updateRetirement` in the frame
+loop, so on the frame the accident was announced the sheet was still open from
+the previous one and the radio card never appeared. It shows in qualifying and
+not in a race because every practice and qualifying session starts in the garage
+(`pitLaneStart`), so `pitDecisionPending` is true from the first frame and the
+sheet is genuinely up when a driver goes off on their out-lap.
+`retireOnTheRadio` now closes the sheet before anybody speaks, which is also
+simply right: a car in the gravel has no stop to make, and
+`pitDecisionPending` says so itself the moment `retired` is set.
+
+**Proved red on today's build**, then proved the probe's own first draft was
+worthless: the initial version used a fixed 9-second wait for the retirement to
+appear, reached the assertions with **1.0s of session time on the clock** and
+the panel not yet raised, and its two negatively-phrased checks ("nothing has
+taken the screen over", "race control did not call it a retirement") **passed on
+the very build it exists to fail.** It now polls the shell's own flag. Against
+pristine `main` it reports 12 failures including *"CONTINUE is one of the corner
+controls (found: [])"* and *"every car that was still running set a time (0 of
+20)"*.
+
 ### Career
 - **`SessionConfig.playerIndex` was hard-coded to `0`.** `Career.grid()` is the championship
   in *team order*, and a rookie starts at the weakest team, which sorts last — so the player's
@@ -666,7 +740,7 @@ against every threshold and so stops binding silently rather than throwing.
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
-| Radio/HUD | Square typewriter radio card, FIA banner, retirement flow, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals |
+| Radio/HUD | Square typewriter radio card, FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals. **The retirement flow has landed for every session kind — see §6.** |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
@@ -714,6 +788,33 @@ against every threshold and so stops binding silently rather than throwing.
     the bottom eighth to the bottom fifth, which is why it was not moved.
   - **1 is a driver's-eye pane reading 22.5% of frame width at Monaco** against a 22.0
     bound. A band question, not a geometry question, but it has not been re-derived.
+- **A RACE that the player retires from is still classified from where it stood.
+  Issue #56.** Found while fixing the same defect in qualifying (§6) and
+  **deliberately not fixed there**. `Continue` on the race corner bar calls `finishSession`
+  immediately, which records `engine.standings` for a race that is still being
+  run — measured by `probe:qualiretire`, which prints the leader's lap against
+  the race distance at that moment and does not assert on it. It is the same
+  species of mistake as the qualifying truncation and the user's words cover it
+  just as well, but it feeds `recordPlayerRound` and a career championship, so
+  changing it is a career-data decision rather than a presentation one. The
+  machinery to fix it exists — `Game.runOutToTheFlag` — and `runOutProgress`
+  already declines to give a race an early exit, so a race would have to be run
+  in full. **Nobody is on this.**
+- **`regress:exit` (issue #25) does not reproduce, but the harness is still
+  load-fragile.** Run three times on 2026-08-03: the first died on its warm-up
+  navigation at `page.goto: Timeout 120000ms exceeded` at load average 29,
+  before reaching an assertion; the second and third were **16 of 16 ok**,
+  including every one of the six failures the issue lists. The pause menu
+  (`src/ui/PauseMenu.ts` + `Game.setPaused`) shares no code path with the
+  retirement panel. The issue's `0.0666… → 0.0666…` is one physics step between
+  samples, which is a loaded machine rather than a broken Resume button. Left
+  open against the robustness problem rather than the logic one.
+- **`probe:qualiretire` needs a quiet machine.** It boots a dev server and drives
+  Chrome under swiftshader, where the simulation runs at roughly a tenth of
+  realtime, so the retirement delay alone is 20–40s of wall clock and the whole
+  probe is minutes. At load average 29 the *first* attempt at `regress:exit` on
+  2026-08-03 died on its warm-up navigation at 120s; the second passed all 16.
+  This is the same load sensitivity §8 records, not a flaky assertion.
 - **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
   measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
   previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
