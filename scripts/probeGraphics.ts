@@ -470,7 +470,14 @@ async function main(): Promise<void> {
       }));
       r.resolutionScale = 0.5; r.climbCeiling = 0.5;
       r.sessionTime = 1000; r.lastTierMoveAt = -1e9;
-      const seen = [];
+      // Seeded with the STARTING tier. Without this the trajectory is recorded
+      // one step late: the very first call already demotes (the verdict timer
+      // is clear and the scaler is at the floor), so 'high' had left before
+      // anything was written down and the probe reported 'medium>low' for a
+      // walk that was in fact correct. An off-by-one in the instrument, not in
+      // the renderer — worth the comment because the failure looked exactly
+      // like a tier being skipped.
+      const seen = [r.features.tier];
       for (let i = 0; i < 3600; i++) {
         r.sessionTime += 1 / 60;
         r.updateAutoTier(1 / 60, 40);
