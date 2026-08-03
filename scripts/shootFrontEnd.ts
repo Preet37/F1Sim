@@ -51,7 +51,11 @@ async function clickText(page: Page, selector: string, text: string): Promise<bo
     const all = [...document.querySelectorAll(sel)];
     return all.find((e) => (e.textContent ?? '').toLowerCase().includes(want.toLowerCase())) ?? null;
   }, selector, text);
-  const el = handle.asElement();
+  // `querySelectorAll` is typed as returning Nodes, so `asElement()` gives an
+  // `ElementHandle<Node>` and `.click()` wants an `ElementHandle<Element>`.
+  // Narrowed rather than cast away, so a selector that really did match a text
+  // node still fails here instead of at run time.
+  const el = handle.asElement() as import('puppeteer-core').ElementHandle<Element> | null;
   if (!el) return false;
   await el.click();
   await wait(420);
@@ -85,7 +89,7 @@ async function main(): Promise<void> {
 
   for (const vp of VIEWPORTS) {
     const page: Page = await browser.newPage();
-    page.on('pageerror', (e) => errors.push(`${vp.name}: ${e.message}`));
+    page.on('pageerror', (e) => errors.push(`${vp.name}: ${String(e)}`));
     page.on('console', (m) => {
       if (m.type() === 'error') errors.push(`${vp.name}: console ${m.text()}`);
     });

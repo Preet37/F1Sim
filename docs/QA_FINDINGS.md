@@ -1,6 +1,11 @@
 # QA findings — first sweep
 
-**Date:** 2026-08-03. **Base:** `main` @ `2dd8bc2` (PROJECT.md commit).
+**Date:** 2026-08-03. **Base:** `main` @ `2dd8bc2` (the PROJECT.md commit).
+**Re-verified on merged `main` @ `e8016b9`** — 30 commits later, after other
+agents' front-door work landed. Line numbers below are against `2dd8bc2` and have
+shifted a little; every defect was re-confirmed present on `e8016b9` before this
+was published, and `probe:finish` re-run there gives **1 of 19** finishers
+completing the distance and **19 of 19** sharing the winner's exact time.
 **Author:** the QA session. This file is the deliverable of a pass whose brief was
 "look through all of the files and find the bugs so I don't have to manually tell you".
 
@@ -646,10 +651,25 @@ Small, safe and inside the QA function's own files. Nothing in `src/` was touche
 `probe:smoke` closes a real gap: every other probe either drives the simulation
 with no UI, or reaches a session through the `?circuit=` deep link, which is
 documented as going *"past the garage briefing"* — i.e. past the entire front end.
-The menus, career screens and settings pages had no automated coverage at all. It
-boots the real game with empty storage as a first-time player, breadth-first walks
-the buttons it finds, and fails on uncaught exceptions, `console.error`, blank
-screens, or too few screens being reachable. Shots land in `audit-out/smoke/`.
+It boots the real game with empty storage as a first-time player, breadth-first
+walks the buttons it finds, and fails on uncaught exceptions, `console.error`,
+blank screens, or too few screens being reachable. Shots land in
+`audit-out/smoke/`.
+
+It is **complementary to, not a duplicate of**, the front-door work that landed on
+`main` while this pass was running: `probe:frontdoor` proves the identity/profile
+state machine in node with an in-memory store, `regress:career` drives the
+first-run path and the skip button, and `probe:menucost` measures what the live
+menu costs the GPU. None of the three walks every button on every screen looking
+for one that throws or leads nowhere, which is what this does.
+
+**The typecheck gap closure earned its keep within minutes.** Merging current
+`main` into this branch immediately surfaced two type errors in
+`scripts/shootFrontEnd.ts`, a harness another agent had just committed —
+`asElement()` returning `ElementHandle<Node>` where `.click()` needs
+`ElementHandle<Element>`, and the same `pageerror` unknown-type pattern as the
+other ten. Neither could have been caught before, because nothing in `scripts/`
+was typechecked. Both are fixed here.
 
 ---
 
