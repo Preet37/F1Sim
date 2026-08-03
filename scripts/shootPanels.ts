@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   // This is the fast loop: "is the panel there, and where", answered in seconds
   // instead of the ten minutes a real circuit build costs.
   const HUD_SCENES = (process.env.SHOOT_SCENES
-    ?? 'clear,pit-advice,safety-car,wet,in-box,pit-choice,rail-max').split(',');
+    ?? 'clear,pit-advice,safety-car,wet,in-box,pit-choice,rail-max,radio,radio-ask').split(',');
 
   // THE OVERLAP CHECK, and it is an assertion rather than a picture.
   //
@@ -142,6 +142,40 @@ async function main(): Promise<void> {
       // Back to a camera with no glass in it, so the rail is measured in the
       // layout the rest of this sweep photographs.
       await page.evaluate(() => window.__panels.camera('chase'));
+
+      // THE RADIO CARD HAS TO BE THERE, and this is the one assertion the
+      // overlap checks cannot make. `fitRail` is allowed to throw the card away
+      // when the band is short, so a card too tall for the band produces a
+      // perfectly clean sweep with no card in it. Only the scenes that raise
+      // one are checked, and `radio-ask` additionally has to carry the buttons.
+      if (scene === 'radio' || scene === 'radio-ask') {
+        const r = await page.evaluate(() => window.__panels.radioReport()) as {
+          shown: boolean; ratio: number; asking: boolean; turns: number; box: number[];
+        };
+        // A landscape phone under a safety car has a 94-pixel band with two
+        // live cues in it, and no card fits in what is left. That is a measured
+        // trade rather than a bug — the cues carry an instruction and the card
+        // carries atmosphere — so it is exempted by BAND SIZE rather than by
+        // viewport name, which keeps the assertion honest on a phone that does
+        // have room.
+        if (!r.shown && r.band > 150) {
+          railFailures.push(
+            `${vp.name}/${scene}: the radio card is not on screen in a ${r.band}px band`);
+        } else if (r.shown && r.ratio < 0.8 && vp.name !== 'phone') {
+          // The letterbox this pass replaced. Not asserted on a landscape
+          // phone, where the band is 94px and the card is deliberately flat.
+          railFailures.push(
+            `${vp.name}/${scene}: the radio card is a letterbox, ratio ${r.ratio}`);
+        }
+        // Desktop only. On a phone and in portrait the rail is short enough
+        // that a strategy call can be replaced by a neutralisation before the
+        // shutter opens, and asserting on which of two live cards won a race
+        // between two engine events is asserting on a coin toss.
+        if (scene === 'radio-ask' && vp.name === 'desktop' && r.shown && !r.asking) {
+          railFailures.push(`${vp.name}/${scene}: the wall asked and the card has no answer on it`);
+        }
+        console.log(`      radio ${vp.name}/${scene}: ` + JSON.stringify(r));
+      }
 
       const rail = await page.evaluate(() => window.__panels.railReport()) as {
         boxes: string[]; overlaps: string[]; clipped: string[];

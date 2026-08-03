@@ -5,8 +5,11 @@ import { CarEntry } from './CarEntry';
 import {
   compoundsAvailableTo, crossoverCandidates, crossoverCase, isWetCompound, stintLife,
 } from './Strategy';
-import { PitWall, Weather, wetCompoundFor, type PitWallContext } from './Weather';
+import {
+  PitWall, Weather, wetCompoundFor, type PitWallContext, type RadioAnswer,
+} from './Weather';
 import { RaceControlManager } from './RaceControlManager';
+import { RaceEngineer } from './RaceEngineer';
 import {
   bandOf, COMPONENT_NAMES, BODY_PART_IDS, PART_DETACH_HEALTH, PART_REPAIR_HEALTH,
   PART_SIZE_M, type BodyPartId, type ImpactZone,
@@ -370,6 +373,16 @@ export class RaceEngine {
    * but only the player's is ever asked a question. See `updatePitWall`.
    */
   readonly pitWalls: PitWall[] = [];
+
+  /**
+   * The player's race engineer — the thing that decides when the wall speaks.
+   *
+   * One, not one per car, because it exists to fill the PLAYER's radio and the
+   * AI has no radio to fill. See `src/race/RaceEngineer.ts` for why the team
+   * channel needed something that watches an ordinary lap rather than only an
+   * accident.
+   */
+  private readonly engineer = new RaceEngineer();
 
   private readonly rng: Rng;
   /** Reused neighbour records, five per car, so perception never allocates. */
@@ -787,7 +800,7 @@ export class RaceEngine {
       // and the AI simply does not need to be asked out loud.
       if (!car.isPlayer) continue;
 
-      if (car.retired) { wall.reset(); continue; }
+      if (car.retired) { wall.reset(); this.engineer.reset(); continue; }
 
       const i = this.track.indexAt(car.s);
       const ctx: PitWallContext = {
@@ -821,7 +834,90 @@ export class RaceEngine {
         car.pitRequested = false;
         car.pitCompoundRequest = null;
       }
+
+      this.fileTeamRadio(car, wall, ctx);
     }
+  }
+
+  /**
+   * Puts the pit wall's traffic on the team feed.
+   *
+   * WHY THE ENGINE FILES THIS AND NOT THE HUD. `probe:hudtext` asserts that a
+   * twenty-minute race produces at least one team-owned bulletin, and it read
+   * the engine's own log to do it — correctly, because the log IS the record of
+   * what was said and a conversation that only exists in the DOM cannot be
+   * replayed, tested or saved. The team channel was silent not because the wire
+   * was broken but because everything on it hung off an accident. See
+   * `RaceEngineer` for the rest of that argument.
+   *
+   * The wall's own strategy call goes on last and separately, because it is the
+   * one message in the game the driver can answer and it must not be buried
+   * under a gap update filed on the same step.
+   */
+  private fileTeamRadio(car: CarEntry, wall: PitWall, ctx: PitWallContext): void {
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    const mate = this.cars.find((c) => c !== car && c.team.id === car.team.id) ?? null;
+    const f = this.weather.forecast.reading;
+    const perLap = car.lap > 0
+      ? (car.setup.fuelLoadL - car.physics.fuelRemaining) / car.lap : 0;
+    const lapsRemaining = Math.max(0, totalLaps - car.lap);
+
+    const notes = this.engineer.update({
+      timeS: this.time,
+      car,
+      mate,
+      standings: this.standings,
+      lapsRemaining,
+      refLapS: this.track.def.referencePoleTimeS,
+      wetness: ctx.wetness,
+      projectedWetness: ctx.projectedWetness,
+      weatherEtaS: f ? f.etaS : null,
+      weatherConfidence: f ? f.confidence : 0,
+      fuelMarginLaps: perLap > 0.05 && lapsRemaining > 0
+        ? car.physics.fuelRemaining / perLap - lapsRemaining : 99,
+      racing: ctx.racing,
+    });
+
+    for (const team of notes) {
+      this.raceControl.log(
+        car.driver.code + ': ' + team.kind, 'info', this.time, car.index,
+        { feed: 'team', team },
+      );
+    }
+
+    const call = this.engineer.callNote(wall.pending);
+    if (call) {
+      this.raceControl.log(
+        car.driver.code + ': ' + (call.kind === 'call' ? call.message : call.kind),
+        call.kind === 'call' && call.urgent ? 'warning' : 'info',
+        this.time, car.index, { feed: 'team', team: call },
+      );
+    }
+  }
+
+  /**
+   * The driver's answer to the pit wall, and the wall's reply to it.
+   *
+   * Routed through the engine rather than left to the HUD so that the reply
+   * lands on the same log as the question — which is what makes the exchange a
+   * conversation with a record rather than two unrelated pieces of UI. The
+   * answer may lapse under the player's finger; that outcome is a reply too, and
+   * saying nothing when it happens is the case that reads as a bug.
+   */
+  answerPitWall(id: number, yes: boolean): RadioAnswer {
+    const wall = this.pitWall;
+    const car = this.playerCar;
+    if (!wall || !car) return 'lapsed';
+    const compound = wall.pending?.compound ?? null;
+    const outcome = wall.answer(id, yes);
+    const team = this.engineer.replyNote(
+      outcome, compound ? getCompound(compound).name : '',
+    );
+    this.raceControl.log(
+      car.driver.code + ': ' + outcome, 'info', this.time, car.index,
+      { feed: 'team', team },
+    );
+    return outcome;
   }
 
   /**
