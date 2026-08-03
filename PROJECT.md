@@ -703,6 +703,15 @@ unverified.
   weather work, and the number that would make a driver move is currently **zero**.
   Verified pre-existing on pristine `main` while working issue #32 — the pit-wall fixes do
   not touch it. **Nobody is on this.**
+- **`probe:smoke` reports PASS having walked only the livery editor.** Measured
+  2026-08-03: the fifteen screens it visits are the main menu and fourteen livery
+  buttons, and `grep -icE "setting|driver|career|garage|paddock"` over its log returns
+  **0**. At the default depth it walks ~130 screens and every one is a livery
+  permutation, because that screen's fourteen buttons each lead to a screen with the
+  same fourteen buttons and the walk de-duplicates by NAME rather than by what a screen
+  is. Its own header says the menus and settings pages "had no automated coverage
+  whatsoever"; they still have none, and every front-end change since it was written has
+  been merged with this as cover. **Issue #62.**
 - **The spoken radio is UNVERIFIED ON iOS SAFARI**, which is a stated target platform.
   WebKit requires user activation before `speechSynthesis.speak()` and every call in
   `TeamRadio` is from a `setTimeout`. `primeSpeech()` spends the Settings-toggle click on a
