@@ -34,7 +34,6 @@ import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import type { CarEntry } from '../src/race/CarEntry';
 import { PHYSICS_DT } from '../src/core/SimClock';
-import { loopDelta } from '../src/core/MathUtils';
 import { AIVehicleController } from '../src/ai/AIVehicleController';
 import { CAR_HALF_WIDTH_M as RC_HALF_WIDTH } from '../src/race/RaceControlManager';
 import {

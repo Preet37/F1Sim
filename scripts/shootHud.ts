@@ -133,7 +133,7 @@ async function main(): Promise<void> {
   const openPage = async (): Promise<void> => {
     page = await browser.newPage();
     page.setDefaultTimeout(240_000);
-    page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
     page.on('console', (m) => {
       if (m.type() === 'error' && !isBrowserNoise(m.location().url ?? '')) {
         errors.push(`console: ${m.text()}`);

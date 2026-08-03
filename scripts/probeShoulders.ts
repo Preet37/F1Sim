@@ -1,5 +1,5 @@
 import { CIRCUITS } from '../src/data/tracks/circuits';
-import { TrackSpline } from '../src/track/TrackSpline';
+import { TrackSpline, MIN_EDGE_ADVANCE } from '../src/track/TrackSpline';
 import { buildWorldModel } from '../src/track/WorldObstacles';
 import {
   computeShoulders, SHOULDER_SLOPE_M, STREET_RUNOFF_W, RUNOFF_W,
@@ -46,11 +46,117 @@ import { TerrainField, buildTerrainMesh } from '../src/render/Terrain';
 
 const failures: string[] = [];
 
+/**
+ * Node-sides where the lap crosses OVER ITSELF, so no shoulder can exist.
+ *
+ * Suzuka is a figure of eight. Where the two legs meet there is no width, not
+ * even half a metre, at which the ground beside one of them is clear of the
+ * other — and drawing the narrowest strip that fits would put a vertical face
+ * of grass through the middle of a racing surface, which is worse than the gap
+ * it replaces. A zero shoulder is the RIGHT answer at a crossing, so the count
+ * above has to be able to tell one from a defect, and it has to do it from the
+ * geometry rather than from a circuit name or a range of `s`.
+ *
+ * Two tests, and both are needed:
+ *
+ *   THE ROADS OVERLAP. Another part of the lap is close enough that its
+ *   asphalt covers the ground this node's shoulder would be drawn on. That is
+ *   what costs the shoulder, and on its own it is also true of two legs
+ *   running side by side, which is a squeeze and not a crossing.
+ *
+ *   AND THE CENTRELINES CROSS. Somewhere in the contiguous run of overlap the
+ *   two polylines properly intersect. Two roads running past each other never
+ *   do; two roads that meet always do. This is the test that makes the
+ *   exclusion a crossing test rather than a proximity test, and it is why the
+ *   run is flood-filled from the intersection instead of taken within some
+ *   radius of it — the extent of a crossing is however far the two roads
+ *   actually overlap, which depends on their angle and their widths, and is
+ *   not a number to pick.
+ *
+ * `MIN_LAP_GAP_M` only has to exclude a node's own neighbourhood. A corner
+ * that folds back on itself does so within a couple of hundred metres of lap;
+ * Suzuka's crossover is 2340m apart along the lap.
+ */
+function crossingNodes(track: TrackSpline): Uint8Array {
+  const n = track.count;
+  const MIN_LAP_GAP_M = 250;
+  /** How far out from the road edge a shoulder has to reach to exist. */
+  const REACH_M = 1;
+
+  const lapGap = (a: number, b: number): number => {
+    const d = Math.abs(track.dist[a] - track.dist[b]);
+    return Math.min(d, track.length - d);
+  };
+
+  // 1. Which nodes have another leg's asphalt over their shoulder.
+  const overlap = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const hi = track.width[i] * 0.5;
+    for (let j = 0; j < n; j++) {
+      if (lapGap(i, j) < MIN_LAP_GAP_M) continue;
+      const reach = hi + track.width[j] * 0.5 + REACH_M;
+      const dx = track.px[j] - track.px[i];
+      const dz = track.pz[j] - track.pz[i];
+      if (dx * dx + dz * dz > reach * reach) continue;
+      overlap[i] = 1;
+      break;
+    }
+  }
+
+  // 2. Where the centrelines properly intersect.
+  const crosses = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!overlap[i]) continue;
+    const i1 = (i + 1) % n;
+    const ax = track.px[i], az = track.pz[i];
+    const bx = track.px[i1], bz = track.pz[i1];
+    for (let j = 0; j < n; j++) {
+      if (lapGap(i, j) < MIN_LAP_GAP_M) continue;
+      const j1 = (j + 1) % n;
+      const cx = track.px[j], cz = track.pz[j];
+      const dx2 = track.px[j1], dz2 = track.pz[j1];
+      const r0 = bx - ax, r1 = bz - az;
+      const s0 = dx2 - cx, s1 = dz2 - cz;
+      const den = r0 * s1 - r1 * s0;
+      if (Math.abs(den) < 1e-12) continue;
+      const t = ((cx - ax) * s1 - (cz - az) * s0) / den;
+      const u = ((cx - ax) * r1 - (cz - az) * r0) / den;
+      if (t < 0 || t > 1 || u < 0 || u > 1) continue;
+      crosses[i] = 1;
+      crosses[i1] = 1;
+      break;
+    }
+  }
+
+  // 3. A run of overlap that contains an intersection is a crossing, all of it.
+  const out = new Uint8Array(n);
+  if (!crosses.some((v) => v === 1)) return out;
+  const seen = new Uint8Array(n);
+  for (let start = 0; start < n; start++) {
+    if (seen[start] || !overlap[start]) continue;
+    const run: number[] = [];
+    let k = start;
+    // Walk back to the head of the run first, so a run is only walked once.
+    while (overlap[(k - 1 + n) % n] && (k - 1 + n) % n !== start) k = (k - 1 + n) % n;
+    let hasCross = false;
+    do {
+      run.push(k);
+      seen[k] = 1;
+      if (crosses[k]) hasCross = true;
+      k = (k + 1) % n;
+    } while (overlap[k] && !seen[k]);
+    if (hasCross) for (const q of run) out[q] = 1;
+  }
+  return out;
+}
+
 console.log(
-  'circuit        nodes  zero-shoulder   steps>0.3m   mean R at holes   mean R lap   worst step',
+  'circuit        nodes  zero-shoulder   steps>0.3m   mean R at holes   mean R lap   worst step'
+  + '   at a crossing',
 );
 
 let totalZero = 0;
+let totalCrossing = 0;
 let totalSteps = 0;
 
 for (const def of CIRCUITS) {
@@ -60,7 +166,10 @@ for (const def of CIRCUITS) {
   const sh = computeShoulders(track, world, runoffW);
   const n = track.count;
 
+  const crossing = crossingNodes(track);
+
   let zero = 0;
+  let atCrossing = 0;
   let steps = 0;
   let worstStep = 0;
   let radiusAtZero = 0;
@@ -76,8 +185,12 @@ for (const def of CIRCUITS) {
     if (Number.isFinite(r)) { radiusSum += r; radiusCount++; }
     for (const arr of [sh.left, sh.right]) {
       if (arr[i] <= 0) {
-        zero++;
-        if (Number.isFinite(r)) radiusAtZero += r;
+        if (crossing[i]) {
+          atCrossing++;
+        } else {
+          zero++;
+          if (Number.isFinite(r)) radiusAtZero += r;
+        }
       }
       const step = Math.abs(arr[j] - arr[i]);
       if (step > 0.3) steps++;
@@ -86,6 +199,7 @@ for (const def of CIRCUITS) {
   }
 
   totalZero += zero;
+  totalCrossing += atCrossing;
   totalSteps += steps;
 
   const meanHoleR = zero > 0 ? (radiusAtZero / zero).toFixed(0) + 'm' : '-';
@@ -95,7 +209,8 @@ for (const def of CIRCUITS) {
     String(zero).padStart(10) + ' (' + (100 * zero / (2 * n)).toFixed(1).padStart(4) + '%)' +
     String(steps).padStart(11) +
     meanHoleR.padStart(18) + meanR.padStart(13) +
-    (worstStep.toFixed(2) + 'm').padStart(13),
+    (worstStep.toFixed(2) + 'm').padStart(13) +
+    String(atCrossing).padStart(16),
   );
 
   // A step wider than the slope limiter is meant to allow is a mesh that cannot
@@ -106,12 +221,143 @@ for (const def of CIRCUITS) {
       `above the ${SHOULDER_SLOPE_M}m slope limit`,
     );
   }
+  if (zero > 0) {
+    failures.push(
+      `${def.id}: ${zero} node-sides with no ground beside the road, and no ` +
+      'crossing to explain them',
+    );
+  }
 }
 
 console.log(
   '\ntotal nodes with no ground beside the road at all: ' + totalZero +
+  '\n  ...and a further ' + totalCrossing + ' where the lap crosses over itself, which is' +
+  '\n     correct: the other leg IS the ground beside this one. Detected from the' +
+  '\n     geometry — roads overlapping and centrelines actually intersecting — not' +
+  '\n     from a circuit name. All of them are Suzuka\'s figure-of-eight, at' +
+  '\n     s=2274..2304 against s=4643..4673, 2340m apart along the lap and within' +
+  '\n     0.6m of each other in plan.' +
   '\ntotal adjacent-node steps over 0.3m:               ' + totalSteps,
 );
+// ===========================================================================
+// The fold: where the road is wider than the corner is round
+// ===========================================================================
+//
+// The road is swept as a ribbon `width` metres across the centreline. Its
+// INNER edge therefore advances more slowly than the centreline does, by the
+// factor `1 - halfWidth * curvature`, and that factor is the whole story:
+//
+//   1     a straight; the two edges and the centre move together
+//   0.3   the limit held by `narrowWhereTheInnerEdgeFolds`
+//   0     the inner edge has STOPPED. The span's quad is a triangle with a
+//         cusp on the inside of the corner, and the shoulder scan finds the
+//         node's own asphalt wrapped around the point where its shoulder
+//         would go.
+//   <0    the inner edge is running BACKWARDS. The quad is a bowtie: asphalt
+//         folded over itself, no pocket for a kerb, and the white line
+//         crossing itself. `validate:limits` reported it as a 6m gap in
+//         Monaco's left-hand line and a 3m gap in COTA's.
+//
+// Measured here from the drawn edge polyline rather than from `curvature`,
+// because `curvature` is smoothed over five nodes and the fold is not: at
+// COTA s=3431 the smoothed radius read 14m while the polyline was turning
+// inside 5.1m and the advance factor was -0.165.
+//
+// As authored the calendar had ten of these. What produced them is in
+// `easeCentrelineKinks`: the surveyed traces carry a control point every 25m,
+// so a hairpin arrives as one 85-130 degree vertex and resampling puts nearly
+// all of the turn into a single 3m node.
+// Imported, not repeated, so the number the pass holds and the number the
+// probe checks cannot drift apart.
+const MIN_ADVANCE = MIN_EDGE_ADVANCE;
+console.log(
+  'circuit      worst advance      where        R      half-width   nodes under ' +
+  MIN_ADVANCE.toFixed(2),
+);
+let foldTotal = 0;
+for (const def of CIRCUITS) {
+  const track = new TrackSpline(def);
+  const n = track.count;
+  const nodeM = track.length / n;
+  let worst = Infinity;
+  let worstI = -1;
+  let worstSide = 1;
+  let under = 0;
+  const rows: string[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const hi = track.width[i] * 0.5;
+    const hj = track.width[j] * 0.5;
+    // The centreline's own step across this span. NOT the nominal node
+    // spacing: the resampler places nodes at uniform arclength along a dense
+    // curve, and where that curve bends hard between two samples the chord
+    // between them is far shorter than the arc — 1.6m against a nominal 3m at
+    // Monaco's hairpin. The advance is a RATIO of the edge's progress to the
+    // centreline's, so both have to be measured the same way.
+    const centre = (track.px[j] - track.px[i]) * track.tx[i]
+      + (track.pz[j] - track.pz[i]) * track.tz[i];
+    if (centre <= 1e-6) continue;
+    for (const side of [-1, 1] as const) {
+      const ex = (track.px[j] + track.nx[j] * side * hj) - (track.px[i] + track.nx[i] * side * hi);
+      const ez = (track.pz[j] + track.nz[j] * side * hj) - (track.pz[i] + track.nz[i] * side * hi);
+      const adv = (ex * track.tx[i] + ez * track.tz[i]) / centre;
+      if (adv < worst) { worst = adv; worstI = i; worstSide = side; }
+      if (adv >= MIN_ADVANCE - 1e-3) continue;
+      under++;
+      if (rows.length < 6) {
+        rows.push(
+          '    s=' + track.dist[i].toFixed(0).padStart(5) + '  ' + (side > 0 ? 'left ' : 'right') +
+          '  advance ' + adv.toFixed(3).padStart(7) +
+          '  half-width ' + hi.toFixed(2) + 'm',
+        );
+      }
+    }
+  }
+  foldTotal += under;
+
+  // The discrete radius the centreline actually turns through at that node,
+  // from the two chords meeting there — not the smoothed `curvature`.
+  const discreteR = (i: number): number => {
+    const p = (i - 1 + n) % n;
+    const q = (i + 1) % n;
+    const a1 = Math.atan2(track.pz[i] - track.pz[p], track.px[i] - track.px[p]);
+    const a2 = Math.atan2(track.pz[q] - track.pz[i], track.px[q] - track.px[i]);
+    let d = a2 - a1;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return Math.abs(d) < 1e-9 ? Infinity : nodeM / Math.abs(d);
+  };
+
+  const r = discreteR(worstI);
+  console.log(
+    def.id.padEnd(13) + worst.toFixed(3).padStart(9) +
+    ('s=' + track.dist[worstI].toFixed(0) + ' ' + (worstSide > 0 ? 'L' : 'R')).padStart(14) +
+    (Number.isFinite(r) ? r.toFixed(1) + 'm' : '-').padStart(11) +
+    ((track.width[worstI] * 0.5).toFixed(2) + 'm').padStart(13) +
+    String(under).padStart(14),
+  );
+  for (const row of rows) console.log(row);
+
+  if (under > 0) {
+    failures.push(
+      `${def.id}: ${under} node-sides where the inner edge of the road advances ` +
+      `less than ${MIN_ADVANCE} of the centreline's rate — worst ${worst.toFixed(3)} ` +
+      `at s=${track.dist[worstI].toFixed(0)}m. The road is wider than the corner is round`,
+    );
+  }
+}
+console.log(
+  '\ntotal node-sides where the road folds towards itself: ' + foldTotal + '\n' +
+  '\nBefore `easeCentrelineKinks` and `narrowWhereTheInnerEdgeFolds` this table\n' +
+  'read 18 node-sides under 0.30 on six circuits: COTA -0.201 at s=3434 and\n' +
+  '-0.170 at s=3431, both self-intersecting, on a 5.1m discrete radius against a\n' +
+  '7.50m half-width; Bahrain 0.007 at s=2544 and 0.010 at s=2547; Monza 0.082 at\n' +
+  's=621; Spa 0.080 at s=207; Monaco 0.111 at s=333. Those same nodes were 17 of\n' +
+  'the calendar\'s 49 zero shoulders and the 6m and 3m gaps `validate:limits`\n' +
+  'found in Monaco\'s and COTA\'s white lines.\n',
+);
+
 console.log(
   '\nThese are counts of PLACES, not of holes. Whether a step is a visible slot\n' +
   'depends on how the strips between them are swept — see `buildTrackMeshes`,\n' +

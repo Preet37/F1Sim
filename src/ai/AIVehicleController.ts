@@ -1650,6 +1650,46 @@ export class AIVehicleController {
     // In clean air the bound is hundreds of metres per second and binds nothing.
     // That is the design: this is not a caution term, it is a floor.
     const hz = p.hazard;
+    /*
+     * A THING THAT WAS TRIED HERE AND MEASURED WORSE. Recorded so it is not
+     * retried blind, because the reasoning for it is good and it is wrong.
+     *
+     * Both bounds below solve `v² = v_lead² + 2 a d`, and both are handed the
+     * lead car's speed RIGHT NOW — which asserts it will still be doing it when
+     * we arrive. Into a braking zone that is the one moment the assertion is
+     * most wrong: the car ahead is about to shed two hundred km/h for a corner
+     * it is already turning into. The obvious correction is to plan against
+     * `min(hz.speedMs, speedTargetAt(car, s + hz.gapM, p))` — what a driver
+     * means by "he has to brake for the same corner I do".
+     *
+     * Measured at Spa, three seeds, quarter distance, F3, before and after:
+     *
+     *   off-track excursions   12.7 -> 6.3 a race     better, and consistently
+     *   car-to-car contacts    20.0 -> 28.0 a race    WORSE, 2 of 3 seeds
+     *   retirements             3.00 -> 3.67 a race   worse
+     *
+     * And `validate:race` at Monaco, which is where it showed up worst — the
+     * tightest circuit on the calendar, so the most to bunch:
+     *
+     *   finishers of 20         15 -> 0     with the change, nobody finished
+     *   retirements              5 -> 8
+     *   position swaps         277 -> 485   a field shuffling, not racing
+     *
+     * Pace itself was never the cost: Bahrain's fastest race lap is 1:56.917
+     * either way, identical to the digit. It is not a caution tax, it is a
+     * concertina — a field that brakes earlier for the car in front arrives at
+     * the corner bunched harder and touches more once it is there. Excursions
+     * are an intermediate quantity; finishers, retirements and contacts are what
+     * the player sees, and all three moved the wrong way.
+     *
+     * (Overtakes at Bahrain read 181 without and 197 with. Do not read that as
+     * the change buying overtaking — at Monaco the same counter went to 485 for
+     * a race no one finished, which is what a bunched field does to a
+     * position-swap count.)
+     *
+     * The braking-zone error above is real and still unfixed. Whatever fixes it
+     * has to not bunch the field to do it.
+     */
     if (hz !== null) {
       const standoff = inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M;
       // The pit lane gets a measured deceleration rather than the computed one.

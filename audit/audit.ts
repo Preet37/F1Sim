@@ -223,7 +223,7 @@ const freeCam = new THREE.PerspectiveCamera(55, SHOT_W / SHOT_H, 0.3, 8000);
 
 function frame(): void {
   if (!engine || !focus) return;
-  renderer.render(1 / 60, engine, focus);
+  renderer.render(1 / 60, 1, engine, focus);
 }
 
 /**

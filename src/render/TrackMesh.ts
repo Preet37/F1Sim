@@ -175,8 +175,39 @@ export const ROAD_SURFACE_Y = Y_ROAD;
  * ground it rides cannot be dropped onto a kerb — so the whole correction lives
  * here, in the one place that knows how thick the road is.
  */
-export function carGroundY(elevationY: number): number {
-  return elevationY + ROAD_SURFACE_Y;
+export function carGroundY(elevationY: number, bankRiseY = 0): number {
+  return elevationY + ROAD_SURFACE_Y + bankRiseY;
+}
+
+/**
+ * The y a car's origin must sit at, ON A BANKED ROAD, at a given lateral offset.
+ *
+ * THE BANKING WAS IGNORED, and on the two circuits that have any it is the
+ * largest positioning error in the game. `carGroundY` took the centreline's
+ * elevation and added the road's thickness, which is right in the middle of the
+ * road and wrong everywhere else: the asphalt under a car is tilted, so a car
+ * sitting `lateral` metres off the centreline stands `lateral * tan(bank)`
+ * higher or lower than the centreline does.
+ *
+ * Measured by `probe:banking`: 1.63m at Zandvoort, where Hugenholtz and the
+ * final banked turn run to 18 degrees, and 0.42m at Spa through Eau Rouge. A
+ * car a metre and a half off the road is not a subtle artefact — it floats
+ * clear on the high side and sinks through the surface on the low side, which
+ * is exactly the "cars visibly float or sink through the road" report.
+ *
+ * The rise is the SAME function the road mesh is built with (`bankHeight`), not
+ * a second copy of the arithmetic, so the car cannot disagree with the surface
+ * it is standing on. The cross-slope runs out a few metres beyond the road edge
+ * rather than continuing forever — see `bankHeight` — so a car in the run-off
+ * is placed on the flat, which is where the run-off is.
+ */
+export function bankedCarGroundY(track: TrackSpline, s: number, lateral: number): number {
+  const bank = track.bankingAt(s);
+  if (bank === 0) return carGroundY(track.elevationAt(s));
+  return carGroundY(
+    track.elevationAt(s),
+    bankHeight(bank, lateral, track.widthAt(s) * 0.5),
+  );
 }
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
