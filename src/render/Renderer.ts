@@ -7,7 +7,7 @@ import {
 import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, bankedCarGroundY, type TrackMeshes } from './TrackMesh';
-import { updateRenderPoses } from './RenderPose';
+import { updateRenderPoses, updateSafetyCarPose } from './RenderPose';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
@@ -1361,6 +1361,11 @@ export class Renderer {
    */
   private updateRenderPoses(engine: RaceEngine, alpha: number): void {
     updateRenderPoses(engine.cars, engine.track.length, alpha);
+    // The safety car is not in `engine.cars` and never will be — see the header
+    // of `SafetyCar.ts` — but it is drawn from the same kind of state and it
+    // gets the same rule. Issue #54 left this out because `SafetyCar` is
+    // race-side code; issue #10 owns it.
+    updateSafetyCarPose(engine.raceControl.safetyCar, engine.track.length, alpha);
   }
 
   /**
@@ -1732,15 +1737,21 @@ export class Renderer {
 
     const track = engine.track;
     const p = track.tmpA;
-    track.toWorld(sc.s, sc.lateral, p);
+    // THE RENDER POSE, not the solver state — issue #54's second half. Every
+    // one of this vehicle's three drawn axes comes out of this pair (X and Z
+    // through `toWorld`, Y through `bankedCarGroundY`), so reading `sc.s` here
+    // drew the safety car as a staircase in all three while the twenty cars
+    // around it were smooth. `updateSafetyCarPose` is the same rule, from the
+    // same module, that `updateRenderPoses` applies to them.
+    track.toWorld(sc.renderS, sc.renderLateral, p);
     // `bankedCarGroundY` and not the bare elevation: the road surface sits 20mm
     // above the terrain, so a vehicle placed on the terrain has its wheels in
     // it — and on a banked corner the asphalt under the car is higher still the
     // further out it sits, which is worth 1.56m at Zandvoort. The safety car
     // leads the field through those corners, so it needs the same treatment the
     // racing cars get.
-    v.root.position.set(p.x, bankedCarGroundY(track, sc.s, sc.lateral), p.y);
-    v.root.rotation.y = track.headingAt(sc.s);
+    v.root.position.set(p.x, bankedCarGroundY(track, sc.renderS, sc.renderLateral), p.y);
+    v.root.rotation.y = track.headingAt(sc.renderS);
 
     // Wheels turn at the speed the car is doing. A course car whose wheels are
     // stationary while it circulates is the single most obvious tell there is.
@@ -1754,7 +1765,7 @@ export class Renderer {
     // car going round a hairpin with its front wheels straight ahead is what
     // this is for.
     const len = track.length;
-    let turn = track.headingAt((sc.s + 8) % len) - track.headingAt(sc.s);
+    let turn = track.headingAt((sc.renderS + 8) % len) - track.headingAt(sc.renderS);
     while (turn > Math.PI) turn -= Math.PI * 2;
     while (turn < -Math.PI) turn += Math.PI * 2;
     const steer = Math.max(-0.5, Math.min(0.5, turn * 6));
