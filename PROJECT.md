@@ -562,8 +562,23 @@ and the button says what it does: `Run it out to the flag`.
 
 **The engine was never the problem, and that is a finding.** The new
 `probe:qualiboard` section (player stops at t=90s, Bahrain and Monaco) **passes
-on `main` as written**: all nineteen other cars leave the pits and set times.
-Both halves of the defect were in `main.ts`.
+on `main` as written**: `19/19` of the other cars leave the pits and set a lap,
+and the driver who stopped is classified P20 rather than deleted. Both halves of
+the defect were in `main.ts`.
+
+**A third bug the new probe found on its own: the principal's transmission was
+being dropped in qualifying.** `Hud.raiseCard` opens with
+`if (this.pitSheetOpen) return` — correctly, because *"the radio stuff is being
+covered by the pit options"* is one of the reported complaints the HUD was built
+to answer. But `updatePitPrompt` runs **after** `updateRetirement` in the frame
+loop, so on the frame the accident was announced the sheet was still open from
+the previous one and the radio card never appeared. It shows in qualifying and
+not in a race because every practice and qualifying session starts in the garage
+(`pitLaneStart`), so `pitDecisionPending` is true from the first frame and the
+sheet is genuinely up when a driver goes off on their out-lap.
+`retireOnTheRadio` now closes the sheet before anybody speaks, which is also
+simply right: a car in the gravel has no stop to make, and
+`pitDecisionPending` says so itself the moment `retired` is set.
 
 **Proved red on today's build**, then proved the probe's own first draft was
 worthless: the initial version used a fixed 9-second wait for the retirement to

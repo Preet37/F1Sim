@@ -162,23 +162,32 @@ await page.evaluate(() => {
 const playerNumber = await page.evaluate(() => {
   const g = window.__game;
   g.engine.playerCar.retire('Beached in the gravel', g.engine.time, 0.85);
+  // THE 2.6-SECOND DELAY IS NOT WHAT THIS PROBE IS TESTING, and it is charged
+  // in SESSION time. `Game.RETIREMENT_DELAY_S` exists so the player gets to
+  // watch the accident happen before anything is said, which is right and
+  // stays. But under a software rasteriser this session advances at roughly a
+  // hundredth of realtime on a loaded machine — measured, 0.06s of session in
+  // 4s of wall clock — so waiting it out costs minutes and, at load average 93,
+  // blew a 120-second budget and failed every assertion downstream for a reason
+  // that had nothing to do with the code under test. Backdating the stamp the
+  // delay is measured from satisfies it on the next frame. Everything the probe
+  // actually asserts happens after it.
+  g.retiredAt = -1e6;
   return g.engine.playerCar.driver.raceNumber;
 });
 
 // WAIT FOR THE PRESENTATION, DO NOT GUESS AT IT.
 //
-// `RETIREMENT_DELAY_S` is 2.6 seconds of SESSION time, and under a software
-// rasteriser the session runs at roughly a tenth of realtime — so a fixed
-// nine-second wait reached the assertions with 1.0s of session on the clock and
-// the retirement not yet raised. Every check then failed for the wrong reason,
-// and worse, the two that were phrased in the negative ("nothing has taken the
-// screen over", "race control did not call it a retirement) PASSED on the very
-// build this probe exists to fail. A probe a broken feature passes is worse
-// than no probe; this polls the shell's own flag instead.
+// A fixed nine-second wait reached the assertions with 1.0s of session on the
+// clock and the retirement not yet raised. Every check then failed for the
+// wrong reason, and worse, the two phrased in the negative ("nothing has taken
+// the screen over", "race control did not call it a retirement") PASSED on the
+// very build this probe exists to fail. A probe a broken feature passes is
+// worse than no probe; this polls the shell's own flag instead.
 const shown = await waitFor(
   () => page.evaluate(() => window.__game.retirementShown === true),
   120_000, 'the retirement to be raised');
-check(shown, 'the game said something about the accident within 120s');
+check(shown, 'the game said something about the accident');
 // One more beat for the rAF that reveals the bar.
 await page.waitForTimeout(1500);
 
@@ -467,11 +476,12 @@ await page.waitForTimeout(7000);
 await page.evaluate(() => {
   const g = window.__game;
   g.engine.playerCar.retire('Accident damage', g.engine.time, 0.9);
+  g.retiredAt = -1e6; // See the note on the qualifying case.
 });
 const raceShown = await waitFor(
   () => page.evaluate(() => window.__game.retirementShown === true),
   120_000, 'the race retirement to be raised');
-check(raceShown, 'the game said something about the race accident within 120s');
+check(raceShown, 'the game said something about the race accident');
 await page.waitForTimeout(1500);
 
 const raceScene = await page.evaluate(() => {
