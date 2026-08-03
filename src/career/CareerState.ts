@@ -1,4 +1,5 @@
 import { clamp, clamp01 } from '../core/MathUtils';
+import { coerceHelmet, type HelmetDesign } from './Identity';
 import type { TierId } from '../data/roster';
 import type { CareerWorld, WorldDriver } from './World';
 import type { RoundResult, SeasonState, SeasonSummary } from './Season';
@@ -43,8 +44,10 @@ export const SAVE_VERSION = 2;
  *
  * 2: `RoundResult.disqualified`, once the race engine started modelling
  *    exclusion separately from retirement under the 2026 regulations.
+ * 3: `PlayerProfile.helmet`, once the player had a face.
+ * 4: `CareerState.weekendInProgress`, so a weekend survives a reload.
  */
-export const SAVE_MINOR = 2;
+export const SAVE_MINOR = 4;
 
 /** The player, as a driver. Mirrors `WorldDriver` because they are one. */
 export interface PlayerProfile {
@@ -53,6 +56,17 @@ export interface PlayerProfile {
   code: string;
   nationality: string;
   raceNumber: number;
+
+  /**
+   * The helmet the player designed. See `src/career/Identity.ts` for why a
+   * helmet is the protagonist of this career mode and not a face.
+   *
+   * OPTIONAL, WHICH IS THE WHOLE POINT OF `saveMinor`. A career started before
+   * the designer existed has no helmet in it and must still open; it is given a
+   * default rolled from its own seed on load, so that career gets a helmet of
+   * its own rather than everybody's being the same one.
+   */
+  helmet?: HelmetDesign;
 
   skill: number;
   aggression: number;
@@ -123,6 +137,38 @@ export interface MyTeamState {
   teammateDriverId: string;
 }
 
+/**
+ * A race weekend that has been started and not finished.
+ *
+ * WHY THIS IS IN THE SAVE. Everything the career records — results, standings,
+ * history, the world — persists, and `probe:save` proves it round-trips. What
+ * did not persist was the weekend itself: the session queue, how far through it
+ * the player was, and the grid qualifying had produced so far. Those lived as
+ * fields on the app shell, so qualifying on the Saturday and closing the tab
+ * threw the qualifying away and put the player back at the hub with the round
+ * unrun. Everything the game had told them about that weekend was gone.
+ *
+ * `sessions` is stored as opaque values on purpose. It is a `SessionConfig[]`,
+ * which belongs to the race engine, and importing that type here would put a
+ * simulation type in the middle of the save schema — where every probe and
+ * every migration would then have to know about it. It round-trips through JSON
+ * unchanged, which is the only property the save needs from it.
+ */
+export interface WeekendProgress {
+  circuitId: string;
+  /** The round it belongs to. A stale weekend from an earlier round is ignored. */
+  round: number;
+  /** Which session of the queue is next. */
+  index: number;
+  /** `SessionConfig[]`, verbatim. See above for why it is not typed here. */
+  sessions: unknown[];
+  /** The grid qualifying has built so far, by driver id. */
+  qualifyingGrid: string[];
+  qualifyingSurvivors: string[];
+  /** Barred from the rest of qualifying under Art. B4.3.2. */
+  qualifyingBarred: string[];
+}
+
 export interface CareerState {
   saveVersion: number;
   saveMinor: number;
@@ -151,6 +197,14 @@ export interface CareerState {
 
   /** Preparation slots left before the next round. */
   prepSlotsLeft: number;
+
+  /**
+   * The weekend the player is part-way through, if any.
+   *
+   * Additive, so a save written before it existed simply has no weekend to
+   * resume. Cleared when the weekend ends or is abandoned.
+   */
+  weekendInProgress?: WeekendProgress;
 
   /**
    * Fields written by a NEWER build than this one.
@@ -196,6 +250,18 @@ export function playerAsWorldDriver(state: CareerState): WorldDriver {
     salaryUsd: 500_000,
     reserve: false,
   };
+}
+
+/**
+ * The player's helmet, whatever state the save is in.
+ *
+ * The one accessor everything draws from, so a career from before the designer
+ * existed, a career hand-edited into nonsense and a career created five minutes
+ * ago all produce a helmet that can be painted. A drawing routine that has to
+ * check for `undefined` is a drawing routine that will eventually be given one.
+ */
+export function playerHelmet(state: CareerState): HelmetDesign {
+  return coerceHelmet(state.player.helmet, state.seed);
 }
 
 /** Applies a bounded change to a narrative quantity. */

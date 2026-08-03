@@ -63,14 +63,16 @@
     "probe:tiers": "tsx scripts/probeTiers.ts",
     "probe:save": "tsx scripts/probeSave.ts",
     "probe:fieldsize": "tsx scripts/probeFieldSize.ts",
-    "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize",
+    "probe:identity": "tsx scripts/probeIdentity.ts",
+    "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize && npm run probe:identity",
     "shoot:hud": "tsx scripts/shootHud.ts",
     "shoot:weather": "tsx scripts/shootWeather.ts",
     "shoot:panels": "tsx scripts/shootPanels.ts",
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:shoulders": "tsx scripts/auditShoulders.ts",
-    "audit:car": "tsx scripts/auditCar.ts"
+    "audit:car": "tsx scripts/auditCar.ts",
+    "shoot:career": "tsx scripts/shootCareer.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

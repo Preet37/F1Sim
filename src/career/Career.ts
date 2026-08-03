@@ -18,6 +18,9 @@ import {
 import {
   CareerEventManager, type CareerEvent, type EventContext,
 } from './Events';
+import {
+  availableNumbers, defaultHelmet, uniqueDriverCode, type HelmetDesign,
+} from './Identity';
 
 /**
  * The career, as one object the rest of the game talks to.
@@ -63,6 +66,7 @@ export class Career {
     lastName: string;
     nationality: string;
     raceNumber?: number;
+    helmet?: HelmetDesign;
     mode?: CareerMode;
     seed?: number;
   }): Career {
@@ -70,13 +74,27 @@ export class Career {
     const world = createWorld(seed, REAL_ROSTER);
     const rng = new Rng(seed ^ 0x11f0a7d3);
 
-    const code = opts.lastName.slice(0, 3).toUpperCase().padEnd(3, 'X');
+    /**
+     * The code and the number are taken against the grid the player is joining,
+     * not in isolation. Two cars in one championship cannot carry the same
+     * number, and two drivers sharing three letters on the timing tower is the
+     * kind of detail that quietly tells somebody the game is not really theirs.
+     */
+    const f3Drivers = world.tiers.F3.drivers;
+    const code = uniqueDriverCode(opts.lastName, f3Drivers.map((d) => d.code));
+    const wanted = opts.raceNumber ?? 47;
+    const numbersTaken = new Set(f3Drivers.map((d) => d.raceNumber));
+    const raceNumber = numbersTaken.has(wanted)
+      ? (availableNumbers(numbersTaken)[0] ?? wanted)
+      : wanted;
+
     const player: PlayerProfile = {
       firstName: opts.firstName,
       lastName: opts.lastName,
       code,
       nationality: opts.nationality,
-      raceNumber: opts.raceNumber ?? 47,
+      raceNumber,
+      helmet: opts.helmet ?? defaultHelmet(seed),
       // A junior with obvious potential and nothing proven. Deliberately below
       // the Formula 3 field's median, so the first season is a fight.
       skill: 0.70,
