@@ -3,6 +3,8 @@ import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from './CarEntry';
 import { RECOVERY_FAST_SECTION_MS, RECOVERY_TRACKSIDE_M } from './Recovery';
 import type { DebrisField } from './DebrisField';
+import { Stewards, type StewardsNotice } from './Stewards';
+import type { Offence } from './DrivingStandards';
 
 /**
  * Race Control: flags, track limits, and penalties.
@@ -505,6 +507,24 @@ export class RaceControlManager {
   /** True once the leader has taken the chequered flag. */
   raceFinished = false;
 
+  /**
+   * The bench.
+   *
+   * Race control notes an incident; the stewards decide what it was. Kept as a
+   * separate object with a two-method interface between them because the
+   * decision has to be testable on its own — see `npm run probe:stewards`, which
+   * stages a squeeze and a corner-priority dispute and asserts the verdict.
+   *
+   * Created on the first `update` because the field size is not known until the
+   * cars arrive.
+   */
+  private stewardsBench: Stewards | null = null;
+
+  /** The stewards, once a session has started. */
+  get stewards(): Stewards | null {
+    return this.stewardsBench;
+  }
+
   constructor(track: TrackSpline, rng?: () => number) {
     this.track = track;
     // Deterministic by default: a replayed race must neutralise identically.
@@ -512,7 +532,19 @@ export class RaceControlManager {
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags.push('green');
   }
 
+  /**
+   * Reports a car-to-car contact to the stewards.
+   *
+   * The engine's contact solver calls this at the moment of the hit. It is a
+   * report and not a decision: nothing is judged until the bench has had the
+   * better part of a lap to look at it.
+   */
+  reportContact(a: CarEntry, b: CarEntry, severity: number, sessionTime: number): void {
+    this.stewardsBench?.reportContact(a, b, severity, sessionTime);
+  }
+
   reset(): void {
+    this.stewardsBench?.reset();
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags[i] = 'green';
     this.sessionFlag = 'green';
     this.neutralisation = 'none';
@@ -712,6 +744,76 @@ export class RaceControlManager {
       this.checkPitLaneSpeed(car, i, sessionTime);
       this.checkNeutralisationDelta(car, i, dt, sessionTime);
     }
+
+    // LAST, and after the per-car loop on purpose: `offTrackNow` is written by
+    // `checkTrackLimits` and the stewards read it as their definition of having
+    // left the track, so the two must be looking at the same step.
+    if (this.stewardsBench === null) {
+      this.stewardsBench = new Stewards(this.track, cars.length, this.stewardsWire, this.rng);
+    }
+    this.stewardsBench.update(cars, sessionTime, isRace, this.neutralisation !== 'none');
+  }
+
+  // =========================================================================
+  // The stewards' end of the wire
+  // =========================================================================
+
+  /**
+   * How the bench speaks to the outside world.
+   *
+   * Two methods, and both of them end in machinery that already existed: a
+   * bulletin on the race-control feed, and a penalty on a car. There is
+   * deliberately no new channel to the HUD — a verdict is a `RaceNotice` with a
+   * `status` the alert renderer already recognises as a decision, so it reaches
+   * the segmented penalty banner without a line of presentation code being
+   * touched.
+   *
+   * The one requirement that is easy to get wrong: `carIndex` must be the car
+   * the decision is ABOUT. The old contact bulletin passed -1, which is why it
+   * could never render as anything but a note.
+   */
+  private readonly stewardsWire = {
+    file: (
+      text: string, severity: RaceControlMessage['severity'], time: number,
+      carIndex: number, notice: StewardsNotice,
+    ): void => {
+      this.log(text, severity, time, carIndex, { notice });
+    },
+    penalise: (
+      car: CarEntry, seconds: 5 | 10, offence: Offence, where: string, time: number,
+    ): void => {
+      this.issueTimePenalty(car, seconds, offence, where, time);
+    },
+  };
+
+  /**
+   * Imposes a time penalty and announces it.
+   *
+   * Art. B1.9.5a and B1.9.5b. The seconds go onto `penaltySeconds` here, at the
+   * moment of the decision, rather than at the flag — because that is when the
+   * driver starts carrying them, and because the timing tower has to be able to
+   * show a held penalty against a car that is still on the road. Serving the
+   * penalty in the pit lane takes them off again (`CarEntry.servePenaltyInBox`);
+   * not serving it leaves them on, and `classifiedTime` charges them at the end.
+   */
+  issueTimePenalty(
+    car: CarEntry, seconds: 5 | 10, offence: Offence, where: string, sessionTime: number,
+  ): void {
+    const kind: PenaltyKind = seconds === 10 ? 'time-10s' : 'time-5s';
+    car.penalties.push({
+      kind,
+      reason: offence + (where ? ' at ' + where : ''),
+      lap: car.lap, timeS: seconds, served: false,
+    });
+    car.penaltySeconds += seconds;
+    this.log(
+      car.driver.code + ' — ' + seconds + ' second time penalty, ' + offence.toLowerCase(),
+      'critical', sessionTime, car.index,
+      { notice: {
+        parties: [car.driver.code], where,
+        offence, status: seconds + ' SECOND TIME PENALTY',
+      } },
+    );
   }
 
   /**
@@ -1660,6 +1762,61 @@ export class RaceControlManager {
           { notice: {
             parties: [car.driver.code], where: '',
             offence: 'MANDATORY TYRE RULE', status: 'DISQUALIFIED',
+          } },
+        );
+      }
+    }
+  }
+
+  /**
+   * Converts penalties nobody ever came in to serve.
+   *
+   * A penalty is not waived by the flag falling. Art. B1.9.5 closes off both
+   * escapes:
+   *
+   *   - A five or ten second penalty may be taken in the pit lane OR paid at the
+   *     end — "The relevant driver may however elect not to stop, provided he
+   *     carries out no further pit stop before the end of the TTCS. In such
+   *     cases five (5) seconds will be added to the elapsed TTCS time of the
+   *     driver concerned." Nothing is needed here for those: the seconds went
+   *     onto `penaltySeconds` when the penalty was imposed and stayed there
+   *     unless a pit stop took them off.
+   *
+   *   - A drive-through or a stop-and-go has no such election, so the regulation
+   *     supplies a conversion for the case where there was no time to serve it:
+   *     "If any of the four (4) penalties above are imposed during the last
+   *     three (3) laps, or after the end of a TTCS ... twenty seconds will be
+   *     added ... in the case of (c) and thirty seconds in the case of (d)."
+   *     Twenty and thirty rather than the nominal cost of the penalty, because a
+   *     penalty that cannot be served is worth more than one that can.
+   *
+   * A car that retired never had the opportunity either, and for that case the
+   * regulation reaches for a grid penalty at the next race instead — which this
+   * game has no machinery for. It is left alone rather than converted, because
+   * adding thirty seconds to a DNF changes nothing and would put a number on the
+   * results screen that means nothing.
+   */
+  convertUnservedPenalties(cars: readonly CarEntry[], sessionTime: number): void {
+    // The bench first. An incident on the last lap has to be decided before its
+    // penalty can be converted, and a decision after the flag is a real thing —
+    // Art. B1.9.5 has a clause for exactly it.
+    this.stewardsBench?.closeOutstanding(cars, sessionTime);
+
+    for (const car of cars) {
+      if (car.retired) continue;
+      for (const p of car.penalties) {
+        if (p.served) continue;
+        const add = p.kind === 'drive-through' ? 20 : p.kind === 'stop-go-10s' ? 30 : 0;
+        if (add === 0) continue;
+        p.served = true;
+        p.timeS = add;
+        car.penaltySeconds += add;
+        this.log(
+          car.driver.code + ' — ' + add + ' seconds added, penalty not served',
+          'critical', sessionTime, car.index,
+          { notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'PENALTY NOT SERVED', status: add + ' SECOND TIME PENALTY',
           } },
         );
       }

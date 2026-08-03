@@ -291,6 +291,19 @@ const IMPACT_SHED_SEVERITY = 0.55;
  */
 const IMPACT_SHARD_SIZE_M = [0.45, 0.12, 0.35] as const;
 
+/**
+ * How close behind the beneficiary has to be before a car ordered to give a
+ * position back actually lifts, metres.
+ *
+ * Two car lengths and a bit. Close enough that coming off the throttle hands the
+ * place over within a corner, far enough that the instruction is not carried out
+ * by parking on the racing line while the other car is still half a straight
+ * away — which loses time to the rest of the field for no benefit to anyone.
+ */
+const CEDE_LIFT_RANGE_M = 14;
+/** How hard. Enough to be decisive, not enough to invite a rear-end shunt. */
+const CEDE_BRAKE = 0.2;
+
 /** How far above the road each part is mounted, metres. */
 const PART_MOUNT_HEIGHT_M: Record<BodyPartId, number> = {
   frontWing: 0.16, rearWing: 0.85, sidepodL: 0.42, sidepodR: 0.42,
@@ -747,6 +760,8 @@ export class RaceEngine {
       if (car.isPlayer) {
         this.applyNeutralisationAssist(car, car.appliedControls);
         this.applyPitLaneAssist(car, car.appliedControls);
+      } else {
+        this.applyCedeInstruction(car, car.appliedControls);
       }
       car.physics.drsAvailable = this.isDrsAllowed(car);
       // Where the car is BEFORE it moves, for the swept test against the solid
@@ -1982,6 +1997,45 @@ export class RaceEngine {
    * the same shared `neutralisedLimit`, so the player is never braked for
    * obeying the other article.
    */
+  /**
+   * Makes an AI car actually give a position back.
+   *
+   * The stewards can instruct a driver to hand a place back under Art. B1.8.6,
+   * and the instruction turns into a five-second penalty if it is not obeyed.
+   * A rule that only bound the player would be worse than no rule at all — the
+   * player would be the only driver on the circuit who could be penalised for
+   * something nineteen other cars simply ignore — so this is the AI's half of
+   * obedience.
+   *
+   * WHY IT IS HERE AND NOT IN `AIVehicleController`. Because it is not racecraft.
+   * The AI decides where to place the car and how hard to attack; this is a
+   * legal obligation imposed from outside, and it belongs with the other two
+   * obligations the engine already imposes on a driver's own controls — the
+   * neutralisation limiter and the pit lane limiter. Putting it in the AI would
+   * also mean nineteen separate copies of a decision that has exactly one right
+   * answer.
+   *
+   * The behaviour is deliberately the smallest thing that works: come off the
+   * throttle and brush the brakes while the beneficiary is close enough behind
+   * to take the place, and stop the moment they have it. No line change, because
+   * moving off the racing line to concede is a choice a driver makes about a
+   * specific corner and getting it wrong puts the two cars back together.
+   */
+  private applyCedeInstruction(car: CarEntry, c: VehicleControls): void {
+    if (car.cedePositionTo < 0 || car.retired || car.inPitLane) return;
+    const to = this.cars[car.cedePositionTo];
+    if (to.retired || to.inPitLane) return;
+    // Already done.
+    if (to.totalDistance > car.totalDistance) return;
+    // Only lift when the other car is actually there to take the place. Braking
+    // for a car eighty metres back concedes nothing and loses time to everybody
+    // else, which is not what the instruction asks for.
+    const gapM = car.totalDistance - to.totalDistance;
+    if (gapM > CEDE_LIFT_RANGE_M) return;
+    c.throttle = 0;
+    c.brake = Math.max(c.brake, CEDE_BRAKE);
+  }
+
   private applyNeutralisationAssist(car: CarEntry, c: VehicleControls): void {
     const rc = this.raceControl;
     if (!this.neutralisationAssist ||
@@ -2406,6 +2460,28 @@ export class RaceEngine {
         if (pen.kind === 'stop-go-10s') car.pitBoxTimer += 10;
         pen.served = true;
       }
+
+      // A five or ten second time penalty is served HERE, at the driver's next
+      // stop, and the crew has to stand back for it: "it may not be worked on
+      // until the Car has been stationary for the duration of the penalty. In
+      // this context, touching the Car or driver by hand or tools or equipment
+      // will all constitute working" (Art. B1.9.5c).
+      //
+      // Which is why a five-second penalty is not worth five seconds. The stop
+      // still has to happen afterwards, at full length, so the driver pays the
+      // penalty AND the stop — and that is the whole reason a driver carrying
+      // one weighs staying out against coming in. Adding it to the box timer is
+      // exactly that arithmetic; `servePenaltyInBox` takes the seconds back off
+      // the end-of-race total so it is not charged twice.
+      //
+      // COORDINATION NOTE: these three lines are the entire interface the pit
+      // stop rewrite needs to preserve. If the stop becomes a choreography with
+      // a release light and a crew-quality parameter, the penalty is a state at
+      // the FRONT of it — the car stationary, the crew standing back — and the
+      // call is `car.penaltyHoldS()` for the duration and
+      // `car.servePenaltyInBox()` once it has elapsed.
+      car.pitBoxTimer += car.penaltyHoldS();
+      car.servePenaltyInBox();
     }
 
     if (car.inPitBox) {
@@ -2645,15 +2721,12 @@ export class RaceEngine {
             // damage wings and gearboxes.
             this.applyContactDamage(a, severity, zoneFor(a.physics.heading, nx, nz));
             this.applyContactDamage(b, severity, zoneFor(b.physics.heading, -nx, -nz));
-            this.raceControl.log(
-              'Contact between ' + a.driver.code + ' and ' + b.driver.code,
-              'warning', this.time, -1,
-              { notice: {
-                parties: [a.driver.code, b.driver.code],
-                where: (this.track.cornerNameAt(a.s) || '').toUpperCase(),
-                offence: 'CONTACT', status: 'NOTED',
-              } },
-            );
+            // Reported to the stewards rather than announced here. The bulletin
+            // is the same one it always was — race control raises it, worded
+            // identically, from `Stewards.openIncident` — but it now carries the
+            // index of a car and an incident that will be decided, instead of
+            // being a dead end with `carIndex: -1` that nothing could follow up.
+            this.raceControl.reportContact(a, b, severity, this.time);
           }
         }
       }
@@ -3023,6 +3096,12 @@ export class RaceEngine {
       }
     }
     if (this.config.kind === 'race') {
+      // Order matters: the unserved penalties are converted to elapsed time
+      // BEFORE the field is re-sorted, because that conversion is exactly what
+      // decides who finished where. A driver carrying five seconds only loses a
+      // place if somebody is within five seconds of them, and that comparison
+      // happens in `updateStandings` through `classifiedTime`.
+      this.raceControl.convertUnservedPenalties(this.cars, this.time);
       this.raceControl.checkMandatoryCompounds(this.cars, this.weather.hasRained, this.time);
     }
     this.updateStandings();

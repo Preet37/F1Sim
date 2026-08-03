@@ -52,6 +52,7 @@
     "probe:strategy": "tsx scripts/probeStrategy.ts",
     "probe:pitstop": "tsx scripts/probePitStop.ts",
     "probe:traffic": "tsx scripts/probeTraffic.ts",
+    "probe:stewards": "tsx scripts/probeStewards.ts",
     "probe:qualiboard": "tsx scripts/probeQualiBoard.ts",
     "probe:renderperf": "tsx scripts/probeRenderPerf.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
