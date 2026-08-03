@@ -28,11 +28,12 @@
  * `SessionConfig.aiDifficulty` is optional and falls back to
  * `CALIBRATION_DIFFICULTY` = 'hard' — deliberately, so that adding a difficulty
  * menu could not silently re-baseline every lap-time check in the suite. But the
- * level a new player is GIVEN is 'medium', and the difference is not only pace:
- * `errorScale` is 1.25 at medium and 1.8 at easy against 1.0 at hard, and that
- * number is the amplitude of the AI's steering wander. The easier the
- * opposition, the more of it ends up off the road. So this probe takes the level
- * as an argument and defaults to the one the player has.
+ * level a new player is GIVEN is 'medium', and that is a different field, not a
+ * slower one. Measured here on one circuit, one seed, the same twenty cars:
+ * Bahrain over fourteen laps gave 6 contacts and one penalised car on hard, 2
+ * and none on easy, 0 and none on medium. So this probe takes the level as an
+ * argument and defaults to the one the player has, and every number below is
+ * quoted with the level it was measured at.
  *
  * So this one counts the things a person sitting in the cockpit can actually
  * see, per race rather than per car-lap, in the car and the grid slot they
@@ -199,10 +200,13 @@ function runRace(
     // else in this repository measures. `SessionConfig.aiDifficulty` defaults to
     // `CALIBRATION_DIFFICULTY` — 'hard', every multiplier at 1 — precisely so
     // that adding a difficulty menu could not re-baseline the validation
-    // harness. The consequence nobody costed is that the harness therefore
-    // measures a field the player has never met: `medium` multiplies the AI's
-    // steering error by 1.25 and `easy` by 1.8, and that error is what puts
-    // cars off the road.
+    // harness. The consequence is that the harness measures a field a default
+    // save has never met, and the gap is large in both directions. Same
+    // circuit, same seed, same twenty cars at Bahrain: 6 contacts and one car
+    // penalised on hard, 2 and none on easy, 0 and none on medium. The
+    // aggression scale is why — an easier field attacks less, so it touches
+    // less — and it means a bound calibrated on hard is a bound nobody's race
+    // is held to.
     aiDifficulty: difficulty,
     // -1, not `gridSlot`: nobody is at the wheel in a headless run, and the
     // player's own car is driven by the same AI as everyone else. What makes it
