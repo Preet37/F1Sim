@@ -3541,12 +3541,30 @@ export class RaceEngine {
       for (const car of this.cars) {
         if (!car.retired && !car.finished) anyRunning = true;
       }
+      // STAMP THE FLAG BEFORE TESTING THE WINDOW, not after.
+      //
+      // These two blocks used to be the other way round, and the order was the
+      // whole bug. `raceFinishedAt` starts at 0, so on the step the leader
+      // crossed the line the window test read `time > 0 + 180` — true for any
+      // race longer than three minutes — and `finishSession()` fired
+      // immediately, stamping `finished` and the winner's `finishTime` on every
+      // car still circulating.
+      //
+      // Measured on a 5-lap race before the fix: 1 of 19 classified finishers
+      // had actually completed the distance, all 19 carried the winner's time
+      // to the microsecond, the finish-time spread was 0.000s, and the race
+      // ended 0.00s after the leader crossed. The 180-second backmarker window
+      // this line exists to provide had never once elapsed.
+      //
+      // It also quietly truncated the final lap of every car except the leader
+      // in every probe that drives a race, which depressed penalty counts and
+      // inflated lap-time spread across the whole suite. See `probe:finish`.
+      if (this.raceControl.raceFinished && this.raceFinishedAt === 0) {
+        this.raceFinishedAt = this.time;
+      }
       // Give backmarkers a window to complete their final lap after the leader.
       if (!anyRunning || (this.raceControl.raceFinished && this.time > this.raceFinishedAt + 180)) {
         this.finishSession();
-      }
-      if (this.raceControl.raceFinished && this.raceFinishedAt === 0) {
-        this.raceFinishedAt = this.time;
       }
       return;
     }
