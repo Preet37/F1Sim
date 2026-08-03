@@ -104,6 +104,62 @@ export const HAZARD_CORRIDOR_M = 2.7;
 export const RACING_ROOM_M = 0.55;
 
 /**
+ * Centre-to-centre room a driver aims for when going round a car that has
+ * stopped on the road, metres.
+ *
+ * Bigger than `RACING_ROOM_M`, and the difference is the whole distinction
+ * between racing somebody and passing an obstacle. Racing room is a minimum
+ * two moving cars negotiate between them — both drivers are looking, both can
+ * yield, and the rules say a car's width is what is owed. A stopped car is
+ * negotiating nothing: it cannot move out of the way, it may have shed bodywork
+ * that is not modelled where it stands, and whatever put it there may still be
+ * unfolding. So this is a TARGET rather than a floor, it is measured from the
+ * obstacle's own lateral position rather than from the centreline, and it is
+ * clamped by the width of the road like any other target.
+ *
+ * AND IT HAS TO CLEAR `HAZARD_CORRIDOR_M`, which is the number that actually
+ * decides whether the car can go past at all. Anything inside 2.7m across the
+ * road is still "in front of us" as far as the following bound is concerned, so
+ * a car that lines up to pass at 2.7m or less is still braking for the obstacle
+ * it is now beside — measured at Monza, cars settled seven metres behind a
+ * stopped car at 2.5m of offset and sat there at zero. `CONTACT_WIDTH_M` (2.0)
+ * is where the two cars touch; 3.5m is a metre and a half of clear air on top of
+ * that and 0.8m outside the corridor, which is the margin that lets the car
+ * actually accelerate past rather than creep alongside.
+ */
+export const BLOCKAGE_CLEARANCE_M = 3.5;
+
+/**
+ * The pace a driver picks their way past a stopped car at, m/s.
+ *
+ * 5 m/s is 18 km/h — a walking-pace crawl, and the slowest speed at which a
+ * Formula 1 car can still be steered anywhere. It exists because the following
+ * bound is a function of the gap alone: it tapers to zero at contact, and a car
+ * stopped dead has no lateral force available at any steering angle, so it can
+ * never move out of the corridor that is holding it at zero. This is the floor
+ * that keeps the car rolling long enough to complete the move.
+ *
+ * Deliberately not more. Everything about going past a stopped car — the double
+ * waved yellows, the marshals who may be walking to it, the bodywork nobody has
+ * swept up — says slowly, and the only thing this has to buy is steering
+ * authority.
+ */
+export const BLOCKAGE_CRAWL_MS = 5;
+
+/**
+ * How far to one side of a stopped car a driver has to be before "the side I am
+ * already on" is a real answer, metres.
+ *
+ * A car queued directly behind an obstacle is a few centimetres to one side of
+ * it, and which side that is, is noise. Without a deadband the answer flips at
+ * the decision rate and the car commits to neither — measured, a target offset
+ * alternating between +0.3m and -6.7m while the car tracked the average and
+ * arrived on the racing line. Half a car's width is wide enough that the sign
+ * means something.
+ */
+export const BLOCKAGE_SIDE_DEADBAND_M = 1.0;
+
+/**
  * How far ahead a lateral move looks, seconds.
  *
  * A car half a car length behind and closing at 10 m/s will be alongside within

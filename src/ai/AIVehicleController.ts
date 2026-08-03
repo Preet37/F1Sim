@@ -10,6 +10,7 @@ import {
   PIT_LIMITER_ARM_M, brakeFor, pitEntryTargetMs, pitLimiterSetpointMs,
 } from '../physics/PitLimiter';
 import {
+  BLOCKAGE_CLEARANCE_M, BLOCKAGE_CRAWL_MS, BLOCKAGE_SIDE_DEADBAND_M, CONTACT_GAP_M,
   PIT_DECEL_MS2, PIT_STANDOFF_M, RACING_ROOM_M, TRAFFIC_STANDOFF_M,
   requiredDecelMs2, safeFollowSpeedMs,
 } from './TrafficAwareness';
@@ -47,6 +48,7 @@ import type { Driver } from '../data/teams';
  *   OVERTAKE       committed to a pass; offset off-line and use everything
  *   DEFEND         under attack; take the inside line before the braking zone
  *   FOLLOW         held up but no opportunity; sit in the tow and mind the tires
+ *   AVOID          something has stopped on the road; go round it
  *   RECOVER        off-track or spun; rejoin safely
  *   PIT_APPROACH   entering the pit lane
  *   PIT_EXIT       leaving the pit lane, rejoining
@@ -61,6 +63,7 @@ export type AIState =
   | 'OVERTAKE'
   | 'DEFEND'
   | 'FOLLOW'
+  | 'AVOID'
   | 'RECOVER'
   | 'PIT_APPROACH'
   | 'PIT_EXIT';
@@ -109,6 +112,30 @@ export interface AIPerception {
    * position is a longitudinal idea.
    */
   hazard: Neighbour | null;
+  /**
+   * A car that has STOPPED on the road in front of this one, or null.
+   *
+   * The third picture, and the one that answers "is there something here I have
+   * to drive round". Neither of the other two can:
+   *
+   *   `ahead` is the car in front on the timing screen, and the racing logic
+   *   that reads it holds station on it. Holding station on a car that is not
+   *   moving means stopping — and then the car behind holds station on US, and
+   *   the whole field is parked. Measured at Monza and Monaco with one car
+   *   pinned to the racing line: 0 of the field still moving four minutes later
+   *   (`npm run probe:blockage`).
+   *
+   *   `hazard` is corridor-filtered, so it vanishes the instant this car has
+   *   moved a couple of metres across the road — which is exactly when the
+   *   avoidance is half done, and letting go of it there steers straight back
+   *   into the obstacle.
+   *
+   * So this one has no corridor filter, carries the obstacle's own lateral
+   * position (the number needed to choose a side), and is qualified by how long
+   * the car has been standing rather than by how slowly it is going — a grid
+   * full of stationary cars at the start is not twenty obstacles.
+   */
+  blockage: Neighbour | null;
   /**
    * Metres this car may move to its LEFT before its bodywork reaches another
    * car's. `Infinity` when the road on that side is clear.
@@ -223,7 +250,7 @@ export function createPerception(): AIPerception {
   return {
     blendRemainingM: 0,
     ahead: null, behind: null, alongsideLeft: null, alongsideRight: null,
-    hazard: null, roomLeftM: Infinity, roomRightM: Infinity,
+    hazard: null, blockage: null, roomLeftM: Infinity, roomRightM: Infinity,
     localYellow: false, yellowLevel: 0, blueFlag: false, neutralised: false,
     neutralisedTargetMs: 0, neutralisedScale: 0, neutralisedCatchUpMult: 1,
     queueGapM: 0, queueAheadM: -1, safetyCarAheadM: -1, safetyCarSpeedMs: 0,
@@ -598,6 +625,16 @@ export class AIVehicleController {
   private overtakeTargetIndex = -1;
   private overtakeSide = 0;
 
+  /**
+   * Which stopped car is being driven round, and on which side.
+   *
+   * Latched, because the side has to be decided ONCE. Re-deciding it every tick
+   * against a shrinking gap is how a car ends up steering left, then right,
+   * then arriving at the obstacle in the middle of the road having committed to
+   * nothing — and there is no second chance with something that is not moving.
+   */
+  private avoidSide = 0;
+
   /** Cached scratch to avoid allocating in the hot path. */
   private readonly lookAheadPoint = new Vec2();
 
@@ -824,6 +861,97 @@ export class AIVehicleController {
         return;
       }
     }
+
+    // --- AVOID. Something has stopped on the road. Go round it.
+    //
+    // ABOVE THE NEUTRALISATION BRANCH ON PURPOSE, and this is the one place the
+    // ordering is a regulation rather than a preference. Art. 55.14 / B5.13.4c
+    // requires cars on the lead lap to "always stay on the racing line unless
+    // deviating is unavoidable" — and a car parked on the racing line is the
+    // definition of unavoidable. It is also the case that matters most: the
+    // stopped car is very often WHY the race was neutralised, so a rule that
+    // put every car back on the racing line while it was neutralised would send
+    // the whole field, in order, into the thing being recovered.
+    //
+    // What this is NOT is an overtake. There is no gate on a passing zone, on
+    // closing speed, or on a yellow flag, because none of those questions are
+    // being asked: a stationary car is not a position being contested, it is an
+    // obstacle, and a driver under double waved yellows is instructed to "be
+    // prepared to change direction or stop" (Art. 26.1b / B1.8.4b) — to change
+    // direction, not to stop behind it. The speed the car goes past at is
+    // already handled elsewhere: the yellow lift, the neutralisation cap and
+    // the `hazard` following bound all still apply on top of this, and all
+    // three are speed limits rather than steering.
+    const block = p.blockage;
+    if (block !== null) {
+      const committing = this.state !== 'AVOID' || this.avoidSide === 0;
+      this.setState('AVOID');
+      // DECIDE THE SIDE ONCE, ON ENTERING, AND THEN LIVE WITH IT.
+      //
+      // Not once per obstacle, which is what this did first and what does not
+      // work: a queue behind a stopped car is itself a row of stopped cars, so
+      // the NEAREST one keeps changing as they shuffle, and a decision keyed on
+      // its identity is re-taken every few steps. Nor freshly every tick. Both
+      // produce the same failure, measured at Monza in the `[held]` mode of
+      // `probe:blockage`: a car sitting directly behind the obstacle is a
+      // hand's width to one side of it, the tie-break flips on that hand's
+      // width, and the target offset alternates between +0.3m and -6.7m at the
+      // decision rate. The car never commits to either, tracks the average,
+      // arrives still on the racing line, and stops.
+      //
+      // Cars either side of us are still read live below, because the room on
+      // the left is exactly what changes while nineteen other cars are making
+      // the same decision. It is the SIDE that is latched.
+      if (committing) {
+        // THE SIDE THIS CAR IS ALREADY ON, unless the road is not there.
+        //
+        // Choosing purely by which side has more asphalt is wrong and was also
+        // measured wrong. A stopped car sits near the middle of the road, so
+        // "more asphalt" comes out the same way for every car in the field —
+        // and a car already four metres to the right of it is then asked to
+        // cross the whole road, in front of it, to reach the side that won by a
+        // few centimetres. `roomLimited` correctly refuses to drive that car
+        // through the obstacle, so the target it can actually reach is a
+        // position two and a half metres away, which is inside
+        // `HAZARD_CORRIDOR_M` and therefore still something to brake for.
+        const roomIfLeft = halfWidth - block.lateral;
+        const roomIfRight = halfWidth + block.lateral;
+        const dLat = lateral - block.lateral;
+        if (Math.abs(dLat) > BLOCKAGE_SIDE_DEADBAND_M) {
+          // Far enough to one side that "the side I am on" means something.
+          let side = Math.sign(dLat);
+          const roomOurs = side > 0 ? roomIfLeft : roomIfRight;
+          const roomOther = side > 0 ? roomIfRight : roomIfLeft;
+          // Only cross if the road genuinely is not there on our own side,
+          // which is the case that matters at a hairpin.
+          if (roomOther > roomOurs + BLOCKAGE_CLEARANCE_M) side = -side;
+          this.avoidSide = side;
+        } else if (Math.abs(roomIfLeft - roomIfRight) > 1.0) {
+          // Squarely behind it: take the side with the road on it.
+          this.avoidSide = roomIfLeft > roomIfRight ? 1 : -1;
+        } else {
+          // Squarely behind it, in the middle of a symmetric road. Go the way
+          // the racing line is not, which is where the cars are not.
+          this.avoidSide = -Math.sign(this.lineAtNode(track.indexAt(s)) || 1);
+        }
+      }
+      const freeLeft = p.roomLeftM > RACING_ROOM_M + 1.0;
+      const freeRight = p.roomRightM > RACING_ROOM_M + 1.0;
+      // ...but never into a side somebody else is already using. Taking the
+      // wider side regardless is how two cars avoiding the same obstacle end up
+      // avoiding it into each other.
+      if (this.avoidSide > 0 && !freeLeft && freeRight) this.avoidSide = -1;
+      else if (this.avoidSide < 0 && !freeRight && freeLeft) this.avoidSide = 1;
+
+      // Clear of its bodywork by a margin, measured from where IT is rather
+      // than from the centreline, and held inside the white line so that going
+      // round a stopped car is not itself a track-limits offence.
+      const want = block.lateral + this.avoidSide * BLOCKAGE_CLEARANCE_M;
+      this.targetLateral = clamp(want, -halfWidth * 0.92, halfWidth * 0.92);
+      return;
+    }
+    // Past it, or it moved. The next obstacle is a fresh decision.
+    this.avoidSide = 0;
 
     // --- Under a safety car or VSC nobody races.
     //
@@ -1272,7 +1400,11 @@ export class AIVehicleController {
     // of the grid heading for a racing line on the left drove through anything
     // in between, because nothing in the path from `targetLateral` to the
     // steering command ever mentioned another car.
-    const lateralRate = this.state === 'OVERTAKE' || this.state === 'DEFEND' ? 3.2 : 2.0;
+    // AVOID moves at the committed rate for the same reason OVERTAKE does: the
+    // move has to be finished before the car gets there, and there is less road
+    // to do it in than a pass has.
+    const lateralRate =
+      this.state === 'OVERTAKE' || this.state === 'DEFEND' || this.state === 'AVOID' ? 3.2 : 2.0;
     this.smoothedLateral =
       damp(this.smoothedLateral,
         this.roomLimited(this.targetLateral, lateral, p, inLane), lateralRate, dt);
@@ -1622,6 +1754,16 @@ export class AIVehicleController {
     // Following: hold a comfortable gap rather than sitting in dirty air. This
     // is the driver's PREFERENCE — how close they like to run — and it is a
     // per-driver number in seconds because that is how a driver thinks about it.
+    //
+    // Note that `ahead` can no longer be a car that has STOPPED: this bound is
+    // `ahead.speedMs` times a shade under one, so a stationary car in front
+    // makes it a target speed of zero — a comfort preference expressed as a
+    // hard stop, which no amount of steering round the obstacle escapes because
+    // it never asks where either car is across the road. That exclusion is made
+    // once, in `RaceEngine.buildPerception`, along with the two other rules that
+    // had the same failure. The floor underneath (`hazard`, below) is the bound
+    // that actually keeps this car out of the back of that one, it is
+    // corridor-filtered, and it is not going anywhere.
     if (p.ahead !== null && this.state !== 'OVERTAKE') {
       const desiredGapM = Math.max(6, prof.followDistanceS * speed);
       if (p.ahead.gapM < desiredGapM) {
@@ -1703,6 +1845,34 @@ export class AIVehicleController {
       targetSpeed = Math.min(
         targetSpeed, safeFollowSpeedMs(hz.gapM, hz.speedMs, decel * 0.72, standoff),
       );
+
+      // --- ...except that a car which has come to a complete stop cannot
+      // steer, and going round something requires steering.
+      //
+      // THE DEADLOCK THIS BREAKS, measured at Monza in the `[held]` mode of
+      // `probe:blockage`. The bound above is `sqrt(v_lead² + 2 a d)` against a
+      // lead speed of zero, and inside the standoff it tapers to zero at
+      // contact — so a car that arrives behind a stopped one settles about seven
+      // metres back at zero. At zero there is no lateral force to be had at any
+      // steering angle, so it cannot move across the road; being unable to move
+      // across the road it stays in the hazard corridor; being in the corridor
+      // the bound stays at zero. Sixteen of twenty cars queued up in that state
+      // and were retired for stopping on track, having each been told to go
+      // round something they were pointed straight at.
+      //
+      // A driver in that position picks their way past at walking pace, and so
+      // does this. It is a FLOOR under a bound and not a target: it only ever
+      // raises a demand the obstacle itself has pushed to nothing, only while
+      // this car is committed to going round, and only while the side it has
+      // chosen is actually free — if somebody is there, there is nothing to
+      // creep into and the car waits like anyone else.
+      const goingRound = this.state === 'AVOID' && p.blockage !== null &&
+        hz.index === p.blockage.index;
+      const sideFree = this.avoidSide > 0
+        ? p.roomLeftM > RACING_ROOM_M + 1.0 : p.roomRightM > RACING_ROOM_M + 1.0;
+      if (goingRound && sideFree && hz.gapM > CONTACT_GAP_M) {
+        targetSpeed = Math.max(targetSpeed, BLOCKAGE_CRAWL_MS);
+      }
     }
 
     // --- Braking -----------------------------------------------------------

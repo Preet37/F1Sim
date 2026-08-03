@@ -23,8 +23,10 @@ import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
-  pitCueText, radioExchange, relayed, repairableInBox, replyExchange, standingsCells,
+  pitCueText, radioExchange, relayed, repairableInBox, replyExchange,
+  radioTurnSpec, setRadioVariantSeed, standingsCells,
   teamLine, towerFit, towerWindow, weatherReadout,
+  type RadioTurn,
 } from '../src/ui/Hud';
 import { COMPONENT_IDS } from '../src/race/DamageModel';
 import { AIVehicleController, type AIPerception } from '../src/ai/AIVehicleController';
@@ -375,11 +377,54 @@ const MOMENTS = [
   { kind: 'neutral-ending', phase: 'hold-line', mustUnlap: false },
   { kind: 'chequered', position: 4 },
   { kind: 'damage', part: 'Front wing' },
+  // RETIREMENT WAS NOT ON THIS LIST, and it is the one the player named:
+  // "once you gotta ask if they okay or maybe another time, u say like better
+  // luck next time". Collapsing its pool back to the single canonical exchange
+  // left this probe entirely green, which is how the repetition survived a
+  // probe that already checked eleven other situations.
+  { kind: 'retired', reason: 'Accident damage', lap: 34 },
+  // `call` is deliberately absent and has no variants: both of its lines are
+  // written by `PitWall` about one particular stop, and paraphrasing somebody
+  // else's words would be inventing facts about the strategy.
 ] as const;
 
+// EVERY VARIANT, NOT WHICHEVER ONE CAME UP.
+//
+// `radioExchange` now holds two to four authored exchanges per situation and
+// rotates between them — see `Hud.pickExchange`, and the reason, which is that
+// the pool used to be of size one and the player said so twice. A probe that
+// called it once per moment would test one variant per run and pass or fail
+// depending on where the cursor happened to be, which is worse than not
+// testing at all: it would go green on a broken variant most of the time and
+// red on nobody's change.
+//
+// So the seed is fixed and each moment is asked `VARIANT_PASSES` times, which
+// is more than the largest pool, so every variant is visited. Each one has to
+// satisfy the same rules on its own.
+const VARIANT_PASSES = 6;
+setRadioVariantSeed(0);
+
+function variantsOf<T>(m: T, fn: (x: T) => RadioTurn[]): RadioTurn[][] {
+  const seen = new Map<string, RadioTurn[]>();
+  for (let i = 0; i < VARIANT_PASSES; i++) {
+    const turns = fn(m);
+    seen.set(turns.map((t) => t.who + ':' + t.line).join('|'), turns);
+  }
+  return [...seen.values()];
+}
+
 for (const m of MOMENTS) {
-  const turns = radioExchange(m);
-  const label = m.kind === 'neutral-ending' ? m.kind + '/' + m.phase : m.kind;
+  const label0 = m.kind === 'neutral-ending' ? m.kind + '/' + m.phase : m.kind;
+  const pool = variantsOf(m, radioExchange);
+  // THE ANTI-REGRESSION FOR THE REPORTED BUG. "why is it always the same
+  // message" was true because there was exactly one message. Two is the floor.
+  check(pool.length >= 2,
+    `radio moment ${label0} has ${pool.length} authored variant(s) — the pit wall `
+    + 'says the same words every time this happens');
+  for (const [vi, turns] of pool.entries()) checkExchange(m, turns, label0 + '#' + vi);
+}
+
+function checkExchange(m: (typeof MOMENTS)[number], turns: RadioTurn[], label: string): void {
   check(turns.length >= 2, `radio moment ${label} has ${turns.length} turn(s), not an exchange`);
   check(turns.some((t) => t.who === 'driver') && turns.some((t) => t.who === 'wall'),
     `radio moment ${label} is only one voice`);
@@ -403,6 +448,7 @@ for (const m of MOMENTS) {
   }
   check(new Set(turns.map((t) => t.line)).size === turns.length,
     `radio moment ${label} repeats itself`);
+  void m;
 }
 const chequered = radioExchange({ kind: 'chequered', position: 4 });
 check(chequered.some((t) => t.line.includes('P4')),
@@ -428,51 +474,114 @@ check(boxCall.some((t) => t.line.includes('20')),
 // regulations before the transmission started is the same fault wearing
 // different words.
 for (const m of MOMENTS) {
-  for (const t of radioExchange(m)) {
-    check(!/\b(minimum|delta) in (every|each) sector\b/i.test(t.line),
-      `${m.kind} restates the regulation instead of giving a number: "${t.line}"`);
-    check(!/\byou must\b|\bdrivers must\b|\bis required to\b/i.test(t.line),
-      `${m.kind} reads as a rulebook: "${t.line}"`);
+  for (const turns of variantsOf(m, radioExchange)) {
+    for (const t of turns) {
+      check(!/\b(minimum|delta) in (every|each) sector\b/i.test(t.line),
+        `${m.kind} restates the regulation instead of giving a number: "${t.line}"`);
+      check(!/\byou must\b|\bdrivers must\b|\bis required to\b/i.test(t.line),
+        `${m.kind} reads as a rulebook: "${t.line}"`);
+    }
   }
 }
 // And the positive form: a neutralisation exchange has to carry a FIGURE, which
 // is the half of the subject the driver does not have.
 for (const m of MOMENTS) {
   if (m.kind !== 'vsc' && m.kind !== 'safety-car' && m.kind !== 'delta') continue;
-  const said = radioExchange(m).map((t) => t.line).join(' ');
-  check(/\d/.test(said),
-    `the ${m.kind} exchange names no number: "${said}"`);
+  for (const turns of variantsOf(m, radioExchange)) {
+    const said = turns.map((t) => t.line).join(' ');
+    check(/\d/.test(said),
+      `the ${m.kind} exchange names no number: "${said}"`);
+  }
 }
-// The delta card says which way round it is, in the driver's own terms.
-check(radioExchange({ kind: 'delta', marginS: 1.2, breaches: 0 })
-  .some((t) => /positive/i.test(t.line) && t.line.includes('1.2')),
-  'a healthy delta is not reported as a positive margin');
-check(radioExchange({ kind: 'delta', marginS: -0.4, breaches: 1 })
-  .some((t) => /negative/i.test(t.line) && /lift/i.test(t.line)),
-  'a delta breach does not tell the driver to lift');
+// The delta card says which way round it is, in the driver's own terms — in
+// EVERY variant, because a driver who is told "lift" on one occasion and given
+// a bare number on the next has been told nothing on the second.
+for (const turns of variantsOf({ kind: 'delta', marginS: 1.2, breaches: 0 } as const, radioExchange)) {
+  check(turns.some((t) => /positive/i.test(t.line) && t.line.includes('1.2')),
+    'a healthy delta is not reported as a positive margin: '
+    + turns.map((t) => t.line).join(' '));
+}
+for (const turns of variantsOf({ kind: 'delta', marginS: -0.4, breaches: 1 } as const, radioExchange)) {
+  check(turns.some((t) => /negative/i.test(t.line) && /lift/i.test(t.line)),
+    'a delta breach does not tell the driver to lift: '
+    + turns.map((t) => t.line).join(' '));
+}
 
 // THE TWO-WAY HALF. A declined instruction has to produce a reply, and the
 // reply the user asked for by name: "the driver could be like 'no stay out' and
 // they be like 'copy, box next lap'".
 for (const outcome of ['yes', 'no', 'lapsed'] as const) {
-  const turns = replyExchange(outcome, 'Hard');
-  check(turns.length >= 2, `the wall's reply to "${outcome}" is not an exchange`);
-  for (const t of turns) {
-    check(t.line.length > 6, `reply/${outcome}: "${t.line}" is not a line of speech`);
+  const pool = variantsOf(outcome, (o) => replyExchange(o, 'Hard'));
+  check(pool.length >= 2,
+    `the wall's reply to "${outcome}" has ${pool.length} authored variant(s) — `
+    + 'a stop is offered several times a race and the answer never changes');
+  for (const turns of pool) {
+    check(turns.length >= 2, `the wall's reply to "${outcome}" is not an exchange`);
+    for (const t of turns) {
+      check(t.line.length > 6, `reply/${outcome}: "${t.line}" is not a line of speech`);
+    }
   }
 }
-check(replyExchange('no', 'Hard').some((t) => /box next lap/i.test(t.line)),
-  'declining the stop does not bring the wall back with a next-lap call');
+for (const turns of variantsOf('no' as const, (o) => replyExchange(o, 'Hard'))) {
+  check(turns.some((t) => /box next lap/i.test(t.line)),
+    'declining the stop does not bring the wall back with a next-lap call: '
+    + turns.map((t) => t.line).join(' '));
+}
 check(replyExchange('lapsed', 'Hard').some((t) => t.who === 'wall'),
   'an offer that lapsed under the driver leaves the wall silent');
-check(new Set([
-  ...replyExchange('yes', 'Hard').map((t) => t.line),
-  ...replyExchange('no', 'Hard').map((t) => t.line),
-  ...replyExchange('lapsed', 'Hard').map((t) => t.line),
-]).size === 6, 'the three answers do not produce three distinct replies');
+// No line may be shared between the three outcomes, in any combination of
+// variants — a player who declines a stop and is answered with the line they
+// would have heard for accepting one has been told nothing.
+{
+  const byOutcome = (['yes', 'no', 'lapsed'] as const).map(
+    (o) => variantsOf(o, (x) => replyExchange(x, 'Hard')),
+  );
+  let shared = '';
+  for (let a = 0; a < byOutcome.length; a++) {
+    for (let b = a + 1; b < byOutcome.length; b++) {
+      const linesA = new Set(byOutcome[a].flat().map((t) => t.line));
+      for (const t of byOutcome[b].flat()) if (linesA.has(t.line)) shared = t.line;
+    }
+  }
+  check(shared === '',
+    `two different answers produce the same reply: "${shared}"`);
+}
 
-console.log(`radio: ${MOMENTS.length} exchanges, both voices alternating, ` +
-  '3 answered outcomes');
+// THE DRIVER IS THE PLAYER, SO THE DRIVER IS NOT SPOKEN.
+//
+//   "i just atp wouldn't say anything for the audio if its a conversation
+//    because you don't need to be saying what the driver says ykwim?"
+//
+// `probe:radio` measures that `TeamRadio` CAN run a transmission unvoiced and
+// that it still paces it. This asserts that this file actually asks for one —
+// a different question, and the one a refactor would break silently.
+{
+  let voicedDriver = '';
+  let silentWall = '';
+  for (const m of MOMENTS) {
+    for (const turns of variantsOf(m, radioExchange)) {
+      for (const t of turns) {
+        const spec = radioTurnSpec(t);
+        if (t.who === 'driver' && spec.voiced !== false) voicedDriver = t.line;
+        if (t.who === 'wall' && spec.voiced === false) silentWall = t.line;
+        check(spec.text === t.line, `the spoken text is not the drawn text: "${t.line}"`);
+      }
+    }
+  }
+  check(voicedDriver === '',
+    `the driver's own line would be said out loud: "${voicedDriver}"`);
+  check(silentWall === '', `the pit wall would be silent on: "${silentWall}"`);
+}
+
+{
+  let pool = 0;
+  for (const m of MOMENTS) pool += variantsOf(m, radioExchange).length;
+  for (const o of ['yes', 'no', 'lapsed'] as const) {
+    pool += variantsOf(o, (x) => replyExchange(x, 'Hard')).length;
+  }
+  console.log(`radio: ${MOMENTS.length} situations, ${pool} authored exchanges, `
+    + 'both voices alternating in every one, 3 answered outcomes');
+}
 
 // ---------------------------------------------------------------------------
 // 7. Two channels, and the filter is ownership

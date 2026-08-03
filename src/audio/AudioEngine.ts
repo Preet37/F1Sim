@@ -1,6 +1,8 @@
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import { clamp, clamp01 } from '../core/MathUtils';
+import { TeamRadio } from './TeamRadio';
+import { noiseBuffer } from './Noise';
 
 /**
  * Procedural audio. Every sound in this game is synthesised at runtime from the
@@ -42,6 +44,17 @@ const C_SOUND = 343;
 const RIVAL_VOICES = 5;
 /** Rivals beyond this distance are inaudible and get no voice. */
 const RIVAL_RANGE_M = 140;
+
+/**
+ * How much the radio link degrades between the pit wall and the far side of the
+ * circuit.
+ *
+ * 0.55 takes quality from 1.0 at the Line to 0.45 at the furthest point, and
+ * `RadioChain` starts dropping out below 0.55 — so breakup is confined to
+ * roughly the far third of a lap. Any higher and the radio is unreliable
+ * everywhere, which stops reading as atmosphere and starts reading as a fault.
+ */
+const RADIO_FADE_WITH_DISTANCE = 0.55;
 
 /**
  * Builds an engine-like harmonic series as a PeriodicWave.
@@ -109,15 +122,6 @@ const FORMANTS: ReadonlyArray<readonly [number, number, number]> = [
   [22, 6.0, 0.4],
 ];
 
-/** Two seconds of white noise, looped. Every noise layer shares this buffer. */
-function noiseBuffer(ctx: AudioContext): AudioBuffer {
-  const len = ctx.sampleRate * 2;
-  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-  return buf;
-}
-
 /**
  * A short synthetic impulse response: exponentially decaying noise.
  *
@@ -156,9 +160,37 @@ export class AudioEngine {
   private volume = 0.8;
 
   // --- Graph ---------------------------------------------------------------
+  /**
+   * Where every sound the CAR makes is summed.
+   *
+   * Separate from `master` because of the radio. A transmission has to duck the
+   * engine without ducking itself, so the two need a gain stage between them:
+   *
+   *   gameBus ──► duck ──┐
+   *                      ├──► master ──► compressor ──► out
+   *   radioBus ──────────┘
+   *
+   * The user's volume lives on `master`, so it still governs everything
+   * including the radio, and `duck` is free to be driven purely by whether
+   * somebody is talking.
+   */
+  private gameBus!: GainNode;
+  /** Pulled down while the radio is live. 1 is unducked. */
+  private duck!: GainNode;
+  /** The radio's own noise bed and squelch, outside the ducking. */
+  private radioBus!: GainNode;
   private master!: GainNode;
   private reverbSend!: GainNode;
   private noise!: AudioBuffer;
+
+  /**
+   * Team radio.
+   *
+   * Constructed eagerly so callers can add listeners and set options before a
+   * user gesture has built the audio graph, and attached to the graph in
+   * `build`. It stays silent until then.
+   */
+  readonly radio = new TeamRadio();
 
   // Engine
   private engBody!: OscillatorNode;
@@ -251,9 +283,34 @@ export class AudioEngine {
     this.master.gain.value = this.enabled ? this.volume : 0;
     this.master.connect(comp);
 
+    // The ducking stage. Everything the car does goes through it; the radio's
+    // own squelch and noise bed do not, which is the whole reason it exists.
+    this.duck = ctx.createGain();
+    this.duck.gain.value = 1;
+    this.duck.connect(this.master);
+
+    this.gameBus = ctx.createGain();
+    this.gameBus.gain.value = 1;
+    this.gameBus.connect(this.duck);
+
+    this.radioBus = ctx.createGain();
+    this.radioBus.gain.value = 1;
+    this.radioBus.connect(this.master);
+
+    // Hands the radio its context, its bus and the ducking hook. It does NOT
+    // build the link's twelve nodes — see `TeamRadio.attach`. The spoken radio
+    // is off by default, and six biquads, a 2x oversampled WaveShaper, a
+    // compressor, a looping noise source and an oscillator running in every
+    // session of every player who never turned it on is a cost with no buyer.
+    // The chain is built on the first `setEnabled(true)` and kept after that.
+    this.radio.attach(ctx, this.radioBus, (depth, tau) => {
+      this.ramp(this.duck.gain, 1 - clamp01(depth), tau);
+    });
+    this.radio.setVolume(this.volume);
+
     const convolver = ctx.createConvolver();
     convolver.buffer = reverbIR(ctx, 1.1, 3.2);
-    convolver.connect(this.master);
+    convolver.connect(this.gameBus);
     this.reverbSend = ctx.createGain();
     this.reverbSend.gain.value = 0.12;
     this.reverbSend.connect(convolver);
@@ -261,7 +318,7 @@ export class AudioEngine {
     // --- Engine ------------------------------------------------------------
     this.engGain = ctx.createGain();
     this.engGain.gain.value = 0;
-    this.engGain.connect(this.master);
+    this.engGain.connect(this.gameBus);
     this.engGain.connect(this.reverbSend);
 
     // One shared tone control. Throttle opens it; a closed throttle is muffled
@@ -329,7 +386,7 @@ export class AudioEngine {
     this.turbo.frequency.value = 3000;
     this.turboGain = ctx.createGain();
     this.turboGain.gain.value = 0;
-    this.turbo.connect(this.turboGain).connect(this.master);
+    this.turbo.connect(this.turboGain).connect(this.gameBus);
 
     // --- Tyre squeal -------------------------------------------------------
     // Two high-Q bandpasses on noise. A single one sounds like a hiss; two
@@ -349,7 +406,7 @@ export class AudioEngine {
     this.squealGain.gain.value = 0;
     this.squeal.connect(this.squealBand).connect(this.squealGain);
     this.squeal.connect(this.squealBand2).connect(this.squealGain);
-    this.squealGain.connect(this.master);
+    this.squealGain.connect(this.gameBus);
     this.squealGain.connect(this.reverbSend);
 
     // --- Surface scrub -----------------------------------------------------
@@ -361,7 +418,7 @@ export class AudioEngine {
     this.scrubFilter.frequency.value = 900;
     this.scrubGain = ctx.createGain();
     this.scrubGain.gain.value = 0;
-    this.scrub.connect(this.scrubFilter).connect(this.scrubGain).connect(this.master);
+    this.scrub.connect(this.scrubFilter).connect(this.scrubGain).connect(this.gameBus);
 
     // --- Wind --------------------------------------------------------------
     this.wind = ctx.createBufferSource();
@@ -373,7 +430,7 @@ export class AudioEngine {
     this.windFilter.Q.value = 0.5;
     this.windGain = ctx.createGain();
     this.windGain.gain.value = 0;
-    this.wind.connect(this.windFilter).connect(this.windGain).connect(this.master);
+    this.wind.connect(this.windFilter).connect(this.windGain).connect(this.gameBus);
 
     // --- Crowd -------------------------------------------------------------
     this.crowd = ctx.createBufferSource();
@@ -385,7 +442,7 @@ export class AudioEngine {
     crowdFilter.Q.value = 0.7;
     this.crowdGain = ctx.createGain();
     this.crowdGain.gain.value = 0.012;
-    this.crowd.connect(crowdFilter).connect(this.crowdGain).connect(this.master);
+    this.crowd.connect(crowdFilter).connect(this.crowdGain).connect(this.gameBus);
 
     // --- Rival voices ------------------------------------------------------
     for (let i = 0; i < RIVAL_VOICES; i++) {
@@ -398,7 +455,7 @@ export class AudioEngine {
       gain.gain.value = 0;
       const pan = ctx.createStereoPanner();
       osc.connect(filter).connect(gain).connect(pan);
-      pan.connect(this.master);
+      pan.connect(this.gameBus);
       pan.connect(this.reverbSend);
       osc.start();
       this.rivals.push({ osc, gain, pan, filter, car: -1, lastDist: 0 });
@@ -411,15 +468,34 @@ export class AudioEngine {
   setEnabled(on: boolean): void {
     this.enabled = on;
     if (this.ctx) this.ramp(this.master.gain, on ? this.volume : 0, 0.08);
+    // The radio is NOT cancelled here. Silencing the game must not take the
+    // radio card off the screen — the words are the feature and the voice is a
+    // garnish on it, and a player who has slid the master volume to zero has
+    // asked for the first and not the second. `setVolume` has already pushed
+    // zero onto the utterance, which is not in this graph and cannot be reached
+    // by `master.gain`, so nothing is audible either way.
   }
 
   setVolume(v: number): void {
     this.volume = clamp01(v);
     if (this.ctx && this.enabled) this.ramp(this.master.gain, this.volume, 0.08);
+    // The voice is not in our graph and the master gain cannot touch it, so the
+    // volume has to be pushed onto the utterance separately or turning the game
+    // down would leave the radio at full blast.
+    this.radio.setVolume(this.volume);
   }
 
-  /** Silences everything without tearing the graph down — for pause and menus. */
+  /**
+   * Silences everything without tearing the graph down — for pause and menus.
+   *
+   * The radio has to be cancelled explicitly rather than relying on the
+   * suspend. `speechSynthesis` is not part of the AudioContext, so suspending
+   * the context stops the engine and leaves the race engineer talking over the
+   * pause menu — which is exactly the sort of thing that only shows up once
+   * somebody pauses mid-transmission.
+   */
   setSuspended(suspended: boolean): void {
+    if (suspended) this.radio.cancelAll();
     if (!this.ctx) return;
     if (suspended) void this.ctx.suspend();
     else void this.ctx.resume();
@@ -556,6 +632,17 @@ export class AudioEngine {
     this.ramp(this.windGain.gain, clamp01(q) * 0.085, 0.07);
     this.ramp(this.windFilter.frequency, 420 + clamp01(speed / 95) * 1500, 0.07);
 
+    // --- Radio link ---------------------------------------------------------
+    // The pit wall is at the Line, so how well the radio works is a function of
+    // how far round the lap the car is. One subtraction and a divide per frame,
+    // and it means a message taken at the far end of the circuit breaks up
+    // while the same message on the pit straight does not.
+    const lapLen = engine.track.length;
+    if (lapLen > 1) {
+      const fromPits = Math.min(player.s, lapLen - player.s) / (lapLen * 0.5);
+      this.radio.setLinkQuality(1 - clamp01(fromPits) * RADIO_FADE_WITH_DISTANCE);
+    }
+
     // --- Rivals -------------------------------------------------------------
     this.updateRivals(dt, engine, player, listenerYaw);
   }
@@ -672,7 +759,7 @@ export class AudioEngine {
     const now = ctx.currentTime;
     g.gain.setValueAtTime(level, now);
     g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    src.connect(f).connect(g).connect(this.master);
+    src.connect(f).connect(g).connect(this.gameBus);
     src.start(now);
     src.stop(now + dur + 0.02);
     src.onended = () => { src.disconnect(); f.disconnect(); g.disconnect(); };
@@ -727,7 +814,7 @@ export class AudioEngine {
     g.gain.setValueAtTime(0, now);
     g.gain.linearRampToValueAtTime(level, now + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    osc.connect(g).connect(this.master);
+    osc.connect(g).connect(this.gameBus);
     osc.start(now);
     osc.stop(now + dur + 0.02);
     osc.onended = () => { osc.disconnect(); g.disconnect(); };
@@ -759,6 +846,7 @@ export class AudioEngine {
   }
 
   dispose(): void {
+    this.radio.dispose();
     if (!this.ctx) return;
     void this.ctx.close();
     this.ctx = null;

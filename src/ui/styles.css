@@ -1532,7 +1532,27 @@ canvas#view {
      `fitRail` threw it out — correctly, and silently, which is how a card
      ends up never appearing at all. 216 is what fits. */
   align-self: flex-start;
-  width: 208px;
+  /* THE SIZE IS MEASURED, NOT WRITTEN. These two are the card at its BIGGEST —
+     what it wants to be when the rail has room — and `Hud.sizeRadioCard`
+     writes `--radio-w` / `--radio-h` under them when it does not.
+
+     The reason is a reported bug, and the report is blunt: "i cant see any of
+     the messages bruh". `shoot:panels` had been printing the same thing for
+     weeks as a known failure — "the radio card is not on screen in a 248px
+     band" on desktop and in a 348px one in portrait — because `fitRail` is
+     allowed to THROW THE CARD AWAY when the rail overruns its band, and a
+     fixed 176px card plus a 45px neutralisation cue plus a 30px pit cue plus
+     two 8px gaps is 267 pixels in a 248 pixel band. Nineteen pixels, and the
+     player never saw a word.
+
+     A card that shrinks by nineteen pixels is legible. A card that is not
+     there is not. So the height is now the room the rail actually has, floored
+     at `RADIO_CARD_MIN_PX`, and the width follows it so the plate keeps its
+     shape rather than becoming the letterbox this pass replaced. Eviction is
+     still there, as the last resort it should always have been. */
+  --radio-w-max: 208px;
+  --radio-h-max: 176px;
+  width: var(--radio-w, var(--radio-w-max));
   /* A FIXED HEIGHT, not a minimum, and this is the part that was wrong twice.
 
      MEASURED AGAINST THE WORST BAND rather than chosen: on a 1400x900 desktop
@@ -1548,7 +1568,7 @@ canvas#view {
      nothing re-measures. A broadcast plate is a fixed size; the words are cut
      to it (`.radio-turn` clamps to two lines) rather than the plate stretching
      to them, so what `fitRail` measures is what ends up on screen. */
-  height: 176px;
+  height: var(--radio-h, var(--radio-h-max));
   display: flex;
   flex-direction: column;
   background: rgba(8, 12, 22, 0.95);
@@ -1563,25 +1583,46 @@ canvas#view {
 .hud-radiocard.entering { transform: translateX(-30px); opacity: 0; }
 .hud-radiocard.leaving { transform: translateX(-16px); opacity: 0; }
 
-/* Mark at the left, the two title lines hard right. */
+/* Mark at the left, the two title lines hard right.
+
+   THE HEADER SCALES WITH THE PLATE, the words do not. `--radio-scale` is the
+   card's height as a fraction of the height the stylesheet asked for, written
+   by `Hud.sizeRadioCard` — 1 when the rail has room and about 0.73 on a
+   desktop under a safety car, where the band leaves 129 pixels of a wanted
+   176. At that size `WHITFIELD` at 14px no longer fitted the narrower plate
+   and wrapped to `WHITFIEL / D`, which is the sort of thing that makes a
+   broadcast graphic look broken.
+
+   Only the header. The turns keep their size, because "make it bigger its so
+   hard to read" was about the WORDS, and shrinking those to fit more of them
+   in would be answering a different complaint than the one that was made. A
+   short card shows fewer turns instead — the plate is a fixed size and the
+   words are cut to it, which is the rule `.radio-turns` has always followed. */
 .radio-head { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
-.radio-mark { flex: 0 0 auto; width: 22px; height: 22px; }
+.radio-mark {
+  flex: 0 0 auto;
+  width: calc(22px * var(--radio-scale, 1));
+  height: calc(22px * var(--radio-scale, 1));
+}
 .radio-mark svg { display: block; width: 100%; height: 100%; }
 .radio-who { text-align: right; min-width: 0; }
 .radio-driver {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: calc(14px * var(--radio-scale, 1));
   font-weight: 850;
   font-stretch: 120%;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--team);
   line-height: 1.02;
-  overflow-wrap: break-word;
+  /* Never mid-word. A surname broken across two lines is worse than a smaller
+     surname, and the scale above is what keeps it off the second line at all. */
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 .radio-title {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: calc(14px * var(--radio-scale, 1));
   font-weight: 850;
   font-stretch: 120%;
   letter-spacing: 0.15em;
@@ -2300,8 +2341,10 @@ canvas#view {
      than the card needs. Slightly smaller, because everything is. */
   .hud-radiocard {
     padding: 7px 10px 9px;
-    width: 232px;
-    height: 214px;
+    /* The maxima, not the size. `Hud.sizeRadioCard` measures the band and
+       writes `--radio-w` / `--radio-h` under these. */
+    --radio-w-max: 232px;
+    --radio-h-max: 214px;
   }
   .radio-driver, .radio-title { font-size: 13px; }
   .radio-turn { font-size: 11px; }
@@ -2509,6 +2552,9 @@ canvas#view {
      know what shape it is being read on. */
   .hud-radiocard {
     padding: 6px 9px 8px;
+    /* Both overridden outright rather than through the custom properties, so
+       the measured square is switched OFF here and the letterbox is the shape.
+       `sizeRadioCard` still writes the properties; nothing reads them. */
     width: 100%;
     /* The letterbox again on a landscape phone, and its height is its content:
        two turns and a header is short enough that it cannot outgrow the band

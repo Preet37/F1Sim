@@ -7,6 +7,10 @@ import {
   DEFAULT_GAMEPAD_SETTINGS, normaliseGamepadSettings, type GamepadSettings,
 } from '../input/GamepadProfile';
 import { DEFAULT_WEEKEND_OPTIONS, type WeekendOptions } from '../race/WeekendFormat';
+import {
+  DEFAULT_GRAPHICS, normaliseGraphics, normaliseTier,
+  type GraphicsSettings, type QualityTier,
+} from '../render/QualityTiers';
 
 /**
  * Local persistence.
@@ -51,7 +55,24 @@ export interface GameSettings {
   tractionAssist: boolean;
   brakingAssist: boolean;
   tiltSteering: boolean;
-  quality: 'auto' | 'low' | 'high';
+  /**
+   * The render tier, or `auto` to let the device be measured.
+   *
+   * `medium` is new (issue #29). Two tiers could not express a phone: `low`
+   * meant no post chain, no shadows, no MSAA and reduced geometry all at once,
+   * and every touch-primary device landed on it. A save written by an older
+   * build holds only `auto`, `low` or `high` and all three are still valid, so
+   * there is no migration — `normaliseTier` coerces anything else to `auto`.
+   */
+  quality: 'auto' | QualityTier;
+  /**
+   * Per-feature overrides on top of the tier.
+   *
+   * Separate from `quality` because the four expensive things do not scale
+   * together and a tier is only a guess at which of them a device can afford.
+   * See `src/render/QualityTiers.ts`.
+   */
+  graphics: GraphicsSettings;
   /** Draw the optimal line on the track, coloured by approach speed. */
   racingLine: boolean;
   /**
@@ -92,6 +113,22 @@ export interface GameSettings {
    * finishes — see `Main.playIntro`.
    */
   introSeen: boolean;
+  /**
+   * Speak the team radio out loud, using the browser's speech synthesiser.
+   *
+   * OFF BY DEFAULT, and that is a judgement rather than caution. Every other
+   * sound in this game is synthesised from the simulation and can be made as
+   * good as the effort put into it; this one is whatever voice the player's
+   * operating system happens to ship, and it cannot be processed — synthesised
+   * speech cannot be routed into WebAudio on any current browser, so the band
+   * limiting, the saturation and the limiter shape the squelch and the noise
+   * bed around the voice but never the voice itself. See `src/audio/RadioChain`.
+   *
+   * The result is good on macOS and Windows, where the system voices are
+   * decent, and merely acceptable on a phone. A bad voice is worse than no
+   * voice, so it is offered rather than imposed.
+   */
+  teamRadioVoice: boolean;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -101,10 +138,15 @@ export const DEFAULT_SETTINGS: GameSettings = {
   tractionAssist: false,
   brakingAssist: false,
   tiltSteering: false,
+  // AUTO, and it stays auto. A first run must not be made worse for anybody:
+  // auto now starts a phone at `medium` rather than pinning it at `low`, and
+  // measures from there.
   quality: 'auto',
+  graphics: { ...DEFAULT_GRAPHICS },
   racingLine: true,
   aiDifficulty: DEFAULT_AI_DIFFICULTY,
   introSeen: false,
+  teamRadioVoice: false,
   // Copied rather than shared: DEFAULT_SETTINGS is spread into a live settings
   // object, and a shared `profiles` map would let one career's controller
   // configuration leak into the defaults every other one starts from.
@@ -237,7 +279,13 @@ export class SaveManager {
 
   loadSettings(): GameSettings {
     const raw = readRaw(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS, gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} } };
+    if (!raw) {
+      return {
+        ...DEFAULT_SETTINGS,
+        gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} },
+        graphics: { ...DEFAULT_GRAPHICS },
+      };
+    }
     try {
       const parsed = JSON.parse(raw) as Partial<GameSettings>;
       // Merged over the defaults so a setting added in a later build gets a
@@ -258,12 +306,23 @@ export class SaveManager {
       // fewer fields in it would leave the new ones undefined — which reaches
       // `raceLapsFor` as NaN and produces a race of NaN laps.
       merged.weekend = { ...DEFAULT_WEEKEND_OPTIONS, ...(parsed.weekend ?? {}) };
+      // And again for graphics, for the same reason and one more: this one
+      // reaches `setPixelRatio`. A `resolution` of `null` or `NaN` from a save
+      // written by hand or by a build that stored it differently produces a
+      // zero-by-zero drawing buffer — a black screen with no console error and
+      // nothing on screen to say which setting did it.
+      merged.graphics = normaliseGraphics(parsed.graphics);
+      // The tier gained `medium`; a value from the future, or a hand-edited
+      // one, falls back to `auto` rather than reaching `TIER_PROFILES` as a
+      // key that is not there and returning `undefined` for every feature.
+      merged.quality = normaliseTier(parsed.quality);
       return merged;
     } catch {
       return {
         ...DEFAULT_SETTINGS,
         gamepad: { ...DEFAULT_GAMEPAD_SETTINGS, profiles: {} },
         weekend: { ...DEFAULT_WEEKEND_OPTIONS },
+        graphics: { ...DEFAULT_GRAPHICS },
       };
     }
   }

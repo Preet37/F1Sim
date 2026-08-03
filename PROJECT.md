@@ -179,11 +179,13 @@ Run `npm run` to list. The important ones:
 
 | Command | What it proves |
 |---|---|
-| `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time |
+| `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
+| `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
+| `probe:blockage` | A car stopped ON the racing line does not stop the race |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
@@ -199,20 +201,25 @@ Run `npm run` to list. The important ones:
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
-| `shoot:panels` | Measures HUD boxes; fails on overlap |
+| `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
+| `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
+| `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
 
 **Known-failing, all pre-existing and documented:**
-- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". **Do not go to
-  `RaceEngine.ts` ~2525** — the earlier "call site that never fires" diagnosis is wrong and
-  that code works. See §6 "Tooling" and issue #28: the probe never writes
-  `engine.playerControls`, so its own car parks and the stopped-car bug freezes the field.
+- ~~`probe:hudtext`~~ — **passes as of the `team-radio-voice` merge**, and independently
+  confirmed again by the `fix-race-blockage` work. The bulletin failure ("no team-owned
+  bulletin was filed in a 20-minute race") is gone on the merged tree: `team voice: 44
+  distinct lines across 31 events`. **Do not go to `RaceEngine.ts` ~2525** — the original
+  "call site that never fires" diagnosis was wrong and that code works. Issue #28 supplied
+  the correct explanation (the probe parked its own car), and #21 supplied the missing
+  half, which was content: 13 authored exchanges became 41.
 - `validate:flags` — safety-car form-up, three failures, stable numbers.
-- `shoot:panels` — **5 rail + 2 mirror layout failures** (radio card off screen at desktop
-  and portrait; `hud-neutral-cue` clipped by 4px; `.hud-notices` over `mirror[R1]` by
-  26×72px on phone/pit-choice/cockpit). Confirmed pre-existing on `main` as of 2026-08-03
-  by running it with an unrelated branch's changes stashed and getting identical output.
+- `shoot:panels` — **2 rail + 2 mirror layout failures**, down from 5 + 2. The two radio-card
+  failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
+  hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
+  .hud-notices over mirror[R1] by 26×72px`. Both pre-existing and untouched by that work.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
@@ -228,6 +235,15 @@ Run `npm run` to list. The important ones:
   regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
   **byte-identical** failure lists. Everything structural in the probe still passes at 20,
   22 and 24 cars. Issue #44.
+
+**Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
+engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
+an agent sent to that call site would have found working code.** The probe builds a race
+with `playerIndex: 0` and never writes `engine.playerControls`, so its player car sat on
+its grid box at zero throttle; the stopped-car bug (#28) then froze the entire field behind
+it, and a frozen race files no bulletins because nothing happens in it. Fixing #28 made the
+probe pass with no change to the call site or to the probe: **44 distinct team lines across
+31 events, 17 messages on the team channel.** Trust the mechanism, not the note.
 
 ---
 
@@ -269,6 +285,10 @@ Preserved verbatim because the phrasing carries information a summary loses.
 > *"the radio stuff is being covered by the pit options."*
 > *"whats this bullshit of holding the minimum every sector make the radios legit and smart think of it like a genuine interaction."*
 > *"that text box i told u to make it a square and make it bigger its so hard to read, and you have to type it out in a typewriter animation as well as say what it actually says like volume wise."*
+> *"also the radio messages have to vary why is it always the same message? also it seems like whatever the message is saying is so different than what the voice is saying, we also need one voice and use the male one not the female one i don't like that one. on top of that i cant see any of the messages bruh"*
+> *"this is so much better i just atp wouldn't say anything for the audio if its a conversation because you don't need to be saying what the driver says ykwim? but this is wayy better for sure."*
+> *"Also still seems like you have the same statement when something happens, we need to vary it up, like once you gotta ask if they okay or maybe another time, u say like better luck next time, or like im sorry we'll have to retrire the car here."*
+> *"also like i said get rid of the female voice. only keep the male voice"*
 > *"why does it seem like the same person as the team principal for all the teams?"*
 > *"why can I only see like 4 cars on the leaderboard, where is everyone and all the cars?"*
 > *"don't do this shit. just have the team radio in some message and then top right corner or smth just be like continue and then once the user presses continue you can check the stats and shit."*
@@ -321,6 +341,87 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   1/60, computing exactly 60fps — neither below 59 nor above 68 — so **the scaler never
   moved in the audit.** Every audit PNG ever produced was shot at full resolution. The
   harness was photographing an image no player had ever seen.
+
+### Rendering: every phone was on the cheapest image the renderer can draw (issue #29)
+
+The tier was `touchPrimary || cores <= 4 ? 'low' : 'high'`, and `touchPrimary` is
+`matchMedia('(pointer: coarse)')` — so **every phone that has ever existed was `low`**, and
+`low` withheld the post-processing chain, the shadow map, MSAA and half the geometry as one
+indivisible decision, with no in-game control. This is the mirrors defect one level up, and
+the reporting device is a phone.
+
+**How much of "the graphics are utter dogshit" is the tier rather than the renderer?**
+Measured, not argued. `probe:sharpness` gained a grain metric — mean absolute Laplacian of
+luma in six horizontal bands, read back inside the frame that drew it, at the resolution
+the scaler actually settled on — and a `SHARP_QUERY` passthrough so a tier can be
+photographed at all. Bahrain, cockpit, identical frame, scale 1.00, buffer ~2940×1396:
+
+| tier | band 1 (horizon) | band 2 (mid-distance) | band 5 (near field) |
+|---|---|---|---|
+| `low` — what every phone got | **20.3** | **63.6** | 3.0 |
+| `low` + post chain, low detail | 2.1 | 18.7 | 6.7 |
+| `medium` (post, full detail, no MSAA) | 4.0 | 22.6 | 6.2 |
+| `medium` + MSAA | 1.7 | 15.5 | 5.8 |
+| `high` — what the developing machine got | 1.2 | 14.8 | 6.1 |
+
+**The phone's image carried 16× the high-frequency speckle at the horizon and 4.3× in the
+middle distance, and the cause is the missing post chain, not the renderer.** Turning post
+on and changing nothing else — geometry still at low detail, still no MSAA, still no
+shadows — recovers 9.7× of the horizon band and 3.4× of the mid-distance. Geometry detail
+contributes nothing measurable (low+post 18.7 against medium's 22.6, i.e. slightly worse).
+MSAA is worth a further ~1.5×. Chase view agrees within 10% on every row. This is the
+user's *"all of the other maps still have the weird black lines and grainy maps"* and it is
+a tier artefact.
+
+**Can a phone afford the chain? Yes — and it is not even a trade.** The obvious objection is
+that the post chain was 71% of frame time, so switching it on for phones would tank the
+device. Measured on an Apple M5 with GPU timer queries, in paired A/B inside one session, at
+**390×844 @ dpr 2 — the pixel count a phone actually draws**, not a desktop's:
+
+| | Bahrain | Monaco | Spa |
+|---|---|---|---|
+| scene alone (no chain) | 5.02ms | 4.90ms | 5.14ms |
+| scene + post chain | 9.78ms | 8.23ms | 10.98ms |
+| post chain costs | +4.26ms (1.9×) | +3.35ms (1.7×) | +5.68ms (2.1×) |
+| MSAA on top of that | +1.69ms | +1.32ms | +4.45ms |
+| **`medium` @ scale 0.50 vs `low` @ scale 1.00** | **3.63 vs 4.99ms — 27% CHEAPER** | 5.17 vs 4.99ms — 6% dearer | **3.90 vs 5.51ms — 29% CHEAPER** |
+
+The last row is the whole decision as one number, measured as one paired factor
+(`PERF_PAIR=tiertrade`) rather than composed from the others, and the spreads are tight
+(−1.82..−1.18, −1.15..+0.56, −1.95..−1.25). **The post chain at a quarter of the pixels
+costs the same or less than no chain at full resolution**, and the grain table above says
+`medium` at scale 0.50 still measures **32.8** in the mid-distance against `low` at scale
+1.00's **63.6**, and **6.8** at the horizon against **20.3** — 1.9× and 3.0× cleaner while
+being no more expensive. A phone was paying full price for the worse image.
+
+What landed:
+- **`src/render/QualityTiers.ts`** — one place that decides what every `quality === 'high'`
+  gate in `src/render/` means. Three tiers and four independent switches (post, shadows,
+  MSAA, resolution ceiling), because the four do not scale together and the binary tier
+  forced an all-or-nothing choice a phone always lost.
+- **Detection cannot solve this and does not pretend to.** `hardwareConcurrency` is clamped
+  on iOS — every iPhone reports the same small number whatever silicon is behind it — and
+  `deviceMemory` is not implemented in Safari at all. Any rule written on those reproduces
+  the bug. So `auto` starts from a floor it is confident about and then **measures**:
+  `Renderer.updateAutoTier` promotes a tier after 8s under budget *at the scaler's ceiling*
+  and demotes-and-latches when the resolution scaler has run out of room. Same shape as the
+  resolution scaler, which is the only thing in this renderer that has ever correctly
+  described the machine it was on. `auto` is still the default; it can no longer pin a phone
+  at `low`.
+- **`PostFX.enabled` was `quality === 'high'` and `readonly`.** The chain now builds and
+  tears down on demand, so the setting takes effect without ending the session.
+- **MSAA has two homes and they did not agree.** The GL context's `antialias` attribute is
+  what antialiases when the chain is off and is *dead* when it is on — the samples that cost
+  bandwidth then are the composer target's. Before three tiers existed the two could not
+  disagree; `medium` is post-without-MSAA and would silently have paid for four samples a
+  pixel. Both follow one switch now, and `probe:graphics` asserts both.
+- **`probe:graphics`, 67 checks**, reading the **GL context** — `getContextAttributes()
+  .antialias`, `shadowMap.enabled`, whether a composer was allocated, the target's
+  `samples`, the drawing-buffer size — rather than the settings object, because a build with
+  the wire cut has a settings object that agrees with itself perfectly. **Proved it goes
+  red:** deleting the arguments to `new Renderer` in `main.ts`, which is the exact bug the
+  issue describes, takes it from **67 ok / 0 failed to 48 ok / 19 failed**, and the three
+  tiers collapse to one GL configuration.
 
 ### The world
 - **Corner "cliffs":** the ground beyond every circuit was one flat quad at y = −0.62
@@ -478,7 +579,9 @@ section load-bearing rather than decorative.
   end. A 42mm-wide, 112mm-**tall** portrait sliver showing a 2.67:1 landscape feed sideways.
   Plus: the feed ran only in `cockpit` mode and only on the `high` tier, and the tier is
   `(pointer: coarse) || cores <= 4` — so **every phone is `low` and it had never run on the
-  reporting device at all.**
+  reporting device at all.** That second half was never a mirror bug: it was the tier, and
+  it was one of about a dozen gates behind it. See "every phone was on the cheapest image"
+  above and issue #29 — the tier itself is now three tiers and four switches.
 - Mirror housing was lofted **widest 30mm in front of the glass**. Pane 74×32mm →
   **150×46mm** (150 is the FIA minimum). Then the cap fix revealed the housing's rear cap
   was a solid disc the size of the aperture — once drawn, **it was the mirror.**
@@ -587,6 +690,71 @@ unable to upshift or downshift. Two independent latches, either of which alone w
   alongside the mirror / ahead at the apex), leaving the track and gaining an advantage,
   causing a collision. Give-the-position-back as a remedy. Penalties served in the box with
   the crew standing off, or added at the flag and re-sorting the classification.
+
+### A car stopped on the racing line — the worst bug in the simulation (#28)
+`RaceEngine.checkBeached` was the **only** thing in the engine that ever cleared a
+stationary car, and it was gated on `Math.abs(lateral) > halfWidth + 2` — the car had to
+be **off** the road. A car stopped **on** the road was never retired, never recovered, and
+raised no flag naming it. It stood there for the rest of the race, and the AI queued behind
+it rather than passing it. `probe:blockage`, one car pinned to the racing line 90s into a
+race, watched for 240s against a same-seed control:
+
+| | field laps vs control | still moving at the end |
+|---|---|---|
+| Monza before | 14 / 42 (33%) | 0 of 16 |
+| Monza after | 39 / 42 (**93%**) | **19 of 19** |
+| Spa before | 23 / 35 (66%) | 9 of 17 |
+| Spa after | 30 / 38 (**79%**) | **19 of 19** |
+| Monaco before | 10 / 41 (24%) | 0 of 20 |
+| Monaco after | 39 / 41 (**95%**) | **19 of 19** |
+
+**Spa is why this needed three circuits.** Before the fix Spa recovered about half the
+field where Monza and Monaco recovered nobody, so a single-circuit check at Spa would have
+read as "mostly fine".
+
+The fix is three things, all in the engine:
+- `checkStranded` runs one stationary timer wherever the car is standing and applies the
+  deadline the site earns — 12s on the racing surface, where the car is "wholly or partly
+  blocking the track" (ISC Appendix H Art. 2.5.5b; Art. 26.1b / B1.8.4b), and the existing
+  9s in the run-off. `RecoveryOperation` then plans the job from where the car is, which
+  for a car on the road neutralises the race until the marshals are done.
+- `updateIncidentFlags` finally does what its own comment always claimed — a yellow for a
+  car "off the racing surface and slow, **or stationary on it**". The second half had never
+  been written. A car on the road now gets **double** waved yellows, a message naming it,
+  and counts toward `activeIncidents`, which is what deploys the VSC (Art. 56.1a / B5.12).
+- The AI gets a third spatial picture (`AIPerception.blockage`) and an `AVOID` state. A
+  stopped car is dropped from `ahead`/`behind` for exactly the reason `sittingOut` is:
+  three separate mechanisms were holding station on it, including the neutralisation
+  queue-gap rule, so **a field slowed down because somebody stopped then formed up behind
+  the car that stopped, at zero.**
+
+**The probe has a second mode because the first one could not tell.** With the AI's
+avoidance deleted entirely and only the retirement left, the staged runs still read 93% /
+91% / 95% — race control took the car away after twelve seconds and the field never had to
+deal with it. The `[held]` mode holds the stationary clock between the "cars behind can see
+it" and "race control acts" thresholds, which takes race control out and leaves the drivers
+alone with the obstacle, and measures cars a minute past it: **Monza 3.3 with the avoidance
+against 2.0 without, Monaco 3.3 against 0.0.** Spa does not discriminate — a car standing
+in the braking zone for La Source is collected within seconds — and the probe says so
+rather than quoting a rate off a four-second sample.
+
+Side effects, all measured and all in the right direction. `probe:traffic` census over
+eleven circuits, five laps, twenty cars: contacts **0.185 → 0.113 per car-lap** (COTA
+1.21 → 0.24, Spa 0.62 → 0.53), at a cost of 8% of the overtakes (3040 → 2800).
+`probe:attrition` five-lap survivors: **Spa 16.0 → 18.3**, Suzuka 18.7 → 19.3, the rest
+20.0/20 unchanged — and the new `STOPPED` column reads **0.0 on all five circuits**, so the
+twelve-second timeout retires nobody in ordinary racing. And `probe:hudtext`, failing since
+#5, now passes — see the corrected record in §4.
+
+**What this did NOT fix, and it is #26.** At full distance (`probe:racelog`, 52 laps,
+Silverstone, F3, P18, medium, 2 seeds) beaching fell **8.50 → 5.50 retirements a race** and
+contacts **29.0 → 26.5**, but total retirements went **12.50 → 20.00**, because 10.50 a race
+are now classified `Stopped on track`. Every one of them was measured happening **under a
+VSC, late in the race, with clear road ahead** — they are the pre-existing neutralised-
+limiter stall in §7, which this work found and localised but did not cause and did not fix.
+**#26 stays open**, and its stated mechanism ("spinning off slowly and getting stuck") is
+now disproved: at full distance the dominant mode is cars stopping dead behind a
+neutralisation on an empty track.
 
 ### AI
 - `alongsideLeft`/`alongsideRight` were computed every step and **read by nothing.**
@@ -720,6 +888,109 @@ controls (found: [])"* and *"every car that was still running set a time (0 of
 - Intro sequence and podium built. **The user has never seen either**: the intro is
   first-run-only via a flag set on their very first load, and the podium only fires after
   finishing a career *race*.
+
+### The team radio — one radio, one switch, one voice (issue #21)
+
+The audio chain was already the best-measured work on the project; it was
+connected to nothing, and `main` had grown a second spoken radio beside it.
+
+- **Two implementations, two off-switches, one `speechSynthesis`.** `Hud.RadioVoice`
+  (live, driven from the typewriter, 🔊 pip, `localStorage['f1sim.radioVoice']`) beside
+  `TeamRadio` (nothing called it). Both called `cancel()` on the same global singleton,
+  so **whichever spoke second killed the other**, and the issue's opening complaint —
+  *"whats this bullshit of holding the minimum every sector make the radios legit"* — was
+  installed twice over. `RadioVoice` is deleted, the flag key is actively removed at
+  startup so a stale value cannot be resurrected, and `GameSettings.teamRadioVoice` on the
+  Audio tab is the only control the feature has.
+- **The typewriter and the voice were two clocks, and the drift was arithmetic rather
+  than jitter.** `Hud.speechRate` was 45 characters a second beside a voice measured at
+  **16.8 c/s at rate 1.0** — about 20 c/s at the rate `RadioVoice` used. **2.2× too fast**,
+  so a four-turn exchange finished on screen in ~5.7 s against ~12.3 s of speech and the
+  card was showing a line the voice had not reached. That is exactly the report:
+  *"it seems like whatever the message is saying is so different than what the voice is
+  saying."* `speechRate`, `TYPE_TICK_MS` and the 66 ms `setInterval` are gone;
+  `Hud.typeExchange` reveals on `RadioEvent.word`, which carries the character range the
+  synthesiser says it has uttered. The reveal cannot drift from the voice because it *is*
+  the voice.
+- **`onstart` is not when the sound starts.** Measured on this machine: `onstart` leads
+  the first audible word by **875–1947 ms** on the first utterance of a session and ~105 ms
+  after it. `TeamRadio` emits `speech` on the first `boundary` for that reason — and the
+  claim is now **asserted** rather than commented. `RadioEvent.atMs` timestamps every
+  event; `probe:radio` requires `speech` and the first real `word` to land in the same task
+  (bar 50 ms; measured **0 ms**). **Re-broken deliberately** by moving `markSpeechStarted`
+  into `onstart`: the check goes red at **383 ms against a 50 ms bar**. Before the
+  timestamps, every ordering check stayed green through that break.
+- **The event stream is not the audio switch.** `speak()` returned `null` when disabled and
+  disabled is the default, so a HUD on this clock would have shown **no card at all**.
+  Events now always run; `enabled` governs only audibility. With the voice off the card
+  types on the estimated schedule at the same pace — a new `SILENT` section of `probe:radio`
+  measures the default configuration end to end (10 word events, all estimated, both turns
+  ending, 221 ms between them).
+- **The interrupt overlapped two squelches.** A higher-priority `speak` ran `stopActive()`
+  → `close()` and then fell through to `pump()` on the same tick, so `RadioChain.open`'s
+  `cancelScheduledValues(at)` wiped the key-up swell `close()` had just scheduled — the
+  "kssht", which is the single most diagnostic sound in the effect — on the path a driver
+  hears most, a safety car cutting off a strategy call. `finish` now arms `pumpNotBefore`
+  and every caller is held behind it. Measured: **222 ms** between the interrupted `end`
+  and the interrupter's `open`, against a 130 ms tail. The path had never been exercised.
+- **ONE VOICE, AND MALE.** Asked twice, the second time with *"like i said"* in front of it.
+  Four per-speaker preference lists resolved to **Daniel, Reed, Moira and Rishi** on macOS —
+  four people, two of them women. There is one `MALE_VOICES` list now, resolved once,
+  cached, shared by all four speakers, separated by rate and pitch alone. **There is no
+  fallback**: the obvious one — "first voice not on the known-female list" — is precisely
+  how a female voice gets in, and forcing the choice to `pool[0]` on this machine selects
+  **Samantha**, with `probe:radio` going red naming her. So either a name off `MALE_VOICES`
+  is present or **the radio does not speak and the card types in silence**.
+- **The driver's own half is not spoken.** *"you don't need to be saying what the driver
+  says ykwim?"* `voiced: false` on every driver turn. Not a skipped turn: it still emits
+  `open`/`word`/`end` and still takes as long as saying it would (**1638 ms** for a
+  25-character reply), because a card that flicks through one side of a conversation reads
+  as a fault.
+- **"why is it always the same message" — the pool was of size one.** Not a seeded RNG
+  returning the same index and not queue crowding: `radioExchange` was a switch in which
+  every branch returned one hard-coded array, with no selection of any kind. Both halves
+  are fixed — `pickExchange` **rotates** rather than randomises, because uniform random over
+  three variants repeats one time in three — and the pool goes **13 → 41 authored exchanges
+  across 13 situations**. The retirement variants are the player's own three registers:
+  concern, the call made apologetically, and consolation.
+- **`probe:hudtext` now visits every variant** off a fixed seed rather than whichever one
+  the cursor was on, and **`retired` is on its list for the first time**. Collapsing that
+  pool back to one left the probe entirely green before — which is how the repetition
+  survived a probe that already checked eleven other situations. Re-broken: *"radio moment
+  retired has 1 authored variant(s) — the pit wall says the same words every time this
+  happens."*
+- **"i cant see any of the messages bruh" — and `shoot:panels` had been saying so for
+  weeks.** Two causes, both fixed. (a) **Nineteen pixels.** A fixed 176px card plus a 45px
+  neutralisation cue plus a 30px pit cue plus two 8px gaps is 267 pixels in a 248 pixel
+  band, and `fitRail` is permitted to throw the radio card away — so the whole feature
+  vanished, silently. `Hud.sizeRadioCard` now sizes the card to the room the rail actually
+  has, floored at 104px and capped at the stylesheet's square, with the width following the
+  height so it cannot become the letterbox the probe also fails. It also subtracts the
+  rail's 28px top mask, which is what was fading the card's first line out and what the
+  screenshot showed as "cut off in the corner". (b) **Parked, not destroyed.** The band's
+  foot rises by up to a third of the viewport under the mirror cameras, so a card raised in
+  a 348px band was measured a moment later in a ~70px one, evicted, and never seen again.
+  Restoring it had been tried and withdrawn because the restore and the eviction raced;
+  they cannot now, because the height is a *function* of the room the un-evictable children
+  leave. **`shoot:panels`: 5 rail failures → 2**, and both remaining ones are pre-existing
+  and unrelated (`hud-neutral-cue` clipped by 4px; `.hud-notices` over `mirror[R1]`).
+- **The chain is built lazily.** `AudioEngine` was calling `radio.attach()` unconditionally
+  — twelve nodes including six biquads, a 2× oversampled WaveShaper, a compressor, a
+  looping noise source and an oscillator — in every session of every player, for a feature
+  that is off by default. `attach` now takes the context and the bus; the chain is built on
+  the first `setEnabled(true)` and kept after that.
+- **Also**: `speakExchange` was dead code and is now what the HUD calls for every card;
+  `isTransmitting`, `queueLength` and `attached` are deleted; the orphaned "Two seconds
+  clears that" comment above a 4000 ms constant and the "limiter's −20 dB threshold" note
+  against `LIMIT_THRESHOLD_DB = -8` are corrected.
+
+**What is NOT covered.** **iOS Safari has not been tested.** WebKit requires user activation
+before `speechSynthesis.speak()` and every call here is from a `setTimeout`, so
+`TeamRadio.primeSpeech()` spends the Settings-toggle click on a silent utterance — written
+from WebKit's documented rule and from the same pattern `main.ts` uses to unlock the
+`AudioContext`, and run on nothing but Chrome/macOS. If it is wrong, the symptom is a
+silent radio with a working card, which is the default experience anyway. Treat it as
+unverified.
 
 ### People (issues #18, #22)
 - **Every team principal was "Pit wall".** `Hud.PRINCIPALS` was a table keyed on the ten
@@ -858,15 +1129,46 @@ against every threshold and so stops binding silently rather than throwing.
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
-| Radio/HUD | Square typewriter radio card, FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals. **The retirement flow has landed for every session kind — see §6.** |
+| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
+| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
+| Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
-| Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### Measured, deferred, and still true
+- **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
+  established the first half by measurement (§6). The second half is the reason `medium`
+  exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple
+  M5, toggled inside one session so drift cancels — **but the machine's load average was
+  17–52 on ten cores for the whole measurement window, so the absolute milliseconds are
+  inflated and only the ratios should be read**:
+
+  | factor, at DESKTOP 1600×1000 @ dpr 2 | Bahrain | Monaco | Spa |
+  |---|---|---|---|
+  | post chain on ÷ off | 1.5× *(spread 1.2–12.4 — unusable)* | **4.3×** (+21.4ms) | **5.1×** (+22.7ms) |
+  | MSAA 4x ÷ 1x on the scene target | 2.7× (+15.7ms) | 2.6× (+17.1ms) | 2.8× (+17.6ms) |
+  | shadow cascade re-render | 1.02× (+0.78ms) | 1.01× (+0.21ms) | 1.02× (+0.77ms) |
+  | resolution 1.00 ÷ 0.75 | 3.5× | 3.5× | 3.6× |
+
+  Three things follow. **(a)** The post chain is the most expensive item and its cost is very
+  nearly linear in pixels — the same factor at phone geometry is 1.7–2.1× rather than
+  4.3–5.1× (§6). Any budget derived from a desktop measurement overstates a phone's by about
+  three times, which is why `PERF_VIEWPORT` now exists and why the tier decision above was
+  taken at phone geometry. **(b)** The shadow cascade's *re-render* is free — 1–2% — so the
+  expensive part of shadows is the per-material sampling and the extra shader variant, which
+  this factor does not isolate and **nobody has measured**. `high` is defined on the
+  assumption that shadows are expensive and **that assumption is currently unbacked.**
+  **(c)** Resolution remains the best lever by a distance, which is why the tier only moves
+  after the resolution scaler has run out of room.
+- **The absolute frame times in this project have not been measured on a quiet machine in a
+  long time.** Every run for issue #29 was taken at load average 17–52 on a ten-core box
+  with other agents on it. Paired mode cancels drift that is *additive*; contention is
+  *multiplicative*, so it inflates both arms and therefore the delta. Ratios survive it.
+  **Anyone re-deriving a budget from a number in this document should re-measure at load
+  under 8 first.**
 - **AI pace ~1.43× reference.** The oldest open item in the project.
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
@@ -877,8 +1179,6 @@ against every threshold and so stops binding silently rather than throwing.
   `probe:banking` while measuring something else, counted and printed there, issue #37.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
-  but the *diagnosis* recorded here was wrong — see the correction in §6 under "Tooling".
 - `validate:flags` — safety-car form-up.
 - **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
   rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
@@ -886,6 +1186,19 @@ against every threshold and so stops binding silently rather than throwing.
   weather work, and the number that would make a driver move is currently **zero**.
   Verified pre-existing on pristine `main` while working issue #32 — the pit-wall fixes do
   not touch it. **Nobody is on this.**
+- **The spoken radio is UNVERIFIED ON iOS SAFARI**, which is a stated target platform.
+  WebKit requires user activation before `speechSynthesis.speak()` and every call in
+  `TeamRadio` is from a `setTimeout`. `primeSpeech()` spends the Settings-toggle click on a
+  silent utterance to unlock the engine — written from WebKit's documented rule and from
+  the same pattern `main.ts` uses for the `AudioContext`, and **run on nothing but
+  Chrome/macOS**. Nobody has put it on a phone. The failure mode if it is wrong is a silent
+  radio with a working card, which is the default configuration anyway, so it is a low-cost
+  gap — but it is a gap and it is not a claim.
+- **On a platform with no voice on `MALE_VOICES`, the radio does not speak at all.**
+  Deliberate — see §6 — but it means the feature is silently unavailable on any platform
+  whose male voices are named something not on that list, and nobody has enumerated
+  Android's or Windows' full sets on real hardware. `probe:radio` fails loudly with
+  `certainty: 'none'` when it happens, and the fix is one line in the list.
 - **`diag:pitchoice` is a diagnostic, not a probe.** It prints a table and always exits 0 —
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
@@ -979,6 +1292,24 @@ Both leading candidates are now eliminated by measurement, and **nobody is on wh
   1.032, COTA 1.032, Spa 1.017, Suzuka 1.012, Interlagos 1.001, and that section is
   explicitly *"reported, not asserted"*. It is a different complaint from swerving (*"if the
   racing line is green how did i go off the track?"*), but it is sitting there unasserted.
+- **Cars come to a standstill under a VSC on completely clear track.** Found while fixing
+  #28 and *not* caused by it. At the #26 configuration (52 laps, Silverstone, F3, medium)
+  on pre-#28 `main`, cars spent **3458 car-seconds stationary with nothing within 60m in
+  front of them while the race was neutralised**, in a race that was 38% neutralised and
+  took 14457 simulated seconds — four hours for a ninety-minute Grand Prix. The simulation
+  counted every one of those cars as still running. #28's retirement drops that to **144
+  car-seconds, 26% neutralised, 8438s**, because the stalled cars are now recovered — but
+  it recovers them by *retiring* them, so what used to be an invisible stall is now 10.5
+  retirements a race. **The cause is in the neutralised limiter, not in the recovery**, and
+  it belongs with the safety-car work already in flight. Until it is fixed, full-distance
+  retirement counts are measuring this and not attrition.
+- **`validate:race` Spa spread is a one-seed sample of a high-variance quantity.** The
+  assertion is `slowestCarBest - fastestLap < 70s` on seed 20260729, and at Spa that is
+  dominated by how much of a five-lap race happens to be neutralised. Measured over five
+  seeds: **74.4s mean and 2 of 5 seeds over the bar on pre-#28 `main`, 52.8s and 1 of 5
+  after.** An intermediate build of #28 failed it at +118s on the sampled seed while being
+  better on the mean; the landed build reads +25.4s. **If it ever goes red, do not raise
+  the bar** — make it a distribution.
 
 ### The car has no over-wheel winglet, and putting one back needs the corner redesigned
 Issue #47 closed by **removing** the 2022-style blade above each front tyre rather than
@@ -1036,6 +1367,18 @@ measurement passes every version of it that is wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
 - Deleting a branch one commit before its tip.
+- **Writing "this does NOT close #N" in a commit message closes #N.** GitHub's keyword
+  parser reads `close #35` straight out of a sentence asserting the opposite, and it does
+  not care about the negation in front of it. On 2026-08-03 this silently closed **two
+  issues that agents had deliberately kept open** and documented at length as unfinished:
+  #35 (rival lap times withheld from the live tower — a *different* mechanism from the
+  DNF-truncation bug that was fixed) and #22 (people bodies below the neck: podium arms
+  are stick rectangles, the garage crew are armless torsos). Both were reopened.
+  **Never put `close`, `closes`, `fixed` or `resolves` adjacent to an issue number unless
+  you mean it** — say "left open: #35" or "#35 is a separate mechanism" instead. And when
+  a merge lands, check `gh issue list --state closed` against what you intended to close;
+  an issue wrongly marked done is how a known bug gets forgotten, which is exactly the
+  failure this file exists to prevent.
 - Completion notifications not always arriving — an agent finished and sat idle while
   counted as in-flight. **Check branch state directly rather than waiting.**
 - **Killed agents leave their work on anonymous branches and nobody ever looks.** On
