@@ -193,21 +193,30 @@ for (const def of CIRCUITS) {
   let boundaryMax = 0;
   const cross: number[] = [];
   const skirt: number[] = [];
-  const tall: { i: number; s: number; face: number }[] = [];
+  const tall: { i: number; s: number; face: number; side: -1 | 1 }[] = [];
 
   /**
    * Is there another piece of this lap near this point and below it?
    *
    * Brute force over the nodes, and it only runs for the handful of stations
-   * that come out over the limit, so it costs nothing. Lap distance is used to
-   * exclude the road this station is beside — the piece of circuit 40m along
-   * the lap from you is you.
+   * that come out over the limit, so it costs nothing.
+   *
+   * THE LAP-DISTANCE EXCLUSION IS NARROW ON PURPOSE. It exists to stop a
+   * station explaining its face with the road it is itself beside, and 40m of
+   * lap either way covers that with room to spare — a node's own road, run-off
+   * and verge together reach nothing like that far. It used to be 120m, and at
+   * three of the calendar's real climbs that is longer than the doubling-back
+   * itself: COTA's turn one passes over its own approach 78m along the lap and
+   * 7m above it, Spa's climb out of La Source 87m and 7m, and both were being
+   * told they had open ground below them when they have a hillside. The
+   * requirement that the other piece be genuinely LOWER is what does the real
+   * work here; lap distance only has to exclude your own feet.
    */
   const foldBelow = (x: number, z: number, y: number, atS: number): number => {
     let best = 0;
     for (let j = 0; j < n; j++) {
       const ds = Math.abs(track.dist[j] - atS);
-      if (Math.min(ds, track.length - ds) < 120) continue;
+      if (Math.min(ds, track.length - ds) < 40) continue;
       const dx = track.px[j] - x;
       const dz = track.pz[j] - z;
       if (dx * dx + dz * dz > FOLD_NEAR_M * FOLD_NEAR_M) continue;
@@ -245,18 +254,26 @@ for (const def of CIRCUITS) {
       // How far the DRAWN ground rises above the run-off it is beside. Positive
       // is grass standing in the run-off; it must not happen anywhere.
       meshOver = Math.max(meshOver, drawn.sampleAt(x, z) - outY);
-      if (face > SKIRT_LIMIT_M) tall.push({ i, s: track.dist[i], face });
+      if (face > SKIRT_LIMIT_M) tall.push({ i, s: track.dist[i], face, side });
       void radius;
     }
   }
 
   // Of the tall faces, the ones with another piece of lap near and below are
   // retaining walls between two levels. The rest are cliffs.
+  // Asked AT THE FACE, not at the centreline. The face stands at the outer edge
+  // of the ground beside the road, which is up to 16.75m away across, and what
+  // is under the centreline says nothing about what is under a point sixteen
+  // metres from it — on the inside of a hill climb it is the difference between
+  // finding the lower leg and missing it entirely. The half-width was already
+  // being computed here and then discarded with a `void`; this is that offset
+  // finally being applied.
   const unexplained = tall.filter((r) => {
     const hw = track.width[r.i] * 0.5;
-    const x = track.px[r.i];
-    const z = track.pz[r.i];
-    void hw;
+    const w = (r.side > 0 ? sh.left : sh.right)[r.i];
+    const outLat = r.side * (hw + w);
+    const x = track.px[r.i] + track.nx[r.i] * outLat;
+    const z = track.pz[r.i] + track.nz[r.i] * outLat;
     return foldBelow(x, z, track.elevation[r.i], r.s) < r.face * 0.5;
   });
   unexplainedAll += unexplained.length;
