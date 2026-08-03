@@ -3970,10 +3970,12 @@ export function buildCar(
     opacity: 0.95,
     depthWrite: false,
   });
+  // One lens geometry for all three, disposed with the car. See `dispose`.
+  const rainLightLens = new THREE.PlaneGeometry(0.072, 0.030);
   {
     // The central lens sits on the crash structure at Z=300 -> y 0.300, on the
     // same station as the shell's moulding so the two are one object to look at.
-    const lens = new THREE.PlaneGeometry(0.072, 0.030);
+    const lens = rainLightLens;
     const centre = new THREE.Mesh(lens, rainLightMat);
     centre.position.set(0, 0.335, -2.316);
     centre.rotation.y = Math.PI;
@@ -4073,6 +4075,12 @@ export function buildCar(
     dispose(): void {
       cockpit?.dispose();
       for (const d of brakeGlow) (d.material as THREE.Material).dispose();
+      // The rear lights own both their lens geometry and their material — one
+      // of each per car, shared across that car's three lenses. `regress:exit`
+      // counts live geometries across a session teardown and caught this the
+      // moment it was added, which is exactly what it is for.
+      rainLightMat.dispose();
+      rainLightLens.dispose();
       // The band materials are shared across the whole field and owned by
       // TyreTexture's cache, so they are emphatically NOT disposed here.
     },
