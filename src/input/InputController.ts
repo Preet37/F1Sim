@@ -213,7 +213,26 @@ export class InputController {
   /** True on the frame the racing-line key was pressed. */
   racingLineToggled = false;
   pausePressed = false;
-  /** Manual gear request, 0 for automatic. */
+  /**
+   * Which gearbox the player is driving, and the gear they last asked for.
+   *
+   * These used to be one number, and that was issue #45. `gearRequest` was a
+   * LATCH: pressing `4` once set it to 4 and only `0` ever cleared it, `0`
+   * appeared in no UI and in no help text, and `VehiclePhysics.updateGearbox`
+   * returned early on any non-zero request — so the automatic block below it was
+   * dead code for the rest of the session and the car could neither upshift nor
+   * downshift. The player found it by pressing a digit on the careers page and
+   * arrived at 205 km/h in fourth on the limiter with every shift light red.
+   *
+   * Splitting the mode out of the number is what makes the state SAYABLE. A
+   * single integer cannot be displayed as "you are in manual" without inventing
+   * a gear to show, and a mode nothing displays is a mode nobody can leave.
+   * `gearMode` is what the HUD prints and what `G` toggles; `gearRequest` is
+   * only meaningful while it reads 'manual', and `update` publishes 0 otherwise
+   * so the physics sees a clean automatic request rather than a stale level.
+   */
+  gearMode: 'auto' | 'manual' = 'auto';
+  /** The gear last asked for. Only published while `gearMode` is 'manual'. */
   gearRequest = 0;
   /** Set for one frame when the player asks to pit. */
   pitRequestToggled = false;
@@ -248,6 +267,48 @@ export class InputController {
   tiltAvailable = false;
   /** True when tilt steering is the active steering source. */
   tiltEnabled = false;
+
+  /**
+   * Whether keystrokes are driving inputs at all.
+   *
+   * `attach` is called once when the shell starts and released only on teardown,
+   * so this object's `keydown` listener is live on the menu, the settings page
+   * and every career screen — everywhere in the game. The text-field guard in
+   * `onKeyDown` stops a key aimed at an `<input>`, and it works; what it cannot
+   * stop is a key pressed with a BUTTON focused, which is most of a career
+   * screen. Nothing downstream noticed because `main.ts` only READS this object
+   * while `screen === 'racing'` — but three pieces of state here are persistent
+   * rather than per-frame (the gear mode, the ERS mode, the DRS flag), so a
+   * digit or an `E` pressed on a menu was still sitting in the car when the
+   * session started. That is precisely how issue #45 was reached: the player was
+   * "trying to run something on the careers page".
+   *
+   * Defaults to true so that a controller used without a shell — every probe in
+   * `scripts/` — behaves exactly as before. The shell opts out.
+   */
+  private enabledFlag = true;
+
+  get enabled(): boolean { return this.enabledFlag; }
+
+  /**
+   * Turning it off also puts everything down.
+   *
+   * The same reasoning as the `blur` handler: a key held at the moment focus
+   * leaves never sends its `keyup` to us, and a control left held is a car that
+   * drives itself the next time a session starts.
+   */
+  set enabled(v: boolean) {
+    if (this.enabledFlag === v) return;
+    this.enabledFlag = v;
+    if (v) return;
+    this.keys.clear();
+    for (const c of Object.values(this.holds)) c.clear();
+    this.targetSteer = 0;
+    this.targetThrottle = 0;
+    this.targetBrake = 0;
+    this.drsHeld = false;
+    this.reverseHeld = false;
+  }
 
   /** Live joystick state, for the on-screen overlay to draw. */
   joystickActive = false;
@@ -415,6 +476,10 @@ export class InputController {
     // key stuck in `this.keys` if focus moved to a field mid-press, and the car
     // would drive itself. `onKeyUp` runs unconditionally for the same reason.
     if (isTextEntry(e.target)) return;
+    // And a key pressed anywhere outside a session belongs to no car. See
+    // `enabled` — this is the other half of the same rule, for the case where
+    // the focused element is a button rather than a field.
+    if (!this.enabled) return;
 
     const k = e.key.toLowerCase();
     // Only swallow keys the game actually uses, so browser shortcuts still work.
@@ -437,11 +502,54 @@ export class InputController {
       case 't': this.pitTyreCyclePressed = true; break;
       case 'f': this.pitRepairTogglePressed = true; break;
       case 'enter': this.pitConfirmPressed = true; break;
+      // The gearbox mode, on its own key, printed in the controls overlay and
+      // shown on the HUD beside the gear. Issue #45's second requirement: there
+      // has to be a way back that a player can FIND. `0` was the old way back
+      // and it is kept below, but it was in no menu, on no screen and in no help
+      // text, so in practice the mode was one-way.
+      case 'g': this.toggleGearMode(); break;
       default: break;
     }
-    // Manual gears on the number keys, for players who want them.
-    if (k >= '1' && k <= '8') this.gearRequest = Number(k);
-    if (k === '0') this.gearRequest = 0;
+    // Manual gears on the number keys. A digit now says "manual, this gear"
+    // rather than silently latching a value that outlives the press: the mode is
+    // explicit, it is on screen, and G or 0 leaves it.
+    if (k >= '1' && k <= '8') this.selectGear(Number(k));
+    if (k === '0') this.setGearMode('auto');
+  }
+
+  /**
+   * Asks for a gear, entering manual if the car was not already there.
+   *
+   * The single entry point for every manual selection — number keys here, and
+   * the paddles, which `main.ts` resolves against the gear the gearbox is
+   * actually in. A paddle meaning "manual from now on" is the deliberate choice
+   * (issue #45 point 3): there is no automatic gearbox in the real sport, so a
+   * driver who takes a paddle has taken the gearbox. It is only defensible
+   * because the HUD now says MANUAL and G gives it back.
+   */
+  selectGear(gear: number): void {
+    this.gearMode = 'manual';
+    this.gearRequest = clamp(Math.round(gear), 1, 8);
+  }
+
+  setGearMode(mode: 'auto' | 'manual'): void {
+    this.gearMode = mode;
+    if (mode === 'auto') this.gearRequest = 0;
+  }
+
+  /**
+   * Flips between the two, keeping the gear the car is in.
+   *
+   * Going manual with `gearRequest` left at 0 would publish an automatic request
+   * while the HUD said MANUAL, which is the disagreement between display and
+   * behaviour this whole change exists to remove. So it asks for the gear it was
+   * last in, or first if it has never been in one — and asking for first at
+   * 300 km/h is safe because `VehiclePhysics.updateGearbox` raises any request
+   * to the lowest gear that will not over-rev the engine.
+   */
+  toggleGearMode(): void {
+    if (this.gearMode === 'manual') this.setGearMode('auto');
+    else this.selectGear(this.gearRequest > 0 ? this.gearRequest : 1);
   }
 
   private onKeyUp(e: KeyboardEvent): void {
@@ -804,7 +912,11 @@ export class InputController {
     out.brake = brake;
     out.drsRequested = this.drsHeld;
     out.ersMode = this.ersMode;
-    out.gearRequest = this.gearRequest;
+    // 0 is "automatic", and it is published from the MODE rather than from the
+    // number. Publishing the raw number is what made the old request a latch:
+    // once written it was never unwritten, because nothing but a key press could
+    // change it and the only key that could was undiscoverable.
+    out.gearRequest = this.gearMode === 'manual' ? this.gearRequest : 0;
     out.reverse = this.reverseHeld || this.reverseTouchHeld;
     // Reversing needs pedal input; Down alone should be enough to actually move.
     if (out.reverse && out.throttle < 0.35 && out.brake < 0.35) out.brake = 0.6;
@@ -937,7 +1049,7 @@ function isTextEntry(target: EventTarget | null): boolean {
 
 const GAME_KEYS = new Set([
   'w', 'a', 's', 'd', 'b', 'h', ' ', 'c', 'p', 'e', 'l', 'shift', 'escape',
-  't', 'f', 'enter',
+  't', 'f', 'g', 'enter',
   'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
   '0', '1', '2', '3', '4', '5', '6', '7', '8',
 ]);
