@@ -21,6 +21,9 @@ import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDir
 import { setRubberLine } from './render/SurfaceDetail';
 import { InputController, pitBindingHints } from './input/InputController';
 import {
+  applySteeringFeel, STEERING_FEELS, STEERING_FEEL_IDS, type SteeringFeelId,
+} from './input/SteeringFeel';
+import {
   describeButton, unboundButton, type ButtonAction, type ButtonRef,
 } from './input/GamepadProfile';
 import { Hud } from './ui/Hud';
@@ -385,6 +388,7 @@ class Game {
     this.input.config.speedSensitiveSteering = this.settings.speedSensitiveSteering;
     this.input.config.tractionAssist = this.settings.tractionAssist;
     this.input.config.brakingAssist = this.settings.brakingAssist;
+    applySteeringFeel(this.input.config, this.settings.steeringFeel);
 
     // Shared by reference on purpose: the controller screen edits this object
     // and the input layer reads it every frame, so a change on the screen is
@@ -2491,6 +2495,35 @@ class Game {
         note: 'Assists are off by default. The car is the same either way — an '
           + 'assist limits what your input can ask for, it does not change the machine.',
         build: (panel, k) => {
+          // Keyboard steering feel — issue #46. This is a FEEL decision that
+          // changes the car for every player on every device, so it is offered
+          // rather than imposed: the default is the measured recommendation and
+          // `Classic` is exactly what the game shipped with, one click away.
+          // The notes are the presets' own, so the screen and the measurements
+          // cannot drift apart.
+          k.choice(panel, {
+            name: 'Keyboard steering',
+            value: s.steeringFeel as SteeringFeelId,
+            options: STEERING_FEEL_IDS.map((id) => ({
+              id, label: STEERING_FEELS[id].label, note: STEERING_FEELS[id].note,
+            })),
+            onChange: (id) => {
+              s.steeringFeel = id;
+              // Live, on the next frame, with no restart: the controller reads
+              // its config every update and nothing caches these three numbers.
+              applySteeringFeel(this.input.config, id);
+              save(); repaint();
+            },
+          });
+          k.block(panel, {
+            head: 'What this changes',
+            line: 'How quickly the wheel winds on when you hold a key, how quickly '
+              + 'it straightens when you let go, and what a frame reports to the car.',
+            note: 'It does not change the car. Measured by probe:steeringfeel: on a '
+              + '2.0g corner at 200 km/h the old feel wandered 7.67m against 0.12m '
+              + 'with a wheel; Settled wanders 0.36m. The price is 184ms more to '
+              + 'unwind from full lock when you simply let go.',
+          });
           k.toggle(panel, {
             name: 'Speed-sensitive steering',
             note: 'Reduces lock as speed rises, as a real rack does.',

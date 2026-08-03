@@ -68,7 +68,10 @@ function stubElement(): HTMLElement {
 installWindowStub();
 
 import { PHYSICS_DT, SimClock } from '../../src/core/SimClock';
-import { DEFAULT_INPUT_CONFIG, InputController } from '../../src/input/InputController';
+import {
+  DEFAULT_INPUT_CONFIG, InputController, type InputConfig,
+} from '../../src/input/InputController';
+import { DEFAULT_STEERING_FEEL, steeringFeel } from '../../src/input/SteeringFeel';
 import {
   VehiclePhysics,
   steerRackLimit,
@@ -76,6 +79,30 @@ import {
   type VehicleControls,
 } from '../../src/physics/VehiclePhysics';
 import { BASE_F1_SPEC, applySetup, baselineSetupFor } from '../../src/physics/VehicleSpec';
+
+/**
+ * Which steering feel a probe run is measuring, from `STEER_FEEL`.
+ *
+ * `STEER_FEEL=classic npm run probe:handling` re-measures on the feel the game
+ * shipped with, which is how the candidates stay comparable after one of them
+ * becomes the default: the numbers in the issue and in PROJECT.md were taken on
+ * `classic`, and without a way back to it a later reader could not reproduce
+ * them. Unset means "whatever ships", which is what CI and every regression run
+ * wants.
+ */
+export function feelFromEnv(): { id: string; cfg: Partial<InputConfig> } {
+  const id = process.env.STEER_FEEL;
+  if (!id) return { id: DEFAULT_STEERING_FEEL, cfg: {} };
+  const f = steeringFeel(id);
+  return {
+    id: f.id,
+    cfg: {
+      keyboardSteerRate: f.keyboardSteerRate,
+      keyboardCentreRate: f.keyboardCentreRate,
+      keyboardSteerPublish: f.keyboardSteerPublish,
+    },
+  };
+}
 
 export const RIG_ENV: EnvironmentState = {
   trackTempC: 38, airTempC: 25, wetness: 0, surfaceGrip: 1,
@@ -133,6 +160,37 @@ function fireKey(type: 'keydown' | 'keyup', key: string, timeStampMs: number): v
  */
 export interface Lane {
   radiusM: number;
+  /**
+   * A CHICANE, as a sinusoidal centreline: `x = A sin(2 pi z / period)`.
+   *
+   * Present because a constant-radius corner and a straight are both lanes on
+   * which a SLOW wheel is free. They ask the driver to acquire one lock and keep
+   * it, so any candidate that fixes the sawtooth by making the wheel lazier
+   * scores well on all six of `probe:handling` §5's original cases while being
+   * unable to change direction — and "cannot change direction" is not a fix, it
+   * is the same complaint on the other side of the corner.
+   *
+   * An S-bend is where a slow return costs something, so it is the lane the cost
+   * has to be paid on. Amplitude and period are chosen together to ask for a
+   * stated peak lateral g at the run speed (`weaveForG`), which is the same way
+   * the constant-radius cases are specified.
+   *
+   * `radiusM` is ignored when this is set.
+   */
+  weaveAmpM?: number;
+  weavePeriodM?: number;
+}
+
+/**
+ * The chicane that asks for `g` of peak lateral acceleration at `speedKph`,
+ * reversing every `periodM / 2` metres.
+ *
+ * Peak curvature of `A sin(kz)` is `A k^2`, so `A = g * 9.81 / (v^2 k^2)`.
+ */
+export function weaveForG(speedKph: number, g: number, periodM: number): Lane {
+  const v = speedKph / 3.6;
+  const k = (2 * Math.PI) / periodM;
+  return { radiusM: Infinity, weaveAmpM: (g * 9.81) / (v * v * k * k), weavePeriodM: periodM };
 }
 
 /**
@@ -140,14 +198,29 @@ export interface Lane {
  * LEFT of the lane — outside, in the right-hander — and wants right lock.
  */
 function crossTrackError(lane: Lane, x: number, z: number): number {
+  if (lane.weaveAmpM !== undefined && lane.weavePeriodM !== undefined) {
+    return x - lane.weaveAmpM * Math.sin((2 * Math.PI * z) / lane.weavePeriodM);
+  }
   if (!Number.isFinite(lane.radiusM)) return x;
   const cx = -lane.radiusM;
   const d = Math.hypot(x - cx, z);
   return d - lane.radiusM;
 }
 
-/** Lane curvature, 1/m, signed the same way the steering is: positive is right. */
-function laneCurvature(lane: Lane): number {
+/**
+ * Lane curvature, 1/m, signed the same way the steering is: positive is right.
+ *
+ * Right is -x (see the sign note on `Lane`), so a path `x(z)` curves right at
+ * `-x''(z)`; for `A sin(kz)` that is `A k^2 sin(kz)`. Evaluated at a supplied
+ * `z` rather than at the car, because a driver on an S-bend has the next
+ * reversal in view — and for a constant-radius lane the argument makes no
+ * difference at all, so the six original cases are bit-identical.
+ */
+function laneCurvature(lane: Lane, z: number): number {
+  if (lane.weaveAmpM !== undefined && lane.weavePeriodM !== undefined) {
+    const k = (2 * Math.PI) / lane.weavePeriodM;
+    return lane.weaveAmpM * k * k * Math.sin(k * z);
+  }
   return Number.isFinite(lane.radiusM) ? 1 / lane.radiusM : 0;
 }
 
@@ -165,8 +238,12 @@ function clampAbs(v: number, lim: number): number {
   return v < -lim ? -lim : v > lim ? lim : v;
 }
 
-/** Lateral g the lane itself demands at `speedMs`. */
+/** Peak lateral g the lane itself demands at `speedMs`. */
 export function laneLateralG(lane: Lane, speedMs: number): number {
+  if (lane.weaveAmpM !== undefined && lane.weavePeriodM !== undefined) {
+    const k = (2 * Math.PI) / lane.weavePeriodM;
+    return (speedMs * speedMs * lane.weaveAmpM * k * k) / 9.81;
+  }
   if (!Number.isFinite(lane.radiusM)) return 0;
   return (speedMs * speedMs) / lane.radiusM / 9.81;
 }
@@ -214,11 +291,14 @@ export function tapOnce(opts: {
   tapMs: number;
   framePeriodMs?: number;
   tweak?: (car: VehiclePhysics) => void;
+  /** Steering-feel candidate under test. Defaults to whatever ships. */
+  inputConfig?: Partial<InputConfig>;
 }): TapResult {
   const { speedKph, tapMs, framePeriodMs = 1000 / 60 } = opts;
 
   windowListeners.clear();
   const input = new InputController();
+  if (opts.inputConfig) Object.assign(input.config, opts.inputConfig);
   input.attach(stubElement());
 
   const spec = applySetup(BASE_F1_SPEC, baselineSetupFor(0.6, 60));
@@ -296,6 +376,136 @@ export function tapOnce(opts: {
 }
 
 // ===========================================================================
+// The cost of the feel: what a candidate charges for the wander it removes
+// ===========================================================================
+
+/**
+ * Latency and travel time through the input path, in milliseconds.
+ *
+ * THE POINT OF THIS MEASUREMENT. Every candidate for the sawtooth buys its
+ * calm with time — a slower spring, a slower rack, or half a frame of
+ * averaging — and "adds latency" is exactly the kind of claim PROJECT.md §3.1
+ * exists to forbid asserting. So it is measured, in the same unit for all three,
+ * against the same rig.
+ *
+ * The car is deliberately NOT in this loop. What is being timed is the input
+ * path — `KeyboardEvent -> InputController -> controls.steer` — at a fixed road
+ * speed, so the speed-sensitive rack limit is present and the vehicle's own
+ * response is not. Mixing the car in would fold turn-in, load transfer and tyre
+ * build-up into a number whose whole purpose is to isolate the keyboard.
+ */
+export interface StepResponse {
+  /** Published lock a long hold settles on at this speed (the rack limit). */
+  fullLock: number;
+  /** Key-down to 90% of `targetLock` reaching the car, ms. */
+  toTargetMs: number;
+  /** Key-down to 98% of `fullLock`, ms. */
+  toFullMs: number;
+  /** Key-up at full lock to the published lock falling under 2% of it, ms. */
+  releaseMs: number;
+  /**
+   * THE FLICK. From steady full RIGHT lock, release and press left in the same
+   * instant; ms until the car is given 90% of `targetLock` in the new
+   * direction.
+   *
+   * This is the number a slow return is paid for in. It contains the whole
+   * direction change — spring back through centre, then ramp on the other way —
+   * which is what an S-bend asks for and what a candidate that fixes the
+   * sawtooth by making the wheel lazy will fail.
+   */
+  flickMs: number;
+}
+
+export function steerStepResponse(opts: {
+  speedKph: number;
+  /** The lock the manoeuvre is aiming at. */
+  targetLock: number;
+  framePeriodMs?: number;
+  inputConfig?: Partial<InputConfig>;
+}): StepResponse {
+  const { speedKph, targetLock, framePeriodMs = 1000 / 60 } = opts;
+  const speedMs = speedKph / 3.6;
+
+  /**
+   * Runs the input path alone and returns (frame-end ms, published steer) for
+   * every frame, given a key script in continuous time.
+   */
+  const run = (
+    events: { tMs: number; type: 'keydown' | 'keyup'; key: 'a' | 'd' }[],
+    endMs: number,
+  ): { tMs: number; steer: number }[] => {
+    windowListeners.clear();
+    const input = new InputController();
+    if (opts.inputConfig) Object.assign(input.config, opts.inputConfig);
+    input.attach(stubElement());
+    const clock = new SimClock();
+    const controls = freshControls();
+    let nowMs = 0;
+    input.timeSourceMs = () => nowMs;
+    clock.advance(0);
+    const out: { tMs: number; steer: number }[] = [];
+    let next = 0;
+    while (nowMs < endMs - 1e-9) {
+      nowMs = Math.min(endMs, nowMs + framePeriodMs);
+      while (next < events.length && events[next].tMs <= nowMs + 1e-9) {
+        const e = events[next++];
+        fireKey(e.type, e.key, e.tMs);
+      }
+      clock.advance(nowMs);
+      input.update(clock.frameDt, controls, speedMs, 1, 1);
+      // The frame's value is what the physics is handed for the steps that
+      // close this frame, so it is charged at the frame's end.
+      out.push({ tMs: nowMs, steer: controls.steer });
+      input.endFrame();
+    }
+    input.detach();
+    return out;
+  };
+
+  const DOWN_MS = 1000;
+  /** Long enough for any candidate's rack to reach its stop and settle. */
+  const HOLD_MS = 2000;
+
+  // --- Hold, then release --------------------------------------------------
+  const hold = run(
+    [
+      { tMs: DOWN_MS, type: 'keydown', key: 'd' },
+      { tMs: DOWN_MS + HOLD_MS, type: 'keyup', key: 'd' },
+    ],
+    DOWN_MS + HOLD_MS + 2000,
+  );
+  const fullLock = Math.max(...hold.map((s) => s.steer));
+  const firstAtOrAfter = (
+    rows: { tMs: number; steer: number }[], fromMs: number, pass: (s: number) => boolean,
+  ): number => {
+    for (const r of rows) {
+      if (r.tMs < fromMs) continue;
+      if (pass(r.steer)) return r.tMs - fromMs;
+    }
+    return Infinity;
+  };
+  const toTargetMs = firstAtOrAfter(hold, DOWN_MS, (s) => s >= 0.9 * targetLock);
+  const toFullMs = firstAtOrAfter(hold, DOWN_MS, (s) => s >= 0.98 * fullLock);
+  const releaseMs = firstAtOrAfter(
+    hold, DOWN_MS + HOLD_MS, (s) => Math.abs(s) <= 0.02 * fullLock,
+  );
+
+  // --- The flick: full right, then hard left, in one instant ----------------
+  const FLICK_MS = DOWN_MS + HOLD_MS;
+  const flick = run(
+    [
+      { tMs: DOWN_MS, type: 'keydown', key: 'd' },
+      { tMs: FLICK_MS, type: 'keyup', key: 'd' },
+      { tMs: FLICK_MS, type: 'keydown', key: 'a' },
+    ],
+    FLICK_MS + 2500,
+  );
+  const flickMs = firstAtOrAfter(flick, FLICK_MS, (s) => s <= -0.9 * targetLock);
+
+  return { fullLock, toTargetMs, toFullMs, releaseMs, flickMs };
+}
+
+// ===========================================================================
 // The driver
 // ===========================================================================
 
@@ -359,13 +569,21 @@ const DECISION_S = 0.125;
 /**
  * The two ramp rates the driver is planning against.
  *
- * Read from `DEFAULT_INPUT_CONFIG` rather than restated, so a change to the
- * keyboard feel moves the model of the player with it. The asymmetry is the
- * point: the wheel returns to centre 62% faster than it winds on, so a press
- * has to pay for the spring as well as for the lock it wants.
+ * Read from the CONTROLLER THIS RUN IS DRIVING rather than restated, so a change
+ * to the keyboard feel moves the model of the player with it — a driver who has
+ * played for ten minutes knows how quickly their own wheel winds on and springs
+ * back, and a driver model still planning against the old rates would charge a
+ * candidate for the model's ignorance rather than for the candidate. With the
+ * shipped config these are 3.4 and 5.5, and the asymmetry is the point: the
+ * wheel returns to centre 62% faster than it winds on, so a press has to pay for
+ * the spring as well as for the lock it wants.
  */
-const STEER_RATE = DEFAULT_INPUT_CONFIG.keyboardSteerRate;
-const CENTRE_RATE = DEFAULT_INPUT_CONFIG.keyboardCentreRate;
+function feelRates(cfg: Partial<InputConfig> | undefined): { steer: number; centre: number } {
+  return {
+    steer: cfg?.keyboardSteerRate ?? DEFAULT_INPUT_CONFIG.keyboardSteerRate,
+    centre: cfg?.keyboardCentreRate ?? DEFAULT_INPUT_CONFIG.keyboardCentreRate,
+  };
+}
 
 export interface LaneRun {
   /** Peak |cross-track error| after the capture window, metres. */
@@ -419,6 +637,16 @@ export interface LaneOptions {
    * vehicle, and agreement between them rules the input path out.
    */
   keyboard?: boolean;
+  /**
+   * Steering-feel candidate under test.
+   *
+   * Applied to the real `InputController.config`, so the candidate is exercised
+   * through the same code the game runs rather than through a copy of it. The
+   * ANALOGUE arm is deliberately unaffected by it — it writes `controls.steer`
+   * directly and has no ramp to change — which is what keeps it a fixed control
+   * arm across every candidate.
+   */
+  inputConfig?: Partial<InputConfig>;
 }
 
 /**
@@ -438,7 +666,9 @@ export function driveLane(opts: LaneOptions): LaneRun {
 
   windowListeners.clear();
   const input = new InputController();
+  if (opts.inputConfig) Object.assign(input.config, opts.inputConfig);
   input.attach(stubElement());
+  const { steer: STEER_RATE, centre: CENTRE_RATE } = feelRates(opts.inputConfig);
 
   const spec = applySetup(BASE_F1_SPEC, baselineSetupFor(0.6, 60));
   const car = new VehiclePhysics(spec, 'medium');
@@ -516,7 +746,15 @@ export function driveLane(opts: LaneOptions): LaneRun {
     // needed to null the predicted error: a car outside the right-hander
     // (positive error) needs more right, so both terms share a sign.
     learned = clampAbs(learned + LEARN_GAIN * seen.err * (framePeriodMs / 1000), LEARN_CLAMP);
-    const kappa = laneCurvature(lane) + (2 * eT) / (Ld * Ld) + learned;
+    // The lane's own curvature is the FEEDFORWARD — the curvature the car has
+    // to be doing right now — so it is read under the wheels, not at the
+    // lookahead point. Reading it at the lookahead was measured and is wrong:
+    // at 50 m/s the lookahead is 55m, which on a 150m chicane is 132 degrees of
+    // phase, so the driver steered for the reversal after the one they were in
+    // and neither arm could hold the lane at all. Identical for a straight or a
+    // constant-radius corner, where curvature does not vary with z.
+    const kappa = laneCurvature(lane, car.position.y)
+      + (2 * eT) / (Ld * Ld) + learned;
     const deltaRad = Math.atan(kappa * car.spec.wheelbaseM);
     // Into the units the rack takes. See the sign note on `Lane`.
     const steerCmd = clampUnit(

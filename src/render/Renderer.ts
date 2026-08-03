@@ -8,6 +8,7 @@ import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh
 import { Wreckage } from './Wreckage';
 import { buildTrackMeshes, bankedCarGroundY, type TrackMeshes } from './TrackMesh';
 import { updateRenderPoses } from './RenderPose';
+import { corneringPitch, corneringRoll, groundLift, wreckLean } from './CarAttitude';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
@@ -1865,16 +1866,39 @@ export class Renderer {
       // lean instead, picked from its own index so it is stable for the session
       // rather than jittering, and eased into over about a second so the car
       // slumps as it comes to rest instead of snapping into the pose.
-      let roll = clamp(-p.lateralG * 0.016, -0.06, 0.06);
-      let pitch = clamp(p.longitudinalG * 0.012, -0.05, 0.05);
+      let roll = corneringRoll(p.lateralG);
+      let pitch = corneringPitch(p.longitudinalG);
       if (car.retired) {
-        // Deterministic, from the car's index: a stable number per car with no
-        // state to store and nothing to reset between sessions.
-        roll = Math.sin(car.index * 12.9898) * 0.075;
-        pitch = Math.cos(car.index * 4.1414) * 0.045;
+        const lean = wreckLean(car.index);
+        roll = lean.roll;
+        pitch = lean.pitch;
       }
       v.root.rotation.z = damp(v.root.rotation.z, roll, 8, dt);
       v.root.rotation.x = damp(v.root.rotation.x, pitch, 8, dt);
+
+      // AND THE LEAN HAS TO STAND ON SOMETHING — issue #58, *"one the wheels
+      // are in the ground not sure how thats possible"*. The rotation above is
+      // about the car's ORIGIN, which is the contact-patch plane, so a leaned
+      // car puts whichever tyre is on the low side under the road by the arm
+      // times the angle: 4.3 degrees of roll at the 962mm outer edge of a front
+      // tyre is 72mm, and 2.6 degrees of pitch at the 1800mm front axle is a
+      // further 81mm. Measured against the DRAWN asphalt by `probe:crashrest`:
+      // a wreck at Monza was 174mm into the road, which is half a tyre.
+      //
+      // ONLY FOR A WRECK, and the omission is deliberate. A running car's roll
+      // and pitch model the BODY moving on its suspension while the tyres stay
+      // planted, and this rig cannot express that — `Renderer` places the whole
+      // visual at one height and nothing moves the body relative to the wheels
+      // (see `CarMesh.frontCornerForProbe`). Lifting the whole car under
+      // braking would draw it hopping off the road, which is a worse artefact
+      // than the one it fixes, and it is transient in a way a wreck's lean is
+      // not. The wreck's lean is a settled pose on a stationary car, and a
+      // stationary car stands on the ground. Recorded in PROJECT.md section 7.
+      if (car.retired) {
+        v.root.position.y += groundLift(
+          v.root.rotation.x, v.root.rotation.y, v.root.rotation.z,
+        );
+      }
 
       // Wheels: spin on the inner group, steer on the outer one.
       //

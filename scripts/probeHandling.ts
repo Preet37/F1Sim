@@ -49,7 +49,19 @@
 import { VehiclePhysics, type VehicleControls, type EnvironmentState } from '../src/physics/VehiclePhysics';
 import { BASE_F1_SPEC, applySetup, baselineSetupFor } from '../src/physics/VehicleSpec';
 import { PHYSICS_DT } from '../src/core/SimClock';
-import { driveLane, radiusForG, tapOnce, type Lane } from './lib/keyboardRig';
+import {
+  driveLane, feelFromEnv, radiusForG, steerStepResponse, tapOnce, weaveForG, type Lane,
+} from './lib/keyboardRig';
+
+/**
+ * Which keyboard steering feel this run is measuring.
+ *
+ * Defaults to whatever ships. `STEER_FEEL=classic npm run probe:handling`
+ * re-measures on the feel the game had before issue #46's fix, which is how the
+ * numbers quoted in that issue stay reproducible now that they are no longer the
+ * default. See `src/input/SteeringFeel.ts`.
+ */
+const FEEL = feelFromEnv();
 
 // ===========================================================================
 // Reporting
@@ -278,7 +290,7 @@ const SHORT_TAP_MS = 30;
 const tapLat = new Map<string, number>();
 for (const kph of TAP_SPEEDS) {
   for (const ms of TAP_MS) {
-    const r = tapOnce({ speedKph: kph, tapMs: ms });
+    const r = tapOnce({ speedKph: kph, tapMs: ms, inputConfig: FEEL.cfg });
     tapLat.set(`${kph}/${ms}`, r.lateral1sM);
     console.log(
       '   ' + String(kph).padStart(3) + String(ms).padStart(7) + 'ms' +
@@ -335,9 +347,9 @@ let worstSpreadAt = '';
 const deadAtRate: string[] = [];
 for (const kph of TAP_SPEEDS) {
   for (const ms of [SHORT_TAP_MS, 80, 160]) {
-    const vals = [15, 30, 60, 144].map(
-      (fps) => tapOnce({ speedKph: kph, tapMs: ms, framePeriodMs: 1000 / fps }).lateral1sM,
-    );
+    const vals = [15, 30, 60, 144].map((fps) => tapOnce({
+      speedKph: kph, tapMs: ms, framePeriodMs: 1000 / fps, inputConfig: FEEL.cfg,
+    }).lateral1sM);
     const lo = Math.min(...vals);
     const hi = Math.max(...vals);
     if (lo < 1e-3) deadAtRate.push(`${ms}ms at ${kph} km/h is worth nothing at some frame rate`);
@@ -399,6 +411,22 @@ const LANE_CASES: LaneCase[] = [
   { label: 'corner 1.2g', lane: { radiusM: radiusForG(120, 1.2) }, kph: 120 },
   { label: 'corner 2.0g', lane: { radiusM: radiusForG(200, 2.0) }, kph: 200 },
   { label: 'corner 2.6g', lane: { radiusM: radiusForG(280, 2.6) }, kph: 280 },
+  // THE CHICANE, and the reason it is here (issue #46, the candidate sweep).
+  //
+  // The six lanes above are a straight or a constant-radius corner, and both
+  // ask the driver to acquire ONE lock and keep it. A candidate that fixed the
+  // sawtooth by making the wheel too lazy to change direction would therefore
+  // score well on all six while being unable to take an S-bend — which is not a
+  // fix, it is the same complaint on the other side of the corner. This lane is
+  // the guard against that, and it works: over-slowing the rack to 1.7 units/s
+  // takes it from 1.67m to 2.64m and through the bar, while over-slowing the
+  // RETURN to 1.7 costs 0.11m.
+  //
+  // 1.2g at 180 km/h on a 90m sinusoid: the lane reverses every 0.90s and moves
+  // +/-0.97m under the car — Suzuka's esses. Chosen against the requirement that
+  // the ANALOGUE arm hold it (it does, 1.26m), because a lane the wheel cannot
+  // track measures the driver model rather than the input path.
+  { label: 'chicane 1.2g', lane: weaveForG(180, 1.2, 90), kph: 180 },
 ];
 
 /**
@@ -437,7 +465,10 @@ for (const c of LANE_CASES) {
     startOffsetM: c.label === 'straight' ? 2 : 0,
     captureS: SETTLE_S, departM: DEPART_BAR_M,
   };
-  const kb = driveLane({ ...common });
+  const kb = driveLane({ ...common, inputConfig: FEEL.cfg });
+  // The analogue arm writes `controls.steer` directly and has no ramp for a
+  // feel to change, so it is deliberately NOT given the candidate config: it is
+  // the fixed control arm every candidate is measured against.
   const wheel = driveLane({ ...common, keyboard: false });
   const ratio = wheel.swingM > 1e-3 ? kb.swingM / wheel.swingM : Infinity;
   if (kb.departed) departed.push(`${c.label} at ${c.kph} km/h`);
@@ -456,7 +487,7 @@ for (const c of LANE_CASES) {
 console.log('');
 ok(departed.length === 0, 'a keyboard driver never leaves the road entirely',
   departed.length === 0
-    ? `all six cases stayed inside ${DEPART_BAR_M}m`
+    ? `all ${LANE_CASES.length} cases stayed inside ${DEPART_BAR_M}m`
     : `left: ${departed.join(', ')}`);
 ok(tooWide.length === 0,
   `settled wander stays inside a car's width (${SWING_BAR_M.toFixed(1)}m peak-to-peak)`,
@@ -464,6 +495,53 @@ ok(tooWide.length === 0,
 ok(growing.length === 0, 'the wander does not grow across the run',
   growing.length === 0 ? 'last third no worse than the middle third anywhere'
     : `growing: ${growing.join(', ')}`);
+
+// ===========================================================================
+// 6. What the feel COSTS
+// ===========================================================================
+//
+// REPORTED, NOT ASSERTED, and deliberately.
+//
+// Everything above has a bar derived from something outside itself — a car is
+// 2.0m wide, a circuit is 15m across, a lift that ends in a spin is a lift that
+// ended in a spin. There is no comparable outside source for "how many
+// milliseconds of steering lag is too many": the honest bounds are hundreds of
+// milliseconds apart and any number written here would be this file's opinion
+// dressed as a measurement, which is precisely what PROJECT.md §3 forbids.
+//
+// It is here because the SAME table is what a candidate is charged with. Section
+// 5 can be made to pass by making the wheel slow, and the only thing standing
+// between "the car stopped swerving" and "the car stopped steering" is this
+// block plus the chicane lane above — which IS asserted, because a car's width
+// is a real bound on an S-bend too.
+
+console.log('\n6. WHAT THIS FEEL COSTS  (reported, not asserted — see the note in the source)');
+console.log(`   feel: ${FEEL.id}`);
+console.log('   Timed through the input path alone at 200 km/h, with no car in the loop,');
+console.log('   so this is the keyboard and not the vehicle. A 2.0g corner at 200 km/h');
+console.log(`   needs a steady ${(0.253).toFixed(3)} of lock.`);
+console.log('');
+console.log('   fps    to 90% of corner lock   to full lock   unwind from full   flick R->L');
+console.log('   ' + '-'.repeat(76));
+for (const fps of [30, 60, 144]) {
+  const r = steerStepResponse({
+    speedKph: 200, targetLock: 0.253, framePeriodMs: 1000 / fps, inputConfig: FEEL.cfg,
+  });
+  console.log(
+    '   ' + String(fps).padStart(3)
+    + F(r.toTargetMs, 22, 0) + 'ms'
+    + F(r.toFullMs, 13, 0) + 'ms'
+    + F(r.releaseMs, 17, 0) + 'ms'
+    + F(r.flickMs, 11, 0) + 'ms',
+  );
+}
+console.log('');
+console.log('   "unwind" is the wheel straightening on its own with no key down, and it is');
+console.log('   the only one of the four the return rate is charged on: pressing the other');
+console.log('   key ramps straight through centre at the RACK rate and never consults the');
+console.log('   return rate at all, which is why the flick column barely moves between the');
+console.log('   presets. Measured, not assumed — it was the expected cost and it is not the');
+console.log('   real one.');
 
 // ===========================================================================
 

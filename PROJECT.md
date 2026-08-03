@@ -171,10 +171,16 @@ src/
 scripts/                  ~40 probes and audit harnesses
   lib/keyboardRig.ts      THE PLAYER'S INPUT PATH, as a rig a probe can drive.
                           KeyboardEvent → InputController → SimClock → physics,
-                          off a simulated wall clock. Two measurements: `tapOnce`
-                          (one press, model-free) and `driveLane` (a closed-loop
-                          driver with a 250ms reaction, keyboard arm and
-                          analogue-wheel control arm). Shared by probe:handling
+                          off a simulated wall clock. Three measurements:
+                          `tapOnce` (one press, model-free), `driveLane` (a
+                          closed-loop driver with a 250ms reaction, keyboard arm
+                          and analogue-wheel control arm, on straights, corners
+                          and a sinusoidal CHICANE) and `steerStepResponse`
+                          (latency, time to full lock, unwind, flick — the input
+                          path alone, no car). Every one takes an `inputConfig`,
+                          which is how a steering-feel candidate is measured
+                          through the real controller rather than a copy of it.
+                          Shared by probe:handling and probe:steeringfeel
 docs/CAREER_MODE.md       Career design document
 reference/                GITIGNORED. Extracted reference frames (see §9)
 ```
@@ -201,7 +207,9 @@ Run `npm run` to list. The important ones:
 | `probe:qualiretire` | The Q1 accident, in a browser: nothing takes the screen over, nothing blurs the circuit, CONTINUE and SEE OUT are in the corner, every regulation string survives, and whichever way the player leaves the other nineteen have real times |
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:gearbox` | The gear a key press puts you in, and that you can get back out of it. Drives `KeyboardEvent → InputController → playerControls → VehiclePhysics` instead of hand-building a controls literal — which is exactly why `probe:drivability` and `probe:handling` could not have caught issue #45 |
-| `probe:handling` | Balance, turn-in and lift-off stability — **and, since #46, what one key press does and whether a keyboard driver can hold a lane at all.** No longer a pure reporter: 11 assertions, and it goes red on `main` |
+| `probe:handling` | Balance, turn-in and lift-off stability — **and, since #46, what one key press does and whether a keyboard driver can hold a lane at all.** No longer a pure reporter: 11 assertions. Seven lanes including a **chicane**, and a §6 that prints what the steering feel COSTS in milliseconds. `STEER_FEEL=classic` re-measures the pre-#46 feel |
+| `probe:steeringfeel` | **The feel decision, as a table.** Fifteen keyboard configurations × seven lanes × three frame rates against one fixed analogue-wheel control arm, plus latency, time-to-full-lock, flick and unwind. Reports; `probe:handling` judges |
+| `diag:chicane` | How the flick lane was chosen: 36 speed × g × period combinations against two stated requirements — the wheel arm must hold it, and it must catch a deliberately over-slowed rack |
 | `probe:drivability` | Turn-in, hands-still yaw stability, pedal margin, catchability, understeer gradient. **Since #46 it asserts the eight bars it had always printed beside its own summary** and exits 1 when it says the car is undrivable |
 | `probe:season` | 100 career-years |
 | `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
@@ -209,6 +217,7 @@ Run `npm run` to list. The important ones:
 | `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
+| `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
 | `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
@@ -216,10 +225,15 @@ Run `npm run` to list. The important ones:
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
+| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
-- **`probe:handling` 4, `probe:drivability` 4, `probe:racingline` 3 — NEW, and new only in the
-  sense that these three probes can now fail at all.** Nothing was changed in `src/physics/`,
+- **`probe:handling` 1** (was 4). The steering-feel work took it to **10 ok / 1 failed** —
+  see §6, "Three candidates for the swerve". What remains is one assertion covering two
+  lanes: the 280 km/h straight (2.98m, a floor no candidate moves and nobody has diagnosed)
+  and the 2.6g/280 km/h corner (4.83m, which the old feel left the road on entirely).
+- **`probe:drivability` 4, `probe:racingline` 3 — NEW, and new only in the
+  sense that these probes can now fail at all.** Nothing was changed in `src/physics/`,
   `src/track/` or `src/ai/` on the branch that added them; every number they report was true
   on `main` before and was being printed and ignored. Two of the three had no assertions
   whatsoever. Full breakdown in §6 and §7 under issue #46. **These are the swerve.**
@@ -701,6 +715,86 @@ viewpoint instead of cancelling in screen space the way it does for the car bein
   render pose means a `prevS`/`prevLateral` on `SafetyCar` itself, which is race-side code
   the in-flight safety-car work owns. Listed in §7.
 
+### The crashed car that shook, and sank its wheels into the road (issue #58)
+
+> *"one the wheels are in the ground not sure how thats possible, second there is a lot of
+> shaking back and forth even tho the car has crashed which it shouldnt do, third the
+> speedometer is in N?"* — from a screen recording.
+
+The issue proposed that all three were **one** contact-resolution state that never
+converges. **That hypothesis is wrong, and disproving it is the first result.** A retired
+car is not stepped at all — `RaceEngine.step` opens with `if (car.retired) continue` — so
+there is no contact loop to fail to converge and its solver state is frozen by
+construction. #28's agent measured exactly that and handed the issue back, correctly. Both
+real defects are in the **drawing** of that frozen state, they are independent of each
+other, and neither is in `src/physics/`.
+
+**1. The shaking: `prev` is never refreshed for a car the engine does not step.**
+`updateRenderPoses` draws every car at `prev + (now − prev) × alpha`, and `prev` is
+captured in `RaceEngine.step` immediately before `physics.step`. **Four branches of that
+loop `continue` before the capture** — a retired car, a car sitting the period out, a car
+on its release timer, and the whole field before the lights go out. For those the pair
+never advances again: it stays at the top of the last step the car *was* stepped on while
+`physics.position` holds the end of that step, and the two differ by one step of travel
+plus the barrier push-out — **311mm at Monza off a 293 km/h accident.** `alpha` is the
+accumulator's remainder and sweeps 0..1 as the display beats against 120Hz, so the wreck is
+**drawn sliding back and forth across its final step, every frame, for the rest of the
+session.** It cannot decay, because nothing about it is a transient, and it is below
+`TELEPORT_M` so the snap that exists for placements does not catch it.
+- Measured by the new `probe:crashrest` §1, driving the **real** `SimClock` and the **real**
+  `updateRenderPoses`, at 50 and 85fps with frame jitter — neither rate divides 120:
+  **Monza 296.7mm of movement in a single frame, Zandvoort 180.8mm, Monaco 79.0mm, Spa
+  55.7mm**, mean 201/123/54/38mm. The **vertical** half is there too, which is #54's
+  channel: **Spa 11.9mm, Monaco 10.8mm, Zandvoort 3.5mm per frame.**
+- Fixed by `CarEntry.holdPose()` — prev := now — called on the retired branch and inside
+  `holdOnGrid`, which covers the other three. **All eight rows go to 0.00mm.** The
+  interpolation itself is untouched and was never wrong; what was wrong is that the
+  invariant *"prev is where the car was at the top of this step"* had not been made to hold
+  for a car that is standing still.
+
+**2. The wheels: the wreck's lean is applied about the origin, and the origin is the
+road.** A wreck has no accelerations, so the roll and pitch that make a running car look
+loaded up both fall to zero and it would sit dead level; `Renderer.syncCars` gives it a
+settled lean from its own index instead, up to **0.075 rad of roll and 0.045 of pitch**.
+That rotation is about the car's origin — which is the contact-patch plane, the thing
+`bankedCarGroundY` puts *exactly* on the drawn asphalt (#3, 2mm on eleven circuits). So
+every contact point on the low side goes straight through the surface: the outer edge of a
+front tyre is **962mm** from the roll axis and the front axle is **1800mm** from the pitch
+axis. **Measured against the drawn triangles, worst car of twenty: 164.2mm at Monza,
+Zandvoort and Spa, 163.9mm at Monaco — 46% of a 360mm tyre, buried.**
+- `src/render/CarAttitude.ts` now owns the lean and a `groundLift`, in its own module for
+  the same reason `RenderPose.ts` is: **so a probe can drive the real rule.** The lift is
+  the depth of the deepest of the eight contact points under the rotation *as actually
+  applied* — which is why it takes the heading as an argument (see §7).
+- **Applied to a wreck only, deliberately.** A running car's roll and pitch model the BODY
+  moving on its suspension while the tyres stay planted, and this rig cannot express that:
+  `Renderer` places the whole visual at one height and nothing moves the body relative to
+  the wheels (`CarMesh.frontCornerForProbe` says so in as many words). Lifting the whole
+  car under braking would draw it hopping off the road — a worse artefact than the one it
+  fixes, and transient in a way a wreck's permanent lean is not.
+- **`probe:crashrest` §2b reads the source**, because §2 computes the root height itself and
+  would therefore stay green with the renderer's call deleted — the tautology §3.2 exists
+  to prevent. Same shape of second check as `probe:banking`'s call-site rule.
+
+**3. The `N` is correct, and this is the deliberate decision the issue asked for.**
+`Hud.update` reads `N` below 0.6 m/s with the throttle shut. A write-off is stopped dead —
+`onSolidImpact` calls `physics.stop()` precisely so the HUD does not keep reading a speed
+for a car pinned against a barrier — so the rule fires and the answer it gives is the right
+one: FIA Technical Regulations Art. 12.4 requires a retired car to be left with a neutral
+selector reachable from outside so marshals can move it, which is why every broadcast
+onboard of a stopped car reads N. `probe:crashrest` §3 asserts it **and asserts that it is
+stable over 120 steps** rather than flickering against the gear the car died in — measured
+`N` on all four circuits, one distinct label each, against frozen physics gears of 1, 1, 2
+and 1. **`src/ui/Hud.ts` was not touched** (held by #17/#35), and does not need to be.
+
+**Proved red three ways.** Removing `holdPose` from the retired branch: **16 of 16 §1
+checks red**, with the numbers above. Making `groundLift` return zero: **4 of 4 §2 checks
+red at 164.2mm**. Deleting the renderer's call to it: **2 of 4 §2b wiring checks red** while
+§2 stayed green, which is the whole reason §2b exists.
+
+`probe:banking`, `probe:carrig`, `probe:rideheight`, `probe:recovery`, `probe:blockage`,
+`probe:gearbox` and `validate:world` are all unchanged and passing.
+
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
   information about the player's car and coloured against the AI's reference car. Green
@@ -774,6 +868,12 @@ passes is worse than no probe. These were those probes, and that was the finding
   passes: nothing spins, turn-in is 0.025–0.083s against a 0.35s bar, the front axle
   saturates first at all four speeds, and a lift at the limit settles at 3.4–3.7° of
   sideslip. The car is fine and the control is not.
+
+  **This table is now HISTORY, and it is reproducible on demand.** The three candidates
+  were swept and one ships as the default — see "Three candidates for the swerve" below.
+  Everything above is what `STEER_FEEL=classic npm run probe:handling` still prints, to
+  the digit; the shipped default reads **0.87 / 1.62 / 2.98 / 0.93 / 0.36 / 4.83** on the
+  same six lanes and leaves the road on none of them.
 - **The racing line is still over-promising, on three circuits, with a driver in the loop.**
   `probe:racingline`'s section 3 was explicitly *"reported, not asserted"* on the reasonable
   grounds that past the point the colour turns, what happens belongs to the driver. Right
@@ -799,6 +899,99 @@ passes is worse than no probe. These were those probes, and that was the finding
   the car **1.09m at 15fps and 0.23m at 144fps**. Note the two breaks fail *different*
   checks — the restored ramp actually makes `no press is silently deleted` pass, because
   over-crediting a low frame rate is the opposite error to deleting the press.
+
+### Three candidates for the swerve, measured — and the one that ships (issue #46)
+
+PR #64 found the mechanism and deliberately stopped there: *"this is a feel decision and
+should not be taken unilaterally in the same PR that built the ruler."* This is the
+decision, taken from measurements.
+
+**`probe:steeringfeel`** flies **fifteen configurations down seven lanes at three frame
+rates each** — 315 closed-loop runs — against the analogue-wheel control arm, and
+`probe:handling` §5 gained the seventh lane. **`probe:handling` 7 ok / 4 failed → 10 ok /
+1 failed.**
+
+| candidate | corner | strt | ratio | 2.6g | lat90 | full | flick | unwind | chicane | 30ms@15fps |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **classic** 3.4/5.5/end — what shipped | **off** | 2.89 | 187× | **LEFT** | 83ms | 300 | 367 | **183** | 1.92 | **0.000 dead** |
+| 1. return 4.5 | off | 2.95 | 132× | LEFT | 83 | 300 | 367 | 233 | 1.87 | 0.000 dead |
+| 1. return 3.4 (symmetric) | 13.90 | 2.92 | 74× | held | 83 | 300 | 367 | 300 | 1.81 | 0.000 dead |
+| 1. return 2.8 | off | 3.06 | 53× | LEFT | 83 | 300 | 367 | 367 | 1.77 | 0.000 dead |
+| 1. return 2.2 | 3.64 | 3.08 | 5.5× | held | 83 | 300 | 367 | 450 | 2.43 | 0.097 / 182% |
+| 2. ramp 2.8 | off | 2.91 | 79× | LEFT | 100 | 350 | 450 | 183 | 1.94 | 0.000 dead |
+| 2. ramp 2.2 | off | 3.27 | 111× | LEFT | 117 | 450 | 567 | 183 | 2.85 | 0.000 dead |
+| 2. ramp 1.7 | off | 3.33 | 166× | LEFT | 150 | 583 | 733 | 183 | 3.04 | 0.000 dead |
+| 3. mean lock | off | 3.06 | 137× | LEFT | 83 | 300 | 383 | 200 | 1.81 | 0.170 / 10.5% |
+| 1+3 return 3.4 + mean | 8.77 | 2.90 | 43× | held | 83 | 300 | 383 | 300 | 2.19 | 0.210 / 3.7% |
+| **1+3 return 2.8 + mean — SHIPS** | **4.83** | 2.98 | **16×** | **held** | **83** | **300** | **383** | **367** | **1.90** | **0.232 / 4.0%** |
+| 1+3 return 2.5 + mean | 3.87 | 2.93 | 7.8× | held | 83 | 300 | 383 | 417 | 2.63 | 0.247 / 3.9% |
+| 1+3 return 2.2 + mean (`calm`) | 3.67 | 2.89 | 6.9× | held | 83 | 300 | 383 | 467 | 2.21 | 0.266 / 3.6% |
+| 2+3 ramp 2.2 + mean | off | 3.06 | 83× | LEFT | 117 | 467 | 583 | 200 | 2.43 | 0.095 / 16.4% |
+
+Lane numbers are the **worst over 30, 60 and 144fps**; `off` means at least one lane left
+the road. `corner`/`strt`/`chicane` are metres peak-to-peak; the milliseconds are through
+the input path alone at 200 km/h with no car in the loop.
+
+**The headline, on the lane the issue is written about — the 2.0g corner at 200 km/h:
+7.67m of keyboard wander against 0.12m with a wheel becomes 0.36m. The ratio goes 61.9× →
+3.0×.** At 30 and 144fps the same lane reads 0.46m and 1.88m against the old feel's 4.54m
+and 21.63m.
+
+**Four things the sweep found that were not the expected answers.**
+
+1. **NO SINGLE CANDIDATE IS ENOUGH. Every one of the three, alone, still leaves the road**
+   — slowing the return alone at 2.8 departs at 144fps, slowing the ramp makes the closed
+   loop worse at every rate, and mean-lock alone departs at 144fps. The default is a
+   COMBINATION and the sweep is what says so.
+2. **A slow return does not cost the flick.** That was the expected cost and it is wrong:
+   pressing the opposite key ramps straight through centre **at the rack rate** and never
+   consults the return rate at all, so a full direction change is 367→383ms whether the
+   return is 5.5 or 2.2. What a slow return actually costs is **letting go** — unwinding
+   from full lock with no key down goes **183ms → 367ms**. That is the real handicap and
+   it is the price of the fix.
+3. **Slowing the RAMP is the one candidate that is simply worse.** It is charged on every
+   input (turn-in 83→150ms, flick 367→733ms), it is the only family that puts the chicane
+   through the 2.0m bar on its own, and it did not fix the closed loop at any rate.
+4. **A faster machine gets MORE of the sawtooth, not less.** The frame's zero-order hold is
+   a low-pass filter whose corner frequency *is* the frame rate, so 144fps is the worst
+   column for almost every row (old feel: 4.54m at 30fps, 21.63m at 144). This is why the
+   first draft of the sweep — 60fps only — produced a non-monotonic column in which a
+   symmetric wheel was *worse* than the asymmetric one, and why every number above is a
+   worst-of-three.
+
+**What ships and how it is switched.** `src/input/SteeringFeel.ts` holds six named presets
+— one per candidate in isolation, two combinations, and `classic`, which is byte-for-byte
+what the game had. **The default is `settled` (rack 3.4, return 2.8, publish mean)** and it
+is chosen on a stated rule: it is the slowest unwind that still holds the chicane inside
+the 2.0m bar at all three frame rates. `calm` is one step further (return 2.2, better on
+every corner, chicane 2.21) and is offered rather than defaulted for exactly that reason.
+Settings → Driving → **Keyboard steering**, applied live, persisted, with the measurement
+printed under it.
+
+**The mean-lock mechanism, because it is the half that is not obvious.** `InputController`
+integrates the wheel's trajectory across the frame as well as stepping it, and publishes
+`area / span` instead of the end point. Two closed-form segment shapes (`rampIntegral`),
+exact, nothing to tune, and `targetSteer` itself is unchanged — only the number handed
+downstream moves. It is what fixes the deleted press: the 30ms press at 15fps ramps the
+wheel up for 30ms and centres it for the remaining 37ms, so the value *at the end of the
+frame* is exactly zero while the mean over the frame is not.
+
+**Proved the instrument still catches a broken car.** `muRear × 0.80` on `STEER_FEEL=classic`
+still gives **3 ok / 8 failed**, exactly as it did before this work. On the new default it
+gives **5 ok / 6 failed** — still red, still failing all four vehicle checks and both §5
+lane bars; the two that now pass are §4's frame-rate pair, which pass because the fix is
+real and which a rear-grip break has no reason to touch.
+
+**Proved the refactor is neutral.** `STEER_FEEL=classic npm run probe:handling` is
+**byte-identical to the pre-change baseline on every number** — the six lanes, the fifteen
+taps, the frame-rate table — with only the new chicane row and the new §6 added.
+
+**Costs, honestly.** Unwinding from full lock by letting go is 2.0× slower (183→367ms). A
+press is worth more than it was — an 80ms press at 200 km/h moves the car 1.57m against
+1.15m — because the lock persists longer. `probe:framerate`'s off-line deviation improves
+on nine of eleven manoeuvres (worst 9.15m → 7.56m) and gets worse on one already flagged
+chaotic (21.41m → 25.92m at 15fps on the held 2Hz slalom). And **the 280 km/h straight does
+not move at all** — see §7.
 
 ### The gearbox: one key press, locked in fourth for the session (issue #45)
 The player pressed a digit while *"trying to run something on the careers page"* and drove
@@ -1297,7 +1490,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Area | What |
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
-| Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
+| Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
@@ -1306,6 +1499,74 @@ against every threshold and so stops binding silently rather than throwing.
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
+
+### `probe:smoke` had never opened the front end it claimed to cover — issue #62
+
+The probe whose own header said *"the menus, the career screens and the settings pages had
+no automated coverage whatsoever"* reported
+
+```
+15 screens walked
+PASS — every reachable front-end screen renders and throws nothing.
+```
+
+having opened **the first-run driver screen and thirteen helmet colours**.
+`grep -icE "setting|driver|career|garage|paddock"` over a full run's log returned **0**.
+Every front-end change merged since it was written had counted it as cover, and at its
+default depth it spent **over half an hour** re-photographing that one screen in
+permutations — `Dark > Gold`, `Plain > Starburst`, and so on to ~197 of them. This is
+PROJECT.md §3.2 in its worst form: not a probe that *would* pass a broken feature, a probe
+that never looks at the code under test.
+
+**Three causes, and each needed its own fix.**
+
+- **It booted with EMPTY storage**, so it started *inside* the first-run flow rather than on
+  the front page. There is one button out of that flow and every other button on it repaints
+  a helmet. It is also why `Continue` and `Team HQ` were unreachable in principle — both are
+  conditional on a saved career, and an empty browser has none. The walk now makes a driver
+  and two careers **through the real buttons**, captures the storage they leave, and restores
+  it before every later boot, so the walk starts on the front page of an established install.
+- **It de-duplicated screens by NAME** — the label of the button that led to them. Identity
+  is now what a screen *is*: the shell's own `Screen` id, plus the headings the page prints,
+  plus the SET of buttons on it. The button that was clicked appears nowhere in the key.
+  Thirteen colours collapse to one; the eight settings tabs stay eight; the five screens that
+  all report `team-hq` (factory, paint shop, engine deal, driver market, preparation) stay
+  five, because the heading separates them. **Asserted, not assumed:** the walk clicks all 61
+  controls on the driver screen and fails if any one of them reads as a different screen.
+- **Nothing said which screens it was supposed to reach**, so reaching none was
+  indistinguishable from a pass. There is now a **required set of 28 routes**, each of which
+  must open *and land on the screen id and heading it names* — the three `team-hq` rooms
+  would otherwise all pass by falling back to the factory.
+
+**Measured on merged `main`, same machine, same software rasteriser:**
+
+| | old | new |
+|---|---|---|
+| distinct screens | **15**, of which 14 are one screen | **35** |
+| screen ids reached, of 20 declared | **2** (`driver-create`, `menu`) | **15** |
+| Settings / drivers / career / paddock / Team HQ | none | all |
+| wall clock, default depth | **≥33.6 min** — 174 of its ~197 screens in 2015s before it was stopped to free the machine | **11.1 min** (665s, 53 cold boots) |
+| wall clock at `SMOKE_DEPTH=1`, the issue's own configuration | 97s for 15 screens | — |
+| the part that can go red, alone (`SMOKE_FREE_S=0`) | n/a | **240s** at load average 5 — and **567s** at load 48, which is the honest caveat on every figure in this table |
+
+**Proved it goes red, and the contrast is the artefact.** `buildSettingsScreen` was made to
+throw on entry — a screen the old crawl had never opened. The old probe: `15 screens walked`
+/ `PASS — every reachable front-end screen renders and throws nothing`, **exit 0, 97s**. The
+new probe on the same build: **exit 1**, twelve failures, naming the throw
+(`"settings · Settings" threw: uncaught: TypeError`), all eight tabs and the controller page
+as `UNREACHABLE`, and `screen "controller" is in the required set and the walk never opened
+it`.
+
+**What the walk found now that it looks:** nothing that throws. Thirty-five screens, zero
+uncaught exceptions, zero `console.error`, no blank screens. It also **corroborates #38
+independently** — `PressConference.ts` and `GarageScene.ts` have no import, no screen id and
+no button in `src/main.ts`, so no walk of the front end can reach them — and it prints the
+five declared screen ids it does **not** reach and why: `intro` (deliberately skipped,
+`regress:career` clicks the real skip button), and `simulating`, `racing`, `results` and
+`event`, which all require a session to be launched. That is other probes' ground
+(`probe:framing`, `probe:hudtext`, `shoot:panels`, `probe:qualiretire`) and the boundary is
+stated rather than silently crossed. **The retirement flow is on the same list**: it needs an
+accident, and `probe:qualiretire` stages one.
 
 ### Measured, deferred, and still true
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
@@ -1358,6 +1619,50 @@ against every threshold and so stops binding silently rather than throwing.
   that reads a height, a sector, a gap or a marshal post off `s` inherits it. The probe
   **excludes those frames from both of its columns and prints them** rather than swallowing
   them, so the exclusion is visible and the count is the measurement. **Nobody is on this.**
+- **EVERY CAR IS DRAWN LEVEL WITH THE WORLD, on a road that is neither flat nor level.
+  Issue #71.** Found by `probe:crashrest` while measuring #58, and it is much the larger
+  half of *"the wheels are in the ground"*. `Renderer.syncCars` sets the car root's
+  `rotation.y` from the heading and its `rotation.x`/`rotation.z` from the car's own
+  accelerations — **and from nothing about the surface under it.** The origin is placed
+  correctly (`bankedCarGroundY`; `probe:banking` holds it to 2mm on eleven circuits) and the
+  car is then drawn horizontal, so on any gradient the downhill axle goes under the asphalt
+  and on any banking the low-side tyre does. It is pure geometry: a 3.6m wheelbase on Spa's
+  18.7% gradient buries an axle **1.8 × 0.187 = 337mm**, and a 1.925m track on Zandvoort's
+  18° buries a tyre **0.9625 × tan(18°) = 313mm**. Raycast against the drawn triangles at
+  the racing offset, worst on the lap, with **no lean at all**: **Monaco 434mm, Zandvoort
+  396mm, Spa 341mm, Monza 15mm** (Monza is flat, which is why a Monza-only check would
+  report this as fine). This is #3 one level up — the placement rule is right *at the
+  origin* and the car is rigid, so being right at one point is not being right.
+  **Not fixed here, and the reason is contention rather than difficulty:** the fix is to
+  give the car the road's own attitude, and `CameraDirector` carries a line-for-line copy of
+  the same two expressions (`rigRoll`/`rigPitch`, with a comment saying the two must not
+  disagree), the cockpit eye offset is rotated by them, and `probe:framing` — 56 known
+  failures, owned by the HUD work — is laid out against where that puts the halo. It is one
+  shared rule in `src/render/CarAttitude.ts` plus one line in each consumer, and it should
+  be done with `probe:framing` and `probe:cameras` watching. **Nobody is on this.**
+- **The car's pitch is applied about the WORLD x axis, so half the circuit gets it as
+  roll.** `Renderer` writes the three angles onto an `Object3D`, whose Euler order is the
+  default `'XYZ'` — that is `RX · RY · RZ`, so the yaw is applied *before* the pitch and the
+  pitch axis is therefore world-x rather than the car's own lateral axis. A car heading
+  along +x receives its braking pitch as pure roll; a car heading along +z receives it
+  correctly. `CameraDirector.updateCockpit` builds the identical Euler in the identical
+  order, so the camera and the car agree with each other and both are wrong together, which
+  is why it has never shown as a mismatch. The correct order is `'YXZ'`. `CarAttitude
+  .groundLift` deliberately computes against the rotation that is *actually applied* rather
+  than the one that was meant, so #58's fix is exact either way — but the underlying
+  ordering is still wrong. Same file boundary and same reviewers as the item above; **filed
+  with it under #71. Nobody is on this.**
+- **A car standing OFF the road is placed on the road's plane, and mostly that is fine.**
+  Checked while working #58 because it was the obvious candidate for "a crashed car is on a
+  different placement path", and **it is not**: the run-off strip is swept at
+  `elevation + bankHeight`, which is the same surface `bankedCarGroundY` returns, so within
+  the laterals a car can actually reach (bounded by `world.containment`) the car origin is
+  within **42mm at Monza, 43mm at Spa, 39mm at Monaco and 310mm at Zandvoort** of the
+  topmost drawn surface under it — the Zandvoort figure being the banking runout, where
+  `bankHeight`'s exponential taper and the mesh's own taper disagree. An earlier sampling of
+  this that ignored the containment line reported errors of **1.5m at Spa and 5.1m at
+  Monaco**; those laterals are behind the barriers and no car can be there, and the numbers
+  are recorded here only so nobody re-derives them and files a bug that is not one.
 - **The safety car is drawn from stepped state in all three axes.** `Renderer.syncSafetyCar`
   takes its position from `toWorld(sc.s, sc.lateral)` and its height from
   `bankedCarGroundY(sc.s, sc.lateral)`, none of which is interpolated — so under a
@@ -1511,15 +1816,24 @@ measurement passes every version of it that is wrong.
   and 0.12m with a wheel — 62×** — because the wheel springs back to centre at 5.5 units/s
   against a 3.4 units/s ramp, so a steady mid-corner lock is a 0–0.71 sawtooth where 0.253
   was wanted. **The swerve is the input path.**
-- **What has NOT been done about it, and why.** Nothing in `src/input/` was changed. The
-  candidate fixes — slowing the return-to-centre, slowing the ramp, or publishing the
-  time-weighted mean lock over a frame instead of its end value — all change how the car
-  feels to every player on every device, and the right way to choose between them is to
-  measure each against `probe:handling` §5 and then put the winner in front of the user.
-  The instrument now exists to do that; the change itself is a feel decision and is not
-  one to take unilaterally in the same PR that built the ruler. **#46 stays open on the fix.**
-- **Also still open: the 30ms press that is worth nothing at 15fps.** Same root cause as
-  mechanism B in `probe:framerate`'s own closing note. `probe:handling` §4 fails on it.
+- ~~**What has NOT been done about it**~~ — **the three candidates have now been measured
+  and one of them ships as the default.** See §6, "Three candidates for the swerve".
+  `probe:handling` **7 ok / 4 failed → 10 ok / 1 failed**. **What is still open is the
+  remaining failure**, and it is two lanes:
+  - **the 280 km/h STRAIGHT, 2.6–3.3m of wander in every one of the fifteen configurations
+    swept and at all three frame rates.** No candidate moves it and none of them is close;
+    the wheel arm holds 0.02–0.11m on the same lane. This is a floor the return rate, the
+    rack rate and the publish mode are all irrelevant to, and it has not been diagnosed.
+    The prime suspect is the driver model rather than the car — `LOCK_BAND = 0.015` in
+    `keyboardRig.ts` is a deadband the KEYBOARD arm has and the wheel arm does not, and
+    0.015 of lock at 280 km/h is worth about 0.38g — but that is a hypothesis and nobody
+    has measured it. **Do not touch it without checking the wheel arm first.**
+  - **the 2.6g/280 km/h corner at 4.83m.** The old feel left the road here entirely; the
+    default now holds it at every frame rate but still wanders more than a car's width.
+- ~~**Also still open: the 30ms press that is worth nothing at 15fps.**~~ **Fixed**, by the
+  mean-lock half of the default: **0.000m → 0.232m at 15fps**, frame spread **dead/182% →
+  4.0%** against a 15% bar, and `probe:framerate`'s edge section goes from *"AND SOME
+  PRESSES ARE STILL LOST"* to *"no press is ever lost"*. See §6.
 - **Still unexamined:** the track-surface and centreline work that landed 2026-08-03
   (`TrackMesh.ts`, `TrackSpline.ts`) has not been tied to the swerve either way; #54's
   un-interpolated heights are somebody else's branch; and nothing here has been driven on a

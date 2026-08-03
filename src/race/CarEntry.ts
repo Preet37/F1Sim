@@ -608,6 +608,45 @@ export class CarEntry {
   }
 
   /**
+   * Declares that this car did NOT move on this physics step.
+   *
+   * THE BUG THIS FIXES — issue #58, *"there is a lot of shaking back and forth
+   * even tho the car has crashed which it shouldnt do"*.
+   *
+   * `prevX`/`prevZ`/`prevHeading`/`prevS`/`prevLateral` are captured by
+   * `RaceEngine.step` immediately before `physics.step`, so for a car that IS
+   * stepped they describe the end of the previous step and the render pose is
+   * the honest lerp between the last two states. Four branches of that loop
+   * `continue` BEFORE the capture — a retired car, a car sitting the period
+   * out, a car still on its release timer and the whole field before the lights
+   * go out — so for those the pair never advances again. It stays frozen at the
+   * state the car had at the top of the LAST step it was stepped on, while
+   * `physics.position` holds the state it ended that step in.
+   *
+   * For a wreck those two differ by exactly one step of travel plus whatever
+   * the barrier push-out added — 311mm at Monza off a 293 km/h accident — and
+   * `updateRenderPoses` then draws the car at `prev + (pos - prev) * alpha`
+   * every frame, forever. `alpha` is the accumulator's remainder and sweeps 0..1
+   * as the frame rate beats against 120Hz, so a car that the simulation has
+   * frozen is DRAWN sliding back and forth over its last step: measured at
+   * **303mm of movement in a single frame** at Monza, 82mm at Monaco, 46mm at
+   * Zandvoort, and it never decays because nothing about it is a transient.
+   *
+   * It is below `TELEPORT_M`, so the snap that exists for placements does not
+   * catch it. The fix is not in the interpolation — the interpolation is right.
+   * It is that the invariant "prev is where the car was at the top of this
+   * step" has to hold for a car that is standing still as well as for one that
+   * is moving, and standing still means prev IS now.
+   */
+  holdPose(): void {
+    this.prevX = this.physics.position.x;
+    this.prevZ = this.physics.position.y;
+    this.prevHeading = this.physics.heading;
+    this.prevS = this.s;
+    this.prevLateral = this.lateral;
+  }
+
+  /**
    * Updates track-space position from the physics position.
    * Returns true if the car crossed the start/finish line this step.
    */
