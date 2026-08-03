@@ -401,6 +401,21 @@ export class InputController {
   // =========================================================================
 
   private onKeyDown(e: KeyboardEvent): void {
+    // A key typed into a text field belongs to the text field.
+    //
+    // These listeners are on `window`, so they see every keystroke in the
+    // document including the ones aimed at an input. `GAME_KEYS` covers w, a,
+    // s, d, b, h, c, p, e, l, t, f, the digits, space and Enter — so with no
+    // guard here, typing a driver's name into the career screen silently lost
+    // more than half its letters, could not contain a space, and could not be
+    // submitted with Enter. The player sees some keys work and others do
+    // nothing, which is exactly how it was reported.
+    //
+    // Released as well as pressed: bailing out of keydown alone would leave a
+    // key stuck in `this.keys` if focus moved to a field mid-press, and the car
+    // would drive itself. `onKeyUp` runs unconditionally for the same reason.
+    if (isTextEntry(e.target)) return;
+
     const k = e.key.toLowerCase();
     // Only swallow keys the game actually uses, so browser shortcuts still work.
     if (GAME_KEYS.has(k) || GAME_KEYS.has(e.code)) e.preventDefault();
@@ -894,6 +909,32 @@ function stampOf(e: { timeStamp?: number }, fallback: () => number): number {
 }
 
 /** Keys the game consumes, so everything else reaches the browser. */
+/**
+ * Is this event aimed at somewhere the player is typing?
+ *
+ * `contentEditable` is checked as well as the tag, because an inline-edit field
+ * has no distinguishing tag name, and `<select>` counts too — it consumes
+ * letter keys to jump between options.
+ *
+ * Duck-typed rather than `instanceof HTMLElement`. This module is driven
+ * headlessly by `probe:framerate` and `validate:gamepad` against a DOM stub
+ * where the `HTMLElement` global does not exist, so an `instanceof` test throws
+ * a `ReferenceError` on the first synthetic keystroke and takes the probe with
+ * it. Reading the two fields we actually care about works in both worlds.
+ *
+ * Deliberately NOT keyed off `document.activeElement`: the event's own target
+ * is the element the browser is about to deliver the character to, and reading
+ * global focus instead would be a second source of truth that can disagree with
+ * it mid focus change.
+ */
+function isTextEntry(target: EventTarget | null): boolean {
+  const el = target as { tagName?: unknown; isContentEditable?: unknown } | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  const tag = el.tagName.toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    || el.isContentEditable === true;
+}
+
 const GAME_KEYS = new Set([
   'w', 'a', 's', 'd', 'b', 'h', ' ', 'c', 'p', 'e', 'l', 'shift', 'escape',
   't', 'f', 'enter',
