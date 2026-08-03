@@ -43,6 +43,30 @@ function chromePath(): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Clicks the page chrome's back arrow. It carries an icon and no text, so
+ * `clickText` cannot find it — which is exactly how the assertion below first
+ * reported "no way back to the main menu from the hub" about a button that was
+ * on the screen.
+ */
+async function clickBack(page: Page): Promise<boolean> {
+  return await page.evaluate(() => {
+    const b = document.querySelector('.navback');
+    if (!(b instanceof HTMLElement)) return false;
+    b.scrollIntoView({ block: 'center' });
+    b.click();
+    return true;
+  });
+}
+
+/** True when any button or tile on the page shows this text. */
+async function hasText(page: Page, text: string): Promise<boolean> {
+  return await page.evaluate((t: string) => {
+    const nodes = [...document.querySelectorAll('button, .menu-item, .mm-tile, .trow')];
+    return nodes.some((n) => (n.textContent ?? '').includes(t));
+  }, text);
+}
+
 /** Clicks the first button whose visible text matches. Returns false if absent. */
 async function clickText(page: Page, text: string): Promise<boolean> {
   return await page.evaluate((t: string) => {
@@ -140,6 +164,55 @@ async function main(): Promise<void> {
     await shot('03-found-split');
     if (!await step('found', 'Enter the championship')) { await page.close(); await context.close(); continue; }
     await shot('04-hub');
+
+    // ---------------------------------------------------------------------
+    // THE ONE ASSERTION IN THIS SWEEP, and it is here because of a merge.
+    //
+    // A career belongs to a driver. `main` files every career through
+    // `ProfileStore.saveCareer`, and that is what the front page's "Continue"
+    // tile and the driver rack read. This branch was written against the older
+    // API and founded a My Team career by writing straight to `SaveManager` —
+    // which saves the bytes and registers them with nobody. The career would
+    // have been perfectly playable until the moment you left the tab, and then
+    // gone from every door back into it.
+    //
+    // A screenshot of the hub cannot see that: the hub is reached either way.
+    // So the sweep leaves the hub, goes back to the front page, and checks the
+    // career it just founded is actually being offered.
+    // ---------------------------------------------------------------------
+    if (await clickBack(page)) {
+      await sleep(1200);
+      await shot('04b-menu-after-founding');
+      if (await hasText(page, 'Continue')) {
+        console.log(`  ${vp.name}: the founded team is offered on the front page`);
+      } else {
+        errors.push(`${vp.name}: a My Team career was founded and the front page does `
+          + 'not offer Continue — it was saved to disk and filed under nobody');
+      }
+      if (await clickText(page, 'Drivers')) {
+        await sleep(1200);
+        await shot('04c-drivers');
+        if (!await hasText(page, 'Formula 1')) {
+          errors.push(`${vp.name}: the founded career is not listed under its driver `
+            + 'on the rack');
+        }
+        if (!await clickBack(page)) {
+          errors.push(`${vp.name}: could not get back to the menu from the rack`);
+        }
+        await sleep(1000);
+      }
+      // And back into it the way a player would, which also proves the career
+      // reloads rather than merely being listed.
+      if (!await clickText(page, 'Continue')) {
+        errors.push(`${vp.name}: Continue did not reopen the founded career`);
+        await page.close(); await context.close(); continue;
+      }
+      await sleep(1600);
+      await shot('04d-hub-resumed');
+    } else {
+      errors.push(`${vp.name}: no way back to the main menu from the hub`);
+    }
+
     if (!await step('hub', 'Team HQ')) { await page.close(); await context.close(); continue; }
     await shot('05-hq');
     if (await step('hq', 'Engine deal')) await shot('06-engine');
@@ -150,11 +223,16 @@ async function main(): Promise<void> {
       if (await step('prep', 'Back to the hub')) { /* back on the hub */ }
       if (await step('hub', 'Team HQ')) { /* and into the factory again */ }
     }
-    if (await step('engine', 'Back to the factory')) {
-      if (await step('hq', 'Driver market')) await shot('07-market');
-      if (await step('market', 'Back to the factory')) {
-        if (await step('hq', 'Paint shop')) await shot('08-paint');
-      }
+    // FROM THE FACTORY, not from the engine screen. This used to ask for "Back
+    // to the factory" a second time here, having already returned to the
+    // factory at the end of the block above — so the step failed, the whole
+    // remaining branch was skipped, and `07-market` and `08-paint` were never
+    // shot at all. The sweep reported the failure and produced fourteen files
+    // instead of eighteen, which is exactly how a screenshot harness stops
+    // covering two screens without anybody noticing.
+    if (await step('hq', 'Driver market')) await shot('07-market');
+    if (await step('market', 'Back to the factory')) {
+      if (await step('hq', 'Paint shop')) await shot('08-paint');
     }
     await page.close();
     await context.close();

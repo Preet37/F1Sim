@@ -109,7 +109,14 @@ async function main(): Promise<void> {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${(e as Error).message}`));
   page.on('console', (m) => {
-    if (m.type() === 'error') errors.push(`error: ${m.text()}`);
+    if (m.type() !== 'error') return;
+    // A missing favicon is not a rendering fault, and the harness page has
+    // never had one. Every other harness in `scripts/` filters it the same way;
+    // now that this script's exit code means something, an unfiltered 404 would
+    // make it fail every run and the assertion would be turned off within a
+    // week.
+    if (/favicon/.test(m.location().url ?? '')) return;
+    errors.push(`error: ${m.text()} (${m.location().url ?? 'no url'})`);
   });
 
   await page.goto(url, { waitUntil: 'load', timeout: 120_000 });
