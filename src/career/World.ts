@@ -163,8 +163,69 @@ export interface WorldTeam {
   prefersExperience: number;
   budgetUsd: number;
 
+  /**
+   * What the factory has built, per department.
+   *
+   * SEPARATE FROM `development` on purpose. `development` is the abstract
+   * "this team got better over the winter" term the paper model moves for every
+   * AI team; this is the thing the player actually commissioned, and it is
+   * itemised because the three departments buy three different physical
+   * properties. An aero project that lands is not a car that is 1% better, it
+   * is a car with more downforce AND more drag — which is a worse car at Monza
+   * and a better one at Monaco, and the physics works that out on its own.
+   *
+   * Optional, so every team that is not the player's carries nothing and every
+   * save written before My Team existed loads unchanged.
+   */
+  upgrades?: TeamUpgrades;
+
   /** True for the player's own constructor in My Team. */
   isPlayerTeam?: boolean;
+}
+
+/**
+ * Accumulated in-career development, itemised by what it physically bought.
+ *
+ * Every field here is a fraction, and every one of them lands on a named
+ * `TeamPerformance` field in `performanceOf` below. There is no field in this
+ * record that does not reach the car; that is the test each one had to pass.
+ */
+export interface TeamUpgrades {
+  /** Adds to `downforceMult`, and costs drag unless bought back by efficiency. */
+  aero: number;
+  /** Subtracts from `dragMult`. The expensive kind of aero. */
+  aeroEfficiency: number;
+  /** Adds to `mechanicalGripMult` and takes off `tireWearMult`. */
+  chassis: number;
+  /** Adds to `powerMult` and `ersMult`, and takes off `failureRate`. */
+  powertrain: number;
+  /** Seconds off `pitCrewTimeS`, which `Strategy.ts` already prices. */
+  pitCrew: number;
+}
+
+/**
+ * Ceilings on what a factory can buy.
+ *
+ * WHY THERE HAS TO BE A CEILING. Upgrades accumulate and nothing else in this
+ * model takes them away within a season, so an uncapped term is a career that
+ * ends with a car three seconds a lap faster than the grid — which is not a
+ * reward, it is the end of the game. These are the widths of the real thing:
+ * 16% of downforce is roughly the gap between the best and worst car on a
+ * modern grid, and it takes several seasons of maximum spend to reach.
+ *
+ * `probe:myteam` develops fifty upgrades and asserts the multipliers are still
+ * inside a sane envelope afterwards, which is what these numbers are for.
+ */
+export const UPGRADE_LIMIT: TeamUpgrades = {
+  aero: 0.16,
+  aeroEfficiency: 0.10,
+  chassis: 0.12,
+  powertrain: 0.09,
+  pitCrew: 0.60,
+};
+
+export function emptyUpgrades(): TeamUpgrades {
+  return { aero: 0, aeroEfficiency: 0, chassis: 0, powertrain: 0, pitCrew: 0 };
 }
 
 export interface WorldDriver {
@@ -324,6 +385,52 @@ export function performanceOf(team: WorldTeam): TeamPerformance {
     base.failureRate += pu.failureRate;
   }
 
+  /**
+   * WHAT THE FACTORY BUILT.
+   *
+   * This is the last thing applied and it is the whole of My Team's connection
+   * to the simulation. Every one of the five terms lands on a different
+   * physical quantity, and the reason they are five rather than one is that a
+   * single "car quality" number would make every upgrade identical and every
+   * decision fake:
+   *
+   *   · AERO buys downforce and CHARGES DRAG for it. That is the real trade and
+   *     it is deliberately not free — a team that only ever runs aero projects
+   *     builds a car that is quick at Monaco and slow at Monza, and the
+   *     physics discovers that without a single per-circuit special case.
+   *   · AERO EFFICIENCY buys the drag back without the downforce, which is what
+   *     a real efficiency programme is and why it is the expensive one.
+   *   · CHASSIS buys mechanical grip — the low-speed corner and the traction
+   *     zone, where downforce does nothing — and is kinder to the tyres, which
+   *     lengthens a stint and is priced by `Strategy.ts`.
+   *   · POWERTRAIN buys combustion power and deployment together and takes
+   *     reliability off the failure rate, because a development programme is
+   *     mostly a reliability programme.
+   *   · PIT CREW is seconds of stationary time, and `Strategy.ts` already turns
+   *     seconds of stationary time into a decision about how many stops to make.
+   *
+   * Applied AFTER the power unit, so a customer penalty is on the engine the
+   * team was supplied and not on the work its own factory did.
+   */
+  const up = team.upgrades;
+  if (up) {
+    base.downforceMult *= 1 + up.aero;
+    // Downforce is not free. A wing that makes more load makes more drag, and
+    // the ratio here — about half a per cent of drag per per cent of load — is
+    // the one a real development curve shows. Efficiency work buys it back.
+    base.dragMult *= 1 + up.aero * 0.55 - up.aeroEfficiency;
+    base.mechanicalGripMult *= 1 + up.chassis;
+    base.tireWearMult *= 1 - up.chassis * 0.8;
+    base.powerMult *= 1 + up.powertrain;
+    base.ersMult *= 1 + up.powertrain;
+    // A floor rather than a subtraction to zero: no car ever finishes every
+    // race, and a career where the player's entry cannot fail has removed the
+    // only thing that makes a reliability project worth buying.
+    base.failureRate = Math.max(0.006, base.failureRate - up.powertrain * 0.35);
+    // Two seconds is a pit stop that has already gone as well as one can.
+    base.pitCrewTimeS = Math.max(1.95, base.pitCrewTimeS - up.pitCrew);
+  }
+
   return base;
 }
 
@@ -467,6 +574,32 @@ export function rollOffSeasonForm(world: CareerWorld, rng: Rng): void {
       const regress = (mean - total) * 0.22;
       const shock = rng.gaussian(0, FORM_SIGMA * 0.55);
       t.form = clamp(t.form + gain + regress + shock, -FORM_LIMIT, FORM_LIMIT);
+
+      /**
+       * The winter takes some of the factory's work back.
+       *
+       * NOT A PUNISHMENT — THE SAME REGRESSION EVERY OTHER TEAM GETS. An AI
+       * team's advantage decays toward the mean by 22% a winter (the `regress`
+       * term two lines up), because the rest of the grid copies what works,
+       * the regulations move, and a development curve flattens. A player team
+       * whose upgrades were permanent would be exempt from the one mechanism
+       * that stops this career becoming a single dominant car for fifteen
+       * seasons, and it would be exempt for no reason other than that its
+       * performance is stored in a different field.
+       *
+       * So: the same 22%, on the same schedule. Development still compounds —
+       * 78% of a large number is a large number — it just cannot run away.
+       */
+      if (t.upgrades) {
+        const u = t.upgrades;
+        u.aero *= 0.78;
+        u.aeroEfficiency *= 0.78;
+        u.chassis *= 0.78;
+        u.powertrain *= 0.78;
+        // Except the pit crew. A trained crew is people, not bodywork, and
+        // nobody's regulations reset them over the winter.
+        u.pitCrew *= 0.94;
+      }
     }
   }
 }

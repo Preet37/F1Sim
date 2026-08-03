@@ -3,7 +3,9 @@ import { F2_2026, F3_2026 } from './junior';
 import type { RosterTier, TierId } from './types';
 
 export type { RosterTeam, RosterDriver, RosterTier, TierId } from './types';
-export { POWER_UNITS, getPowerUnit, powerUnitFor, type PowerUnit } from './powerUnits';
+export {
+  FALLBACK_POWER_UNIT_ID, POWER_UNITS, getPowerUnit, powerUnitFor, type PowerUnit,
+} from './powerUnits';
 export { F1_2026 } from './f1-2026';
 export { F2_2026, F3_2026 } from './junior';
 

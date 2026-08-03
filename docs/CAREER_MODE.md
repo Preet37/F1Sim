@@ -973,8 +973,101 @@ It is the moment the career stops being a table.
 
 ### What is built, as of this commit
 
-**Layers 1 and 2 are complete and verified.** Layers 3, 4 and 5 are designed here
-and not built.
+**Layers 1, 2 and 3 are complete and verified.** Layer 4 is begun — the newsroom
+and the briefing exist; press conferences, sponsors, staff and rivalries do not.
+Layer 5 is unchanged.
+
+#### Layer 3 — My Team, and the exact number each decision moves
+
+Every system below was required to name a `TeamPerformance` field before it was
+allowed to ship. This is that table, with the measured magnitudes rather than the
+intended ones.
+
+| Decision | Field it moves | By how much |
+|---|---|---|
+| Aero project | `downforceMult` ×, `dragMult` × | +0.4 to +3.2% of downforce, and 55% of that gain again as drag |
+| Aero **efficiency** project | `dragMult` × | −0.4 to −3.2% of drag, no downforce. Costs 1.35× |
+| Chassis project | `mechanicalGripMult` ×, `tireWearMult` × | +0.4 to +3.2% of grip; tyre wear falls by 80% of the same fraction |
+| Powertrain project | `powerMult` ×, `ersMult` ×, `failureRate` − | +0.4 to +3.2% of power and deployment; failure rate falls by 35% of the fraction, floored at 0.006. Costs 1.18× |
+| Pit crew | `pitCrewTimeS` − | −0.06s a step, floored at 1.95s. `Strategy.ts` already prices stationary time |
+| Engine supplier | `powerMult` ×, `ersMult` ×, `failureRate` + | 0.988–1.042 power, 1.008–1.045 deployment, +0.018–0.062 failure rate. A customer gets ~0.5% less and 12% more failures than the works team |
+| Department morale | project **cost** ×, **QC failure** × | cost `1.25 − 0.50·m/100`; QC `base·(1.6 − 0.8·m/100)/(0.6 + 0.4·level)`. Measured: $19.5M vs $32.5M for a concept, 10% vs 20% QC failure |
+| Facility level | project **duration**, **QC failure**, **gain** | ±14% of duration per level from 3; QC divided by `0.6 + 0.4·level`; gain ×`0.70 + 0.15·level` |
+| Headcount | project **gain** | ×`0.72 + 0.55·√(staff/320)`. Sub-linear on purpose |
+| Cost cap | a hard ceiling on all of the above | $135M. Breaching costs constructors' points, a fine, and a three-round development ban |
+| Teammate | a real `Driver` in the world | Their own skill, aggression and tyre management in the second car, scoring constructors' points |
+| Livery | `team.colour`, `team.accent`, and the design registry | What `CarMesh` paints, in six pattern families, three colours, three finishes |
+
+Upgrades are **capped** (`UPGRADE_LIMIT` in `World.ts`) and **decay 22% each
+winter**, on exactly the same schedule and by exactly the same fraction as every
+AI team's hidden form regresses toward the mean. A player team whose development
+was permanent would be exempt from the one mechanism that stops a career becoming
+a single dominant car for fifteen seasons.
+
+**Two economic numbers were set by measurement, not opinion.** A starting team's
+fixed annual bill is about $68M. The first pass paid $34M of commercial income
+against $22M of last-place prize money, so a team that developed *nothing at all*
+lost $8M a season and was insolvent by its third; `probe:myteam` reported 85
+projects commissioned across a hundred seasons. Commercial income is now
+$44–84M, which makes the back of the grid break even, and the cost cap becomes
+the binding constraint only near the front — which is where it binds in the real
+sport.
+
+#### The livery designer
+
+`src/render/LiveryDesign.ts` holds the vocabulary and imports no three.js, so the
+editor, the painter and the probes all agree about what a livery is without any
+of them building one. Six pattern families, a **three**-colour palette whose
+third colour draws the pinstripe, three finishes with their own shared surface
+maps, and a mark drawn from the same ten devices the timing tower already puts
+beside every team's name.
+
+`bolt` / `satin` / no mark is the default, and `audit:livery`'s control shot is
+**byte-identical** to `audit:car`'s baseline — so no car on the real 2026 grid
+has moved by a pixel.
+
+#### Layer 4, so far — legibility before systems
+
+The verdict that prompted this was not "it needs more systems": it was *"it's not
+clear what's going on, what you're supposed to do, or how it works."* Adding
+systems to something illegible makes it worse, so the first work of Layer 4 is
+the three questions a player must be able to answer at every moment.
+
+| Question | Answered by |
+|---|---|
+| What just happened? | `roundDebrief` / `offSeasonStories` in `src/career/Newsroom.ts`, rendered by `newsFeed` |
+| What am I being asked to decide? | `openDecisions`, rendered by `decisionList` at the **top** of the hub and the factory |
+| What happens next? | The round card the hub already drew, and the action bar |
+
+**Every headline is derived from state that already exists.** No line is authored
+about an event that did not occur. `probe:news` walks 5,595 stories across a
+hundred career-years and checks each against the state it describes: every driver
+and team id resolves, every result line matches the classification, every
+standings line matches the table, every promotion that found no seat is reported
+as one that did not happen.
+
+Three championships have been simulated every season since Layer 2 and the player
+was never told a word about any of them. They are now reported.
+
+**"Jittery" was literal, and self-inflicted.** The factory screen handled every
+button by rebuilding the whole page, so commissioning a project flashed the
+screen and threw the scroll position away on the busiest page in the mode. It is
+now mounted once and repainted in place, with the scroll restored explicitly.
+
+**`spendPrepSlot` is reachable.** It had been implemented, documented and
+callable from nowhere; every one of its five branches moves something the
+simulation reads. `src/ui/Preparation.ts` is the screen, and each option states
+its real magnitude rather than a euphemism.
+
+#### What Layer 4 still does not have
+
+Press conferences, department-morale consequences *from* press answers, the fan
+rating as a gate on sponsorship, sponsors with contract objectives and their
+names on the car, declared rivalries, staff with agendas (analyst, publicist,
+marketer, PA, manager), agencies, and rival-team politics. `declareRivalry` is
+still reachable from nowhere. Commercial income is a **placeholder for
+sponsorship** and says so in its own comment: it is real money on a real ledger
+tied to fan rating, but nobody signs anything.
 
 | | |
 |---|---|
@@ -991,6 +1084,18 @@ and not built.
 | `scripts/probeTiers.ts` | Lap times for every tier at every circuit. |
 | `scripts/probeSave.ts` | Round-trips, migration, forward compatibility, eight kinds of garbage. |
 | `scripts/regressCareerFlow.mjs` | The whole loop, in a real browser. |
+| `src/career/MyTeam.ts` | The budget, the cost cap, the three departments, upgrade projects and their quality control, the engine offers, the free-agent pool and the itemised ledger. |
+| `src/career/Newsroom.ts` | Headlines and open decisions, derived from season state and nothing else. |
+| `src/render/LiveryDesign.ts` | Six pattern families, the palette, three finishes, ten marks. No three.js. |
+| `src/render/Livery.ts` | The family dispatch, the pinstripe, per-finish surface maps, the design registry keyed on the colour pair so `CarMesh` needs no change. |
+| `src/ui/TeamCreate.ts` | Founding the constructor: name, livery, engine and the second car, on one screen because they compete for one budget. |
+| `src/ui/TeamHQ.ts` | The cost-cap gauge, the department plates, the ledger, the engine board and the driver market. |
+| `src/ui/LiveryEditor.ts` | The paint shop, previewing on a real `CarStage` with chips painted by the real painter. |
+| `src/ui/Briefing.ts`, `src/ui/Preparation.ts` | What just happened, what to decide, and what to do between races. |
+| `scripts/probeMyTeam.ts` | 100 My Team career-years: the books balance, the cap binds, every upgrade reaches `specForTeam`. |
+| `scripts/probeNews.ts` | 5,595 headlines checked against the state they describe. |
+| `scripts/auditLivery.ts` | Every pattern family photographed on the real car, with a control shot that must match `audit:car`. |
+| `scripts/shootMyTeam.ts` | Drives the real app through the whole My Team flow. Found two crashes a component harness would have photographed as working. |
 
 `src/career/CareerEngine.ts` is deleted. Nothing else in the repository referred
 to it.
