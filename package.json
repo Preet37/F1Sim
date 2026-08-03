@@ -76,7 +76,8 @@
     "audit:car": "tsx scripts/auditCar.ts",
     "shoot:career": "tsx scripts/shootCareer.ts",
     "probe:pitcrew": "tsx scripts/probePitCrew.ts",
-    "audit:pitlane": "tsx scripts/auditPitLane.ts"
+    "audit:pitlane": "tsx scripts/auditPitLane.ts",
+    "diag:pitchoice": "tsx scripts/diagPitChoice.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
