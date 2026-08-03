@@ -116,7 +116,7 @@ console.log('origin sits from the triangle underneath it.\n');
 
 console.log(
   padr('circuit', 14) + pad('max bank', 10) + pad('banked', 8) + pad('rays', 8) +
-  pad('overlap', 9) +
+  pad('overlap', 9) + pad('slope err', 12) +
   '  |' + pad('OLD max err', 13) + pad('OLD mean', 10) +
   '  |' + pad('NEW max err', 13) + pad('NEW mean', 10),
 );
@@ -128,6 +128,8 @@ let missDetail = '';
 let overlaps = 0;
 let worstOverlapM = 0;
 let worstOverlapAt = '';
+let worstSlope = 0;
+let worstSlopeAt = '';
 
 const down = new THREE.Vector3(0, -1, 0);
 const origin = new THREE.Vector3();
@@ -150,6 +152,7 @@ for (const def of CIRCUITS) {
   let bankedNodes = 0;
   let sampled = 0;
   let circuitOverlaps = 0;
+  let slopeMax = 0;
   let oldMax = 0, oldSum = 0;
   let newMax = 0, newSum = 0;
   let n = 0;
@@ -162,6 +165,8 @@ for (const def of CIRCUITS) {
     if (Math.abs(bank) > 1e-6) bankedNodes++;
 
     const hw = t.width[i] * 0.5;
+    /** Drawn asphalt height at ±RACING_OFFSET_FRAC, for the cross-slope check. */
+    const drawn: Record<number, number> = {};
     for (const side of [-1, 1]) {
       const lateral = side * hw * RACING_OFFSET_FRAC;
       const x = t.px[i] + t.nx[i] * lateral;
@@ -206,6 +211,8 @@ for (const def of CIRCUITS) {
         continue;
       }
 
+      drawn[side] = asphalt;
+
       // What each rule places the car's origin at.
       const oldY = carGroundY(t.elevationAt(s));
       const newY = bankedCarGroundY(t, s, lateral);
@@ -218,6 +225,26 @@ for (const def of CIRCUITS) {
       if (eOld > worstOld) { worstOld = eOld; worstOldAt = `${def.id} s=${s.toFixed(0)}`; }
       if (eNew > worstNew) { worstNew = eNew; worstNewAt = `${def.id} s=${s.toFixed(0)}`; }
     }
+
+    // IS THE ROAD ACTUALLY BANKED? Everything above compares the car against
+    // the asphalt, and a flat road with a flat placement rule agrees perfectly
+    // — proved by breaking `bankHeight` to return 0 and watching the errors
+    // stay at zero. So the drawn cross-slope is also read straight off the two
+    // triangles and checked against the circuit's OWN banking datum, which is
+    // the surveyed number in `circuits.ts` and owes nothing to the renderer.
+    // This is what fails when the banking quietly leaves the world.
+    if (drawn[-1] !== undefined && drawn[1] !== undefined) {
+      const span = 2 * hw * RACING_OFFSET_FRAC;
+      // Left-hand normal, so +lateral is to the left and a positive bank drops
+      // it: `bankHeight` returns -lat*tan(bank) inside the road edge.
+      const drawnBank = Math.atan2(drawn[-1] - drawn[1], span);
+      const err = Math.abs(drawnBank - bank);
+      if (err > slopeMax) { slopeMax = err; }
+      if (err > worstSlope) {
+        worstSlope = err;
+        worstSlopeAt = `${def.id} s=${s.toFixed(0)}`;
+      }
+    }
   }
   meshes.dispose();
 
@@ -227,6 +254,7 @@ for (const def of CIRCUITS) {
     pad(((maxBank * 180) / Math.PI).toFixed(1) + 'deg', 10) +
     pad(((100 * bankedNodes) / sampled).toFixed(0) + '%', 8) +
     pad(String(n), 8) + pad(String(circuitOverlaps), 9) +
+    pad(((slopeMax * 180) / Math.PI).toFixed(2) + 'deg', 12) +
     '  |' + pad(m(oldMax), 13) + pad(m(oldSum / n), 10) +
     '  |' + pad(m(newMax), 13) + pad(m(newSum / n), 10),
   );
@@ -273,7 +301,6 @@ if (strays.length > 0) {
   console.log('FAIL — the flat, centreline-only rule is called outside TrackMesh.ts:');
   for (const s of strays) console.log(`  ${s}`);
   console.log('Anything placed at a lateral offset must go through `bankedCarGroundY`.');
-  process.exitCode = 1;
 } else {
   console.log('Call sites: `carGroundY` is called only inside TrackMesh.ts; every placement');
   console.log('elsewhere in src/ goes through `bankedCarGroundY`.');
@@ -283,16 +310,40 @@ if (strays.length > 0) {
 // swept by the same `bankHeight`. A residue here means the car and the road have
 // been allowed to disagree again, which is the whole defect.
 const TOL_M = 0.002;
+/**
+ * How far the drawn cross-slope may sit from the circuit's own banking datum.
+ *
+ * A tenth of a degree, which at Zandvoort's 7.5m of half-width is 13mm across
+ * the road. The surface is a plane inside the white lines and the sampling is
+ * on the mesh's vertex rows, so the honest expectation is zero and the measured
+ * residue is 0.00 degrees on all eleven circuits. This is a tripwire, not a
+ * budget.
+ */
+const TOL_SLOPE_RAD = (0.1 * Math.PI) / 180;
+console.log(`worst drawn cross-slope error against the circuit's banking datum: ` +
+  `${((worstSlope * 180) / Math.PI).toFixed(3)}deg (${worstSlopeAt || 'nowhere'})`);
 console.log('');
+
+let failed = strays.length > 0;
+if (worstSlope > TOL_SLOPE_RAD) {
+  console.log(`FAIL — the road is drawn ${((worstSlope * 180) / Math.PI).toFixed(2)}deg off the ` +
+    'banking the circuit is surveyed with.');
+  console.log('The cars would stand on it happily; the corner simply is not banked any more.');
+  failed = true;
+}
 if (misses > 0) {
   console.log(`FAIL — ${misses} sample points have no asphalt drawn under them.`);
-  process.exitCode = 1;
+  failed = true;
 } else if (worstNew > TOL_M) {
   console.log(`FAIL — the car is still off the drawn asphalt by up to ${worstNew.toFixed(3)}m.`);
   console.log('The placement must go through the same `bankHeight` the mesh does.');
+  failed = true;
+}
+if (failed) {
   process.exitCode = 1;
 } else {
   console.log(`PASS — cars stand on the drawn asphalt within ${(TOL_M * 1000).toFixed(0)}mm on all`);
-  console.log(`${CIRCUITS.length} circuits, including on 18 degrees of banking at Zandvoort.`);
+  console.log(`${CIRCUITS.length} circuits, including on 18 degrees of banking at Zandvoort, and`);
+  console.log("the drawn cross-slope is the circuit's own surveyed banking.");
 }
 console.log('');
