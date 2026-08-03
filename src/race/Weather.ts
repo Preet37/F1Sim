@@ -1043,6 +1043,39 @@ export class PitWall {
 
   /** The engine calls this once it has actually served the stop. */
   onServed(): void {
+    this.releaseStanding();
+  }
+
+  /**
+   * The driver has waved off a stop they had already agreed to.
+   *
+   * `boxRequested` is a LATCH, not an event — it stands from the yes on the
+   * radio until the stop is served — and the engine mirrors it onto
+   * `car.pitRequested` on every physics step. So there has to be a way to let
+   * the latch go that is not "the stop happened", or the PIT button cannot
+   * cancel a stop the wall called: the mirror simply puts the request back on
+   * the next step, along with the wall's tyre. That is exactly what it did.
+   * See `RaceEngine.requestPit`.
+   *
+   * It takes the re-ask cooldown for the same reason a "no" does. A driver who
+   * has just waved a stop off does not want to be asked again eight
+   * milliseconds later, and without the cooldown that is precisely what the
+   * next call to `update` would do.
+   */
+  withdraw(): void {
+    this.releaseStanding();
+  }
+
+  /**
+   * Lets the standing call go, and holds the radio for a while.
+   *
+   * The two ways a standing call ends — served, or waved off — leave the wall
+   * in the same state, and they are kept as separate verbs because the CALLER
+   * knows which happened and the wall does not. The cooldown is the part that
+   * matters: without it the very next `update` would ask again, eight
+   * milliseconds after the driver settled the question.
+   */
+  private releaseStanding(): void {
     this.boxRequested = false;
     this.requestedCompound = null;
     this.cooldown = REASK_COOLDOWN_S;

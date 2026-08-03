@@ -34,6 +34,17 @@
  *   5. Reading the sheet does not MOVE the sheet. `pitSheet` is called a
  *      hundred times between the call and the box, exactly as a 60fps HUD
  *      calls it, and the driver's instruction is still there at the end.
+ *   6. A stop the PIT WALL called and the driver then waved off stays waved
+ *      off. See §6 — this is the same latch as issue #32 read the other way
+ *      round, and it is the assertion that would have caught both.
+ *
+ * WHAT §1 IS REALLY MEASURING. Six of its seven cases — every one that chooses
+ * a compound — failed on `main` for six weeks (issue #32) because the pit wall
+ * cancelled any stop the driver had picked a tyre for, 8ms after they picked
+ * it. The "the car never completed a stop" line is not a harness complaint; it
+ * is the game-breaking symptom. Deliberately restoring that cancel turns §1
+ * red in exactly the six cases the issue reported, which is the evidence that
+ * this probe is load-bearing rather than decorative.
  *
  * Run: npm run probe:pitstop
  */
@@ -46,9 +57,10 @@ import { PHYSICS_DT } from '../src/core/SimClock';
 import { ProbeDriver } from './lib/pitDriver';
 import { DRY_COMPOUNDS, type CompoundId } from '../src/data/tires';
 import {
-  cyclePitCompound, offeredCompounds, pitSheet, setPitCompound, setPitRepair,
-  togglePitRepair,
+  clearPitOrder, cyclePitCompound, offeredCompounds, pitSheet, setPitCompound,
+  setPitRepair, togglePitRepair,
 } from '../src/race/PitStop';
+import type { PitWallContext } from '../src/race/Weather';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
@@ -323,6 +335,100 @@ check(served === DRY_COMPOUNDS.length * 2, `${served} of ${DRY_COMPOUNDS.length 
   const good = pitSheet(engine, car);
   check(good.warning === '', `a legal choice raised a warning: "${good.warning}"`);
   console.log('two-compound rule: warned, not overruled');
+}
+
+// ---------------------------------------------------------------------------
+// 6. "Stay out, stay out" — a stop the WALL called, waved off by the driver
+// ---------------------------------------------------------------------------
+//
+// The other half of issue #32. That issue was the pit wall CANCELLING a stop
+// the driver called; this is the pit wall REINSTATING one the driver cancelled,
+// and it is the same latch read the other way round.
+//
+// `PitWall.boxRequested` is a latch, not an event: it stands from the moment
+// the driver says yes on the radio until the stop is served. The engine mirrors
+// it onto `car.pitRequested` every physics step. `requestPit(car, false)` — the
+// PIT button, and the only way a player can wave a stop off — wrote only to
+// `car.pitRequested`, so the mirror put it straight back 8ms later, together
+// with the wall's own tyre. The radio said "Stay out, stay out" and the car
+// pitted anyway, on a compound the driver had just cleared.
+//
+// Driven through the real controls: the wall's own `answer()` for the yes, and
+// `requestPit` + `clearPitOrder` for the wave-off, which is exactly what
+// `main.ts:togglePitRequest` calls.
+
+{
+  const def = getCircuit('silverstone');
+  const config: SessionConfig = {
+    kind: 'race', name: 'wave-off', durationS: 0, laps: 20,
+    playerIndex: 0, standingStart: false, pitLaneStart: false, seed: 24601,
+  };
+  const engine = new RaceEngine(def, config);
+  const track = engine.track;
+  const pit = def.pitLane;
+  const player = engine.cars[0];
+  for (const car of engine.cars) if (car !== player) car.eliminated = true;
+
+  const startS = (pit.entryS - 900 + track.length) % track.length;
+  const idx = track.indexAt(startS);
+  player.placeOnTrack(track, startS, track.lineOffset[idx], track.targetSpeed[idx]);
+
+  // Get a real box call out of the engine's own wall, by driving it with the
+  // wet context the weather would give it. Rain arriving is the one situation
+  // where the wall calls a driver in unprompted, and it is the situation the
+  // player meets it in.
+  const wall = engine.pitWall;
+  check(wall !== null, 'the player has no pit wall');
+  const ctx: PitWallContext = {
+    timeS: 0, compound: 'medium', dryPreference: 'medium',
+    wetness: 0.05, trackTempC: 30, lapsRemaining: 18,
+    refLapS: 92, pitCostS: 22, usedDryCompounds: ['medium'],
+    hasRained: false, racing: true, projectedWetness: 0.75,
+    horizonLaps: 3,
+    forecast: { etaS: 140, intensity: 0.8, precipitation: 'rain', confidence: 0.78, worsening: true },
+  };
+  let call = wall?.pending ?? null;
+  for (let i = 0; i < 200 && wall && !call; i++) { wall.update(0.1, ctx); call = wall.pending; }
+  check(call !== null, 'the wall never offered a stop with heavy rain on the way');
+  const answered = call && wall ? wall.answer(call.id, true) : 'lapsed';
+  check(answered === 'yes', 'the driver said yes to the box call and it did not take');
+
+  const driver = new ProbeDriver(player, track);
+  const controls = engine.playerControls;
+
+  // One step for the engine to mirror the wall's call onto the car.
+  driver.drive(PHYSICS_DT, controls);
+  engine.step();
+  console.log(`wall calls in        -> pitRequested=${player.pitRequested}` +
+    ` compound=${player.pitCompoundRequest}`);
+  check(player.pitRequested, 'the driver agreed to box and the car was never called in');
+
+  // Now the driver changes their mind. This is the PIT button, verbatim.
+  engine.requestPit(player, false);
+  clearPitOrder(player);
+
+  let backAfterSteps = -1;
+  let compoundWhenBack: string | null = null;
+  let reachedLane = false;
+  for (let i = 0; i < Math.round(60 / PHYSICS_DT); i++) {
+    driver.drive(PHYSICS_DT, controls);
+    engine.step();
+    if (backAfterSteps < 0 && player.pitRequested) {
+      backAfterSteps = i;
+      compoundWhenBack = player.pitCompoundRequest;
+    }
+    if (player.inPitLane) reachedLane = true;
+    if (player.retired || player.pitStops > 0) break;
+  }
+  console.log(`driver waves it off  -> request back after ${backAfterSteps < 0 ? 'never' : backAfterSteps + ' step(s)'}` +
+    ` compound=${compoundWhenBack} lane=${reachedLane ? 'yes' : 'no'} stops=${player.pitStops}`);
+
+  check(backAfterSteps < 0,
+    `the driver waved the stop off and the wall put it back ${backAfterSteps} step(s) later`);
+  check(compoundWhenBack === null,
+    `the wave-off cleared the tyre choice and the wall wrote ${compoundWhenBack} back onto the car`);
+  check(!reachedLane && player.pitStops === 0,
+    `the driver said "stay out" and the car pitted anyway (${player.pitStops} stop(s))`);
 }
 
 // ---------------------------------------------------------------------------
