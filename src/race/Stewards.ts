@@ -336,6 +336,38 @@ export interface CornerFrame {
   peakCurvature: number;
 }
 
+/**
+ * WHY THE BRAKING ZONE IS NOT PART OF THE CORNER HERE, having been tried.
+ *
+ * The corner window runs from where the curvature comes up, thirty or forty
+ * metres before the apex. Most racing contact happens earlier than that, under
+ * braking, so most of it falls through to the following-car test and is declined
+ * with a reason about straights. That looks exactly like an oversight, and DSG
+ * Point A(i) appears to license the fix: the front axle must be alongside the
+ * mirror "PRIOR TO AND AT THE APEX", which plainly includes the approach.
+ *
+ * Extending the window a hundred metres back was tried and reverted. Measured
+ * over four circuits it took the bench from four penalties to eight, from one a
+ * race to two, and — the number that condemned it — from a majority of
+ * incidents ending in no further action to a majority ending in a penalty.
+ *
+ * The reason is not that the threshold was wrong. It is that the TEST does not
+ * apply there. Points A and B are evaluated AT THE APEX because that is the
+ * moment the question is settled; a car three metres behind at the braking point
+ * is not diving in, it may be perfectly placed by the apex, and it has not yet
+ * done anything the guidelines have an opinion about. When the contact happens
+ * before either car reaches the apex there is no apex evidence, and applying the
+ * at-the-apex geometry to the braking point produces a confident answer to a
+ * question the geometry was never asked.
+ *
+ * Real stewards do penalise braking-zone collisions constantly, and they do it
+ * on Point A(ii) and A(iii) — was the move controlled, was it ever going to make
+ * the corner — which is the subjective half this module declines to model at
+ * all. So the honest state is the one that ships: those contacts are declined,
+ * with a stated reason, and this comment is here so the next person to notice
+ * the gap knows it was measured rather than missed.
+ */
+
 /** Below this the "corner" is a flat-out kink and has no meaningful apex. */
 const MIN_CORNER_CURVATURE = 1 / 600;
 /** Where the corner is deemed to begin and end, as a fraction of its peak. */
