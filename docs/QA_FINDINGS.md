@@ -208,17 +208,38 @@ Consequently, on every touch device, permanently and with no way to try otherwis
 - Reduced-detail paths throughout `TrackMesh`, `Paddock`, `Grandstands`,
   `Signage`, `ParticleSystem`, `SkidMarks`, `Rain` and `CarMesh`.
 
-This is the same shape as the mirror-feed bug already in the record: a feature
-gated on a tier the reporting device never gets. It bears directly on *"the
-graphics are utter dogshit"* — the phone has never rendered a single post-process
-pass.
+Verified directly rather than inferred. `src/render/Renderer.ts:246`:
+
+```ts
+this.quality = opts.quality ?? (touchPrimary || cores <= 4 ? 'low' : 'high');
+```
+
+and `src/render/PostFX.ts:703-704`, the first two statements of the constructor:
+
+```ts
+this.enabled = quality === 'high';
+if (!this.enabled) return;
+```
+
+The whole post chain is never even built. `antialias: this.quality === 'high'`
+(`Renderer.ts:250`) turns MSAA off in the same breath.
+
+This is the same shape as the mirror-feed bug already in the record — a feature
+gated on a tier the reporting device never gets — and PROJECT.md §6 establishes
+that the reporting device *is* a phone ("every phone is `low` and it had never run
+on the reporting device at all"). So the standing complaint *"the graphics are
+utter dogshit"* has been made, throughout this project, about a device that
+renders **no post-processing, no shadows and no anti-aliasing**, with no in-game
+way to ask for any of it. That is worth weighing before any more render work is
+commissioned: some of the quality gap may not be the renderer at all.
 
 `Renderer.ts:347 get postEnabled()` is dead code with no callers.
 
 ---
 
-### A6 — The on-screen REV pad does nothing, and sits inside the throttle zone
-**Severity: high on phones. Confidence: high on "inert"; medium on the overlap.**
+### A6 — The on-screen REV pad does nothing, and pressing it actuates a different control
+**Severity: high on phones. Confidence: certain on "inert"; high on "actuates
+something else"; the specific control depends on viewport.**
 **Files:** `src/input/InputController.ts:207, 808`; `src/ui/Hud.ts:579, 1960`
 
 `grep -rn reverseTouchHeld src/` returns three lines: the initialiser
@@ -229,10 +250,30 @@ only `steer / throttle / brake / drs / ers`; `ActiveTouch['role']` has no
 `'reverse'` member and `zoneFor` cannot return one.
 
 The HUD nevertheless builds and paints the button, with a full `.active` style in
-`styles.css:1740-1745`. Its CSS box (`right: 18px; bottom: 64px + 34vh; width: 22vw;
-height: 46px`) lands around nx 0.76-0.98 / ny 0.52-0.58 on a landscape phone,
-which is inside `throttle: { x0: 0.72, y0: 0.5, x1: 1.0, y1: 1.0 }` — so pressing
-REV applies **full throttle forward**.
+`styles.css:1740-1745`.
+
+The pad is a painted label and nothing more: `.hud-touch { pointer-events: none; }`
+(`styles.css:1696`), so the touch passes straight through the overlay to the
+canvas, where `zoneFor` decides what it means from the normalised coordinates
+alone. **Pressing REV therefore actuates whichever `TOUCH_ZONES` box it happens
+to sit on.**
+
+Working that through for an iPhone-sized landscape viewport (844×390 CSS px),
+from `.touch-reverse { right: 18px; bottom: calc(64px + 34vh); width: 22vw;
+max-width: 150px; height: 46px }`:
+
+- x spans 676→826 px, so **nx 0.80 → 0.98**
+- bottom is 64 + 0.34×390 = 196.6px, so y spans 147.4→193.4 from the top, **ny 0.38 → 0.50**
+
+Against `TOUCH_ZONES` (`InputController.ts:171-178`) that lands inside
+`ers: { x0: 0.72, y0: 0.3, x1: 1.0, y1: 0.48 }` — **not** `throttle`, whose
+`y0` is 0.5. So on that viewport pressing REV cycles the **ERS mode**. On a
+taller or shorter viewport the 34vh offset moves it, and the throttle box
+(`x0: 0.72, y0: 0.5`) is directly below. Either way it is not reverse.
+
+(Recorded precisely because the first pass at this finding asserted "throttle"
+and the arithmetic does not support it. The certain part — inert, and it fires
+somebody else's control — is what matters.)
 
 **What it costs the player:** on a phone there is no way to reverse out of a
 gravel trap or off a wall at all. Reverse is keyboard down-arrow or a gamepad
@@ -569,6 +610,13 @@ Small, safe and inside the QA function's own files. Nothing in `src/` was touche
 7. **Removed dead code**: `PIN` in `probeRenderPerf.ts` (superseded — the ablation
    pins the scaler at `:391`; verified before deleting), unused imports in
    `probeCurvature`, `probeStewards`, `probeTiers`.
+8. **`scripts/raceSweep.ts`** now sets `process.exitCode = 1` when any race in
+   the sweep fails (finding B1). It had none.
+9. **`scripts/probeCameras.ts:114`** — `dir.update(1 / 60, …)` while sampling
+   every 8th physics step (1/15 s) is now `dir.update(8 * PHYSICS_DT, …)`
+   (finding B6). The probe still passes on all eleven circuits with the honest
+   dt — the fix does not turn it red, it makes it able to see a camera that
+   damps into a barrier.
 
 **New probes** (all wired into `npm run`):
 
