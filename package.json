@@ -53,6 +53,7 @@
     "probe:framing": "tsx scripts/probeFraming.ts",
     "probe:suspension": "tsx scripts/probeSuspension.ts",
     "probe:carrig": "tsx scripts/probeCarRig.ts",
+    "probe:crashrest": "tsx scripts/probeCrashRest.ts",
     "probe:hudtext": "tsx scripts/probeHudText.ts",
     "probe:radio": "tsx scripts/probeRadio.ts",
     "probe:strategy": "tsx scripts/probeStrategy.ts",
@@ -100,7 +101,7 @@
     "diag:pitchoice": "tsx scripts/diagPitChoice.ts",
     "shoot:people": "tsx scripts/shootPeople.ts",
     "probe:qualiretire": "node scripts/probeQualiRetire.mjs",
-  "probe:people": "tsx scripts/probePeople.ts"
+    "probe:people": "tsx scripts/probePeople.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
