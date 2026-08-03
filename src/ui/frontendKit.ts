@@ -1,7 +1,6 @@
 import './frontend.css';
 import { hex, type HelmetDesign } from '../career/Identity';
 import { driverPortraitSvg } from './DriverPortrait';
-import type { DriverProfile } from '../profile/ProfileStore';
 
 /**
  * The small shared pieces of the front of house.
@@ -165,8 +164,14 @@ export function optSlider(parent: HTMLElement, spec: {
   const readout = el('b', '', box);
 
   const paint = (v: number) => {
+    // A UNITLESS FRACTION, not a percentage. The readout has to sit on the
+    // thumb, and the thumb's centre travels from 16px to (width - 16px) rather
+    // than from 0 to width — so the correction is `16px - 32px * fraction`,
+    // which is only expressible in `calc` if the fraction is a bare number. As
+    // a percentage the same expression silently resolved against the track's
+    // width and the number drifted off the handle at both ends.
     const pct = (v - spec.min) / Math.max(1e-6, spec.max - spec.min);
-    box.style.setProperty('--pct', (pct * 100).toFixed(2) + '%');
+    box.style.setProperty('--pct', pct.toFixed(4));
     readout.textContent = spec.format ? spec.format(v) : String(Math.round(v));
     input.setAttribute('aria-valuetext', readout.textContent);
   };
@@ -193,24 +198,6 @@ export function optBlock(parent: HTMLElement, spec: {
   return box;
 }
 
-/**
- * How a career reads in one line: the tier, the year and the round.
- *
- * Shared so the menu tile, the drivers rack and the career list all describe
- * the same save the same way.
- */
-export function careerLine(c: {
-  tier: string; seasonYear: number; round: number;
-}, tierName: (t: string) => string): string {
-  return tierName(c.tier) + ' · ' + c.seasonYear + ' · Round ' + (c.round + 1);
-}
-
-/** "3 wins", "1 win", "No wins" — never "1 wins" and never a bare zero. */
-export function count(n: number, one: string, many: string, none: string): string {
-  if (n <= 0) return none;
-  return n + ' ' + (n === 1 ? one : many);
-}
-
 /** A driver's record as label/value pairs, for the rack and the chip. */
 export function recordCells(r: {
   starts: number; wins: number; podiums: number; poles: number;
@@ -227,16 +214,4 @@ export function recordCells(r: {
     },
     { label: 'Titles', value: String(r.titles), none: r.titles === 0 },
   ];
-}
-
-/** The line under a driver's name on the identity chip. */
-export function profileLine(
-  p: DriverProfile, current: { tier: string; round: number } | null,
-  tierName: (t: string) => string,
-): { code: string; number: number; where: string } {
-  return {
-    code: p.code,
-    number: p.raceNumber,
-    where: current ? tierName(current.tier) + ' · R' + (current.round + 1) : 'No career',
-  };
 }

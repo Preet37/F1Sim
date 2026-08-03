@@ -66,7 +66,7 @@
 
 .screen {
   /* The unlit hall. Overwritten with the player's own colours the moment there
-     is a player; see `Frontend.applyIdentityColours`. */
+     is a player; see `applyIdentityColours`. */
   --me: #9fb0c4;
   --me-2: #5d6b7d;
   /* The accent as a glow and as a wash. Derived once, so no rule below has to
@@ -75,6 +75,51 @@
   --me-wash: color-mix(in srgb, var(--me) 14%, transparent);
   --me-edge: color-mix(in srgb, var(--me) 62%, transparent);
 }
+
+/* ==========================================================================
+   Front-of-house corrections to the shared chassis
+   ==========================================================================
+
+   `page()` in `main.ts` builds every screen in the game on one chassis, and
+   three of its decisions are right for a working screen and wrong for the
+   front page. Scoped to `.frontdoor`, which only the menu, the drivers rack,
+   the driver editor and the settings carry — nothing in `styles.css` is
+   redefined and no other screen is touched. */
+
+/* THE FRONT PAGE DOES NOT SCROLL. Its whole argument is that it fits. */
+.frontdoor .page-body:has(.mm) {
+  overflow: hidden;
+  padding-top: calc(14px + env(safe-area-inset-top));
+  padding-bottom: 14px;
+}
+
+/* THE WORDMARK IS NOT SAID TWICE. The status rail exists to tell you where you
+   are on a screen that is somewhere; on the front page it printed "F1SIM /
+   MAIN MENU" four centimetres above a wordmark reading F1SIM. */
+.screen.is-menu .statusrail { display: none; }
+
+/* THE CAR IS A BAND OF THE COMPOSITION, so its box is the band and not the
+   viewport. `stage-hero` is mounted INTO `.mm-hero`, which means the camera
+   frames itself to whatever the layout gave it — the same code on a desktop,
+   on a phone held sideways and in portrait, with no breakpoint to keep in
+   step. It bleeds a little past the top and bottom so the reflection ends in
+   darkness rather than at a hard edge. */
+.stage.stage-hero { inset: 0 -2% -6% -2%; }
+/* The shared veil is a left-to-right ramp, for screens whose interface sits
+   in a column beside the car. Here the interface is above and below it, so the
+   ramp is vertical — heavier at the top, where the wordmark and the identity
+   chip have to hold their contrast against whatever the light rig is doing. */
+.mm-hero .stage-veil {
+  background:
+    linear-gradient(180deg, rgba(4, 6, 9, 0.86) 0%, rgba(4, 6, 9, 0.3) 12%,
+      rgba(4, 6, 9, 0) 30%, rgba(4, 6, 9, 0) 74%, rgba(4, 6, 9, 0.6) 100%);
+}
+
+/* SETTINGS FILLS THE PAGE. A tab rail eight tall beside a panel four rows deep
+   left two thirds of a desktop screen empty and made the panel look like a
+   dialog that had failed to load. */
+.frontdoor .page-body:has(.set) { display: flex; }
+.set { flex: 1 1 auto; }
 
 /* ==========================================================================
    THE MAIN MENU
@@ -251,6 +296,10 @@
 
 /* The one sentence on the page. It sits low and left, under the car's nose,
    in the place a broadcast lower third goes. */
+/* Over the car, not under it: the stage is a positioned element inside this
+   band, so anything meant to read on top of it has to say so. */
+.mm-blurb, .mm-warn { position: relative; z-index: 2; }
+
 .mm-blurb {
   max-width: 30ch;
   font-size: clamp(11.5px, 1.15vw, 14px);
@@ -391,6 +440,12 @@
     linear-gradient(180deg, rgba(28, 37, 48, 0.95), rgba(10, 14, 20, 0.95));
 }
 .mm-tiles .menu-item.lead .menu-fig { color: var(--me); }
+/* The base rule paints a lead item's name green, because green is this game's
+   "go". On the front page that is one accent too many — the lit edge, the
+   wash and the figure are already saying which tile this is, in the player's
+   own colour — so the name stays ink and green is left to the one primary
+   button in the action bar, where the house rule put it. */
+.mm-tiles .menu-item.lead .menu-name { color: var(--ink); }
 
 /* --- The secondary row -------------------------------------------------- */
 
@@ -483,18 +538,25 @@
 }
 .drv-note b { color: var(--ink-2); font-weight: 700; }
 
+/* A rack, not a stretched row. `auto-fill` with a 1fr maximum turns two
+   drivers on a wide monitor into two cards a third of a metre across; capped,
+   they stay card-sized and the rack fills from the left the way a shelf does. */
 .drv-rack {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(326px, 380px));
+  justify-content: start;
   gap: 12px;
 }
 
 .drv-card {
   position: relative;
   display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr);
   gap: 14px;
-  align-items: center;
+  /* Top, not centre. The card's height is set by the stats and the buttons,
+     and a portrait vertically centred in it floats away from the name it
+     belongs to. */
+  align-items: start;
   padding: 14px 14px 14px 12px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--card-me, var(--ink-3));
@@ -522,8 +584,25 @@
   letter-spacing: 0.2em;
   color: var(--card-me, var(--ink));
 }
-.drv-art { align-self: end; margin-bottom: -14px; }
-.drv-art svg { display: block; width: 100%; height: auto; }
+/* The portrait runs off the bottom of its own column, the way the bust is
+   drawn to. The card clips it, which is what makes a rack of drivers read as
+   people standing in slots rather than as avatars in boxes. */
+.drv-art {
+  align-self: end;
+  position: relative;
+  height: 108px;
+}
+.drv-art svg {
+  display: block;
+  position: absolute;
+  left: -14%;
+  bottom: -14px;
+  width: 128%;
+  height: auto;
+}
+/* Two actions on one line. Left to the base button size they stack, which
+   makes every card in the rack forty pixels taller than it needs to be. */
+.drv-actions .btn { padding: 7px 12px; font-size: 11px; }
 .drv-code {
   font-family: var(--font-data);
   font-size: 10px;
@@ -574,8 +653,9 @@
 .drv-new {
   display: grid;
   place-items: center;
+  align-content: center;
   gap: 8px;
-  min-height: 120px;
+  min-height: 150px;
   border: 1px dashed var(--line-2);
   background: rgba(9, 13, 18, 0.4);
   color: var(--ink-2);
@@ -646,8 +726,7 @@
   display: grid;
   grid-template-columns: 172px minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
-  height: 100%;
+  align-items: stretch;
   min-height: 0;
 }
 
@@ -715,8 +794,11 @@
 }
 .set-tab.on::after { background: var(--me); box-shadow: var(--me-glow); }
 
+.set-rail { align-self: start; }
+
 .set-panel {
   min-width: 0;
+  overflow-y: auto;
   border: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(16, 21, 28, 0.82), rgba(8, 11, 16, 0.86));
   box-shadow: var(--plate-lift);
@@ -837,7 +919,9 @@
    of is the one place it cannot be missed. Built on a real <input type=range>
    so the keyboard, the screen reader and the touch target all come for free. */
 .opt-slider {
-  --pct: 50%;
+  /* Where the handle is, 0 to 1. Unitless so it can be multiplied by a length
+     in `calc` — see `optSlider` in frontendKit.ts. */
+  --pct: 0.5;
   position: relative;
   flex: 1 1 auto;
   min-width: 110px;
@@ -863,7 +947,8 @@
   margin-top: -1.5px;
   border-radius: 2px;
   background: linear-gradient(90deg,
-    var(--me) 0, var(--me) var(--pct), rgba(150, 180, 214, 0.2) var(--pct));
+    var(--me) 0, var(--me) calc(var(--pct) * 100%),
+    rgba(150, 180, 214, 0.2) calc(var(--pct) * 100%));
   pointer-events: none;
 }
 .opt-slider input::-webkit-slider-thumb {
@@ -890,11 +975,11 @@
    still belongs to the input underneath. */
 .opt-slider b {
   position: absolute;
-  left: var(--pct);
+  /* The handle is 32px across, so its centre travels between 16px and
+     (100% - 16px) rather than between 0 and 100%. */
+  left: calc(var(--pct) * 100% + 16px - 32px * var(--pct));
   top: 50%;
   transform: translate(-50%, -50%);
-  /* The handle is 32px and travels between 16px and (100% - 16px). */
-  margin-left: calc(16px - 0.32 * var(--pct));
   pointer-events: none;
   font-family: var(--font-data);
   font-size: 11px;
@@ -940,7 +1025,10 @@
 }
 .opt-key span { font-size: 12px; color: var(--ink-2); }
 
-@media (max-width: 760px) {
+/* A phone held sideways is 390 tall. A vertical rail of eight tabs eats half
+   of that and leaves two rows of settings visible under it, so the rail lies
+   down whenever the screen is SHORT as well as when it is narrow. */
+@media (max-width: 760px), (max-height: 520px) {
   .set { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   /* The rail becomes a strip that scrolls sideways, which is the only honest
      way to fit eight tabs across a phone. */

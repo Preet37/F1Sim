@@ -77,6 +77,16 @@ export interface IntroOptions {
   beats: readonly IntroBeat[];
   /** Total run time. The last beat holds until this. */
   durationS: number;
+  /**
+   * Stretches the whole sequence, beats and all.
+   *
+   * FOR PHOTOGRAPHY, and it is honest about it. `shoot:frontend` runs under a
+   * software rasteriser where a single screenshot costs several seconds, so at
+   * normal speed every frame it captured landed after the sequence had already
+   * finished — the harness photographed the menu three times and labelled the
+   * pictures "intro". One is the default and nothing about the game changes.
+   */
+  timeScale?: number;
   quality?: 'low' | 'high';
   /**
    * The colours of the light rig behind the car — the player's own helmet.
@@ -139,7 +149,14 @@ export class IntroSequence {
         quality: opts.quality ?? 'high',
         still: this.reduced,
         set: 'wet',
-        streaks: opts.streaks,
+        // THE TITLE SEQUENCE ALWAYS HAS A RIG, even on a first run when there
+        // is nobody to light it for. The menu stays unlit until there is a
+        // driver — that is the point of the accent — but a title sequence in a
+        // black room with no lighting is not a restrained title sequence, it
+        // is an unfinished one, and the first run is the one that has to land.
+        // Cold blue and sodium: a pit lane at night.
+        streaks: opts.streaks && opts.streaks.length > 0
+          ? opts.streaks : [0x2f6bd8, 0xffa63c],
         look: opts.beats[0]?.look ?? 'nose',
       });
       this.stage.setDrift(true);
@@ -202,7 +219,8 @@ export class IntroSequence {
 
   private readonly tick = (now: number): void => {
     if (this.done) return;
-    const t = (now - this.startedAt) / 1000;
+    const scale = Math.max(0.05, this.opts.timeScale ?? 1);
+    const t = (now - this.startedAt) / 1000 / scale;
 
     // Advance to the latest beat whose moment has passed. A loop rather than an
     // index step, so a tab that was in the background and comes back a beat and

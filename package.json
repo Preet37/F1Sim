@@ -14,7 +14,7 @@
     "calibrate": "tsx scripts/calibrateSolver.ts",
     "validate:physics": "tsx scripts/validatePhysics.ts",
     "validate:race": "tsx scripts/validateRace.ts",
-    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying && npm run validate:integrity && npm run validate:world && npm run validate:difficulty && npm run validate:gamepad && npm run validate:flags",
+    "validate": "npm run validate:tracks && npm run validate:physics && npm run validate:race && npm run validate:qualifying && npm run validate:integrity && npm run validate:world && npm run validate:difficulty && npm run validate:gamepad && npm run validate:flags && npm run probe:frontdoor",
     "validate:gamepad": "tsx scripts/probeGamepad.ts",
     "validate:difficulty": "tsx scripts/probeDifficulty.ts",
     "validate:qualifying": "tsx scripts/probeQualifying.ts",
@@ -66,7 +66,7 @@
     "probe:save": "tsx scripts/probeSave.ts",
     "probe:fieldsize": "tsx scripts/probeFieldSize.ts",
     "probe:identity": "tsx scripts/probeIdentity.ts",
-    "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize && npm run probe:identity",
+    "probe:career": "npm run probe:season && npm run probe:tiers && npm run probe:save && npm run probe:fieldsize && npm run probe:identity && npm run probe:frontdoor",
     "shoot:hud": "tsx scripts/shootHud.ts",
     "shoot:weather": "tsx scripts/shootWeather.ts",
     "shoot:panels": "tsx scripts/shootPanels.ts",
@@ -74,7 +74,10 @@
     "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:shoulders": "tsx scripts/auditShoulders.ts",
     "audit:car": "tsx scripts/auditCar.ts",
-    "shoot:career": "tsx scripts/shootCareer.ts"
+    "shoot:career": "tsx scripts/shootCareer.ts",
+    "shoot:frontend": "tsx scripts/shootFrontEnd.ts",
+    "probe:frontdoor": "tsx scripts/probeFrontDoor.ts",
+    "probe:menucost": "tsx scripts/probeMenuCost.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

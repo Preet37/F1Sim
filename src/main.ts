@@ -474,7 +474,7 @@ class Game {
    * would take and drop a GL context ten times while somebody browses.
    */
   private mountStage(
-    mode: 'right' | 'full' | 'panel',
+    mode: 'right' | 'full' | 'panel' | 'hero',
     livery: { colour: number; accent: number; number?: number; code?: string },
     into?: HTMLElement,
     /**
@@ -582,6 +582,12 @@ class Game {
     this.disposeStage();
     this.screenRoot.innerHTML = '';
     this.screenRoot.classList.remove('lit');
+    // The front of house corrects three of this chassis's decisions — it does
+    // not scroll, it does not print the wordmark twice, and its car stands in
+    // a band rather than over the whole frame. Both classes are cleared here
+    // and set by the screens that want them, so no working screen can inherit
+    // them by being built after one.
+    this.screenRoot.classList.remove('frontdoor', 'is-menu');
     const page = this.el('div', 'page', this.screenRoot);
 
     this.statusRail(page, opts.where ?? opts.tab ?? '');
@@ -859,6 +865,10 @@ class Game {
         f1.map((t) => ({ colour: t.colour, accent: t.accent, code: t.code })),
       ),
       durationS: 16.5,
+      // `?introslow=6` stretches the sequence so the screenshot harness can
+      // catch a frame of it. See `IntroOptions.timeScale`.
+      timeScale: Number(
+        new URLSearchParams(window.location.search).get('introslow')) || 1,
       quality: this.renderer.quality,
       // The rig behind the car in the rain is the player's own colours when
       // there is a player, and cold sodium when there is not — which is what a
@@ -879,6 +889,7 @@ class Game {
     const profile = this.profiles.active;
     const current = this.profiles.currentCareer();
     const { body } = this.page({ where: 'Main Menu' });
+    this.screenRoot.classList.add('frontdoor', 'is-menu');
 
     // The player's own colours, published to the screen. Everything lit on the
     // front end is lit in them; with no driver yet the hall stays unlit.
@@ -890,12 +901,6 @@ class Game {
     // the helmet the player designed.
     const showTeam = this.career ? getTeam(this.career.state.teamId) : PADDOCK_ORDER[0];
     const showDriver = DRIVERS.find((d) => d.teamId === showTeam.id);
-    this.mountStage('full', {
-      colour: showTeam.colour,
-      accent: showTeam.accent,
-      number: profile?.raceNumber ?? showDriver?.raceNumber,
-      code: profile?.code ?? showDriver?.code,
-    }, undefined, { streaks: rigColours(profile?.helmet ?? null) });
 
     const tiles: MenuTile[] = [];
 
@@ -970,6 +975,28 @@ class Game {
             + 'Finish in the top two and you go up.',
         },
     });
+
+    // THE CAR GOES INSIDE THE LAYOUT, not behind the viewport.
+    //
+    // Every other screen hangs the stage off the screen's own edges with a
+    // percentage box, which is right where the car IS the screen. Here it is
+    // one band of a composition that also has a title above it and four grid
+    // slots below, and a viewport-relative box needed a media query per
+    // breakpoint and still left the car floating in a hole on a tall phone.
+    // Mounted into the hero element, the camera frames itself to whatever box
+    // the layout gave it, at every aspect, with nothing to keep in step.
+    const hero = body.querySelector('.mm-hero');
+    if (hero instanceof HTMLElement) {
+      this.mountStage('hero', {
+        colour: showTeam.colour,
+        accent: showTeam.accent,
+        number: profile?.raceNumber ?? showDriver?.raceNumber,
+        code: profile?.code ?? showDriver?.code,
+      }, hero, { streaks: rigColours(profile?.helmet ?? null) });
+      // The pool of light on the floor belongs to the screen behind the car,
+      // and this is one of the two screens in the game that is a moment.
+      this.screenRoot.classList.add('lit');
+    }
   }
 
   /**
@@ -1037,6 +1064,7 @@ class Game {
       sub: 'Who is playing, and everyone else who plays on this device.',
       back: () => this.showMenu(),
     });
+    this.screenRoot.classList.add('frontdoor');
     applyIdentityColours(this.screenRoot, active?.helmet ?? null);
 
     buildDriversScreen(body, {
@@ -1122,6 +1150,7 @@ class Game {
             + 'run at the ladder.',
       back: first ? undefined : () => this.showDrivers(),
     });
+    this.screenRoot.classList.add('frontdoor');
     applyIdentityColours(this.screenRoot, editing?.helmet ?? null);
 
     // The seat this driver would be offered, so the panel on the right is
@@ -1139,6 +1168,9 @@ class Game {
         accent: startTeam.accent,
       },
       takenNumbers: f3.drivers.map((d) => d.raceNumber),
+      // No seat panel: this screen is making a person, not signing a contract.
+      // The contract is `showCareerCreate`, and it is a different question.
+      showSeat: false,
       initial: editing
         ? {
           firstName: editing.firstName,
@@ -1950,6 +1982,7 @@ class Game {
       sub: 'Every change here is saved and applied the moment you make it.',
       back: () => (back ? back() : this.career ? this.showCareerHub() : this.showMenu()),
     });
+    this.screenRoot.classList.add('frontdoor');
     applyIdentityColours(this.screenRoot, this.profiles.active?.helmet ?? null);
 
     const save = () => this.saves.saveSettings(this.settings);

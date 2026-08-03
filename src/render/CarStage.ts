@@ -270,7 +270,20 @@ export class CarStage {
       // The one effect borrowed wholesale from the race, and deliberately: this
       // is the SAME rain the track renders, so the titles are showing the game
       // rather than a drawing of it. It is one draw call of thin lines.
-      this.rain = new RainCurtain(this.quality);
+      // Tuned for THIS picture, not for a track. The camera here is three
+      // metres from the subject and barely moving, so the race's near fade of
+      // seven metres would erase every drop the shot can actually see, and the
+      // race's opacity is set against a bright road rather than a black hall.
+      this.rain = new RainCurtain(this.quality, {
+        // The volume is the size of the room, not of a lap. At the race's 90
+        // metres the same drop count is one drop per sixty-six cubic metres,
+        // which at this focal length is a handful of specks; at 26 it is rain.
+        boxM: 26,
+        boxH: 20,
+        nearM: 2.0,
+        gain: 2.1,
+        colour: 0xcfe0f2,
+      });
       this.scene.add(this.rain.mesh);
       // Depth. Without it the dark hall behind a dark wet car is a flat void
       // and the rain has nothing to fall through.
@@ -501,7 +514,14 @@ export class CarStage {
     // Roughly four fifths of the width rather than all of it: a car photographed
     // against a seamless backdrop needs the backdrop visible around it, or the
     // shot reads as a crop rather than as a car standing in a room.
-    const distW = (this.halfSpan / 0.78) / (tanY * Math.max(this.aspect, 0.35));
+    //
+    // MORE OF IT ON A TALL BOX. In portrait the width is the scarce dimension
+    // and there is height to spare, so holding the car to four fifths of the
+    // width leaves a phone-shaped hole with a small car floating in the middle
+    // of it. The margin closes as the box narrows.
+    const room = this.aspect >= 1 ? 0.78
+      : 0.78 + (1 - Math.min(1, Math.max(0.3, this.aspect))) * 0.24;
+    const distW = (this.halfSpan / room) / (tanY * Math.max(this.aspect, 0.35));
     const distH = (this.halfHeight / 0.62) / tanY;
     this.fitDistance = THREE.MathUtils.clamp(Math.max(distW, distH), 6, 40);
 
@@ -664,77 +684,116 @@ export class CarStage {
     this.streakOwned.length = 0;
     if (this.streakColours.length === 0) return;
 
+    const wet = this.set === 'wet';
     const group = new THREE.Group();
-    // Spread across the back wall, alternating the two colours outwards from
-    // the centre so a two-colour rig reads as a rig rather than as a flag.
-    const n = Math.max(4, Math.min(9, this.streakColours.length * 3));
-    const spread = 15.5;
+    // The falloff. A light bar with a hard top and bottom edge is a PANEL; the
+    // same bar faded out at both ends is a LIGHT. One 4x64 texture, shared by
+    // every bar and every halo, is the entire difference between the two — and
+    // it is the reason the first version of this read as coloured wallpaper.
+    const fade = this.buildFalloffTexture();
+    this.streakOwned.push(fade);
+
+    // AN ARC BEHIND THE CAR, not a wall and not a full ring.
+    //
+    // A wall is out of frame for three of the five shots the title sequence
+    // cuts to — down the flank, over the rear wing, at kerb height — which is
+    // exactly what the first version did. A full ring puts a lamp between the
+    // lens and the car in every one of them. So: a wide arc centred on the
+    // point opposite the hero camera, wrapping far enough round each side that
+    // there is always something lit in the back of the frame.
+    // FEWER BARS ON THE LOW TIER. Thirteen bars are four quads each — fifty-two
+    // draw calls of pure atmosphere — and the machines on this path are the
+    // ones that cannot afford them. Seven reads as the same rig.
+    const cap = this.quality === 'high' ? 13 : 7;
+    const n = Math.max(this.quality === 'high' ? 9 : 5,
+      Math.min(cap, this.streakColours.length * 5 + 1));
+    const radius = 18;
+    // Opposite the launch angle, which is where a photographer would stand.
+    const centre = Math.PI + LOOKS.hero.yaw;
     for (let i = 0; i < n; i++) {
-      const t = n === 1 ? 0.5 : i / (n - 1);
-      const x = (t - 0.5) * spread;
       const colour = new THREE.Color(this.streakColours[i % this.streakColours.length]);
-      // Brightness falls towards the middle so the car is never backlit into a
-      // silhouette by the bar directly behind it.
-      const centreness = 1 - Math.abs(t - 0.5) * 2;
-      const gain = 1.5 + 2.6 * (1 - centreness);
-      const h = 7.2 + ((i * 37) % 11) * 0.22;
-      const z = -8.6 - ((i * 53) % 7) * 0.55;
+      // A hundred and thirty degrees, not two hundred. Wider than this and the
+      // bars at each end come round past the front axle and stand BETWEEN the
+      // lens and the car, which is a lighting rig photographing itself.
+      const a = centre + (-1.15 + (i / (n - 1)) * 2.3);
+      const x = Math.sin(a) * radius;
+      const z = Math.cos(a) * radius;
+      // Bars straight behind the car are the hottest, so the rim light has
+      // something to come from and the arc has a centre rather than being an
+      // even fence.
+      const behind = Math.max(0, Math.cos(a - centre));
+      const gain = (wet ? 2.9 : 2.3) * (0.40 + behind * 0.95);
+      // Short enough to stop below the top of the frame. A bar that runs the
+      // full height crosses the wordmark and the identity chip, and the car
+      // stops being the brightest thing in its own photograph.
+      const h = 6.4 + ((i * 37) % 11) * 0.26;
+      const y = h * 0.5 - 1.3;
 
-      const core = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.26, h),
-        new THREE.MeshBasicMaterial({
-          color: colour.clone().multiplyScalar(gain),
-          toneMapped: false,
-          side: THREE.DoubleSide,
-        }),
-      );
-      core.position.set(x, h * 0.5 - 0.4, z);
-      group.add(core);
-      this.streakOwned.push(core.geometry, core.material as THREE.Material);
+      const bar = (
+        w: number, height: number, py: number, mul: number, opacity: number,
+        additive: boolean, order: number,
+      ) => {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(w, height),
+          new THREE.MeshBasicMaterial({
+            color: colour.clone().multiplyScalar(gain * mul),
+            alphaMap: fade,
+            transparent: true,
+            opacity,
+            blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+            depthWrite: false,
+            toneMapped: false,
+            side: THREE.DoubleSide,
+          }),
+        );
+        m.position.set(x, py, z);
+        // Turned to face the middle, so a bar at the side of the ring is seen
+        // edge-on-ish rather than as a billboard lying across the picture.
+        m.lookAt(0, py, 0);
+        m.renderOrder = order;
+        group.add(m);
+        this.streakOwned.push(m.geometry, m.material as THREE.Material);
+      };
 
-      // The halo. Additive and wide, which is what a bright thin source looks
-      // like through a lens and through rain.
-      const halo = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.5, h * 1.06),
-        new THREE.MeshBasicMaterial({
-          color: colour.clone().multiplyScalar(gain * 0.30),
-          transparent: true,
-          opacity: 0.5,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          toneMapped: false,
-          side: THREE.DoubleSide,
-        }),
-      );
-      halo.position.set(x, h * 0.5 - 0.4, z + 0.05);
-      halo.renderOrder = 4;
-      group.add(halo);
-      this.streakOwned.push(halo.geometry, halo.material as THREE.Material);
-
-      // The reflection. A real one, below the floor, at a fraction of the
-      // brightness and stretched — which is exactly what a vertical light does
-      // in a wet surface, and the reason the wet set needs no extra pass.
-      const wet = this.set === 'wet';
-      const refl = new THREE.Mesh(
-        new THREE.PlaneGeometry(wet ? 0.62 : 0.30, h * (wet ? 1.5 : 1.0)),
-        new THREE.MeshBasicMaterial({
-          color: colour.clone().multiplyScalar(gain * (wet ? 0.42 : 0.24)),
-          transparent: true,
-          opacity: wet ? 0.62 : 0.4,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          toneMapped: false,
-          side: THREE.DoubleSide,
-        }),
-      );
-      refl.position.set(x, -h * (wet ? 0.75 : 0.5) + 0.4, z);
-      refl.renderOrder = 0;
-      group.add(refl);
-      this.streakOwned.push(refl.geometry, refl.material as THREE.Material);
+      // Core, halo, and a wide soft bloom. The core is narrow on purpose: a
+      // wide bright rectangle is a wall, and it is the halo around a THIN
+      // source that reads as light. The outermost bloom is the cheapest thing
+      // to lose on a machine that is short of fill, and losing it costs the
+      // picture least.
+      bar(0.22, h, y, 1.0, 1.0, false, 4);
+      bar(0.95, h * 1.02, y, 0.34, 0.66, true, 4);
+      if (this.quality === 'high') bar(3.2, h * 1.06, y, 0.09, 0.46, true, 4);
+      // The reflection, below the floor. Water returns more and stretches it,
+      // which is why the wet set needs no second pass to look wet.
+      bar(wet ? 0.72 : 0.34, h * (wet ? 1.6 : 1.0), -y * (wet ? 1.35 : 1.0),
+        wet ? 0.5 : 0.28, wet ? 0.7 : 0.45, true, 0);
     }
 
     this.streakGroup = group;
     this.scene.add(group);
+  }
+
+  /**
+   * The alpha ramp every light bar is masked with: nothing at the ends, full
+   * in the middle, with the bottom held longer than the top because a lamp
+   * standing on a floor is brightest near it.
+   */
+  private buildFalloffTexture(): THREE.CanvasTexture {
+    const cv = document.createElement('canvas');
+    cv.width = 4;
+    cv.height = 128;
+    const g = cv.getContext('2d')!;
+    const grad = g.createLinearGradient(0, 0, 0, 128);
+    grad.addColorStop(0.00, '#000');
+    grad.addColorStop(0.14, '#8a8a8a');
+    grad.addColorStop(0.42, '#ffffff');
+    grad.addColorStop(0.80, '#e2e2e2');
+    grad.addColorStop(1.00, '#000');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 4, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    return tex;
   }
 
   private buildLights(): void {

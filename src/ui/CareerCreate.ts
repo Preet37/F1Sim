@@ -77,6 +77,18 @@ export interface CareerCreateOptions {
     accent: number;
   };
   /**
+   * Whether to show the seat panel at all.
+   *
+   * False when this screen is being used to MAKE A DRIVER rather than to sign
+   * a contract — the first-run welcome, and the editor reached from the
+   * drivers rack. Neither of those is an offer of a seat, and a panel headed
+   * "What is actually on offer" on a screen where nothing is on offer is the
+   * kind of leftover that makes an interface feel assembled rather than
+   * designed. The colours are still used, because the driver on the left is
+   * wearing the race suit either way.
+   */
+  showSeat?: boolean;
+  /**
    * The driver this screen opens on.
    *
    * ADDED SO THAT MAKING A DRIVER AND SIGNING A CONTRACT ARE NOT TWO PEOPLE.
@@ -244,19 +256,21 @@ export function buildCareerCreate(
   paints.appendChild(dice);
 
   // --- The seat ----------------------------------------------------------
-  section(panel, 'The seat', 'What is actually on offer, and what it is worth.');
-  const seat = el('div', 'sg-seat', panel);
-  seat.style.setProperty('--team', hex(opts.seat.colour));
-  const seatHead = el('div', 'sg-seat-head', seat);
-  el('div', 'sg-seat-team', seatHead, opts.seat.teamName);
-  el('div', 'sg-seat-tier', seatHead, opts.seat.tierName);
-  const seatFacts = el('div', 'sg-seat-facts', seat);
-  fact(seatFacts, 'Calendar', opts.seat.rounds + ' rounds');
-  fact(seatFacts, 'To go up', 'Finish in the top two');
-  fact(seatFacts, 'If you do not', 'Four seasons here and the seat is gone');
-  el('div', 'sg-seat-line', seat,
-    'It is the slowest car in the championship. Every driver who has ever '
-    + 'reached Formula 1 started somewhere like it.');
+  if (opts.showSeat !== false) {
+    section(panel, 'The seat', 'What is actually on offer, and what it is worth.');
+    const seat = el('div', 'sg-seat', panel);
+    seat.style.setProperty('--team', hex(opts.seat.colour));
+    const seatHead = el('div', 'sg-seat-head', seat);
+    el('div', 'sg-seat-team', seatHead, opts.seat.teamName);
+    el('div', 'sg-seat-tier', seatHead, opts.seat.tierName);
+    const seatFacts = el('div', 'sg-seat-facts', seat);
+    fact(seatFacts, 'Calendar', opts.seat.rounds + ' rounds');
+    fact(seatFacts, 'To go up', 'Finish in the top two');
+    fact(seatFacts, 'If you do not', 'Four seasons here and the seat is gone');
+    el('div', 'sg-seat-line', seat,
+      'It is the slowest car in the championship. Every driver who has ever '
+      + 'reached Formula 1 started somewhere like it.');
+  }
 
   // =========================================================================
   // Painting
