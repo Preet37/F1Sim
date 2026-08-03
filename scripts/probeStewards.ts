@@ -59,13 +59,21 @@ function raceConfig(over: Partial<SessionConfig> = {}): SessionConfig {
 }
 
 /**
- * Everyone who is not in the scene, parked out of the way and kept there.
+ * Everyone who is not in the scene, taken out of it entirely.
  *
- * Parked ON the racing line at zero speed on purpose. A car off the road and
- * slow raises a yellow, a yellow raises `activeIncidents`, and three of those
- * deploy the safety car — under which the stewards deliberately decline to judge
- * anything. A stationary car within the white lines raises nothing, which is
- * exactly what a staged scene needs from its extras.
+ * Retired, and with the recovery already complete, which is the one state that
+ * makes a car invisible to everything a staged scene cares about: race control
+ * signals a retirement from `recovery.signal` and a finished recovery signals
+ * nothing, so no yellow is raised and no safety car is deployed — and the
+ * stewards decline to judge anything under a neutralisation, which would make
+ * every case here come out the same way for the wrong reason.
+ *
+ * `cleared` matters as much. `RaceEngine.resolveContacts` still collides with a
+ * retired car while it is a solid wreck, and a scene that has to run for a lap
+ * and a half — the give-a-place-back window is a lap — puts the two cars on
+ * rails round the whole circuit and straight through wherever the extras were
+ * left. That is exactly what happened: the excursion case produced a verdict
+ * about car 0 hitting car 2 forty seconds later, instead of the one it staged.
  */
 function parkTheRest(engine: RaceEngine, keep: number[], awayFromS: number): void {
   const len = engine.track.length;
@@ -73,6 +81,9 @@ function parkTheRest(engine: RaceEngine, keep: number[], awayFromS: number): voi
   for (const car of engine.cars) {
     if (keep.includes(car.index)) continue;
     car.placeOnTrack(engine.track, (awayFromS + len * 0.4 + n * 16) % len, 0, 0);
+    car.retired = true;
+    car.cleared = true;
+    car.recovery.done = true;
     n++;
   }
 }
@@ -483,23 +494,49 @@ function runExcursion(obey: boolean): { engine: RaceEngine; cheat: CarEntry; riv
   // from eight metres behind to six metres ahead, and comes back at full speed.
   const OFF_FROM = 10;
   const OFF_TO = 12;
-  const CEDE_BY = OFF_TO + Math.max(30, track.referenceLapTime) + 4;
-  const steps = Math.round((CEDE_BY + 70) / PHYSICS_DT);
+  // The place is handed back well AFTER the verdict, not before it. Handing it
+  // back first is a different case entirely — the stewards find nothing left to
+  // order and file no further action — and it was silently the case being tested
+  // until the deliberation was timed against the concession. The bench takes
+  // between `INVESTIGATION_MIN_S` and `INVESTIGATION_MAX_S` plus the six seconds
+  // before it opens the investigation, so eighty seconds clears it on any draw.
+  const OBEY_AT = OFF_TO + 80;
+  const steps = Math.round(280 / PHYSICS_DT);
   let base = corner.entryS - 400;
   if (base < 0) base += len;
 
+
+  // Both cars run at the circuit's own reference speed for wherever they are.
+  // A fixed speed will not do: race control only counts an excursion as gaining
+  // anything if the car came back at racing pace, and 42 m/s through Eau Rouge
+  // is a car that lost four seconds.
+  //
+  // `totalDistance` IS SET EXPLICITLY, and it has to be. `placeOnTrack` moves
+  // the car and resets the mark that `updateProjection` measures the next step's
+  // progress from, so a car put on rails accrues distance at whatever speed it
+  // is placed with and the teleport between one placement and the next never
+  // counts. Both cars therefore advance identically however far apart in `s`
+  // they are put — and race order is a `totalDistance` question, so the whole
+  // point of the scene, that one car came back in front of the other, was
+  // invisible to the stewards.
+  let rivalS = base;
+  let travelled = 0;
   for (let i = 0; i < steps; i++) {
     const t = i * PHYSICS_DT;
-    const rivalS = (base + t * SPEED_MS) % len;
-    rival.placeOnTrack(track, rivalS, 0, SPEED_MS);
+    const v = track.targetSpeed[track.indexAt(rivalS)];
+    rivalS = (rivalS + v * PHYSICS_DT) % len;
+    travelled += v * PHYSICS_DT;
+    rival.placeOnTrack(track, rivalS, 0, v);
+    rival.totalDistance = travelled;
 
     let gap: number;
     if (t < OFF_FROM) gap = -8;
     else if (t < OFF_TO) gap = -8 + 14 * ((t - OFF_FROM) / (OFF_TO - OFF_FROM));
-    else if (obey && t > OFF_TO + 6) gap = -8;
+    else if (obey && t > OBEY_AT) gap = -8;
     else gap = 6;
     const lat = t >= OFF_FROM && t < OFF_TO ? halfWidth + 2.2 : 1.2;
-    cheat.placeOnTrack(track, (rivalS + gap + len) % len, lat, SPEED_MS);
+    cheat.placeOnTrack(track, (rivalS + gap + len) % len, lat, v);
+    cheat.totalDistance = travelled + gap;
     parkTheRest(engine, [0, 1], corner.apexS);
     engine.step();
   }
@@ -707,6 +744,9 @@ interface Tally {
   byOffence: Map<string, number>;
   againstCar: number[];
   playerFinished: number;
+  /** Decisions arising on the opening lap, where a race's contacts pile up. */
+  firstLapPenalties: number;
+  racedLaps: number;
 }
 
 const PLAYER_INDEX = 7;
@@ -715,7 +755,7 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
   const tally: Tally = {
     races: 0, contactsSeen: 0, noted: 0, nfa: 0, giveBack: 0, penalties: 0,
     penaltiesOnPlayer: 0, notedOnPlayer: 0, byOffence: new Map(), againstCar: [],
-    playerFinished: 0,
+    playerFinished: 0, firstLapPenalties: 0, racedLaps: 0,
   };
 
   for (const def of CIRCUITS) {
@@ -746,6 +786,7 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
 
       const bench = engine.raceControl.stewards;
       tally.races++;
+      tally.racedLaps += laps;
       if (!player.retired) tally.playerFinished++;
       if (!bench) continue;
       tally.noted += bench.noted;
@@ -754,20 +795,11 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
         else if (v.kind === 'give-position-back') tally.giveBack++;
         else {
           tally.penalties++;
+          if (v.lap <= 1) tally.firstLapPenalties++;
           tally.byOffence.set(v.offence ?? '?', (tally.byOffence.get(v.offence ?? '?') ?? 0) + 1);
           while (tally.againstCar.length <= v.againstIndex) tally.againstCar.push(0);
           if (v.againstIndex >= 0) tally.againstCar[v.againstIndex]++;
           if (v.againstIndex === PLAYER_INDEX) tally.penaltiesOnPlayer++;
-        }
-      }
-      // Penalties issued outside the bench too — an unserved give-back becomes
-      // one, and it is a penalty against a driver like any other.
-      for (const car of engine.cars) {
-        for (const p of car.penalties) {
-          if (p.reason.includes('FAILING TO GIVE THE POSITION BACK') &&
-              car.index === PLAYER_INDEX) {
-            tally.penaltiesOnPlayer++;
-          }
         }
       }
     }
@@ -797,15 +829,32 @@ function checkCalendar(): void {
   const spread = t.againstCar.filter((n) => n > 0).length;
   console.log(`  distinct cars penalised               ${spread}`);
   console.log(`  player reached the flag               ${t.playerFinished} of ${t.races}`);
+  // A five-lap race is not a fifth of a Grand Prix as far as the stewards are
+  // concerned: the opening lap is a fixed cost that a longer race does not pay
+  // again. Splitting it is the only way to say what a real distance would do.
+  const later = t.penalties - t.firstLapPenalties;
+  const laterLaps = Math.max(1, t.racedLaps - t.races);
+  const perLap = later / laterLaps;
+  const gp = t.firstLapPenalties / t.races + perLap * 56;
+  console.log(`  of those, on the opening lap          ${t.firstLapPenalties}`);
+  console.log(`  after the opening lap                 ${later} over ${laterLaps} race-laps` +
+    ` = ${perLap.toFixed(3)} a lap`);
+  console.log(`  implied for a 57-lap Grand Prix       ${gp.toFixed(1)} penalties`);
 
   // The bounds. These are the claim, and they are the thing that has to keep
   // being true.
   check(t.noted > 0, 'a whole calendar produced no incidents at all — the bench is not wired in');
   const penPerRace = t.penalties / Math.max(1, t.races);
-  check(penPerRace <= 2.0,
+  check(penPerRace <= 1.5,
     `${penPerRace.toFixed(2)} penalties a race is more than a Grand Prix produces`);
-  check(t.nfa + t.giveBack >= t.penalties,
-    'more incidents end in a penalty than end without one, which is the wrong way round');
+  // The number that actually matters, because these are five-lap races and a
+  // Grand Prix is not five laps. A real season runs at one to three driving
+  // penalties a race; below half of one and the bench has stopped working.
+  check(gp >= 0.5 && gp <= 6,
+    `${gp.toFixed(1)} penalties implied for a full-distance race is outside one to three ` +
+    `by enough to be wrong`);
+  check(t.nfa + t.giveBack >= t.penalties * 2,
+    'a majority of incidents should end without a penalty, and this one does not');
   if (t.penalties >= 8) {
     check(share <= 0.30,
       `${(share * 100).toFixed(0)}% of penalties fall on one car in twenty — the bench is ` +
@@ -815,6 +864,15 @@ function checkCalendar(): void {
 }
 
 // ===========================================================================
+
+/**
+ * `STEWARDS_PROBE=staged` runs everything except the calendar sweep.
+ *
+ * The sweep is most of the runtime and none of the iteration: when a staged case
+ * comes out wrong it is the staging or the rule that is wrong, and re-running
+ * eleven full races to find that out again costs twenty minutes a try.
+ */
+const STAGED_ONLY = process.env.STEWARDS_PROBE === 'staged';
 
 console.log('THE STEWARDS');
 console.log('');
@@ -829,7 +887,8 @@ checkAiObeys();
 console.log('');
 console.log('THE PENALTY');
 checkPenaltyService();
-checkCalendar();
+if (!STAGED_ONLY) checkCalendar();
+else console.log('\n(calendar sweep skipped — STEWARDS_PROBE=staged)');
 
 if (failures.length > 0) {
   console.log('\nFAILURES:');

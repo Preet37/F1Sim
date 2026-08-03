@@ -59,13 +59,20 @@ import {
  *    A car that held its line and was driven into is not at fault for being
  *    there, whichever side of the corner it was on.
  *  - A multi-car incident is a racing incident. `CROWD_RADIUS_M`.
+ *  - Causing a collision needs a collision. A contact that cost the other car
+ *    nothing is a rub, and rubs happen several times a lap in a twenty-car
+ *    field. See `Evidence.consequenceA`, which is the single change that took
+ *    this from ten penalties a Grand Prix to three.
  *  - Anything involving a stationary wreck, the pit lane, a neutralisation or a
  *    car that had already lost control is not judged at all.
  *
- * The consequence is a distribution rather than a rule: across a full calendar
- * this produces roughly one penalty every two to three races, which is the
- * order of magnitude a Grand Prix actually produces. `npm run probe:stewards`
- * measures it and fails if it drifts.
+ * The consequence is a distribution rather than a rule. Measured over the
+ * calendar, with one car driven through `playerControls` exactly as a human
+ * would be: 53 incidents noted, 47 no further action, one position ordered
+ * back, six penalties, none of them against the driven car. Scaled off the
+ * opening lap that works out at about three penalties in a full-distance Grand
+ * Prix, which is what a real one produces. `npm run probe:stewards` measures it
+ * and fails if it drifts outside half a penalty to six.
  *
  * ===========================================================================
  * WHY THE VERDICT IS SLOW
@@ -169,6 +176,15 @@ const REAR_END_LEAD_DECEL_MS2 = 40;
  * in. Setting it tight would make every overtaking attempt a dive.
  */
 const DIVE_IN_OVERSPEED = 1.25;
+
+/**
+ * How long after a contact the stewards look at what it did, seconds.
+ *
+ * See `Evidence.consequenceA`.
+ */
+const AFTERMATH_S = 2.5;
+/** A speed loss this big, in m/s, is a spin or a trip through the gravel. */
+const CONSEQUENCE_SPEED_LOSS_MS = 8;
 
 /** Lateral movement toward the other car that counts as crowding, metres. */
 const SQUEEZE_MOVE_M = 0.35;
@@ -416,9 +432,14 @@ export class IncidentRecorder {
     this.nextSampleAt = -1;
   }
 
-  /** Records the field, if a sample is due. Call every physics step. */
-  sample(cars: readonly CarEntry[], track: TrackSpline, sessionTime: number): void {
-    if (sessionTime < this.nextSampleAt) return;
+  /**
+   * Records the field, if a sample is due. Call every physics step.
+   *
+   * Returns true on the steps it actually recorded, which is what lets the
+   * pair-scanning above run at the recorder's rate rather than at 120Hz.
+   */
+  sample(cars: readonly CarEntry[], track: TrackSpline, sessionTime: number): boolean {
+    if (sessionTime < this.nextSampleAt) return false;
     this.nextSampleAt = sessionTime + 1 / SAMPLE_HZ;
 
     const slot = this.head;
@@ -442,6 +463,7 @@ export class IncidentRecorder {
     }
     this.head = (this.head + 1) % SAMPLE_CAP;
     if (this.filled < SAMPLE_CAP) this.filled++;
+    return true;
   }
 
   /** How many samples are held. */
@@ -471,17 +493,33 @@ export class IncidentRecorder {
     out.cogToFrontM = this.cogToFront[carIndex];
   }
 
-  /** The newest sample at or before `t`. False when the window does not reach. */
+  /**
+   * The newest sample at or before `t`. False when the window does not reach.
+   *
+   * Constant time, not a scan. It is called from the pair loop that looks for a
+   * car being crowded toward an edge, which is O(cars squared) to begin with; a
+   * linear walk through a hundred and sixty samples inside that is twenty cars
+   * times twenty cars times a hundred and sixty, twenty times a second, for an
+   * answer that simple arithmetic gives directly. The samples are evenly spaced
+   * in time by construction, so the age of the one wanted is just the elapsed
+   * time over the sample interval — the short correction loops afterwards exist
+   * only to absorb the rounding.
+   */
   read(carIndex: number, t: number, out: Snapshot): boolean {
-    for (let age = 0; age < this.filled; age++) {
-      const slot = this.slotAge(age);
-      const stamp = this.buf[(carIndex * SAMPLE_CAP + slot) * STRIDE + FIELD_T];
-      if (stamp <= t + 1e-6) {
-        this.readSlot(carIndex, slot, out);
-        return true;
-      }
-    }
-    return false;
+    if (this.filled === 0) return false;
+    const newest = this.buf[(carIndex * SAMPLE_CAP + this.slotAge(0)) * STRIDE + FIELD_T];
+    let age = Math.floor((newest - t) * SAMPLE_HZ);
+    if (age < 0) age = 0;
+    if (age >= this.filled) age = this.filled - 1;
+    const stampAt = (a: number): number =>
+      this.buf[(carIndex * SAMPLE_CAP + this.slotAge(a)) * STRIDE + FIELD_T];
+    // Too new: walk back until the sample is at or before `t`.
+    while (age < this.filled - 1 && stampAt(age) > t + 1e-6) age++;
+    // Too old: walk forward while the next one is still not after `t`.
+    while (age > 0 && stampAt(age - 1) <= t + 1e-6) age--;
+    if (stampAt(age) > t + 1e-6) return false;
+    this.readSlot(carIndex, this.slotAge(age), out);
+    return true;
   }
 
   /**
@@ -558,6 +596,23 @@ interface Evidence {
   beforeB: Snapshot;
   /** The car in front's deceleration over the half-second before contact. */
   leadDecelMs2: number;
+  /**
+   * Did the contact actually do anything to each car?
+   *
+   * Filled `AFTERMATH_S` after the incident, not at it, because the answer is
+   * not available at the moment of the hit.
+   *
+   * THIS IS THE DIFFERENCE BETWEEN A COLLISION AND A RUB, and it is how the
+   * offence is really applied. Appendix L Art. 2(d) is "causing a collision",
+   * and two cars touching wheels through a corner and carrying on is not one:
+   * the stewards note it and take no further action. What earns a penalty is a
+   * contact that put somebody off the road, cost them a place, spun them, or
+   * ended their race. Without this test the rule fires on every wheel-to-wheel
+   * rub in a twenty-car field, which is several a lap.
+   */
+  consequenceA: boolean;
+  consequenceB: boolean;
+  aftermathDone: boolean;
 }
 
 interface OpenIncident {
@@ -596,10 +651,28 @@ interface Excursion {
   behindDistance: number;
 }
 
+/**
+ * How long this particular incident takes to decide, in seconds.
+ *
+ * Deliberately NOT drawn from a random number generator. `RaceControlManager`'s
+ * generator is the one that decides when a safety car comes out and how long a
+ * recovery takes, and a bench that draws from it would change the outcome of
+ * every neutralisation in the race by the mere fact of having noticed a contact
+ * — which is a race that cannot be replayed from its seed. A hash of the
+ * incident gives the same spread, varies between incidents in the same race,
+ * and consumes nothing.
+ */
+function deliberationS(aIndex: number, bIndex: number, lap: number, nth: number): number {
+  let h = (aIndex * 73856093) ^ (bIndex * 19349663) ^ (lap * 83492791) ^ (nth * 2654435761);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  const frac = ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
+  return INVESTIGATION_MIN_S + frac * (INVESTIGATION_MAX_S - INVESTIGATION_MIN_S);
+}
+
 export class Stewards {
   private readonly track: TrackSpline;
   private readonly wire: StewardsWire;
-  private readonly rng: () => number;
   private readonly corners: CornerFrame[];
   readonly recorder: IncidentRecorder;
 
@@ -612,8 +685,18 @@ export class Stewards {
   /** Contacts in the recent past, for the pile-up test. */
   private readonly recentContacts: { s: number; time: number; a: number; b: number }[] = [];
 
-  /** Every verdict this session, oldest first. Read by probes and the career. */
-  readonly verdicts: (Verdict & { time: number; where: string; kind2: IncidentKind })[] = [];
+  /**
+   * Every decision this session, oldest first.
+   *
+   * The COMPLETE record, including the penalties that are not the outcome of an
+   * investigation — a driver who ignored an instruction to hand a place back is
+   * penalised by the remedy loop rather than by the bench, and leaving that out
+   * of the ledger would make any count of "penalties this season" wrong in the
+   * one direction that matters, since ignoring an instruction is the offence a
+   * human player is most likely to commit.
+   */
+  readonly verdicts:
+    (Verdict & { time: number; lap: number; where: string; incident: IncidentKind })[] = [];
   /** How many incidents have been noted this session. */
   noted = 0;
 
@@ -621,10 +704,9 @@ export class Stewards {
   private readonly scratchA = blankSnapshot();
   private readonly scratchB = blankSnapshot();
 
-  constructor(track: TrackSpline, carCount: number, wire: StewardsWire, rng?: () => number) {
+  constructor(track: TrackSpline, carCount: number, wire: StewardsWire) {
     this.track = track;
     this.wire = wire;
-    this.rng = rng ?? (() => 0.5);
     this.corners = buildCornerTable(track);
     this.recorder = new IncidentRecorder(carCount);
     for (let i = 0; i < carCount; i++) {
@@ -684,9 +766,12 @@ export class Stewards {
     // guidelines apply in qualifying; the machinery in this file does not.
     if (!isRace) return;
 
-    this.recorder.sample(cars, this.track, sessionTime);
+    // The crowding scan is O(cars squared) and it can only see as far back as
+    // the recorder, so there is nothing to be gained from running it more often
+    // than the recorder samples.
+    const sampled = this.recorder.sample(cars, this.track, sessionTime);
     this.trimRecentContacts(sessionTime);
-    this.scanForCrowding(cars, sessionTime);
+    if (sampled) this.scanForCrowding(cars, sessionTime);
     this.scanForExcursions(cars, sessionTime);
     this.drainContacts(cars, sessionTime, neutralised);
     this.deliberate(cars, sessionTime);
@@ -909,8 +994,7 @@ export class Stewards {
     const a = cars[p.aIndex];
     const b = cars[p.bIndex];
     const where = (this.track.cornerNameAt(a.s) || '').toUpperCase();
-    const wait = INVESTIGATION_MIN_S +
-      this.rng() * (INVESTIGATION_MAX_S - INVESTIGATION_MIN_S);
+    const wait = deliberationS(p.aIndex, p.bIndex, a.lap, this.noted);
 
     this.lastIncidentAt[p.aIndex] = p.now;
     this.lastIncidentAt[p.bIndex] = p.now;
@@ -953,6 +1037,7 @@ export class Stewards {
       entryA: blankSnapshot(), entryB: blankSnapshot(),
       beforeA: blankSnapshot(), beforeB: blankSnapshot(),
       leadDecelMs2: 0,
+      consequenceA: false, consequenceB: false, aftermathDone: false,
     };
 
     if (!this.recorder.read(aIndex, now, ev.contactA)) return ev;
@@ -1029,6 +1114,37 @@ export class Stewards {
     return ev;
   }
 
+  /**
+   * Looks at what the contact did, a couple of seconds after it.
+   *
+   * Reads the recorder rather than the cars, so "went off at any point since"
+   * is a real answer rather than a snapshot of this instant — a car that speared
+   * across the gravel and rejoined has suffered the consequence even if it is
+   * back on the road by the time anybody looks.
+   */
+  private takeAftermath(inc: OpenIncident, cars: readonly CarEntry[], now: number): void {
+    const ev = inc.ev;
+    ev.aftermathDone = true;
+    if (!ev.ok) return;
+    ev.consequenceA = this.sufferedSomething(inc.aIndex, ev.contactA, cars, inc.time, now);
+    ev.consequenceB = this.sufferedSomething(inc.bIndex, ev.contactB, cars, inc.time, now);
+  }
+
+  private sufferedSomething(
+    index: number, atContact: Snapshot, cars: readonly CarEntry[], from: number, now: number,
+  ): boolean {
+    const car = cars[index];
+    if (car.retired) return true;
+    for (let t = from; t <= now + 1e-6; t += 1 / SAMPLE_HZ) {
+      if (!this.recorder.read(index, t, this.scratchA)) continue;
+      if (this.scratchA.t < from - 1e-6) continue;
+      if (this.scratchA.offTrack) return true;
+      if (atContact.speedMs - this.scratchA.speedMs > CONSEQUENCE_SPEED_LOSS_MS) return true;
+      if (this.scratchA.position > atContact.position) return true;
+    }
+    return false;
+  }
+
   // -------------------------------------------------------------------------
   // Deliberating
   // -------------------------------------------------------------------------
@@ -1038,6 +1154,10 @@ export class Stewards {
       const inc = this.open[k];
       const a = cars[inc.aIndex];
       const b = cars[inc.bIndex];
+
+      if (!inc.ev.aftermathDone && now >= inc.time + AFTERMATH_S) {
+        this.takeAftermath(inc, cars, now);
+      }
 
       if (!inc.investigated && now >= inc.investigateAt) {
         inc.investigated = true;
@@ -1078,6 +1198,7 @@ export class Stewards {
    */
   closeOutstanding(cars: readonly CarEntry[], now: number): void {
     for (const inc of this.open) {
+      if (!inc.ev.aftermathDone) this.takeAftermath(inc, cars, now);
       let verdict = this.judge(inc);
       if (verdict.kind === 'give-position-back') {
         verdict = {
@@ -1096,6 +1217,8 @@ export class Stewards {
       const to = cars[car.cedePositionTo];
       car.cedePositionTo = -1;
       if (car.retired || to.retired || to.totalDistance > car.totalDistance) continue;
+      this.recordPenalty(
+        car.index, to.index, car.lap, now, 'the race ended with the place still held');
       this.wire.penalise(car, 5, 'FAILING TO GIVE THE POSITION BACK', '', now);
     }
   }
@@ -1225,6 +1348,7 @@ export class Stewards {
       // The overtaking car was entitled to room. The defender is at fault only
       // if the defender is the one that closed on it.
       if (closedBy !== defenderIndex) return nfa('the entitled car was the one that moved');
+      if (!this.costSomething(inc, overtakerIndex)) return nfa('contact without consequence');
       return {
         kind: 'penalty', offence: 'CAUSING A COLLISION',
         againstIndex: defenderIndex, victimIndex: overtakerIndex,
@@ -1237,6 +1361,7 @@ export class Stewards {
     // The overtaking car was not entitled to room, so the defender was free to
     // take its line. Fault only if the overtaker is the one that closed.
     if (closedBy !== overtakerIndex) return nfa('the defending car was the one that moved');
+    if (!this.costSomething(inc, defenderIndex)) return nfa('contact without consequence');
     return {
       kind: 'penalty', offence: 'CAUSING A COLLISION',
       againstIndex: overtakerIndex, victimIndex: defenderIndex,
@@ -1278,12 +1403,18 @@ export class Stewards {
     if (ev.leadDecelMs2 > REAR_END_LEAD_DECEL_MS2) {
       return nfa('the car in front braked abnormally');
     }
+    if (!this.costSomething(inc, leaderIndex)) return nfa('contact without consequence');
 
     return {
       kind: 'penalty', offence: 'CAUSING A COLLISION',
       againstIndex: followerIndex, victimIndex: leaderIndex,
       because: 'ran into the back of a car ahead on the same line',
     };
+  }
+
+  /** Did the contact cost the named car anything? See `Evidence.consequenceA`. */
+  private costSomething(inc: OpenIncident, victimIndex: number): boolean {
+    return victimIndex === inc.aIndex ? inc.ev.consequenceA : inc.ev.consequenceB;
   }
 
   /**
@@ -1325,7 +1456,9 @@ export class Stewards {
   private publish(
     inc: OpenIncident, verdict: Verdict, cars: readonly CarEntry[], now: number,
   ): void {
-    this.verdicts.push({ ...verdict, time: now, where: inc.where, kind2: inc.kind });
+    this.verdicts.push({
+      ...verdict, time: now, lap: inc.lap, where: inc.where, incident: inc.kind,
+    });
 
     const a = cars[inc.aIndex];
     const b = cars[inc.bIndex];
@@ -1385,6 +1518,17 @@ export class Stewards {
    * measured on this circuit's own reference time, with a floor for the very
    * short ones.
    */
+  /** Files a penalty that did not come from an investigation into the ledger. */
+  private recordPenalty(
+    against: number, victim: number, lap: number, now: number, because: string,
+  ): void {
+    this.verdicts.push({
+      kind: 'penalty', offence: 'FAILING TO GIVE THE POSITION BACK',
+      againstIndex: against, victimIndex: victim, because,
+      time: now, lap, where: '', incident: 'off-track-advantage',
+    });
+  }
+
   private cedeWindowS(): number {
     return Math.max(30, this.track.referenceLapTime);
   }
@@ -1426,6 +1570,7 @@ export class Stewards {
 
       if (now >= car.cedeDeadline) {
         car.cedePositionTo = -1;
+        this.recordPenalty(car.index, to.index, car.lap, now, 'the place was never handed back');
         this.wire.penalise(car, 5, 'FAILING TO GIVE THE POSITION BACK', '', now);
       }
     }

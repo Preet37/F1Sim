@@ -1968,36 +1968,6 @@ export class RaceEngine {
   }
 
   /**
-   * The player's neutralised speed limit, applied for them.
-   *
-   * The pit lane's assist, pointed at the other limit the driver is required to
-   * obey. Everything about the shape of it is deliberately the same, because the
-   * two are the same problem: the limit is armed BEFORE the car needs it, the
-   * car is braked into it on a planning profile rather than dropped onto it, and
-   * the HUD says the limiter is on. `applyPitLaneAssist` below is the original
-   * and its comment explains why an automatic limiter obliges the game to
-   * provide the arrival; this owes the driver exactly the same thing.
-   *
-   * WHY IT HAS TO EXIST AT ALL. The player's report is one sentence covering
-   * both halves — "under safetycar and flags and everything every car has to
-   * follow the speedlimit, it should auto put the speed up." The nineteen AI
-   * cars were fixed and the twentieth was not, which makes the rule a handicap
-   * rather than a rule. And a neutralised limit is much harder to judge by eye
-   * than a pit entry: what the regulations actually require is a minimum TIME
-   * through each marshalling sector, set by the FIA ECU (2025 Sporting Regs
-   * Art. 55.7 and 56.5 / 2026 Section B Art. B5.13.2b and B5.12.2b), which is
-   * not a number a driver can read off a speedometer. The penalty for getting
-   * it wrong is five seconds.
-   *
-   * WHAT IT DOES NOT DO. Steering is the driver's, everywhere. The throttle is
-   * the driver's everywhere the limit is not binding. And the limit relaxes
-   * exactly as it does for the AI when the player is entitled to run quicker —
-   * closing a gap to the queue (Art. 55.7 / B5.13.2b requires them to close it)
-   * or unlapping themselves (Art. 55.14 / B5.13.4c requires them to pass) — via
-   * the same shared `neutralisedLimit`, so the player is never braked for
-   * obeying the other article.
-   */
-  /**
    * Makes an AI car actually give a position back.
    *
    * The stewards can instruct a driver to hand a place back under Art. B1.8.6,
@@ -2036,6 +2006,36 @@ export class RaceEngine {
     c.brake = Math.max(c.brake, CEDE_BRAKE);
   }
 
+  /**
+   * The player's neutralised speed limit, applied for them.
+   *
+   * The pit lane's assist, pointed at the other limit the driver is required to
+   * obey. Everything about the shape of it is deliberately the same, because the
+   * two are the same problem: the limit is armed BEFORE the car needs it, the
+   * car is braked into it on a planning profile rather than dropped onto it, and
+   * the HUD says the limiter is on. `applyPitLaneAssist` below is the original
+   * and its comment explains why an automatic limiter obliges the game to
+   * provide the arrival; this owes the driver exactly the same thing.
+   *
+   * WHY IT HAS TO EXIST AT ALL. The player's report is one sentence covering
+   * both halves — "under safetycar and flags and everything every car has to
+   * follow the speedlimit, it should auto put the speed up." The nineteen AI
+   * cars were fixed and the twentieth was not, which makes the rule a handicap
+   * rather than a rule. And a neutralised limit is much harder to judge by eye
+   * than a pit entry: what the regulations actually require is a minimum TIME
+   * through each marshalling sector, set by the FIA ECU (2025 Sporting Regs
+   * Art. 55.7 and 56.5 / 2026 Section B Art. B5.13.2b and B5.12.2b), which is
+   * not a number a driver can read off a speedometer. The penalty for getting
+   * it wrong is five seconds.
+   *
+   * WHAT IT DOES NOT DO. Steering is the driver's, everywhere. The throttle is
+   * the driver's everywhere the limit is not binding. And the limit relaxes
+   * exactly as it does for the AI when the player is entitled to run quicker —
+   * closing a gap to the queue (Art. 55.7 / B5.13.2b requires them to close it)
+   * or unlapping themselves (Art. 55.14 / B5.13.4c requires them to pass) — via
+   * the same shared `neutralisedLimit`, so the player is never braked for
+   * obeying the other article.
+   */
   private applyNeutralisationAssist(car: CarEntry, c: VehicleControls): void {
     const rc = this.raceControl;
     if (!this.neutralisationAssist ||

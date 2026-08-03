@@ -749,7 +749,7 @@ export class RaceControlManager {
     // `checkTrackLimits` and the stewards read it as their definition of having
     // left the track, so the two must be looking at the same step.
     if (this.stewardsBench === null) {
-      this.stewardsBench = new Stewards(this.track, cars.length, this.stewardsWire, this.rng);
+      this.stewardsBench = new Stewards(this.track, cars.length, this.stewardsWire);
     }
     this.stewardsBench.update(cars, sessionTime, isRace, this.neutralisation !== 'none');
   }
