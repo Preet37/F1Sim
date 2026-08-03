@@ -495,6 +495,16 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - Deleting a branch one commit before its tip.
 - Completion notifications not always arriving — an agent finished and sat idle while
   counted as in-flight. **Check branch state directly rather than waiting.**
+- **Killed agents leave their work on anonymous branches and nobody ever looks.** On
+  2026-08-03 a sweep of `git worktree list` found `worktree-agent-aea9aeb446049f08b`
+  holding ~4,000 lines of finished people-graphics work (issues #22 and #18) that had
+  never been merged, **plus 299 lines of uncommitted probe** in its working tree — the
+  single hardest artefact to reconstruct, one `git worktree remove` from being gone.
+  A second branch held the full-distance retirement finding that issue #26 is built on.
+  Neither branch was named for its work, so `git branch -a` gave no clue either carried
+  anything. **Two rules out of this:** name the branch for the work, never
+  `worktree-agent-<hash>`; and before removing any worktree, run
+  `git status --porcelain` in it and read what comes back.
 
 ---
 
