@@ -106,6 +106,14 @@ const MESH_STEP = 2;
  */
 const SAME_ROAD_M = 5;
 
+/**
+ * Height difference below which two hits are the same piece of asphalt.
+ *
+ * A millimetre. The road is drawn as triangles and a ray through the edge two
+ * of them share is reported against both, which is not two surfaces.
+ */
+const COINCIDENT_M = 0.001;
+
 console.log('\n' + '='.repeat(102));
 console.log('BANKING — is a car placed on the asphalt that is DRAWN under it?');
 console.log('='.repeat(102));
@@ -176,13 +184,21 @@ for (const def of CIRCUITS) {
       origin.set(x, t.elevation[i] + 500, z);
       ray.set(origin, down);
       const hits = ray.intersectObject(road, false);
-      let asphalt = -Infinity;
-      let inWindow = 0;
+      // Two hits at the same height are one surface: a ray that passes exactly
+      // through the edge two triangles share is reported against both, and
+      // sampling on the mesh's own vertex rows puts a ray on an edge every
+      // time. Four of those, at the seam where the lap closes and at one node
+      // of Jeddah, were counted as overlapping asphalt until the heights were
+      // compared: 0.477 against 0.477. Separate surfaces differ.
+      const ys: number[] = [];
       for (const h of hits) {
         if (Math.abs(h.point.y - t.elevation[i]) > SAME_ROAD_M) continue;
-        inWindow++;
-        if (h.point.y > asphalt) asphalt = h.point.y;
+        if (ys.some((y) => Math.abs(y - h.point.y) <= COINCIDENT_M)) continue;
+        ys.push(h.point.y);
       }
+      const inWindow = ys.length;
+      let asphalt = -Infinity;
+      for (const y of ys) if (y > asphalt) asphalt = y;
       if (inWindow === 0) {
         misses++;
         if (!missDetail) missDetail = `${def.id} s=${s.toFixed(0)} lat=${lateral.toFixed(1)}`;
@@ -198,14 +214,10 @@ for (const def of CIRCUITS) {
       if (inWindow > 1) {
         overlaps++;
         circuitOverlaps++;
-        const gapTop = asphalt;
         let gapBottom = Infinity;
-        for (const h of hits) {
-          if (Math.abs(h.point.y - t.elevation[i]) > SAME_ROAD_M) continue;
-          if (h.point.y < gapBottom) gapBottom = h.point.y;
-        }
-        if (gapTop - gapBottom > worstOverlapM) {
-          worstOverlapM = gapTop - gapBottom;
+        for (const y of ys) if (y < gapBottom) gapBottom = y;
+        if (asphalt - gapBottom > worstOverlapM) {
+          worstOverlapM = asphalt - gapBottom;
           worstOverlapAt = `${def.id} s=${s.toFixed(0)}`;
         }
         continue;
