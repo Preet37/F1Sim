@@ -1168,8 +1168,8 @@ Three issues, one defect. **Work that exists, is right, and has no route into it
 pattern this file has recorded four separate times (`TIER_INFO.carPace` read by nothing,
 `alongsideLeft/Right` computed and read by nothing, `speakExchange` dead, the intro and the
 podium). What was different this time is that #62's rebuilt `probe:smoke` made it
-*measurable*: it parses the 20-entry `Screen` union out of `main.ts` itself and enforces a
-required set of routes, so "you cannot get there" is a named failure rather than a note.
+*measurable*: it parses the `Screen` union out of `main.ts` itself and enforces a required
+set of routes, so "you cannot get there" is a named failure rather than a note.
 
 | | before | now |
 |---|---|---|
