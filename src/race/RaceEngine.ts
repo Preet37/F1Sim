@@ -1282,7 +1282,11 @@ export class RaceEngine {
 
     for (let i = 0; i < this.cars.length; i++) {
       const car = this.cars[i];
-      if (car.retired) continue;
+      // A wreck is not stepped, so nothing else in this loop will refresh the
+      // pose the renderer interpolates FROM — and a stale one is drawn as a car
+      // sliding back and forth over its final step for the rest of the session.
+      // See `CarEntry.holdPose` and issue #58.
+      if (car.retired) { car.holdPose(); continue; }
       // Cars taking no part in this period: knocked out of an earlier segment
       // (Art. B2.4.2a-b), or entered and barred from running by Art. B4.3.2.
       // Both stay parked in their garage for the whole period, and both are
@@ -1411,6 +1415,10 @@ export class RaceEngine {
   }
 
   private holdOnGrid(car: CarEntry): void {
+    // A held car is not stepped either, and the same staleness applies: the
+    // three branches that call this all `continue` before the pose capture. See
+    // `CarEntry.holdPose`.
+    car.holdPose();
     // Hold the car stationary without letting the physics drift it.
     car.physics.velocity.set(0, 0);
     car.physics.yawRate = 0;
