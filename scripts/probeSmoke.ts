@@ -74,8 +74,11 @@
  *     rather than taking it on trust.
  *
  * Run: npm run probe:smoke                        ~11 min on a quiet machine
- *   SMOKE_FREE_S=0  required set only, no free walk — ~4 min, and it is the
- *                   whole of what can go red. Use this one under load.
+ *   SMOKE_FREE_S=0  required set only, no free walk — and it is the whole of
+ *                   what can go red. Use this one under load. Measured 240s at
+ *                   load average 5 and 567s at 48: this runs a real browser
+ *                   under a software rasteriser, so the figure is a statement
+ *                   about the machine as much as about the probe.
  *   SMOKE_DEPTH=n   how deep the free walk goes past the required routes (2)
  *   SMOKE_SHOTS=0   skip screenshots
  *   SMOKE_MAX=n     hard ceiling on distinct screens (120)
