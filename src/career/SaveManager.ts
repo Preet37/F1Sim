@@ -6,6 +6,7 @@ import {
 import {
   DEFAULT_GAMEPAD_SETTINGS, normaliseGamepadSettings, type GamepadSettings,
 } from '../input/GamepadProfile';
+import { DEFAULT_STEERING_FEEL } from '../input/SteeringFeel';
 import { DEFAULT_WEEKEND_OPTIONS, type WeekendOptions } from '../race/WeekendFormat';
 import {
   DEFAULT_GRAPHICS, normaliseGraphics, normaliseTier,
@@ -54,6 +55,15 @@ export interface GameSettings {
   speedSensitiveSteering: boolean;
   tractionAssist: boolean;
   brakingAssist: boolean;
+  /**
+   * Which keyboard steering feel is in use — a `SteeringFeelId`.
+   *
+   * Stored as a plain string rather than as the union so that a save written by
+   * a build offering a preset this one does not have loads instead of throwing;
+   * `steeringFeel()` falls back to the default on anything it does not know.
+   * See `src/input/SteeringFeel.ts` and issue #46.
+   */
+  steeringFeel: string;
   tiltSteering: boolean;
   /**
    * The render tier, or `auto` to let the device be measured.
@@ -137,6 +147,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   speedSensitiveSteering: true,
   tractionAssist: false,
   brakingAssist: false,
+  steeringFeel: DEFAULT_STEERING_FEEL,
   tiltSteering: false,
   // AUTO, and it stays auto. A first run must not be made worse for anybody:
   // auto now starts a phone at `medium` rather than pinning it at `low`, and

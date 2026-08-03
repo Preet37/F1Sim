@@ -6,6 +6,7 @@ import {
   BUTTON_ACTIONS, DEFAULT_GAMEPAD_SETTINGS,
   type ButtonAction, type GamepadSettings,
 } from './GamepadProfile';
+import { DEFAULT_STEERING_FEEL, STEERING_FEELS } from './SteeringFeel';
 
 /**
  * Unified input.
@@ -26,11 +27,39 @@ import {
 
 export type InputSource = 'keyboard' | 'gamepad' | 'touch' | 'tilt';
 
+/**
+ * What the physics is handed for a frame in which the digital wheel MOVED.
+ *
+ * `end` is the value the wheel finished the frame on, which is what this class
+ * has always published. `mean` is the time-weighted average of the wheel's
+ * position across the frame — the same trajectory, integrated rather than
+ * sampled at its right-hand edge.
+ *
+ * The distinction only exists because the car is a fixed-step solver fed one
+ * input per frame (the zero-order hold, mechanism B in `probe:framerate`'s
+ * closing note). A ramp sampled at the end of each frame is not the ramp; it is
+ * a staircase half a frame ahead of it, and the error is signed — which is
+ * exactly how a 30ms press at 15fps ends up worth 0.000m (the ramp buys 0.10 of
+ * lock and the 37ms of spring afterwards takes 0.20 back, and the frame's ONLY
+ * observation is the zero at the end). Publishing the mean makes the frame
+ * report what the wheel did rather than where it stopped.
+ *
+ * The wheel's own state (`targetSteer`) integrates identically either way. Only
+ * the number handed downstream changes.
+ */
+export type SteerPublishMode = 'end' | 'mean';
+
 export interface InputConfig {
   /** Steering rate for digital input, units per second. */
   keyboardSteerRate: number;
   /** How fast digital steering returns to centre. */
   keyboardCentreRate: number;
+  /**
+   * Whether a frame publishes the wheel's end position or its mean over the
+   * frame. See `SteerPublishMode`. Only affects digital (keyboard) steering —
+   * an analogue source has one sample per frame and no trajectory to average.
+   */
+  keyboardSteerPublish: SteerPublishMode;
   /** Pedal ramp rates for digital input. */
   keyboardThrottleRate: number;
   keyboardBrakeRate: number;
@@ -57,8 +86,13 @@ export interface InputConfig {
 }
 
 export const DEFAULT_INPUT_CONFIG: InputConfig = {
-  keyboardSteerRate: 3.4,
-  keyboardCentreRate: 5.5,
+  // The three steering-feel numbers come from the named preset rather than
+  // being written here, so that "which feel is the default" is one line in one
+  // file and every probe, the settings screen and the game read the same answer.
+  // See `src/input/SteeringFeel.ts` and issue #46.
+  keyboardSteerRate: STEERING_FEELS[DEFAULT_STEERING_FEEL].keyboardSteerRate,
+  keyboardCentreRate: STEERING_FEELS[DEFAULT_STEERING_FEEL].keyboardCentreRate,
+  keyboardSteerPublish: STEERING_FEELS[DEFAULT_STEERING_FEEL].keyboardSteerPublish,
   keyboardThrottleRate: 4.5,
   /**
    * Brake pedal ramp, pedal-fraction per second.
@@ -160,6 +194,36 @@ class HoldClock {
   get isDown(): boolean {
     return this.downAt >= 0;
   }
+}
+
+/**
+ * One `moveToward` segment, with the area under it.
+ *
+ * `moveToward` already gives the end point; what the mean-lock publish mode
+ * needs as well is the integral of the value over the segment, and the integral
+ * is not `(start + end) / 2 * t` in general because the value SATURATES: once it
+ * reaches the target it stops moving and sits there for the rest of the segment.
+ * Getting that wrong under-reports every held key that reaches full lock inside
+ * a frame, which at 15fps is most of them.
+ *
+ * Exactly two shapes, both closed-form and both exact — there is no quadrature
+ * here and nothing to tune:
+ *   - it does not arrive: a straight line from `cur` to `end`, area = mean x t.
+ *   - it arrives at t1 = |target - cur| / rate: a trapezium to t1 plus a
+ *     rectangle at `target` for the remaining t - t1.
+ */
+function rampIntegral(
+  cur: number, target: number, rate: number, t: number,
+): { end: number; area: number } {
+  if (t <= 0) return { end: cur, area: 0 };
+  const d = target - cur;
+  const travel = rate * t;
+  if (Math.abs(d) <= travel) {
+    const t1 = rate > 1e-12 ? Math.abs(d) / rate : 0;
+    return { end: target, area: ((cur + target) * 0.5) * t1 + target * (t - t1) };
+  }
+  const end = cur + (d > 0 ? travel : -travel);
+  return { end, area: (cur + end) * 0.5 * t };
 }
 
 /** A touch zone on screen, in normalised viewport coordinates. */
@@ -691,6 +755,16 @@ export class InputController {
     // gamepad" and supporting the player's gamepad: the profile knows that this
     // device's throttle is button 7 resting at 0 or axis 2 resting at +1, and
     // the code below does not have to.
+    /**
+     * What this frame hands the physics, when that is not simply where the
+     * wheel ended up.
+     *
+     * Only the keyboard branch ever writes it, and only under
+     * `keyboardSteerPublish === 'mean'`. Null means "publish `targetSteer`",
+     * which is what every source has always done.
+     */
+    let publishSteer: number | null = null;
+
     let gamepadSteer = 0;
     let gamepadThrottle = 0;
     let gamepadBrake = 0;
@@ -853,17 +927,33 @@ export class InputController {
       // through, so it reads "lock, then centring". See HoldClock.isDown — the
       // wrong order erases a short press entirely rather than rounding it.
       const steerRate = this.config.keyboardSteerRate;
+      // The wheel's trajectory across the frame is integrated as well as
+      // stepped, so the frame can report the mean it held rather than only the
+      // instant it ended on. `area` is units-of-lock x seconds; `span` is the
+      // seconds it covers, which is `dt` except in the pathological frame where
+      // both direction keys were down for most of it and the clamped portions
+      // overlap. Normalising by `span` rather than by `dt` keeps the published
+      // value a mean of something that actually happened in either case.
+      let area = 0;
+      let span = 0;
+      const seg = (target: number, rate: number, t: number): void => {
+        const r = rampIntegral(this.targetSteer, target, rate, t);
+        this.targetSteer = r.end;
+        area += r.area;
+        span += t;
+      };
       const ramp = (): void => {
-        if (tRight > 0) this.targetSteer = moveToward(this.targetSteer, 1, steerRate * tRight);
-        if (tLeft > 0) this.targetSteer = moveToward(this.targetSteer, -1, steerRate * tLeft);
+        if (tRight > 0) seg(1, steerRate, tRight);
+        if (tLeft > 0) seg(-1, steerRate, tLeft);
       };
       const centre = (): void => {
-        if (tCentre > 0) {
-          this.targetSteer = moveToward(this.targetSteer, 0, this.config.keyboardCentreRate * tCentre);
-        }
+        if (tCentre > 0) seg(0, this.config.keyboardCentreRate, tCentre);
       };
       if (this.holds.right.isDown || this.holds.left.isDown) { centre(); ramp(); }
       else { ramp(); centre(); }
+      if (this.config.keyboardSteerPublish === 'mean' && span > 1e-9) {
+        publishSteer = area / span;
+      }
 
       /** One pedal, same chronological ordering. */
       const pedal = (cur: number, tHeld: number, rate: number, downAtEnd: boolean): number => {
@@ -887,7 +977,7 @@ export class InputController {
     // Real steering racks are geared so full lock at speed is not available.
     // Applying it here rather than in the physics keeps the vehicle model honest
     // and makes the assist something the player can turn off.
-    let steer = clamp(this.targetSteer, -1, 1);
+    let steer = clamp(publishSteer ?? this.targetSteer, -1, 1);
     if (this.config.speedSensitiveSteering) {
       // Gentle, and deliberately much weaker than it looks like it should be.
       //

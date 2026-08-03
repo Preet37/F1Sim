@@ -108,7 +108,8 @@ function fireKey(type: 'keydown' | 'keyup', key: string, timeStamp = 0): void {
 installWindowStub();
 
 import { PHYSICS_DT, SimClock } from '../src/core/SimClock';
-import { DEFAULT_INPUT_CONFIG, InputController } from '../src/input/InputController';
+import { InputController } from '../src/input/InputController';
+import { applySteeringFeel, DEFAULT_STEERING_FEEL, steeringFeel } from '../src/input/SteeringFeel';
 import { VehiclePhysics, type EnvironmentState, type VehicleControls } from '../src/physics/VehiclePhysics';
 import { BASE_F1_SPEC } from '../src/physics/VehicleSpec';
 // The last section drives a real race on real geometry through the real camera
@@ -120,6 +121,30 @@ import { CIRCUITS } from '../src/data/tracks/circuits';
 
 /** The ceiling `SimClock` enforces. Not exported, so restated here. */
 const MAX_STEPS_PER_FRAME = 8;
+
+/**
+ * Which keyboard steering feel this run measures (issue #46).
+ *
+ * The whole question this file exists to answer — does the same press buy the
+ * same lock at every frame rate — is a property of the input path, and issue
+ * #46 gave the input path a switch. So the switch has to reach here too, or the
+ * probe would silently measure one configuration while the game ran another.
+ * `STEER_FEEL=classic npm run probe:framerate` re-measures the old feel.
+ */
+const FEEL_ID = process.env.STEER_FEEL ?? DEFAULT_STEERING_FEEL;
+const FEEL = steeringFeel(FEEL_ID);
+
+/**
+ * A controller configured for the feel under test.
+ *
+ * Every construction site in this file goes through it, so a run cannot end up
+ * half on one feel and half on another.
+ */
+function newInput(): InputController {
+  const input = new InputController();
+  applySteeringFeel(input.config, FEEL.id);
+  return input;
+}
 
 const ENV: EnvironmentState = {
   trackTempC: 40, airTempC: 25, wetness: 0, surfaceGrip: 1, airDensityRatio: 1, abrasion: 1,
@@ -359,7 +384,7 @@ function runCase(rate: RateCase, mv: Manoeuvre): RunResult {
   // A fresh controller per run: `targetSteer` is persistent state and a run
   // that inherited it would be measuring the previous manoeuvre.
   windowListeners.clear();
-  const input = new InputController();
+  const input = newInput();
   input.attach(stubElement());
 
   const physics = new VehiclePhysics(BASE_F1_SPEC, 'medium');
@@ -684,7 +709,7 @@ console.log('   InputController driven alone, d held for exactly 0.200s of wall 
 console.log('   ' + padr('rate', 10) + pad('targetSteer', 14) + pad('out.steer', 12));
 for (const rate of RATE_CASES) {
   windowListeners.clear();
-  const input = new InputController();
+  const input = newInput();
   input.attach(stubElement());
   const c = freshControls();
   const holdS = 0.2;
@@ -821,12 +846,14 @@ for (const rate of RATE_CASES) {
     const trials = 400;
     // What a perfectly timed press would buy. moveToward is linear until it
     // saturates at 1, and these presses are all well short of that.
-    const ideal = DEFAULT_INPUT_CONFIG.keyboardSteerRate * (pressMs / 1000);
+    // Read from the FEEL under test, not from the shipped default, or a
+    // `STEER_FEEL=heavy` run would be scored against a rack it is not using.
+    const ideal = FEEL.keyboardSteerRate * (pressMs / 1000);
 
     for (let k = 0; k < trials; k++) {
       const t0 = (k / trials) * period;
       windowListeners.clear();
-      const input = new InputController();
+      const input = newInput();
       input.attach(stubElement());
       const c = freshControls();
       let tMs = 0;

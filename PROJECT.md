@@ -171,10 +171,16 @@ src/
 scripts/                  ~40 probes and audit harnesses
   lib/keyboardRig.ts      THE PLAYER'S INPUT PATH, as a rig a probe can drive.
                           KeyboardEvent → InputController → SimClock → physics,
-                          off a simulated wall clock. Two measurements: `tapOnce`
-                          (one press, model-free) and `driveLane` (a closed-loop
-                          driver with a 250ms reaction, keyboard arm and
-                          analogue-wheel control arm). Shared by probe:handling
+                          off a simulated wall clock. Three measurements:
+                          `tapOnce` (one press, model-free), `driveLane` (a
+                          closed-loop driver with a 250ms reaction, keyboard arm
+                          and analogue-wheel control arm, on straights, corners
+                          and a sinusoidal CHICANE) and `steerStepResponse`
+                          (latency, time to full lock, unwind, flick — the input
+                          path alone, no car). Every one takes an `inputConfig`,
+                          which is how a steering-feel candidate is measured
+                          through the real controller rather than a copy of it.
+                          Shared by probe:handling and probe:steeringfeel
 docs/CAREER_MODE.md       Career design document
 reference/                GITIGNORED. Extracted reference frames (see §9)
 ```
@@ -200,7 +206,9 @@ Run `npm run` to list. The important ones:
 | `probe:qualiretire` | The Q1 accident, in a browser: nothing takes the screen over, nothing blurs the circuit, CONTINUE and SEE OUT are in the corner, every regulation string survives, and whichever way the player leaves the other nineteen have real times |
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:gearbox` | The gear a key press puts you in, and that you can get back out of it. Drives `KeyboardEvent → InputController → playerControls → VehiclePhysics` instead of hand-building a controls literal — which is exactly why `probe:drivability` and `probe:handling` could not have caught issue #45 |
-| `probe:handling` | Balance, turn-in and lift-off stability — **and, since #46, what one key press does and whether a keyboard driver can hold a lane at all.** No longer a pure reporter: 11 assertions, and it goes red on `main` |
+| `probe:handling` | Balance, turn-in and lift-off stability — **and, since #46, what one key press does and whether a keyboard driver can hold a lane at all.** No longer a pure reporter: 11 assertions. Seven lanes including a **chicane**, and a §6 that prints what the steering feel COSTS in milliseconds. `STEER_FEEL=classic` re-measures the pre-#46 feel |
+| `probe:steeringfeel` | **The feel decision, as a table.** Fifteen keyboard configurations × seven lanes × three frame rates against one fixed analogue-wheel control arm, plus latency, time-to-full-lock, flick and unwind. Reports; `probe:handling` judges |
+| `diag:chicane` | How the flick lane was chosen: 36 speed × g × period combinations against two stated requirements — the wheel arm must hold it, and it must catch a deliberately over-slowed rack |
 | `probe:drivability` | Turn-in, hands-still yaw stability, pedal margin, catchability, understeer gradient. **Since #46 it asserts the eight bars it had always printed beside its own summary** and exits 1 when it says the car is undrivable |
 | `probe:season` | 100 career-years |
 | `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
@@ -217,8 +225,12 @@ Run `npm run` to list. The important ones:
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
 
 **Known-failing, all pre-existing and documented:**
-- **`probe:handling` 4, `probe:drivability` 4, `probe:racingline` 3 — NEW, and new only in the
-  sense that these three probes can now fail at all.** Nothing was changed in `src/physics/`,
+- **`probe:handling` 1** (was 4). The steering-feel work took it to **10 ok / 1 failed** —
+  see §6, "Three candidates for the swerve". What remains is one assertion covering two
+  lanes: the 280 km/h straight (2.98m, a floor no candidate moves and nobody has diagnosed)
+  and the 2.6g/280 km/h corner (4.83m, which the old feel left the road on entirely).
+- **`probe:drivability` 4, `probe:racingline` 3 — NEW, and new only in the
+  sense that these probes can now fail at all.** Nothing was changed in `src/physics/`,
   `src/track/` or `src/ai/` on the branch that added them; every number they report was true
   on `main` before and was being printed and ignored. Two of the three had no assertions
   whatsoever. Full breakdown in §6 and §7 under issue #46. **These are the swerve.**
@@ -773,6 +785,12 @@ passes is worse than no probe. These were those probes, and that was the finding
   passes: nothing spins, turn-in is 0.025–0.083s against a 0.35s bar, the front axle
   saturates first at all four speeds, and a lift at the limit settles at 3.4–3.7° of
   sideslip. The car is fine and the control is not.
+
+  **This table is now HISTORY, and it is reproducible on demand.** The three candidates
+  were swept and one ships as the default — see "Three candidates for the swerve" below.
+  Everything above is what `STEER_FEEL=classic npm run probe:handling` still prints, to
+  the digit; the shipped default reads **0.87 / 1.62 / 2.98 / 0.93 / 0.36 / 4.83** on the
+  same six lanes and leaves the road on none of them.
 - **The racing line is still over-promising, on three circuits, with a driver in the loop.**
   `probe:racingline`'s section 3 was explicitly *"reported, not asserted"* on the reasonable
   grounds that past the point the colour turns, what happens belongs to the driver. Right
@@ -798,6 +816,99 @@ passes is worse than no probe. These were those probes, and that was the finding
   the car **1.09m at 15fps and 0.23m at 144fps**. Note the two breaks fail *different*
   checks — the restored ramp actually makes `no press is silently deleted` pass, because
   over-crediting a low frame rate is the opposite error to deleting the press.
+
+### Three candidates for the swerve, measured — and the one that ships (issue #46)
+
+PR #64 found the mechanism and deliberately stopped there: *"this is a feel decision and
+should not be taken unilaterally in the same PR that built the ruler."* This is the
+decision, taken from measurements.
+
+**`probe:steeringfeel`** flies **fifteen configurations down seven lanes at three frame
+rates each** — 315 closed-loop runs — against the analogue-wheel control arm, and
+`probe:handling` §5 gained the seventh lane. **`probe:handling` 7 ok / 4 failed → 10 ok /
+1 failed.**
+
+| candidate | corner | strt | ratio | 2.6g | lat90 | full | flick | unwind | chicane | 30ms@15fps |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **classic** 3.4/5.5/end — what shipped | **off** | 2.89 | 187× | **LEFT** | 83ms | 300 | 367 | **183** | 1.92 | **0.000 dead** |
+| 1. return 4.5 | off | 2.95 | 132× | LEFT | 83 | 300 | 367 | 233 | 1.87 | 0.000 dead |
+| 1. return 3.4 (symmetric) | 13.90 | 2.92 | 74× | held | 83 | 300 | 367 | 300 | 1.81 | 0.000 dead |
+| 1. return 2.8 | off | 3.06 | 53× | LEFT | 83 | 300 | 367 | 367 | 1.77 | 0.000 dead |
+| 1. return 2.2 | 3.64 | 3.08 | 5.5× | held | 83 | 300 | 367 | 450 | 2.43 | 0.097 / 182% |
+| 2. ramp 2.8 | off | 2.91 | 79× | LEFT | 100 | 350 | 450 | 183 | 1.94 | 0.000 dead |
+| 2. ramp 2.2 | off | 3.27 | 111× | LEFT | 117 | 450 | 567 | 183 | 2.85 | 0.000 dead |
+| 2. ramp 1.7 | off | 3.33 | 166× | LEFT | 150 | 583 | 733 | 183 | 3.04 | 0.000 dead |
+| 3. mean lock | off | 3.06 | 137× | LEFT | 83 | 300 | 383 | 200 | 1.81 | 0.170 / 10.5% |
+| 1+3 return 3.4 + mean | 8.77 | 2.90 | 43× | held | 83 | 300 | 383 | 300 | 2.19 | 0.210 / 3.7% |
+| **1+3 return 2.8 + mean — SHIPS** | **4.83** | 2.98 | **16×** | **held** | **83** | **300** | **383** | **367** | **1.90** | **0.232 / 4.0%** |
+| 1+3 return 2.5 + mean | 3.87 | 2.93 | 7.8× | held | 83 | 300 | 383 | 417 | 2.63 | 0.247 / 3.9% |
+| 1+3 return 2.2 + mean (`calm`) | 3.67 | 2.89 | 6.9× | held | 83 | 300 | 383 | 467 | 2.21 | 0.266 / 3.6% |
+| 2+3 ramp 2.2 + mean | off | 3.06 | 83× | LEFT | 117 | 467 | 583 | 200 | 2.43 | 0.095 / 16.4% |
+
+Lane numbers are the **worst over 30, 60 and 144fps**; `off` means at least one lane left
+the road. `corner`/`strt`/`chicane` are metres peak-to-peak; the milliseconds are through
+the input path alone at 200 km/h with no car in the loop.
+
+**The headline, on the lane the issue is written about — the 2.0g corner at 200 km/h:
+7.67m of keyboard wander against 0.12m with a wheel becomes 0.36m. The ratio goes 61.9× →
+3.0×.** At 30 and 144fps the same lane reads 0.46m and 1.88m against the old feel's 4.54m
+and 21.63m.
+
+**Four things the sweep found that were not the expected answers.**
+
+1. **NO SINGLE CANDIDATE IS ENOUGH. Every one of the three, alone, still leaves the road**
+   — slowing the return alone at 2.8 departs at 144fps, slowing the ramp makes the closed
+   loop worse at every rate, and mean-lock alone departs at 144fps. The default is a
+   COMBINATION and the sweep is what says so.
+2. **A slow return does not cost the flick.** That was the expected cost and it is wrong:
+   pressing the opposite key ramps straight through centre **at the rack rate** and never
+   consults the return rate at all, so a full direction change is 367→383ms whether the
+   return is 5.5 or 2.2. What a slow return actually costs is **letting go** — unwinding
+   from full lock with no key down goes **183ms → 367ms**. That is the real handicap and
+   it is the price of the fix.
+3. **Slowing the RAMP is the one candidate that is simply worse.** It is charged on every
+   input (turn-in 83→150ms, flick 367→733ms), it is the only family that puts the chicane
+   through the 2.0m bar on its own, and it did not fix the closed loop at any rate.
+4. **A faster machine gets MORE of the sawtooth, not less.** The frame's zero-order hold is
+   a low-pass filter whose corner frequency *is* the frame rate, so 144fps is the worst
+   column for almost every row (old feel: 4.54m at 30fps, 21.63m at 144). This is why the
+   first draft of the sweep — 60fps only — produced a non-monotonic column in which a
+   symmetric wheel was *worse* than the asymmetric one, and why every number above is a
+   worst-of-three.
+
+**What ships and how it is switched.** `src/input/SteeringFeel.ts` holds six named presets
+— one per candidate in isolation, two combinations, and `classic`, which is byte-for-byte
+what the game had. **The default is `settled` (rack 3.4, return 2.8, publish mean)** and it
+is chosen on a stated rule: it is the slowest unwind that still holds the chicane inside
+the 2.0m bar at all three frame rates. `calm` is one step further (return 2.2, better on
+every corner, chicane 2.21) and is offered rather than defaulted for exactly that reason.
+Settings → Driving → **Keyboard steering**, applied live, persisted, with the measurement
+printed under it.
+
+**The mean-lock mechanism, because it is the half that is not obvious.** `InputController`
+integrates the wheel's trajectory across the frame as well as stepping it, and publishes
+`area / span` instead of the end point. Two closed-form segment shapes (`rampIntegral`),
+exact, nothing to tune, and `targetSteer` itself is unchanged — only the number handed
+downstream moves. It is what fixes the deleted press: the 30ms press at 15fps ramps the
+wheel up for 30ms and centres it for the remaining 37ms, so the value *at the end of the
+frame* is exactly zero while the mean over the frame is not.
+
+**Proved the instrument still catches a broken car.** `muRear × 0.80` on `STEER_FEEL=classic`
+still gives **3 ok / 8 failed**, exactly as it did before this work. On the new default it
+gives **5 ok / 6 failed** — still red, still failing all four vehicle checks and both §5
+lane bars; the two that now pass are §4's frame-rate pair, which pass because the fix is
+real and which a rear-grip break has no reason to touch.
+
+**Proved the refactor is neutral.** `STEER_FEEL=classic npm run probe:handling` is
+**byte-identical to the pre-change baseline on every number** — the six lanes, the fifteen
+taps, the frame-rate table — with only the new chicane row and the new §6 added.
+
+**Costs, honestly.** Unwinding from full lock by letting go is 2.0× slower (183→367ms). A
+press is worth more than it was — an 80ms press at 200 km/h moves the car 1.57m against
+1.15m — because the lock persists longer. `probe:framerate`'s off-line deviation improves
+on nine of eleven manoeuvres (worst 9.15m → 7.56m) and gets worse on one already flagged
+chaotic (21.41m → 25.92m at 15fps on the held 2Hz slalom). And **the 280 km/h straight does
+not move at all** — see §7.
 
 ### The gearbox: one key press, locked in fourth for the session (issue #45)
 The player pressed a digit while *"trying to run something on the careers page"* and drove
@@ -1510,15 +1621,24 @@ measurement passes every version of it that is wrong.
   and 0.12m with a wheel — 62×** — because the wheel springs back to centre at 5.5 units/s
   against a 3.4 units/s ramp, so a steady mid-corner lock is a 0–0.71 sawtooth where 0.253
   was wanted. **The swerve is the input path.**
-- **What has NOT been done about it, and why.** Nothing in `src/input/` was changed. The
-  candidate fixes — slowing the return-to-centre, slowing the ramp, or publishing the
-  time-weighted mean lock over a frame instead of its end value — all change how the car
-  feels to every player on every device, and the right way to choose between them is to
-  measure each against `probe:handling` §5 and then put the winner in front of the user.
-  The instrument now exists to do that; the change itself is a feel decision and is not
-  one to take unilaterally in the same PR that built the ruler. **#46 stays open on the fix.**
-- **Also still open: the 30ms press that is worth nothing at 15fps.** Same root cause as
-  mechanism B in `probe:framerate`'s own closing note. `probe:handling` §4 fails on it.
+- ~~**What has NOT been done about it**~~ — **the three candidates have now been measured
+  and one of them ships as the default.** See §6, "Three candidates for the swerve".
+  `probe:handling` **7 ok / 4 failed → 10 ok / 1 failed**. **What is still open is the
+  remaining failure**, and it is two lanes:
+  - **the 280 km/h STRAIGHT, 2.6–3.3m of wander in every one of the fifteen configurations
+    swept and at all three frame rates.** No candidate moves it and none of them is close;
+    the wheel arm holds 0.02–0.11m on the same lane. This is a floor the return rate, the
+    rack rate and the publish mode are all irrelevant to, and it has not been diagnosed.
+    The prime suspect is the driver model rather than the car — `LOCK_BAND = 0.015` in
+    `keyboardRig.ts` is a deadband the KEYBOARD arm has and the wheel arm does not, and
+    0.015 of lock at 280 km/h is worth about 0.38g — but that is a hypothesis and nobody
+    has measured it. **Do not touch it without checking the wheel arm first.**
+  - **the 2.6g/280 km/h corner at 4.83m.** The old feel left the road here entirely; the
+    default now holds it at every frame rate but still wanders more than a car's width.
+- ~~**Also still open: the 30ms press that is worth nothing at 15fps.**~~ **Fixed**, by the
+  mean-lock half of the default: **0.000m → 0.232m at 15fps**, frame spread **dead/182% →
+  4.0%** against a 15% bar, and `probe:framerate`'s edge section goes from *"AND SOME
+  PRESSES ARE STILL LOST"* to *"no press is ever lost"*. See §6.
 - **Still unexamined:** the track-surface and centreline work that landed 2026-08-03
   (`TrackMesh.ts`, `TrackSpline.ts`) has not been tied to the swerve either way; #54's
   un-interpolated heights are somebody else's branch; and nothing here has been driven on a
