@@ -635,6 +635,41 @@ wrong ground.
   every `NaN > threshold` is false, and it prints `VERDICT: the two geometries are
   comparable` on zero circuits examined. No `process.exit` in the file either.
 
+### B9 — `regress:career` cannot start at all when `FORCE_COLOR` is set — **fixed, see C10**
+**Confidence: certain. Nearly reported as a product bug; it is not one.**
+**File:** `scripts/regressCareerFlow.mjs:51`
+
+```js
+const m = String(b).match(/localhost:(\d+)/);
+```
+
+The harness runs `vite --port 0` and reads the assigned port off the banner. Vite
+prints that port **bold** — the bytes are literally
+`localhost:\x1b[1m5199\x1b[22m/` — so the regex finds nothing, `PORT` stays 0
+forever, and the run dies on `vite did not answer in 60s (port never announced)`
+with a perfectly healthy dev server listening beside it.
+
+Vite drops the colour when stdout is not a TTY, which is why this ever worked. It
+does **not** drop it when `FORCE_COLOR` is set, which most CI runners set and
+which every agent shell on this machine has (`FORCE_COLOR=3`). So the entire
+`npm run regress` target dies at this step in exactly the environment an
+automated sweep runs in.
+
+**How it was nearly mis-reported, which is the point of writing it up.** It
+surfaced as `regress:career EXIT=1` in the sweep — a probe not on the
+known-failing list, i.e. apparently a new regression from another agent's
+front-door work, which had just landed. The first re-run failed too, at load 6.7,
+which ruled out the contention explanation the brief warns about. Only unsetting
+`FORCE_COLOR` and re-running showed it passing every assertion. **It was the
+measuring instrument, not the thing measured.**
+
+`regressSessionExit.mjs:81` is unaffected — it matches the contiguous substring
+`'ready in'` and uses a fixed port — and it passed in the same sweep, which is
+the detail that made "environment, not product" worth testing rather than
+assuming.
+
+---
+
 ### B8 — Remaining tautologies and coverage gaps
 **Confidence: medium-high.**
 
@@ -715,6 +750,10 @@ Small, safe and inside the QA function's own files. Nothing in `src/` was touche
    `probeCurvature`, `probeStewards`, `probeTiers`.
 8. **`scripts/raceSweep.ts`** now sets `process.exitCode = 1` when any race in
    the sweep fails (finding B1). It had none.
+10. **`scripts/regressCareerFlow.mjs:51`** now strips ANSI before matching the
+    port (finding B9), so `npm run regress` survives `FORCE_COLOR` being set.
+    Verified both ways: it failed with `FORCE_COLOR=3` before the change and
+    passes with `FORCE_COLOR=3` after it.
 9. **`scripts/probeCameras.ts:114`** — `dir.update(1 / 60, …)` while sampling
    every 8th physics step (1/15 s) is now `dir.update(8 * PHYSICS_DT, …)`
    (finding B6). The probe still passes on all eleven circuits with the honest
@@ -798,6 +837,9 @@ are not meaningful. Results:
 |---|---|
 | `validate:tracks`, `validate:physics`, `validate:qualifying`, `validate:world`, `validate:difficulty`, `validate:gamepad`, `validate:limits` | pass |
 | `probe:curvature`, `probe:handling`, `probe:framerate`, `probe:racingline`, `probe:turnin`, `probe:brakebalance`, `probe:attrition` | pass — **but see B2/B7**: several of these cannot fail |
+| `probe:damage`, `probe:recovery`, `probe:neutralplayer`, `probe:pitlimiter`, `probe:cameras`, `probe:reverse`, `probe:suspension`, `probe:carrig` | pass |
+| `regress:laps`, `regress:results`, `regress:exit` | pass |
+| `regress:career` | **failed in the sweep, and it was my instrument, not the game** — see B9. Passes on every assertion once `FORCE_COLOR` is unset, and passes with it set after the C10 fix |
 | `validate:race` | pass (killed twice by the OS under load before completing; passed when re-run alone) |
 | `validate:integrity` | killed under load, not re-run to completion |
 | `probe:racesweep` | **fail — 13 of 55 races, see A2b.** Newly visible: it had no exit code until this pass |

@@ -48,7 +48,14 @@ const server = spawn(
   { stdio: ['ignore', 'pipe', 'pipe'] },
 );
 server.stdout.on('data', (b) => {
-  const m = String(b).match(/localhost:(\d+)/);
+  // Strip ANSI before matching. Vite prints the port bold — the banner is
+  // literally `localhost:\x1b[1m5173\x1b[22m/` — so `/localhost:(\d+)/` finds
+  // nothing, `PORT` stays 0 and this harness dies on "port never announced"
+  // with the dev server running perfectly beside it. Vite drops the colour when
+  // stdout is not a TTY, which is why this worked; it does NOT drop it when
+  // FORCE_COLOR is set, which most CI runners and every agent shell on this
+  // machine do. The failure looked exactly like a career-mode regression.
+  const m = String(b).replace(/\x1b\[[0-9;]*m/g, '').match(/localhost:(\d+)/);
   if (m) PORT = Number(m[1]);
 });
 const shutdown = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } };
