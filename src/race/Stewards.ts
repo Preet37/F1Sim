@@ -145,25 +145,28 @@ const CONVERGENCE_WINDOW_S = 0.7;
  * Below this there is no inside and no outside, so DSG Points A and B have
  * nothing to say and the contact falls through to the following-car test.
  *
- * MEASURED, AND IT USED TO BE FAR TOO WIDE. At 0.9m this was quietly throwing
- * away most of the corner contacts in a race. Over a calendar, thirty-eight
- * incidents ended in no further action and twenty-four of them died in the
- * following-car test having never reached a guideline at all — "not on the same
- * line" fourteen times and "side by side, no corner to own" ten — against ONE
- * that reached the corner-priority test and was declined on its own margin. The
- * bench was not being careful; it was not looking.
+ * 0.9m was too wide on the merits — two cars actually in contact are at most
+ * about two metres apart across the road and usually much less, and a car half a
+ * metre up the inside is exactly what Points A and B are about. There is no
+ * minimum lateral separation anywhere in the guidelines. Forty centimetres is a
+ * fifth of a car, which is about the width at which "inside" starts to mean
+ * anything at all.
  *
- * Two cars actually in contact are at most about two metres apart across the
- * road and are usually much less, and a car half a metre up the inside on the
- * way into a corner is exactly what Points A and B are about. There is no
- * minimum lateral separation anywhere in the guidelines, and there should not
- * be one here either beyond the width needed for "inside" to mean anything.
- * Forty centimetres is a fifth of a car.
+ * A CORRECTION, because this constant was changed on a wrong diagnosis and the
+ * wrong diagnosis is the more useful thing to record. Over a calendar, thirty-
+ * eight incidents ended in no further action and twenty-four of them died in
+ * the following-car test having never reached a guideline — "not on the same
+ * line" fourteen times, "side by side, no corner to own" ten. This looked like
+ * the gate that was throwing them away. It was not: narrowing it from 0.9 to
+ * 0.4 changed the calendar by exactly nothing, the same forty-four incidents
+ * with the same forty-four outcomes, because those contacts never reached this
+ * test. They were not in a corner at all.
  *
- * Widening the door does not make the bench freer with penalties, because it is
- * not the door that decides: `CLEAR_PRIORITY_M` and `CLEAR_CONVERGENCE_M` still
- * have to be cleared, and a case that cannot clear them comes out as a racing
- * incident WITH A STATED REASON instead of as a shrug about a straight.
+ * They were in braking zones, which is where racing contact happens and which
+ * the corner window does not cover. See the note above `MIN_CORNER_CURVATURE`
+ * for what happens if you extend it to reach them, and why the honest answer is
+ * to decline those cases rather than to judge them with a test built for a
+ * different moment.
  */
 const SAME_LINE_M = 0.4;
 
