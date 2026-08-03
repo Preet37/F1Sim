@@ -520,7 +520,7 @@ export class CarStage {
     // width leaves a phone-shaped hole with a small car floating in the middle
     // of it. The margin closes as the box narrows.
     const room = this.aspect >= 1 ? 0.78
-      : 0.78 + (1 - Math.min(1, Math.max(0.3, this.aspect))) * 0.24;
+      : 0.78 + (1 - Math.min(1, Math.max(0.3, this.aspect))) * 0.34;
     const distW = (this.halfSpan / room) / (tanY * Math.max(this.aspect, 0.35));
     const distH = (this.halfHeight / 0.62) / tanY;
     this.fitDistance = THREE.MathUtils.clamp(Math.max(distW, distH), 6, 40);

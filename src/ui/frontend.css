@@ -511,6 +511,15 @@
   .idchip { grid-row: 2; }
   .mm-right { grid-row: 2; }
   .mm-version { display: none; }
+  /* A PORTRAIT PHONE HAS HEIGHT TO SPARE AND THE CAR CANNOT USE IT. The car is
+     framed to the WIDTH — that is the dimension a car occupies — so on a tall
+     narrow screen a hero band that takes every remaining pixel leaves a small
+     car floating in the middle of a large hole. Capped, the car band is tight
+     under the identity chip, the leftover goes above the grid slots, and the
+     one sentence on the page comes back because there is now room for it. */
+  .mm { justify-content: space-between; }
+  .mm-hero { flex: 0 1 46vh; min-height: 210px; }
+  .mm-blurb { display: block; }
 }
 
 @media (prefers-reduced-motion: reduce) {
