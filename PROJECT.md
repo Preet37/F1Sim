@@ -235,6 +235,8 @@ Run `npm run` to list. The important ones:
   failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
   hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
   .hud-notices over mirror[R1] by 26×72px`. Both pre-existing and untouched by that work.
+  **Re-confirmed byte-for-byte on 2026-08-03** by the #13/#38 routing branch, which touches
+  no HUD code: still 2 + 2, same two sentences.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
@@ -245,6 +247,16 @@ Run `npm run` to list. The important ones:
   the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
   cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
   in §7. **This is a probe that got stricter, not a feature that broke.**
+- ~~`shoot:frontend`~~ — **was red on `main` and nobody had recorded it, and the cause was
+  not the front end.** It exited 1 on every run with three identical lines, one per
+  viewport: `console Failed to load resource: the server responded with a status of 404`.
+  The text of a console error is the same for a missing icon as for a missing module, so
+  the report said nothing about which. Measured on 2026-08-03 by listening on `response`
+  and printing every non-2xx URL the front end produces: **exactly one, `404
+  /favicon.ico`.** `index.html` references no icon, `public/` holds only `textures/`, and
+  Chrome asks every document for one. Filtered on the URL — the same exclusion
+  `probe:smoke` has carried since #62 — and any surviving console error now prints its URL.
+  **Same species as `probe:fieldsize` below: a probe going red without anybody noticing.**
 - `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
   regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
