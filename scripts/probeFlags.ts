@@ -151,6 +151,14 @@ class Measurement {
   }
 
   readonly scFormUpGaps: number[] = [];
+  /**
+   * How far the leader was from the Line when the green came out, metres.
+   *
+   * Kept separately per regime because the regulations put them in different
+   * places — see the note where they are recorded.
+   */
+  readonly scGreenToLineM: number[] = [];
+  readonly vscGreenToLineM: number[] = [];
   /** Largest lead-lap queue seen while forming up. */
   queueSize = 0;
   readonly phaseSeconds = new Map<string, number>();
@@ -390,7 +398,29 @@ function runScenario(
     }
 
     const nowRegime = rc.neutralisation !== 'none' ? rc.neutralisation : 'green';
-    if (nowRegime !== regime) { regime = nowRegime; regimeStartedAt = engine.time; }
+    if (nowRegime !== regime) {
+      // WHERE THE GREEN CAME OUT. A VSC may end anywhere on the lap: "at any
+      // time between 10 and 15 seconds later, 'VSC' on the FIA light panels will
+      // change to green and drivers may continue racing immediately" (Art. 56.7
+      // / B5.12.4). A safety car period may not — it ends at the Line, and the
+      // regulation names the place: "as the leader approaches the Line the
+      // yellow flags will be withdrawn and a green flag and/or green light panel
+      // will be displayed at the Line" (Art. 55.15 / B5.13.6).
+      //
+      // The distinction is the player's report, and until it was fixed the game
+      // had the two the same: "the vsc ending can happen whenever but safety car
+      // ends at the end of the lap". So this records the leader's distance along
+      // the lap at the instant of every green, and the two regimes are asserted
+      // separately below.
+      const leaderNow = engine.standings[0];
+      if (nowRegime === 'green' && leaderNow) {
+        const toLine = engine.track.length - leaderNow.s;
+        if (regime === 'sc-ending' || regime === 'safety-car') m.scGreenToLineM.push(toLine);
+        else if (regime === 'vsc') m.vscGreenToLineM.push(toLine);
+      }
+      regime = nowRegime;
+      regimeStartedAt = engine.time;
+    }
     for (let i = 0; i < sectorSince.length; i++) {
       const sig = rc.signalForSector(i);
       if (sig !== sectorSignal[i]) { sectorSignal[i] = sig; sectorSince[i] = engine.time; }
@@ -719,6 +749,15 @@ console.log('\nVIRTUAL SAFETY CAR (Bahrain, 10 laps — benign incident, Art. 56
 
   const drop = reportPace(m, 'GREEN', 'VSC', 'VSC vs green');
   const ratio = reportLapRatio(m, 'VSC', 'VSC lap time');
+  if (m.vscGreenToLineM.length > 0) {
+    // The contrast case, reported rather than asserted. A VSC ends "at any time
+    // between 10 and 15 seconds" after the warning and the cars are wherever
+    // they are (Art. 56.7 / B5.12.4); there is nothing to require of the place,
+    // and requiring one would be importing the safety car's rule.
+    console.log('  ' + 'green shown with the leader'.padEnd(32) +
+      m.vscGreenToLineM.map((d) => d.toFixed(0) + 'm').join(', ') +
+      ' from the Line (unconstrained — Art. 56.7 / B5.12.4)');
+  }
   console.log('  ' + 'passes under the VSC'.padEnd(32) + m.illegalIn('VSC'));
   console.log('  ' + 'passes as the flag came out'.padEnd(32) + m.transitionalPasses);
   console.log('  ' + 'passes under a local yellow'.padEnd(32) + m.illegalIn('YEL') + ' / ' +
@@ -793,6 +832,38 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
   console.log('  phases:');
   for (const [phase, secs] of m.phaseSeconds) {
     console.log('    ' + phase.padEnd(16) + secs.toFixed(1) + 's');
+  }
+
+  // WHERE THE SAFETY CAR PERIOD ENDED.
+  //
+  // "As the Safety Car is approaching the Pit Entry Road the SC boards will be
+  // withdrawn and, other than on the last lap of the TTCS, as the leader
+  // approaches the Line the yellow flags will be withdrawn and a green flag
+  // and/or green light panel will be displayed at the Line" — 2026 Section B
+  // Art. B5.13.6 / 2025 Sporting Regs Art. 55.15, final paragraph.
+  //
+  // The green is at the LINE. It is the one thing about a safety car period that
+  // a VSC does not share — Art. 56.7 / B5.12.4 puts the VSC's green wherever the
+  // cars happen to be, ten to fifteen seconds after the warning — and the game
+  // had them the same until it was reported: "the vsc ending can happen whenever
+  // but safety car ends at the end of the lap".
+  //
+  // The window is generous because the article's own word is APPROACHES: the
+  // flag is out before the leader gets there, or nobody could see it and go.
+  const SC_GREEN_WINDOW_M = 400;
+  if (m.scGreenToLineM.length > 0) {
+    const worst = Math.max(...m.scGreenToLineM);
+    console.log('  ' + 'green shown with the leader'.padEnd(32) +
+      m.scGreenToLineM.map((d) => d.toFixed(0) + 'm').join(', ') + ' from the Line');
+    if (worst > SC_GREEN_WINDOW_M) {
+      fail(
+        `a safety car period went green with the leader ${worst.toFixed(0)}m from the Line — ` +
+        `Art. 55.15 / B5.13.6 shows the green AT the Line, and that is the whole ` +
+        `difference between a safety car and a VSC`,
+      );
+    }
+  } else {
+    fail('no safety car period ended during the measurement — the withdrawal is not covered');
   }
 
   console.log('  ' + 'lapped cars at the wave'.padEnd(32) +
