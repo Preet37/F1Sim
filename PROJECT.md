@@ -788,9 +788,9 @@ against every threshold and so stops binding silently rather than throwing.
     the bottom eighth to the bottom fifth, which is why it was not moved.
   - **1 is a driver's-eye pane reading 22.5% of frame width at Monaco** against a 22.0
     bound. A band question, not a geometry question, but it has not been re-derived.
-- **A RACE that the player retires from is still classified from where it stood.**
-  Found while fixing the same defect in qualifying (§6) and **deliberately not
-  fixed here**. `Continue` on the race corner bar calls `finishSession`
+- **A RACE that the player retires from is still classified from where it stood.
+  Issue #56.** Found while fixing the same defect in qualifying (§6) and
+  **deliberately not fixed there**. `Continue` on the race corner bar calls `finishSession`
   immediately, which records `engine.standings` for a race that is still being
   run — measured by `probe:qualiretire`, which prints the leader's lap against
   the race distance at that moment and does not assert on it. It is the same
@@ -800,6 +800,15 @@ against every threshold and so stops binding silently rather than throwing.
   machinery to fix it exists — `Game.runOutToTheFlag` — and `runOutProgress`
   already declines to give a race an early exit, so a race would have to be run
   in full. **Nobody is on this.**
+- **`regress:exit` (issue #25) does not reproduce, but the harness is still
+  load-fragile.** Run three times on 2026-08-03: the first died on its warm-up
+  navigation at `page.goto: Timeout 120000ms exceeded` at load average 29,
+  before reaching an assertion; the second and third were **16 of 16 ok**,
+  including every one of the six failures the issue lists. The pause menu
+  (`src/ui/PauseMenu.ts` + `Game.setPaused`) shares no code path with the
+  retirement panel. The issue's `0.0666… → 0.0666…` is one physics step between
+  samples, which is a loaded machine rather than a broken Resume button. Left
+  open against the robustness problem rather than the logic one.
 - **`probe:qualiretire` needs a quiet machine.** It boots a dev server and drives
   Chrome under swiftshader, where the simulation runs at roughly a tenth of
   realtime, so the retirement delay alone is 20–40s of wall clock and the whole
