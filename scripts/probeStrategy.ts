@@ -260,8 +260,34 @@ console.log(`  of those, ${free.length} were free to follow the plan ` +
 check(sawCue, 'the driver was never told about the stop the plan asks for');
 check(cueText.includes(String(target)) || cueText.includes('THIS LAP'),
   `the cue "${cueText}" does not name the planned lap ${target}`);
-check(stopped >= Math.ceil(running.length * 0.75),
-  `only ${stopped} of ${running.length} running cars pitted at all`);
+// Asked of the cars that got far enough to be DUE a stop, not of everyone still
+// running — those are different questions and only the first one is about the
+// strategist.
+//
+// This assertion used to read `stopped >= 75% of running` and it passed for the
+// wrong reason. At seed 7 the old weather model made this Silverstone race wet
+// (measured: wetness 0.56 at the flag), so 16 of 18 cars pitted — 8 following
+// their plan and 8 more driven in by rain. The rewritten model draws this seed
+// dry, those 8 emergency stops correctly stop happening, and a floor calibrated
+// against them fails while the strategist is doing better than before.
+//
+// Measured across that change: laps completed are unchanged (median 16 -> 17,
+// max 18 -> 19), so there is no pace regression underneath it; and of the cars
+// that reached their own planned lap, 8 of 8 pitted on both sides.
+// `>` and not `>=`: a car whose planned lap is the lap it is on when the window
+// closes has not yet had a lap in which to serve the stop. Measured — the three
+// cars this excludes were all at exactly `lap === plannedLap` with the stop
+// still ahead of them, which is a boundary artefact of the 2400s window and not
+// a strategist that ignored its plan.
+const due = running.filter((c) => plannedLap[c.index] > 0 && c.lap > plannedLap[c.index]);
+const dueStopped = due.filter((c) => c.pitStops >= 1).length;
+console.log(`  ${due.length} cars reached their planned lap; ${dueStopped} of them stopped ` +
+  `(${stopped} of ${running.length} running cars stopped for any reason)`);
+
+check(due.length >= 6,
+  `only ${due.length} cars reached their planned lap in the window — too few to judge the strategist by`);
+check(dueStopped >= Math.ceil(due.length * 0.9),
+  `only ${dueStopped} of ${due.length} cars that reached their planned lap actually stopped`);
 
 // The AI follows its plan, and the assertion now says so.
 //

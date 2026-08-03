@@ -63,13 +63,17 @@ for (let i = 0; i < standings.length; i++) {
   const cells = standingsCells(engine, car, ahead, leader);
 
   check(cells.pos === String(car.position), `row ${i}: position ${cells.pos} != ${car.position}`);
+  check(cells.code === car.driver.code.toUpperCase(), `row ${i}: code not upper-cased`);
   check(cells.surname === car.driver.lastName.toUpperCase(), `row ${i}: surname not upper-cased`);
   check(cells.first === car.driver.firstName, `row ${i}: first name missing`);
   check(cells.team === car.team.name, `row ${i}: team name missing`);
   check(cells.tyre.length > 0, `row ${i}: no compound`);
 
   if (i === 0) {
-    check(cells.gap === 'LEADER', `leader gap should read LEADER, got ${cells.gap}`);
+    // The leader's cell names the COLUMN. Every other row in it is a figure,
+    // so a word there reads as the heading it is — and restating "leader" beside
+    // a position that already says 1 is the panel saying it twice.
+    check(cells.gap === 'Interval', `leader gap should read Interval, got ${cells.gap}`);
   } else if (!car.retired && !car.disqualified) {
     const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
     if (lapsBehind > 0) {
@@ -81,7 +85,10 @@ for (let i = 0; i < standings.length; i++) {
         `row ${i}: interval ${cells.gap} is not a signed gap`);
     }
   }
-  if (car.retired) check(cells.gap === 'DNF', `a retired car must read DNF, got ${cells.gap}`);
+  // `Out`, not `DNF`. The row is already dimmed and already at the foot of the
+  // order; three capitals of jargon on top of that is the third statement of the
+  // same fact.
+  if (car.retired) check(cells.gap === 'Out', `a retired car must read Out, got ${cells.gap}`);
 }
 console.log(`running order: ${standings.length} rows, lapped car present: ${sawLapped}`);
 
@@ -133,11 +140,16 @@ const VIEWPORTS: [string, number, number, number][] = [
 
 for (const [name, w, h, clearance] of VIEWPORTS) {
   const fit = towerFit(w, h);
-  const rowH = fit.compact ? 17 : 29;
-  // Session eyebrow, position line, fastest-lap capsule, column rule, padding —
-  // and the 5px break under the pinned leader. Compact drops the eyebrow and
-  // the column rule, which is where the difference between the two comes from.
-  const chrome = fit.compact ? 63 : 106;
+  const rowH = fit.compact ? 17 : 26;
+  // Header, flag band, column rule, the fastest-lap strip along the foot, the
+  // panel's padding, and the 5px break under the pinned leader. Compact drops
+  // the circuit name and the column rule, which is where the difference between
+  // the two comes from.
+  //
+  // MEASURED WITH THE FLAG BAND OUT, which is the tallest the panel ever is.
+  // A budget written for the quiet frame is a budget that overflows on the one
+  // frame the driver most needs the panel to be readable.
+  const chrome = fit.compact ? 76 : 118;
   const bottom = 10 + chrome + fit.rows * rowH + 5;
 
   check(fit.rows >= 4, `${name}: ${fit.rows} rows is not a running order`);

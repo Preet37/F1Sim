@@ -11,6 +11,7 @@ import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
 import { EnvProbe } from './EnvProbe';
+import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
@@ -73,6 +74,16 @@ const EXPOSURE = { day: 1.35, dusk: 1.4, night: 1.7 };
 /** Never scale below this fraction of native resolution. */
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 1.0;
+
+/**
+ * What the distance goes toward in the rain.
+ *
+ * A flat, faintly blue grey. Rain does not have a colour of its own; what it
+ * does is remove the colour from everything more than a few hundred metres
+ * away, and a wet circuit photographed at dusk has the same grey horizon a wet
+ * circuit photographed at noon does.
+ */
+const WET_FOG_COLOUR = new THREE.Color(0x8f97a1);
 
 /**
  * How the dynamic resolution scaler decides. See `updateResolutionScale`.
@@ -742,11 +753,79 @@ export class Renderer {
     // every chase and onboard shot. Exponential-squared fog has no onset at
     // all: it is smooth from the camera outwards, which is also how air
     // actually behaves.
-    const wet = engine.weather.wetness;
+    // Built once and then MUTATED by `applyWeather`, not rebuilt. `applyAmbience`
+    // runs at session load and the weather changes for the rest of the session,
+    // so the density and the colour below are starting values rather than
+    // settled ones.
+    this.fogColour = fogColour;
+    this.scene.fog = new THREE.FogExp2(fogColour, 1.9 / 1700);
+    this.applyWeather(engine, true);
+  }
+
+  /** The ambience's own fog colour, before the weather greys it down. */
+  private fogColour = 0xc6d8e8;
+  /** Wetness the scene was last dressed for, so the work can be skipped. */
+  private dressedWetness = -1;
+
+  /**
+   * Pushes the weather into the scene. Called every frame.
+   *
+   * THIS IS THE BUG THE WHOLE VISUAL HALF OF THIS TASK TURNED ON. Every
+   * wetness-aware thing in the renderer — the fog distance, the cloud cover,
+   * the environment probe's flattened sun and ground mirror, the effects
+   * director's spray trigger — was already written, correct, and read exactly
+   * once, in `loadSession`. A race that started dry and rained on lap ten
+   * rendered as a dry race for its entire duration, which is precisely what the
+   * screenshot that prompted this work showed: a HUD reading HEAVY RAIN over a
+   * dry-looking circuit.
+   *
+   * Quantised to a fiftieth so the expensive parts — the environment probe's
+   * re-render, the pooling map — do not run on a wetness that has moved by
+   * 0.0001 since the previous frame. `EnvProbe.apply` quantises again on its own
+   * account; this is about not calling it at all.
+   */
+  private applyWeather(engine: RaceEngine, force = false): void {
+    const w = engine.weather;
+    const wet = clamp01(w.wetness);
+    const q = Math.round(wet * 50) / 50;
+    if (!force && q === this.dressedWetness) return;
+    this.dressedWetness = q;
+
+    // Visibility. A wet circuit is a hazy one — the spray of twenty-two cars is
+    // the largest part of it and the low cloud is the rest.
     const far = 1700 - wet * 900;
-    // Chosen so the fog is most of the way to opaque at `far`, matching what
-    // the linear version's far plane used to mean.
-    this.scene.fog = new THREE.FogExp2(fogColour, 1.9 / far);
+    const fog = this.scene.fog as THREE.FogExp2 | null;
+    if (fog) {
+      fog.density = 1.9 / far;
+      // Toward a flat, bright grey as it soaks. A wet day has no colour in the
+      // distance whatever the time of day, and keeping the dry ambience's fog
+      // hue at full strength under heavy rain left a warm dusk haze behind a
+      // rainstorm.
+      fog.color.setHex(this.fogColour).lerp(WET_FOG_COLOUR, wet * 0.55);
+    }
+
+    // Cloud. The same expression `applyAmbience` used, now live.
+    const skyMat = this.sky?.material as THREE.ShaderMaterial | undefined;
+    if (skyMat) {
+      const night = engine.track.def.ambience === 'night';
+      const base = clamp01(0.35 + wet * 0.6);
+      skyMat.uniforms.cloudAmount.value = night ? base * 0.3 : base;
+    }
+
+    // The road, and everything else the detail shader owns.
+    //
+    // `dryLine` is how much further the racing line has dried than the road
+    // around it, which is the quantity that draws a dry line. Taken as the
+    // measured difference between the two water fields rather than as a
+    // function of time, so the stripe on screen appears exactly when and where
+    // the simulation says the grip has come back.
+    const surf = w.surface;
+    const dryLine = clamp01((surf.meanOffWater - surf.meanLineWater) / 0.25);
+    setSurfaceWetness(wet, dryLine);
+
+    // The probe: a flattened sun and a ground mirror term, both already
+    // implemented and both previously frozen at the session's opening wetness.
+    this.envProbe.apply(this.scene, this.ambience, wet);
   }
 
   /** Player preference, kept across sessions. */
@@ -969,6 +1048,7 @@ export class Renderer {
    */
   render(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     this.updateResolutionScale(dt);
+    this.applyWeather(engine);
     this.drainImpacts(engine);
     this.drainDebris(engine);
     this.syncCars(dt, engine, focusCar);
@@ -1019,6 +1099,11 @@ export class Renderer {
     this.projectFocus(focusCar, cam);
     this.post.update(
       dt, focusCar.physics.speedMs, this.focusUv.x, this.focusUv.y, this.nightBias, cam,
+      // The grade's own weather term: desaturation and a lifted black point.
+      // Driven by what is FALLING as much as by what is lying, because the
+      // visibility loss in the rain is airborne — spray and low cloud — and it
+      // clears well before the road does.
+      Math.max(engine.weather.wetness * 0.7, engine.weather.rainRate),
     );
     // Keep the sky centred on the camera so it never clips or parallaxes.
     if (this.sky) this.sky.position.copy(cam.position);

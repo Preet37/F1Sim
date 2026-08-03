@@ -35,7 +35,7 @@ import { PHYSICS_DT } from '../src/core/SimClock';
  * more than its share, and `balance` (positive = rear closer to its limit) says
  * the same thing directly.
  */
-const env = { trackTempC: 40, airTempC: 25, wetness: 0, airDensityRatio: 1, abrasion: 1 };
+const env = { trackTempC: 40, airTempC: 25, wetness: 0, surfaceGrip: 1, airDensityRatio: 1, abrasion: 1 };
 
 /** Slip angle at which the magic formula peaks: sin(C*atan(B*a)) maxes at B*a = 1.978. */
 const peakSlipDeg = (1.978 / BASE_F1_SPEC.corneringStiffnessFront) * 57.3;

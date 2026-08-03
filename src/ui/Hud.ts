@@ -1,5 +1,6 @@
 import { clamp01, formatDelta, formatGap, formatLapTime, MS_TO_KPH } from '../core/MathUtils';
 import { getCompound } from '../data/tires';
+import { liveGapCell } from '../race/Classification';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
@@ -25,33 +26,49 @@ import { TrackMap } from './TrackMap';
 /**
  * One line of the running order.
  *
- * Six cells, in the shape a broadcast timing panel uses: a team-colour bar, the
- * position, the team's mark, the driver's name over their team's name, then the
- * gap and the best lap right-aligned in the figure face. The old row was a
- * three-letter code and a number — `HAL  +0.985` — which is all a 224px column
- * had space for, and which asks the viewer to have memorised twenty
- * abbreviations before the graphic tells them anything.
+ * Seven cells, in the order a broadcast timing panel puts them: a team-colour
+ * bar, the position — in a filled red cell for the leader — the team's own
+ * generated mark in its livery colour, the three-letter code in heavy white
+ * caps, the gap, the tyre compound as a single colour-coded letter, and the
+ * status badges in a column of their own.
+ *
+ * THE BADGE COLUMN IS THE POINT OF THIS PASS. "You can see who has set the
+ * fastest lap, who's got a penalty, who's out, what tire compounds etc." —
+ * four facts about twenty cars, all of them on one panel, none of them needing
+ * a word. A purple square with a stopwatch is the fastest lap, a red square
+ * with an exclamation is a penalty — the same glyph the penalty banner ends
+ * with, deliberately, so the two read as one system — and a chequered square is
+ * a car that has finished. A retired car keeps its place at the foot of the
+ * order with the whole row dimmed and `Out` where the gap was.
+ *
+ * WHY THE CODE AND NOT THE NAME. The row this replaces set the driver's given
+ * name and surname over their team's name, on the argument that an
+ * abbreviation means nothing to somebody who has not learnt the field. What it
+ * cost was the rest of the row: three lines of type in a 336-pixel panel
+ * leaves no column for the tyre, none for the badges, and half the field's
+ * worth of rows. The identification is not gone — it has moved to the mark
+ * beside the code, which is in the team's own livery colour, and the two
+ * together are what a broadcast tower identifies a car by.
  *
  * `seen` is the whole performance story. Every cell is compared before it is
  * written, so a frame in which nothing overtakes anybody writes nothing at all
  * — and the mark, which is a five-element SVG, is only rebuilt when the car in
- * the row changes team, which happens once a session at most.
+ * the row changes team, which happens once a session at most. The badges are
+ * three elements whose display is toggled off one diffed string, so a car
+ * taking the fastest lap costs one comparison and one class write.
  */
 interface Row {
   root: HTMLElement;
   bar: HTMLElement;
   pos: HTMLElement;
   mark: HTMLElement;
-  first: HTMLElement;
-  surname: HTMLElement;
-  team: HTMLElement;
+  code: HTMLElement;
   gap: HTMLElement;
-  best: HTMLElement;
-  lastLap: HTMLElement;
   tyre: HTMLElement;
+  badges: HTMLElement;
   seen: {
-    pos: string; first: string; surname: string; team: string; tyre: string;
-    gap: string; best: string; lastLap: string; markTeam: string; colour: string;
+    pos: string; code: string; tyre: string; gap: string;
+    markTeam: string; colour: string; badges: string; state: string;
   };
 }
 
@@ -103,8 +120,14 @@ export class Hud {
   private fuel!: HTMLElement;
   private fuelDelta!: HTMLElement;
   private lapCounter!: HTMLElement;
-  private position!: HTMLElement;
+  private lapTotal!: HTMLElement;
+  private lapBlock!: HTMLElement;
   private sessionName!: HTMLElement;
+  private rowsBox!: HTMLElement;
+  /** The flag band under the tower's header, and its two lines. */
+  private flagBand!: HTMLElement;
+  private flagBandLabel!: HTMLElement;
+  private flagBandCause!: HTMLElement;
   private fastestBar!: HTMLElement;
   private fastestFirst!: HTMLElement;
   private fastestWho!: HTMLElement;
@@ -161,6 +184,10 @@ export class Hud {
   private weatherPill!: HTMLElement;
   private weatherTemps!: HTMLElement;
 
+  /** The noticeboard, top centre. Race control and nothing else. */
+  private controlStack!: HTMLElement;
+  /** Bulletins on the noticeboard, oldest first. */
+  private controlCards: HTMLElement[] = [];
   /** Cards on screen, oldest first. */
   private alertCards: HTMLElement[] = [];
   /** The pit advice the pop-up last spoke, so it speaks once per change. */
@@ -182,6 +209,15 @@ export class Hud {
   /** Lights lit last frame, so each transition fires exactly once. */
   private litCount = -1;
   private rows: Row[] = [];
+  /**
+   * The tower's shape — row count and whether the flag band is out.
+   *
+   * The only two things that change its HEIGHT, and the rail below it is laid
+   * out against that height. Kept as a string so one compare covers both and
+   * `Hud.update` measures nothing on the frames where neither has moved.
+   */
+  private lastTowerShape = '';
+  private flagBandShown = false;
 
   private buttonBar!: HTMLElement;
   private cameraButton!: HTMLElement;
@@ -265,26 +301,40 @@ export class Hud {
     // are in, and it is how every broadcast graphic does it.
     this.teamStripe = this.el('hud-stripe', this.tower);
 
-    // The header block. What a broadcast leaves on screen permanently is not
-    // just the order — it is the session, the lap, and who holds the fastest
-    // lap. The last of those was nowhere in this game: the purple was on the
-    // sector tiles of the player's own panel and told you nothing about the
-    // other nineteen cars.
-    this.sessionName = this.el('tower-session', this.tower, '');
+    // --- The header -------------------------------------------------------
+    //
+    // The series mark, then the lap. Two facts and no more: a broadcast tower
+    // header says which championship you are watching and how far through the
+    // race it is, and the lap is the one number on the whole panel that is read
+    // from across a room, so it is set big and the total is set small beside
+    // it.
+    //
+    // The mark is this game's own, and it is the only wordmark anywhere in the
+    // HUD. No real series mark is reproduced.
     const towerHead = this.el('tower-head', this.tower);
-    this.position = this.el('tower-position', towerHead, 'P1');
-    this.lapCounter = this.el('tower-lapcount', towerHead, 'LAP 1/50');
+    this.el('tower-series', towerHead).innerHTML = 'F1<b>SIM</b>';
+    this.sessionName = this.el('tower-session', towerHead, '');
+    const lapBlock = this.el('tower-lapblock', towerHead);
+    this.lapBlock = lapBlock;
+    this.el('tower-lapword', lapBlock, 'LAP');
+    this.lapCounter = this.el('tower-lapnow', lapBlock, '1');
+    this.el('tower-lapbar', lapBlock, '/');
+    this.lapTotal = this.el('tower-laptotal', lapBlock, '50');
 
-    // The fastest lap, in its own outlined capsule. Purple, because purple is
-    // the outright best in this system and the fastest lap is the definition
-    // of it — the same purple the holder's name is drawn in below.
-    this.fastestBar = this.el('tower-fastest', this.tower);
-    this.el('fastest-label', this.fastestBar, 'Fastest lap');
-    this.el('fastest-dot', this.fastestBar, '·');
-    this.fastestFirst = this.el('fastest-first', this.fastestBar, '');
-    this.fastestWho = this.el('fastest-who', this.fastestBar, '');
-    this.fastestTime = this.el('fastest-time', this.fastestBar, '');
-    this.fastestBar.dataset.probe = 'fastest';
+    // --- The flag band ----------------------------------------------------
+    //
+    // WHERE FLAG STATE BELONGS, and it took two complaints to get here. A
+    // yellow flag used to be a strip across the top centre of the frame, over
+    // the road, in the one place every camera in this game is pointed. It is
+    // race control talking about the session, and the panel that says what the
+    // session is doing is this one — so the flag is a full-width band directly
+    // under the header, in the flag's own colour, with a second line naming the
+    // cause. The centre of the frame keeps exactly one thing: the start.
+    this.flagBand = this.el('tower-flagband', this.tower);
+    this.flagBand.dataset.probe = 'flag';
+    this.flagBandLabel = this.el('flagband-label', this.flagBand, '');
+    this.flagBandCause = this.el('flagband-cause', this.flagBand, '');
+    this.flagBand.style.display = 'none';
 
     // The column header. It shares its grid template with every row below it
     // through one custom property, so a column cannot drift from its label —
@@ -292,11 +342,28 @@ export class Hud {
     // would eventually undo.
     const cols = this.el('tower-cols', this.tower);
     for (const [cls, label] of [
-      ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-driver', 'Driver'],
-      ['c-gap', 'Gap'], ['c-best', 'Best'], ['c-lap', 'Lap'], ['c-tyre', ''],
+      ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-code', 'Driver'],
+      ['c-gap', 'Gap'], ['c-tyre', ''], ['c-badge', ''],
     ] as [string, string][]) {
       this.el('tower-col ' + cls, cols, label);
     }
+
+    // The rows get a box of their own so the fastest-lap strip can sit under
+    // them: rows are appended as the field is sized, and a footer appended
+    // before them would end up in the middle of the order.
+    this.rowsBox = this.el('tower-rows', this.tower);
+
+    // The fastest lap, along the foot of the panel. The badge in the order
+    // above says WHO holds it, which is what the eye wants mid-corner; this
+    // says what it is, which is the number you read on the straight. Purple,
+    // because purple is the outright best in this system and the fastest lap is
+    // the definition of it.
+    this.fastestBar = this.el('tower-fastest', this.tower);
+    this.el('fastest-label', this.fastestBar, 'Fastest lap');
+    this.fastestFirst = this.el('fastest-first', this.fastestBar, '');
+    this.fastestWho = this.el('fastest-who', this.fastestBar, '');
+    this.fastestTime = this.el('fastest-time', this.fastestBar, '');
+    this.fastestBar.dataset.probe = 'fastest';
 
     // --- Top right: sectors and lap times ----------------------------------
     this.buildTimingPanel();
@@ -434,14 +501,34 @@ export class Hud {
     // --- Weather bug -------------------------------------------------------
     this.buildWeather();
 
-    // --- Flag --------------------------------------------------------------
-    // The one graphic still allowed in the middle of the frame, and only
-    // because it has been moved hard against the TOP edge, where every camera
-    // in this game is looking at sky. A flag is the single loudest thing race
-    // control can say and it earns the centre column; nothing else does.
+    // --- The start ----------------------------------------------------------
+    // The one graphic still allowed in the middle of the frame, and the only
+    // one that has ever earned it: five red lights and the count to them. Every
+    // flag this used to carry is a band across the top of the running order
+    // now — see `updateFlag`.
     this.flagBanner = this.el('hud-flag', this.root, '');
-    this.flagBanner.dataset.probe = 'flag';
+    // `start`, not `flag`: the flags moved into the tower band, which carries
+    // the `flag` token now. This element is the countdown and nothing else.
+    this.flagBanner.dataset.probe = 'start';
     this.flagBanner.style.display = 'none';
+
+    // --- The noticeboard, top centre --------------------------------------
+    //
+    // TWO VOICES, TWO PLACES. "The FIA doesn't say shit but give notifications,
+    // the rest of the stuff happens between the team principal and the driver."
+    // Race control is a noticeboard — flags, incidents, verdicts, session state
+    // — impersonal, terse, addressed to nobody. The pit wall is a person who
+    // knows this driver. They were already drawn as two different systems; they
+    // are now in two different parts of the frame, which is where a broadcast
+    // puts them and is the difference between a split you can see and a split
+    // you have to read.
+    //
+    // The top centre is free because the flag left it: see `updateFlag`. It is
+    // the one band of the picture every camera in this game is pointing at sky
+    // in, and a bulletin is the one thing that has to be seen by somebody who
+    // is looking at the road.
+    this.controlStack = this.el('hud-controls', this.root);
+    this.controlStack.dataset.probe = 'controls';
 
     // --- The left rail -----------------------------------------------------
     this.buildNotices();
@@ -598,25 +685,25 @@ export class Hud {
   /** Builds the timing tower rows once, sized to the field. */
   private ensureRows(n: number): void {
     while (this.rows.length < n) {
-      const root = this.el('tower-row', this.tower);
+      const root = this.el('tower-row', this.rowsBox);
       const bar = this.el('tower-bar', root);
       const pos = this.el('tower-pos', root, '');
       const mark = this.el('tower-mark', root);
-      const who = this.el('tower-who', root);
-      const nameLine = this.el('tower-name', who);
-      const first = this.el('tower-first', nameLine, '');
-      const surname = this.el('tower-surname', nameLine, '');
-      const sub = this.el('tower-sub', who);
-      const team = this.el('tower-team', sub, '');
+      const code = this.el('tower-code', root, '');
       const gap = this.el('tower-gap', root, '');
-      const best = this.el('tower-best', root, '');
-      const lastLap = this.el('tower-lastlap', root, '');
       const tyre = this.el('tower-tyre', root, '');
+      // Three badges, built once and shown by class. Creating an element in the
+      // frame a car takes the fastest lap is a layout in the frame something
+      // interesting happened, which is the worst frame to spend one in.
+      const badges = this.el('tower-badges', root);
+      this.el('tbadge tb-fast', badges).appendChild(stopwatchSvg());
+      this.el('tbadge tb-pen', badges, '!');
+      this.el('tbadge tb-fin', badges).appendChild(chequerSvg());
       this.rows.push({
-        root, bar, pos, mark, first, surname, team, gap, best, lastLap, tyre,
+        root, bar, pos, mark, code, gap, tyre, badges,
         seen: {
-          pos: '', first: '', surname: '', team: '', tyre: '',
-          gap: '', best: '', lastLap: '', markTeam: '', colour: '',
+          pos: '', code: '', tyre: '', gap: '',
+          markTeam: '', colour: '', badges: '', state: '',
         },
       });
     }
@@ -901,6 +988,7 @@ export class Hud {
       this.radioPitShown = false;
       this.hideRadioCard(true);
       for (const c of this.alertCards.slice()) this.dismissAlert(c, true);
+      for (const c of this.controlCards.slice()) this.dismissControl(c, true);
       // The field's driver codes, so `relayed` knows which three-letter words
       // are people. Built once per session; the field does not change inside
       // one, and guessing instead turns "the" into a driver.
@@ -978,16 +1066,22 @@ export class Hud {
     setClass(this.tyreTempRear, 'hud-tyretemp ' + tempClass(p.rearTires.thermalBalance));
 
     // --- Position and timing ---------------------------------------------
-    setText(this.position, 'P' + player.position);
     setStyle(this.teamStripe, 'background',
       '#' + player.team.colour.toString(16).padStart(6, '0'));
-    setText(this.sessionName, engine.config.name.toUpperCase() + ' · ' + engine.track.def.name.toUpperCase());
+    setText(this.sessionName, engine.track.def.name.toUpperCase());
     const totalLaps = engine.config.laps || engine.track.def.raceLaps;
     if (engine.config.kind === 'race') {
-      setText(this.lapCounter, 'LAP ' + Math.min(player.lap + 1, totalLaps) + '/' + totalLaps);
+      setText(this.lapCounter, String(Math.min(player.lap + 1, totalLaps)));
+      setText(this.lapTotal, String(totalLaps));
+      setClass(this.lapBlock, 'tower-lapblock');
     } else {
+      // A practice or qualifying session is a clock, not a lap count. The big
+      // slot carries whichever of the two this session is measured in, so the
+      // number read from across a room is always the one that matters.
       const remaining = Math.max(0, engine.config.durationS - engine.time);
-      setText(this.lapCounter, engine.config.name + '  ' + formatClock(remaining));
+      setText(this.lapCounter, formatClock(remaining));
+      setText(this.lapTotal, '');
+      setClass(this.lapBlock, 'tower-lapblock is-clock');
     }
 
     const clock = lapClock(engine, player);
@@ -1051,50 +1145,48 @@ export class Hud {
     this.updateTouch(input);
   }
 
+  /**
+   * The flag, in the tower — and the start, in the middle of the frame.
+   *
+   * THE COMPLAINT, TWICE. A yellow flag used to be a strip across the top
+   * centre of the picture. That is the one place every camera in this game is
+   * pointed, and a flag is not a thing that happens for a second and goes: it
+   * stands for as long as the hazard does, so it stood on the road for as long
+   * as the hazard did.
+   *
+   * A flag is race control talking about the SESSION, and the panel that says
+   * what the session is doing is the running order. So it is a band across the
+   * top of the tower now, in the flag's own colour, with a second line naming
+   * the cause — because a driver shown a yellow wants to know what is round the
+   * corner, and `YELLOW FLAG` alone does not say.
+   *
+   * The centre column keeps exactly one graphic, and it is the one thing that
+   * has to be in the middle of the frame because it is the thing you are
+   * looking at the middle of the frame for: the start.
+   */
   private updateFlag(engine: RaceEngine, player: CarEntry): void {
-    const rc = engine.raceControl;
-    let text = '';
-    let cls = 'hud-flag';
-
     if (!engine.started) {
-      text = engine.startLights > 0 ? 'LIGHTS OUT IN ' + Math.ceil(engine.startLights) : 'GO';
-      cls = 'hud-flag flag-start';
-    } else if (rc.sessionFlag === 'chequered') {
-      text = 'CHEQUERED FLAG';
-      cls = 'hud-flag flag-chequered';
-    } else if (rc.sessionFlag === 'red') {
-      text = 'RED FLAG';
-      cls = 'hud-flag flag-red';
-    } else if (rc.neutralisation === 'safety-car') {
-      text = 'SAFETY CAR';
-      cls = 'hud-flag flag-sc';
-    } else if (rc.neutralisation === 'vsc') {
-      text = 'VIRTUAL SAFETY CAR';
-      cls = 'hud-flag flag-vsc';
-    } else if (player.blueFlag) {
-      text = 'BLUE FLAG — LET THEM BY';
-      cls = 'hud-flag flag-blue';
-    } else {
-      const local = rc.flagAt(player.s);
-      if (local === 'double-yellow') { text = 'DOUBLE YELLOW'; cls = 'hud-flag flag-yellow'; }
-      else if (local === 'yellow') { text = 'YELLOW FLAG'; cls = 'hud-flag flag-yellow'; }
-    }
-
-    // Penalties take precedence — the player needs to know immediately.
-    const pen = player.penalties[player.penalties.length - 1];
-    if (!text && pen && !pen.served && pen.kind === 'drive-through') {
-      text = 'DRIVE THROUGH PENALTY';
-      cls = 'hud-flag flag-red';
-    }
-    if (player.disqualified) { text = 'DISQUALIFIED'; cls = 'hud-flag flag-red'; }
-
-    if (text) {
+      const text = engine.startLights > 0
+        ? 'LIGHTS OUT IN ' + Math.ceil(engine.startLights) : 'GO';
       setText(this.flagBanner, text);
-      setClass(this.flagBanner, cls);
+      setClass(this.flagBanner, 'hud-flag flag-start');
       setStyle(this.flagBanner, 'display', 'block');
     } else {
       setStyle(this.flagBanner, 'display', 'none');
     }
+
+    const band = flagBandState(engine, player);
+    if (band) {
+      setText(this.flagBandLabel, band.label);
+      setText(this.flagBandCause, band.cause);
+      setClass(this.flagBand, 'tower-flagband fb-' + band.tone);
+      setStyle(this.flagBand, 'display', 'flex');
+    } else {
+      setStyle(this.flagBand, 'display', 'none');
+    }
+    // The band changes the panel's height, and the notice rail below it is laid
+    // out against that height. See the shape check at the end of `updateTower`.
+    this.flagBandShown = band !== null;
   }
 
   /** The weather bug: one class and two strings, both diffed. */
@@ -1197,7 +1289,7 @@ export class Hud {
    */
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
-    const fit = towerFit(window.innerWidth, window.innerHeight);
+    const fit = towerFit(window.innerWidth, window.innerHeight, this.mirrorFloorPx);
     // THE TOWER GIVES WAY TO THE PIT SHEET on a short screen. 390 pixels of
     // height leaves the notice rail a 94-pixel band between the running order
     // and the tyre panel, and no arrangement of a tyre choice and a wing choice
@@ -1209,7 +1301,11 @@ export class Hud {
     // written inline by the loop below, and an inline style beats any rule a
     // media query can offer. The tower's own row count is the only honest place
     // to say "no rows".
-    const squeezed = this.pitSheetOpen && window.innerHeight <= 470;
+    // ...and under the mirror cameras for the same reason: the band the rail
+    // has left, once it has lifted clear of the glass, is not one a tyre
+    // choice and a wing choice fit in either.
+    const squeezed = this.pitSheetOpen &&
+      (window.innerHeight <= 470 || this.mirrorFloor > 0);
     const shown = squeezed ? 0 : Math.min(standings.length, fit.rows);
     this.ensureRows(shown);
 
@@ -1267,12 +1363,8 @@ export class Hud {
       const seen = row.seen;
 
       if (seen.pos !== cells.pos) { row.pos.textContent = cells.pos; seen.pos = cells.pos; }
-      if (seen.first !== cells.first) { row.first.textContent = cells.first; seen.first = cells.first; }
-      if (seen.surname !== cells.surname) { row.surname.textContent = cells.surname; seen.surname = cells.surname; }
-      if (seen.team !== cells.team) { row.team.textContent = cells.team; seen.team = cells.team; }
+      if (seen.code !== cells.code) { row.code.textContent = cells.code; seen.code = cells.code; }
       if (seen.gap !== cells.gap) { row.gap.textContent = cells.gap; seen.gap = cells.gap; }
-      if (seen.best !== cells.best) { row.best.textContent = cells.best; seen.best = cells.best; }
-      if (seen.lastLap !== cells.lastLap) { row.lastLap.textContent = cells.lastLap; seen.lastLap = cells.lastLap; }
       if (seen.tyre !== cells.tyre) {
         row.tyre.textContent = cells.tyre;
         row.tyre.style.color = '#' + getCompound(car.compound).colour.toString(16).padStart(6, '0');
@@ -1289,17 +1381,36 @@ export class Hud {
         seen.markTeam = car.team.id;
       }
 
-      // Purple is the outright best in this system, and both of these are one:
-      // the position at the head of the order, and the fastest lap anyone has
-      // set. Nothing else in the tower is coloured.
+      // The badge column: three facts, three squares, one diffed string.
+      const badges = statusBadges(car, sessionBest);
+      if (seen.badges !== badges) {
+        setClass(row.badges, 'tower-badges' + badges);
+        seen.badges = badges;
+      }
+
       // A rule under the pinned leader, because the row below it is not the
       // car behind it. A list that silently skips eight places is a lie.
-      setClass(row.root, 'tower-row'
+      const state = 'tower-row'
         + (pinLeader && i === 0 ? ' is-pinned' : '')
         + (car.position === 1 ? ' is-leader' : '')
         + (car === player ? ' is-player' : '')
-        + (car.retired || car.disqualified ? ' is-out' : '')
-        + (sessionBest > 0 && car.bestLapTime === sessionBest ? ' is-fastest' : ''));
+        + (car.retired || car.disqualified ? ' is-out' : '');
+      if (seen.state !== state) { row.root.className = state; seen.state = state; }
+    }
+
+    // WHERE THE RAIL STARTS. The notice rail used to begin at half the
+    // viewport height, which is a guess about where the running order ends —
+    // and it is wrong the moment the tower changes size, which it now does
+    // whenever the camera picks up the mirrors. So the tower measures itself
+    // and the rail is laid out against the answer.
+    //
+    // One layout read, on the frames where the row count or the flag band has
+    // actually changed. `Hud.update` does not measure anything.
+    const shape = shown + '|' + (this.flagBandShown ? 'f' : '');
+    if (shape !== this.lastTowerShape) {
+      this.lastTowerShape = shape;
+      const bottom = Math.round(this.tower.getBoundingClientRect().bottom);
+      if (bottom > 0) this.root.style.setProperty('--rail-top', bottom + 8 + 'px');
     }
   }
 
@@ -1458,9 +1569,7 @@ export class Hud {
     this.root.classList.toggle('pit-open', open);
     if (open) {
       this.hideRadioCard(true);
-      while (this.alertCards.length > this.maxAlerts()) {
-        this.dismissAlert(this.alertCards[0], true);
-      }
+      this.fitRail();
     }
   }
 
@@ -1479,13 +1588,82 @@ export class Hud {
    * where that string has actually changed, which is a handful per race.
    */
   private enforceRailBudget(): void {
+    // The viewport is in the key because a rotation changes the band without
+    // changing anything on it, and a rail that only re-checks itself when a
+    // card arrives is a rail that stays wrong until the next message.
     const key = this.neutralCue.style.display + '|' + this.pitCue.style.display + '|' +
-      this.radioCard.style.display + '|' + (this.pitSheetOpen ? 'pit' : '');
+      this.radioCard.style.display + '|' + (this.pitSheetOpen ? 'pit' : '') + '|' +
+      this.lastTowerShape + '|' + window.innerWidth + 'x' + window.innerHeight +
+      '|' + this.mirrorFloor;
     if (key === this.lastPinned) return;
     this.lastPinned = key;
-    while (this.alertCards.length > this.maxAlerts()) {
-      this.dismissAlert(this.alertCards[0], true);
+    this.fitRail();
+  }
+
+  /**
+   * Empties the rail until what is in it fits the band it has.
+   *
+   * THE BUDGET, MEASURED RATHER THAN PREDICTED. `maxAlerts` divides the band by
+   * the shortest a card is ever laid out at, which is a good estimate and was
+   * the right answer while the band was a fixed strip. It is not one any more:
+   * the band's foot rises by up to a third of the viewport when the camera
+   * picks up the mirrors, and its head now follows the running order, so the
+   * two ends move independently and an estimate is wrong in both directions.
+   * This asks the browser what actually fits.
+   *
+   * The eviction order is the priority order. The oldest pop-up goes first —
+   * it is the one already read — and the radio card after them, because it is
+   * the one item on the rail that is atmosphere rather than instruction. The
+   * two live cues and the pit sheet are never evicted: a cue is the state of
+   * the race and the sheet is a decision with a deadline.
+   *
+   * One layout read per rail CHANGE. `Hud.update` reaches this through
+   * `enforceRailBudget`, which compares a string first and returns.
+   */
+  private fitRail(): void {
+    // A STOP BEING CHOSEN TAKES THE RAIL. The sheet is a decision with a
+    // deadline measured in corners and a pop-up over it is the fault this
+    // whole arrangement exists to prevent, so the pop-ups go whether or not
+    // they would have fitted beside it.
+    if (this.pitSheetOpen) {
+      for (const c of this.alertCards.slice()) this.dismissAlert(c, true);
     }
+    // Bounded so a card taller than the whole band cannot spin here.
+    for (let guard = 0; guard < 8; guard++) {
+      if (this.railOverflowPx() <= 0) return;
+      if (this.alertCards.length > 0) {
+        this.dismissAlert(this.alertCards[0], true);
+        continue;
+      }
+      if (this.radioCard.style.display !== 'none') {
+        this.hideRadioCard(true);
+        continue;
+      }
+      return;
+    }
+  }
+
+  /** How far the rail's contents overrun its band, pixels. */
+  private railOverflowPx(): number {
+    const band = this.notices.getBoundingClientRect().height;
+    // Before the first layout — in a probe, or on the frame the HUD is built —
+    // there is nothing to measure and nothing has been shown yet.
+    if (band <= 0) return 0;
+    const gap = parseFloat(getComputedStyle(this.notices).rowGap) || 0;
+    let used = 0;
+    let n = 0;
+    for (const child of this.notices.children) {
+      const e = child as HTMLElement;
+      // Fractional, not `offsetHeight`. Four or five children each rounded
+      // down to the pixel is several pixels of slack that is not there, which
+      // is exactly the margin a card overflows a band by.
+      const h = e.getBoundingClientRect().height;
+      if (h < 1) continue;
+      used += h;
+      n++;
+    }
+    if (n > 1) used += (n - 1) * gap;
+    return used - band;
   }
 
   private pushAlert(player: CarEntry, line: string, chip: string, tone: AlertTone): void {
@@ -1537,7 +1715,7 @@ export class Hud {
       const mark = this.el('control-teammark', who);
       mark.appendChild(teamMarkSvg(about.team));
       this.el('control-bang', card, '!');
-      this.mountCard(card);
+      this.mountControl(card);
       return;
     }
 
@@ -1547,7 +1725,44 @@ export class Hud {
     this.el('control-mark', head, 'RACE CONTROL');
     this.el('control-headline', card, c.headline);
     if (c.detail) this.el('control-detail', card, c.detail);
-    this.mountCard(card);
+    this.mountControl(card);
+  }
+
+  /**
+   * Puts a bulletin on the noticeboard.
+   *
+   * Its own stack, its own budget and its own dwell. Two at a time, because the
+   * board is over the road and a third card is a third of the picture — and
+   * because two is what race control ever has running at once in practice: an
+   * incident and the decision that follows it.
+   */
+  private mountControl(card: HTMLElement): void {
+    // IN PORTRAIT THERE IS NO TOP CENTRE. The running order and the timing
+    // panel take a 390-pixel frame between them, the wheel dash and the gap
+    // readout take the strip under them, and what is left at the top of the
+    // picture is a 38-pixel gutter. So on that one shape the board goes back
+    // into the rail where it was, and the two voices stay apart by look — no
+    // face, a hard official label, capitals — rather than by place.
+    if (window.innerWidth <= 620 && window.innerHeight > window.innerWidth) {
+      this.mountCard(card);
+      return;
+    }
+    this.controlStack.appendChild(card);
+    this.controlCards.push(card);
+    enterNextFrame(card);
+    window.setTimeout(() => this.dismissControl(card), this.alertDwellMs);
+    while (this.controlCards.length > MAX_CONTROL_CARDS) {
+      this.dismissControl(this.controlCards[0], true);
+    }
+  }
+
+  private dismissControl(card: HTMLElement, now = false): void {
+    const i = this.controlCards.indexOf(card);
+    if (i < 0) return;
+    this.controlCards.splice(i, 1);
+    if (now) { card.remove(); return; }
+    card.classList.add('leaving');
+    window.setTimeout(() => card.remove(), 420);
   }
 
   /** Shared entry animation, dwell and eviction for both kinds of card. */
@@ -1562,9 +1777,7 @@ export class Hud {
     enterNextFrame(card);
     window.setTimeout(() => this.dismissAlert(card), this.alertDwellMs);
 
-    while (this.alertCards.length > this.maxAlerts()) {
-      this.dismissAlert(this.alertCards[0], true);
-    }
+    this.fitRail();
   }
 
   private dismissAlert(card: HTMLElement, now = false): void {
@@ -1588,14 +1801,13 @@ export class Hud {
   private updateRadioCard(engine: RaceEngine, player: CarEntry): void {
     const rc = engine.raceControl;
 
-    // A card that was admitted on a tall window and is still standing on a
-    // short one. `showRadioCard` declines below 470px and while a stop is being
-    // chosen, but neither of those is checked again once the card is up — so
-    // rotating a phone, or calling for a stop mid-clip, left it hanging out of
-    // the top of the band. Same fault as the pop-up budget: a condition tested
-    // only on the way in is not a condition.
-    if (this.radioCard.style.display !== 'none' &&
-        (window.innerHeight <= 470 || this.pitSheetOpen)) {
+    // A card that was admitted into a tall band and is still standing in a
+    // short one. Rotating a phone, calling for a stop mid-clip, or changing to
+    // a camera with the mirrors in it all shrink the band under a card that is
+    // already up — and a condition tested only on the way in is not a
+    // condition. The size case is handled by `fitRail`, which measures; this is
+    // the one rule that is not about size.
+    if (this.radioCard.style.display !== 'none' && this.pitSheetOpen) {
       this.hideRadioCard(true);
     }
 
@@ -1655,12 +1867,14 @@ export class Hud {
   }
 
   private showRadioCard(player: CarEntry, moment: RadioMoment): void {
-    // 390 pixels of height carries the running order, the live cues, the
-    // weather and the car state, and that is the whole budget. The radio card
-    // is the one item on the rail that is atmosphere rather than instruction,
-    // so it is the one that goes.
-    if (window.innerHeight <= 470) return;
-    // And it stands down entirely while a stop is being chosen. The driver has
+    // WHETHER IT FITS IS MEASURED, at the end of this function, by `fitRail` —
+    // the band's foot rises by up to a third of the viewport under the mirror
+    // cameras and its head follows the running order, so no rule written in
+    // viewport pixels is right in every combination. The card is the one item
+    // on the rail that is atmosphere rather than instruction, so it is the
+    // first thing evicted when the answer is no.
+    //
+    // It stands down entirely while a stop is being chosen. The driver has
     // a decision in front of them with a deadline measured in corners; the rail
     // is not tall enough to carry both, and covering the decision with the
     // atmosphere is the fault this whole pass exists to fix.
@@ -1703,9 +1917,10 @@ export class Hud {
     // out through the top of the mask. The budget is now enforced when the
     // budget CHANGES, not only when something new is pushed. Ordered after the
     // display write because `maxAlerts` reads it.
-    while (this.alertCards.length > this.maxAlerts()) {
-      this.dismissAlert(this.alertCards[0], true);
-    }
+    // The eviction the reported overlap came from, and it is measured now
+    // rather than estimated: `maxAlerts` divides a band whose two ends both
+    // move. See `fitRail`.
+    this.fitRail();
 
     this.radioTimers.push(window.setTimeout(() => {
       this.radioCard.classList.add('leaving');
@@ -1767,14 +1982,45 @@ export class Hud {
    * moves or disappears when the camera changes is a readout you have to go
    * looking for.
    *
-   * Kept as a hook — the camera mode is a thing the HUD is entitled to know —
-   * but it no longer changes the layout.
+   * WHAT IT DOES CHANGE, and the exception is the mirrors. Three of the eight
+   * cameras have the car's own mirrors in shot, and a mirror is not decoration
+   * — it is the only way to see a car that is about to be alongside. The HUD
+   * therefore treats the panes exactly as it treats the racing surface: as part
+   * of the frame it is not allowed to stand on. `MIRROR_PANES` says where they
+   * land, `mirrorBand` reduces that to the corridor between them, and the three
+   * custom properties written here are what the stylesheet lays the bottom band
+   * out against. Every other camera clears the flag and the HUD spreads back
+   * out.
+   *
+   * One attribute and three properties per camera CHANGE, which happens when a
+   * player presses the camera button. Nothing here runs per frame.
    */
   setCameraMode(mode: string): void {
     this.cockpitView = mode === 'cockpit';
+    const band = mirrorBand(mode);
+    this.mirrorFloor = band ? (100 - band.top) / 100 : 0;
+    if (this.root.dataset.camera !== mode) this.root.dataset.camera = mode;
+    if (band) {
+      this.root.dataset.mirrors = 'yes';
+      this.root.style.setProperty('--mirror-l', band.left.toFixed(1) + '%');
+      this.root.style.setProperty('--mirror-r', (100 - band.right).toFixed(1) + '%');
+      this.root.style.setProperty('--mirror-top', band.top.toFixed(1) + '%');
+      this.root.style.setProperty('--mirror-bottom', (100 - band.top).toFixed(1) + '%');
+    } else {
+      delete this.root.dataset.mirrors;
+      for (const p of ['--mirror-l', '--mirror-r', '--mirror-top', '--mirror-bottom']) {
+        this.root.style.removeProperty(p);
+      }
+    }
   }
   /** Which camera is live. Read by nothing yet; see `setCameraMode`. */
   cockpitView = false;
+  /** Height of the mirror band as a fraction of the viewport, 0 when none. */
+  private mirrorFloor = 0;
+  /** The same, in pixels, for `towerFit`. */
+  private get mirrorFloorPx(): number {
+    return this.mirrorFloor * window.innerHeight;
+  }
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? 'block' : 'none';
@@ -1922,8 +2168,133 @@ export function neutralisationCue(
   };
 }
 // ===========================================================================
+// THE MIRRORS
+// ===========================================================================
+
+/**
+ * The three cameras that have the car's own mirrors in shot.
+ *
+ * `bumper`, `chase`, `tv`, `drone` and `trackside` are outside the cockpit or
+ * ahead of it and see no glass at all, so the HUD has the whole frame in those.
+ */
+export type MirrorView = 'driver' | 'cockpit' | 'onboard-t';
+
+export interface PaneRect {
+  /** Percentages of frame width and height, top-left origin. */
+  x0: number; y0: number; x1: number; y1: number;
+}
+
+/**
+ * WHERE THE MIRROR PANES LAND, per camera, as percentages of the frame.
+ *
+ * THE FAULT THIS FIXES. The mirrors were mounted 78.6 degrees out of roll from
+ * the day they were written and were only just made to work. On the frame they
+ * started working, the weather bug was lying across the left pane in the
+ * driver's eye and the tyre panel across it in the cockpit — so on a landscape
+ * phone the player could not see one of their own mirrors in either roll-hoop
+ * view, and the fix that had just landed was invisible.
+ *
+ * A mirror is not decoration. It is the only way to see a car that is about to
+ * be alongside, and it is therefore part of the frame the HUD must keep clear
+ * in exactly the sense the racing surface is. The non-overlap guarantee used to
+ * cover only the left notice rail; these rectangles extend it to the glass.
+ *
+ * MEASURED, NOT DESIGNED. Every number is the envelope of `mirrorPaneCorners`
+ * projected through the real `CameraDirector` on all eleven circuits, in both
+ * frame shapes (2.17:1 and 16:9), with the head at rest AND turned to the stops
+ * — a driver looking through a corner swings the outside pane most of the way
+ * to the frame edge, and a keep-out that ignored that would be clear only on
+ * the straights. `probe:framing` re-measures the geometry every run and fails
+ * if a pane escapes the rectangle declared for it, so a change to the mirror
+ * mount cannot silently invalidate the layout below.
+ *
+ * A one-point margin is added to each measured edge, for the circuits and
+ * chassis attitudes that are not in the twelve-sample sweep.
+ */
+export const MIRROR_PANES: Readonly<Record<MirrorView, readonly PaneRect[]>> = {
+  // The driver's own eye: the panes are nearest and largest here, and the left
+  // one reaches the frame edge in the 16:9 shape.
+  driver: [
+    { x0: 0, y0: 70.5, x1: 20.0, y1: 88.5 },
+    { x0: 71.5, y0: 69.5, x1: 100, y1: 91.0 },
+  ],
+  // The roll-hoop pod, 0.2m behind and above the eye: the panes pull inboard
+  // and drop down the frame.
+  cockpit: [
+    { x0: 5.0, y0: 78.5, x1: 31.0, y1: 93.0 },
+    { x0: 62.0, y0: 77.5, x1: 86.0, y1: 94.0 },
+  ],
+  // The T-cam, 0.8m further back again. Small, low and close to the centre.
+  'onboard-t': [
+    { x0: 24.0, y0: 82.5, x1: 35.0, y1: 89.5 },
+    { x0: 66.0, y0: 82.5, x1: 76.5, y1: 90.5 },
+  ],
+};
+
+/**
+ * The corridor the HUD may use low in the frame, derived from the panes.
+ *
+ * ONE NUMBER EACH, and it is deliberately blunter than the rectangles it comes
+ * from: above `top` the HUD has the whole width, and below it the HUD has
+ * `left` to `right` and nothing outside them. A stylesheet cannot express "this
+ * box may be in the bottom-left corner as long as it is not in that rectangle",
+ * and a rule that cannot be expressed is a rule that gets broken by the next
+ * media query. A corridor is one comparison per edge and it is conservative in
+ * the safe direction.
+ *
+ * Derived rather than declared so the corridor cannot drift from the panes.
+ */
+export function mirrorBand(
+  mode: string,
+): { left: number; right: number; top: number } | null {
+  const panes = MIRROR_PANES[mode as MirrorView] as readonly PaneRect[] | undefined;
+  if (!panes) return null;
+  let left = 0;
+  let right = 100;
+  let top = 100;
+  for (const p of panes) {
+    // Which side of the frame a pane is on decides which edge it pushes.
+    if (p.x0 + p.x1 < 100) left = Math.max(left, p.x1);
+    else right = Math.min(right, p.x0);
+    top = Math.min(top, p.y0);
+  }
+  return { left, right, top };
+}
+
+/**
+ * The panes as pixel boxes, for a harness that measures the real DOM.
+ *
+ * `shoot:panels` walks every HUD box against these and fails on any
+ * intersection, which is the same treatment the notice rail already gets. The
+ * conversion lives here rather than in the harness so the picture and the
+ * assertion are reading one table.
+ */
+export function mirrorPaneBoxes(
+  mode: string, w: number, h: number,
+): { name: string; x: number; y: number; w: number; h: number }[] {
+  const panes = MIRROR_PANES[mode as MirrorView] as readonly PaneRect[] | undefined;
+  if (!panes) return [];
+  return panes.map((p, i) => ({
+    name: 'mirror[' + (p.x0 + p.x1 < 100 ? 'L' : 'R') + i + ']',
+    x: (p.x0 / 100) * w,
+    y: (p.y0 / 100) * h,
+    w: ((p.x1 - p.x0) / 100) * w,
+    h: ((p.y1 - p.y0) / 100) * h,
+  }));
+}
+
+// ===========================================================================
 // THE RUNNING ORDER
 // ===========================================================================
+
+/**
+ * How many bulletins the noticeboard carries at once.
+ *
+ * Two. The board sits over the road, so a third card is a third of the picture
+ * — and two is what race control ever has running in practice: an incident, and
+ * the decision that follows it.
+ */
+const MAX_CONTROL_CARDS = 2;
 
 /** How long a pop-up and a radio card stand before they leave, ms. */
 const ALERT_LIFE_MS = 7200;
@@ -1990,22 +2361,33 @@ function enterNextFrame(card: HTMLElement): void {
  * this repo has a history of HUD panels running off the bottom of a 390px
  * screen — without standing up a browser to measure it.
  */
-export function towerFit(w: number, h: number): { rows: number; compact: boolean } {
+export function towerFit(
+  w: number, h: number, floorPx = 0,
+): { rows: number; compact: boolean } {
   // Written the same way round as the media query that shrinks the row —
   // `@media (max-width: 900px), (max-height: 470px)`. If these two ever
   // disagree the panel is measured for one row height and drawn at another,
   // which is exactly how a tower ends up hanging off the bottom of a phone.
   const compact = w <= 900 || h <= 470;
-  const rowH = compact ? 17 : 29;
+  const rowH = compact ? 17 : 26;
   // The panel's own header block and column rule, PLUS the whole rail beneath
   // it: the notice stack, the weather bug and the car state. This number is
   // the reason the tower is not simply "as many rows as fit" — the rest of
   // the left rail has to exist somewhere, and a tower sized to the viewport
   // grows straight down through the pit instruction.
-  const reserved = compact ? 240 : 554;
-  const fits = Math.floor((h - reserved) / rowH);
+  const reserved = compact ? 260 : 570;
+  const fits = Math.floor((h - floorPx - reserved) / rowH);
+  // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
+  // glass in shot the bottom of the frame is not the HUD's to use — see
+  // `MIRROR_PANES` — so the whole left column lifts by the height of the band
+  // and the running order is what pays for it. Four rows is the floor there
+  // rather than six: a tower that keeps six rows on a landscape phone standing
+  // on a 119-pixel mirror band leaves the notice rail forty pixels, and forty
+  // pixels is not a rail. The other sixteen cars can wait for a straight; the
+  // car about to be alongside cannot.
+  const min = floorPx > 0 ? 4 : compact ? 4 : 6;
   return {
-    rows: Math.max(compact ? 4 : 6, Math.min(fits, compact ? 8 : 14)),
+    rows: Math.max(min, Math.min(fits, compact ? 8 : 14)),
     compact,
   };
 }
@@ -2027,21 +2409,30 @@ export function towerFit(w: number, h: number): { rows: number; compact: boolean
 export function standingsCells(
   engine: RaceEngine, car: CarEntry, ahead: CarEntry | null, leader: CarEntry,
 ): {
-  pos: string; first: string; surname: string; team: string;
+  pos: string; code: string; first: string; surname: string; team: string;
   tyre: string; gap: string; best: string; lastLap: string;
 } {
-  const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
-  const gap = car.retired ? 'DNF'
-    : car.disqualified ? 'DSQ'
-    : car.position === 1 ? 'LEADER'
-    : engine.config.kind !== 'race'
-      ? (car.bestLapTime > 0 && leader.bestLapTime > 0
-        ? formatGap(car.bestLapTime - leader.bestLapTime) : '—')
-    : lapsBehind > 0 ? '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS')
-    : formatGap(car.interval);
+  // THE RULE COMES FROM `liveGapCell` AND IS NOT REIMPLEMENTED HERE. It carries
+  // the distinction between a race and a Lap Time Classified Session — there is
+  // no leader in qualifying, only a fastest lap and everybody's deficit to it —
+  // and it cites the articles for both. The tower had its own copy of that
+  // arithmetic and the two disagreed, which is how `LEADER` came to be printed
+  // during a qualifying session.
+  //
+  // What is left here is PRESENTATION, and it is two words. `Interval` because
+  // the leader's cell names the column rather than restating a position the
+  // number beside it already gives — every other row in that column is a
+  // figure, so a word there reads as the heading it is. `Out` because the row
+  // is already dimmed and already at the foot of the order, and three capitals
+  // of jargon on top of that is the panel saying the same thing three times.
+  const ruled = liveGapCell(car, ahead, leader, engine.config.kind === 'race');
+  const gap = ruled === 'LEADER' ? 'Interval'
+    : ruled === 'DNF' || ruled === 'OUT' ? 'Out'
+    : ruled;
 
   return {
     pos: String(car.position),
+    code: car.driver.code.toUpperCase(),
     first: car.driver.firstName,
     surname: car.driver.lastName.toUpperCase(),
     team: car.team.name,
@@ -2050,6 +2441,84 @@ export function standingsCells(
     best: car.bestLapTime > 0 ? formatLapTime(car.bestLapTime) : '—',
     lastLap: car.lastLapTime > 0 ? formatLapTime(car.lastLapTime) : '—',
   };
+}
+
+/**
+ * Which status badges a car is carrying, as a class suffix.
+ *
+ * Three facts the running order has always known and never shown: who holds the
+ * fastest lap, who has something to serve, and who has finished. Returned as a
+ * string of classes rather than as booleans so the row can diff the whole
+ * column in one compare — twenty rows times sixty frames is not a place to
+ * touch three elements each.
+ *
+ * Pure and exported so `probe:hudtext` can assert what the panel claims about a
+ * car against what the engine says about it.
+ */
+export function statusBadges(car: CarEntry, sessionBest: number): string {
+  let out = '';
+  if (sessionBest > 0 && car.bestLapTime === sessionBest) out += ' has-fast';
+  // Anything not yet served, and any time already added to the race result. A
+  // five-second penalty is served at the stop and is a fact about the classified
+  // order from the moment it is issued.
+  if (car.penaltySeconds > 0 || car.penalties.some((p) => !p.served)) out += ' has-pen';
+  if (car.finished) out += ' has-fin';
+  return out;
+}
+
+/**
+ * What the flag band says, and what colour it is.
+ *
+ * PRECEDENCE IS THE WHOLE OF THIS FUNCTION. Several of these can be true at
+ * once — a car can be disqualified under a safety car while a yellow is out in
+ * the sector it is in — and a band that showed the wrong one would be worse
+ * than no band. The order is: what has happened to YOU, then what has happened
+ * to the session, then what is round the next corner. A driver who has been
+ * disqualified does not need to be told about a yellow.
+ *
+ * The second line names the cause, because a driver shown a yellow wants to
+ * know what is round the corner and `YELLOW FLAG` on its own does not say.
+ *
+ * Pure and exported so a probe can assert the band against the race control it
+ * is reading, rather than against a reimplementation of it.
+ */
+export function flagBandState(
+  engine: RaceEngine, player: CarEntry,
+): { label: string; cause: string; tone: string } | null {
+  const rc = engine.raceControl;
+
+  if (player.disqualified) {
+    return { label: 'DISQUALIFIED', cause: 'BLACK FLAG', tone: 'black' };
+  }
+  const pen = player.penalties[player.penalties.length - 1];
+  if (pen && !pen.served && pen.kind === 'drive-through') {
+    return { label: 'DRIVE THROUGH', cause: 'PENALTY TO SERVE', tone: 'red' };
+  }
+
+  if (rc.sessionFlag === 'chequered') {
+    return { label: 'CHEQUERED FLAG', cause: 'SESSION OVER', tone: 'chequered' };
+  }
+  if (rc.sessionFlag === 'red') {
+    return { label: 'RED FLAG', cause: 'SESSION STOPPED', tone: 'red' };
+  }
+  if (rc.neutralisation === 'safety-car') {
+    return { label: 'SAFETY CAR', cause: 'FIELD NEUTRALISED', tone: 'yellow' };
+  }
+  if (rc.neutralisation === 'vsc') {
+    return { label: 'VIRTUAL SAFETY CAR', cause: 'DELTA TIME ENFORCED', tone: 'yellow' };
+  }
+  if (player.blueFlag) {
+    return { label: 'BLUE FLAG', cause: 'LET THE LEADERS BY', tone: 'blue' };
+  }
+
+  const local = rc.flagAt(player.s);
+  if (local === 'double-yellow') {
+    return { label: 'DOUBLE YELLOW', cause: 'HAZARD ON THE RACING LINE', tone: 'yellow' };
+  }
+  if (local === 'yellow') {
+    return { label: 'YELLOW FLAG', cause: 'TRACK HAZARD', tone: 'yellow' };
+  }
+  return null;
 }
 
 /**
@@ -2802,6 +3271,58 @@ const DEVICES: readonly (readonly DeviceSpec[])[] = [
     { tag: 'rect', attrs: { x: '5', y: '12', width: '7', height: '8', fill: '#a' } },
   ],
 ];
+
+/**
+ * The stopwatch, drawn.
+ *
+ * The fastest lap's badge. A watch rather than a letter because the badge is
+ * eleven pixels across in the running order and a glyph at that size is read as
+ * a shape, not as type — and because the purple square already says which of
+ * the four things it is. Crown, bezel and a hand at ten past.
+ */
+export function stopwatchSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const add = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.appendChild(e);
+  };
+  add('rect', { x: '9.4', y: '1.6', width: '5.2', height: '2.6', rx: '1.1', fill: 'currentColor' });
+  add('circle', {
+    cx: '12', cy: '14', r: '8', fill: 'none',
+    stroke: 'currentColor', 'stroke-width': '2.4',
+  });
+  add('path', {
+    d: 'M12 14 L12 9.2 M12 14 L15.4 15.8', fill: 'none', stroke: 'currentColor',
+    'stroke-width': '2', 'stroke-linecap': 'round',
+  });
+  return svg;
+}
+
+/**
+ * The chequered flag, drawn.
+ *
+ * A car that has taken the flag. Four squares rather than a waving flag on a
+ * pole: at badge size a flag is a smudge and a two-by-two chequer is
+ * unmistakable, which is the whole job of a square eleven pixels across.
+ */
+export function chequerSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const [x, y] of [[3, 3], [12.5, 12.5]] as [number, number][]) {
+    const e = document.createElementNS(NS, 'rect');
+    for (const [k, v] of Object.entries({
+      x: String(x), y: String(y), width: '8.5', height: '8.5', fill: 'currentColor',
+    })) e.setAttribute(k, v);
+    svg.appendChild(e);
+  }
+  return svg;
+}
 
 /**
  * The team principal, drawn.

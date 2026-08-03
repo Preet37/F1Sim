@@ -59,6 +59,8 @@ export interface TierCar {
   downforceMult: number;
   dragMult: number;
   mechanicalGripMult: number;
+  /** Scales the 798kg Formula 1 minimum. See the note below. */
+  massMult: number;
   /** Points for positions 1..10. */
   points: readonly number[];
   /** Point for the fastest lap, inside the top ten. */
@@ -79,35 +81,46 @@ export interface TierCar {
  * otherwise hand them out of every corner, and it is a large part of why an F2
  * car cannot live with an F1 car onto a straight.
  *
- * ONE KNOWN COMPROMISE. `specForTeam` multiplies power, downforce, drag and grip
- * but not MASS, and a real Formula 3 car is 605kg against a Formula 1 car's 798.
- * So the junior cars here are correctly underpowered and correctly short of
- * downforce, but too heavy — which flatters their braking and hurts their
- * traction out of slow corners. Fixing it properly needs a `massMult` field on
- * `TeamPerformance` and one line in `specForTeam`, which is a change in
- * `src/physics/VehicleSpec.ts`. It is a request, not something taken here, and
- * the multipliers below are tuned to land the lap times with the mass as it is.
+ * MASS IS NOW A TERM, and it was the missing one. `specForTeam` used to multiply
+ * power, downforce, drag and grip but not mass, so a Formula 3 car weighed what
+ * a Formula 1 car weighs. That is not a small error and it is not a uniform one:
+ * downforce goes as v squared and mass does not, so a tier built only out of
+ * power and downforce is correct at the circuit where speed is highest and too
+ * slow everywhere the car is slow. `probe:tiers` measured exactly that — Monza
+ * +12.7 / +20.1 against Zandvoort +16.8 / +24.8, for targets of 13 and 19 — and
+ * no amount of tuning the other multipliers could have fixed the spread, only
+ * moved which circuit was wrong. See `massMult` in VehicleSpec.
+ *
+ * The two mass figures are the minimum weights the formulae run to, with driver:
+ * 605kg for Formula 3 and 795 for Formula 2, against Formula 1's 798. Formula 2
+ * is therefore very nearly as heavy as a Formula 1 car and gets almost nothing
+ * out of this; its deficit is a power and downforce deficit, and always was.
  */
 export const TIER_CAR: Record<TierId, TierCar> = {
   F3: {
     name: 'FIA Formula 3 Championship', shortName: 'Formula 3',
     // ~380hp against ~750hp of combustion, no hybrid, and a wing package that
     // makes about a third of the downforce.
-    powerMult: 0.52, ersMult: 0, downforceMult: 0.80,
+    powerMult: 0.49, ersMult: 0, downforceMult: 0.72,
     // Much less wing means much less drag, which is why the deficit down a
     // straight is nothing like the deficit through a corner.
-    dragMult: 0.80, mechanicalGripMult: 1.00,
+    dragMult: 0.80, mechanicalGripMult: 0.95,
+    // 605kg of 798.
+    massMult: 0.758,
     points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapPoint: true,
   },
   F2: {
     name: 'FIA Formula 2 Championship', shortName: 'Formula 2',
-    powerMult: 0.68, ersMult: 0, downforceMult: 0.86,
+    powerMult: 0.71, ersMult: 0, downforceMult: 0.86,
     dragMult: 0.88, mechanicalGripMult: 1.00,
+    // 795kg of 798. A Formula 2 car is not a light car.
+    massMult: 0.996,
     points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapPoint: true,
   },
   F1: {
     name: 'FIA Formula One World Championship', shortName: 'Formula 1',
     powerMult: 1, ersMult: 1, downforceMult: 1, dragMult: 1, mechanicalGripMult: 1,
+    massMult: 1,
     points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], fastestLapPoint: true,
   },
 };
@@ -292,6 +305,10 @@ export function performanceOf(team: WorldTeam): TeamPerformance {
     downforceMult: car.downforceMult * c.downforceMult * lift,
     dragMult: car.dragMult * c.dragMult,
     mechanicalGripMult: car.mechanicalGripMult * c.mechanicalGripMult * lift,
+    // The tier's own mass. Nothing a team does changes it: every car in a
+    // championship runs to the same minimum weight, and a team that finds a
+    // kilogram spends it on ballast placement rather than on being lighter.
+    massMult: car.massMult,
     tireWearMult: c.tireWearMult,
     failureRate: c.failureRate,
     pitCrewTimeS: c.pitCrewTimeS,

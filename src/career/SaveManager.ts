@@ -82,6 +82,16 @@ export interface GameSettings {
    * thing they complain about next.
    */
   weekend: WeekendOptions;
+  /**
+   * Whether the opening sequence has been played.
+   *
+   * A SETTING RATHER THAN A CAREER FIELD, because it is a fact about this
+   * browser and not about any championship: somebody with three careers should
+   * not be shown the opening three times, and deleting a career should not
+   * bring it back. Written the moment the sequence starts, not when it
+   * finishes — see `Main.playIntro`.
+   */
+  introSeen: boolean;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -94,6 +104,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   quality: 'auto',
   racingLine: true,
   aiDifficulty: DEFAULT_AI_DIFFICULTY,
+  introSeen: false,
   // Copied rather than shared: DEFAULT_SETTINGS is spread into a live settings
   // object, and a shared `profiles` map would let one career's controller
   // configuration leak into the defaults every other one starts from.

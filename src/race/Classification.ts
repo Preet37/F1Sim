@@ -37,6 +37,8 @@
  * were wrong. They were classified first in Q1 and through to Q2.
  */
 
+import { formatGap } from '../core/MathUtils';
+
 /** The subset of a car the classification actually reads. */
 export interface ClassifiedCar {
   position: number;
@@ -122,6 +124,76 @@ export function resultGapCell(car: ClassifiedCar, isRace: boolean): string {
   if (car.lapsDown >= 1) return '+' + car.lapsDown + (car.lapsDown === 1 ? ' LAP' : ' LAPS');
   if (!Number.isFinite(car.gapToLeader)) return '--.---';
   return '+' + car.gapToLeader.toFixed(3);
+}
+
+/** The subset of a car the LIVE timing tower reads for its gap column. */
+export interface RunningCar {
+  position: number;
+  retired: boolean;
+  disqualified: boolean;
+  bestLapTime: number;
+  /** Seconds behind the car directly ahead on the road. Races only. */
+  interval: number;
+  /** Whole laps behind the leader. Races only. */
+  lapsDown: number;
+}
+
+/**
+ * The gap column of the LIVE timing tower, while the session is running.
+ *
+ * THERE IS NO LEADER IN QUALIFYING. This is the same rule `resultGapCell`
+ * enforces on the results board, and the tower had its own copy of the logic
+ * that had never been brought into line with it — so a qualifying segment
+ * printed the word LEADER against the quickest car and DNF against a car in
+ * the barrier, both of which are race language.
+ *
+ * A Lap Time Classified Session is "any track running session during which the
+ * classification of the session is determined based upon the time taken by a
+ * driver to complete a single lap" (Section B, Definitions). Nobody is racing
+ * anybody in one. There is no first place on the road to be leading, no
+ * interval to the car ahead worth reading, and — Art. B2.4.3a-b — no DNF: a
+ * driver is classified on the best time they set, and the three routes out of
+ * the classification are the 107% rule, no time in Q1 and disqualification.
+ * What there is instead is a fastest lap and everybody's deficit to it, which
+ * is the one number the column should carry.
+ *
+ * A RACE keeps every word of the race language, because in a race all of it is
+ * true. Somebody is leading, a lapped car is out of the fight, and a car in the
+ * barrier did not cover the distance.
+ *
+ * `ahead` is the car directly in front on the road, used only to work out
+ * whether this car is a lap down on it. Null for the car at the front.
+ */
+export function liveGapCell(
+  car: RunningCar,
+  ahead: Pick<RunningCar, 'lapsDown'> | null,
+  fastest: Pick<RunningCar, 'bestLapTime'>,
+  isRace: boolean,
+): string {
+  // Disqualification is a real outcome of every session type — Art. B2.4.3b.iii
+  // makes a driver disqualified from Qualifying unclassified — so it is read
+  // before anything else in both halves.
+  if (car.disqualified) return 'DSQ';
+
+  if (!isRace) {
+    // Art. B2.4.3a: the lap has been set and the accident does not un-set it.
+    // The car is out of the session; the driver is still in the classification,
+    // and the column exists to say how far off the pace they were.
+    if (!(car.bestLapTime > 0)) return car.retired ? 'OUT' : '—';
+    if (!(fastest.bestLapTime > 0)) return '—';
+    // `<= 0` rather than `=== 0` so that a car whose lap is the reference lap
+    // reads FASTEST even if the caller passed a fastest car chosen a step
+    // earlier — a tower that flickers between FASTEST and -0.001 is worse than
+    // one that is a frame stale.
+    const deficit = car.bestLapTime - fastest.bestLapTime;
+    return deficit <= 0 ? 'FASTEST' : formatGap(deficit);
+  }
+
+  if (car.retired) return 'DNF';
+  if (car.position === 1) return 'LEADER';
+  const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
+  if (lapsBehind > 0) return '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS');
+  return formatGap(car.interval);
 }
 
 /** The subset of a car the qualifying board reads. */

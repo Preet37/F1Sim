@@ -94,8 +94,28 @@ export interface EnvironmentState {
   /** Track surface temperature, °C. */
   trackTempC: number;
   airTempC: number;
-  /** 0 dry .. 1 standing water. */
+  /**
+   * 0 dry .. 1 standing water, AT THE POSITION THIS CAR OCCUPIES.
+   *
+   * Not a session-wide scalar any more. A wet track is wet unevenly — deeper
+   * where it drains badly, shallower on the line the cars have been pumping
+   * clear — and the whole reason wet running looks the way it does is that a
+   * driver can move sideways and find a different number here. The race engine
+   * writes this per car, per step, from `TrackSurface`.
+   */
   wetness: number;
+  /**
+   * A direct multiplier on tyre grip from what the surface itself is made of,
+   * as distinct from how much water is lying on it. 1.0 is clean asphalt.
+   *
+   * This is where laid-down rubber lives, and it is the reason the fast line on
+   * a soaked track is not the dry line. Rubber under water is slick in a way
+   * the wet-grip curve knows nothing about, because the wet-grip curve is a
+   * property of the TYRE and this is a property of the ROAD. Off the line the
+   * surface is abrasive and unrubbered — worse when dry, because it is dusty
+   * and collects marbles, and better when flooded.
+   */
+  surfaceGrip: number;
   /** Air density ratio vs sea level; altitude affects power and drag. */
   airDensityRatio: number;
   /** Circuit surface abrasion multiplier. */
@@ -810,7 +830,12 @@ export class VehiclePhysics {
     if (loadRear < 0) loadRear = 0;
 
     // --- Surface and tire grip --------------------------------------------
-    const surfaceGrip = SURFACE_GRIP[this.surface];
+    // Two independent things multiplied: what the car is driving ON (asphalt,
+    // kerb, grass) and what condition that surface is IN (rubbered, dusty,
+    // rubbered-and-flooded). Keeping them separate is what lets a car run
+    // wide onto a damp, unrubbered part of the road and find MORE grip than
+    // the racing line has, which is the defining move of a wet Grand Prix.
+    const surfaceGrip = SURFACE_GRIP[this.surface] * env.surfaceGrip;
     const muFront = spec.baseMu * this.frontTires.grip * surfaceGrip;
     const muRear = spec.baseMu * this.rearTires.grip * surfaceGrip;
 
@@ -1208,8 +1233,8 @@ export class VehiclePhysics {
       ? clamp01((c.throttle - tractionLimit) / Math.max(1 - tractionLimit, 0.05))
       : 0;
 
-    this.frontTires.update(dt, frontSlipSpeed, loadFront, staticFront, env.trackTempC, env.wetness, env.abrasion);
-    this.rearTires.update(dt, rearSlipSpeed, loadRear, staticRear, env.trackTempC, env.wetness, env.abrasion);
+    this.frontTires.update(dt, frontSlipSpeed, loadFront, staticFront, env.trackTempC, env.wetness, env.abrasion, this.speedMs);
+    this.rearTires.update(dt, rearSlipSpeed, loadRear, staticRear, env.trackTempC, env.wetness, env.abrasion, this.speedMs);
 
     // --- Vibration ---------------------------------------------------------
     // Kerbs produce a high-frequency oscillation; lock-ups produce a lower one.
