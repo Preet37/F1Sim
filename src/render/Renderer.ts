@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, wrapAngle } from '../core/MathUtils';
 import {
-  buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
+  buildCar, disposeCarGeometryCache, actuationForTeam, BODY_PART_IDS,
   type BodyPartId, type CarVisual,
 } from './CarMesh';
 import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
@@ -578,6 +578,8 @@ export class Renderer {
         quality: this.quality,
         withCockpit: car === cockpitCar,
         compound: car.compound,
+        // Per TEAM, not per car: a team's two cars run the same rear wing.
+        actuation: actuationForTeam(car.team.id),
       });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
@@ -1620,26 +1622,42 @@ export class Renderer {
       // the new set is on.
       v.setCompound(car.compound);
 
-      // ACTIVE AERO, both ends, off one signal.
+      // ACTIVE AERO, BOTH ENDS, OFF ONE SIGNAL — and to this team's own travel.
       //
-      // When the system opens, the rear flap rotates up and forward to open a
-      // large slot above the main plane and the two upper front-wing elements
-      // rotate flat — X-mode against the Z-mode the wing is built in. Both shed
-      // drag, which is what `drsDragReduction` in the vehicle spec is already
-      // doing to the physics, and both cost downforce, which is
-      // `drsDownforceLoss`. Driving the two ends from `p.drsOpen` — the same
-      // flag the physics integrates and the same one the HUD's badge reads — is
-      // what guarantees the geometry, the handling and the indicator can never
-      // disagree about which state the car is in.
+      // The 2026 car has no DRS. It has active aero at both ends, with two
+      // commanded positions the regulations name Corner Mode and Straight Mode
+      // (Technical Arts. C3.10.10 for the front wing, C3.11.6 for the rear).
+      // Both ends are commanded together, which is why one flag drives both:
+      // Sporting Art. B7.1.1(c) defines the system as "fully activated" only
+      // when BOTH the front wing profiles and the rear flap are in Straight
+      // Mode. Running them off `p.drsOpen` — the same flag the physics
+      // integrates and the HUD's badge reads — is what guarantees the geometry,
+      // the handling and the indicator can never disagree.
       //
-      // DAMPED, not snapped. A real flap takes a couple of tenths to travel, and
-      // a wing that teleports between two positions reads as a rendering glitch
-      // rather than as a mechanism. The front pair move a little slower than the
-      // rear flap because they are the heavier assembly.
-      const flapTarget = p.drsOpen ? -0.85 : 0;
-      v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, 14, dt);
-      const frontTarget = p.drsOpen ? FRONT_X_MODE_RAD : 0;
-      v.frontFlaps.rotation.x = damp(v.frontFlaps.rotation.x, frontTarget, 10, dt);
+      // PER TEAM. Under the old DRS rules every car on the grid ran the same
+      // mechanism to the same 85mm limit, because Art. 3.10.10 fixed the axis
+      // and the actuator position and Appendix 5 made the actuator itself an
+      // open-source component shared across all competitors. The 2026 rules
+      // drop all of that: they still require one actuator, one fixed Y-aligned
+      // axis and two positions, but say nothing about where the axis sits along
+      // the chord or how far the flap travels — and the grid has separated
+      // accordingly. `ACTUATION` carries the four solutions and the sourcing.
+      //
+      // DAMPED, not snapped, at THIS car's rate. A wing that teleports between
+      // two positions reads as a rendering glitch rather than as a mechanism.
+      // The rate is the team's own transition time: C3.11.6(d) caps it at 400ms
+      // for everyone, and where a team lands inside that follows from where it
+      // put the axis. `damp` is exponential, so a rate of 4/travelS puts it
+      // within 2% of the new position after `travelS` seconds.
+      const a = v.actuation;
+      const rearRate = 4 / a.travelS;
+      const flapTarget = p.drsOpen ? a.openRad : 0;
+      v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, rearRate, dt);
+      // The front is the heavier assembly and is allowed two actuators against
+      // the rear's one (C3.10.10(p) vs C3.11.6(e)), so it travels a little
+      // slower rather than a little faster.
+      const frontTarget = p.drsOpen ? a.frontOpenRad : 0;
+      v.frontFlaps.rotation.x = damp(v.frontFlaps.rotation.x, frontTarget, rearRate * 0.72, dt);
 
       // --- Rear lights --------------------------------------------------------
       //

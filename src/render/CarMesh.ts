@@ -262,6 +262,11 @@ export interface CarVisual {
   frontFlaps: THREE.Object3D;
   brakeGlow: THREE.Mesh[];
   /**
+   * This car's active-aero actuation, so the renderer can drive the flaps to
+   * this team's own travel and rate rather than to one generic mechanism.
+   */
+  actuation: Actuation;
+  /**
    * The three regulation rear lights: one central, two in the endplate bodies.
    *
    * NOT brake lights. An F1 car does not have brake lights and never has —
@@ -363,6 +368,151 @@ export interface CarOptions {
   withCockpit?: boolean;
   /** Compound to fit at build time. Changed later via `setCompound`. */
   compound?: CompoundId;
+  /** Which rear-wing actuation this team runs. See `ACTUATION`. */
+  actuation?: ActuationId;
+}
+
+// --- Active aero, and how teams differ ------------------------------------
+//
+// "THE WINGS SHOULD HAVE THE FLAPS RIGHT, LIKE WHEN THEY GET THE EXTRA BOOST
+//  AND BATTERY THE FLAPS OPEN UP, AND RESEARCH ON THAT CUZ FERRARI OPENS UP
+//  DIFFERENTLY THAN MERCEDES DOES WHICH IS DIFFERENT THAN RED BULL ETC."
+//
+// This is right, but only for the season this game is set in, and it is worth
+// recording why — because for the four seasons BEFORE it, it was false, and
+// building visible per-team differences into a 2022-2025 car would have been
+// inventing them.
+//
+// UNDER THE DRS RULES (2022-2025) TEAMS COULD NOT DIFFER, BY REGULATION.
+// Technical Art. 3.10.10 required the actuator "inboard of Y=25" — a single
+// central unit, so no endplate actuators and no twin actuators. 3.10.10(b)
+// fixed the axis of rotation in the top-rear corner of the reference volume.
+// 3.10.10(c) forbade "relative movement between the constituent parts", so
+// designed spanwise twist was illegal. Every car opened to the same maximum
+// 85mm slot (3.10.10(g)), measured with the same spherical gauge. And the
+// actuator itself is an OPEN SOURCE COMPONENT — Appendix 5, row 2C, "Rear wing
+// adjuster (DRS)... DRS actuator including linkages" — whose design and IP
+// Art. 17.6 requires be "made available to all Competitors" on an FIA server.
+// The teams were running the same mechanism to the same limit.
+//
+// (Endplate-region packaging WAS legal once: the 2016-2021 rules allowed the
+// associated bodywork "either less than 25mm from the longitudinal centre line
+// or more than 350mm" — 450mm from 2018. 2022 closed it to the centreline.)
+//
+// UNDER THE 2026 RULES THEY GENUINELY DIVERGE, and that is what this models.
+// DRS is gone; the car has active aero at both ends, in two positions the
+// regulations name "Corner Mode" and "Straight Mode":
+//
+//   C3.11.6  Rear Wing Adjuster System: "(b) Adjustment of RW Flap is about a
+//            fixed axis of rotation, which must be aligned with the Y-Axis";
+//            "(c) ... a 'Corner Mode' position ... a 'Straight Mode' position
+//            that, when compared to the Corner Mode position, results in a
+//            decrease in incidence"; "(d) maximum transition time ... does not
+//            exceed 400ms"; "(e) be driven by a single actuator"; "(k)
+//            Physical stops must be provided."
+//   C3.10.10 Front Wing Adjuster System: the same two-mode architecture, but
+//            with up to two movable elements (FW Primary Flap and FW Secondary
+//            Flap, on the Primary and Secondary Axes) and, unlike the rear,
+//            "(p) be driven by up to two actuators".
+//
+// What the regulations DO NOT constrain any more is where along the chord the
+// axis sits or how far the flap travels — and that is exactly where the grid
+// has separated. Reported from 2026 testing: cars whose flap ends up BELOW the
+// endplate line, having rotated past vertical so the section inverts (the
+// "flip-flop" wing — because the flap's upper surface has less area than its
+// underside, inverting it opens a bigger gap than merely flattening it would);
+// cars whose flap instead rises ABOVE the endplates for the same reason; and a
+// real spread of pivot positions — trailing edge, central, and up at the
+// mainplane leading edge — which trades deployment speed against retraction
+// speed.
+//
+// So the four archetypes below are the four real solutions, mapped onto this
+// game's fictional teams. Each is legal under C3.11.6: one actuator, one fixed
+// Y-aligned axis, two positions, and a transition inside 400ms.
+// WHAT IS DELIBERATELY NOT MODELLED, having tried it and measured the result.
+//
+// The most striking 2026 solutions reported from testing are the "flip-flop"
+// wings, where the flap rotates PAST VERTICAL so the section turns over — one
+// team's finishing below the endplate line, another's rising above it. Both were
+// built here first, and `probe:activeaero` rejected both: at this car's flap
+// chord an inverting flap puts its leading edge at y = 1.025, which is 80mm
+// above the 0.945 ceiling the entire rear wing assembly is dimensioned backwards
+// from, and above the airbox. The flap would stand proud of the roll hoop.
+//
+// The ceiling is real but its provenance is 2022-2025: rear wing profiles capped
+// at Z=910. The 2026 rules govern bodywork by reference volumes instead, and a
+// deployed flap leaving the closed-position volume is precisely what makes those
+// wings possible — but I could not confirm which article grants the deployed
+// allowance or how much of one, and the honest response to an unconfirmed
+// allowance is not to spend it. So all four archetypes below stay inside the
+// authored box, and differentiate by axis position and travel within it. The
+// probe asserts the ceiling so this cannot regress silently.
+export type ActuationId = 'trailing' | 'forward' | 'leading' | 'central';
+
+export interface Actuation {
+  /**
+   * Where the axis sits along the flap chord: 0 at the leading edge, 1 at the
+   * trailing edge. The regulations fix the axis for a given car; they no longer
+   * say where it has to be.
+   */
+  pivotChordFrac: number;
+  /**
+   * Rotation from Corner Mode to Straight Mode, radians. Negative lays the flap
+   * down and forward. Past about -1.5 the section passes vertical and inverts,
+   * which is the "flip-flop" solution.
+   */
+  openRad: number;
+  /**
+   * Transition time, seconds. C3.11.6(d) caps this at 400ms for everyone; where
+   * a team lands inside that is a design choice, and a leading-edge pivot
+   * deploys fast and retracts slowly while a trailing-edge one is the reverse.
+   */
+  travelS: number;
+  /** Front wing travel, radians. Front and rear are commanded together. */
+  frontOpenRad: number;
+}
+
+// Slot gaps below are the measured output of `probe:activeaero`, not targets.
+export const ACTUATION: Record<ActuationId, Actuation> = {
+  // Axis at the flap's trailing edge, so the leading edge swings up and forward
+  // and the flap ends lying almost flat. The largest opening on the grid — 150mm
+  // against a 17mm closed slot — and the one that reads most clearly from
+  // behind. Slowest of the four, because the leading edge travels furthest.
+  trailing: { pivotChordFrac: 1.00, openRad: -0.85, travelS: 0.32, frontOpenRad: -0.20 },
+  // Axis mid-forward. The flap tips more than it lies down, and the opening is
+  // both smaller and further forward. 66mm.
+  forward: { pivotChordFrac: 0.35, openRad: -0.95, travelS: 0.25, frontOpenRad: -0.22 },
+  // Mid-chord: the balanced compromise, and the closest to the old DRS motion.
+  // 90mm.
+  central: { pivotChordFrac: 0.55, openRad: -0.88, travelS: 0.28, frontOpenRad: -0.18 },
+  // Axis right up at the mainplane's leading edge. Quickest to deploy of the
+  // four, and it buys the least: the flap pivots about its own nose, so the slot
+  // barely widens. 27mm. This is the trade the real solution makes — deployment
+  // speed against opening — and it is why it is not the obvious choice.
+  leading: { pivotChordFrac: 0.12, openRad: -0.72, travelS: 0.22, frontOpenRad: -0.15 },
+};
+
+/**
+ * Which team runs which. Ten teams over four solutions, which is roughly how a
+ * real grid distributes when a rule opens up: a couple of distinct extremes and
+ * a cluster in the middle.
+ */
+const TEAM_ACTUATION: Record<string, ActuationId> = {
+  'apex': 'trailing',
+  'scuderia-rosso': 'forward',
+  'meridian': 'central',
+  'albion': 'trailing',
+  'aurora': 'leading',
+  'vantage': 'central',
+  'northstar': 'forward',
+  'lumen': 'leading',
+  'kestrel': 'central',
+  'brava': 'trailing',
+};
+
+/** The actuation a team runs, defaulting to the mid-grid solution. */
+export function actuationForTeam(teamId: string): ActuationId {
+  return TEAM_ACTUATION[teamId] ?? 'central';
 }
 
 // --- Principal dimensions, in metres, from the current technical regulations --
@@ -825,14 +975,14 @@ export function rearMembers(side: 1 | -1): SuspensionMember[] {
  */
 const REAR_WING_Z = -2.076;
 const REAR_WING_Y = 0.781;
-const DRS_PIVOT_Y = 0.935;
-const DRS_PIVOT_Z = -2.320;
+export const DRS_PIVOT_Y = 0.935;
+export const DRS_PIVOT_Z = -2.320;
 /**
  * Top of the rear wing assembly, y. The regulation limit is 0.945; everything
  * up there is authored against this so the endplate, the tip roll and the flap
  * agree about where the ceiling is.
  */
-const REAR_WING_TOP_Y = 0.942;
+export const REAR_WING_TOP_Y = 0.942;
 /**
  * Half-span of the rear wing. The regulations put the profiles inboard of
  * Y = 480, so 960mm overall — which is a little over HALF the car's width, and
@@ -840,6 +990,15 @@ const REAR_WING_TOP_Y = 0.942;
  * built at 1020mm.
  */
 const REAR_WING_HALF_SPAN = 0.480;
+
+/**
+ * Mainplane trailing edge, in the car's frame — the near side of the slot.
+ *
+ * From the derivation above: a 14mm slot below the flap's leading edge puts it
+ * at (0.799, -2.192). Named here so `probe:activeaero` measures the slot
+ * against the same number the geometry was authored from rather than a copy.
+ */
+export const MAINPLANE_TRAILING = { y: 0.799, z: -2.192 };
 /**
  * Incidence the flap is BUILT at, radians.
  *
@@ -849,9 +1008,9 @@ const REAR_WING_HALF_SPAN = 0.480;
  * the right one to draw, because a steep closed flap is what makes the open
  * position read as a change.
  */
-const DRS_CLOSED_RAD = 0.80;
+export const DRS_CLOSED_RAD = 0.80;
 /** Flap chord, metres. Shared by the geometry and by the pivot offset. */
-const DRS_FLAP_CHORD = 0.170;
+export const DRS_FLAP_CHORD = 0.170;
 
 interface Tiers {
   /** Vertices around a ring on the main body lofts. */
@@ -3632,19 +3791,53 @@ export function buildCar(
   shadow.renderOrder = -1;
   root.add(shadow);
 
-  // DRS flap on a pivot at its leading edge.
+  // The rear flap, on this team's axis. See `ACTUATION` for why the axis is a
+  // per-team quantity in 2026 and was not one under the DRS rules.
+  const act = ACTUATION[opts.actuation ?? 'central'];
   const flapPivot = new THREE.Group();
-  flapPivot.position.set(0, DRS_PIVOT_Y, DRS_PIVOT_Z);
+  // THE AXIS MOVES; THE CLOSED FLAP DOES NOT.
+  //
+  // This is the part that is easy to get wrong and would have been a real bug.
+  // Moving the hinge forward along the chord must change how the flap OPENS,
+  // not where it sits when shut — every car's wing is in the same place in
+  // Corner Mode, and `REAR_WING_Y`/`DRS_PIVOT_Y` are derived from the Z=910
+  // height limit, so a flap that drifted with the hinge would leave the
+  // regulation box on some cars and not others.
+  //
+  // So the pivot group is placed at the AXIS's world position, computed by
+  // walking back from the flap's trailing edge — which stays pinned at
+  // (DRS_PIVOT_Y, DRS_PIVOT_Z) — along the chord. With the flap built at
+  // incidence `DRS_CLOSED_RAD`, the unit vector from trailing edge to leading
+  // edge is (0, -sin, cos), and the axis sits (1-f) chords along it.
+  const backFromTrailing = DRS_FLAP_CHORD * (1 - act.pivotChordFrac);
+  flapPivot.position.set(
+    0,
+    DRS_PIVOT_Y - backFromTrailing * Math.sin(DRS_CLOSED_RAD),
+    DRS_PIVOT_Z + backFromTrailing * Math.cos(DRS_CLOSED_RAD),
+  );
   const flap = new THREE.Mesh(geo.flap, shellMat);
-  // Offset so the flap's TRAILING EDGE lands on the pivot. The element is
-  // centred by `wingElement`, so after `rotateX(DRS_CLOSED_RAD)` its trailing
-  // edge — local (0, 0, -chord/2) — sits at (0, +c/2 sin, -c/2 cos), and this
-  // is that vector negated. Hard-coding it as a magic -0.092 in z is what put
-  // the hinge at the leading edge and cost the car its DRS slot.
+  // Offset so the chosen point on the flap's chord lands on the pivot.
+  //
+  // `wingElement` centres the section, so its trailing edge is at local
+  // (0, 0, -chord/2) and its leading edge at (0, 0, +chord/2). A chord fraction
+  // f (0 = leading, 1 = trailing) is therefore at (0, 0, chord*(0.5 - f)), and
+  // after `rotateX(DRS_CLOSED_RAD)` that point sits at
+  // (0, -d sin, d cos) with d = chord*(0.5 - f). The offset below is that
+  // vector negated, so the axis passes through it.
+  //
+  // Checked at f = 1: d = -chord/2, giving (0, -c/2 sin, +c/2 cos), which is
+  // exactly the trailing-edge offset this replaces.
+  //
+  // Getting this wrong is not cosmetic and there is history: the hinge was once
+  // hard-coded at the flap's LEADING edge, from which a slot physically cannot
+  // open — the slot IS the gap between the mainplane's trailing edge and the
+  // flap's leading edge, so hinging there rotates the flap while leaving the
+  // one dimension that matters exactly where it was.
+  const pivotFromCentre = DRS_FLAP_CHORD * (0.5 - act.pivotChordFrac);
   flap.position.set(
     0,
-    -(DRS_FLAP_CHORD * 0.5) * Math.sin(DRS_CLOSED_RAD),
-    (DRS_FLAP_CHORD * 0.5) * Math.cos(DRS_CLOSED_RAD),
+    pivotFromCentre * Math.sin(DRS_CLOSED_RAD),
+    -pivotFromCentre * Math.cos(DRS_CLOSED_RAD),
   );
   flap.castShadow = true;
   flapPivot.add(flap);
@@ -3829,6 +4022,7 @@ export function buildCar(
     drsFlap: flapPivot,
     frontFlaps: frontFlapPivot,
     brakeGlow,
+    actuation: act,
     rainLights,
     setRainLight(on: boolean, flashPhase: number): void {
       // One material, three lenses — they are one circuit on a real car too.
