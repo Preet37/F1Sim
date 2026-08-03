@@ -144,8 +144,12 @@ export const SATURATION_DRIVE = 2.6;
  * saturation here is the low-order harmonic grit a cheap transmitter adds, and
  * that comes from the KNEE, not from the clipping.
  */
-export function saturationCurve(drive: number, n = 1024): Float32Array {
-  const curve = new Float32Array(n);
+export function saturationCurve(drive: number, n = 1024): Float32Array<ArrayBuffer> {
+  // Explicitly `Float32Array<ArrayBuffer>` rather than a bare `Float32Array`.
+  // Since TypeScript 5.7 the typed arrays are generic in their backing buffer
+  // and the bare name widens to `ArrayBufferLike`, which includes
+  // `SharedArrayBuffer` — and `WaveShaperNode.curve` will not accept that.
+  const curve = new Float32Array(new ArrayBuffer(n * 4));
   const k = Math.max(0.001, drive);
   const norm = Math.tanh(k);
   for (let i = 0; i < n; i++) {
