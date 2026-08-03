@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { clamp, clamp01, damp } from '../core/MathUtils';
+import { clamp, clamp01, damp, wrapAngle } from '../core/MathUtils';
 import {
   buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
   type BodyPartId, type CarVisual,
@@ -49,6 +49,17 @@ import { PART_DETACH_HEALTH, PART_REPAIR_HEALTH } from '../race/DamageModel';
 
 /** Suspension health below which a corner starts visibly folding up. */
 const SUSPENSION_BEND_HEALTH = 0.62;
+
+/**
+ * Movement in one physics step beyond which the car was PLACED, not driven.
+ *
+ * The fastest thing on the circuit does about 100 m/s, which is 0.84m in a
+ * 120Hz step, and a barrier rebound resolves inside a step without moving the
+ * car far. 5m is six times the honest maximum and far below the smallest
+ * teleport there is (a pit-box placement moves tens of metres), so it separates
+ * the two cleanly with nothing near the boundary. See `updateRenderPoses`.
+ */
+const TELEPORT_M = 5;
 
 /**
  * Tone-mapping exposure, by time of day.
@@ -1041,12 +1052,75 @@ export class Renderer {
   }
 
   /**
+   * Places every car where it should be DRAWN this frame.
+   *
+   * THE BUG THIS FIXES. The doc comment on `render` used to say that `alpha`
+   * was "unused for now; the physics runs at 120Hz, comfortably above display
+   * rate", and that reasoning is the defect. Being above the display rate is
+   * not the property that matters — being an INTEGER MULTIPLE of it is, and it
+   * almost never is. The accumulator hands out whole steps, so a 50fps frame
+   * worth 2.4 steps is delivered as 2, 2, 3, 2, 3, 2, 2, 3... A car at 80 m/s
+   * covers 0.67m per step, so drawn at the last completed step it advances
+   * 1.33m on one frame and 2.00m on the next: the same car, on the same
+   * straight, at the same speed, apparently accelerating and decelerating by
+   * 50% every frame. That is the reported "one frame and then the next frame
+   * that car moves to another position ... its not a smooth frame transition".
+   *
+   * WHY ONLY OTHER CARS. The player's car looked fine because every following
+   * camera is anchored to it. The camera inherits the identical stagger, so in
+   * screen space the error cancels and the player's car sits still while the
+   * whole world — and every rival in it — judders around it. The report said
+   * exactly that, and it is the signature of this bug and of no other.
+   *
+   * THE FIX is the standard one for a fixed-step simulation: draw the pose at
+   * `alpha` of the way from the previous step to the current one, where `alpha`
+   * is the fraction of a step still sitting in the accumulator. That renders up
+   * to one step (8.3ms) in the past, which is invisible, and removes the
+   * stagger entirely because the drawn pose is now a continuous function of
+   * wall-clock time instead of a staircase.
+   *
+   * TELEPORTS ARE NOT INTERPOLATED. A car placed on the grid, serviced in its
+   * box or craned back onto the circuit moves further in one step than any car
+   * can drive, and lerping across that would smear it over several hundred
+   * metres of scenery for a frame. Anything beyond `TELEPORT_M` snaps.
+   *
+   * Cost: three lerps and a `wrapAngle` per car per frame — 22 cars is about a
+   * microsecond, which is why this was always the right thing to do.
+   */
+  private updateRenderPoses(engine: RaceEngine, alpha: number): void {
+    const a = clamp01(alpha);
+    for (const car of engine.cars) {
+      const p = car.physics;
+      const dx = p.position.x - car.prevX;
+      const dz = p.position.y - car.prevZ;
+      if (dx * dx + dz * dz > TELEPORT_M * TELEPORT_M) {
+        car.renderX = p.position.x;
+        car.renderZ = p.position.y;
+        car.renderHeading = p.heading;
+        continue;
+      }
+      car.renderX = car.prevX + dx * a;
+      car.renderZ = car.prevZ + dz * a;
+      // Through the short way round. A car crossing the +-pi branch would
+      // otherwise spin through a full turn in one frame, which is a far worse
+      // artefact than the one being fixed.
+      car.renderHeading = car.prevHeading + wrapAngle(p.heading - car.prevHeading) * a;
+    }
+  }
+
+  /**
    * Draws one frame.
    * @param dt real frame time in seconds
-   * @param alpha interpolation fraction between physics steps (unused for now;
-   *              the physics runs at 120Hz, comfortably above display rate)
+   * @param alpha fraction of a physics step left in the accumulator, from
+   *              `SimClock.interpolationAlpha`. Drives `updateRenderPoses`;
+   *              passing 1 draws the last completed step, which is what this
+   *              did before interpolation existed.
    */
-  render(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
+  render(dt: number, alpha: number, engine: RaceEngine, focusCar: CarEntry): void {
+    // FIRST. Every consumer below — the cars, the cameras, the effects, the
+    // shadow frustum, the motion-blur focus — reads the render pose, and they
+    // must all read the same one.
+    this.updateRenderPoses(engine, alpha);
     this.updateResolutionScale(dt);
     this.applyWeather(engine);
     this.drainImpacts(engine);
@@ -1112,12 +1186,8 @@ export class Renderer {
     // would have roughly one texel per metre.
     if (this.sun.castShadow) {
       const y = engine.track.elevationAt(focusCar.s);
-      this.sun.target.position.set(focusCar.physics.position.x, y, focusCar.physics.position.y);
-      this.sun.position.set(
-        focusCar.physics.position.x - 60,
-        y + 110,
-        focusCar.physics.position.y + 48,
-      );
+      this.sun.target.position.set(focusCar.renderX, y, focusCar.renderZ);
+      this.sun.position.set(focusCar.renderX - 60, y + 110, focusCar.renderZ + 48);
     }
 
     // Mirror feeds, immediately before the frame that samples them.
@@ -1200,11 +1270,10 @@ export class Renderer {
    * entire frame in one direction.
    */
   private projectFocus(car: CarEntry, cam: THREE.PerspectiveCamera): void {
-    const p = car.physics;
     this.tmpVec.set(
-      p.position.x + Math.sin(p.heading) * 60,
+      car.renderX + Math.sin(car.renderHeading) * 60,
       1.2,
-      p.position.y + Math.cos(p.heading) * 60,
+      car.renderZ + Math.cos(car.renderHeading) * 60,
     );
     this.tmpVec.project(cam);
     // NDC to the pass's UV space. No y flip: a render target's v axis points the
@@ -1446,9 +1515,11 @@ export class Renderer {
       // elevation every wheel on the grid ran 20mm underground and had a
       // 237mm-wide flat bitten out of the bottom of it. Measured by
       // `npm run probe:carrig`.
+      // INTERPOLATED, not the solver's last step. See `updateRenderPoses` —
+      // this one line is the whole of the "the cars jitter" defect.
       const y = carGroundY(track.elevationAt(car.s));
-      v.root.position.set(p.position.x, y, p.position.y);
-      v.root.rotation.y = p.heading;
+      v.root.position.set(car.renderX, y, car.renderZ);
+      v.root.rotation.y = car.renderHeading;
 
       // Geometry LOD, from the camera's position at the END of the previous
       // frame — the director has not moved it yet this frame. A frame of lag on

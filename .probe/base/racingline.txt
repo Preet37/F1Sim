@@ -1,0 +1,97 @@
+
+> f1sim@0.1.0 probe:racingline
+> tsx scripts/probeRacingLine.ts
+
+Monza: heaviest braking zone into a 59 km/h corner
+
+colour of the road just ahead of the car:
+distance to corner   R     G     B    reads as
+
+--- approaching at 330 km/h ---
+          600m   1.00  0.15  0.03   RED
+          350m   1.00  0.23  0.03   RED
+          200m   1.00  0.05  0.03   RED
+          150m   1.00  0.05  0.03   RED
+          100m   1.00  0.05  0.03   RED
+           60m   1.00  0.05  0.03   RED
+
+--- approaching at 240 km/h ---
+          600m   0.15  0.95  0.25   GREEN
+          350m   0.15  0.95  0.25   GREEN
+          200m   1.00  0.05  0.03   RED
+          150m   1.00  0.05  0.03   RED
+          100m   1.00  0.05  0.03   RED
+           60m   1.00  0.05  0.03   RED
+
+--- approaching at 160 km/h ---
+          600m   0.15  0.95  0.25   GREEN
+          350m   0.15  0.95  0.25   GREEN
+          200m   0.15  0.95  0.25   GREEN
+          150m   1.00  0.05  0.03   RED
+          100m   1.00  0.05  0.03   RED
+           60m   1.00  0.05  0.03   RED
+
+--- approaching at 90 km/h ---
+          600m   0.15  0.95  0.25   GREEN
+          350m   0.15  0.95  0.25   GREEN
+          200m   0.15  0.95  0.25   GREEN
+          150m   0.15  0.95  0.25   GREEN
+          100m   0.15  0.95  0.25   GREEN
+           60m   1.00  0.05  0.03   RED
+
+
+=== follow-the-green: does the colour keep its promise? ===
+
+At every point on every lap, the fastest speed at which the road ahead
+still reads GREEN is found, and the car is released from there: it holds
+that speed for a fifth of a second — a driver reacting to the colour
+CHANGING, which it has not yet done — and then brakes as hard as the
+tyres allow. "worst load" is the most lateral grip it is asked for on the
+way through. Above 1.00 the car leaves the road, and the green that put
+it there was a lie.
+
+Run for every car a player can actually be in, because the promise is
+made to all of them and the reference car is none of them.
+
+circuit       top, softs/lotop, mediums/fullmid, mediums/fullmid, wr hards/midback, wr hards/full    worst
+bahrain               0.969        0.969        0.950        0.969        0.969    0.969
+jeddah                0.969        0.969        0.969        0.969        0.969    0.969
+monaco                0.969        0.844        0.969        0.969        0.969    0.969
+silverstone           0.969        0.969        0.969        0.969        0.969    0.969
+redbullring           0.969        0.969        0.969        0.969        0.969    0.969
+spa                   0.969        0.969        0.969        0.969        0.969    0.969
+zandvoort             0.969        0.908        0.969        0.969        0.969    0.969
+monza                 0.969        0.969        0.969        0.969        0.969    0.969
+suzuka                0.969        0.969        0.969        0.969        0.969    0.969
+cota                  0.969        0.969        0.969        0.969        0.969    0.969
+interlagos            0.969        0.969        0.969        0.969        0.969    0.969
+
+worst per car over the whole calendar:
+  best team, fresh softs, low fuel      0.969   ok
+  best team, fresh mediums, full        0.969   ok
+  midfield, fresh mediums, full         0.969   ok
+  midfield, worn hards, mid fuel        0.969   ok
+  backmarker, worn hards, full          0.969   ok
+
+PASS — green means the car makes the corner, on all eleven circuits,
+       for every car a player can be driving
+
+
+=== the same measurement, driver-in-the-loop ===
+
+A credulous driver — full throttle on green, maximum braking on anything
+else — flown at every corner. Reported, not asserted: past the point the
+colour turns, what happens is about the driver, not the display.
+
+circuit        corners  worst load    longitudinal-only would be    graded vs reference car
+bahrain             11       1.056                         2.596                      1.225
+jeddah              11       0.937                         2.108                      1.145
+monaco              13       1.132                         3.860                      1.258
+silverstone         12       0.964                         2.537                      1.144
+redbullring          7       0.951                         2.549                      1.147
+spa                 11       1.063                         3.589                      1.177
+zandvoort            8       0.951                         2.423                      1.143
+monza                8       0.992                         2.685                      1.128
+suzuka              13       1.012                         3.039                      1.180
+cota                15       1.053                         3.344                      1.214
+interlagos          10       1.001                         2.942                      1.172

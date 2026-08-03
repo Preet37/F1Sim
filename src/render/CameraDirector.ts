@@ -397,7 +397,7 @@ export class CameraDirector {
     const speed = p.speedMs;
     this.smoothSpeed = damp(this.smoothSpeed, speed, 3, dt);
 
-    const heading = p.heading;
+    const heading = car.renderHeading;
     const sinH = Math.sin(heading);
     const cosH = Math.cos(heading);
 
@@ -487,7 +487,7 @@ export class CameraDirector {
     const slip = clamp(wrapAngle(travelHeading - viewHeading), -1.05, 1.05) * slipWeight;
 
     // The point every following camera is anchored to.
-    this.anchor.set(p.position.x, carY, p.position.y);
+    this.anchor.set(car.renderX, carY, car.renderZ);
 
     switch (this.mode) {
       case 'chase': {
@@ -538,9 +538,9 @@ export class CameraDirector {
         // backwards instead of being two terms that could disagree.
         const yaw = viewHeading - slip * 0.55;
         this.desired.set(
-          p.position.x - Math.sin(yaw) * dist,
+          car.renderX - Math.sin(yaw) * dist,
           carY + height,
-          p.position.y - Math.cos(yaw) * dist,
+          car.renderZ - Math.cos(yaw) * dist,
         );
         // Aim a short way ahead of the car, and low.
         //
@@ -551,9 +551,9 @@ export class CameraDirector {
         // the horizon. This pair puts the car around two thirds down and the
         // horizon around a third from the top, which is the broadcast framing.
         this.lookTarget.set(
-          p.position.x + sinR * 5.6,
+          car.renderX + sinR * 5.6,
           carY + 0.80,
-          p.position.y + cosR * 5.6,
+          car.renderZ + cosR * 5.6,
         );
         this.applySmoothed(dt, 9, 11, this.anchor);
         // Bank into the corner.
@@ -609,9 +609,9 @@ export class CameraDirector {
         // helmet now subtends 23 per cent of frame width against the
         // reference's 21.
         this.desired.set(
-          p.position.x - sinH * 0.80,
+          car.renderX - sinH * 0.80,
           carY + 1.10,
-          p.position.y - cosH * 0.80,
+          car.renderZ - cosH * 0.80,
         );
         // Aim on the road twenty metres up, which is 3.4 degrees of nose-down
         // and puts the horizon at 42 per cent of frame height. Not further: the
@@ -619,9 +619,9 @@ export class CameraDirector {
         // flattens it until the shot is all sky and the hoop drops back out of
         // the bottom of the frame.
         this.lookTarget.set(
-          p.position.x + sinH * 20,
+          car.renderX + sinH * 20,
           carY - 0.10,
-          p.position.y + cosH * 20,
+          car.renderZ + cosH * 20,
         );
         this.applySmoothed(dt, 60, 20, this.anchor);
         break;
@@ -640,14 +640,14 @@ export class CameraDirector {
         // Being a metre ahead of the car's mass is not a defect here: it is why
         // a nose camera turns in early and feels quick.
         this.desired.set(
-          p.position.x + sinH * 3.20,
+          car.renderX + sinH * 3.20,
           carY + 0.46,
-          p.position.y + cosH * 3.20,
+          car.renderZ + cosH * 3.20,
         );
         this.lookTarget.set(
-          p.position.x + sinH * 40,
+          car.renderX + sinH * 40,
           carY + 0.62,
-          p.position.y + cosH * 40,
+          car.renderZ + cosH * 40,
         );
         this.applySmoothed(dt, 60, 22, this.anchor);
         break;
@@ -666,14 +666,14 @@ export class CameraDirector {
         const dist = lerp(12, 15, clamp01(this.smoothSpeed / 90));
         const yaw = viewHeading - slip * 0.3;
         this.desired.set(
-          p.position.x - Math.sin(yaw) * dist,
+          car.renderX - Math.sin(yaw) * dist,
           carY + 3.4,
-          p.position.y - Math.cos(yaw) * dist,
+          car.renderZ - Math.cos(yaw) * dist,
         );
         this.lookTarget.set(
-          p.position.x + sinR * 2.5,
+          car.renderX + sinR * 2.5,
           carY + 1.00,
-          p.position.y + cosR * 2.5,
+          car.renderZ + cosR * 2.5,
         );
         this.applySmoothed(dt, 4.5, 9, this.anchor);
         break;
@@ -694,11 +694,11 @@ export class CameraDirector {
         const orbit = this.dronePhase;
         const dist = 10.5;
         this.desired.set(
-          p.position.x + Math.sin(orbit) * dist,
+          car.renderX + Math.sin(orbit) * dist,
           carY + 4.6 + Math.sin(orbit * 0.7) * 1.5,
-          p.position.y + Math.cos(orbit) * dist,
+          car.renderZ + Math.cos(orbit) * dist,
         );
-        this.lookTarget.set(p.position.x, carY + 0.55, p.position.y);
+        this.lookTarget.set(car.renderX, carY + 0.55, car.renderZ);
         this.applySmoothed(dt, 3.0, 8, this.anchor);
         break;
       }
@@ -752,7 +752,7 @@ export class CameraDirector {
           track.elevation[i] + 2.1 + standoff * 0.22,
           track.pz[i] + track.nz[i] * off,
         );
-        this.lookTarget.set(p.position.x, carY + 0.55, p.position.y);
+        this.lookTarget.set(car.renderX, carY + 0.55, car.renderZ);
         // The camera position is static; only the aim tracks the car, and on a
         // long lens it has to track it briskly or the car leaves the frame.
         this.applySmoothed(dt, 100, 12);
@@ -771,8 +771,8 @@ export class CameraDirector {
       // A real trackside camera zooms to hold the car at a usable size as it
       // approaches and goes past. A fixed focal length either loses the car in
       // the distance or has it fill the frame for a tenth of a second.
-      const dx = this.camera.position.x - p.position.x;
-      const dz = this.camera.position.z - p.position.y;
+      const dx = this.camera.position.x - car.renderX;
+      const dz = this.camera.position.z - car.renderZ;
       const dist = Math.max(10, Math.hypot(dx, dz));
       // The long end has to be genuinely long. An 8-degree floor was already
       // biting at ninety metres, which is well inside the range this camera
@@ -814,7 +814,7 @@ export class CameraDirector {
     const minY = roadY + MIN_CAMERA_HEIGHT_M;
     if (this.camera.position.y < minY) this.camera.position.y = minY;
 
-    if (world) this.keepOutOfSolids(dt, world, p.position.x, p.position.y, roadY);
+    if (world) this.keepOutOfSolids(dt, world, car.renderX, car.renderZ, roadY);
   }
 
   /**
@@ -963,12 +963,12 @@ export class CameraDirector {
       DRIVER_EYE_Y,
       DRIVER_EYE_Z + this.headShiftZ,
     );
-    this.carEuler.set(this.rigPitch, p.heading, this.rigRoll, 'XYZ');
+    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'XYZ');
     this.eye.applyEuler(this.carEuler);
     this.camera.position.set(
-      p.position.x + this.eye.x,
+      car.renderX + this.eye.x,
       carY + this.eye.y,
-      p.position.y + this.eye.z,
+      car.renderZ + this.eye.z,
     );
 
     // Looking into the corner.
@@ -991,14 +991,14 @@ export class CameraDirector {
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
     const aheadHeading = track.headingAt(car.s + lookAheadM);
     const target = clamp(
-      wrapAngle(aheadHeading - p.heading) * DRIVER_HEAD.lookGain,
+      wrapAngle(aheadHeading - car.renderHeading) * DRIVER_HEAD.lookGain,
       -DRIVER_HEAD.lookMax, DRIVER_HEAD.lookMax,
     );
     this.headYaw = damp(this.headYaw, target, DRIVER_HEAD.lookRate, dt);
 
     this.camera.rotation.set(
       this.rigPitch - DRIVER_EYE_PITCH,
-      p.heading + this.headYaw + Math.PI,
+      car.renderHeading + this.headYaw + Math.PI,
       this.rigRoll + this.headLean,
       'YXZ',
     );
@@ -1041,12 +1041,12 @@ export class CameraDirector {
     // were floating rather than bolted down; the rotation angles were already
     // right, it was the position that was wrong.
     this.eye.set(EYE_X, EYE_Y, EYE_Z);
-    this.carEuler.set(this.rigPitch, p.heading, this.rigRoll, 'XYZ');
+    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'XYZ');
     this.eye.applyEuler(this.carEuler);
     this.camera.position.set(
-      p.position.x + this.eye.x,
+      car.renderX + this.eye.x,
       carY + this.eye.y,
-      p.position.y + this.eye.z,
+      car.renderZ + this.eye.z,
     );
 
     // Drivers look at the apex, not at the nose. Take the heading of the track
@@ -1062,14 +1062,14 @@ export class CameraDirector {
     // still frames the shot.
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
     const aheadHeading = track.headingAt(car.s + lookAheadM);
-    const target = clamp(wrapAngle(aheadHeading - p.heading) * 0.30, -0.20, 0.20);
+    const target = clamp(wrapAngle(aheadHeading - car.renderHeading) * 0.30, -0.20, 0.20);
     this.headYaw = damp(this.headYaw, target, 2.6, dt);
 
     // Nose-down bias. See EYE_PITCH: it is the other half of the roll-hoop
     // framing and belongs beside the eye point it goes with, not here.
     this.camera.rotation.set(
       this.rigPitch - EYE_PITCH,
-      p.heading + this.headYaw + Math.PI,
+      car.renderHeading + this.headYaw + Math.PI,
       this.rigRoll,
       'YXZ',
     );

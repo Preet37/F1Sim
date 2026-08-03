@@ -1,0 +1,15 @@
+
+> f1sim@0.1.0 validate:integrity
+> tsx scripts/probeIntegrity.ts
+
+bahrain       lapsSet= 0/20  walledIn=0.12%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+jeddah        lapsSet= 0/20  walledIn=0.00%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+monaco        lapsSet= 0/20  walledIn=0.02%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+silverstone   lapsSet= 0/20  walledIn=0.00%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+redbullring   lapsSet= 9/20  walledIn=0.05%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+spa           lapsSet= 0/20  walledIn=0.00%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+zandvoort     lapsSet= 4/20  walledIn=0.13%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+monza         lapsSet= 1/20  walledIn=0.04%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+suzuka        lapsSet= 0/20  walledIn=0.05%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+cota          lapsSet= 0/20  walledIn=0.09%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0
+interlagos    lapsSet= 8/20  walledIn=0.02%  aiOffside=0.0m  playerOffside=0.0m  throughWalls=0

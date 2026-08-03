@@ -4116,7 +4116,13 @@ class Game {
         ? player
         : engine.standings.find((c) => !c.retired) ?? engine.standings[0] ?? player;
       if (!focus) return;
-      this.renderer.render(this.clock.frameDt, engine, focus);
+      // The alpha the clock has been computing since it was written and nobody
+      // ever asked for. Without it every car on the circuit is drawn at the last
+      // completed 120Hz step, and because a frame is almost never a whole number
+      // of steps, the field advances in a 2-2-3-2-3 stagger — visible as jitter
+      // on every car except the player's, whose camera staggers with it. See
+      // `Renderer.updateRenderPoses`.
+      this.renderer.render(this.clock.frameDt, this.clock.interpolationAlpha, engine, focus);
 
       // Audio is driven from the focused car and panned around the camera, so a
       // trackside or drone camera hears the scene from where it is standing

@@ -1,0 +1,154 @@
+
+> f1sim@0.1.0 validate:limits
+> tsx scripts/probeTrackLimits.ts
+
+=== Track limits ===
+
+The white line is painted inboard of half-width, so its OUTER edge
+is the regulation boundary. A car is off only when its innermost
+extremity clears that edge.
+
+car half-width (over the tyres):  0.995 m
+edge line width:                  0.140 m
+
+--- Paint, from the built geometry (front-facing triangles only) ---
+circuit          right    left   outer-edge err   band    max gap
+bahrain         100.0%  100.0%         0.005 m   0.135 m       0 m  
+jeddah          100.0%  100.0%         0.005 m   0.135 m       0 m  
+monaco          100.0%   99.8%         0.005 m   0.135 m       6 m  left at 336m, pit lane
+silverstone     100.0%  100.0%         0.005 m   0.135 m       0 m  
+redbullring     100.0%  100.0%         0.005 m   0.135 m       0 m  
+spa             100.0%  100.0%         0.005 m   0.135 m       3 m  right at 210m, pit lane
+zandvoort       100.0%  100.0%         0.005 m   0.135 m       0 m  
+monza           100.0%  100.0%         0.005 m   0.135 m       0 m  
+suzuka          100.0%  100.0%         0.005 m   0.135 m       0 m  
+cota            100.0%   99.9%         0.005 m   0.135 m       3 m  left at 3431m, NOT the pit lane
+interlagos      100.0%  100.0%         0.005 m   0.135 m       0 m  
+
+--- The rule, from RaceControlManager ---
+Insets are measured from the OUTER edge of the white line to the
+car's innermost extremity. Positive = still overlapping the track.
+
+circuit          +0.10   +0.07   0.000  -0.001  -0.100   threshold
+bahrain              ok      ok      ok     DEL     DEL     -0.0000 m
+jeddah               ok      ok      ok     DEL     DEL     -0.0000 m
+monaco               ok      ok      ok     DEL     DEL     -0.0000 m
+silverstone          ok      ok      ok     DEL     DEL     -0.0000 m
+redbullring          ok      ok      ok     DEL     DEL     -0.0000 m
+spa                  ok      ok      ok     DEL     DEL     -0.0000 m
+zandvoort            ok      ok      ok     DEL     DEL     -0.0000 m
+monza                ok      ok      ok     DEL     DEL     -0.0000 m
+suzuka               ok      ok      ok     DEL     DEL     -0.0000 m
+cota                 ok      ok      ok     DEL     DEL     -0.0000 m
+interlagos           ok      ok      ok     DEL     DEL     -0.0000 m
+
+--- The same test with the car yawed ---
+A car running wide is sliding. Its four contact patches spread
+across the track as it rotates, so the last one to leave the paint
+is further from the centreline than half a car width. The threshold
+below is metres of overlap still on the track when the lap died —
+positive means the lap was deleted while the car was still on it.
+
+circuit             0 deg    5 deg   10 deg   15 deg   25 deg
+(old rule)        -0.005    0.132    0.261    0.380    0.586
+bahrain            0.000   -0.000    0.000    0.000   -0.000
+jeddah             0.000    0.000    0.000    0.000   -0.000
+monaco             0.000   -0.000    0.000    0.000   -0.000
+silverstone        0.000    0.000    0.000    0.000   -0.000
+redbullring        0.000   -0.000    0.000    0.000   -0.000
+spa                0.000    0.000    0.000    0.000   -0.000
+zandvoort          0.000    0.000    0.000    0.000   -0.000
+monza              0.000   -0.000    0.000    0.000    0.000
+suzuka             0.000   -0.000    0.000    0.000   -0.000
+cota               0.000   -0.000    0.000    0.000   -0.000
+interlagos         0.000   -0.000    0.000    0.000   -0.000
+
+--- Cars driving: how many deletions the old rule invented ---
+An excursion is counted the way race control counts it: once, on the
+step the car is first judged off. A FALSE one is an excursion the old
+rule reported in which no part of the car ever actually left the
+track. Steps are counted too, because the AI is tuned to stay inside
+the line and rarely goes far past it — the player does, and the
+per-step disagreement is the size of the trap they drive into.
+
+circuit         car-steps   off:real   off:old  false-step  false-exc   worst m
+bahrain            208423          0         0           0          0     0.000
+jeddah             208822          0         0           0          0     0.000
+monaco             235940         24        24         537          0     0.744
+silverstone        207902          0         0           0          0     0.000
+redbullring        221753          0         0           0          0     0.000
+spa                204699          0         0           0          0     0.000
+zandvoort          226387          0         0           0          0     0.000
+monza              202874          0         0           0          0     0.000
+suzuka             206206          3         4         152          0     0.889
+cota               200750          0         0           0          0     0.000
+interlagos         226709          0         0           0          0     0.000
+
+0 of the old rule's 28 reported excursions across the eleven
+circuits were of a car that never left the track, and it spent up to
+0.89 m of car still on the paint while calling one off.
+
+--- Which laps a track-limits excursion can be sanctioned on ---
+Art. B1.9.4: in an LTCS the sanction IS the deletion of a lap time.
+On a lap that carries no time there is nothing to delete.
+
+circuit          session   lap            deleted  strikes  announced
+bahrain        quali     out                 no        0          0
+bahrain        quali     in                  no        0          0
+bahrain        quali     flying             yes        1          1
+bahrain        race      out                 no        1          1
+bahrain        race      flying              no        1          1
+jeddah         quali     out                 no        0          0
+jeddah         quali     in                  no        0          0
+jeddah         quali     flying             yes        1          1
+jeddah         race      out                 no        1          1
+jeddah         race      flying              no        1          1
+monaco         quali     out                 no        0          0
+monaco         quali     in                  no        0          0
+monaco         quali     flying             yes        1          1
+monaco         race      out                 no        1          1
+monaco         race      flying              no        1          1
+silverstone    quali     out                 no        0          0
+silverstone    quali     in                  no        0          0
+silverstone    quali     flying             yes        1          1
+silverstone    race      out                 no        1          1
+silverstone    race      flying              no        1          1
+redbullring    quali     out                 no        0          0
+redbullring    quali     in                  no        0          0
+redbullring    quali     flying             yes        1          1
+redbullring    race      out                 no        1          1
+redbullring    race      flying              no        1          1
+spa            quali     out                 no        0          0
+spa            quali     in                  no        0          0
+spa            quali     flying             yes        1          1
+spa            race      out                 no        1          1
+spa            race      flying              no        1          1
+zandvoort      quali     out                 no        0          0
+zandvoort      quali     in                  no        0          0
+zandvoort      quali     flying             yes        1          1
+zandvoort      race      out                 no        1          1
+zandvoort      race      flying              no        1          1
+monza          quali     out                 no        0          0
+monza          quali     in                  no        0          0
+monza          quali     flying             yes        1          1
+monza          race      out                 no        1          1
+monza          race      flying              no        1          1
+suzuka         quali     out                 no        0          0
+suzuka         quali     in                  no        0          0
+suzuka         quali     flying             yes        1          1
+suzuka         race      out                 no        1          1
+suzuka         race      flying              no        1          1
+cota           quali     out                 no        0          0
+cota           quali     in                  no        0          0
+cota           quali     flying             yes        1          1
+cota           race      out                 no        1          1
+cota           race      flying              no        1          1
+interlagos     quali     out                 no        0          0
+interlagos     quali     in                  no        0          0
+interlagos     quali     flying             yes        1          1
+interlagos     race      out                 no        1          1
+interlagos     race      flying              no        1          1
+
+PASS — the line is on both sides everywhere, the rule is
+applied at its outer edge, and only a lap that carries a time
+can lose one.

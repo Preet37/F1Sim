@@ -170,9 +170,13 @@ export class EffectsDirector {
       if (!fx) continue;
       if (car.retired && car.recovered) continue;
 
-      const p = car.physics;
-      const x = p.position.x;
-      const z = p.position.y;
+      // The DRAWN pose, not the solver's last step. Smoke leaves the contact
+      // patch and rubber is laid under it, so an emitter reading the stepped
+      // position puts both up to 0.7m from the tyre that is supposed to have
+      // made them — and staggers them frame to frame in exactly the way
+      // `Renderer.updateRenderPoses` exists to stop.
+      const x = car.renderX;
+      const z = car.renderZ;
       // The DRAWN road, not the bare elevation: smoke, spray and plank sparks
       // all leave from the contact patch, and the contact patch stands on the
       // asphalt mesh. See `carGroundY` — the cars themselves had the same
@@ -207,8 +211,8 @@ export class EffectsDirector {
 
     // Car axes in world space. The physics stores heading as a yaw about the
     // vertical, so forward and right fall straight out of it.
-    const cos = Math.cos(p.heading);
-    const sin = Math.sin(p.heading);
+    const cos = Math.cos(car.renderHeading);
+    const sin = Math.sin(car.renderHeading);
     const fwdX = sin, fwdZ = cos;
     const rightX = cos, rightZ = -sin;
 
