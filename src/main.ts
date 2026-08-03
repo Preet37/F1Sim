@@ -36,9 +36,9 @@ import { playerIndexIn } from './career/Seat';
 import { buildCareerCreate, type CreatedIdentity } from './ui/CareerCreate';
 import { buildTeamCreate, type TeamCreateHandle } from './ui/TeamCreate';
 import { buildLiveryEditor, type LiveryEditorHandle } from './ui/LiveryEditor';
-import {
-  capGauge, driverMarket, engineDeal, factoryFloor, ledgerStrip, teamIdentity,
-} from './ui/TeamHQ';
+import { capGauge, driverMarket, engineDeal, mountTeamHQ } from './ui/TeamHQ';
+import { decisionList, newsFeed } from './ui/Briefing';
+import { buildPreparation } from './ui/Preparation';
 import { clearLiveryDesigns, registerLiveryDesign } from './render/Livery';
 import { coerceDesign } from './render/LiveryDesign';
 import { playerHelmet } from './career/CareerState';
@@ -1144,21 +1144,73 @@ class Game {
       },
     });
 
-    const refresh = () => {
-      this.saves.save(this.careerId, career.state);
-      this.showTeamHQ();
-    };
-
-    teamIdentity(body, career);
-    capGauge(body, career);
-    this.el('div', 'section-title', body, 'The factory');
-    factoryFloor(body, { career, onChange: refresh });
-    this.el('div', 'section-title', body, 'The books');
-    ledgerStrip(body, career);
+    // MOUNTED ONCE AND REPAINTED IN PLACE. Rebuilding the page on every button
+    // press — which is what this did first — flashes the screen and throws the
+    // scroll position away on the busiest page in the mode. See `mountTeamHQ`.
+    mountTeamHQ(body, {
+      career,
+      onChange: () => this.saves.save(this.careerId, career.state),
+      routes: {
+        hq: () => this.showTeamHQ(),
+        engine: () => this.showEngineDeal(),
+        market: () => this.showDriverMarket(),
+        livery: () => this.showLiveryEditor(),
+        prep: () => this.showPreparation(),
+        hub: () => this.showCareerHub(),
+      },
+    });
 
     this.button('Paint shop', actions, () => this.showLiveryEditor(), 'btn ghost');
     this.button('Engine deal', actions, () => this.showEngineDeal(), 'btn ghost');
     this.button('Driver market', actions, () => this.showDriverMarket(), 'btn ghost');
+    this.spacer(actions);
+    this.button('Back to the hub', actions, () => this.showCareerHub(), 'btn primary');
+  }
+
+  /**
+   * Preparation between rounds.
+   *
+   * `Career.spendPrepSlot` has been implemented and documented and reachable
+   * from nowhere. Every branch of it moves something the simulation reads — a
+   * driver attribute the AI's own model uses, a department morale that decides
+   * what an upgrade costs and whether it passes quality control, a fan rating
+   * that decides commercial income — and none of it could be touched by
+   * anybody playing.
+   */
+  private showPreparation(): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('team-hq');
+    const { body, actions } = this.page({
+      tab: TIER_CAR[career.tier].shortName,
+      where: 'Preparation',
+      title: 'Between rounds',
+      sub: career.state.prepSlotsLeft + ' '
+        + (career.state.prepSlotsLeft === 1 ? 'slot' : 'slots')
+        + ' before the next race. Every one of these moves a number the car uses.',
+      back: () => this.showCareerHub(),
+      rule: {
+        parts: [
+          Math.max(0, career.round), 1,
+          Math.max(0, career.calendar.length - career.round - 1),
+        ],
+        at: 1,
+      },
+    });
+
+    // Mounted once and repainted in place, for the same reason Team HQ is:
+    // rebuilding the page on every press flashes the screen and throws the
+    // scroll away.
+    const prep = buildPreparation(body, {
+      career,
+      onChange: () => {
+        this.saves.save(this.careerId, career.state);
+        prep.refresh();
+        slots.textContent = career.state.prepSlotsLeft + ' left';
+      },
+    });
+    const slots = this.el('div', 'mt-why', body, career.state.prepSlotsLeft + ' left');
+
     this.spacer(actions);
     this.button('Back to the hub', actions, () => this.showCareerHub(), 'btn primary');
   }
@@ -1321,6 +1373,24 @@ class Game {
       note: TIER_CAR[s.tier].name + ' · ' + s.season.year
         + ' · round ' + round + ' of ' + career.calendar.length,
     });
+
+    // WHAT JUST HAPPENED, AND WHAT YOU ARE BEING ASKED TO DECIDE.
+    //
+    // Above the instruments, deliberately. The verdict on this mode was that it
+    // is not clear what is going on or what you are supposed to do, and the hub
+    // was the specific place that was true: it opened on six meters and a form
+    // table, and everything the simulation had just done — a part delivered, a
+    // championship position lost, a rival signed somebody, an idle factory —
+    // went unreported. Both blocks are generated from state that already
+    // exists; see `src/career/Newsroom.ts`.
+    decisionList(body, career, {
+      hq: () => this.showTeamHQ(),
+      engine: () => this.showEngineDeal(),
+      market: () => this.showDriverMarket(),
+      livery: () => this.showLiveryEditor(),
+      prep: () => this.showPreparation(),
+    });
+    newsFeed(body, career, 5);
 
     // Your own car, in your own garage.
     //

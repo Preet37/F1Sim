@@ -31,6 +31,10 @@ import {
 import {
   availableNumbers, defaultHelmet, uniqueDriverCode, type HelmetDesign,
 } from './Identity';
+import {
+  offSeasonStories, openDecisions, roundDebrief,
+  type Decision, type Story,
+} from './Newsroom';
 
 /** A project that reached the end of its schedule, and whether it passed QC. */
 export interface ProjectDelivery {
@@ -481,15 +485,77 @@ export class Career {
    * retroactively.
    */
   recordPlayerRound(result: RoundResult): ProjectDelivery[] {
+    // Captured BEFORE the round is folded in, because "up to P4" is a
+    // comparison and there is nothing to compare against afterwards.
+    const positionBefore = this.championshipPosition;
+
     recordRound(this.state.season, this.state.tier, result);
     this.advanceOtherTiers();
     this.updateRivalries(result);
     this.state.prepSlotsLeft = this.prepSlotsForNextRound();
-    // The factory runs on the same clock as the championship. Returned rather
-    // than stored so the screen that shows a delivered part is the screen that
-    // comes straight after the race, and a career that never opens it does not
-    // accumulate a queue of unread news.
-    return this.advanceFactory();
+    // The factory runs on the same clock as the championship.
+    const deliveries = this.advanceFactory();
+
+    /**
+     * WHAT JUST HAPPENED, WRITTEN DOWN.
+     *
+     * The verdict on this career mode was that it is not clear what is going on,
+     * and the largest single reason was that everything the simulation did
+     * between one press of "Race Weekend" and the next went unreported. A part
+     * arrived and changed the car; the championship moved; somebody won the
+     * Formula 2 race the player is trying to be promoted into. All of it was in
+     * the state and none of it was ever said.
+     *
+     * Held on the instance rather than in the save because it is a report about
+     * a moment, not a fact about the career — and because a save that carried a
+     * queue of unread news would show somebody a race result from three weeks
+     * ago the next time they opened the tab.
+     */
+    this.recentStories = roundDebrief({
+      state: this.state,
+      result,
+      positionBefore,
+      deliveries: deliveries.map((d) => ({
+        department: d.project.department,
+        ambition: d.project.ambition,
+        efficiency: d.project.efficiency,
+        passed: d.passed,
+        gain: d.project.gain,
+        costUsd: d.project.costUsd,
+      })),
+    });
+
+    return deliveries;
+  }
+
+  /**
+   * The news, however the player arrived at this screen.
+   *
+   * After a round it is the debrief. On a fresh load — where there is no
+   * "just happened" to report — it falls back to what is true of the season
+   * right now, so the hub is never blank and never stale.
+   */
+  private recentStories: Story[] = [];
+
+  stories(): Story[] {
+    if (this.recentStories.length > 0) return this.recentStories;
+    return roundDebrief({
+      state: this.state,
+      // A synthetic round with nobody in it: `roundDebrief` reports only what it
+      // can find, so an empty order produces the standings and paddock lines and
+      // no race result. That is exactly right for "you have just opened this".
+      result: {
+        round: this.round, circuitId: this.currentCircuitId, order: [], retired: [],
+        poleDriverId: '', fastestLapDriverId: '', wetRace: false, driven: false,
+      },
+      deliveries: [],
+      positionBefore: 0,
+    });
+  }
+
+  /** What the player is actually being asked to decide, most urgent first. */
+  decisions(): Decision[] {
+    return openDecisions(this.state, Math.max(0, this.calendar.length - this.round));
   }
 
   /** Resolves the player's round on paper, for a race they chose to skip. */
@@ -543,7 +609,7 @@ export class Career {
    */
   endSeason(): {
     report: OffSeasonReport; summary: SeasonSummary; promoted: boolean;
-    team: TeamSeasonReport | null;
+    team: TeamSeasonReport | null; stories: Story[];
   } {
     const s = this.state;
 
@@ -609,7 +675,11 @@ export class Career {
     // the wage bill depends on which driver the market left in the second car.
     this.rollTeamIntoNextSeason();
     installWorld(s.world);
-    return { report, summary, promoted, team: teamReport };
+    // The winter, as news. `runOffSeason` has always returned every promotion,
+    // retirement and signing it made; until now they were rendered as a list of
+    // ids on one screen and thrown away.
+    this.recentStories = offSeasonStories(s, report);
+    return { report, summary, promoted, team: teamReport, stories: this.recentStories };
   }
 
   /**

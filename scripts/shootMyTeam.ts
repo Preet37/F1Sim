@@ -139,6 +139,13 @@ async function main(): Promise<void> {
     await shot('05-hq');
     if (await step('hq', 'Engine deal')) await shot('06-engine');
     if (await step('engine', 'Back to the factory')) {
+      // The preparation screen, reached the way a player reaches it: from the
+      // decision the briefing puts at the top of the page.
+      if (await step('hq', 'Prepare')) await shot('09-prep');
+      if (await step('prep', 'Back to the hub')) { /* back on the hub */ }
+      if (await step('hub', 'Team HQ')) { /* and into the factory again */ }
+    }
+    if (await step('engine', 'Back to the factory')) {
       if (await step('hq', 'Driver market')) await shot('07-market');
       if (await step('market', 'Back to the factory')) {
         if (await step('hq', 'Paint shop')) await shot('08-paint');

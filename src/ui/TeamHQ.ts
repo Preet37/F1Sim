@@ -11,6 +11,7 @@ import {
   type Ambition, type DepartmentId,
 } from '../career/MyTeam';
 import { drawMark } from '../render/LiveryDesign';
+import { decisionList, newsFeed, type BriefingRoutes } from './Briefing';
 import { performanceOf } from '../career/World';
 
 /**
@@ -49,6 +50,79 @@ export interface TeamScreenOptions {
   career: Career;
   /** Called after anything that changes the save, so the caller can persist. */
   onChange: () => void;
+}
+
+/**
+ * Mounts the whole factory screen, and repaints it IN PLACE.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS AND WHY IT IS NOT `showTeamHQ()` CALLING ITSELF
+ * ---------------------------------------------------------------------------
+ *
+ * The first version of this screen handled every button by rebuilding the whole
+ * page — `page()` clears `screenRoot.innerHTML` and constructs it again — so
+ * commissioning a project made the screen flash white, throw away the scroll
+ * position and drop the player back at the top of a page they were halfway
+ * down. Doing that on the busiest screen in the mode, on every single press,
+ * IS the "jittery" complaint, and it was self-inflicted.
+ *
+ * So the screen is built once with stable containers, and a change repaints
+ * only the containers whose contents can have changed, inside the existing
+ * scroll box. The scroll position is then restored explicitly, because
+ * commissioning a project genuinely changes the height of the plate above the
+ * one you are looking at and the browser has no way to know what you were
+ * reading.
+ */
+export function mountTeamHQ(
+  body: HTMLElement, opts: TeamScreenOptions & { routes: BriefingRoutes },
+): { refresh(): void } {
+  const { career } = opts;
+
+  const decisionsHost = el('div', '', body);
+  const identityHost = el('div', '', body);
+  const gaugeHost = el('div', '', body);
+  el('div', 'section-title', body, 'The factory');
+  const factoryHost = el('div', '', body);
+  el('div', 'section-title', body, 'The books');
+  const ledgerHost = el('div', '', body);
+  el('div', 'section-title', body, 'The paddock');
+  const newsHost = el('div', '', body);
+
+  /** The page's own scroll box. `page()` puts the body inside it. */
+  const scroller = (): HTMLElement | null => {
+    let n: HTMLElement | null = body;
+    while (n) {
+      if (n.scrollHeight > n.clientHeight + 1) return n;
+      n = n.parentElement;
+    }
+    return null;
+  };
+
+  const paint = (inner: { career: Career; onChange: () => void }): void => {
+    decisionsHost.innerHTML = '';
+    decisionList(decisionsHost, career, opts.routes);
+    identityHost.innerHTML = '';
+    teamIdentity(identityHost, career);
+    gaugeHost.innerHTML = '';
+    capGauge(gaugeHost, career);
+    factoryHost.innerHTML = '';
+    factoryFloor(factoryHost, inner);
+    ledgerHost.innerHTML = '';
+    ledgerStrip(ledgerHost, career);
+    newsHost.innerHTML = '';
+    newsFeed(newsHost, career, 6);
+  };
+
+  const refresh = (): void => {
+    const box = scroller();
+    const at = box?.scrollTop ?? 0;
+    opts.onChange();
+    paint({ career, onChange: refresh });
+    if (box) box.scrollTop = at;
+  };
+
+  paint({ career, onChange: refresh });
+  return { refresh };
 }
 
 // ===========================================================================
