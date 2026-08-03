@@ -222,6 +222,23 @@ Nothing happens after t≈213s because nothing is moving. No laps, no pit stops,
 damage — and therefore no team bulletins, because five of the six team-feed call
 sites are pit-stop, pit-entry and damage events. The call sites are fine.
 
+**The probe's own output says so, and this is the cleanest evidence of all.** Its
+penultimate line on the current tree reads:
+
+```
+channels: 1 to race control, 0 to the team, 0 dropped as somebody else's business
+FAILURES:
+  no team-owned bulletin was filed in a 20-minute race
+```
+
+**One** race-control message in twenty minutes of racing. A real twenty-minute
+race files dozens — flags, track limits, penalties, stops. The number that was
+meant to be the control for the failing assertion (`check(toControl > 0, 'race
+control never spoke in a 20-minute race')`) squeaks past on a single message, and
+that is the tell: it is not the team channel that is quiet, it is the entire
+session. Every other assertion in the probe passes because they are exercised
+against hand-built fixtures rather than the frozen race.
+
 **What this costs:** an agent sent to fix "a call site that never fires" will find
 a call site that works and no bug. The real fixes are A2, and separately giving
 the probe a driven player car.
