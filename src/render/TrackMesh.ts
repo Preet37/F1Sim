@@ -106,6 +106,15 @@ const SHOULDER_CLEARANCE_M = 0.4;
 /** How far the kerb section reaches outboard of the white line, metres. */
 const KERB_OUTER_M = 1.185;
 /**
+ * How much room beside the road a kerb needs before one is drawn.
+ *
+ * Exported because `probe:shoulders` reports how much of the kerbing the
+ * SIMULATION flags is never drawn — the places where a car's grip changes and
+ * the driver has nothing to see — and it has to gate on the same number the
+ * mesh builder gates on rather than a second copy of it.
+ */
+export const KERB_ROOM_M = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
+/**
  * Width of the astroturf mat laid outboard of a kerb, metres.
  *
  * Measured off the reference footage against the kerb beside it: the mat runs
@@ -1297,7 +1306,7 @@ export function buildTrackMeshes(
     // back on itself that is far enough to lay red-and-white kerbing across the
     // other section's racing surface — which is exactly what it was doing at
     // Monaco's climb out of Sainte Dévote.
-    const kerbRoom = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
+    const kerbRoom = KERB_ROOM_M;
     if (track.isCurbLeft[a] && track.isCurbLeft[b]
       && shoulderAt(a, 1) >= kerbRoom && shoulderAt(b, 1) >= kerbRoom) sweepKerb(a, b, 1);
     if (track.isCurbRight[a] && track.isCurbRight[b]
