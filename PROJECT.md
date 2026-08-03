@@ -192,6 +192,8 @@ Run `npm run` to list. The important ones:
 | `validate:world` | Nothing built on the racing surface |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
 | `shoot:panels` | Measures HUD boxes; fails on overlap |
+| `probe:people` | 42 principals: all named, all unique, none within a look distance |
+| `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
 
 **Known-failing, all pre-existing and documented:**
 - `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". **Do not go to
@@ -199,6 +201,10 @@ Run `npm run` to list. The important ones:
   that code works. See §6 "Tooling" and issue #28: the probe never writes
   `engine.playerControls`, so its own car parks and the stopped-car bug freezes the field.
 - `validate:flags` — safety-car form-up, three failures, stable numbers.
+- `shoot:panels` — **5 rail + 2 mirror layout failures** (radio card off screen at desktop
+  and portrait; `hud-neutral-cue` clipped by 4px; `.hud-notices` over `mirror[R1]` by
+  26×72px on phone/pit-choice/cockpit). Confirmed pre-existing on `main` as of 2026-08-03
+  by running it with an unrelated branch's changes stashed and getting identical output.
 
 ---
 
@@ -426,6 +432,46 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   first-run-only via a flag set on their very first load, and the podium only fires after
   finishing a career *race*.
 
+### People (issues #18, #22)
+- **Every team principal was "Pit wall".** `Hud.PRINCIPALS` was a table keyed on the ten
+  **invented** team ids the game shipped with (`apex`, `scuderia-rosso`, `meridian`);
+  career mode replaces the grid with the real 2026 roster (`mclaren`, `ferrari`,
+  `red-bull`), so *every lookup a career player could ever make* missed and fell through
+  to `?? 'Pit wall'` — behind `principalSvg`, one fixed pictogram whose only per-team
+  variable was the disc colour. The user's "why does it seem like the same person as the
+  team principal for all the teams" was literally true, in both halves.
+- `src/ui/people/` now holds a **parametric look model** (21 fields), a planar face
+  painter, a figure, and a cast with a principal for **42 teams** across F1/F2/F3 plus the
+  ten legacy ids, which never returns a shared fallback: an id it has never seen still
+  produces a specific named person off a hash.
+- `probe:people`, **537 checks**. Measured: closest pair on the F1 grid **0.520** against
+  a 0.30 bar; closest pair among all 42 **0.183** (ferrari / scuderia-rosso, which are
+  authored as analogues) against a 0.12 bar; mean look distance between two random
+  strangers **0.835**; **0** near-identical pairs in 44,850; all 3,300 categorical
+  combinations produce a drawable path with no `NaN`.
+- **Proved it can go red, three ways.** (a) Pointing Mercedes' cast entry at McLaren's
+  look overrides: closest F1 pair 0.520 → **0.170**, 1 of 537 failed, exit 1 — note that
+  identical authored overrides still leave 0.170 of id-hashed residual, so the 0.30 bar
+  sits above what a duplicate can reach. (b) Reverting the two Italian renames: 2 checks
+  failed on name uniqueness. (c) Reverting the `StrategyScreen` import: 3 checks failed on
+  the wiring section.
+- **The two Italian renames in `Cast.ts` were a NAME clash, not a look-distance clash.**
+  `ferrari` was `Elena Brambilla`, which is also the legacy `scuderia-rosso` principal;
+  `racing-bulls` was `Nino Carbone`, also legacy `brava`. The recovery commit's guess
+  offered both possibilities; the probe settles it. The renames were necessary, and the
+  look parameters were never touched.
+- **Wired.** `StrategyScreen.ts` — on the path to every race — now draws
+  `principalDiscSvg`. Measured at the real on-screen size (`.strat-portrait` is 68px
+  desktop, 52px phone): apex draws Marco Vidal, brava draws Nino Carbone, visibly two
+  people. `Hud.principalOf` re-exports the cast; the string `'Pit wall'` no longer exists
+  as a fallback anywhere in `src/`.
+- **IP boundary confirmed clean.** Every face in `people/` is SVG generated from a hash of
+  an id. There is not one image file, one photograph, or one per-driver look override in
+  the module — `grep` for any real driver surname across `src/ui/people/`,
+  `PressConference.ts`, `Podium.ts` and `GarageScene.ts` returns nothing. Principals and
+  journalists are invented people from invented name pools, deliberately so, because the
+  press-conference system puts sentences in their mouths.
+
 ### Tooling
 - **`scripts/` is now typechecked.** `tsconfig.scripts.json` covers `scripts` and `audit`
   as a *separate* project — separate so `@types/node` cannot leak into `src/` and let
@@ -456,7 +502,7 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots, `carGroundY` banking |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
-| People graphics | Parametric characters, per-team principals, press-conference scenes |
+| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
 | Career/story | My Team, facility, livery editor, press/morale/sponsors, rivalries, the full world |
 
@@ -480,7 +526,23 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - Lap times of cars that have completed a lap should show even when the player has not
   completed theirs. *"why are you waiting on me to display their times?"*
 - The pit crew currently reads as blocky figures — the exact thing the user rejected
-  ("forget about the lego people").
+  ("forget about the lego people"). **Still here, and deliberately not removed.** The
+  `people-graphics` work is 2D SVG for UI screens; the pit crew is 3D, in
+  `src/render/CrewFigure.ts` and `src/render/PitCrew.ts`, and was neither touched nor
+  photographed by it. Reading the source, the crew limbs are `CapsuleGeometry` and
+  chamfered boxes rather than plain boxes, and the one `BoxGeometry` in `PitCrew.ts` is
+  the light gantry's head, not a person's — so the line **may** already be stale. Nobody
+  has measured it. `probe:pitcrew` and the pit-stop work own that question.
+- **`PressConference.ts` and `GarageScene.ts` are unreachable.** ~800 lines imported by
+  `audit/people.ts` and by nothing in `src/`. `src/main.ts` has no screen id, no route and
+  no key for either; the only way any human has seen them is `npm run shoot:people`. This
+  is §6's intro-and-podium failure repeating. **Issue #38.**
+- **The figures are flat-vector illustrated people, not blocky — but the bodies are
+  unfinished.** Heads read well and the eleven principals are plainly eleven people
+  (`hud-out/people/desktop-principals.png`), and they survive down to 40px on hair colour,
+  skin tone, glasses and beard. Below the neck: podium arms are stick rectangles with no
+  elbow and no hand, with the trophy attached to the end; the garage crew are **armless**
+  torsos. `phone-presser` (844×390) cuts the question and answer text off below the fold.
 
 ---
 
