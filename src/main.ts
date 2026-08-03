@@ -3167,6 +3167,7 @@ class Game {
       this.retirementShown = false;
       this.spectating = false;
       this.retiredAt = 0;
+      this.hud.setRetired(false);
       return;
     }
     if (this.retirementShown || this.spectating) return;
@@ -3174,7 +3175,65 @@ class Game {
     if (engine.time - this.retiredAt < Game.RETIREMENT_DELAY_S) return;
 
     this.retirementShown = true;
-    this.showRetirement(engine, player);
+    if (engine.config.kind === 'race') this.retireOnTheRadio(player);
+    else this.showRetirement(engine, player);
+  }
+
+  /**
+   * A race ending on the radio, with the decision in the corner.
+   *
+   *   "why do we still have this thing, I thought we talked about, remove the
+   *    retired. its just a radio message about you having to retire and then
+   *    top right continue or watch the race, and once the user presses continue
+   *    the stats show up."
+   *
+   * Asked three times. What was there was a full-screen modal carrying the
+   * cause, the worst component, the corner, the lap, the classification and a
+   * bar chart of twelve damaged parts — filed at the player about two seconds
+   * after an accident they were in, over the top of the car they most wanted to
+   * be looking at. None of it is wrong and all of it is unasked for.
+   *
+   * So the shape is inverted. The principal says the one thing that matters
+   * over the radio, the two decisions a retired driver actually has sit in the
+   * top-right corner, and every number waits until `Continue` is pressed —
+   * which lands on the same classification screen the end of a race lands on,
+   * so there is one results screen in the game rather than two.
+   *
+   * THE CLOCK IS NOT PAUSED. The modal paused it, which froze nineteen cars
+   * mid-race behind a card about the twentieth. `Watch the race` was offered by
+   * a screen that had already stopped the race.
+   */
+  private retireOnTheRadio(player: CarEntry): void {
+    this.retireOverlay?.remove();
+    this.hud.setRetired(true);
+    this.hud.sayRetirement(
+      player,
+      player.retirementReason || 'the car is beyond use',
+      player.lap + 1,
+    );
+
+    const bar = this.el('div', 'retirebar', document.getElementById('app') as HTMLElement);
+    // The two answers a driver in a barrier actually has. Named as the thing
+    // that happens: `Continue` goes to the result, watching keeps the cameras
+    // running on the race that is still going on around them.
+    const act = (label: string, cls: string, onClick: () => void) => {
+      const b = document.createElement('button');
+      b.className = 'btn ' + cls;
+      b.textContent = label;
+      b.addEventListener('click', onClick);
+      bar.appendChild(b);
+    };
+    act('Continue', 'primary', () => {
+      this.dismissRetirement();
+      this.finishSession();
+    });
+    act('Watch the race', 'ghost', () => {
+      this.spectating = true;
+      this.dismissRetirement();
+    });
+
+    this.retireOverlay = bar;
+    window.requestAnimationFrame(() => bar.classList.add('shown'));
   }
 
   private showRetirement(engine: RaceEngine, player: CarEntry): void {
@@ -3418,6 +3477,11 @@ class Game {
   private dismissRetirement(): void {
     this.retireOverlay?.remove();
     this.retireOverlay = null;
+    this.hud.setRetired(false);
+    // Only the practice/qualifying card ever pauses; the race path deliberately
+    // does not, so the field carries on behind the radio message. Unpausing
+    // unconditionally is still right — it is the state this leaves in either
+    // case, and a session resumed frozen is the failure this guards.
     this.clock.paused = false;
     this.audio.setSuspended(false);
   }

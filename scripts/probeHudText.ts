@@ -24,7 +24,7 @@ import { PHYSICS_DT } from '../src/core/SimClock';
 import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
   pitCueText, radioExchange, relayed, repairableInBox, replyExchange, standingsCells,
-  teamLine, towerFit, weatherReadout,
+  teamLine, towerFit, towerWindow, weatherReadout,
 } from '../src/ui/Hud';
 import { COMPONENT_IDS } from '../src/race/DamageModel';
 import { AIVehicleController, type AIPerception } from '../src/ai/AIVehicleController';
@@ -93,6 +93,70 @@ for (let i = 0; i < standings.length; i++) {
 }
 console.log(`running order: ${standings.length} rows, lapped car present: ${sawLapped}`);
 
+// ---------------------------------------------------------------------------
+// 1b. Other cars' times do not wait for the player's
+// ---------------------------------------------------------------------------
+//
+// "if other cars have completed their lap and I haven't, you should still be
+//  showing their times?? why are you waiting on me to display their times that
+//  they did at other laps?"
+//
+// A lap time belongs to the car that set it. The tower's whole job is to show
+// what everybody else is doing WHILE you are still out there, so a player who
+// has not completed a lap — the first lap of any race, and the whole of a
+// session they crashed out of early — must still see the times of cars that
+// have. This drives a qualifying session in which the player never moves and
+// asserts the panel about the nineteen cars that did.
+{
+  const idleConfig: SessionConfig = {
+    kind: 'qualifying', name: 'Q1', durationS: 900, laps: 0,
+    // ON THE CIRCUIT RATHER THAN IN THE GARAGE, and the reason is a bug rather
+    // than a preference: with `pitLaneStart: true` and no control input, all
+    // twenty cars are still in the pit lane after ten minutes. The idle player
+    // blocks the lane and nothing gets out — the same "the AI will not pass a
+    // stationary car" fault that froze the routing race above, in its second
+    // location. Reported; not fixed here, because it belongs to the AI.
+    playerIndex: 0, standingStart: false, pitLaneStart: false,
+    seed: 77, qualifyingPhase: 1, advancing: 15,
+  };
+  const idle = new RaceEngine(getCircuit('monza'), idleConfig);
+  // Not a single control input: the player never moves off their slot while the
+  // other nineteen run the session.
+  for (let i = 0; i < Math.round(600 / PHYSICS_DT) && !idle.over; i++) idle.step();
+
+  const me = idle.cars[0];
+  check(!(me.bestLapTime > 0), 'the idle player set a lap — the probe is not testing anything');
+  const others = idle.standings.filter((c) => c !== me && c.bestLapTime > 0);
+  check(others.length > 0,
+    'no other car set a lap in ten minutes — the probe is not testing anything');
+
+  const quickest = idle.standings.find((c) => c.bestLapTime > 0)!;
+  let shown = 0;
+  for (const car of others) {
+    const cells = standingsCells(idle, car, null, quickest);
+    check(/^\d+:\d\d\.\d\d\d$/.test(cells.best),
+      `${car.driver.code} set ${car.bestLapTime.toFixed(3)} and the tower shows "${cells.best}"`);
+    // And the gap column, which is what the tower actually draws: a deficit to
+    // the quickest lap of the session, computed between two OTHER cars and
+    // owing nothing to the player.
+    check(cells.gap !== '—' && cells.gap !== 'Out',
+      `${car.driver.code} has a lap and the tower's gap column reads "${cells.gap}"`);
+    shown++;
+  }
+  // The player's own row is the honest exception: they have no time, so they
+  // have no gap. That must not be contagious.
+  const mine = standingsCells(idle, me, null, quickest);
+  check(mine.best === '—', `a driver with no lap shows a best of "${mine.best}"`);
+  console.log(`idle player: ${shown} of ${idle.cars.length - 1} rivals' times shown ` +
+    'while the player has none');
+
+  // The fastest-lap strip is the same question asked about one car, and it is
+  // the one the player is most likely to notice missing.
+  const fast = fastestLap(idle.standings);
+  check(fast !== null && fast.time > 0,
+    'no fastest lap is credited while the player has not set one');
+}
+
 // The best-lap column must carry a formatted lap time for anyone who has set
 // one, because the column exists to be compared down the panel.
 const withLap = standings.filter((c) => c.bestLapTime > 0);
@@ -127,13 +191,15 @@ if (fastest) {
  */
 const VIEWPORTS: [string, number, number, number][] = [
   // name, width, height, px of rail that must be left below the panel.
-  // The clearance is not a guess: on a full-size viewport the rail below the
-  // tower carries the notice stack, the weather bug and the car state, and
-  // `.hud-notices` is pinned to `max(300px, 50vh)` — so the tower must end
-  // above half the screen or the two meet.
-  ['desktop 1400x900', 1400, 900, 450],
-  ['wide desktop 1920x1080', 1920, 1080, 540],
-  ['laptop 1280x800', 1280, 800, 400],
+  //
+  // The clearance is not a guess. It is what the rail beneath the tower has to
+  // carry, and it came DOWN in the pass that moved the tyre, fuel and weather
+  // panels into the right-hand car column: what is left below the running
+  // order is the radio card (198px), the two live cues (30 each), the gaps
+  // between them, and the rail's own bottom offset clear of the mirror band.
+  ['desktop 1400x900', 1400, 900, 366],
+  ['wide desktop 1920x1080', 1920, 1080, 366],
+  ['laptop 1280x800', 1280, 800, 366],
   ['landscape phone 844x390', 844, 390, 174],
   ['landscape phone 740x360', 740, 360, 144],
   ['portrait phone 390x844', 390, 844, 300],
@@ -141,7 +207,7 @@ const VIEWPORTS: [string, number, number, number][] = [
 
 for (const [name, w, h, clearance] of VIEWPORTS) {
   const fit = towerFit(w, h);
-  const rowH = fit.compact ? 17 : 26;
+  const rowH = fit.compact ? 17 : 20;
   // Header, flag band, column rule, the fastest-lap strip along the foot, the
   // panel's padding, and the 5px break under the pinned leader. Compact drops
   // the circuit name and the column rule, which is where the difference between
@@ -160,6 +226,44 @@ for (const [name, w, h, clearance] of VIEWPORTS) {
     `${name}: compact flag disagrees with the media query that shrinks the row`);
   console.log(`${name.padEnd(24)} ${String(fit.rows).padStart(2)} rows  ` +
     `${fit.compact ? 'compact' : 'full   '}  bottom ${bottom}px`);
+}
+// A DESKTOP SHOWS THE WHOLE FIELD. Once it does, there is no window at all and
+// there is nothing left for a window to hide.
+check(towerFit(1400, 900).rows >= 20,
+  `a 1400x900 desktop shows ${towerFit(1400, 900).rows} of 20 cars`);
+
+// ---------------------------------------------------------------------------
+// 2b. The window, with the player at the back of a field of wrecks
+// ---------------------------------------------------------------------------
+//
+// "why can I only see like 4 cars on the leaderboard, where is everyone and all
+//  the cars?" — reported from a screenshot showing P1, a break, and P14 to P20,
+// of which six were marked `Out`. The player was eighteenth. This is that exact
+// situation: twenty cars, the six behind the player retired, eight rows.
+
+{
+  const field = Array.from({ length: 20 }, (_, i) => ({ retired: i >= 14 }));
+  const me = 17;
+  const win = towerWindow(field, 8, me);
+  check(win.rows.length === 8, `the window drew ${win.rows.length} of 8 rows`);
+  check(win.rows.includes(me), 'the window does not contain the player');
+  check(win.pinLeader && win.rows[0] === 0, 'the leader is not pinned above the window');
+  // The whole point: a scarce row does not go to a car that cannot be raced.
+  const wrecks = win.rows.filter((i) => field[i].retired && i !== me).length;
+  check(wrecks === 0,
+    `${wrecks} of 8 rows went to retired cars while the player was racing`);
+  // And most of what is shown is the road ahead rather than the road behind.
+  const ahead = win.rows.filter((i) => i < me).length;
+  check(ahead >= 5, `only ${ahead} of the 8 rows are cars the player can catch`);
+  console.log(`tower window: P18 of 20 with 6 wrecks behind → rows ` +
+    win.rows.map((i) => i + 1).join(', '));
+}
+// A field that fits is drawn whole, in order, with nothing pinned.
+{
+  const field = Array.from({ length: 20 }, () => ({ retired: false }));
+  const win = towerWindow(field, 20, 17);
+  check(!win.pinLeader && win.rows.length === 20 && win.rows[0] === 0 && win.rows[19] === 19,
+    'a tower with room for the whole field still windows it');
 }
 
 // ---------------------------------------------------------------------------

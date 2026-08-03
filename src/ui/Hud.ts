@@ -5,7 +5,9 @@ import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 import type { InputController } from '../input/InputController';
 import { bandOf, COMPONENT_NAMES, type ComponentId } from '../race/DamageModel';
-import type { FlagSignal, RaceControlMessage, TeamNote } from '../race/RaceControlManager';
+import type {
+  FlagSignal, RaceControlMessage, RaceNotice, TeamNote,
+} from '../race/RaceControlManager';
 import { TrackMap } from './TrackMap';
 
 /**
@@ -63,11 +65,13 @@ interface Row {
   pos: HTMLElement;
   mark: HTMLElement;
   code: HTMLElement;
+  /** The car's own best lap. Drawn only in a Lap Time Classified Session. */
+  time: HTMLElement;
   gap: HTMLElement;
   tyre: HTMLElement;
   badges: HTMLElement;
   seen: {
-    pos: string; code: string; tyre: string; gap: string;
+    pos: string; code: string; tyre: string; gap: string; time: string;
     markTeam: string; colour: string; badges: string; state: string;
   };
 }
@@ -181,6 +185,7 @@ export class Hud {
   private radioTimers: number[] = [];
   /** The typewriter's own interval, separate so it can be cancelled alone. */
   private radioTypeTimer = 0;
+
   /** The mute control, and the voice it switches. */
   private radioMute!: HTMLElement;
   private readonly voice = new RadioVoice();
@@ -223,6 +228,8 @@ export class Hud {
   private markedTeam = '';
   /** Driver codes of the field — tokens `relayed` must leave in capitals. */
   private keepCaps = new Set<string>();
+  /** Driver code to car number, for the official banner's `44 (HAM)` form. */
+  private carNumbers = new Map<string, number>();
   /** Race-control state the radio card has already reacted to. */
   private lastNeutral = 'none';
   private lastSessionFlag = 'green';
@@ -379,7 +386,7 @@ export class Hud {
     const cols = this.el('tower-cols', this.tower);
     for (const [cls, label] of [
       ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-code', 'Driver'],
-      ['c-gap', 'Gap'], ['c-tyre', ''], ['c-badge', ''],
+      ['c-time', 'Best'], ['c-gap', 'Gap'], ['c-tyre', ''], ['c-badge', ''],
     ] as [string, string][]) {
       this.el('tower-col ' + cls, cols, label);
     }
@@ -680,6 +687,17 @@ export class Hud {
     this.radioMute.setAttribute('aria-label', 'Team radio voice');
     this.el('radio-rule', this.radioCard);
 
+    // THE WAVEFORM, behind the words, in the team's colour at low alpha.
+    //
+    // It is the one thing on the plate that says AUDIO rather than text, and
+    // that is the whole job: without it a card of quoted capitals is a caption,
+    // and the reference plate is unmistakably a recording. Drawn as SVG in the
+    // game's own geometry, built once, and never touched again — it does not
+    // animate, because a waveform that dances to nothing is a lie about a
+    // signal the game does not have, and because this sits behind live text
+    // that is already being written a character at a time.
+    this.radioCard.appendChild(waveformSvg());
+
     this.radioTurnsEl = this.el('radio-turns', this.radioCard);
     // Four slots, built once. The card is square now rather than a letterbox,
     // and a square carries the whole argument rather than the last two lines of
@@ -750,6 +768,9 @@ export class Hud {
       const pos = this.el('tower-pos', root, '');
       const mark = this.el('tower-mark', root);
       const code = this.el('tower-code', root, '');
+      // The car's own best lap. Zero-width in a race — see `.hud-tower.is-timed`
+      // — and the whole point of the panel in a session that is about lap times.
+      const time = this.el('tower-time', root, '');
       const gap = this.el('tower-gap', root, '');
       const tyre = this.el('tower-tyre', root, '');
       // Three badges, built once and shown by class. Creating an element in the
@@ -760,9 +781,9 @@ export class Hud {
       this.el('tbadge tb-pen', badges, '!');
       this.el('tbadge tb-fin', badges).appendChild(chequerSvg());
       this.rows.push({
-        root, bar, pos, mark, code, gap, tyre, badges,
+        root, bar, pos, mark, code, time, gap, tyre, badges,
         seen: {
-          pos: '', code: '', tyre: '', gap: '',
+          pos: '', code: '', tyre: '', gap: '', time: '',
           markTeam: '', colour: '', badges: '', state: '',
         },
       });
@@ -1053,6 +1074,11 @@ export class Hud {
       // are people. Built once per session; the field does not change inside
       // one, and guessing instead turns "the" into a driver.
       this.keepCaps = new Set(engine.cars.map((c) => c.driver.code));
+      // And the code-to-number table the official banner needs. Race control
+      // names a car by its NUMBER with the code in brackets — `CARS 44 (HAM)
+      // AND 1 (VER)` — and the notice carries only the code, so the banner
+      // resolves it here. Built once per session for the same reason.
+      this.carNumbers = new Map(engine.cars.map((c) => [c.driver.code, c.driver.raceNumber]));
     }
 
     // --- Speed, gear, rpm -------------------------------------------------
@@ -1366,26 +1392,22 @@ export class Hud {
     // choice and a wing choice fit in either.
     const squeezed = this.pitSheetOpen &&
       (window.innerHeight <= 470 || this.mirrorFloor > 0);
-    const shown = squeezed ? 0 : Math.min(standings.length, fit.rows);
+    // THE TOWER GIVES WAY TO A DECISION, on every viewport and not only on the
+    // short ones. Now that a full-height desktop draws all twenty cars, the
+    // running order is 533 pixels tall — and the pit sheet is 250 more, in the
+    // same column, with the two live cues under it. It fitted before only
+    // because the tower was capped at fourteen rows. Eight rows is the leader,
+    // the fight and the player; the other twelve can wait for the few seconds
+    // a tyre choice takes.
+    const capped = this.pitSheetOpen ? Math.min(fit.rows, PIT_OPEN_ROWS) : fit.rows;
+    const shown = squeezed ? 0 : Math.min(standings.length, capped);
     this.ensureRows(shown);
 
-    // A window around the player whenever the whole field does not fit — being
-    // shown P1 to P14 while you are running sixteenth is a graphic about
-    // somebody else's race — and the LEADER pinned to the top of it whenever
-    // that window has moved off them. "See who hit the fastest lap, and the
-    // race leaders" is the whole job of this panel, and a window that scrolls
-    // past P1 answers neither. Broadcast towers do exactly this.
-    let start = 0;
-    let pinLeader = false;
-    if (shown < standings.length) {
-      const idx = standings.indexOf(player);
-      start = Math.max(0, Math.min(idx - Math.floor(shown / 2), standings.length - shown));
-      if (start > 0) {
-        pinLeader = true;
-        const rest = shown - 1;
-        start = Math.max(1, Math.min(idx - Math.floor(rest / 2), standings.length - rest));
-      }
-    }
+    // Which cars get a row, when there are not enough rows for everybody. See
+    // `towerWindow` — retirements go first, and the player sits two thirds down
+    // their own window so most of what they can see is the road ahead.
+    const win = towerWindow(standings, shown, standings.indexOf(player));
+    const pinLeader = win.pinLeader;
 
     // Who holds the fastest lap, and what it is. One pass over twenty cars and
     // no allocation — cheaper than the string compares it saves downstream.
@@ -1405,10 +1427,10 @@ export class Hud {
       // Rows are only ever created, never destroyed, so a window that has been
       // made shorter has more of them than it can now fit. Hiding the surplus
       // is what keeps the tower inside the viewport after a resize.
-      // With the leader pinned, row zero is P1 and everything below it is the
-      // window, shifted by one.
-      const at = pinLeader ? (i === 0 ? 0 : start + i - 1) : start + i;
-      const car = i < shown ? standings[at] : undefined;
+      // `towerWindow` has already resolved the pin and the drop-outs, so this
+      // is a straight index into the order it chose.
+      const at = win.rows[i] ?? -1;
+      const car = i < shown && at >= 0 ? standings[at] : undefined;
       if (!car) {
         setStyle(row.root, 'display', 'none');
         continue;
@@ -1425,6 +1447,12 @@ export class Hud {
       if (seen.pos !== cells.pos) { row.pos.textContent = cells.pos; seen.pos = cells.pos; }
       if (seen.code !== cells.code) { row.code.textContent = cells.code; seen.code = cells.code; }
       if (seen.gap !== cells.gap) { row.gap.textContent = cells.gap; seen.gap = cells.gap; }
+      // A LAP TIME BELONGS TO THE CAR THAT SET IT. Written from that car's own
+      // `bestLapTime` and nothing else, so it appears the moment they cross the
+      // line whatever the player is doing — which is the whole of the reported
+      // fault: "why are you waiting on me to display their times that they did
+      // at other laps?"
+      if (seen.time !== cells.best) { row.time.textContent = cells.best; seen.time = cells.best; }
       if (seen.tyre !== cells.tyre) {
         row.tyre.textContent = cells.tyre;
         row.tyre.style.color = '#' + getCompound(car.compound).colour.toString(16).padStart(6, '0');
@@ -1454,6 +1482,10 @@ export class Hud {
         + (pinLeader && i === 0 ? ' is-pinned' : '')
         + (car.position === 1 ? ' is-leader' : '')
         + (car === player ? ' is-player' : '')
+        // The quickest lap of the session, so the time column is purple on the
+        // one row that holds it — the sport's own rule, which is why the column
+        // needs no legend.
+        + (sessionBest > 0 && car.bestLapTime === sessionBest ? ' is-best' : '')
         + (car.retired || car.disqualified ? ' is-out' : '');
       if (seen.state !== state) { row.root.className = state; seen.state = state; }
     }
@@ -1466,9 +1498,13 @@ export class Hud {
     //
     // One layout read, on the frames where the row count or the flag band has
     // actually changed. `Hud.update` does not measure anything.
-    const shape = shown + '|' + (this.flagBandShown ? 'f' : '');
+    // A Lap Time Classified Session gets the lap-time column; a race does not.
+    // One class write per session, not per frame.
+    const timed = engine.config.kind !== 'race';
+    const shape = shown + '|' + (this.flagBandShown ? 'f' : '') + (timed ? 't' : '');
     if (shape !== this.lastTowerShape) {
       this.lastTowerShape = shape;
+      this.tower.classList.toggle('is-timed', timed);
       const bottom = Math.round(this.tower.getBoundingClientRect().bottom);
       if (bottom > 0) this.root.style.setProperty('--rail-top', bottom + 8 + 'px');
     }
@@ -1488,6 +1524,11 @@ export class Hud {
    */
   private updateAlerts(engine: RaceEngine, player: CarEntry): void {
     const messages = engine.raceControl.messages;
+    // WHAT THE DRIVER IS ACTUALLY DOING, read once. Every team line below is
+    // gated on it and a line that fails the gate is dropped rather than held —
+    // see `DriverState` for why a radio that catches up is worse than one that
+    // missed something.
+    const state = driverState(engine, player);
     // Where to resume. If the last bulletin relayed has been shifted off the
     // end of the log, everything between then and now is gone — so pick up
     // from as much of the tail as the stack can show rather than replaying a
@@ -1512,9 +1553,14 @@ export class Hud {
       // without one — a pit call the shell logged in plain words — is relayed
       // as it stands rather than being dropped.
       if (m.team) {
+        if (!noteAllowed(m.team, state)) continue;
         const said = teamLine(m.team, this.teamContext(engine, player, about!));
         this.pushAlert(player, said.line, '', said.tone);
       } else {
+        // Unstructured text has no declared precondition, so it gets the
+        // blanket one: a retired driver is told nothing further about a race
+        // they are no longer in.
+        if (state.retired) continue;
         this.pushAlert(
           player, relayed(m.text, this.keepCaps), '',
           m.severity === 'critical' ? 'urgent' : m.severity === 'warning' ? 'warn' : 'info',
@@ -1525,7 +1571,8 @@ export class Hud {
 
     // The pit call speaks once, when the advice changes — not on every frame
     // it holds. The persistent card below carries it for as long as it stands.
-    const advice = player.inPitLane || player.pitRequested
+    // A pit call is an instruction to a car that can still reach the pit lane.
+    const advice = !state.running || player.pitRequested
       ? '' : (engine.pitAdvice(player) ?? '');
     if (advice !== this.lastAdvice) {
       this.lastAdvice = advice;
@@ -1655,12 +1702,24 @@ export class Hud {
     // The viewport is in the key because a rotation changes the band without
     // changing anything on it, and a rail that only re-checks itself when a
     // card arrives is a rail that stays wrong until the next message.
+    // THE BAND'S OWN HEIGHT IS IN THE KEY, and it is the fix for a whole family
+    // of one-frame-late failures. Everything else here is a proxy for "the rail
+    // has changed shape", and every proxy has a case it misses: the cue that
+    // appears in the same frame as the card, the tower's rail-top written after
+    // the card was measured, a safe-area inset arriving late on a phone. The
+    // band is the thing the budget is actually divided from, so measuring it is
+    // both the honest key and one `getBoundingClientRect` on one element.
+    const band = Math.round(this.notices.getBoundingClientRect().height);
     const key = this.neutralCue.style.display + '|' + this.pitCue.style.display + '|' +
       this.radioCard.style.display + '|' + (this.pitSheetOpen ? 'pit' : '') + '|' +
       this.lastTowerShape + '|' + window.innerWidth + 'x' + window.innerHeight +
-      '|' + this.mirrorFloor;
+      '|' + this.mirrorFloor + '|' + band;
     if (key === this.lastPinned) return;
     this.lastPinned = key;
+    // A card the rail took away when it was short, put back now the band has
+    // grown — a driver who glanced in a mirror mid-transmission gets the rest
+    // of it. Ordered before `fitRail` so the restored card is measured with
+    // everything else rather than on the next change.
     this.fitRail();
   }
 
@@ -1700,6 +1759,14 @@ export class Hud {
         continue;
       }
       if (this.radioCard.style.display !== 'none') {
+        // The card is the one item on this rail that is atmosphere rather than
+        // instruction, so it is the first thing evicted when the band is short
+        // — and it is evicted OUTRIGHT rather than parked, which is a real cost
+        // worth naming: a player who glances in a mirror mid-transmission loses
+        // the rest of it. Restoring it when the band grows back was tried and
+        // withdrawn; the restore and the eviction are two measurements of a
+        // band whose height changes under both of them, and the two raced. See
+        // the note in the handover.
         this.hideRadioCard(true);
         continue;
       }
@@ -1730,34 +1797,73 @@ export class Hud {
     return used - band;
   }
 
-  private pushAlert(player: CarEntry, line: string, chip: string, tone: AlertTone): void {
-    const card = document.createElement('div');
-    card.className = 'hud-alert tone-' + tone + ' entering';
-
-    const portrait = this.el('alert-portrait', card);
-    portrait.appendChild(principalSvg(player.team));
-    const body = this.el('alert-body', card);
-    const who = this.el('alert-who', body);
-    this.el('alert-name', who, principalOf(player.team.id));
-    this.el('alert-role', who, 'Team principal');
-    this.el('alert-line', body, line);
-    if (chip) this.el('alert-chip', body, chip);
-
-    this.mountCard(card);
+  /**
+   * The pit wall saying one thing.
+   *
+   * ONE RADIO, ONE LOOK. This used to build a completely different object: a
+   * chat bubble with a circular avatar, `MARCO VIDAL` on one line and `Team
+   * principal` under it in sentence case, sitting on the same rail as the
+   * broadcast plate.
+   *
+   *   "why are there two different types of radio messages happening, I can't
+   *    tell the difference?"
+   *
+   * They could not tell the difference because there was not one to tell. Both
+   * were the player's own pit wall, on the player's own team channel, saying
+   * the player's own team's business — rendered in two visual languages that
+   * shared no type, no colour and no shape. The bubble also carried a face and
+   * a name the plate did not, which made the two look like two different
+   * PEOPLE as well as two different systems.
+   *
+   * So there is one card now, and this is a transmission with a single turn in
+   * it. The tone survives as the card's accent; the chip is dropped, because a
+   * chip is a status string and this is somebody talking.
+   *
+   * The rail therefore carries ONE radio card, which is also what a radio is:
+   * two people cannot transmit at once, and a stack of three simultaneous
+   * transmissions was never a thing that could happen.
+   */
+  private pushAlert(player: CarEntry, line: string, _chip: string, tone: AlertTone): void {
+    this.raiseCard(player, [{ who: 'wall', line }], tone, false);
   }
 
   /**
-   * A race-control bulletin.
+   * A race-control bulletin, as the official strip.
    *
-   * The same stack as the principal's card, deliberately: they compete for the
-   * same sixty pixels and giving each its own column would mean two things
-   * pinned to one edge, which is the fault this whole pass is fixing. What they
-   * do not share is a look. No face, no name, a hard official label, capitals,
-   * and the four facts on a second line — a driver should never have to work
-   * out which of the two is talking.
+   *   "this doesn't look good, I showed you an image of the FIA, you should
+   *    replicate that font and color and completely."
+   *
+   * The reference is unambiguous and what was here matched none of it. This was
+   * a dark ROUNDED CARD with a yellow bar down its left edge, a `RACE CONTROL`
+   * chip on its own line, the incident under it, and the facts under that —
+   * three stacked blocks in a rounded rectangle, which is the shape of a
+   * notification and not of an official notice.
+   *
+   * The real thing is a HORIZONTAL STRIP across the top of the picture:
+   *
+   *     ┌──────┬──────────────────────────────────────────────────┐
+   *     │ ⬤    │ RACE CONTROL: TURN 8 INCIDENT INVOLVING CARS      │
+   *     │ mark │ 44 (HAM) AND 1 (VER)                              │
+   *     │      │ NOTED - IMPEDING                                  │
+   *     └──────┴──────────────────────────────────────────────────┘
+   *
+   * Squared corners, no rounding anywhere. A darker navy block on the left
+   * carrying the governing body's mark, then the message area. `RACE CONTROL:`
+   * in bold and the incident CONTINUING ON THE SAME LINE — not a chip above it
+   * — with the facts on a smaller second line. White on navy, condensed, tight,
+   * uppercase, and no accent bar of any colour.
+   *
+   * THE MARK IS THIS GAME'S OWN. The FIA roundel is a trademark and is not
+   * reproduced; `governingMarkSvg` draws the game's own governing-body device
+   * in the same position at the same weight, which is the substitution the
+   * whole of this repo's signage already makes.
+   *
+   * The DECISION variant keeps its segmented form — a penalty has changed the
+   * result and has to be unmissable — but it is now built on the same strip,
+   * with the same mark block, so the two states read as one system.
    */
   private pushControlCard(m: RaceControlMessage, about: CarEntry | undefined): void {
-    const c = raceControlCard(m);
+    const c = raceControlCard(m, this.carNumbers);
     const card = document.createElement('div');
 
     // A DECISION. The segmented strip: the authority, the sentence in red
@@ -1770,7 +1876,8 @@ export class Hud {
       // card and in the running order. One property, so a change of roster
       // recolours every one of them at once.
       card.style.setProperty('--team', '#' + about.team.colour.toString(16).padStart(6, '0'));
-      this.el('control-seg control-mark', card, 'RACE CONTROL');
+      const badge = this.el('control-seg control-badge', card);
+      badge.appendChild(governingMarkSvg());
       const pen = this.el('control-seg control-penalty', card);
       for (const line of c.penalty) this.el('control-penline', pen, line);
       const who = this.el('control-seg control-driver', card);
@@ -1783,12 +1890,21 @@ export class Hud {
       return;
     }
 
-    // A NOTE. The banner of facts.
+    // A NOTE. The official strip: the mark block, then one run of text that
+    // opens `RACE CONTROL:` in bold and carries straight on into the incident.
     card.className = 'hud-control tone-' + c.tone + ' entering';
-    const head = this.el('control-head', card);
-    this.el('control-mark', head, 'RACE CONTROL');
-    this.el('control-headline', card, c.headline);
-    if (c.detail) this.el('control-detail', card, c.detail);
+    const badge = this.el('control-badge', card);
+    badge.appendChild(governingMarkSvg());
+    const body = this.el('control-body', card);
+    const line = this.el('control-headline', body);
+    // Two elements rather than an interpolated string, so nothing that came out
+    // of a roster or a save is ever written as markup.
+    const label = document.createElement('b');
+    label.className = 'control-label';
+    label.textContent = 'RACE CONTROL: ';
+    line.appendChild(label);
+    line.appendChild(document.createTextNode(c.headline));
+    if (c.detail) this.el('control-detail', body, c.detail);
     this.mountControl(card);
   }
 
@@ -2008,10 +2124,7 @@ export class Hud {
         const stale = this.question;
         this.question = null;
         setStyle(this.radioChoice, 'display', 'none');
-        this.showRadioCard(player, {
-          kind: 'call', message: '', reason: '', question: '',
-          compound: stale.compound, callId: stale.id,
-        }, replyExchange('lapsed', stale.compound));
+        this.raiseCard(player, replyExchange('lapsed', stale.compound), 'info', false);
       }
       return;
     }
@@ -2057,33 +2170,49 @@ export class Hud {
     const outcome = q.answer(yes);
     const player = engine.playerCar;
     if (!player) return;
-    this.showRadioCard(player, {
-      kind: 'call', message: '', reason: '', question: '',
-      compound: q.compound, callId: q.id,
-    }, replyExchange(outcome, q.compound));
+    this.raiseCard(player, replyExchange(outcome, q.compound), 'info', false);
+  }
+
+  /** A moment, in its own words. */
+  private showRadioCard(player: CarEntry, moment: RadioMoment): void {
+    // THE GATE. Nothing reaches the card without a precondition on this car's
+    // own state having been declared and met — see `MOMENT_VALID`. A driver in
+    // a barrier is not asking for a delta, and the wall is not giving them one.
+    if (this.lastEngine && !momentAllowed(moment, driverState(this.lastEngine, player))) {
+      return;
+    }
+    const asking = moment.kind === 'call' && moment.question.length > 0;
+    if (asking && moment.kind === 'call') {
+      setText(this.radioAsk, moment.question);
+      setText(this.radioYes, this.question?.yesLabel ?? 'YES');
+      setText(this.radioNo, this.question?.noLabel ?? 'NO');
+    }
+    this.raiseCard(
+      player, radioExchange(moment),
+      moment.kind === 'call' && moment.callId > 0 ? 'warn' : 'info',
+      asking,
+    );
   }
 
   /**
-   * @param turns overrides the moment's own exchange. Used for the wall's REPLY
-   *        to an answer, which is the same card carrying different words rather
-   *        than a second card stacked under the first.
+   * THE ONE CARD. Every word the player's own team says reaches the screen
+   * through here — a strategy call, a gap, a penalty, a safety car, a
+   * retirement, and the single-sentence pop-ups that used to be a separate
+   * widget with a face on it. One channel, one look.
+   *
+   * WHETHER IT FITS IS MEASURED, at the end of this function, by `fitRail` —
+   * the band's foot rises by up to a third of the viewport under the mirror
+   * cameras and its head follows the running order, so no rule written in
+   * viewport pixels is right in every combination.
+   *
+   * It stands down entirely while a stop is being chosen. The driver has a
+   * decision in front of them with a deadline measured in corners; the rail is
+   * not tall enough to carry both.
    */
-  private showRadioCard(
-    player: CarEntry, moment: RadioMoment, turns?: RadioTurn[],
+  private raiseCard(
+    player: CarEntry, ex: RadioTurn[], tone: AlertTone, asking: boolean,
   ): void {
-    // WHETHER IT FITS IS MEASURED, at the end of this function, by `fitRail` —
-    // the band's foot rises by up to a third of the viewport under the mirror
-    // cameras and its head follows the running order, so no rule written in
-    // viewport pixels is right in every combination. The card is the one item
-    // on the rail that is atmosphere rather than instruction, so it is the
-    // first thing evicted when the answer is no.
-    //
-    // It stands down entirely while a stop is being chosen. The driver has
-    // a decision in front of them with a deadline measured in corners; the rail
-    // is not tall enough to carry both, and covering the decision with the
-    // atmosphere is the fault this whole pass exists to fix.
     if (this.pitSheetOpen) return;
-    const ex = turns ?? radioExchange(moment);
     if (ex.length === 0) return;
     for (const t of this.radioTimers) window.clearTimeout(t);
     this.radioTimers.length = 0;
@@ -2095,21 +2224,17 @@ export class Hud {
       this.radioMark.appendChild(teamMarkSvg(player.team));
       this.markedTeam = player.team.id;
     }
-    // The team's colour is the card's colour: the surname, the number, the
-    // waveform behind it and every one of the driver's own lines are all drawn
-    // from this one property, so a data swap that changes the roster changes
-    // the card without touching a line of this file.
+    // The team's colour is the card's colour: the surname, the waveform behind
+    // it and every one of the driver's own lines are all drawn from this one
+    // property, so a data swap that changes the roster changes the card without
+    // touching a line of this file.
     this.radioCard.style.setProperty(
       '--team', '#' + player.team.colour.toString(16).padStart(6, '0'),
     );
     setText(this.radioDriver, player.driver.lastName);
+    setClass(this.radioCard, 'hud-radiocard tone-' + tone);
 
-    // The buttons, but only for a question that is actually still being asked.
-    const asking = moment.kind === 'call' && moment.question.length > 0 && turns === undefined;
-    if (asking && moment.kind === 'call') {
-      setText(this.radioAsk, moment.question);
-      setText(this.radioYes, this.question?.yesLabel ?? 'YES');
-      setText(this.radioNo, this.question?.noLabel ?? 'NO');
+    if (asking) {
       setStyle(this.radioClock, 'width', '100%');
       setStyle(this.radioChoice, 'display', 'block');
     } else {
@@ -2122,20 +2247,73 @@ export class Hud {
     this.radioCard.classList.add('entering');
     setStyle(this.radioCard, 'display', 'block');
     enterNextFrame(this.radioCard);
-
-    // The eviction the reported overlap came from, and it is measured now
-    // rather than estimated: `maxAlerts` divides a band whose two ends both
-    // move. See `fitRail`.
     this.fitRail();
 
     // A question stands for as long as the offer does — its own clock, not the
     // card's — because taking the buttons away underneath somebody who is still
-    // deciding is exactly the fault the two-clock note above is about.
+    // deciding is exactly the fault the two-clock note is about.
     const dwell = asking ? Math.max(this.radioDwellMs, 20_000) : this.radioDwellMs;
     this.radioTimers.push(window.setTimeout(() => {
       this.radioCard.classList.add('leaving');
       this.radioTimers.push(window.setTimeout(() => this.hideRadioCard(true), 440));
     }, dwell));
+  }
+
+  /**
+   * Broadcasts the driver's retirement, in place of the modal that used to.
+   *
+   * Public because the app shell owns what happens to a session and the HUD
+   * owns what the radio says — the shell decides the race is over for this
+   * driver and asks for it to be said. `hold` keeps the card up rather than
+   * dwelling it away, because a transmission that vanishes leaves a player
+   * looking at a corner control with no idea why it appeared.
+   */
+  sayRetirement(player: CarEntry, reason: string, lap: number): void {
+    // 1. THE PRINCIPAL, FIRST, AS A PERSON. "Are you okay?" — before the cause,
+    //    before the classification, before anything. See the `retired` case in
+    //    `radioExchange`.
+    this.showRadioCard(player, { kind: 'retired', reason, lap });
+    // No dwell on this one. The race the driver is no longer in carries on
+    // behind it, and the only thing that takes the card away is the player
+    // deciding what to do next.
+    for (const t of this.radioTimers) window.clearTimeout(t);
+    this.radioTimers.length = 0;
+
+    // 2. RACE CONTROL, SECOND, IN ITS OWN VOICE. The ruling is not the team's
+    //    to make and not the team's to word: a retirement is an official fact
+    //    about the classification, so it goes on the official strip at the top
+    //    of the picture in the same treatment every other ruling gets.
+    //
+    //    Synthesised here rather than filed by the engine because it is a
+    //    PRESENTATION of a fact the engine already recorded — `car.retired` and
+    //    `retirementReason` — and filing a second bulletin for it would put the
+    //    same event on the log twice.
+    this.pushControlCard({
+      time: 0,
+      text: 'CAR ' + player.driver.raceNumber + ' RETIRED',
+      severity: 'critical',
+      carIndex: player.index,
+      feed: 'race-control',
+      notice: {
+        parties: [player.driver.code],
+        where: 'LAP ' + lap,
+        offence: 'CAR RETIRED',
+        // Not a penalty, so it does not take the segmented decision strip —
+        // `isDecision` reads this and correctly says no. It is a note.
+        status: reason.toUpperCase(),
+      },
+    }, player);
+  }
+
+  /**
+   * Puts the HUD into the state of a driver who is out of the race.
+   *
+   * The timing panel goes: lap time, delta and sector times for a car that is
+   * in a barrier are three readouts of nothing, and they are in the top-right
+   * corner, which is where the driver is now being asked to make a decision.
+   */
+  setRetired(v: boolean): void {
+    this.root.classList.toggle('is-retired', v);
   }
 
   /**
@@ -2183,13 +2361,21 @@ export class Hud {
     let turn = 0;
     let at = 0;
     let pause = 0;
+    // The clock. `speechRate` is a property rather than a constant because the
+    // right answer to "how fast does this type" is "exactly as fast as it is
+    // being spoken" — text appearing at the speed of the voice reading it is
+    // the whole difference between an effect and a transmission. Until the
+    // audio layer lands, `speechRate` is a measured estimate of synthesised
+    // speech at the rate `RadioVoice` sets; when it lands, whoever owns the
+    // audio writes the real figure here and nothing else in this file changes.
+    const perTick = Math.max(1, Math.round(this.speechRate * TYPE_TICK_MS / 1000));
     this.radioTypeTimer = window.setInterval(() => {
       if (pause > 0) { pause--; return; }
       const t = ex[turn];
       const row = rows[turn];
       if (!t || !row) { window.clearInterval(this.radioTypeTimer); return; }
       if (at === 0) this.voice.sayOne(t);
-      at += TYPE_CHARS_PER_TICK;
+      at += perTick;
       row.textContent = '“' + t.line.slice(0, at) + (at < t.line.length ? '' : '”');
       if (at >= t.line.length) {
         turn++;
@@ -2200,6 +2386,27 @@ export class Hud {
       }
     }, TYPE_TICK_MS);
   }
+
+  /**
+   * How fast the words arrive, characters a second.
+   *
+   * THE SEAM FOR THE AUDIO LAYER, and it is deliberately a property on the HUD
+   * rather than a constant in this module. A typewriter running at a fixed rate
+   * beside a voice running at its own is two clocks that drift apart over a
+   * four-turn exchange, and the drift is exactly what makes the effect read as
+   * decoration. The rate that is right is the rate the line is being SPOKEN at.
+   *
+   * The default is measured rather than chosen: `RadioVoice` sets `rate` to
+   * about 1.2, and English synthesised speech at 1.0 runs near 14 characters a
+   * second, so 45 is a shade ahead of the voice — which is the correct place to
+   * be, because a word half-drawn when it is heard reads as lag and a word
+   * drawn a beat early reads as a caption keeping up.
+   *
+   * When the radio audio lands, the thing to do is write the utterance's real
+   * duration here — `line.length / durationS` — at the moment it starts. That
+   * is one assignment and no other change to this file.
+   */
+  speechRate = 45;
 
   private hideRadioCard(now = false): void {
     if (!now) { this.radioCard.classList.add('leaving'); return; }
@@ -2604,20 +2811,15 @@ const RADIO_LIFE_MS = 8000;
 const RADIO_TURNS_SHOWN = 4;
 
 /**
- * The typewriter's rate.
- *
- * ABOUT 45 CHARACTERS A SECOND, which is a shade faster than an urgent person
- * speaks and considerably slower than reading. Slower than this and a four-turn
- * exchange outlasts the corner it was sent on; faster and there is no arrival,
- * only a flicker before the text is simply there.
+ * The typewriter's tick.
  *
  * A tick rather than a per-character timer so the whole transmission is one
- * interval. Three characters every 66ms is 15 writes a second on one element
- * with no children — a thousandth of the frame budget, and it stops when the
- * words run out.
+ * interval: fifteen writes a second on one element with no children is a
+ * thousandth of the frame budget, and it stops when the words run out. How
+ * many characters land per tick is not a constant — see `Hud.speechRate`,
+ * which exists so the words can arrive at the speed they are being spoken.
  */
 const TYPE_TICK_MS = 66;
-const TYPE_CHARS_PER_TICK = 3;
 /** Ticks of silence between one person finishing and the next starting. */
 const TYPE_TURN_GAP_TICKS = 5;
 
@@ -2638,6 +2840,15 @@ const RAIL_GAPS_PX = 36;
  * than this is not a card that fits, it is a card that is about to be clipped.
  */
 const MIN_CARD_PX = 58;
+
+/**
+ * Rows the running order keeps while a stop is being chosen.
+ *
+ * The pit sheet is a decision with a deadline measured in corners and it lives
+ * in the same column as the tower. Eight rows is the leader, the fight and the
+ * player, which is what a driver deciding on a tyre actually needs to see.
+ */
+const PIT_OPEN_ROWS = 8;
 
 /** Whether the player has asked the system for less movement. */
 function prefersReducedMotion(): boolean {
@@ -2684,9 +2895,15 @@ class RadioVoice {
   private voices: SpeechSynthesisVoice[] | null = null;
 
   constructor() {
-    // Default ON, because a feature nobody discovers is a feature that was not
-    // built. The switch is on the card itself and the choice is remembered.
-    this.on = readFlag('f1sim.radioVoice', true);
+    // DEFAULT OFF, and that is a judgement about quality rather than about
+    // discoverability. `speechSynthesis` voices are flat, badly paced for
+    // radio, and were reported as "kinda creepy" — which is the correct
+    // reaction to a machine reading a person's lines. So the card has to be
+    // fully legible and satisfying with no audio at all: the typewriter, the
+    // pacing and the writing carry it, and the voice is an option somebody can
+    // turn on from the switch in the card's header. Nothing is load-bearing on
+    // it. See `RadioVoice`'s header for the rest of that argument.
+    this.on = readFlag('f1sim.radioVoice', false);
   }
 
   get enabled(): boolean { return this.on; }
@@ -2902,13 +3119,27 @@ export function towerFit(
   // disagree the panel is measured for one row height and drawn at another,
   // which is exactly how a tower ends up hanging off the bottom of a phone.
   const compact = w <= 900 || h <= 470;
-  const rowH = compact ? 17 : 26;
+  // 22 rather than 26 on a desktop. Four pixels a row is three more cars, and
+  // a broadcast tower row is tighter than this one was.
+  const rowH = compact ? 17 : 20;
   // The panel's own header block and column rule, PLUS the whole rail beneath
   // it: the notice stack, the weather bug and the car state. This number is
   // the reason the tower is not simply "as many rows as fit" — the rest of
   // the left rail has to exist somewhere, and a tower sized to the viewport
   // grows straight down through the pit instruction.
-  const reserved = compact ? 260 : 570;
+  //
+  // IT CAME DOWN BY A HUNDRED AND EIGHTY PIXELS, from two changes in the same
+  // pass. The rail used to reserve room for a stack of up to two principal's
+  // cards ON TOP OF the broadcast plate, and now carries exactly one card,
+  // because two people cannot transmit on one radio at once. And the tyre,
+  // fuel and weather panels have moved out of this column entirely, into the
+  // CAR column on the right where they belong — see `.hud-carstate`. Both are
+  // pixels handed straight back to the running order, which is what pays for
+  // "why can I only see like 4 cars on the leaderboard".
+  // The compact figure is unchanged: on a phone the tyre and weather panels are
+  // repositioned by their own media queries rather than by this column, so
+  // moving them on a desktop bought the phone nothing.
+  const reserved = compact ? 260 : 500;
   const fits = Math.floor((h - floorPx - reserved) / rowH);
   // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
   // glass in shot the bottom of the frame is not the HUD's to use — see
@@ -2919,10 +3150,83 @@ export function towerFit(
   // pixels is not a rail. The other sixteen cars can wait for a straight; the
   // car about to be alongside cannot.
   const min = floorPx > 0 ? 4 : compact ? 4 : 6;
+  // THE CEILINGS WENT UP because the reported fault was the ceiling.
+  //
+  //   "why can I only see like 4 cars on the leaderboard, where is everyone
+  //    and all the cars?"
+  //
+  // Twenty on a desktop is the whole field, so a full-height screen now
+  // windows nothing at all — which is the only arrangement that cannot hide
+  // the fight. Twelve on a phone is half again what it was.
   return {
-    rows: Math.max(min, Math.min(fits, compact ? 8 : 14)),
+    rows: Math.max(min, Math.min(fits, compact ? 12 : 20)),
     compact,
   };
+}
+
+/**
+ * Which cars the tower draws, when it cannot draw all of them.
+ *
+ * THE REPORTED FAULT, and it is worth being exact about it because the
+ * behaviour it replaces is defensible in principle and failed completely in
+ * practice. The window centred itself on the player and pinned the leader
+ * above it. Running eighteenth of twenty in eight rows, that produced P1, a
+ * dashed break, and P14 to P20 — and in the screenshot it was reported from,
+ * six of those seven were marked `Out`. The player could see the leader, five
+ * retirements and one moving car.
+ *
+ * Two things are wrong there and only one of them is the row count.
+ *
+ * A RETIRED CAR IS NOT PART OF THE FIGHT. It holds its classified position and
+ * belongs on a results screen, but it cannot be raced, caught or lost to, and
+ * spending a scarce row on it to tell the driver something that will still be
+ * true in twenty laps is the worst trade this panel can make. So when the
+ * window is short, retirements are the first thing dropped from it.
+ *
+ * AND THE FIGHT IS AHEAD. Centring the window puts as many rows behind the
+ * player as in front, which is even-handed and wrong: the cars a driver can do
+ * something about are the ones they are catching. The player now sits two
+ * thirds of the way down their own window, so most of what they can see is
+ * road they might make up.
+ *
+ * Pure and exported so `probe:hudtext` can put a player at the back of a field
+ * of wrecks and assert what they are shown.
+ */
+export function towerWindow(
+  standings: readonly { retired: boolean }[], shown: number, playerIdx: number,
+): { rows: number[]; pinLeader: boolean } {
+  const n = standings.length;
+  if (shown >= n) {
+    return { rows: Array.from({ length: n }, (_, i) => i), pinLeader: false };
+  }
+  if (shown <= 0) return { rows: [], pinLeader: false };
+
+  // The cars worth a row: everybody still running, plus the player, who keeps
+  // theirs whatever has happened to them.
+  const live: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!standings[i].retired || i === playerIdx) live.push(i);
+  }
+  // If dropping the retirements is not enough to fit, or there is nobody
+  // running at all, fall back to the whole order — a short tower of wrecks is
+  // still better than an empty one.
+  const pool = live.length >= Math.min(shown, 2) ? live : Array.from({ length: n }, (_, i) => i);
+
+  const at = Math.max(0, pool.indexOf(playerIdx));
+  if (pool.length <= shown) return { rows: pool, pinLeader: false };
+
+  // The player two thirds down, so most of the window is the road ahead.
+  const behind = Math.max(1, Math.round(shown / 3));
+  let from = Math.max(0, Math.min(at - (shown - behind), pool.length - shown));
+  // The leader is pinned whenever the window has scrolled off them, because
+  // "who is winning" is the one question this panel must always answer.
+  const pinLeader = from > 0;
+  if (pinLeader) {
+    const rest = shown - 1;
+    from = Math.max(1, Math.min(at - (rest - behind), pool.length - rest));
+    return { rows: [pool[0], ...pool.slice(from, from + rest)], pinLeader: true };
+  }
+  return { rows: pool.slice(from, from + shown), pinLeader: false };
 }
 
 /**
@@ -3225,6 +3529,139 @@ export function spokenPart(name: string): string {
 
 export type AlertTone = 'info' | 'warn' | 'urgent' | 'go';
 
+// ===========================================================================
+// THE GATE
+// ===========================================================================
+
+/**
+ * What the driver is actually doing, at the moment something wants to be said.
+ *
+ *   "make sure that the radio messages that are happening are reasonable and
+ *    intelligent. like if you crashed the fucking car you're not the one asking
+ *    about VSC and your principal isn't saying maintain the delta, that's
+ *    fucking retarded."
+ *
+ * THE FAULT WAS STRUCTURAL AND IT IS WORTH NAMING PRECISELY. Every message in
+ * this HUD was selected from a WORLD EVENT — a virtual safety car was deployed,
+ * so play the virtual safety car exchange — with no reference at all to the
+ * state of the car it was being sent to. The event was true. The message was
+ * addressed to somebody who was not in a position to receive it.
+ *
+ * That is a whole class of fault rather than two bad lines, and it produces the
+ * same absurdity every time the player's race diverges from the world's: a
+ * driver in a barrier being asked for a delta; a pit wall watching its own car
+ * burn and answering with the minimum sector time; a strategy question with two
+ * buttons on it put to somebody who can no longer press either.
+ *
+ * So nothing is said without a precondition on THIS car. And a message whose
+ * precondition fails is DROPPED, not queued — there is no correct later moment
+ * to tell a retired driver about the delta, and a radio that catches up on what
+ * it could not say is worse than one that missed it.
+ */
+export interface DriverState {
+  /** On the circuit, in the session, able to act on an instruction. */
+  running: boolean;
+  /** The car is out. Nothing about the race is addressed to them again. */
+  retired: boolean;
+  /** In the pit lane or the box — most instructions do not apply. */
+  inPitLane: boolean;
+  /** Something is broken enough to change what is worth saying. */
+  damaged: boolean;
+  /** The chequered flag has been shown. */
+  sessionOver: boolean;
+}
+
+/** Reads the state off the car, so nothing else has to know how. */
+export function driverState(engine: RaceEngine, car: CarEntry): DriverState {
+  const over = engine.raceControl.sessionFlag === 'chequered' || car.finished;
+  return {
+    retired: car.retired,
+    inPitLane: car.inPitLane,
+    damaged: car.damage.worst().health < 0.7,
+    sessionOver: over,
+    running: !car.retired && !car.inPitLane && !over,
+  };
+}
+
+/**
+ * When each kind of transmission is worth sending.
+ *
+ * A `Record` KEYED ON THE UNION rather than a switch with a default, and that
+ * is the load-bearing decision in this file: TypeScript will not compile a new
+ * `RadioMoment` kind until somebody has written down when it is valid. The
+ * point of the exercise is not to fix the two lines that were reported, it is
+ * to make the next line impossible to add without answering the question.
+ */
+const MOMENT_VALID: Readonly<Record<RadioMoment['kind'], (s: DriverState) => boolean>> = {
+  // Strategy, neutralisations and the delta are all instructions about a race
+  // the driver is still in. Every one of them is nonsense to a car in a
+  // barrier, and the delta is nonsense to a car in the pit lane as well —
+  // Art. 55.7 and 56.5 apply on the circuit.
+  pit: (s) => s.running,
+  'safety-car': (s) => !s.retired && !s.sessionOver,
+  vsc: (s) => !s.retired && !s.sessionOver,
+  delta: (s) => s.running,
+  'neutral-ending': (s) => !s.retired && !s.sessionOver,
+  // The question with buttons on it. Hardest gate of the lot, because a
+  // question put to somebody who cannot act on it is worse than silence: they
+  // are being asked to make a decision the game will then ignore.
+  call: (s) => s.running,
+  // The flag is addressed to whoever took it. A driver who retired on lap
+  // four did not take it and is not being congratulated on a finish.
+  chequered: (s) => !s.retired,
+  damage: (s) => !s.retired,
+  // The only one that is valid PRECISELY BECAUSE the car is gone.
+  retired: (s) => s.retired,
+};
+
+/** Whether this moment should reach the driver at all. */
+export function momentAllowed(m: RadioMoment, s: DriverState): boolean {
+  return MOMENT_VALID[m.kind](s);
+}
+
+/**
+ * The same gate for the pit wall's single-sentence traffic.
+ *
+ * Keyed on the union for the same reason. The split is mostly one question:
+ * does this line ask the driver to DO something? A retired driver can be told
+ * their team-mate is out, because that is news about the team; they cannot be
+ * told to look after their tyres.
+ */
+const NOTE_VALID: Readonly<Record<TeamNote['kind'], (s: DriverState) => boolean>> = {
+  // What happened to a car. Still true, and still worth hearing, whoever it
+  // happened to — including a driver who has just retired hearing about it.
+  off: () => true,
+  damage: () => true,
+  retired: () => true,
+  failure: () => true,
+  stranded: () => true,
+  recovered: () => true,
+  stop: (s) => !s.retired,
+  'penalty-served': (s) => !s.retired,
+  // Pit-lane procedure, addressed to a car on its way in.
+  'pit-closed': (s) => !s.retired,
+  'pit-missed': (s) => !s.retired,
+  'pit-fast': (s) => !s.retired,
+  // The pit wall's own traffic: all of it is about a race in progress, and
+  // none of it survives the car stopping.
+  gap: (s) => s.running,
+  tyres: (s) => s.running,
+  weather: (s) => !s.retired && !s.sessionOver,
+  position: (s) => !s.retired,
+  fuel: (s) => s.running,
+  call: (s) => s.running,
+  reply: (s) => !s.retired,
+  // A penalty outlives the car it was given to — it is charged at the flag
+  // (Art. B1.9.5b) and changes the classification — so a retired driver is
+  // still told. The place to hand back is not: there is nobody to hand it to.
+  penalty: () => true,
+  cede: (s) => s.running,
+};
+
+export function noteAllowed(n: TeamNote, s: DriverState): boolean {
+  return NOTE_VALID[n.kind](s);
+}
+
 /**
  * The live pit cue: the reason, then the control.
  *
@@ -3327,7 +3764,9 @@ export function messageRoute(
  * has no parties and no detail, so it prints as its own headline. `SAFETY CAR
  * DEPLOYED` needs nothing added to it.
  */
-export function raceControlCard(m: RaceControlMessage): {
+export function raceControlCard(
+  m: RaceControlMessage, numbers?: ReadonlyMap<string, number>,
+): {
   headline: string;
   detail: string;
   tone: AlertTone;
@@ -3355,11 +3794,42 @@ export function raceControlCard(m: RaceControlMessage): {
     };
   }
   return {
-    headline: n.parties.join(', ') + ' INCIDENT',
+    // THE OFFICIAL WORDING, which names a car by its NUMBER with the code in
+    // brackets: `TURN 8 INCIDENT INVOLVING CARS 44 (HAM) AND 1 (VER)`. Race
+    // control does not identify a driver by their surname — the entry list is
+    // numbers, and the number is what is on the car. The bracketed code is the
+    // broadcast's own concession to people who have not learnt twenty numbers.
+    //
+    // Falls back to the bare codes when the caller has no number table, which
+    // is what every existing test and the panel harness pass.
+    headline: officialParties(n, numbers),
     detail: [n.where, n.offence, n.status].filter((s) => s.length > 0).join(' · '),
     tone,
     penalty: isDecision(n.status) ? twoLines(n.status) : [],
   };
+}
+
+/**
+ * How race control names the cars in a notice.
+ *
+ * `INCIDENT INVOLVING CARS 44 (HAM) AND 1 (VER)` where the place is known and
+ * there is more than one party, `CAR 44 (HAM)` where there is one, and the bare
+ * codes where the field is not available to resolve numbers from.
+ */
+function officialParties(
+  n: RaceNotice, numbers?: ReadonlyMap<string, number>,
+): string {
+  const named = n.parties.map((code) => {
+    const no = numbers?.get(code);
+    return no === undefined ? code : no + ' (' + code + ')';
+  });
+  if (!numbers) return n.parties.join(', ') + ' INCIDENT';
+  const cars = named.length === 1
+    ? 'CAR ' + named[0]
+    : 'CARS ' + named.slice(0, -1).join(', ') + ' AND ' + named[named.length - 1];
+  // The place leads when there is one, exactly as the wide broadcast variant
+  // sets it: `TURN 8 INCIDENT INVOLVING CARS …`.
+  return (n.where ? n.where + ' ' : '') + 'INCIDENT INVOLVING ' + cars;
 }
 
 /** A status that has changed the result, as opposed to one that is a note. */
@@ -3820,6 +4290,21 @@ export type RadioMoment =
   | { kind: 'chequered'; position: number }
   | { kind: 'damage'; part: string }
   /**
+   * The driver's race being over, said by the principal rather than by a modal.
+   *
+   *   "why do we still have this thing, I thought we talked about, remove the
+   *    retired. its just a radio message about you having to retire and then
+   *    top right continue or watch the race."
+   *
+   * Third time of asking. A full-screen `RETIRED` panel with a damage breakdown
+   * on it is the game stopping to file a report about something the player has
+   * just watched happen, and it lands about two seconds after the accident —
+   * which is the moment they most want to be looking at their own car in the
+   * barrier. The information is not wrong; it is being volunteered instead of
+   * offered. So the wall says it, and the stats wait to be asked for.
+   */
+  | { kind: 'retired'; reason: string; lap: number }
+  /**
    * The strategist, asking something with an answer attached.
    *
    * The only moment in the game where the card carries buttons. The turns are
@@ -4015,6 +4500,34 @@ export function radioExchange(m: RadioMoment): RadioTurn[] {
         { who: 'wall', line: m.part + ' has taken a hit. Numbers are still good.' },
         { who: 'driver', line: 'It does not feel good.' },
         { who: 'wall', line: 'Keep going. We are watching it.' },
+      ];
+
+    // The one the modal used to say. Note what is NOT in it: no classification,
+    // no damage breakdown, no better luck next time. A principal on the radio
+    // says the three things that are true in the ten seconds after an accident
+    // — stop the car, are you alright, it is not your fault — and everything
+    // else waits until somebody asks for it.
+    case 'retired':
+      // THE FIRST THING A TEAM SAYS IS NOT ABOUT THE CAR.
+      //
+      //   "the principal should be asking 'are you okay?' or something along
+      //    those lines, and then obviously like the FIA notif you can do
+      //    something similar and be like 'unfortunately you have to retire'."
+      //
+      // Which is exactly the two-voice split this HUD already has, and it falls
+      // out of it rather than needing a special case. The human question is the
+      // TEAM's — a person who has just watched somebody they know hit a barrier
+      // at speed asks whether they are hurt, and asks it before anything else.
+      // The ruling is RACE CONTROL's, in its own impersonal register, on the
+      // official strip; see `Hud.sayRetirement`.
+      //
+      // Nothing here mentions points, classification or the rest of the season.
+      // The driver is still in the car.
+      return [
+        { who: 'wall', line: 'Are you okay? Talk to me.' },
+        { who: 'driver', line: "I'm okay. I'm okay." },
+        { who: 'wall', line: 'Good. Kill the switches and get out of the car.' },
+        { who: 'driver', line: 'Copy. Sorry, lads.' },
       ];
 
     // The strategist's case, and the only one that leaves the last word to the
@@ -4226,6 +4739,98 @@ export function stopwatchSvg(): SVGSVGElement {
  * pole: at badge size a flag is a smudge and a two-by-two chequer is
  * unmistakable, which is the whole job of a square eleven pixels across.
  */
+/**
+ * The governing body's mark, for the left block of the race-control strip.
+ *
+ * THE SUBSTITUTION. The reference strip carries the FIA roundel in a navy block
+ * at its left edge, and the FIA roundel is a trademark. So this is the game's
+ * own device in the same place at the same weight: a ring, a horizontal bar
+ * across it, and a chequered quadrant — the three ideas an officiating mark in
+ * this sport is made of, in geometry nobody owns. It is the same substitution
+ * every other badge in this repo makes, including the team marks beside it.
+ *
+ * White on the strip's navy, because the strip is white on navy throughout and
+ * a mark in a second colour would be the one thing on it asking for attention.
+ */
+export function governingMarkSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 32 32');
+  svg.setAttribute('aria-label', 'Race control');
+  const add = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.appendChild(e);
+    return e;
+  };
+  add('circle', {
+    cx: '16', cy: '16', r: '13.2',
+    fill: 'none', stroke: 'currentColor', 'stroke-width': '2.2',
+  });
+  // The bar. An officiating mark in motorsport is a wheel with a horizon
+  // through it; this is that idea and no more of it.
+  add('rect', { x: '4.6', y: '14.2', width: '22.8', height: '3.6', fill: 'currentColor' });
+  // The chequer, one quadrant, four squares. The flag is the sport's own
+  // universal sign for a decision having been made.
+  const s = 3.1;
+  for (const [cx, cy] of [[16.9, 5.6], [23.1, 5.6], [16.9, 11.8], [23.1, 11.8]]) {
+    if ((cx > 20) === (cy > 8)) continue;
+    add('rect', {
+      x: String(cx), y: String(cy), width: String(s), height: String(s),
+      fill: 'currentColor',
+    });
+  }
+  add('rect', { x: '16.9', y: '5.6', width: String(s), height: String(s), fill: 'currentColor' });
+  add('rect', { x: '20.0', y: '8.7', width: String(s), height: String(s), fill: 'currentColor' });
+  return svg;
+}
+
+/**
+ * The waveform behind the radio card's words.
+ *
+ * A transmission is AUDIO, and a plate of quoted capitals with nothing behind
+ * it is a caption of one. The broadcast reference has a trace running under the
+ * text and it is the single element that makes the card read as a recording
+ * rather than as a subtitle.
+ *
+ * STATIC, and deliberately. An animated waveform would be dancing to a signal
+ * this game does not have — there is no audio stream behind these words, only a
+ * speech synthesiser that may be switched off — and a meter that moves when
+ * nothing is being measured is a decorative lie. It is also drawn behind text
+ * that is already being written a character at a time, and two things moving in
+ * the same 200 pixels is one too many.
+ *
+ * Generated rather than drawn: 46 bars whose heights come from a fixed sum of
+ * three sines, which gives the irregular clustering of speech rather than the
+ * even comb of a synthesised tone. Deterministic, so it is the same trace every
+ * time and never reads as data.
+ */
+export function waveformSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'radio-wave');
+  svg.setAttribute('viewBox', '0 0 200 44');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+  const bars = 46;
+  for (let i = 0; i < bars; i++) {
+    const t = i / bars;
+    // Three incommensurate frequencies: speech has no period, and a single
+    // sine reads immediately as a test tone.
+    const a = Math.sin(t * 31.4) * 0.5 + Math.sin(t * 12.9 + 1.7) * 0.32
+      + Math.sin(t * 57.1 + 0.4) * 0.18;
+    const h = Math.max(1.5, Math.abs(a) * 20 + 1.5);
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', (i * (200 / bars) + 0.8).toFixed(2));
+    r.setAttribute('y', (22 - h).toFixed(2));
+    r.setAttribute('width', (200 / bars - 1.6).toFixed(2));
+    r.setAttribute('height', (h * 2).toFixed(2));
+    r.setAttribute('rx', '0.8');
+    svg.appendChild(r);
+  }
+  return svg;
+}
+
 export function chequerSvg(): SVGSVGElement {
   const NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
