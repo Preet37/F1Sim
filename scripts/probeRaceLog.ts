@@ -324,7 +324,18 @@ installWorld(world);
  */
 const TIER: TierId = (process.env.RACELOG_TIER as TierId) ?? 'F3';
 const GRID_SLOT = Number(process.env.RACELOG_SLOT ?? 17);
-const CIRCUITS = (process.env.RACELOG_CIRCUITS ?? 'bahrain,silverstone,spa').split(',');
+/**
+ * Monza is in the default set on purpose, and it is the one that fails.
+ *
+ * It is where the penalty column the player described actually comes from: a
+ * car beaches, the safety car comes out, and `checkNeutralisationDelta` then
+ * issues a fresh five-second penalty to every car in the field on every one of
+ * the twenty marshalling sectors it is judged quick in. Measured, two races:
+ * 256 delta penalties, 15 of 20 cars carrying a badge at the flag, the driven
+ * car holding twelve of them. A probe that passed while that was live would be
+ * a probe that had been aimed away from the bug.
+ */
+const CIRCUITS = (process.env.RACELOG_CIRCUITS ?? 'bahrain,silverstone,spa,monza').split(',');
 const SEEDS = (process.env.RACELOG_SEEDS ?? '20260729,20268648')
   .split(',').map((s) => Number(s.trim()));
 const DISTANCES = (process.env.RACELOG_LAPS ?? 'quarter,full')
