@@ -74,15 +74,22 @@ These have all been decided. Do not re-litigate them without the user.
   only permissively licensed ones — CC0, public domain, or explicitly licensed for this
   use. Record the licence and source of anything added.
 
-  **How this is implemented in practice.** Every branded slot — team badge, sponsor decal,
-  driver portrait — is an *asset slot* backed by a generated placeholder, loaded from
-  `public/brand/<team-id>/` if a file is present and falling back to the generated mark if
-  not. That means the user can drop real artwork in themselves at any time and it appears
-  immediately, with no code change, and removing the directory returns the game to a
-  shippable state. The assistant populates the generated marks and the slots; it does not
-  commit reproductions of third-party trademarks into the repository. This is also simply
-  the right architecture — it is the same swappable boundary that `src/data/roster/` gives
-  the names.
+  **How this is MEANT to be implemented — and is NOT. See issue #36.** The agreed design is
+  that every branded slot — team badge, sponsor decal, driver portrait — is an *asset slot*
+  backed by a generated placeholder, loaded from `public/brand/<team-id>/` if a file is
+  present and falling back to the generated mark if not. The user could then drop real
+  artwork in themselves and it would appear immediately with no code change, and removing
+  the directory would return the game to a shippable state.
+
+  **None of that exists.** Verified 2026-08-03: `grep -rn "public/brand" src scripts audit`
+  returns nothing and `public/` contains only `textures/`. There is no loader and no
+  fallback path. This paragraph asserted the mechanism as fact for long enough that a code
+  review had to discover otherwise, so it is corrected here rather than quietly fixed.
+  What is genuinely true today is the *generated* geometric marks (`MARK_DEVICES` in
+  `src/render/LiveryDesign.ts`, carrying an explicit non-infringement comment) and the
+  fictional `SPONSORS` set in `src/render/Livery.ts`. Those are real; the swap boundary is
+  not. Until #36 lands, the only working IP boundary in this project is
+  `src/data/roster/` — which does hold, and which is why §3 keeps insisting on it.
 - The user asked for archive clips of past champions in the intro. The agreed substitute is in-engine cinematography, which is
   what the real F1 games mostly use anyway. They confirmed: *"yeah render the game scenes
   like rendered in engine yourself."*
