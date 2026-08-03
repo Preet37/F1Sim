@@ -3997,6 +3997,15 @@ export function teamLine(
         : { line: note.cause + '. Stop the car, kill the switches. Sorry.', tone: 'urgent' };
 
     case 'stranded':
+      if (note.onTrack) {
+        return ctx.mate
+          ? { line: who + ' has stopped on track. Double yellows — expect a VSC.', tone: 'warn' }
+          : {
+            line: 'You are stopped on the racing line. Out of the car and behind the barrier, ' +
+              'quickly — they are still coming past.',
+            tone: 'urgent',
+          };
+      }
       return ctx.mate
         ? { line: who + ' is beached and out. Marshals are on it — expect yellows.', tone: 'warn' }
         : { line: 'You are stuck. Leave it, get out of the car, keep the barrier between you and the track.', tone: 'urgent' };

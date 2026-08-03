@@ -3973,7 +3973,11 @@ export class RaceEngine {
    * `Recovery.ts`'s job and it does it from where the car is.
    */
   private checkStranded(car: CarEntry, dt: number): void {
-    if (car.physics.speedMs >= STRANDED_SPEED_MS || car.inPitLane) {
+    // A car that has taken the chequered flag is not retired for stopping. It
+    // has finished; where it comes to rest on the slowing-down lap is between
+    // the driver and the marshals, and `retire` after the flag would rewrite a
+    // result that has already been earned.
+    if (car.physics.speedMs >= STRANDED_SPEED_MS || car.inPitLane || car.finished) {
       car.stuckTimer = 0;
       return;
     }
@@ -4003,7 +4007,7 @@ export class RaceEngine {
           offence: offRoad ? 'CAR STOPPED OFF TRACK' : 'CAR STOPPED ON TRACK',
           status: 'RECOVERY IN PROGRESS',
         },
-        team: { kind: 'stranded' },
+        team: { kind: 'stranded', onTrack: !offRoad },
       },
     );
   }

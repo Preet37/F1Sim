@@ -259,7 +259,13 @@ export type TeamNote =
   | { kind: 'damage'; part: string; health: number }
   | { kind: 'retired'; reason: string }
   | { kind: 'failure'; cause: string }
-  | { kind: 'stranded' }
+  /**
+   * The car has stopped and is not restarting. `onTrack` is the difference
+   * between "you are in the gravel, stay behind the barrier" and "you are
+   * standing in the middle of the road" — which are different instructions to a
+   * driver, so the pit wall does not get to say the same thing for both.
+   */
+  | { kind: 'stranded'; onTrack?: boolean }
   | { kind: 'recovered' }
   | { kind: 'stop'; compound: string }
   | { kind: 'pit-closed' }
