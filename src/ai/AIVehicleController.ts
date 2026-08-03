@@ -1650,35 +1650,46 @@ export class AIVehicleController {
     // In clean air the bound is hundreds of metres per second and binds nothing.
     // That is the design: this is not a caution term, it is a floor.
     const hz = p.hazard;
-    /**
-     * The speed to plan against the car in front at.
+    /*
+     * A THING THAT WAS TRIED HERE AND MEASURED WORSE. Recorded so it is not
+     * retried blind, because the reasoning for it is good and it is wrong.
      *
-     * NOT its current speed, and that difference is a corner's worth of closing
-     * rate. Both bounds below solve `v² = v_lead² + 2 a d`, and feeding them the
-     * lead car's speed RIGHT NOW asserts that it will still be doing it when we
-     * arrive. On a straight that is true. Into a braking zone it is the one
-     * moment it is most wrong: the car ahead is about to shed two hundred km/h
-     * for a corner it is already turning into, and a driver planning against the
-     * speed it is doing on the way in has planned to arrive where it used to be.
+     * Both bounds below solve `v² = v_lead² + 2 a d`, and both are handed the
+     * lead car's speed RIGHT NOW — which asserts it will still be doing it when
+     * we arrive. Into a braking zone that is the one moment the assertion is
+     * most wrong: the car ahead is about to shed two hundred km/h for a corner
+     * it is already turning into. The obvious correction is to plan against
+     * `min(hz.speedMs, speedTargetAt(car, s + hz.gapM, p))` — what a driver
+     * means by "he has to brake for the same corner I do".
      *
-     * Measured at Spa, where 63% of all the contact in a race happened at La
-     * Source and on the two hundred metres of braking in front of it — every
-     * lap, in a race whose opening lap was clean. That is not a start-line
-     * accident and it is not two cars racing for an apex; it is the field
-     * arriving at a hairpin at the end of a straight having each planned against
-     * the last car's straight-line speed.
+     * Measured at Spa, three seeds, quarter distance, F3, before and after:
      *
-     * So take the lower of what the car ahead is doing and what the road allows
-     * where it is. This is the same `speedTargetAt` the corner-braking scan uses
-     * one block below, asked at the other car's position rather than at our own,
-     * and it is what a driver means by "he has to brake for the same corner I
-     * do". It binds nowhere else: on a straight the road allows far more than
-     * anybody is doing, the minimum is the other car's own speed, and the bound
-     * is the enormous number it has always been in clean air.
+     *   off-track excursions   12.7 -> 6.3 a race     better, and consistently
+     *   car-to-car contacts    20.0 -> 28.0 a race    WORSE, 2 of 3 seeds
+     *   retirements             3.00 -> 3.67 a race   worse
+     *
+     * And `validate:race` at Monaco, which is where it showed up worst — the
+     * tightest circuit on the calendar, so the most to bunch:
+     *
+     *   finishers of 20         15 -> 0     with the change, nobody finished
+     *   retirements              5 -> 8
+     *   position swaps         277 -> 485   a field shuffling, not racing
+     *
+     * Pace itself was never the cost: Bahrain's fastest race lap is 1:56.917
+     * either way, identical to the digit. It is not a caution tax, it is a
+     * concertina — a field that brakes earlier for the car in front arrives at
+     * the corner bunched harder and touches more once it is there. Excursions
+     * are an intermediate quantity; finishers, retirements and contacts are what
+     * the player sees, and all three moved the wrong way.
+     *
+     * (Overtakes at Bahrain read 181 without and 197 with. Do not read that as
+     * the change buying overtaking — at Monaco the same counter went to 485 for
+     * a race no one finished, which is what a bunched field does to a
+     * position-swap count.)
+     *
+     * The braking-zone error above is real and still unfixed. Whatever fixes it
+     * has to not bunch the field to do it.
      */
-    const leadPlanMs = hz === null ? 0 : (inLane
-      ? hz.speedMs
-      : Math.min(hz.speedMs, this.speedTargetAt(car, s + hz.gapM, p)));
     if (hz !== null) {
       const standoff = inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M;
       // The pit lane gets a measured deceleration rather than the computed one.
@@ -1690,7 +1701,7 @@ export class AIVehicleController {
       // Planned at slightly less than everything the car has, so the demand
       // shows up as a lift before it has to show up as a stamp on the pedal.
       targetSpeed = Math.min(
-        targetSpeed, safeFollowSpeedMs(hz.gapM, leadPlanMs, decel * 0.72, standoff),
+        targetSpeed, safeFollowSpeedMs(hz.gapM, hz.speedMs, decel * 0.72, standoff),
       );
     }
 
@@ -1756,7 +1767,7 @@ export class AIVehicleController {
     // nobody is confident about the back of another car.
     if (hz !== null) {
       const a = requiredDecelMs2(
-        speed, hz.gapM, leadPlanMs, inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M,
+        speed, hz.gapM, hz.speedMs, inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M,
       );
       if (a > aReq) aReq = a;
     }
