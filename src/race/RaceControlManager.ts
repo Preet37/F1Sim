@@ -1848,6 +1848,35 @@ export class RaceControlManager {
       car.deltaSectorPartial = true;
       return;
     }
+    // ...and neither is a car closing the queue. THE SAME ARTICLE CONTAINS BOTH
+    // OBLIGATIONS: B5.13.2b / Art. 55.7 requires cars to "form up in a queue
+    // behind the Safety Car no more than the maximum allowable gap of ten (10)
+    // car lengths apart" and, in the very next paragraph, to "stay above the
+    // minimum time set by the FIA ECU at least once in each marshalling sector".
+    // A car half a kilometre adrift of the queue cannot satisfy the first at the
+    // second's pace, and the wording of the second is what resolves it: AT LEAST
+    // ONCE in each sector, which explicitly tolerates being quick for part of
+    // one. A car spending a whole sector closing is doing what it was told.
+    //
+    // Measured: making the safety car crawl until the WHOLE field had formed up
+    // — which is what fixed the form-up — left cars out of the queue for longer,
+    // and the delta penalties issued in one Bahrain race went from five to
+    // thirty-four. Every one of them was a car closing a gap it is required to
+    // close.
+    //
+    // Safety car only. Under a VSC there is no queue and no closing up: the gaps
+    // are held as they were (Art. 56.5 / B5.12.2b asks for the delta and for
+    // nothing else), so there is no other article to be caught between.
+    if (this.neutralisation === 'safety-car') {
+      const limit = this.queueGapLimitM(car, false);
+      const gap = car.perception.queueAheadM;
+      if (limit > 0 && gap > limit) {
+        car.deltaSectorTime = 0;
+        car.deltaSectorIndex = -1;
+        car.deltaSectorPartial = true;
+        return;
+      }
+    }
     // The delta obligation has an end, and the regulation states it: drivers
     // must stay above the minimum time "from the time at which all Competitors
     // have been sent the 'SAFETY CAR DEPLOYED' message until the time that each

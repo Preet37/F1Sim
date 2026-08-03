@@ -186,14 +186,21 @@ export class SafetyCar {
    * illuminated regardless of where the leader is" (B5.13.1 / Art. 55.6).
    */
   scramble(): void {
-    if (this.station !== 'garage') return;
+    if (this.station === 'scrambling' || this.station === 'circuit') return;
+    // Already on its way home down the pit lane when the next order comes, which
+    // a race with two incidents in quick succession produces. It does not go
+    // back to its bay to start again — it is in the lane, pointing the right
+    // way, and it simply keeps going to the end of it.
+    const restarting = this.station === 'returning';
     this.station = 'scrambling';
     this.stationS = 0;
     this.orangeLights = true;
     this.greenLight = false;
-    this.s = this.bayS;
+    if (!restarting) {
+      this.s = this.bayS;
+      this.speedMs = 0;
+    }
     this.lateral = this.track.def.pitLane.lateralOffsetM;
-    this.speedMs = 0;
   }
 
   /** True once it has run down the lane and is waiting at the end of it. */
