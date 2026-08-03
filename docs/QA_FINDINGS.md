@@ -110,6 +110,24 @@ The null case — identical staging, blocker left alone — passes at exactly 10
 and 20/20, so the probe is capable of going green and the failure is the
 simulation's.
 
+**Re-run on merged `main` @ `e8016b9`** (the authoritative numbers):
+
+| circuit | field laps, staged | field laps, control | moving at the end |
+|---|---|---|---|
+| monza `[null control]` | 41 | 41 (100%) | **20 / 20** |
+| monza | 11 | 41 (27%) | **0 / 20** |
+| spa | 10 | 34 (29%) | 10 / 19 |
+| monaco | 9 | 35 (26%) | **0 / 18** |
+
+Still failing, and the lap-count collapse is unchanged on all three circuits
+(27% / 29% / 26%). One thing did move: Spa now recovers about half the field
+instead of none, so something in the last thirty commits helps there and helps
+nowhere else. That is worth knowing before anyone concludes this is fixed from a
+single-circuit check — it is the *"YOU NEED TO FIX EVERY MAP"* pattern again.
+Monaco additionally now fails the third assertion outright: a car stood on the
+racing line for four minutes and race control never retired it, never recovered
+it and never raised a flag naming it.
+
 **What it costs the player:** spin to a halt on the road, stall on the grid, or
 put the controller down for a minute, and the entire twenty-car field queues up
 behind you nose-to-tail and stops forever. The race cannot be resumed. It also
@@ -721,8 +739,8 @@ are not meaningful. Results:
 | `validate:integrity` | killed under load, not re-run to completion |
 | `validate:flags` | **fail — 3 failures, pre-existing and documented.** Numbers stable: double-yellow lift 21.6% vs single-yellow 85.3%; median safety-car gap 219m against the ten-car-length limit; safety-car lap ×1.36 a green lap against a real ×1.6-2.0 |
 | `probe:hudtext` | **fail — pre-existing, but the recorded cause is wrong. See A3** |
-| `probe:finish` (new) | **fail — A1** |
-| `probe:blockage` (new) | **fail — A2** |
+| `probe:finish` (new) | **fail — A1.** Re-confirmed on merged `main`: 1/19 completed the distance, 19/19 share the winner's time |
+| `probe:blockage` (new) | **fail — A2.** Re-confirmed on merged `main`: 27%/29%/26% of the control's laps; 0/20 moving at Monza, 0/18 at Monaco |
 | `probe:smoke` (new) | pass — 6 screens, no console errors |
 | remainder | in flight when this was written; nothing new had failed |
 
