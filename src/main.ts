@@ -4743,13 +4743,15 @@ class Game {
    * has to follow the car.
    */
   private updatePitPrompt(engine: RaceEngine, player: CarEntry): void {
-    // Serving a drive-through is not a stop and there is nothing to choose: the
-    // car transits the lane without stopping. Offering a tyre choice there would
-    // be offering something the crew cannot do.
-    const relevant =
-      engine.config.kind === 'race' &&
-      !player.retired && !player.finished && !player.pitTransitOnly &&
-      (player.pitRequested || (player.inPitLane && !player.servicedThisVisit));
+    // Whether there is a decision to be made is the ENGINE's question, and it
+    // answers it: `pitDecisionPending`. This used to be a condition written out
+    // here that began `config.kind === 'race'`, so the sheet never appeared in
+    // practice or qualifying — "whenever I am pitting no matter what session is
+    // I should be asked". A stop in FP2 is where the tyre you are going to
+    // qualify on gets chosen and where a damaged wing gets replaced, and the
+    // compound was being picked for the player by the race strategist's
+    // function in a session that has no strategy.
+    const relevant = engine.pitDecisionPending(player);
 
     if (relevant) {
       this.pitPrompt.render(

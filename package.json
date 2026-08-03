@@ -85,7 +85,10 @@
     "shoot:career": "tsx scripts/shootCareer.ts",
     "shoot:frontend": "tsx scripts/shootFrontEnd.ts",
     "probe:frontdoor": "tsx scripts/probeFrontDoor.ts",
-    "probe:menucost": "tsx scripts/probeMenuCost.ts"
+    "probe:menucost": "tsx scripts/probeMenuCost.ts",
+    "probe:pitcrew": "tsx scripts/probePitCrew.ts",
+    "audit:pitlane": "tsx scripts/auditPitLane.ts",
+    "diag:pitchoice": "tsx scripts/diagPitChoice.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

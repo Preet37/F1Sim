@@ -15,6 +15,7 @@ import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
+import { buildPitCrew, PIT_JACK_LIFT_M, type PitCrewScene } from './PitCrew';
 import { MarshalPosts } from './MarshalPost';
 import { buildSafetyCar, type SafetyCarVisual } from './SafetyCarMesh';
 import type { RaceEngine } from '../race/RaceEngine';
@@ -201,6 +202,7 @@ export class Renderer {
   private paddock: PaddockScene | null = null;
   /** The player's own pit box, highlighted so they can find it. */
   private pitBox: PitBoxMarker | null = null;
+  private pitCrew: PitCrewScene | null = null;
   private marshalPosts: MarshalPosts | null = null;
   /**
    * Readable so the audit harness can find the car with the cockpit in it and
@@ -618,6 +620,13 @@ export class Renderer {
       this.scene.add(this.pitBox.root);
     }
 
+    // The working pit crew: twenty-one people, their equipment and the release
+    // light. Exactly ONE crew exists — it follows whichever car is being
+    // serviced and hides when none is — so a pit lane with nothing happening in
+    // it costs a visibility test. See `PitCrew.ts`.
+    this.pitCrew = buildPitCrew(this.quality);
+    this.scene.add(this.pitCrew.root);
+
     // The safety car, parked in its garage until race control sends it out.
     this.safetyCar = buildSafetyCar(this.quality);
     this.safetyCar.root.visible = false;
@@ -905,6 +914,11 @@ export class Renderer {
       this.scene.remove(this.pitBox.root);
       this.pitBox.dispose();
       this.pitBox = null;
+    }
+    if (this.pitCrew) {
+      this.scene.remove(this.pitCrew.root);
+      this.pitCrew.dispose();
+      this.pitCrew = null;
     }
     if (this.marshalPosts) {
       this.scene.remove(this.marshalPosts.root);
@@ -1198,6 +1212,10 @@ export class Renderer {
       const p = engine.playerCar;
       this.pitBox.setVisible(!!p && (p.inPitLane || p.pitRequested));
     }
+
+    // The crew. Poses twenty-one figures from the engine's own resolved stop
+    // while a car is in its box, and returns after one branch when none is.
+    this.pitCrew?.update(engine);
 
     // The marshal panels. Cheap: the colour buffer is only touched on the frame
     // a sector's flag actually changes.
@@ -1607,7 +1625,17 @@ export class Renderer {
       // `npm run probe:carrig`.
       // INTERPOLATED, not the solver's last step. See `updateRenderPoses` —
       // this one line is the whole of the "the cars jitter" defect.
-      const y = bankedCarGroundY(track, car.s, car.lateral);
+      let y = bankedCarGroundY(track, car.s, car.lateral);
+      // A car in its pit box is ON JACKS, and for two and a half seconds it is
+      // the most-looked-at car in the game. Both jacks go in the instant it
+      // stops, lift it together, and drop it when the last gun reports — so the
+      // height comes straight from the same choreography the crew are animated
+      // from rather than from a timer of the renderer's own. Added ON TOP of
+      // the banked ground height rather than replacing it: a car on jacks is
+      // still standing on a road with a camber. See `PitStopChoreography.ts`.
+      if (car.inPitBox) {
+        y += engine.pitStopOf(car).progress.jack * PIT_JACK_LIFT_M;
+      }
       v.root.position.set(car.renderX, y, car.renderZ);
       v.root.rotation.y = car.renderHeading;
 
