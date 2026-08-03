@@ -71,6 +71,8 @@ function chromePath(): string {
   throw new Error('no Chrome found; set CHROME_PATH');
 }
 
+const NAV_MS = Number(process.env.GFX_NAV_MS ?? 420_000);
+
 const AUTO: GraphicsSettings = { post: 'auto', shadows: 'auto', msaa: 'auto', resolution: 'auto' };
 
 // ===========================================================================
@@ -245,7 +247,7 @@ async function withStoredSettings<T>(
 
 async function settle(page: Page): Promise<void> {
   await page.waitForFunction('!!window.__game && !!window.__game.renderer',
-    { timeout: 180_000, polling: 100 });
+    { timeout: NAV_MS, polling: 100 });
 }
 
 async function loadWith(
@@ -255,7 +257,11 @@ async function loadWith(
   // Setting it after load and reloading would work too; this way the very
   // first `new Renderer` sees it, which is the moment the bug lived in.
   return await withStoredSettings(page, settings, async () => {
-    await page.goto(url + query, { waitUntil: 'load', timeout: 180_000 });
+    // Generous, and finite. A deep-linked circuit build under swiftshader is
+    // genuinely slow and gets slower in proportion to whatever else is on the
+    // box; `GFX_NAV_MS` is there so a contended machine can be given room
+    // without anybody being tempted to loosen an assertion instead.
+    await page.goto(url + query, { waitUntil: 'load', timeout: NAV_MS });
     await settle(page);
     return await page.evaluate(READ_GL) as GlState;
   });
@@ -383,7 +389,7 @@ async function main(): Promise<void> {
 
   await withStoredSettings(page, null, async () => {
     // Nothing in storage at all: the state a new player is in.
-    await page.goto(url, { waitUntil: 'load', timeout: 180_000 });
+    await page.goto(url, { waitUntil: 'load', timeout: NAV_MS });
     await settle(page);
     const st = await page.evaluate(READ_GL) as GlState;
     check(st.tier !== 'low',
@@ -458,7 +464,7 @@ async function main(): Promise<void> {
 
     // Survives a reload. The spread-over-defaults path in `loadSettings` is
     // where a new nested field usually goes missing.
-    await page.goto(url, { waitUntil: 'load', timeout: 180_000 });
+    await page.goto(url, { waitUntil: 'load', timeout: NAV_MS });
     await settle(page);
     const reloaded = await page.evaluate(READ_GL) as GlState;
     check(reloaded.tier === 'medium' && reloaded.shadowMapEnabled,
@@ -473,17 +479,36 @@ async function main(): Promise<void> {
 
   if (process.env.GFX_CIRCUITS === '1') {
     console.log('\n6. The tier survives a session build, on all eleven circuits');
+    let timedOut = 0;
     for (const c of CIRCUITS) {
-      const st = await loadWith(page, url, { quality: 'medium', graphics: AUTO },
-        `?circuit=${c.id}&session=practice&duration=60`);
-      await page.waitForFunction("window.__game.screen === 'racing'",
-        { timeout: 300_000, polling: 250 }).catch(() => {});
+      // ONE CIRCUIT'S HARNESS TIMEOUT MUST NOT DELETE THE OTHER TEN. Building a
+      // circuit under swiftshader on a machine that is already running other
+      // agents took Monaco past three minutes and threw out of `main`, so the
+      // run reported two circuits and an exception — which is exactly the
+      // "verified on one circuit" failure this section exists to prevent,
+      // arriving by a different route. A circuit that cannot be loaded is
+      // reported as a failure with its reason, and the sweep carries on.
+      try {
+        await loadWith(page, url, { quality: 'medium', graphics: AUTO },
+          `?circuit=${c.id}&session=practice&duration=60`);
+        await page.waitForFunction("window.__game.screen === 'racing'",
+          { timeout: 300_000, polling: 250 });
+      } catch (e) {
+        timedOut++;
+        check(false, `${c.id}: the session could not be loaded to be checked`,
+          String(e).split('\n')[0]);
+        continue;
+      }
       const live = await page.evaluate(READ_GL) as GlState;
       check(live.tier === 'medium' && live.postEnabled && live.featDetail === 'high'
         && !live.shadowMapEnabled,
         `${c.id}: medium survives building the circuit`,
         `tier=${live.tier} post=${live.postEnabled} detail=${live.featDetail} shadows=${live.shadowMapEnabled}`);
-      void st;
+    }
+    if (timedOut > 0) {
+      console.log(`\n  NOTE: ${timedOut} circuit(s) never finished loading. Under software`);
+      console.log('  GL that is usually the machine rather than the renderer — check the');
+      console.log('  load average and re-run before reading it as a defect.');
     }
   } else {
     console.log('\n6. Eleven circuits — skipped. Set GFX_CIRCUITS=1 to run.');
