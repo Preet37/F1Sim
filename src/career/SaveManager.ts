@@ -6,7 +6,7 @@ import {
 import {
   DEFAULT_GAMEPAD_SETTINGS, normaliseGamepadSettings, type GamepadSettings,
 } from '../input/GamepadProfile';
-import { DEFAULT_STEERING_FEEL } from '../input/SteeringFeel';
+import { DEFAULT_STEERING_FEEL, steeringFeel } from '../input/SteeringFeel';
 import { DEFAULT_WEEKEND_OPTIONS, type WeekendOptions } from '../race/WeekendFormat';
 import {
   DEFAULT_GRAPHICS, normaliseGraphics, normaliseTier,
@@ -306,6 +306,14 @@ export class SaveManager {
       // on disk to a valid level rather than letting a stale 0.85 reach the AI
       // and index the difficulty table with a miss.
       merged.aiDifficulty = toDifficultyId(parsed.aiDifficulty as unknown);
+      // Same reasoning for the steering feel. The shallow merge above only
+      // covers a MISSING key; a key holding a preset this build does not have —
+      // a save from a later build, or a hand-edited one — survives it. The
+      // input layer already falls back safely, but the settings screen would
+      // then show a list with nothing selected, which is a player who cannot
+      // see what their car is doing. Coerced to a real id here so the screen,
+      // the save and the controller all agree.
+      merged.steeringFeel = steeringFeel(parsed.steeringFeel).id;
       // The controller configuration is nested, so the shallow merge above
       // would hand back whatever shape happened to be on disk — including a
       // profile from an older build with a missing field, or a hand-edited one
