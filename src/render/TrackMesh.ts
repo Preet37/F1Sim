@@ -19,7 +19,6 @@ import {
   PIT_GARAGE_SPACING_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
-import { KeepOutField } from '../track/WorldObstacles';
 import {
   TerrainField, buildTerrainMesh, GROUND_SAMPLE_STRIDE, GROUND_MESH_NAME,
   type GroundSamples,
@@ -106,6 +105,15 @@ export const SHOULDER_SLOPE_M = 0.6;
 const SHOULDER_CLEARANCE_M = 0.4;
 /** How far the kerb section reaches outboard of the white line, metres. */
 const KERB_OUTER_M = 1.185;
+/**
+ * How much room beside the road a kerb needs before one is drawn.
+ *
+ * Exported because `probe:shoulders` reports how much of the kerbing the
+ * SIMULATION flags is never drawn — the places where a car's grip changes and
+ * the driver has nothing to see — and it has to gate on the same number the
+ * mesh builder gates on rather than a second copy of it.
+ */
+export const KERB_ROOM_M = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
 /**
  * Width of the astroturf mat laid outboard of a kerb, metres.
  *
@@ -501,10 +509,41 @@ class StripBuilder {
  * across Suzuka's road, which is a worse artefact than the black line it was
  * added to fix.
  *
- * Same test as the barrier's: the outer edge must not be inside any node's road
- * disc, with no lap-distance exclusion, which is sound because the shoulder is
- * always at least half a metre outboard of its own road edge and therefore
- * never inside its own disc.
+ * THE ROAD IS A RIBBON, NOT A STRING OF DISCS, and that distinction is the
+ * whole of the "divots in the corners" defect.
+ *
+ * This used to test the probe against a disc of radius `width/2` at every node,
+ * with no lap-distance exclusion, on the reasoning that "the shoulder is always
+ * at least half a metre outboard of its own road edge and therefore never
+ * inside its own disc". That reasoning holds for a node's OWN disc and for
+ * nothing else. A disc is as long as the road is wide — seven and a half metres
+ * at Bahrain, two and a half node spacings — so on the inside of a corner the
+ * discs belonging to nodes further round the arc swing inboard and cover the
+ * ground beside THIS node. The scan then reports that a corner's own asphalt,
+ * two nodes along, is a foreign obstruction, and returns zero.
+ *
+ * It is not a rare case. On the calendar as it stands, 162 node-sides scan to
+ * zero and 134 of them are blocked by a node within twelve metres along the
+ * lap: every one of the eleven circuits except Suzuka has no genuine crossover
+ * at all, and Suzuka's real figure-of-eight accounts for 28 of its 41. Each
+ * false zero then propagates: the slope limiter below may only take the
+ * shoulder down `SHOULDER_SLOPE_M` per node, so a single spurious zero drags
+ * twenty-eight nodes — eighty-four metres — of neighbouring shoulder down with
+ * it on each side. Four false zeros at Bahrain's turn one are what leave the
+ * entire corner with no run-off, no verge, no astroturf, no kerb and no skirt:
+ * just asphalt, and then a one-metre drop straight to the desert floor.
+ *
+ * So the road is tested as what it is: an oriented slab per node, `halfSlab`
+ * long and `width/2` across, exactly the model `narrowWhereTheLapOverlapsItself`
+ * already uses to decide the same question about the same geometry. Separation
+ * is the largest gap over the four separating axes of the two boxes, which is a
+ * lower bound on the true distance and therefore errs toward blocking.
+ *
+ * Suzuka is the test that this has not simply been loosened into uselessness.
+ * Its two legs genuinely cross, their centrelines pass within a quarter of a
+ * metre vertically, and the slab test blocks them exactly as the disc test did:
+ * a real crossover has the other road under the probe, not two nodes up its own
+ * arc, and no amount of correct longitudinal extent makes that go away.
  */
 export function computeShoulders(
   track: TrackSpline, world: WorldModel, runoffW: number,
@@ -512,10 +551,129 @@ export function computeShoulders(
   const count = track.count;
   const barrierAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
-    const road = new KeepOutField();
-    for (let i = 0; i < count; i++) {
-      road.add(track.px[i], track.pz[i], track.width[i] * 0.5);
+    const nodeM = track.length / count;
+
+    /**
+     * The road, as the quadrilaterals it is actually drawn as.
+     *
+     * One per span, corners in order: near-left, far-left, far-right,
+     * near-right. Deliberately not a slab of chosen length per node — there is
+     * no length to choose. The quads tile the ribbon exactly, meeting edge to
+     * edge at every node, so their union IS the racing surface: no wedge of
+     * real asphalt left untested on the outside of a curve, and no invented
+     * asphalt reaching up the arc on the inside of one. Both of those are
+     * tuning failures the disc model and a fixed-length slab both have, and
+     * this has neither.
+     */
+    const quad = new Float64Array(count * 8);
+    for (let j = 0; j < count; j++) {
+      const k = (j + 1) % count;
+      const hj = track.width[j] * 0.5, hk = track.width[k] * 0.5;
+      const o = j * 8;
+      quad[o] = track.px[j] + track.nx[j] * hj; quad[o + 1] = track.pz[j] + track.nz[j] * hj;
+      quad[o + 2] = track.px[k] + track.nx[k] * hk; quad[o + 3] = track.pz[k] + track.nz[k] * hk;
+      quad[o + 4] = track.px[k] - track.nx[k] * hk; quad[o + 5] = track.pz[k] - track.nz[k] * hk;
+      quad[o + 6] = track.px[j] - track.nx[j] * hj; quad[o + 7] = track.pz[j] - track.nz[j] * hj;
     }
+
+    // A coarse grid over the spans, so the scan stays linear in the node count.
+    // `buildTrackMeshes` runs once per session but `probe:shoulders` builds
+    // every circuit on the calendar, and a brute-force pass is felt there.
+    const CELL = 24;
+    const bins = new Map<number, number[]>();
+    const binKey = (gx: number, gz: number): number => (gx * 73856093) ^ (gz * 19349663);
+    for (let j = 0; j < count; j++) {
+      const o = j * 8;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let c = 0; c < 4; c++) {
+        const qx = quad[o + c * 2], qz = quad[o + c * 2 + 1];
+        if (qx < x0) x0 = qx; if (qx > x1) x1 = qx;
+        if (qz < z0) z0 = qz; if (qz > z1) z1 = qz;
+      }
+      for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++) {
+        for (let gz = Math.floor(z0 / CELL); gz <= Math.floor(z1 / CELL); gz++) {
+          const k = binKey(gx, gz);
+          const bin = bins.get(k);
+          if (bin) bin.push(j);
+          else bins.set(k, [j]);
+        }
+      }
+    }
+    /** Largest span a road quad spans, for the grid query's reach. */
+    let quadReach = 0;
+    for (let j = 0; j < count; j++) {
+      const o = j * 8;
+      for (let c = 0; c < 4; c++) {
+        quadReach = Math.max(quadReach, Math.hypot(
+          quad[o + c * 2] - track.px[j], quad[o + c * 2 + 1] - track.pz[j],
+        ) + nodeM);
+      }
+    }
+
+    /**
+     * True when a probe box stands at least `margin` clear of every road quad.
+     *
+     * `(pnx, pnz)` is the probe's across axis and `(ptx, ptz)` its along axis;
+     * `halfX`/`halfZ` are its half extents on those. Separating-axis test over
+     * the probe's two axes and the quad's four edge normals, taking the largest
+     * gap: exact when the closest features are a face and a vertex, and
+     * understating the distance by at most a factor of root two corner to
+     * corner — so it can refuse a shoulder that would just have fitted and can
+     * never grant one that would not.
+     */
+    const clearOfRoad = (
+      x: number, z: number,
+      pnx: number, pnz: number, ptx: number, ptz: number,
+      halfX: number, halfZ: number, margin: number,
+    ): boolean => {
+      const probeReach = Math.hypot(halfX, halfZ) + margin + quadReach;
+      const g0x = Math.floor((x - probeReach) / CELL);
+      const g1x = Math.floor((x + probeReach) / CELL);
+      const g0z = Math.floor((z - probeReach) / CELL);
+      const g1z = Math.floor((z + probeReach) / CELL);
+      const seen = new Set<number>();
+      // Corner offsets from the probe, reused per candidate.
+      const rx = [0, 0, 0, 0], rz = [0, 0, 0, 0];
+      for (let gx = g0x; gx <= g1x; gx++) {
+        for (let gz = g0z; gz <= g1z; gz++) {
+          const bin = bins.get(binKey(gx, gz));
+          if (!bin) continue;
+          for (const j of bin) {
+            if (seen.has(j)) continue;
+            seen.add(j);
+            const o = j * 8;
+            for (let c = 0; c < 4; c++) {
+              rx[c] = quad[o + c * 2] - x;
+              rz[c] = quad[o + c * 2 + 1] - z;
+            }
+            /** Gap between the two shapes' shadows on one unit axis. */
+            const gapOn = (ax: number, az: number): number => {
+              const r = halfX * Math.abs(pnx * ax + pnz * az)
+                + halfZ * Math.abs(ptx * ax + ptz * az);
+              let lo = Infinity, hi = -Infinity;
+              for (let c = 0; c < 4; c++) {
+                const p = rx[c] * ax + rz[c] * az;
+                if (p < lo) lo = p;
+                if (p > hi) hi = p;
+              }
+              return Math.max(lo - r, -r - hi);
+            };
+            let sep = Math.max(gapOn(pnx, pnz), gapOn(ptx, ptz));
+            for (let c = 0; c < 4 && sep < margin; c++) {
+              const d = (c + 1) & 3;
+              let ex = rz[c] - rz[d], ez = rx[d] - rx[c];
+              const len = Math.hypot(ex, ez);
+              if (len < 1e-9) continue;
+              ex /= len; ez /= len;
+              const g = gapOn(ex, ez);
+              if (g > sep) sep = g;
+            }
+            if (sep < margin) return false;
+          }
+        }
+      }
+      return true;
+    };
     // The narrowest shoulder the scan can report — and it has to be wide
     // enough to pass its own first test, which it was not.
     //
@@ -563,10 +721,26 @@ export function computeShoulders(
         let w = 0;
         for (let d = MIN_M; d <= want; d += 0.5) {
           const lat = side * (hw + d);
-          if (!road.clearOfBox(
+          // Probed ACROSS the road only, with no extent along it.
+          //
+          // The old box was half a node long, and on a curve that length is not
+          // free: a straight three-metre box sitting beside a bending road has
+          // its ends nearer the asphalt than its middle, so the clearance it
+          // demands grows with curvature. Between MIN_M and the 0.4m margin
+          // there is only 0.35m of slack, and a curvature of 1/17m — an
+          // ordinary second-gear corner — eats all of it. That is a second way
+          // of failing at exactly the same corners as the discs did.
+          //
+          // Nothing is lost by dropping it, because the longitudinal guarantee
+          // is not this box's job. The erosion pass below takes each node's
+          // width down to the smallest its immediate neighbours can also stand
+          // behind, which is the same statement and is applied where the sweep
+          // actually needs it. The two mechanisms were doing one job twice, and
+          // the one that also coupled to curvature is the one to lose.
+          if (!clearOfRoad(
             track.px[i] + track.nx[i] * lat, track.pz[i] + track.nz[i] * lat,
-            track.tz[i], track.tx[i], 0.25, (track.length / count) * 0.5,
-            SHOULDER_CLEARANCE_M,
+            track.nx[i], track.nz[i], track.tx[i], track.tz[i],
+            0.25, 0, SHOULDER_CLEARANCE_M,
           )) break;
           w = d;
         }
@@ -575,11 +749,13 @@ export function computeShoulders(
 
       // --- Erode by one node --------------------------------------------
       //
-      // Each width above was tested against a probe box half a node long, so it
-      // vouches for the ground within about a metre and a half of its own node
-      // and no further. The strips are swept between stations, and a station's
-      // quad reaches into its neighbours' territory — so a node may only claim
-      // a width its neighbours can also stand behind.
+      // Each width above was tested at its own station and nowhere else, so it
+      // vouches for the ground at that station and no further. The strips are
+      // swept between stations, and a station's quad reaches into its
+      // neighbours' territory — so a node may only claim a width its
+      // neighbours can also stand behind. This pass is now the ONLY thing
+      // providing that guarantee; see the probe call above for why the box it
+      // used to be shared with had to give the job up.
       //
       // The old sweep got this for free and by accident, by taking the smaller
       // of a span's two ends; that is also what made the outer edge a staircase
@@ -1130,7 +1306,7 @@ export function buildTrackMeshes(
     // back on itself that is far enough to lay red-and-white kerbing across the
     // other section's racing surface — which is exactly what it was doing at
     // Monaco's climb out of Sainte Dévote.
-    const kerbRoom = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
+    const kerbRoom = KERB_ROOM_M;
     if (track.isCurbLeft[a] && track.isCurbLeft[b]
       && shoulderAt(a, 1) >= kerbRoom && shoulderAt(b, 1) >= kerbRoom) sweepKerb(a, b, 1);
     if (track.isCurbRight[a] && track.isCurbRight[b]

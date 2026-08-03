@@ -59,6 +59,7 @@
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
     "probe:kerbs": "tsx scripts/probeKerbs.ts",
     "probe:shoulders": "tsx scripts/probeShoulders.ts",
+    "probe:surfacesteps": "tsx scripts/probeSurfaceSteps.ts",
     "probe:debris": "tsx scripts/probeDebris.ts",
     "probe:season": "tsx scripts/probeSeason.ts",
     "probe:tiers": "tsx scripts/probeTiers.ts",

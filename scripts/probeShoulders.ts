@@ -3,7 +3,7 @@ import { TrackSpline } from '../src/track/TrackSpline';
 import { buildWorldModel } from '../src/track/WorldObstacles';
 import {
   computeShoulders, SHOULDER_SLOPE_M, STREET_RUNOFF_W, RUNOFF_W,
-  bankHeight, groundSamples, Y_ROAD, Y_RUNOFF,
+  bankHeight, groundSamples, Y_ROAD, Y_RUNOFF, KERB_ROOM_M,
 } from '../src/render/TrackMesh';
 import { TerrainField, buildTerrainMesh } from '../src/render/Terrain';
 
@@ -193,21 +193,30 @@ for (const def of CIRCUITS) {
   let boundaryMax = 0;
   const cross: number[] = [];
   const skirt: number[] = [];
-  const tall: { i: number; s: number; face: number }[] = [];
+  const tall: { i: number; s: number; face: number; side: -1 | 1 }[] = [];
 
   /**
    * Is there another piece of this lap near this point and below it?
    *
    * Brute force over the nodes, and it only runs for the handful of stations
-   * that come out over the limit, so it costs nothing. Lap distance is used to
-   * exclude the road this station is beside — the piece of circuit 40m along
-   * the lap from you is you.
+   * that come out over the limit, so it costs nothing.
+   *
+   * THE LAP-DISTANCE EXCLUSION IS NARROW ON PURPOSE. It exists to stop a
+   * station explaining its face with the road it is itself beside, and 40m of
+   * lap either way covers that with room to spare — a node's own road, run-off
+   * and verge together reach nothing like that far. It used to be 120m, and at
+   * three of the calendar's real climbs that is longer than the doubling-back
+   * itself: COTA's turn one passes over its own approach 78m along the lap and
+   * 7m above it, Spa's climb out of La Source 87m and 7m, and both were being
+   * told they had open ground below them when they have a hillside. The
+   * requirement that the other piece be genuinely LOWER is what does the real
+   * work here; lap distance only has to exclude your own feet.
    */
   const foldBelow = (x: number, z: number, y: number, atS: number): number => {
     let best = 0;
     for (let j = 0; j < n; j++) {
       const ds = Math.abs(track.dist[j] - atS);
-      if (Math.min(ds, track.length - ds) < 120) continue;
+      if (Math.min(ds, track.length - ds) < 40) continue;
       const dx = track.px[j] - x;
       const dz = track.pz[j] - z;
       if (dx * dx + dz * dz > FOLD_NEAR_M * FOLD_NEAR_M) continue;
@@ -245,18 +254,26 @@ for (const def of CIRCUITS) {
       // How far the DRAWN ground rises above the run-off it is beside. Positive
       // is grass standing in the run-off; it must not happen anywhere.
       meshOver = Math.max(meshOver, drawn.sampleAt(x, z) - outY);
-      if (face > SKIRT_LIMIT_M) tall.push({ i, s: track.dist[i], face });
+      if (face > SKIRT_LIMIT_M) tall.push({ i, s: track.dist[i], face, side });
       void radius;
     }
   }
 
   // Of the tall faces, the ones with another piece of lap near and below are
   // retaining walls between two levels. The rest are cliffs.
+  // Asked AT THE FACE, not at the centreline. The face stands at the outer edge
+  // of the ground beside the road, which is up to 16.75m away across, and what
+  // is under the centreline says nothing about what is under a point sixteen
+  // metres from it — on the inside of a hill climb it is the difference between
+  // finding the lower leg and missing it entirely. The half-width was already
+  // being computed here and then discarded with a `void`; this is that offset
+  // finally being applied.
   const unexplained = tall.filter((r) => {
     const hw = track.width[r.i] * 0.5;
-    const x = track.px[r.i];
-    const z = track.pz[r.i];
-    void hw;
+    const w = (r.side > 0 ? sh.left : sh.right)[r.i];
+    const outLat = r.side * (hw + w);
+    const x = track.px[r.i] + track.nx[r.i] * outLat;
+    const z = track.pz[r.i] + track.nz[r.i] * outLat;
     return foldBelow(x, z, track.elevation[r.i], r.s) < r.face * 0.5;
   });
   unexplainedAll += unexplained.length;
@@ -319,6 +336,62 @@ console.log(
   'slope up to 7.44m at Zandvoort, and a skirt on EVERY station of every circuit\n' +
   'equal to the local elevation plus 0.62m — 4.1m mean at Bahrain, 27.2m mean at\n' +
   'Spa, 58.6m worst on the calendar.\n',
+);
+
+// ===========================================================================
+// The kerb the driver cannot see
+// ===========================================================================
+//
+// This is where the width defect stops being a rendering complaint and starts
+// being a driving one, and it is why the two reports arrived together.
+//
+// `RaceEngine.updateSurface` reads `isCurbLeft/Right` and, when the car's
+// centre passes `halfWidth - 0.4`, hands every tyre on the car a kerb's grip
+// instead of asphalt's — SURFACE_GRIP 0.85 against 1.00. That is a 15% step
+// with no blend, and measured on a settled car it is worth about 0.4 degrees
+// of extra rear slip angle at an apex.
+//
+// `buildTrackMeshes` draws a kerb only where the shoulder is wide enough to
+// hold one. So wherever the shoulder was wrongly zeroed, the simulation put a
+// grip change at a place the renderer left as plain asphalt with a metre drop
+// beyond it: the driver clips the same apex on every lap, the car steps
+// sideways every time, and there is nothing on screen where it happens.
+//
+// Before the shoulder scan stopped reading a corner's own road as an
+// obstruction this was 458 node-sides on the calendar — 7.2% of all flagged
+// kerbing, 10.6% at Bahrain, 18.9% at Monaco, 13.2% at COTA. What is left is
+// a different defect, measured but not fixed here: at ten nodes across the
+// calendar the authored centreline turns tighter than the road is wide, so the
+// inside edge of the road has no forward progress at all and there is
+// genuinely no pocket for a kerb to sit in. That wants the road narrowed, not
+// the shoulder widened.
+console.log('circuit'.padEnd(13) + 'flagged kerb'.padStart(14) + 'drawn'.padStart(8)
+  + 'invisible'.padStart(11) + '   % the driver cannot see');
+let flagAll = 0, missAll = 0;
+for (const def of CIRCUITS) {
+  const track = new TrackSpline(def);
+  const world = buildWorldModel(track);
+  const sh = computeShoulders(
+    track, world, def.scenery === 'street' ? STREET_RUNOFF_W : RUNOFF_W,
+  );
+  let flagged = 0, drawn = 0;
+  for (let i = 0; i < track.count; i++) {
+    for (const side of [1, -1] as const) {
+      if (!(side > 0 ? track.isCurbLeft[i] : track.isCurbRight[i])) continue;
+      flagged++;
+      if ((side > 0 ? sh.left : sh.right)[i] >= KERB_ROOM_M) drawn++;
+    }
+  }
+  flagAll += flagged; missAll += flagged - drawn;
+  console.log(
+    def.id.padEnd(13) + String(flagged).padStart(14) + String(drawn).padStart(8) +
+    String(flagged - drawn).padStart(11) +
+    ('  ' + (100 * (flagged - drawn) / Math.max(1, flagged)).toFixed(1) + '%').padStart(14),
+  );
+}
+console.log(
+  `\ntotal flagged ${flagAll}, invisible ${missAll} ` +
+  `(${(100 * missAll / Math.max(1, flagAll)).toFixed(1)}%) — was 458 (7.2%)\n`,
 );
 
 if (failures.length) {
