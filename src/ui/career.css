@@ -438,6 +438,228 @@
 }
 
 /* ==========================================================================
+   THE OPENING SEQUENCE
+   ==========================================================================
+
+   The hall with nothing else in it. The car is a real GL canvas underneath;
+   everything here is the type over it, the vignette around it, and the two
+   controls that must never be hard to find. */
+
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--carbon-0);
+  overflow: hidden;
+}
+.intro-stage { position: absolute; inset: 0; }
+.intro-stage canvas { width: 100%; height: 100%; display: block; }
+
+/* The pool of light on the floor, and the darkness at the edges. Composited in
+   CSS rather than in GL for the same reason the car stage does it: resolution
+   independent, free, and identical on a machine with no car on screen. */
+.intro::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(78% 58% at 50% 40%, rgba(var(--key), 0.10), transparent 68%),
+    radial-gradient(120% 90% at 50% 50%, transparent 42%, rgba(0, 0, 0, 0.86) 100%);
+}
+
+.intro-copy {
+  position: absolute;
+  left: max(28px, env(safe-area-inset-left));
+  right: max(28px, env(safe-area-inset-right));
+  bottom: max(78px, calc(env(safe-area-inset-bottom) + 78px));
+  pointer-events: none;
+}
+.intro-title {
+  font-family: var(--font-display);
+  font-stretch: 122%;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 0.98;
+  font-size: clamp(30px, 6.4vw, 74px);
+  color: var(--ink);
+  text-wrap: balance;
+}
+.intro-sub {
+  margin-top: 10px;
+  font-size: clamp(13px, 1.6vw, 18px);
+  color: var(--ink-2);
+  max-width: 46ch;
+}
+
+/* The entrance. One gesture — a rise and a fade — retriggered per beat, and
+   nothing else moves. */
+.intro-title, .intro-sub { opacity: 0; transform: translateY(14px); }
+.intro.shown .intro-title,
+.intro.shown .intro-sub {
+  opacity: 1;
+  transform: none;
+  transition: opacity 620ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 620ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.intro.shown .intro-sub { transition-delay: 140ms; }
+
+/* The skip, bottom right, from the first frame. */
+.intro-skip {
+  position: absolute;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: max(20px, calc(env(safe-area-inset-bottom) + 20px));
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: rgba(13, 18, 24, 0.72);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 10px 16px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.intro-skip:hover { color: var(--ink); border-color: var(--ink-3); }
+.intro-skip:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.intro-skip svg { width: 13px; height: 13px; }
+
+/* How much of it is left. A line along the very bottom edge, so it is
+   answerable without being a component. */
+.intro-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: rgba(150, 180, 214, 0.14);
+}
+.intro-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ink-2);
+}
+
+.intro-still .intro-title, .intro-still .intro-sub { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .intro.shown .intro-title,
+  .intro.shown .intro-sub { transition: none; }
+}
+
+/* ==========================================================================
+   THE PODIUM
+   ==========================================================================
+
+   The payoff, and the only screen in the game that is allowed to be a picture
+   first and a table second. Three drivers on three steps, at three heights,
+   because that is what a podium IS — the whole point of the object is that the
+   heights are unequal and legible from the back of a grandstand. */
+
+.podium {
+  display: grid;
+  /* Second, first, third: the real order on a real podium, and the reason the
+     winner is in the middle rather than on the left. */
+  grid-template-columns: 1fr 1.24fr 1fr;
+  gap: 10px;
+  align-items: end;
+  margin: 14px 0 22px;
+  /* Bounded, and centred. A podium that grows with the viewport turns into
+     three enormous heads on a desktop — which is exactly what the first
+     version did — and the object is meant to be seen whole. */
+  max-width: 560px;
+}
+.pod-step { min-width: 0; text-align: center; }
+/* The portrait is CROPPED to its own step. The bust is drawn running out of
+   its frame on purpose, and without the crop the shoulders of second place lie
+   across the winner. */
+.pod-art {
+  position: relative;
+  width: 100%;
+  max-width: 132px;
+  margin: 0 auto;
+  overflow: hidden;
+}
+.pod-step.p1 .pod-art { max-width: 168px; }
+.pod-art .portrait { display: block; width: 100%; height: auto; }
+/* The player's own step, lit. `--me` is their helmet's shell colour. */
+.pod-step.me .pod-art::after {
+  content: '';
+  position: absolute;
+  inset: -6% -10% 6%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--me, #fff), transparent 74%);
+  opacity: 0.22;
+  z-index: -1;
+}
+.pod-block {
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--team, var(--ink-3));
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  box-shadow: var(--plate-lift);
+  padding: 10px 8px 12px;
+}
+/* MIN-height, not height. The steps must differ — that is what a podium is —
+   but a block shorter than the name standing on it spills its own caption out
+   of the bottom, which is what the first version did to third place. */
+.pod-step.p1 .pod-block { min-height: 148px; }
+.pod-step.p2 .pod-block { min-height: 122px; }
+.pod-step.p3 .pod-block { min-height: 104px; }
+.pod-pos {
+  font-family: var(--font-data);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink-3);
+  transform: skewX(var(--lean));
+}
+.pod-step.p1 .pod-pos { color: var(--sig-white); font-size: 34px; }
+.pod-name {
+  font-family: var(--font-display);
+  font-stretch: 116%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 15px;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+}
+.pod-step.p1 .pod-name { font-size: 19px; }
+.pod-team { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.pod-gap {
+  font-family: var(--font-data);
+  font-size: 11px;
+  color: var(--ink-2);
+  margin-top: 5px;
+}
+
+/* The anthem line: what this result was, in one sentence. */
+.pod-verdict {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: clamp(20px, 3.4vw, 34px);
+  line-height: 1.04;
+  margin: 2px 0 6px;
+  text-wrap: balance;
+}
+.pod-verdict.win { color: var(--sig-purple); }
+.pod-verdict.podium { color: var(--sig-green); }
+.pod-line { font-size: 13px; color: var(--ink-2); max-width: 62ch; }
+
+@media (max-width: 480px) {
+  .pod-step.p1 .pod-block { min-height: 118px; }
+  .pod-step.p2 .pod-block { min-height: 100px; }
+  .pod-step.p3 .pod-block { min-height: 88px; }
+  .pod-name { font-size: 12px; }
+  .pod-step.p1 .pod-name { font-size: 14px; }
+}
+
+/* ==========================================================================
    The audit sheet — `audit/career.html` only
    ========================================================================== */
 

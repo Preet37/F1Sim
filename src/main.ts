@@ -35,6 +35,8 @@ import { needsWorldRebuild } from './career/SaveCodec';
 import { playerIndexIn } from './career/Seat';
 import { buildCareerCreate } from './ui/CareerCreate';
 import { playerHelmet } from './career/CareerState';
+import { buildPodium } from './ui/Podium';
+import { IntroSequence, openingBeats } from './ui/IntroSequence';
 import { driverCard } from './ui/DriverPortrait';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
@@ -70,6 +72,7 @@ import { clearPitOrder } from './race/PitStop';
 
 type Screen =
   | 'menu'
+  | 'intro'
   | 'career-create'
   | 'career-hub'
   | 'session-select'
@@ -100,6 +103,8 @@ class Game {
 
   private engine: RaceEngine | null = null;
   private career: Career | null = null;
+  /** The opening sequence, while it is on screen. */
+  private intro: IntroSequence | null = null;
   private careerId = 'slot1';
   private settings: GameSettings;
 
@@ -303,6 +308,11 @@ class Game {
       // A deep link is used for headless verification and to jump straight into a
       // session, so it goes past the garage briefing rather than through it.
       this.launchSession(deepLink.circuitId);
+    } else if (!this.settings.introSeen) {
+      // FIRST RUN ONLY, and never in front of a deep link — a deep link is how
+      // every headless harness in this repository reaches a session, and a
+      // title sequence in front of one would break all of them.
+      this.playIntro(() => this.showMenu());
     } else {
       this.showMenu();
     }
@@ -390,6 +400,13 @@ class Game {
     if (this.screen === 'controller' && s !== 'controller') {
       this.controllerScreen?.dispose();
       this.controllerScreen = null;
+    }
+    // Same reasoning for the opening sequence: it owns a GL context and a
+    // frame loop, and anything that navigates away from it — a deep link, a
+    // reload of the screen, an error — has to take them back.
+    if (this.screen === 'intro' && s !== 'intro') {
+      this.intro?.dispose();
+      this.intro = null;
     }
     this.screen = s;
     const inSession = s === 'racing';
@@ -722,6 +739,47 @@ class Game {
   }
 
   /**
+   * Plays the opening sequence, once.
+   *
+   * `introSeen` is written the moment it starts rather than when it ends, so a
+   * player who skips it, closes the tab, or reloads mid-sequence is never shown
+   * it a second time. Being made to sit through — or skip past — an opening
+   * twice is the specific thing that makes people resent them.
+   */
+  private playIntro(after: () => void): void {
+    this.settings.introSeen = true;
+    this.saves.saveSettings(this.settings);
+
+    this.setScreen('intro');
+    // The menu leaves a car stage of its own behind it, and two GL contexts for
+    // two cars is one more than any browser should be asked for.
+    this.disposeStage();
+    this.screenRoot.innerHTML = '';
+
+    // The real Formula 1 grid's colours for the walk, then the Formula 3 team
+    // the player is about to be offered. The last car standing in the light is
+    // the one they are actually given.
+    const f1 = REAL_ROSTER.tiers.F1.teams;
+    const f3 = REAL_ROSTER.tiers.F3.teams;
+    const rookie = f3[f3.length - 1];
+
+    const done = (): void => {
+      this.intro = null;
+      after();
+    };
+    this.intro = new IntroSequence({
+      host: document.getElementById('app') as HTMLElement,
+      beats: openingBeats(
+        { colour: rookie.colour, accent: rookie.accent, code: rookie.code },
+        f1.map((t) => ({ colour: t.colour, accent: t.accent, code: t.code })),
+      ),
+      durationS: 13.6,
+      quality: this.renderer.quality,
+      onDone: done,
+    });
+  }
+
+  /**
    * The front page.
    *
    * It opens on the state of the world, not on a wordmark. A monitor that has
@@ -836,6 +894,10 @@ class Game {
       () => this.showPaddock());
     entry('Settings', 'Assists, opposition, camera and audio',
       '', () => this.showSettings());
+    // Replayable, because an opening that can only be seen once and is skipped
+    // by half the people who see it may as well not have been made.
+    entry('Opening sequence', 'Watch the titles again', '',
+      () => this.playIntro(() => this.showMenu()));
 
     if (this.saves.isEphemeral) {
       this.el('div', 'notice', column,
@@ -3337,6 +3399,37 @@ class Game {
       // The session is over, so all three sectors are done.
       rule: { ...this.circuitRule(engine.track.def), at: 3 },
     });
+
+    // THE PODIUM, when this was a race in a career.
+    //
+    // A ladder from Formula 3 to a world championship is worth nothing if
+    // arriving anywhere on it produces the same twenty-row table as everything
+    // else. Only a career gets it: a quick race has no season for the result to
+    // mean anything in, and putting a podium on one would be ceremony without a
+    // reason. See `src/ui/Podium.ts`.
+    if (isRace && this.career && engine.standings.length > 0) {
+      const s = this.career.state;
+      buildPodium(body, {
+        top3: engine.standings.slice(0, 3).map((c) => ({
+          driverId: c.driver.id,
+          firstName: c.driver.firstName,
+          lastName: c.driver.lastName,
+          teamName: c.team.shortName,
+          colour: c.team.colour,
+          accent: c.team.accent,
+          gap: c.position === 1 ? ''
+            : c.lapsDown > 0 ? '+' + c.lapsDown + (c.lapsDown === 1 ? ' lap' : ' laps')
+            : '+' + c.gapToLeader.toFixed(3),
+          isPlayer: c.driver.id === s.playerDriverId,
+          // The player's own designed helmet; everybody else's is derived from
+          // their driver id, so the whole grid has one and none of it is stored.
+          helmet: c.driver.id === s.playerDriverId ? playerHelmet(s) : undefined,
+        })),
+        playerPosition: player && !player.retired ? player.position : 0,
+        circuitName: engine.track.def.name,
+        tierName: TIER_CAR[this.career.tier].shortName,
+      });
+    }
 
     // The player's own result first, because that is the question they are
     // asking the screen. The classification below answers everything else.
