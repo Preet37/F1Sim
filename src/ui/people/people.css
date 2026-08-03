@@ -283,16 +283,25 @@
    frame, and a strip of photographers along the foot of the stage.
    --------------------------------------------------------------------------- */
 
+.person-figure { display: block; }
+
+/* The figure fills its step. `career.css` already crops `.pod-art`, which is
+   what stops second place's raised arm landing across the winner. */
 .pod-figure { display: block; width: 100%; height: auto; }
 
-.pod-stage {
-  position: relative;
-  border-radius: 4px 4px 0 0;
-  overflow: hidden;
-  background: linear-gradient(180deg, var(--carbon-1), var(--carbon-0));
+/* The helmet in the other hand. Absolutely placed against the step rather than
+   drawn into the figure, because it is a different drawing — the player's own
+   six numbers, painted by `DriverPortrait.ts` — and it has to stay that way. */
+.pod-helmet {
+  position: absolute;
+  right: 2%;
+  bottom: 4%;
+  width: 40%;
+  height: auto;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.55));
 }
 
-.pod-stage svg { display: block; width: 100%; height: auto; }
+.pod-step.p1 .pod-helmet { width: 37%; }
 
 /* ---------------------------------------------------------------------------
    The garage
@@ -307,3 +316,14 @@
 }
 
 .garage svg { display: block; width: 100%; height: auto; }
+
+.garage-svg { display: block; width: 100%; height: auto; }
+
+.gar-name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 118%;
+  font-size: 34px;
+  letter-spacing: 0.06em;
+  fill: rgba(255, 255, 255, 0.20);
+}

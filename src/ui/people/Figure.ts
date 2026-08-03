@@ -45,7 +45,22 @@ export interface FigureOptions extends HeadOptions {
   pose?: Pose;
   /** A race number on the chest. Drivers only. */
   number?: number;
+  /**
+   * A trophy in the raised hand. `raised` pose only.
+   *
+   * Three metals, and they are the only place in this interface where gold,
+   * silver and bronze appear — the five signal colours mean what they mean and
+   * a podium is not a signal.
+   */
+  trophy?: 'gold' | 'silver' | 'bronze';
 }
+
+const TROPHY_METAL: Readonly<Record<string, [string, string, string]>> = {
+  // [body, catch, shade]
+  gold: ['#c99a2e', '#ffe9a8', '#7d5a12'],
+  silver: ['#a9b2bc', '#eef3f8', '#606a75'],
+  bronze: ['#a1642f', '#e0a86a', '#5f3616'],
+};
 
 export interface FigureArt {
   defs: string;
@@ -73,7 +88,7 @@ export function figureArt(look: PersonLook, opts: FigureOptions): FigureArt {
   // range from slight to heavy is the last quarter of that.
   const sh = g.hw * lerp(1.85, 2.75, look.build);
   const hip = sh * lerp(0.80, 0.96, look.build);
-  const armW = g.hw * lerp(0.42, 0.62, look.build);
+  const armW = g.hw * lerp(0.50, 0.72, look.build);
 
   // --- Neck and its shadow -------------------------------------------------
   const neck = `<path fill="${skin.base}" d="`
@@ -166,18 +181,37 @@ function armsFor(
   if (pose === 'raised') {
     // One arm up. Not a wave: the elbow stays low and the forearm goes up and
     // slightly out, which is what somebody acknowledging a grandstand does.
-    const hx = cx - sh * 0.78;
+    const h = handOf(cx, sh, armW, shoulderY, H);
+    // AS A STROKE, NOT AS AN OUTLINE. The first version traced the arm as a
+    // closed path and it came out as a flag on a pole beside the shoulder,
+    // because a narrow closed shape that starts at the edge of the torso never
+    // looks attached to it. A round-capped stroke that STARTS INSIDE THE CHEST
+    // and runs through the elbow to the hand is one path, is always the right
+    // thickness, and is joined to the body by construction.
+    const sx = cx - sh * 0.62;
+    const sy = top + H * 0.10;
+    const ex = cx - sh * 1.06;
+    const ey = top - H * 0.16;
+    const arm = `M ${f1(sx)} ${f1(sy)} C ${f1(ex + armW * 0.4)} ${f1(sy - H * 0.06)} `
+      + `${f1(ex)} ${f1(ey + H * 0.10)} ${f1(ex)} ${f1(ey)} `
+      + `C ${f1(ex)} ${f1(ey - H * 0.22)} ${f1(h.x - armW * 0.2)} ${f1(h.y + armW * 2.4)} ${f1(h.x)} ${f1(h.y + armW * 0.9)}`;
     return {
       behind: upper(1),
-      front: `<path fill="${opts.suit}" d="`
-        + `M ${f1(cx - sh + armW * 0.1)} ${f1(top)} L ${f1(cx - sh - armW * 0.95)} ${f1(top + H * 0.05)}`
-        + ` C ${f1(cx - sh - armW * 1.5)} ${f1(top + H * 0.26)} ${f1(hx - armW * 1.9)} ${f1(top - H * 0.36)} ${f1(hx - armW * 1.35)} ${f1(top - H * 0.72)}`
-        + ` L ${f1(hx - armW * 0.35)} ${f1(top - H * 0.66)}`
-        + ` C ${f1(hx - armW * 0.7)} ${f1(top - H * 0.28)} ${f1(cx - sh + armW * 0.3)} ${f1(top + H * 0.22)} ${f1(cx - sh + armW * 0.1)} ${f1(top)} Z"/>`
-        + `<ellipse cx="${f1(hx - armW * 0.85)}" cy="${f1(top - H * 0.80)}" rx="${f1(armW * 0.62)}" `
+      front: `<path fill="none" stroke="${opts.suit}" stroke-linecap="round" `
+        + `stroke-linejoin="round" stroke-width="${f1(armW * 1.45)}" d="${arm}"/>`
+        // The turned side of the arm, thinner and offset right, so it is a limb
+        // rather than a tube of flat colour.
+        + `<path fill="none" stroke="rgba(0,0,0,0.24)" stroke-linecap="round" `
+        + `stroke-width="${f1(armW * 0.42)}" transform="translate(${f1(armW * 0.42)} 0)" d="${arm}"/>`
+        // The cuff.
+        + `<path fill="none" stroke="${opts.accent}" stroke-linecap="butt" `
+        + `stroke-width="${f1(armW * 1.45)}" d="`
+        + `M ${f1(h.x - armW * 0.06)} ${f1(h.y + armW * 1.5)} L ${f1(h.x)} ${f1(h.y + armW * 1.05)}"/>`
+        + (opts.trophy ? trophy(h.x, h.y, armW, opts.trophy) : '')
+        + `<ellipse cx="${f1(h.x)}" cy="${f1(h.y)}" rx="${f1(armW * 0.62)}" `
         + `ry="${f1(armW * 0.74)}" fill="${skin.base}"/>`
-        + `<ellipse cx="${f1(hx - armW * 1.05)}" cy="${f1(top - H * 0.86)}" rx="${f1(armW * 0.34)}" `
-        + `ry="${f1(armW * 0.40)}" fill="${skin.lift}" opacity="0.4"/>`,
+        + `<ellipse cx="${f1(h.x - armW * 0.18)}" cy="${f1(h.y - armW * 0.16)}" rx="${f1(armW * 0.30)}" `
+        + `ry="${f1(armW * 0.36)}" fill="${skin.lift}" opacity="0.4"/>`,
     };
   }
 
@@ -199,6 +233,50 @@ function armsFor(
   return { behind: upper(-1) + upper(1), front: fore(-1) + fore(1) };
 }
 
+/** Where the raised hand ends up. Shared so the trophy lands IN it. */
+function handOf(
+  cx: number, sh: number, armW: number, shoulderY: number, H: number,
+): { x: number; y: number } {
+  return { x: cx - sh * 0.78 - armW * 0.85, y: shoulderY + H * 0.04 - H * 0.80 };
+}
+
+/**
+ * A cup.
+ *
+ * Bowl, stem, base, two handles. Four shapes, and it is unmistakable at
+ * thirty pixels because a trophy is one of about six silhouettes every person
+ * alive can name instantly. The catch light is on the upper left, as everything
+ * else in this game is.
+ */
+function trophy(
+  x: number, y: number, armW: number, metal: 'gold' | 'silver' | 'bronze',
+): string {
+  const [body, lift, shade] = TROPHY_METAL[metal];
+  const r = armW * 1.05;
+  const top = y - r * 2.6;
+  return `<g>`
+    // Handles, behind the bowl.
+    + `<path fill="none" stroke="${body}" stroke-width="${f1(r * 0.20)}" d="`
+    + `M ${f1(x - r * 0.78)} ${f1(top + r * 0.30)} C ${f1(x - r * 1.55)} ${f1(top + r * 0.45)} ${f1(x - r * 1.45)} ${f1(top + r * 1.25)} ${f1(x - r * 0.66)} ${f1(top + r * 1.20)}`
+    + `M ${f1(x + r * 0.78)} ${f1(top + r * 0.30)} C ${f1(x + r * 1.55)} ${f1(top + r * 0.45)} ${f1(x + r * 1.45)} ${f1(top + r * 1.25)} ${f1(x + r * 0.66)} ${f1(top + r * 1.20)}"/>`
+    // The bowl.
+    + `<path fill="${body}" d="`
+    + `M ${f1(x - r * 0.86)} ${f1(top)} L ${f1(x + r * 0.86)} ${f1(top)}`
+    + ` C ${f1(x + r * 0.80)} ${f1(top + r * 1.35)} ${f1(x + r * 0.36)} ${f1(top + r * 1.62)} ${f1(x)} ${f1(top + r * 1.66)}`
+    + ` C ${f1(x - r * 0.36)} ${f1(top + r * 1.62)} ${f1(x - r * 0.80)} ${f1(top + r * 1.35)} ${f1(x - r * 0.86)} ${f1(top)} Z"/>`
+    + `<path fill="${lift}" opacity="0.55" d="`
+    + `M ${f1(x - r * 0.80)} ${f1(top + r * 0.06)} C ${f1(x - r * 0.72)} ${f1(top + r * 1.05)} ${f1(x - r * 0.48)} ${f1(top + r * 1.38)} ${f1(x - r * 0.30)} ${f1(top + r * 1.50)}`
+    + ` C ${f1(x - r * 0.58)} ${f1(top + r * 1.22)} ${f1(x - r * 0.62)} ${f1(top + r * 0.60)} ${f1(x - r * 0.58)} ${f1(top + r * 0.06)} Z"/>`
+    // Lip, stem and base.
+    + `<rect x="${f1(x - r * 0.94)}" y="${f1(top - r * 0.14)}" width="${f1(r * 1.88)}" `
+    + `height="${f1(r * 0.20)}" rx="${f1(r * 0.06)}" fill="${lift}"/>`
+    + `<rect x="${f1(x - r * 0.15)}" y="${f1(top + r * 1.60)}" width="${f1(r * 0.30)}" `
+    + `height="${f1(r * 0.45)}" fill="${shade}"/>`
+    + `<rect x="${f1(x - r * 0.55)}" y="${f1(top + r * 2.02)}" width="${f1(r * 1.10)}" `
+    + `height="${f1(r * 0.24)}" rx="${f1(r * 0.05)}" fill="${body}"/>`
+    + `</g>`;
+}
+
 /** The race number, on the chest of a suit. */
 function chestNumber(
   cx: number, sh: number, shoulderY: number, H: number, opts: FigureOptions,
@@ -208,6 +286,47 @@ function chestNumber(
     + `height="${f1(H * 0.24)}" rx="${f1(H * 0.02)}" fill="rgba(6,8,11,0.42)"/>`
     + `<text x="${f1(cx)}" y="${f1(y + H * 0.185)}" text-anchor="middle" `
     + `class="fig-number" fill="${opts.accent}">${String(opts.number)}</text>`;
+}
+
+/**
+ * A figure, as an element, framed to whatever it is doing.
+ *
+ * The frame is computed from the pose rather than fixed, because a raised arm
+ * goes a hundred units above the crown and a seated figure does not: one
+ * viewBox for both would either crop the trophy or float the panel in white
+ * space. Everything else about the drawing is identical.
+ */
+export function figureSvg(
+  look: PersonLook, opts: FigureOptions & { size?: number },
+): SVGSVGElement {
+  const art = figureArt(look, opts);
+  const g = headGeometry(look);
+  const pose = opts.pose ?? 'seated';
+  const shoulderY = g.chinY + g.h * 0.30;
+  const top = pose === 'raised'
+    // Room for the arm and whatever is in the hand.
+    ? shoulderY + g.h * 0.04 - g.h * 0.80 - g.hw * 3.4
+    : g.crownY - g.hw * 0.62;
+  // The torso is drawn all the way to `FIGURE_BOTTOM` so it can be cropped
+  // anywhere; where it is actually CUT is a framing decision. Cropping at the
+  // floor gives a figure four head-heights tall inside a step 130 pixels wide,
+  // which is a skittle. A podium shot is head to waist.
+  const bottom = pose === 'raised' ? shoulderY + g.h * 1.30 : FIGURE_BOTTOM;
+  const left = pose === 'raised' ? -18 : 0;
+  const width = 200 - left * 2;
+  const height = bottom - top;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg') as SVGSVGElement;
+  svg.setAttribute('viewBox', `${f1(left)} ${f1(top)} ${f1(width)} ${f1(height)}`);
+  svg.setAttribute('class', 'person-figure');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-hidden', 'true');
+  if (opts.size) {
+    svg.setAttribute('width', String(opts.size));
+    svg.setAttribute('height', String(Math.round(opts.size * (height / width))));
+  }
+  svg.innerHTML = `<defs>${art.defs}</defs>${art.markup}`;
+  return svg;
 }
 
 // ===========================================================================

@@ -7,6 +7,9 @@ import {
 } from '../src/ui/people/Look';
 import { principalFor, fullName } from '../src/ui/people/Cast';
 import { buildPressConference } from '../src/ui/PressConference';
+import { buildPodium } from '../src/ui/Podium';
+import { buildGarage } from '../src/ui/GarageScene';
+import { principalCard } from '../src/ui/people/PrincipalCard';
 
 /** The eleven, with the colours the roster actually carries. */
 const F1_TEAMS = [
@@ -293,7 +296,76 @@ declare global {
   interface Window { __people: { show(name: string): boolean } }
 }
 
-const SCENES: Record<string, () => void> = { sheet, principals, presser };
+/** The podium, with people on it. */
+function podium(): void {
+  app.innerHTML = '';
+  app.className = '';
+  const screen = el('div', 'screen', app);
+  const page = el('div', 'page', screen);
+  const bar = el('div', 'topbar', page);
+  el('div', 'navback-gap', bar);
+  const titles = el('div', 'topbar-titles', bar);
+  el('div', 'tab', titles, 'Grand Prix');
+  el('h1', 'page-title', titles, 'Classification');
+  const body = el('div', 'page-body', page);
+
+  const field = [
+    { id: 'PLAYER', first: 'Ondrej', last: 'Zdravkovic', team: 'Williams', c: 0x1868db, a: 0xf2f3f5 },
+    { id: 'norris', first: 'Lando', last: 'Norris', team: 'McLaren', c: 0xff8000, a: 0x111f4a },
+    { id: 'leclerc', first: 'Charles', last: 'Leclerc', team: 'Ferrari', c: 0xe8002d, a: 0xffc61a },
+  ];
+  buildPodium(body, {
+    top3: [0, 1, 2].map((i, pos) => ({
+      driverId: field[i].id,
+      firstName: field[i].first,
+      lastName: field[i].last,
+      teamName: field[i].team,
+      colour: field[i].c,
+      accent: field[i].a,
+      gap: pos === 0 ? '' : '+' + (pos * 4.281).toFixed(3),
+      isPlayer: field[i].id === 'PLAYER',
+      helmet: field[i].id === 'PLAYER'
+        ? { family: 'blade' as const, base: 0xff7a1a, stripe: 0x111f4a, trim: 0xf2f3f5, visor: 'gold' as const }
+        : undefined,
+    })),
+    playerPosition: 1,
+    circuitName: 'Monza',
+    tierName: 'Formula 1',
+  });
+}
+
+/** The garage, and the principal card that heads every radio message. */
+function garage(): void {
+  app.innerHTML = '';
+  app.className = '';
+  const screen = el('div', 'screen', app);
+  const page = el('div', 'page', screen);
+  const bar = el('div', 'topbar', page);
+  el('div', 'navback-gap', bar);
+  const titles = el('div', 'topbar-titles', bar);
+  el('div', 'tab', titles, 'Paddock');
+  el('h1', 'page-title', titles, 'Atlassian Williams Racing');
+  el('div', 'page-sub', titles, 'They have an opening for next season. It is yours if you want it.');
+  const body = el('div', 'page-body', page);
+
+  buildGarage(body, {
+    teamId: 'williams', teamName: 'Williams', colour: 0x1868db, accent: 0xf2f3f5,
+    crew: 3, seed: 12,
+  });
+
+  const rail = el('div', 'audit-row', body);
+  rail.style.marginTop = '18px';
+  for (const t of F1_TEAMS.slice(0, 6)) {
+    const c = el('div', 'audit-cell', rail);
+    principalCard(c, {
+      teamId: t.id,
+      colour: parseInt(t.colour.slice(1), 16),
+      headset: true,
+    });
+  }
+}
+
+const SCENES: Record<string, () => void> = { sheet, principals, presser, podium, garage };
 
 window.__people = {
   show(name: string): boolean {
