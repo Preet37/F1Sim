@@ -74,6 +74,7 @@
     "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:shoulders": "tsx scripts/auditShoulders.ts",
     "audit:car": "tsx scripts/auditCar.ts",
+    "audit:livery": "tsx scripts/auditLivery.ts",
     "shoot:career": "tsx scripts/shootCareer.ts"
   },
   "dependencies": {

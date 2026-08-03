@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import {
+  DEFAULT_LIVERY_DESIGN, drawMark,
+  type LiveryDesign, type LiveryFamilyId, type LiveryFinish,
+} from './LiveryDesign';
 
 /**
  * Procedural team liveries.
@@ -43,6 +47,65 @@ export interface LiverySpec {
   number: number;
   /** Driver's three-letter code. */
   code: string;
+  /**
+   * Pattern family, trim colour, finish and mark.
+   *
+   * OPTIONAL, AND THAT IS THE WHOLE COMPATIBILITY STORY. `CarMesh.ts` builds
+   * this record from a team's two colours and a driver's number and code, and it
+   * belongs to another agent — so it does not pass a design and does not have
+   * to. Absent, the design is looked up in the registry below by the team's
+   * colour pair; absent from there too, it is `DEFAULT_LIVERY_DESIGN`, which
+   * paints exactly what this file painted before families existed.
+   */
+  design?: LiveryDesign;
+}
+
+// ===========================================================================
+// The design registry
+// ===========================================================================
+
+/**
+ * Designs, keyed by the colour pair that identifies a team.
+ *
+ * WHY A REGISTRY AND NOT AN ARGUMENT. The one call site that builds a livery is
+ * `shellMaterial` in `CarMesh.ts`, which is another agent's file and which knows
+ * a team only as `colour, accent, number, code`. Threading a design through it
+ * would mean changing `buildCar`, `CarStage`, the paddock screen and the intro
+ * sequence — four files nobody involved in this work owns — for a value only one
+ * car on the grid has.
+ *
+ * So a design is REGISTERED against the colour pair it belongs to, exactly the
+ * way `CarMesh` already caches materials against the same pair. The career
+ * registers the player's team on load and after the editor closes; every other
+ * car looks itself up, finds nothing, and paints as it always has.
+ */
+const designs = new Map<string, LiveryDesign>();
+
+/** Bumped on every registration, so a repaint cannot be served from the cache. */
+let designEpoch = 0;
+
+function designKey(colour: number, accent: number): string {
+  return colour + ':' + accent;
+}
+
+/** Gives the car painted in these two colours a design of its own. */
+export function registerLiveryDesign(
+  colour: number, accent: number, design: LiveryDesign,
+): void {
+  designs.set(designKey(colour, accent), { ...design });
+  designEpoch++;
+}
+
+/** Forgets every registered design. Called when a career is left. */
+export function clearLiveryDesigns(): void {
+  if (designs.size === 0) return;
+  designs.clear();
+  designEpoch++;
+}
+
+/** The design a car in these colours will be painted in. Never null. */
+export function liveryDesignFor(colour: number, accent: number): LiveryDesign {
+  return designs.get(designKey(colour, accent)) ?? DEFAULT_LIVERY_DESIGN;
 }
 
 export interface LiveryTextures {
@@ -286,6 +349,20 @@ const SPONSORS = [
   'MAXPOWER', 'WAVELESS', 'NEBULA', 'ARALDI', 'LUMINARE',
 ] as const;
 
+/**
+ * The names painted on this car.
+ *
+ * A design may carry its own set — which is where the sponsorship system will
+ * plug in, largest deal first — and falls back to the house set otherwise. THE
+ * SET IS AND STAYS FICTIONAL. A sponsor's name down the side of a car at 115mm
+ * is a reproduced wordmark, which is exactly the thing `docs/CAREER_MODE.md`
+ * section 0 rules out, and it is ruled out whether the team wearing it is real
+ * or not.
+ */
+function sponsorSet(d: LiveryDesign): readonly string[] {
+  return d.sponsors && d.sponsors.length > 0 ? d.sponsors : SPONSORS;
+}
+
 // ===========================================================================
 // Canvas plumbing
 // ===========================================================================
@@ -393,6 +470,64 @@ class Panel {
   }
 
   /**
+   * Outlines a closed polygon — the pinstripe.
+   *
+   * THE SINGLE MOST VALUABLE MARK ON A RACING CAR, and the one a generated
+   * livery never has. Real paint schemes almost always separate two fields of
+   * colour with a thin line of a third: a white hairline between a red flash and
+   * a black body, a gold line round a green panel. It is the difference between
+   * a shape that has been PLACED on the car and two colours that happen to meet,
+   * and it costs one stroke.
+   *
+   * Width is given as a fraction of the panel's girth so it comes out the same
+   * physical thickness on the sidepod as on the monocoque despite the two having
+   * entirely different pixel densities.
+   */
+  edge(points: readonly [number, number][], colour: string, widthG: number): void {
+    const c = this.ctx;
+    c.save();
+    c.strokeStyle = colour;
+    c.lineWidth = Math.max(1, widthG * this.h);
+    c.lineJoin = 'round';
+    c.beginPath();
+    c.moveTo(this.px(points[0][0]), this.py(points[0][1]));
+    for (let i = 1; i < points.length; i++) c.lineTo(this.px(points[i][0]), this.py(points[i][1]));
+    c.closePath();
+    c.stroke();
+    c.restore();
+  }
+
+  /** Strokes an open path in (L, G). A hairline that does not close on itself. */
+  line(points: readonly [number, number][], colour: string, widthG: number): void {
+    const c = this.ctx;
+    c.save();
+    c.strokeStyle = colour;
+    c.lineWidth = Math.max(1, widthG * this.h);
+    c.lineCap = 'butt';
+    c.lineJoin = 'round';
+    c.beginPath();
+    c.moveTo(this.px(points[0][0]), this.py(points[0][1]));
+    for (let i = 1; i < points.length; i++) c.lineTo(this.px(points[i][0]), this.py(points[i][1]));
+    c.stroke();
+    c.restore();
+  }
+
+  /** Paints the team's mark, sized in metres like every other graphic here. */
+  mark(l: number, g: number, device: number, diameterM: number,
+    ground: string, accent: string): void {
+    // Sized on the girth axis, which is the one a mark on the deck is read
+    // across; the atlas is anisotropic, so the disc is squashed back on the
+    // other axis to come out round on the car.
+    const size = diameterM * this.pxG;
+    const c = this.ctx;
+    c.save();
+    c.translate(this.px(l), this.py(g));
+    c.scale(this.pxL / this.pxG, 1);
+    drawMark(c, 0, 0, size, device, ground, accent);
+    c.restore();
+  }
+
+  /**
    * Draws text so it reads the right way up on the car.
    *
    * The (L, G) frame points in a different direction on each face of the body,
@@ -464,6 +599,286 @@ class Panel {
 // The livery itself
 // ===========================================================================
 
+// ===========================================================================
+// The pattern families
+// ===========================================================================
+
+/**
+ * The graphics each family draws on each panel.
+ *
+ * WHAT IS AND IS NOT IN HERE. A family owns the ARRANGEMENT of colour and
+ * nothing else: the base coat, the bare-laminate underside, the race numbers,
+ * the driver code, the sponsor set, the panel seams and the painted-in occlusion
+ * are identical for every car and live in the three `paint*` functions below.
+ * That split is what stops six families becoming six copies of one painter that
+ * slowly disagree about where the number goes.
+ *
+ * `bolt` is byte-for-byte the design this file painted before families existed,
+ * and it is the default. Every car on the real 2026 grid therefore looks exactly
+ * as it did; the five below it are new surface, reachable only by a team that
+ * has chosen one.
+ */
+interface FamilyPainter {
+  body(p: Panel, spec: LiverySpec, acc: string, trim: string): void;
+  pod(p: Panel, spec: LiverySpec, acc: string, trim: string): void;
+  airbox(p: Panel, spec: LiverySpec, acc: string, trim: string): void;
+}
+
+/** Smooth 0..1, for the curves the wave family is made of. */
+function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * A rising curve across a panel, as a closed polygon.
+ *
+ * Sampled rather than a bezier because a bezier through the atlas's anisotropy
+ * would need its control points converted twice, and sixteen segments is already
+ * smoother than the texel grid it lands on.
+ */
+function risingBand(
+  gFrom: number, gTo: number, thickness: number, samples = 16,
+): [number, number][] {
+  const top: [number, number][] = [];
+  const bottom: [number, number][] = [];
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const g = gFrom + (gTo - gFrom) * smoothstep(t);
+    top.push([t, g]);
+    bottom.push([t, g + thickness]);
+  }
+  return [...top, ...bottom.reverse()];
+}
+
+const FAMILIES: Record<LiveryFamilyId, FamilyPainter> = {
+  /**
+   * BOLT — the original. A swept nose, a deck spine, a flank flash.
+   *
+   * Unchanged, deliberately and permanently. It is what the whole grid wears.
+   */
+  bolt: {
+    body(p, _spec, acc) {
+      // Swept back further along the deck than down the sides, which is how a
+      // real nose flash is shaped and reads instantly as livery rather than as
+      // two-tone.
+      p.poly([
+        [0.0, 0.10], [0.075, 0.10], [0.110, 0.22], [0.145, 0.40],
+        [0.145, 0.60], [0.110, 0.78], [0.075, 0.90], [0.0, 0.90],
+      ], acc);
+      // Runs from behind the cockpit to the tail, widening over the engine cover.
+      p.poly([
+        [0.40, 0.475], [0.40, 0.525],
+        [0.55, 0.560], [0.80, 0.565], [1.0, 0.545],
+        [1.0, 0.455], [0.80, 0.435], [0.55, 0.440],
+      ], acc);
+      // The visible sliver between the nose and the sidepod inlet, rising toward
+      // the shoulder as it goes back.
+      for (const g of [0.25, 0.75] as const) {
+        const s = g > 0.5 ? -1 : 1;
+        p.poly([
+          [0.14, g + s * 0.055], [0.33, g + s * 0.10],
+          [0.33, g + s * 0.045], [0.14, g - s * 0.02],
+        ], acc);
+      }
+    },
+    pod(p, _spec, acc) {
+      for (const g of [0.25, 0.75] as const) {
+        const s = g > 0.5 ? -1 : 1;
+        p.poly([
+          [0.03, g - s * 0.075], [0.03, g + s * 0.085],
+          [0.30, g + s * 0.095], [0.62, g + s * 0.075],
+          [0.90, g + s * 0.030], [1.0, g],
+          [1.0, g - s * 0.035], [0.72, g - s * 0.005],
+          [0.40, g + s * 0.010], [0.14, g - s * 0.020],
+        ], acc);
+      }
+    },
+    airbox(p, _spec, acc) {
+      p.band(0, 1, 0.43, 0.57, acc);
+    },
+  },
+
+  /**
+   * STRIPE — twin racing stripes, nose to tail, straight over the airbox.
+   *
+   * The oldest motor-racing graphic there is and still the best-looking one,
+   * because it follows the car's own axis rather than fighting it. The trim
+   * hairline down each outer edge is doing the real work: without it the pair
+   * reads as one wide band with a slot in it.
+   */
+  stripe: {
+    body(p, _spec, acc, trim) {
+      /**
+       * WIDE, AND WIDER THAN THEY FIRST WERE.
+       *
+       * The body panel's girth is the whole circumference of the section, so a
+       * band of a few per cent of it is only a few centimetres on the car — and
+       * the first attempt at this drew a pair of 6cm stripes that vanished into
+       * a gold hairline down the engine cover. Real racing stripes are wide
+       * enough to run over the shoulder of the bodywork and be visible from the
+       * side as well as from above, which is what the 12cm here does.
+       */
+      for (const [g0, g1] of [[0.400, 0.464], [0.536, 0.600]] as const) {
+        p.band(0, 1, g0 - 0.014, g0, trim);
+        p.band(0, 1, g0, g1, acc);
+        p.band(0, 1, g1, g1 + 0.014, trim);
+      }
+    },
+    pod(p, _spec, acc, trim) {
+      // The pods are outboard of the centreline, so the stripes cannot run over
+      // them. They get the shoulder line instead, which is what carries the eye
+      // from the nose stripes to the rear wing.
+      p.band(0, 1, 0.255, 0.315, acc);
+      p.band(0, 1, 0.315, 0.327, trim);
+      p.band(0, 1, 0.685, 0.745, acc);
+      p.band(0, 1, 0.673, 0.685, trim);
+    },
+    airbox(p, _spec, acc, trim) {
+      // The SAME fractions as the body deck, so the pair runs unbroken from the
+      // nose over the roll hoop rather than stepping sideways at the panel join.
+      for (const [g0, g1] of [[0.400, 0.464], [0.536, 0.600]] as const) {
+        p.band(0, 1, g0 - 0.014, g0, trim);
+        p.band(0, 1, g0, g1, acc);
+        p.band(0, 1, g1, g1 + 0.014, trim);
+      }
+    },
+  },
+
+  /**
+   * CHEVRON — forward chevrons repeated down the flank and across the deck.
+   *
+   * A rhythm rather than a shape: four of them make a car look like it is
+   * already moving in a static screenshot, which is the only reason a repeating
+   * device is worth the paint. Alternating accent and trim is what keeps the
+   * repeat from turning into a fence.
+   */
+  chevron: {
+    body(p, _spec, acc, trim) {
+      // A blunt accent nose, cut square with a trim edge — the chevrons need a
+      // solid mass at the front of the car to point away from.
+      p.poly([[0.0, 0.10], [0.088, 0.10], [0.088, 0.90], [0.0, 0.90]], acc);
+      p.line([[0.092, 0.10], [0.092, 0.90]], trim, 0.020);
+      const t = 0.042;
+      for (let i = 0; i < 4; i++) {
+        const l = 0.455 + i * 0.132;
+        p.poly([
+          [l, 0.500], [l + 0.072, 0.408], [l + 0.072 + t, 0.408],
+          [l + t, 0.500], [l + 0.072 + t, 0.592], [l + 0.072, 0.592],
+        ], i % 2 === 0 ? acc : trim);
+      }
+    },
+    pod(p, _spec, acc, trim) {
+      const t = 0.055;
+      for (const g of [0.25, 0.75] as const) {
+        const s = g > 0.5 ? -1 : 1;
+        for (let i = 0; i < 4; i++) {
+          const l = 0.10 + i * 0.20;
+          p.poly([
+            [l, g], [l + 0.085, g + s * 0.125], [l + 0.085 + t, g + s * 0.125],
+            [l + t, g], [l + 0.085 + t, g - s * 0.125], [l + 0.085, g - s * 0.125],
+          ], i % 2 === 0 ? acc : trim);
+        }
+      }
+    },
+    airbox(p, _spec, acc, trim) {
+      p.poly([
+        [0.10, 0.50], [0.36, 0.28], [0.46, 0.28],
+        [0.20, 0.50], [0.46, 0.72], [0.36, 0.72],
+      ], acc);
+      p.band(0, 1, 0.485, 0.515, trim);
+    },
+  },
+
+  /**
+   * WAVE — a curve rising off the floor, over the sidepod, into the airbox.
+   *
+   * The only family whose boundary is not a straight line, and the one that
+   * follows the car's actual surface: the sidepod undercut rises toward the
+   * rear on a real car, and a graphic that rises with it looks moulded in rather
+   * than stuck on.
+   */
+  wave: {
+    body(p, _spec, acc, trim) {
+      for (const g of [0.16, 0.84] as const) {
+        const s = g > 0.5 ? -1 : 1;
+        const pts = risingBand(g, g + s * 0.20, s * 0.085);
+        p.poly(pts, acc);
+        p.edge(pts, trim, 0.014);
+      }
+      // The crest carries over the deck at the tail, closing the shape.
+      p.poly([[0.86, 0.44], [1.0, 0.425], [1.0, 0.575], [0.86, 0.56]], acc);
+    },
+    pod(p, _spec, acc, trim) {
+      for (const g of [0.14, 0.86] as const) {
+        const s = g > 0.5 ? -1 : 1;
+        const pts = risingBand(g, g + s * 0.26, s * 0.115);
+        p.poly(pts, acc);
+        p.edge(pts, trim, 0.012);
+      }
+    },
+    airbox(p, _spec, acc, trim) {
+      const pts = risingBand(0.72, 0.42, 0.24);
+      p.poly(pts, acc);
+      p.edge(pts, trim, 0.018);
+    },
+  },
+
+  /**
+   * SPLIT — one hard diagonal, front half against rear half.
+   *
+   * The most legible livery on a grid and the one that survives being a hundred
+   * pixels across in a trackside shot, because it is a single edge rather than a
+   * set of details. It leans forward as it goes up, so the car looks like it is
+   * being driven into the split rather than wearing a stripe.
+   */
+  split: {
+    body(p, _spec, acc, trim) {
+      p.poly([[0.66, 0.10], [0.42, 0.90], [1.0, 0.90], [1.0, 0.10]], acc);
+      p.line([[0.66, 0.10], [0.42, 0.90]], trim, 0.030);
+    },
+    pod(p, _spec, acc, trim) {
+      p.poly([[0.46, 0.0], [0.20, 1.0], [1.0, 1.0], [1.0, 0.0]], acc);
+      p.line([[0.46, 0.0], [0.20, 1.0]], trim, 0.026);
+    },
+    airbox(p, _spec, acc, trim) {
+      p.poly([[0.62, 0.0], [0.40, 1.0], [1.0, 1.0], [1.0, 0.0]], acc);
+      p.line([[0.62, 0.0], [0.40, 1.0]], trim, 0.030);
+    },
+  },
+
+  /**
+   * HALO — the accent confined to the shoulder line and the airbox crown.
+   *
+   * The restrained one, and it is the best-looking of the six. A car is a shape
+   * before it is a graphic, and a single band following the highest line on the
+   * bodywork does nothing except tell the eye where that line is. Matte black
+   * with one band of colour along the shoulder is the livery most players will
+   * reach for first and it was previously impossible to make.
+   */
+  halo: {
+    body(p, _spec, acc, trim) {
+      p.band(0, 1, 0.285, 0.330, acc);
+      p.band(0, 1, 0.330, 0.342, trim);
+      p.band(0, 1, 0.670, 0.715, acc);
+      p.band(0, 1, 0.658, 0.670, trim);
+      // A cap right on the tip of the nose. One accent mark at the front of the
+      // car, so it is not read from head-on as unpainted.
+      p.band(0.0, 0.030, 0.10, 0.90, acc);
+    },
+    pod(p, _spec, acc, trim) {
+      p.band(0, 1, 0.300, 0.352, acc);
+      p.band(0, 1, 0.352, 0.364, trim);
+      p.band(0, 1, 0.648, 0.700, acc);
+      p.band(0, 1, 0.636, 0.648, trim);
+    },
+    airbox(p, _spec, acc, trim) {
+      p.band(0, 1, 0.455, 0.545, acc);
+      p.band(0, 1, 0.443, 0.455, trim);
+      p.band(0, 1, 0.545, 0.557, trim);
+    },
+  },
+};
+
 /**
  * Monocoque panel: nose, chassis flanks, engine-cover deck.
  *
@@ -472,9 +887,12 @@ class Panel {
  * floor. So the graphics go where they will actually be looked at: the nose, the
  * short stretch of flank between the nose and the sidepod inlet, and the deck.
  */
-function paintBody(p: Panel, spec: LiverySpec, flash: number, ink: string): void {
+function paintBody(
+  p: Panel, spec: LiverySpec, flash: number, ink: string, d: LiveryDesign,
+): void {
   const base = css(spec.colour);
   const acc = css(flash);
+  const trim = css(d.trim);
   const carbon = '#101216';
 
   p.fill(base);
@@ -486,41 +904,31 @@ function paintBody(p: Panel, spec: LiverySpec, flash: number, ink: string): void
   p.band(0, 1, 0.10, 0.15, css(shade(spec.colour, -0.45)));
   p.band(0, 1, 0.85, 0.90, css(shade(spec.colour, -0.45)));
 
-  // --- Contrasting nose ---------------------------------------------------
-  // Swept back further along the deck than down the sides, which is how a real
-  // nose flash is shaped and reads instantly as livery rather than as two-tone.
-  p.poly([
-    [0.0, 0.10], [0.075, 0.10], [0.110, 0.22], [0.145, 0.40],
-    [0.145, 0.60], [0.110, 0.78], [0.075, 0.90], [0.0, 0.90],
-  ], acc);
-
-  // --- Deck spine ---------------------------------------------------------
-  // Runs from behind the cockpit to the tail, widening over the engine cover.
-  p.poly([
-    [0.40, 0.475], [0.40, 0.525],
-    [0.55, 0.560], [0.80, 0.565], [1.0, 0.545],
-    [1.0, 0.455], [0.80, 0.435], [0.55, 0.440],
-  ], acc);
-
-  // --- Chassis flank flash ------------------------------------------------
-  // The visible sliver between the nose and the sidepod inlet, rising toward the
-  // shoulder as it goes back.
-  for (const g of [0.25, 0.75] as const) {
-    const s = g > 0.5 ? -1 : 1;
-    p.poly([
-      [0.14, g + s * 0.055], [0.33, g + s * 0.10],
-      [0.33, g + s * 0.045], [0.14, g - s * 0.02],
-    ], acc);
-  }
+  FAMILIES[d.family].body(p, spec, acc, trim);
 
   // --- Race numbers -------------------------------------------------------
+  //
+  // WHY THE OUTLINE IS CONDITIONAL. `bolt` puts every number on the nose flash
+  // or the deck spine, so a single ink colour read from the accent is correct
+  // and is what this file has always drawn. The other five families do not
+  // guarantee what is underneath a number — a `halo` nose is base colour, a
+  // `split` engine cover depends on where the diagonal fell — so those get a
+  // contrasting outline, which is what a real racing number carries anyway and
+  // which is legible on any ground.
   const num = String(spec.number);
-  p.text(0.062, 0.26, num, { face: 'left', heightM: 0.135, colour: ink, slant: 0.16 });
-  p.text(0.062, 0.74, num, { face: 'right', heightM: 0.135, colour: ink, slant: 0.16 });
+  const plain = d.family === 'bolt';
+  const numInk = plain ? ink : readable(spec.colour);
+  const outline = plain ? undefined : (luminance(spec.colour) > 0.45 ? '#f4f7fa' : '#0b0e13');
+  p.text(0.062, 0.26, num,
+    { face: 'left', heightM: 0.135, colour: numInk, slant: 0.16, outline });
+  p.text(0.062, 0.74, num,
+    { face: 'right', heightM: 0.135, colour: numInk, slant: 0.16, outline });
   // On the deck of the nose, where the overhead and chase cameras see it.
-  p.text(0.075, 0.50, num, { face: 'deck', heightM: 0.15, colour: ink, slant: 0.16 });
+  p.text(0.075, 0.50, num,
+    { face: 'deck', heightM: 0.15, colour: numInk, slant: 0.16, outline });
   // And on the engine cover, sitting on the spine.
-  p.text(0.72, 0.50, num, { face: 'deck', heightM: 0.19, colour: ink, slant: 0.16 });
+  p.text(0.72, 0.50, num,
+    { face: 'deck', heightM: 0.19, colour: numInk, slant: 0.16, outline });
 
   // --- Driver code by the cockpit ----------------------------------------
   const codeInk = readable(spec.colour);
@@ -538,19 +946,35 @@ function paintBody(p: Panel, spec: LiverySpec, flash: number, ink: string): void
   // that is what stays legible across a whole grid of liveries.
   const decalInk = readable(spec.colour);
   const faint = luminance(spec.colour) > 0.45 ? 'rgba(12,16,22,0.62)' : 'rgba(240,244,248,0.62)';
-  p.decal(0.185, 0.50, SPONSORS[spec.number % SPONSORS.length], {
+  const brands = sponsorSet(d);
+  p.decal(0.185, 0.50, brands[spec.number % brands.length], {
     face: 'deck', heightM: 0.052, colour: decalInk, weight: 800,
   });
-  p.decal(0.325, 0.50, SPONSORS[(spec.number + 3) % SPONSORS.length], {
+  p.decal(0.325, 0.50, brands[(spec.number + 3) % brands.length], {
     face: 'deck', heightM: 0.034, colour: faint,
   });
-  p.decal(0.545, 0.50, SPONSORS[(spec.number + 6) % SPONSORS.length], {
+  p.decal(0.545, 0.50, brands[(spec.number + 6) % brands.length], {
     face: 'deck', heightM: 0.040, colour: faint,
   });
   for (const [g, face] of [[0.30, 'left'], [0.70, 'right']] as const) {
-    p.decal(0.185, g, SPONSORS[(spec.number + 1) % SPONSORS.length], {
+    p.decal(0.185, g, brands[(spec.number + 1) % brands.length], {
       face, heightM: 0.042, colour: faint,
     });
+  }
+
+  // --- The team's mark ------------------------------------------------------
+  //
+  // On the engine cover, ahead of the number, where the overhead and chase
+  // cameras hold it — and on the nose deck, which is what a front-on shot and
+  // the podium camera see. The SAME device the timing tower draws beside this
+  // team's name, so the badge on the screen and the badge on the car are one
+  // badge. Only a team that has chosen one carries it; `mark: -1` is the
+  // default and is what every car on the real grid has.
+  if (d.mark >= 0) {
+    const ground = css(shade(spec.colour, luminance(spec.colour) > 0.45 ? -0.55 : 0.18));
+    p.mark(0.585, 0.50, d.mark, 0.20, ground, acc);
+    p.mark(0.305, 0.300, d.mark, 0.11, ground, acc);
+    p.mark(0.305, 0.700, d.mark, 0.11, ground, acc);
   }
 
   // --- Panel seams and occlusion -------------------------------------------
@@ -569,7 +993,7 @@ function paintBody(p: Panel, spec: LiverySpec, flash: number, ink: string): void
 }
 
 /** Sidepod: inlet surround, downwash ramp, and the flash that runs off the body. */
-function paintPod(p: Panel, spec: LiverySpec, flash: number): void {
+function paintPod(p: Panel, spec: LiverySpec, flash: number, d: LiveryDesign): void {
   p.fill(css(spec.colour));
   // The undercut is bare laminate on every current car, and it is a large area
   // seen from every trackside and chase angle.
@@ -579,31 +1003,27 @@ function paintPod(p: Panel, spec: LiverySpec, flash: number): void {
   // Dark surround at the inlet, so the mouth reads as a hole in bodywork.
   p.band(0.0, 0.035, 0.0, 1.0, '#0a0c11');
 
-  // Flash along both flanks — the pods are mirror images of one another in the
-  // world but share this panel, so both sides have to carry it.
-  for (const g of [0.25, 0.75] as const) {
-    const s = g > 0.5 ? -1 : 1;
-    p.poly([
-      [0.03, g - s * 0.075], [0.03, g + s * 0.085],
-      [0.30, g + s * 0.095], [0.62, g + s * 0.075],
-      [0.90, g + s * 0.030], [1.0, g],
-      [1.0, g - s * 0.035], [0.72, g - s * 0.005],
-      [0.40, g + s * 0.010], [0.14, g - s * 0.020],
-    ], css(flash));
-  }
+  FAMILIES[d.family].pod(p, spec, css(flash), css(d.trim));
 
   // Sponsors down the flank, which is the largest uninterrupted painted area on
   // the car and the one a trackside camera sees most of.
+  //
+  // THE TITLE SPONSOR GETS THE SIDEPOD, at 115mm, and it is the only piece of
+  // type on the car big enough to read from a trackside camera. When the
+  // sponsorship system exists these will be the deals the player signed; today
+  // they are the invented house set, and either way they come through
+  // `sponsorSet` so the painter never needs to know which.
   const podInk = readable(spec.colour);
   const podFaint = luminance(spec.colour) > 0.45 ? 'rgba(12,16,22,0.58)' : 'rgba(240,244,248,0.58)';
+  const brands = sponsorSet(d);
   for (const [g, face] of [[0.30, 'left'], [0.70, 'right']] as const) {
-    p.decal(0.30, g, SPONSORS[(spec.number + 2) % SPONSORS.length], {
+    p.decal(0.30, g, brands[(spec.number + 2) % brands.length], {
       face, heightM: 0.115, colour: podInk, weight: 800,
     });
-    p.decal(0.60, g, SPONSORS[(spec.number + 5) % SPONSORS.length], {
+    p.decal(0.60, g, brands[(spec.number + 5) % brands.length], {
       face, heightM: 0.065, colour: podFaint,
     });
-    p.decal(0.79, g, SPONSORS[(spec.number + 8) % SPONSORS.length], {
+    p.decal(0.79, g, brands[(spec.number + 8) % brands.length], {
       face, heightM: 0.048, colour: podFaint,
     });
   }
@@ -619,9 +1039,9 @@ function paintPod(p: Panel, spec: LiverySpec, flash: number): void {
 }
 
 /** Airbox and roll hoop: accent crown, driver code on the flanks. */
-function paintAirbox(p: Panel, spec: LiverySpec, flash: number): void {
+function paintAirbox(p: Panel, spec: LiverySpec, flash: number, d: LiveryDesign): void {
   p.fill(css(spec.colour));
-  p.band(0, 1, 0.43, 0.57, css(flash));
+  FAMILIES[d.family].airbox(p, spec, css(flash), css(d.trim));
   p.band(0, 1, 0.0, 0.10, '#101216');
   p.band(0, 1, 0.90, 1.0, '#101216');
   // The mouth end goes dark: it is a duct, not a nose.
@@ -754,12 +1174,28 @@ function paintHelmet(p: Panel, spec: LiverySpec, flash: number): void {
   });
 }
 
-/** Colour for each flat swatch, derived from the team's two colours. */
-function swatchColour(name: SwatchName, spec: LiverySpec, flash: number): number {
+/** Colour for each flat swatch, derived from the team's three colours. */
+function swatchColour(
+  name: SwatchName, spec: LiverySpec, flash: number, d: LiveryDesign,
+): number {
   switch (name) {
     case 'body': return spec.colour;
     case 'accent': return flash;
     case 'carbon': return 0x0f1115;
+    /**
+     * DELIBERATELY NOT THE DESIGN'S TRIM COLOUR.
+     *
+     * This swatch is the painted suspension and the titanium halo, and the
+     * first version of this work did drive it from the trim colour — which,
+     * with an ivory trim, turned every wishbone and the halo into a white rod
+     * and made the front of the car read as a scatter of scaffolding. The trim
+     * colour is a hairline. Given a whole structure to colour it stops being
+     * one and starts being the loudest thing on the car.
+     *
+     * So the trim reads where it is supposed to read: as the pinstripe along
+     * the edge of a flash, which is exactly the mark that makes a livery look
+     * designed. The hardware stays the near-black it has always been.
+     */
     case 'trim': return 0x1e222a;
     case 'rim': return 0xb4bcc6;
     case 'tyre': return 0x101216;
@@ -779,16 +1215,42 @@ function swatchColour(name: SwatchName, spec: LiverySpec, flash: number): number
 // ===========================================================================
 
 const cache = new Map<string, LiveryTextures>();
-let sharedSurface: THREE.Texture | null = null;
+
+/**
+ * One shared surface map PER FINISH, rather than one for the whole grid.
+ *
+ * How shiny a panel is does not depend on what colour it is — which is why this
+ * was a single texture shared by twenty-two cars, and why it stays shared. But
+ * it does depend on what the car was painted WITH, and a matte car is a
+ * different material from a gloss one rather than a differently coloured one.
+ *
+ * Three maps instead of one keeps the property that made this cheap: a grid of
+ * twenty-four cars costs twenty-four colour textures and at most three surface
+ * maps, and in practice one, because only a team that has chosen a finish is
+ * anything other than satin.
+ */
+const surfaces = new Map<string, THREE.Texture>();
+
+/** Roughness of clear-coated paint, per finish. Metalness is 0.02 throughout. */
+const FINISH_ROUGHNESS: Record<LiveryFinish, { paint: number; deck: number; helmet: number }> = {
+  // Wet-looking: a tight lobe that holds a hard highlight down a flank. Not
+  // tighter than 0.21 — see the note on PAINT below about what the probe's sun
+  // does to a narrow lobe on a curved panel.
+  gloss: { paint: 0.22, deck: 0.28, helmet: 0.18 },
+  // The grid standard, and the values this file has always used.
+  satin: { paint: 0.30, deck: 0.38, helmet: 0.24 },
+  // No highlight at all. The shape does the work, which is the whole appeal.
+  matte: { paint: 0.62, deck: 0.66, helmet: 0.44 },
+};
 
 /**
  * Green = roughness, blue = metalness, matching three.js's channel convention so
  * one texture can serve as both maps.
  *
- * This is where the matte/gloss split lives. It is identical for every car, so
- * twenty cars share one copy of it.
+ * This is where the matte/gloss split lives. It is identical for every car with
+ * the same finish, so the whole grid normally shares one copy of it.
  */
-function buildSurfaceMap(size: number): THREE.Texture {
+function buildSurfaceMap(size: number, finish: LiveryFinish): THREE.Texture {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d')!;
@@ -829,7 +1291,8 @@ function buildSurfaceMap(size: number): THREE.Texture {
   // angle, which takes the peak below the point ACES flattens it — and the
   // highlight becomes a bright soft sweep down a flank instead of a hole burnt
   // in the livery.
-  const PAINT = set(0.30, 0.02);
+  const R = FINISH_ROUGHNESS[finish];
+  const PAINT = set(R.paint, 0.02);
   // Structural carbon on a race car is CLEAR-COATED, and that is most of the
   // difference between the wings on the reference car and the wings that were
   // here. 0.62 is bare laminate straight out of the autoclave: matte, dusty,
@@ -857,7 +1320,7 @@ function buildSurfaceMap(size: number): THREE.Texture {
    * whole area — which made it the first thing to blow out and the reason the
    * engine cover came back as a white stripe in three-quarter shots.
    */
-  const DECK = set(0.38, 0.02);
+  const DECK = set(R.deck, 0.02);
 
   const body = new Panel(ctx, PANEL.body, size);
   body.fill(PAINT);
@@ -875,7 +1338,9 @@ function buildSurfaceMap(size: number): THREE.Texture {
 
   // A painted helmet shell: the same clear-coated paint as the bodywork, a
   // little glossier because a helmet is polished and a sidepod is not.
-  new Panel(ctx, PANEL.helmet, size).fill(set(0.24, 0.02));
+  // The helmet is the driver's, not the team's, so it keeps the satin shell it
+  // has always had whatever the car was painted with.
+  new Panel(ctx, PANEL.helmet, size).fill(set(FINISH_ROUGHNESS.satin.helmet, 0.02));
 
   const air = new Panel(ctx, PANEL.airbox, size);
   air.fill(PAINT);
@@ -905,8 +1370,8 @@ function buildSurfaceMap(size: number): THREE.Texture {
     // Clear-coated paint over laminate. Matches PAINT above; if one moves the
     // other has to, or a flat-swatched panel and a painted one meeting along an
     // edge show a step in gloss right down the car.
-    body: [0.30, 0.02],
-    accent: [0.29, 0.02],
+    body: [R.paint, 0.02],
+    accent: [R.paint - 0.01, 0.02],
     // Clear-coated laminate. See the CARBON constant above.
     carbon: [0.40, 0.02],
     // Painted carbon suspension and the titanium halo share this swatch. The
@@ -920,7 +1385,7 @@ function buildSurfaceMap(size: number): THREE.Texture {
     glass: [0.05, 0.02],
     light: [0.42, 0.02],
     // A painted helmet shell, which is the same material as the bodywork.
-    helmet: [0.24, 0.02],
+    helmet: [FINISH_ROUGHNESS.satin.helmet, 0.02],
     suit: [0.78, 0.02],
     glove: [0.86, 0.02],
     dark: [0.90, 0.02],
@@ -944,7 +1409,17 @@ function buildSurfaceMap(size: number): THREE.Texture {
  * @param size texture edge in pixels; 512 on desktop, 256 on the low tier
  */
 export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
-  const key = `${spec.colour}:${spec.accent}:${spec.number}:${spec.code}:${size}`;
+  // The design comes from the call if there is one and from the registry
+  // otherwise, which is how `CarMesh` — which knows nothing about families —
+  // still paints the player's team correctly.
+  const design = spec.design ?? liveryDesignFor(spec.colour, spec.accent);
+
+  // `designEpoch` is in the key rather than the design's own fields because a
+  // registration REPLACES a design at the same colour pair: without it, a
+  // repaint in the livery editor would be served the previous texture out of
+  // this cache and nothing on screen would change.
+  const key = `${spec.colour}:${spec.accent}:${spec.number}:${spec.code}:${size}`
+    + `:${design.family}:${design.trim}:${design.finish}:${design.mark}:${designEpoch}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
@@ -963,13 +1438,13 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   const mk = (name: PanelName) =>
     new Panel(ctx, PANEL[name], size, PANEL_SIZE[name].lengthM, PANEL_SIZE[name].girthM);
 
-  paintBody(mk('body'), spec, flash, ink);
-  paintPod(mk('pod'), spec, flash);
-  paintAirbox(mk('airbox'), spec, flash);
+  paintBody(mk('body'), spec, flash, ink, design);
+  paintPod(mk('pod'), spec, flash, design);
+  paintAirbox(mk('airbox'), spec, flash, design);
   paintHelmet(mk('helmet'), spec, flash);
 
   for (const name of SWATCH_ORDER) {
-    new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash)));
+    new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash, design)));
   }
 
   const map = new THREE.CanvasTexture(canvas);
@@ -977,9 +1452,14 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   map.anisotropy = 4;
   map.needsUpdate = true;
 
-  if (!sharedSurface) sharedSurface = buildSurfaceMap(size);
+  const surfaceKey = design.finish + ':' + size;
+  let surface = surfaces.get(surfaceKey);
+  if (!surface) {
+    surface = buildSurfaceMap(size, design.finish);
+    surfaces.set(surfaceKey, surface);
+  }
 
-  const result: LiveryTextures = { map, surface: sharedSurface };
+  const result: LiveryTextures = { map, surface };
   cache.set(key, result);
   return result;
 }
@@ -987,8 +1467,8 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
 export function disposeLiveryCache(): void {
   for (const t of cache.values()) t.map.dispose();
   cache.clear();
-  sharedSurface?.dispose();
-  sharedSurface = null;
+  for (const s of surfaces.values()) s.dispose();
+  surfaces.clear();
   carbonTex?.map.dispose();
   carbonTex?.surface.dispose();
   carbonTex = null;

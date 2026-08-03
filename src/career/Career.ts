@@ -1,11 +1,21 @@
-import { Rng, clamp01 } from '../core/MathUtils';
+import { Rng, clamp, clamp01 } from '../core/MathUtils';
 import { getTeam, type Driver } from '../data/teams';
 import { REAL_ROSTER, TIER_ORDER, type TierId } from '../data/roster';
 import {
-  TIER_CAR, createWorld, findDriver, findTeam, installWorld, raceSeats,
+  TIER_CAR, createWorld, emptyUpgrades, findDriver, findTeam, installWorld, raceSeats,
   toDriver, transfer,
-  type CareerWorld, type WorldDriver,
+  type CareerWorld, type WorldDriver, type WorldTeam,
 } from './World';
+import {
+  AMBITION, COST_CAP_USD, DEPARTMENT_IDS, MAX_FACILITY_LEVEL, MAX_STAFF,
+  MIN_STAFF, NEW_TEAM_CHASSIS, PIT_CREW_STEP_USD, STAFF_WAGE_USD,
+  STARTING_BUDGET_USD, applyUpgrade, breachPenaltyFor, capSpent,
+  commercialIncomePerRound, defaultDepartments, emptyLedger, engineOffers,
+  facilityUpgradeCostUsd, facilityUpkeepUsd, factoryAnnualCostUsd,
+  generateFreeAgents, investInPitCrew, prizeMoneyFor, projectCostUsd,
+  projectGain, projectRounds, qcFailureChance,
+  type Ambition, type BreachPenalty, type DepartmentId, type UpgradeProject,
+} from './MyTeam';
 import {
   circuitFor, positionOf, recordRound, runOffSeason, seasonComplete,
   settleGrid, simulateRound, sortedStandings, startSeason,
@@ -13,7 +23,7 @@ import {
 } from './Season';
 import {
   SAVE_MINOR, SAVE_VERSION, playerAsWorldDriver, playerStanding,
-  type CareerMode, type CareerState, type PlayerProfile,
+  type CareerMode, type CareerState, type MyTeamState, type PlayerProfile,
 } from './CareerState';
 import {
   CareerEventManager, type CareerEvent, type EventContext,
@@ -21,6 +31,33 @@ import {
 import {
   availableNumbers, defaultHelmet, uniqueDriverCode, type HelmetDesign,
 } from './Identity';
+
+/** A project that reached the end of its schedule, and whether it passed QC. */
+export interface ProjectDelivery {
+  project: UpgradeProject;
+  /**
+   * False when quality control rejected it.
+   *
+   * The money is gone either way. That is the mechanic: a demoralised
+   * department does not deliver a worse part, it delivers one that does not
+   * pass, and the cap space it consumed is not refunded.
+   */
+  passed: boolean;
+}
+
+/** What a season did to the team's books. */
+export interface TeamSeasonReport {
+  constructorPosition: number;
+  prizeUsd: number;
+  capSpentUsd: number;
+  penalty: BreachPenalty;
+  closingCashUsd: number;
+}
+
+/** Dollars as millions, to one decimal. Every money string in the mode uses it. */
+function fmtM(usd: number): string {
+  return (usd / 1e6).toFixed(1);
+}
 
 /**
  * The career, as one object the rest of the game talks to.
@@ -154,6 +191,199 @@ export class Career {
     return career;
   }
 
+  /**
+   * Starts a My Team career: owner and lead driver, in Formula 1, from nothing.
+   *
+   * A SEPARATE CAREER TYPE, NOT A LADDER SHORTCUT. The brief is "build a racing
+   * empire from the ground up", so the team enters Formula 1 directly as a
+   * TWELFTH ENTRY rather than buying somebody else's. That makes the grid 24
+   * cars, which is outside the envelope every existing probe measures at 20 —
+   * `probe:fieldsize` runs full headless races at 20, 22 and 24 on Monaco, Spa
+   * and Monza and reports that the grid holds structurally at every size: every
+   * car starts clear, every car gets its own pit box, everybody is classified
+   * once. That measurement is why this is a twelfth team and not a takeover.
+   *
+   * The player is the lead driver and takes no salary — they own the outfit.
+   * The second car is a real `WorldDriver` in this save's world, so whoever is
+   * signed qualifies on merit, races the same physics, scores constructors'
+   * points and beats the player or does not.
+   */
+  static createMyTeam(opts: {
+    firstName: string;
+    lastName: string;
+    nationality: string;
+    raceNumber?: number;
+    helmet?: HelmetDesign;
+    seed?: number;
+    team: {
+      name: string;
+      shortName: string;
+      code: string;
+      baseCountry: string;
+      colour: number;
+      accent: number;
+      trim: number;
+      liveryFamily: string;
+      liveryFinish: 'gloss' | 'satin' | 'matte';
+      liveryMark: number;
+    };
+    /** Chosen from `Career.freeAgentsFor(seed)`. */
+    teammate: WorldDriver;
+    /** Chosen from `engineOffers`. Must be one the team is allowed to have. */
+    powerUnitId: string;
+  }): Career {
+    const seed = opts.seed ?? Math.floor(Date.now() % 2147483647);
+    const world = createWorld(seed, REAL_ROSTER);
+    const rng = new Rng(seed ^ 0x11f0a7d3);
+
+    const f1 = world.tiers.F1;
+    const teamId = 'myteam';
+
+    const team: WorldTeam = {
+      id: teamId,
+      tier: 'F1',
+      name: opts.team.name,
+      shortName: opts.team.shortName,
+      code: opts.team.code,
+      colour: opts.team.colour,
+      accent: opts.team.accent,
+      powerUnitId: opts.powerUnitId,
+      chassis: { ...NEW_TEAM_CHASSIS },
+      // No hidden form roll for the player's own team. Every other car on the
+      // grid carries a variance the player has to work out from the stopwatch;
+      // applying one to their own would mean a career where the first season is
+      // secretly good or secretly bad for a reason nothing on any screen could
+      // ever explain. Their car is exactly what they built.
+      form: 0,
+      development: 0,
+      developmentRate: 0.6,
+      prefersExperience: 0.4,
+      budgetUsd: STARTING_BUDGET_USD,
+      upgrades: emptyUpgrades(),
+      isPlayerTeam: true,
+    };
+    f1.teams.push(team);
+
+    const code = uniqueDriverCode(opts.lastName, f1.drivers.map((d) => d.code));
+    const wanted = opts.raceNumber ?? 47;
+    const taken = new Set(f1.drivers.map((d) => d.raceNumber));
+    const raceNumber = taken.has(wanted) ? (availableNumbers(taken)[0] ?? wanted) : wanted;
+    taken.add(raceNumber);
+
+    const player: PlayerProfile = {
+      firstName: opts.firstName,
+      lastName: opts.lastName,
+      code,
+      nationality: opts.nationality,
+      raceNumber,
+      helmet: opts.helmet ?? defaultHelmet(seed),
+      // An owner-driver entering Formula 1 is not a Formula 3 rookie. They are
+      // credible and they are not a front-runner, which is the same place the
+      // car starts — so the first season is about the operation rather than
+      // about either being unusually good or unusually bad.
+      skill: 0.76,
+      aggression: 0.70,
+      consistency: 0.72,
+      tyreManagement: 0.70,
+      wetSkill: 0.72,
+      racecraft: 0.71,
+      experience: 3,
+      age: 24,
+    };
+
+    const departments = defaultDepartments();
+    const myTeam: MyTeamState = {
+      teamId,
+      name: opts.team.name,
+      shortName: opts.team.shortName,
+      code: opts.team.code,
+      baseCountry: opts.team.baseCountry,
+      colour: opts.team.colour,
+      accent: opts.team.accent,
+      trim: opts.team.trim,
+      liveryFamily: opts.team.liveryFamily,
+      liveryFinish: opts.team.liveryFinish,
+      liveryMark: opts.team.liveryMark,
+      cashUsd: STARTING_BUDGET_USD,
+      ledger: emptyLedger(),
+      departments,
+      projects: [],
+      nextProjectId: 1,
+      powerUnitId: opts.powerUnitId,
+      powerUnitYearsLeft: 3,
+      teammateDriverId: opts.teammate.id,
+      developmentBanRounds: 0,
+      pointsDeducted: 0,
+    };
+
+    const state: CareerState = {
+      saveVersion: SAVE_VERSION,
+      saveMinor: SAVE_MINOR,
+      createdAt: new Date().toISOString(),
+      seed,
+      mode: 'myteam',
+      player,
+      playerDriverId: 'PLAYER',
+      tier: 'F1',
+      teamId,
+      contractYears: 99,
+      seasonsInTier: 0,
+      world,
+      season: { year: world.season, tiers: {} as SeasonState['tiers'] },
+      history: [],
+      narrative: {
+        fanRating: 12,
+        reputation: 20,
+        pressure: 22,
+        // The three departments start with a morale each, because morale is
+        // read by `projectCostUsd` and `qcFailureChance` from the first project
+        // commissioned. An empty record here would mean the whole mechanic did
+        // nothing until something happened to populate it.
+        departmentMorale: {
+          aero: departments.aero.morale,
+          chassis: departments.chassis.morale,
+          powertrain: departments.powertrain.morale,
+        },
+        rivalries: [],
+        flags: {},
+        firedEvents: [],
+      },
+      team: myTeam,
+      prepSlotsLeft: 2,
+    };
+
+    // The second car, signed into the world as a real entrant.
+    const mate: WorldDriver = {
+      ...opts.teammate,
+      tier: 'F1',
+      teamId,
+      contractYears: 2,
+      reserve: false,
+      raceNumber: taken.has(opts.teammate.raceNumber)
+        ? (availableNumbers(taken)[0] ?? opts.teammate.raceNumber)
+        : opts.teammate.raceNumber,
+    };
+    f1.drivers.push(playerAsWorldDriver(state));
+    f1.drivers.push(mate);
+
+    const career = new Career(state);
+    career.state.season = startSeason(world);
+    career.seedRivalries(rng);
+    career.beginTeamSeason();
+    return career;
+  }
+
+  /**
+   * The free agents available to a team created from this seed.
+   *
+   * Deterministic, so the create screen and `createMyTeam` cannot disagree about
+   * who was on the market — and so a career is reproducible from its seed, which
+   * is what makes `probe:myteam` able to run the same career twice.
+   */
+  static freeAgentsFor(seed: number, season = REAL_ROSTER.season): WorldDriver[] {
+    return generateFreeAgents(new Rng(seed ^ 0x63a1d7f5), 8, season);
+  }
+
   /** Removes this career's grid, returning the game to the static one. */
   dispose(): void {
     // Deliberately not `clearGrid()` here — the caller decides, because leaving
@@ -234,11 +464,16 @@ export class Career {
    * reads about is one that has already happened rather than one computed
    * retroactively.
    */
-  recordPlayerRound(result: RoundResult): void {
+  recordPlayerRound(result: RoundResult): ProjectDelivery[] {
     recordRound(this.state.season, this.state.tier, result);
     this.advanceOtherTiers();
     this.updateRivalries(result);
     this.state.prepSlotsLeft = this.prepSlotsForNextRound();
+    // The factory runs on the same clock as the championship. Returned rather
+    // than stored so the screen that shows a delivered part is the screen that
+    // comes straight after the race, and a career that never opens it does not
+    // accumulate a queue of unread news.
+    return this.advanceFactory();
   }
 
   /** Resolves the player's round on paper, for a race they chose to skip. */
@@ -290,7 +525,10 @@ export class Career {
    * own off-season runs — promotions, retirements, the market, development — and
    * only afterwards is the player placed, using the same rules.
    */
-  endSeason(): { report: OffSeasonReport; summary: SeasonSummary; promoted: boolean } {
+  endSeason(): {
+    report: OffSeasonReport; summary: SeasonSummary; promoted: boolean;
+    team: TeamSeasonReport | null;
+  } {
     const s = this.state;
 
     // Finish anything outstanding, in every tier.
@@ -301,6 +539,12 @@ export class Career {
         if (++guard > 60) break;
       }
     }
+
+    // The books close on the season that just ran, before the world moves on:
+    // prize money is paid on the constructors' table as it finished, and the
+    // cap audit deducts from that same table. Doing it after `runOffSeason`
+    // would be auditing a championship that no longer exists.
+    const teamReport = this.settleTeamSeason();
 
     const myTable = sortedStandings(s.season.tiers[s.tier]);
     const myPosition = myTable.findIndex((e) => e.driverId === s.playerDriverId) + 1;
@@ -344,8 +588,12 @@ export class Career {
 
     s.season = startSeason(s.world);
     s.prepSlotsLeft = 3;
+    // The team's own new year: ledger reset, unfinished projects written off,
+    // next season's fixed bill charged. After the world's off-season, because
+    // the wage bill depends on which driver the market left in the second car.
+    this.rollTeamIntoNextSeason();
     installWorld(s.world);
-    return { report, summary, promoted };
+    return { report, summary, promoted, team: teamReport };
   }
 
   /**
@@ -523,19 +771,30 @@ export class Career {
       case 'simulator':
         s.narrative.flags.simulatorPrepared = true;
         break;
+      /**
+       * A media day and a factory visit are the two ends of the same trade, and
+       * BOTH ENDS ARE NOW REAL.
+       *
+       * They used to move `narrative.departmentMorale` only. In a My Team career
+       * that record is a mirror — the authoritative morale lives on the
+       * department, because that is what `projectCostUsd` and `qcFailureChance`
+       * read — so the whole mechanic was moving a copy nothing consulted. A day
+       * at the factory now genuinely makes the next aero package cheaper and
+       * more likely to pass, and a day in front of the cameras genuinely does
+       * not.
+       */
       case 'media':
         s.narrative.fanRating = Math.min(100, s.narrative.fanRating + 4);
-        for (const k of Object.keys(s.narrative.departmentMorale)) {
-          s.narrative.departmentMorale[k] = Math.max(0, s.narrative.departmentMorale[k] - 2);
-        }
+        this.nudgeEveryDepartment(-2);
         break;
       case 'factory':
-        for (const k of Object.keys(s.narrative.departmentMorale)) {
-          s.narrative.departmentMorale[k] = Math.min(100, s.narrative.departmentMorale[k] + 5);
-        }
+        this.nudgeEveryDepartment(5);
         break;
       case 'sponsor':
-        if (s.team) s.team.cashUsd += 750_000;
+        if (s.team) {
+          s.team.cashUsd += 750_000;
+          s.team.ledger.commercialUsd += 750_000;
+        }
         break;
     }
 
@@ -602,6 +861,544 @@ export class Career {
     this.state.narrative.rivalries.push({
       driverId, heat: 55, state: 'hostile', declared: true, wonAgainst: 0, lostTo: 0,
     });
+  }
+
+  // =======================================================================
+  // My Team — the money and the factory
+  // =======================================================================
+
+  get myTeam(): MyTeamState | null { return this.state.team; }
+
+  /** The player's own constructor, as the world holds it. */
+  myTeamRecord(): WorldTeam | null {
+    const t = this.state.team;
+    return t ? findTeam(this.state.world, t.teamId) ?? null : null;
+  }
+
+  /**
+   * Rebuilds the grid overlay from the world.
+   *
+   * CALLED AFTER EVERY MUTATION, AND IT HAS TO BE. `installWorld` converts each
+   * `WorldTeam` into a plain `Team` by calling `performanceOf` ONCE, and that
+   * `Team` is what `getTeam` hands to `CarEntry`. So an upgrade written into
+   * `world` and not re-installed is an upgrade the physics will never see —
+   * which is precisely the class of bug this whole design exists to eliminate,
+   * reintroduced one layer higher up. Every method below that changes a car, a
+   * colour or a name ends with this call.
+   */
+  private refreshGrid(): void {
+    installWorld(this.state.world);
+  }
+
+  /** The second driver at the player's team, whoever it currently is. */
+  teammate(): WorldDriver | null {
+    const t = this.state.team;
+    if (!t) return null;
+    const seats = this.state.world.tiers.F1.drivers.filter(
+      (d) => d.teamId === t.teamId && !d.reserve && !d.retired
+        && d.id !== this.state.playerDriverId);
+    const mate = seats[0] ?? null;
+    // The stored id is a convenience for screens; the world is the truth, and
+    // the transfer market can change it behind the player's back between
+    // seasons. Resyncing here means the two can never disagree.
+    if (mate) t.teammateDriverId = mate.id;
+    return mate;
+  }
+
+  /**
+   * Charges the season's fixed bill, up front.
+   *
+   * ANNUALLY AND IN ADVANCE, rather than accruing per round, because the cost
+   * cap is an annual limit and a player deciding whether they can afford a
+   * concept project in round two needs to know what the wage bill is going to
+   * be by round eleven. Accruing would let somebody commission everything early
+   * and discover in October that the staff they employ had been counting
+   * against the cap the whole time. This way the headroom on the screen is the
+   * real headroom.
+   */
+  beginTeamSeason(): void {
+    const t = this.state.team;
+    if (!t) return;
+    const factory = factoryAnnualCostUsd(t.departments);
+    const mate = this.teammate();
+    const engine = engineOffers(t.teamId, this.state.season.year, this.state.narrative.reputation)
+      .find((o) => o.unit.id === t.powerUnitId);
+
+    t.ledger.staffUsd = factory.staffUsd;
+    t.ledger.facilityUsd = factory.facilityUsd;
+    // The owner-driver takes no salary. The second car does.
+    t.ledger.salariesUsd = mate?.salaryUsd ?? 0;
+    t.ledger.engineUsd = engine?.costUsd ?? 0;
+
+    t.cashUsd -= t.ledger.staffUsd + t.ledger.facilityUsd
+      + t.ledger.salariesUsd + t.ledger.engineUsd;
+    this.refreshGrid();
+  }
+
+  /** Cap already committed this season, including the full-season factory bill. */
+  capCommittedUsd(): number {
+    const t = this.state.team;
+    return t ? capSpent(t.ledger) : 0;
+  }
+
+  /** How much of the cost cap is left to commit. Can be negative after a breach. */
+  capHeadroomUsd(): number {
+    return COST_CAP_USD - this.capCommittedUsd();
+  }
+
+  /**
+   * Whether a commitment is allowed, and what it would cost.
+   *
+   * Returns rather than throws, because every screen that can spend money has
+   * to be able to show the reason BEFORE the button is pressed. A cap breach is
+   * a decision the player is entitled to make deliberately, so `overCap` is
+   * reported rather than refused — the caller confirms it, naming the penalty.
+   */
+  canCommit(costUsd: number, opts: { underCap: boolean }): {
+    ok: boolean;
+    overCap: boolean;
+    reason: string;
+  } {
+    const t = this.state.team;
+    if (!t) return { ok: false, overCap: false, reason: 'Not a My Team career.' };
+    if (costUsd > t.cashUsd) {
+      return {
+        ok: false, overCap: false,
+        reason: `Costs $${fmtM(costUsd)}M and there is $${fmtM(t.cashUsd)}M in the bank.`,
+      };
+    }
+    if (opts.underCap && costUsd > this.capHeadroomUsd()) {
+      const over = costUsd - this.capHeadroomUsd();
+      return {
+        ok: true, overCap: true,
+        reason: `Takes you $${fmtM(over)}M past the cost cap. `
+          + breachPenaltyFor(this.capCommittedUsd() + costUsd).summary,
+      };
+    }
+    return { ok: true, overCap: false, reason: '' };
+  }
+
+  /** What a project would cost and deliver, before it is commissioned. */
+  quoteProject(department: DepartmentId, ambition: Ambition, efficiency = false): {
+    costUsd: number; rounds: number; gain: number; qcFailure: number;
+  } {
+    const t = this.state.team;
+    const spec = AMBITION[ambition];
+    const dept = t?.departments[department]
+      ?? { level: 1, staff: MIN_STAFF, morale: 50 };
+    return {
+      costUsd: projectCostUsd(spec, department, dept.morale, efficiency),
+      rounds: projectRounds(spec, dept),
+      gain: projectGain(spec, dept),
+      qcFailure: qcFailureChance(spec, dept),
+    };
+  }
+
+  /**
+   * Commissions an upgrade.
+   *
+   * The quality-control roll happens HERE, at commission time, and is hidden
+   * until delivery. That is deliberate and it is the difference between a
+   * mechanic and a slot machine: the outcome is decided by the state of the
+   * department on the day the work was ordered, so the player's earlier choices
+   * — what they said to the press, whether they went to the factory instead of
+   * a media day — are what determined it, rather than a coin flip four rounds
+   * later that nothing could have influenced.
+   */
+  startProject(department: DepartmentId, ambition: Ambition, efficiency = false): {
+    ok: boolean; reason: string; project?: UpgradeProject;
+  } {
+    const t = this.state.team;
+    if (!t) return { ok: false, reason: 'Not a My Team career.' };
+    if (t.developmentBanRounds > 0) {
+      return {
+        ok: false,
+        reason: `Development ban: ${t.developmentBanRounds} more `
+          + `${t.developmentBanRounds === 1 ? 'round' : 'rounds'}.`,
+      };
+    }
+    if (department !== 'aero' && efficiency) {
+      return { ok: false, reason: 'Only an aerodynamics project can target efficiency.' };
+    }
+    if (t.projects.some((p) => p.department === department)) {
+      return { ok: false, reason: `${department} is already working on something.` };
+    }
+
+    const quote = this.quoteProject(department, ambition, efficiency);
+    const check = this.canCommit(quote.costUsd, { underCap: true });
+    if (!check.ok) return { ok: false, reason: check.reason };
+
+    const dept = t.departments[department];
+    const project: UpgradeProject = {
+      id: `p${t.nextProjectId++}`,
+      department,
+      ambition,
+      efficiency,
+      costUsd: quote.costUsd,
+      roundsLeft: quote.rounds,
+      gain: quote.gain,
+      willFailQc: this.rng.chance(qcFailureChance(AMBITION[ambition], dept)),
+      startedRound: this.round,
+    };
+    t.projects.push(project);
+    t.cashUsd -= quote.costUsd;
+    t.ledger.developmentUsd += quote.costUsd;
+    return { ok: true, reason: '', project };
+  }
+
+  /**
+   * Cancels a project.
+   *
+   * HALF THE MONEY COMES BACK AND NONE OF THE CAP DOES. Cap space, once
+   * committed, is spent — that is how the real regulation works and it is what
+   * stops "start everything, cancel what you cannot afford" being a free option.
+   */
+  cancelProject(id: string): boolean {
+    const t = this.state.team;
+    if (!t) return false;
+    const i = t.projects.findIndex((p) => p.id === id);
+    if (i < 0) return false;
+    const [p] = t.projects.splice(i, 1);
+    t.cashUsd += Math.round(p.costUsd * 0.5);
+    return true;
+  }
+
+  /** Takes on or lets go staff, charged pro-rata for the rest of the season. */
+  changeStaff(department: DepartmentId, delta: number): { ok: boolean; reason: string } {
+    const t = this.state.team;
+    if (!t) return { ok: false, reason: 'Not a My Team career.' };
+    const dept = t.departments[department];
+    const target = clamp(dept.staff + delta, MIN_STAFF, MAX_STAFF);
+    const change = target - dept.staff;
+    if (change === 0) {
+      return {
+        ok: false,
+        reason: delta > 0 ? `Already at the ${MAX_STAFF} limit.` : `Already at the ${MIN_STAFF} minimum.`,
+      };
+    }
+
+    const rounds = this.calendar.length;
+    const remaining = Math.max(0, rounds - this.round) / Math.max(1, rounds);
+    const cost = Math.round(change * STAFF_WAGE_USD * remaining);
+
+    if (cost > 0) {
+      const check = this.canCommit(cost, { underCap: true });
+      if (!check.ok) return { ok: false, reason: check.reason };
+    }
+    dept.staff = target;
+    t.cashUsd -= cost;
+    t.ledger.staffUsd += cost;
+    // Losing people is felt. Hiring is not a morale event, because nobody has
+    // ever been cheered up by a colleague arriving.
+    if (change < 0) this.nudgeMorale(department, -6);
+    return { ok: true, reason: '' };
+  }
+
+  /** Builds the next level of a facility. Capital cost, under the cap. */
+  upgradeFacility(department: DepartmentId): { ok: boolean; reason: string } {
+    const t = this.state.team;
+    if (!t) return { ok: false, reason: 'Not a My Team career.' };
+    const dept = t.departments[department];
+    if (dept.level >= MAX_FACILITY_LEVEL) {
+      return { ok: false, reason: 'This facility is already at level ' + MAX_FACILITY_LEVEL + '.' };
+    }
+    const cost = facilityUpgradeCostUsd(dept.level);
+    const check = this.canCommit(cost, { underCap: true });
+    if (!check.ok) return { ok: false, reason: check.reason };
+
+    dept.level++;
+    t.cashUsd -= cost;
+    t.ledger.facilityUsd += cost;
+    // The upkeep of the new level, for the rest of this season.
+    const rounds = this.calendar.length;
+    const remaining = Math.max(0, rounds - this.round) / Math.max(1, rounds);
+    const extraUpkeep = Math.round(
+      (facilityUpkeepUsd(dept.level) - facilityUpkeepUsd(dept.level - 1)) * remaining);
+    t.cashUsd -= extraUpkeep;
+    t.ledger.facilityUsd += extraUpkeep;
+    // A department given a new building is a department that believes you.
+    this.nudgeMorale(department, 9);
+    return { ok: true, reason: '' };
+  }
+
+  /**
+   * Buys a faster pit crew.
+   *
+   * Straight to `TeamPerformance.pitCrewTimeS`, which `PitStop.ts` uses as the
+   * stationary time and `Strategy.ts` already prices when it decides how many
+   * stops to make. Six hundredths a step is not a rounding error over a season:
+   * it is the difference between a two-stop being worth it and not.
+   */
+  investInPitCrew(): { ok: boolean; reason: string } {
+    const t = this.state.team;
+    const team = this.myTeamRecord();
+    if (!t || !team) return { ok: false, reason: 'Not a My Team career.' };
+    const check = this.canCommit(PIT_CREW_STEP_USD, { underCap: true });
+    if (!check.ok) return { ok: false, reason: check.reason };
+    if (!investInPitCrew(team)) {
+      return { ok: false, reason: 'This crew is as quick as a crew gets.' };
+    }
+    t.cashUsd -= PIT_CREW_STEP_USD;
+    t.ledger.developmentUsd += PIT_CREW_STEP_USD;
+    this.refreshGrid();
+    return { ok: true, reason: '' };
+  }
+
+  /**
+   * Moves a department's morale, keeping the two copies of it in step.
+   *
+   * THERE ARE TWO COPIES AND ONLY ONE OF THEM IS AUTHORITATIVE. The department
+   * record is the truth, because it is what the cost and quality-control
+   * formulas read; `narrative.departmentMorale` is the mirror the narrative
+   * layer and the save's driver-career shape already had. Every write goes
+   * through here so they cannot drift — which they did, silently, for as long
+   * as the preparation slots were writing only to the mirror.
+   */
+  nudgeMorale(department: DepartmentId, by: number): void {
+    const t = this.state.team;
+    if (!t) {
+      const n = this.state.narrative.departmentMorale;
+      n[department] = clamp((n[department] ?? 50) + by, 0, 100);
+      return;
+    }
+    const dept = t.departments[department];
+    dept.morale = clamp(dept.morale + by, 0, 100);
+    this.state.narrative.departmentMorale[department] = dept.morale;
+  }
+
+  /** The whole factory at once. What a media day and a factory visit move. */
+  nudgeEveryDepartment(by: number): void {
+    if (this.state.team) {
+      for (const id of DEPARTMENT_IDS) this.nudgeMorale(id, by);
+      return;
+    }
+    const n = this.state.narrative.departmentMorale;
+    for (const k of Object.keys(n)) n[k] = clamp(n[k] + by, 0, 100);
+  }
+
+  /**
+   * Signs a power unit.
+   *
+   * The one management decision whose effect is visible in a speed trap. It
+   * multiplies `powerMult` and `ersMult` and adds to `failureRate` in
+   * `performanceOf`, so a career that switches from Audi to Ferrari gains about
+   * five per cent of combustion power and takes on about two per cent more
+   * chance of not finishing — and the player finds that out at Monza, not on
+   * this screen.
+   */
+  signPowerUnit(unitId: string, years = 3): { ok: boolean; reason: string } {
+    const t = this.state.team;
+    const team = this.myTeamRecord();
+    if (!t || !team) return { ok: false, reason: 'Not a My Team career.' };
+    if (unitId === t.powerUnitId) return { ok: false, reason: 'Already your supplier.' };
+
+    const offer = engineOffers(t.teamId, this.state.season.year, this.state.narrative.reputation)
+      .find((o) => o.unit.id === unitId);
+    if (!offer) return { ok: false, reason: 'No such manufacturer.' };
+    if (!offer.available) return { ok: false, reason: offer.reason };
+
+    // Breaking a deal that still has time to run costs a fee, outside the cap.
+    if (t.powerUnitYearsLeft > 0 && t.powerUnitId) {
+      const current = engineOffers(t.teamId, this.state.season.year, 100)
+        .find((o) => o.unit.id === t.powerUnitId);
+      if (current) {
+        const fee = Math.round(current.unit.costPerSeasonUsd * 0.45 * t.powerUnitYearsLeft);
+        if (fee > t.cashUsd) {
+          return {
+            ok: false,
+            reason: `Breaking the ${current.unit.shortName} deal costs $${fmtM(fee)}M `
+              + `and there is $${fmtM(t.cashUsd)}M in the bank.`,
+          };
+        }
+        t.cashUsd -= fee;
+        t.ledger.engineUsd += fee;
+      }
+    }
+
+    t.powerUnitId = unitId;
+    t.powerUnitYearsLeft = years;
+    team.powerUnitId = unitId;
+    this.refreshGrid();
+    return { ok: true, reason: '' };
+  }
+
+  /**
+   * Puts a new driver in the second car.
+   *
+   * The outgoing driver becomes a reserve rather than being deleted, so the
+   * transfer market can give them a seat again — the same rule the player's own
+   * arrival in Formula 3 follows, and the reason a career's world never quietly
+   * loses people.
+   */
+  signTeammate(driver: WorldDriver, years = 2): { ok: boolean; reason: string } {
+    const t = this.state.team;
+    if (!t) return { ok: false, reason: 'Not a My Team career.' };
+    // The first year of a salary is payable now; it sits outside the cap.
+    const check = this.canCommit(driver.salaryUsd, { underCap: false });
+    if (!check.ok) return { ok: false, reason: check.reason };
+
+    const f1 = this.state.world.tiers.F1;
+    const current = this.teammate();
+    if (current) current.reserve = true;
+
+    const taken = new Set(f1.drivers.filter((d) => !d.retired).map((d) => d.raceNumber));
+    taken.delete(driver.raceNumber);
+    const existing = findDriver(this.state.world, driver.id);
+    if (existing) {
+      transfer(this.state.world, driver.id, t.teamId, 'F1');
+      existing.contractYears = years;
+    } else {
+      f1.drivers.push({
+        ...driver,
+        tier: 'F1',
+        teamId: t.teamId,
+        reserve: false,
+        contractYears: years,
+        raceNumber: taken.has(driver.raceNumber)
+          ? (availableNumbers(taken)[0] ?? driver.raceNumber)
+          : driver.raceNumber,
+      });
+    }
+
+    t.cashUsd -= driver.salaryUsd;
+    t.ledger.salariesUsd += driver.salaryUsd;
+    t.teammateDriverId = driver.id;
+
+    // A driver signed mid-season joins a championship already in progress, so
+    // they need a standings entry or their points have nowhere to go.
+    const ts = this.state.season.tiers.F1;
+    if (!ts.standings.some((e) => e.driverId === driver.id)) {
+      ts.standings.push({
+        driverId: driver.id, teamId: t.teamId, points: 0, wins: 0, podiums: 0,
+        poles: 0, fastestLaps: 0, dnfs: 0, bestFinish: 99,
+      });
+    }
+    this.refreshGrid();
+    return { ok: true, reason: '' };
+  }
+
+  /** Repaints the car. Reaches `team.colour`, which is what `CarMesh` paints. */
+  applyLivery(design: {
+    colour: number; accent: number; trim: number;
+    family: string; finish: 'gloss' | 'satin' | 'matte'; mark: number;
+  }): void {
+    const t = this.state.team;
+    const team = this.myTeamRecord();
+    if (!t || !team) return;
+    t.colour = design.colour;
+    t.accent = design.accent;
+    t.trim = design.trim;
+    t.liveryFamily = design.family;
+    t.liveryFinish = design.finish;
+    t.liveryMark = design.mark;
+    team.colour = design.colour;
+    team.accent = design.accent;
+    this.refreshGrid();
+  }
+
+  /** Renames the team. The timing tower, the pit board and the grid all follow. */
+  renameTeam(name: string, shortName: string, code: string): void {
+    const t = this.state.team;
+    const team = this.myTeamRecord();
+    if (!t || !team) return;
+    t.name = name; t.shortName = shortName; t.code = code;
+    team.name = name; team.shortName = shortName; team.code = code;
+    this.refreshGrid();
+  }
+
+  /**
+   * One round of the factory: income in, projects on, deliveries out.
+   *
+   * Called from `recordPlayerRound`, so a season the player simulates and a
+   * season they drive advance the factory identically. A project that only
+   * progressed on driven weekends would make skipping a race a development
+   * penalty, which nothing in the design says it should be.
+   */
+  private advanceFactory(): ProjectDelivery[] {
+    const t = this.state.team;
+    if (!t) return [];
+
+    t.cashUsd += commercialIncomePerRound(this.state.narrative.fanRating, this.calendar.length);
+    t.ledger.commercialUsd += commercialIncomePerRound(
+      this.state.narrative.fanRating, this.calendar.length);
+
+    if (t.developmentBanRounds > 0) t.developmentBanRounds--;
+
+    const team = this.myTeamRecord();
+    const delivered: ProjectDelivery[] = [];
+    const still: UpgradeProject[] = [];
+    for (const p of t.projects) {
+      p.roundsLeft--;
+      if (p.roundsLeft > 0) { still.push(p); continue; }
+      if (p.willFailQc || !team) {
+        delivered.push({ project: p, passed: false });
+        // A part that failed is a department that knows it failed.
+        this.nudgeMorale(p.department, -5);
+      } else {
+        applyUpgrade(team, p);
+        delivered.push({ project: p, passed: true });
+        this.nudgeMorale(p.department, 4);
+      }
+    }
+    t.projects = still;
+    if (delivered.length > 0) this.refreshGrid();
+    return delivered;
+  }
+
+  /**
+   * Closes the team's financial season: prize money, then the cap audit.
+   *
+   * IN THAT ORDER, AND THE ORDER MATTERS. The audit deducts constructors'
+   * points, and the constructors' table is what decides prize money — so the
+   * prize is paid on the position the team earned on track and the penalty is
+   * applied to the championship afterwards, which is how the real thing works
+   * and is a good deal more painful than losing the money as well.
+   */
+  private settleTeamSeason(): TeamSeasonReport | null {
+    const t = this.state.team;
+    if (!t) return null;
+
+    const ts = this.state.season.tiers.F1;
+    const table = Object.entries(ts.constructorPoints).sort((a, b) => b[1] - a[1]);
+    const position = Math.max(1, table.findIndex(([id]) => id === t.teamId) + 1);
+    const prize = prizeMoneyFor(position);
+    t.cashUsd += prize;
+    t.ledger.prizeUsd = prize;
+
+    const spent = capSpent(t.ledger);
+    const penalty = breachPenaltyFor(spent);
+    if (penalty.severity !== 'none') {
+      ts.constructorPoints[t.teamId] = Math.max(
+        0, (ts.constructorPoints[t.teamId] ?? 0) - penalty.pointsDeducted);
+      t.cashUsd -= penalty.fineUsd;
+      t.developmentBanRounds = penalty.developmentBanRounds;
+      t.pointsDeducted = penalty.pointsDeducted;
+      // Being caught is felt across the whole factory.
+      for (const id of DEPARTMENT_IDS) this.nudgeMorale(id, -8);
+    } else {
+      t.pointsDeducted = 0;
+    }
+
+    return {
+      constructorPosition: position,
+      prizeUsd: prize,
+      capSpentUsd: spent,
+      penalty,
+      closingCashUsd: t.cashUsd,
+    };
+  }
+
+  /** Fresh ledger, fresh cap, and the new season's bill charged up front. */
+  private rollTeamIntoNextSeason(): void {
+    const t = this.state.team;
+    if (!t) return;
+    t.ledger = emptyLedger();
+    // Projects do not survive a regulation change. Anything unfinished at the
+    // end of a season is written off, which is why a concept started in round
+    // ten is a bad idea and why the screen says how many rounds are left.
+    t.projects = [];
+    if (t.powerUnitYearsLeft > 0) t.powerUnitYearsLeft--;
+    this.beginTeamSeason();
   }
 
   // =======================================================================

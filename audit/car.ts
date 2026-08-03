@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { buildCar, type CarVisual } from '../src/render/CarMesh';
+import { disposeCarGeometryCache } from '../src/render/CarMesh';
+import { registerLiveryDesign, clearLiveryDesigns } from '../src/render/Livery';
+import { coerceDesign, type LiveryDesign } from '../src/render/LiveryDesign';
 import { EnvProbe, type Ambience } from '../src/render/EnvProbe';
 
 /**
@@ -40,6 +43,15 @@ interface BuildOpts {
   ambience?: Ambience;
   colour?: number;
   accent?: number;
+  /**
+   * Pattern family, trim colour and finish.
+   *
+   * Registered against the colour pair rather than passed to `buildCar`,
+   * because that is exactly how the game does it — `CarMesh` knows a team as
+   * two colours and looks the design up. A harness that took a different route
+   * to the painter would not be photographing the real thing.
+   */
+  design?: Partial<LiveryDesign>;
   compound?: 'soft' | 'medium' | 'hard' | 'intermediate' | 'wet';
   /** Steering angle in radians, applied to the front steer groups. */
   steer?: number;
@@ -210,7 +222,15 @@ async function build(opts: BuildOpts): Promise<Stats> {
   }
   const quality = opts.quality ?? 'high';
   applyAmbience(opts.ambience ?? 'day');
-  car = buildCar(opts.colour ?? 0x1d4ed8, opts.accent ?? 0xf5c518, {
+  const colour = opts.colour ?? 0x1d4ed8;
+  const accent = opts.accent ?? 0xf5c518;
+  // A design is a repaint, and the material cache in `CarMesh` is keyed on the
+  // colour pair alone — so the cache has to be dropped or the second family
+  // photographed would be served the first one's texture.
+  clearLiveryDesigns();
+  disposeCarGeometryCache();
+  if (opts.design) registerLiveryDesign(colour, accent, coerceDesign(opts.design));
+  car = buildCar(colour, accent, {
     quality,
     number: 16,
     code: 'AUD',
