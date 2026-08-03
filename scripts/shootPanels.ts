@@ -151,6 +151,10 @@ async function main(): Promise<void> {
       if (scene === 'radio' || scene === 'radio-ask') {
         const r = await page.evaluate(() => window.__panels.radioReport()) as {
           shown: boolean; ratio: number; asking: boolean; turns: number; box: number[];
+          // The rail height the card had to fit in. "Not on screen" has two causes
+          // -- never raised, or measured by `fitRail` and thrown out -- and the
+          // band is what tells them apart, so the assertion below reads it.
+          band: number;
         };
         // A landscape phone under a safety car has a 94-pixel band with two
         // live cues in it, and no card fits in what is left. That is a measured

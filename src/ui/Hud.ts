@@ -2713,15 +2713,23 @@ export interface PaneRect {
 export const MIRROR_PANES: Readonly<Record<MirrorView, readonly PaneRect[]>> = {
   // The driver's own eye: the panes are nearest and largest here, a fifth of
   // the frame across, and both reach the frame edge under head turn.
+  // Widened once more for banking. `carGroundY` used to ignore it, so the car
+  // -- and every camera riding it -- sat at the centreline's height while the
+  // asphalt beneath was banked. Correcting that moved the eye, and with it the
+  // panes: COTA escaped this table by 2.8 points outboard in the driver's eye
+  // and 3.7 in the cockpit. Measured again with the correction in, and widened
+  // to enclose it rather than trimmed to admit it -- the rectangle is only
+  // worth anything while it is allowed to be wrong, and this is the second time
+  // it has been.
   driver: [
-    { x0: 0, y0: 69.5, x1: 23.0, y1: 90.5 },
+    { x0: 0, y0: 69.5, x1: 27.0, y1: 90.5 },
     { x0: 69.0, y0: 68.5, x1: 100, y1: 93.0 },
   ],
   // The roll-hoop pod, 0.2m behind and above the eye: the panes pull inboard
   // and drop down the frame.
   cockpit: [
-    { x0: 2.0, y0: 77.5, x1: 33.0, y1: 94.0 },
-    { x0: 60.0, y0: 76.5, x1: 88.5, y1: 95.0 },
+    { x0: 2.0, y0: 77.5, x1: 37.0, y1: 94.0 },
+    { x0: 60.0, y0: 76.5, x1: 93.5, y1: 95.0 },
   ],
   // The T-cam, 0.8m further back again. Small, low and close to the centre.
   'onboard-t': [
