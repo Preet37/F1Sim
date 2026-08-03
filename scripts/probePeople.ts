@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   COMPLEXIONS, HAIR_PIGMENTS, HAIR_STYLES, FACIAL_HAIR, EYEWEAR, HEADWEAR,
   coerceLook, lookFor, lookFromSeed, lookDistance,
@@ -287,6 +289,62 @@ for (const r of ROLES) {
   ok(p.role.length > 0, `role ${r} produces a title`, p.role);
   const g = headGeometry(p.look);
   ok(!skullPath(g).includes('NaN'), `role ${r} produces a drawable head`);
+}
+
+section('The cast is WIRED IN, not merely present');
+
+/**
+ * The trap this project keeps falling into, asserted.
+ *
+ * PROJECT.md §6: the intro sequence and the podium were both built and the user
+ * has never seen either, because nothing routes to them. Four thousand lines of
+ * people that only `audit/people.ts` imports is the same failure, and every
+ * check above it passes happily in that state — `principalFor` returns eleven
+ * distinct principals whether or not a screen ever calls it.
+ *
+ * So this section does not ask what the cast CAN do. It asks what the running
+ * game actually draws, by reading the source of the screens. It is deliberately
+ * a text check: the thing being guarded against is somebody quietly changing an
+ * import back, and an import is text.
+ */
+const SRC = join(process.cwd(), 'src');
+
+function sourcesUnder(dir: string, out: string[] = []): string[] {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) sourcesUnder(p, out);
+    else if (e.name.endsWith('.ts')) out.push(p);
+  }
+  return out;
+}
+
+const ALL_SRC = sourcesUnder(SRC);
+
+// 1. The screen the player actually reaches before every race.
+const strat = readFileSync(join(SRC, 'ui', 'StrategyScreen.ts'), 'utf8');
+ok(/principalDiscSvg\s*\(/.test(strat),
+  'the strategy screen draws a PERSON, not the fixed pictogram',
+  'StrategyScreen.ts does not call principalDiscSvg');
+ok(/principalNameOf\s*\(/.test(strat),
+  'the strategy screen names the principal from the cast');
+
+// 2. `Hud.principalSvg` is the one-silhouette drawer that caused the complaint.
+//    It takes only a colour, so it CANNOT draw a specific person — any call to
+//    it anywhere is the bug, by construction.
+for (const f of ALL_SRC) {
+  if (f.includes('/ui/people/')) continue;             // the comments explaining it
+  if (f.endsWith('/ui/Hud.ts')) continue;              // its own declaration
+  const s = readFileSync(f, 'utf8');
+  ok(!/[^a-zA-Z]principalSvg\s*\(/.test(s),
+    `${f.slice(SRC.length + 1)} does not draw the one-silhouette principal`);
+}
+
+// 3. The fallback string itself. It only ever existed as a `??` default in
+//    `Hud.ts`; if it reappears as one, the bug has been reintroduced wholesale.
+for (const f of ALL_SRC) {
+  const s = readFileSync(f, 'utf8');
+  ok(!/\?\?\s*'Pit wall'/.test(s) && !/\?\?\s*"Pit wall"/.test(s),
+    `${f.slice(SRC.length + 1)} has no "Pit wall" fallback`);
 }
 
 // ===========================================================================

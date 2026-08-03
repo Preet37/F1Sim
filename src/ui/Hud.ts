@@ -3426,29 +3426,23 @@ export function fastestLap(
 /**
  * Who speaks for each team.
  *
- * Invented people for invented teams — the same rule the grid itself follows,
- * and the reason there is not a real name, badge or trademark anywhere in this
- * file. From where the driver sits this is a cast of one: you only ever hear
- * your own team principal, and their job is to tell you things you would
- * rather not hear.
+ * THIS USED TO BE A TABLE HERE, AND THE TABLE WAS ISSUE #18. It was keyed on
+ * the ids of the ten INVENTED teams the game shipped with — `apex`,
+ * `scuderia-rosso`, `meridian`. Career mode then replaces the grid with the real
+ * 2026 roster, whose ids are `mclaren`, `ferrari`, `red-bull`, so every lookup a
+ * career player could ever make missed, fell through to the default, and named
+ * their principal the literal string **"Pit wall"** — behind the one shared
+ * silhouette `principalSvg` draws. Two teams, ten teams, forty-two teams: the
+ * same person every time. The player was not imagining it.
+ *
+ * The cast now lives in `people/Cast.ts`, which holds a principal for every team
+ * in every tier INCLUDING those same ten legacy ids (Marco Vidal and the rest
+ * are still there, unchanged, so an old save does not lose its principal), and
+ * which never returns a shared fallback — an id it has never seen still produces
+ * a specific named person off the generator. There is no "Pit wall" string left
+ * in the codebase to fall through to.
  */
-const PRINCIPALS: Readonly<Record<string, string>> = {
-  apex: 'Marco Vidal',
-  'scuderia-rosso': 'Elena Brambilla',
-  meridian: 'Tom Ashcroft',
-  albion: 'Rhys Gallagher',
-  aurora: 'Ingrid Sandell',
-  vantage: 'Cato Brenner',
-  northstar: 'Dana Whitlock',
-  lumen: 'Sofia Reyes',
-  kestrel: 'Anders Vike',
-  brava: 'Nino Carbone',
-};
-
-/** The team principal's name, for the notification's byline. */
-export function principalOf(teamId: string): string {
-  return PRINCIPALS[teamId] ?? 'Pit wall';
-}
+export { principalNameOf as principalOf } from './people/Cast';
 
 /**
  * What the big lap clock says.

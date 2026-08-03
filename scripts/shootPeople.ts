@@ -72,8 +72,12 @@ async function main(): Promise<void> {
   await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
   await page.waitForFunction('!!window.__people', { timeout: 60_000 });
 
+  // `roles` was in this list and has never existed in `audit/people.ts`, so
+  // every run printed `(no scene "roles")` and moved on. Kept honest: this list
+  // must name scenes that are actually there, or the harness reports a gap it
+  // invented.
   const SCENES = (process.env.SHOOT_PEOPLE
-    ?? 'sheet,principals,roles,presser,podium,garage').split(',');
+    ?? 'sheet,principals,presser,podium,garage').split(',');
 
   for (const scene of SCENES) {
     for (const vp of VIEWPORTS) {
