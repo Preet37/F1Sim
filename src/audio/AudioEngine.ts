@@ -297,8 +297,12 @@ export class AudioEngine {
     this.radioBus.gain.value = 1;
     this.radioBus.connect(this.master);
 
-    // The link is built on the first transmission rather than here, so a player
-    // who never turns the radio on never pays for the twelve nodes it needs.
+    // The link's twelve nodes are built here, once, rather than per
+    // transmission. They are silent when nobody is talking — the bed is gated
+    // to zero — so the cost is six biquads and a looping buffer read per render
+    // quantum, against twenty engine voices already running. Building them per
+    // message would trade that for an allocation in the middle of a race, which
+    // is the more expensive of the two mistakes.
     this.radio.attach(ctx, this.radioBus, (depth, tau) => {
       this.ramp(this.duck.gain, 1 - clamp01(depth), tau);
     });

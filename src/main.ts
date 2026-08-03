@@ -40,6 +40,7 @@ import { IntroSequence, openingBeats } from './ui/IntroSequence';
 import { driverCard } from './ui/DriverPortrait';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
+import { TeamRadio } from './audio/TeamRadio';
 import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
 import { circuitSvg, circuitLoadingArt } from './ui/CircuitArt';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
@@ -256,6 +257,7 @@ class Game {
       void this.audio.start().then(() => {
         this.audio.setVolume(this.settings.masterVolume);
         this.audio.setEnabled(this.settings.masterVolume > 0);
+        this.audio.radio.setEnabled(this.settings.teamRadioVoice);
       });
       window.removeEventListener('pointerdown', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
@@ -1741,6 +1743,26 @@ class Game {
         this.audio.setVolume(value);
         this.audio.setEnabled(value > 0);
         if (value > 0) this.audio.playUiClick();
+        this.saves.saveSettings(this.settings);
+        this.showSettings(back);
+      });
+    }
+
+    // Off by default and its own row rather than a step on the volume control,
+    // because it is a different KIND of sound: everything else in the mix is
+    // synthesised from the simulation, and this is the operating system's own
+    // voice, which cannot be processed on the way past. See `RadioChain`.
+    if (TeamRadio.supported) {
+      this.el('div', 'section-title', body, 'Team radio');
+      const rg = this.el('div', 'card-grid', body);
+      const c = this.el('div', 'card' + (this.settings.teamRadioVoice ? ' selected' : ''), rg);
+      this.el('div', 'card-state', c, this.settings.teamRadioVoice ? 'On' : 'Off');
+      this.el('div', 'card-name', c, 'Spoken radio');
+      this.el('div', 'card-meta', c, 'Reads the pit wall aloud, using your device voice');
+      c.addEventListener('click', () => {
+        this.settings.teamRadioVoice = !this.settings.teamRadioVoice;
+        this.audio.radio.setEnabled(this.settings.teamRadioVoice);
+        if (this.settings.masterVolume > 0) this.audio.playUiClick();
         this.saves.saveSettings(this.settings);
         this.showSettings(back);
       });

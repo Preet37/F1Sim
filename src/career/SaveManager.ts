@@ -92,6 +92,22 @@ export interface GameSettings {
    * finishes — see `Main.playIntro`.
    */
   introSeen: boolean;
+  /**
+   * Speak the team radio out loud, using the browser's speech synthesiser.
+   *
+   * OFF BY DEFAULT, and that is a judgement rather than caution. Every other
+   * sound in this game is synthesised from the simulation and can be made as
+   * good as the effort put into it; this one is whatever voice the player's
+   * operating system happens to ship, and it cannot be processed — synthesised
+   * speech cannot be routed into WebAudio on any current browser, so the band
+   * limiting, the saturation and the limiter shape the squelch and the noise
+   * bed around the voice but never the voice itself. See `src/audio/RadioChain`.
+   *
+   * The result is good on macOS and Windows, where the system voices are
+   * decent, and merely acceptable on a phone. A bad voice is worse than no
+   * voice, so it is offered rather than imposed.
+   */
+  teamRadioVoice: boolean;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -105,6 +121,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   racingLine: true,
   aiDifficulty: DEFAULT_AI_DIFFICULTY,
   introSeen: false,
+  teamRadioVoice: false,
   // Copied rather than shared: DEFAULT_SETTINGS is spread into a live settings
   // object, and a shared `profiles` map would let one career's controller
   // configuration leak into the defaults every other one starts from.
