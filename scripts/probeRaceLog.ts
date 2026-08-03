@@ -146,6 +146,17 @@ interface RaceLog {
   penaltiesBySource: Map<PenaltySource, number>;
   /** How many separate cars carry at least one penalty badge at the flag. */
   carsWithPenalty: number;
+  /**
+   * Sanctionable track-limit excursions, over the whole field.
+   *
+   * The input to most of the penalty count, and the quantity nothing measured.
+   * `validate:limits` asserts WHERE the boundary is and that the rule fires at
+   * it; how often twenty cars actually cross it in a race is a different
+   * question and it is the one that decides what the tower looks like.
+   */
+  strikes: number;
+  /** Laps completed by the whole field, for a per-car-lap rate. */
+  carLaps: number;
   /** The player's car. */
   playerRetired: string;
   playerContacts: number;
@@ -238,7 +249,11 @@ function runRace(
   const penaltiesBySource = new Map<PenaltySource, number>();
   let penalties = 0;
   let carsWithPenalty = 0;
+  let strikes = 0;
+  let carLaps = 0;
   for (const car of engine.cars) {
+    strikes += car.trackLimitStrikes;
+    carLaps += car.lap;
     // A warning is not a penalty and does not put a badge on the tower.
     const real = car.penalties.filter((p) => p.kind !== 'track-limits-warning');
     penalties += real.length;
@@ -259,6 +274,8 @@ function runRace(
     penalties,
     penaltiesBySource,
     carsWithPenalty,
+    strikes,
+    carLaps,
     playerRetired: player.retired ? player.retirementReason : '',
     playerContacts,
     playerPenalties: player.penalties.filter((p) => p.kind !== 'track-limits-warning').length,
@@ -301,6 +318,7 @@ interface Agg {
   retired: number; retiredLap1: number;
   contacts: number; contactsLap1: number;
   penalties: number; carsWithPenalty: number;
+  strikes: number; carLaps: number;
   playerOut: number; playerContacts: number; playerPenalties: number;
   bySource: Map<PenaltySource, number>;
   byReason: Map<string, number>;
@@ -310,7 +328,8 @@ interface Agg {
 function emptyAgg(): Agg {
   return {
     races: 0, laps: 0, retired: 0, retiredLap1: 0, contacts: 0, contactsLap1: 0,
-    penalties: 0, carsWithPenalty: 0, playerOut: 0, playerContacts: 0, playerPenalties: 0,
+    penalties: 0, carsWithPenalty: 0, strikes: 0, carLaps: 0,
+    playerOut: 0, playerContacts: 0, playerPenalties: 0,
     bySource: new Map(), byReason: new Map(), worstRetired: 0, worstPenalisedCars: 0,
   };
 }
@@ -335,6 +354,8 @@ for (const distance of DISTANCES) {
       agg.contactsLap1 += log.contactsLap1;
       agg.penalties += log.penalties;
       agg.carsWithPenalty += log.carsWithPenalty;
+      agg.strikes += log.strikes;
+      agg.carLaps += log.carLaps;
       if (log.playerRetired) agg.playerOut++;
       agg.playerContacts += log.playerContacts;
       agg.playerPenalties += log.playerPenalties;
@@ -349,6 +370,7 @@ for (const distance of DISTANCES) {
         `${(log.retired + ' out').padStart(8)}` +
         `${(log.contacts + ' contacts').padStart(14)}` +
         `${(log.carsWithPenalty + '/20 penalised').padStart(17)}` +
+        `${(log.strikes + ' off-track').padStart(14)}` +
         `   player P${log.playerPosition}` +
         (log.playerRetired ? ' OUT (' + log.playerRetired + ')' : '') +
         `, ${log.playerContacts} contact${log.playerContacts === 1 ? '' : 's'}` +
@@ -394,6 +416,14 @@ for (const [distance, a] of perDistance) {
   }
   console.log(`  ${distance.toUpperCase()} — contacts on the opening lap: ` +
     `${(a.contactsLap1 / a.races).toFixed(2)} of ${(a.contacts / a.races).toFixed(2)} a race`);
+  // The input to the penalty column. A real Grand Prix produces a handful of
+  // sanctionable excursions across twenty cars over a whole race — well under
+  // 0.02 a car-lap — and the number above about a tenth of that is what turns
+  // the ladder in `onTrackLimitInfraction` into a stream of five-second
+  // penalties, because every excursion past the fourth is another one.
+  console.log(`  ${distance.toUpperCase()} — sanctionable excursions: ` +
+    `${(a.strikes / a.races).toFixed(1)} a race = ` +
+    `${(a.strikes / Math.max(1, a.carLaps)).toFixed(3)} a car-lap`);
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +448,19 @@ for (const [distance, a] of perDistance) {
 const MAX_RETIRED_PER_RACE = 3.0;
 const MAX_PENALISED_CARS_PER_RACE = 4.0;
 const MAX_CONTACTS_PER_RACE = 12.0;
+/**
+ * Sanctionable track-limit excursions per car-lap.
+ *
+ * The real figure is tiny. Austria 2023 is the outlier every commentator still
+ * cites — 1,200 reported excursions over 71 laps and 20 cars, of which about
+ * 80 were sanctionable after review, which is 0.06 a car-lap on the worst day
+ * the rule has ever had. An ordinary Grand Prix is an order of magnitude below
+ * that. The bound here is set at Austria's, because a field that is off the
+ * road more often than the worst race in the rule's history is producing the
+ * penalty column the player was complaining about, and no amount of tuning the
+ * penalty ladder fixes a car that cannot stay on the circuit.
+ */
+const MAX_STRIKES_PER_CAR_LAP = 0.06;
 
 for (const [distance, a] of perDistance) {
   const retired = a.retired / a.races;
@@ -430,17 +473,25 @@ for (const [distance, a] of perDistance) {
     `"it seems like every driver there had a penalty"`);
   check(contacts <= MAX_CONTACTS_PER_RACE,
     `${distance}: ${contacts.toFixed(2)} car-to-car contacts a race — the field is fighting itself`);
+  const strikeRate = a.strikes / Math.max(1, a.carLaps);
+  check(strikeRate <= MAX_STRIKES_PER_CAR_LAP,
+    `${distance}: ${strikeRate.toFixed(3)} sanctionable excursions a car-lap ` +
+    `(${(a.strikes / a.races).toFixed(1)} a race) — the field cannot stay on the road`);
 }
 
 // A field that never touches anybody is the other failure, and it is just as
 // wrong: "i can understand how occasionally things happen". Asserted across the
-// whole sweep rather than per distance, because zero contacts in one short race
-// is an ordinary race.
+// whole sweep, and only once the sweep is long enough for the claim to mean
+// something — zero contacts in one short race is an ordinary race, and a floor
+// that fires on that is a floor nobody will keep.
 {
   let anyContacts = 0;
-  for (const a of perDistance.values()) anyContacts += a.contacts;
-  check(anyContacts > 0,
-    'not one car touched another in the entire sweep — the field has stopped racing');
+  let races = 0;
+  for (const a of perDistance.values()) { anyContacts += a.contacts; races += a.races; }
+  if (races >= 4) {
+    check(anyContacts > 0,
+      `not one car touched another in ${races} races — the field has stopped racing`);
+  }
 }
 
 clearGrid();

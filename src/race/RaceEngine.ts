@@ -3294,12 +3294,49 @@ export class RaceEngine {
   // Reliability
   // =========================================================================
 
+  /**
+   * The chance that this car's machinery lets go, this step.
+   *
+   * `TeamPerformance.failureRate` is documented as a probability PER RACE
+   * DISTANCE — 0.03 for the best-prepared car on the grid to 0.085 for the
+   * worst — and the job here is to spread it over the running. It used to be
+   * spread over TIME:
+   *
+   *     raceSeconds = laps * referenceLapTime
+   *     perSecond   = failureRate / raceSeconds
+   *
+   * and both halves of that were wrong in the same direction, which is why the
+   * field was losing two cars a race to mechanicals when a Grand Prix loses
+   * about one.
+   *
+   * TIME IS THE WRONG DENOMINATOR. `referenceLapTime` is the theoretical lap
+   * from the solved speed profile — a perfect lap, in a Formula 1 car, with no
+   * traffic and no fuel. Nothing ever laps that quickly, so a race always ran
+   * longer than the `raceSeconds` its hazard had been normalised against and
+   * always produced more failures than `failureRate` promised. A junior car is
+   * a fifth slower than the reference and was therefore a fifth more likely to
+   * break, having done exactly the same mileage; and a race neutralised twice
+   * spent a quarter of an hour at safety-car pace manufacturing failures out of
+   * wall-clock, which is the opposite of how a gearbox wears. Distance is the
+   * denominator the quantity actually has.
+   *
+   * AND THE DISTANCE IS THE GRAND PRIX'S, not this session's. `config.laps`
+   * meant a 14-lap quarter-distance race carried a full Grand Prix's worth of
+   * reliability risk, packed into a quarter of the running — which is precisely
+   * the "way too many accidents" the short-race player was looking at, arriving
+   * four times as often per race as the sport's own figure. Choose 25% distance
+   * and you take 25% of the risk, which is both what a player means by a
+   * quarter-distance race and what the number in the roster claims.
+   */
   private checkReliability(car: CarEntry, dt: number): void {
     if (this.config.kind !== 'race') return;
-    // Failure rate is per race distance, converted to a per-second hazard.
-    const raceSeconds = (this.config.laps || this.track.def.raceLaps) * this.track.referenceLapTime;
-    const perSecond = car.team.performance.failureRate / Math.max(raceSeconds, 1);
-    if (this.rng.next() < perSecond * dt) {
+    const gpMetres = this.track.def.raceLaps * this.track.length;
+    const perMetre = car.team.performance.failureRate / Math.max(gpMetres, 1);
+    // Mileage covered this step. A car stationary in its box is not wearing
+    // anything out, and one circulating behind a safety car is wearing it out
+    // at the rate it is actually travelling.
+    const metres = car.physics.speedMs * dt;
+    if (this.rng.next() < perMetre * metres) {
       const causes = ['Power unit failure', 'Gearbox failure', 'Hydraulics', 'Overheating', 'Loss of drive'];
       const cause = this.rng.pick(causes);
       car.retire(cause, this.time);
