@@ -1950,6 +1950,12 @@ export class Hud {
     const w = Math.min(maxW, h * (maxW / maxH));
     this.radioCard.style.setProperty('--radio-h', h.toFixed(1) + 'px');
     this.radioCard.style.setProperty('--radio-w', w.toFixed(1) + 'px');
+    // The header's type follows the plate — see `.radio-head` in styles.css.
+    // At 129 of a wanted 176 the driver's surname at full size no longer fits
+    // the narrower card and wraps mid-word, which reads as a broken graphic
+    // rather than as a small one. The TURNS are deliberately not scaled: the
+    // complaint was that the words were hard to read.
+    this.radioCard.style.setProperty('--radio-scale', (h / maxH).toFixed(3));
   }
 
   /** How far the rail's contents overrun its band, pixels. */
