@@ -66,6 +66,9 @@
 
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import type { CarEntry } from '../src/race/CarEntry';
+import {
+  CATCHUP_HEADROOM, DELTA_REFERENCE_MARGIN, MEASURED_CONTROLLER_OVERSHOOT,
+} from '../src/race/RaceControlManager';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { loopDelta } from '../src/core/MathUtils';
 import { PHYSICS_DT } from '../src/core/SimClock';
@@ -120,6 +123,17 @@ const PASS_PROXIMITY_M = 15;
 /** Seconds after a flag changes during which a pass counts as transitional. */
 const TRANSITION_S = 8;
 
+/**
+ * The most delta penalties one race may hand out.
+ *
+ * Deliberately absolute rather than a rate. A race with three neutralisations in
+ * it and twenty cars can legitimately produce a handful; it cannot legitimately
+ * produce dozens, and any implementation that starts scaling with the count of
+ * marshalling sectors — there are twenty of those per lap — sails past this
+ * immediately, which is exactly what happened.
+ */
+const MAX_DELTA_PENALTIES = 12;
+
 interface Cell { sum: number; n: number; }
 
 class Measurement {
@@ -151,6 +165,14 @@ class Measurement {
   }
 
   readonly scFormUpGaps: number[] = [];
+  /**
+   * How far the leader was from the Line when the green came out, metres.
+   *
+   * Kept separately per regime because the regulations put them in different
+   * places — see the note where they are recorded.
+   */
+  readonly scGreenToLineM: number[] = [];
+  readonly vscGreenToLineM: number[] = [];
   /** Largest lead-lap queue seen while forming up. */
   queueSize = 0;
   readonly phaseSeconds = new Map<string, number>();
@@ -390,7 +412,29 @@ function runScenario(
     }
 
     const nowRegime = rc.neutralisation !== 'none' ? rc.neutralisation : 'green';
-    if (nowRegime !== regime) { regime = nowRegime; regimeStartedAt = engine.time; }
+    if (nowRegime !== regime) {
+      // WHERE THE GREEN CAME OUT. A VSC may end anywhere on the lap: "at any
+      // time between 10 and 15 seconds later, 'VSC' on the FIA light panels will
+      // change to green and drivers may continue racing immediately" (Art. 56.7
+      // / B5.12.4). A safety car period may not — it ends at the Line, and the
+      // regulation names the place: "as the leader approaches the Line the
+      // yellow flags will be withdrawn and a green flag and/or green light panel
+      // will be displayed at the Line" (Art. 55.15 / B5.13.6).
+      //
+      // The distinction is the player's report, and until it was fixed the game
+      // had the two the same: "the vsc ending can happen whenever but safety car
+      // ends at the end of the lap". So this records the leader's distance along
+      // the lap at the instant of every green, and the two regimes are asserted
+      // separately below.
+      const leaderNow = engine.standings[0];
+      if (nowRegime === 'green' && leaderNow) {
+        const toLine = engine.track.length - leaderNow.s;
+        if (regime === 'sc-ending' || regime === 'safety-car') m.scGreenToLineM.push(toLine);
+        else if (regime === 'vsc') m.vscGreenToLineM.push(toLine);
+      }
+      regime = nowRegime;
+      regimeStartedAt = engine.time;
+    }
     for (let i = 0; i < sectorSince.length; i++) {
       const sig = rc.signalForSector(i);
       if (sig !== sectorSignal[i]) { sectorSignal[i] = sig; sectorSince[i] = engine.time; }
@@ -657,6 +701,44 @@ function reportLapRatio(m: Measurement, bucket: Bucket, label: string): number |
 // ===========================================================================
 // 1. Yellow flags, in qualifying — where no neutralisation can mask the lift
 // ===========================================================================
+// ===========================================================================
+// 0. The two constants that must not cross.
+//
+// A car closing on the safety car queue is told to run at `SC_CATCHUP_MULT`
+// times the queue pace, and a car that crosses a marshalling sector faster than
+// `DELTA_REFERENCE_MARGIN` times it is penalised. If the first is not provably
+// under the second — INCLUDING the error of the controller doing the aiming —
+// then the game issues penalties for compliance, and it did: measured over two
+// races at Monza, 262 penalties, 256 of them from the delta check, fifteen of
+// twenty cars carrying one. The player's report is "it seems like every driver
+// there had a penalty".
+//
+// `RaceControlManager` derives one from the other and throws at load if they
+// cross. This asserts the same relation from the outside, so that the invariant
+// is checked by the thing that would notice it being broken as well as by the
+// thing that would break it.
+// ===========================================================================
+console.log('\nTHE DELTA CONSTANTS');
+{
+  // Derived here the same way `RaceControlManager` derives it, from the exported
+  // inputs, so the probe cannot silently drift onto a stale copy of the answer.
+  const catchUp = DELTA_REFERENCE_MARGIN / CATCHUP_HEADROOM;
+  const fastest = catchUp * MEASURED_CONTROLLER_OVERSHOOT;
+  console.log('  ' + 'catch-up allowance'.padEnd(32) + 'x' + catchUp.toFixed(3) +
+    ' the queue pace');
+  console.log('  ' + 'reached with controller error'.padEnd(32) + 'x' + fastest.toFixed(3));
+  console.log('  ' + 'penalty threshold'.padEnd(32) + 'x' + DELTA_REFERENCE_MARGIN.toFixed(3));
+  console.log('  ' + 'headroom'.padEnd(32) +
+    pct(DELTA_REFERENCE_MARGIN / fastest - 1) + ' inside the threshold');
+  if (fastest >= DELTA_REFERENCE_MARGIN) {
+    fail(
+      `a car obeying the catch-up instruction reaches x${fastest.toFixed(3)} the queue ` +
+      `pace against a penalty threshold of x${DELTA_REFERENCE_MARGIN.toFixed(3)} — ` +
+      `every car closing a gap is penalised for closing it`,
+    );
+  }
+}
+
 console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists in a non-race)');
 {
   const m = runScenario('Q1', 'silverstone', 'qualifying', 0, 480, 77001 + SEED_OFFSET, {
@@ -664,6 +746,7 @@ console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists i
   });
 
   const singles = reportPace(m, 'GREEN', 'YEL', 'single yellow vs green');
+  const singlePairs = m.comparePace('GREEN', 'YEL')?.pairs ?? 0;
   const doubles = reportPace(m, 'GREEN', '2YEL', 'double yellow vs green');
   console.log('  ' + 'passes under a yellow'.padEnd(32) + m.illegalPasses);
   console.log('  ' + 'passes of a car that had gone off'.padEnd(32) + m.passesOfDisabledCars);
@@ -673,10 +756,30 @@ console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists i
   // bigger lift than a single, and both must be discernible (Art. 26.1a/b /
   // B1.8.4a/b). "Discernible" is the stewards' word and is deliberately
   // qualitative, so the bar here is only that the lift is real.
-  if (singles !== null && singles < 0.03) {
+  //
+  // BOTH CHECKS NEED ENOUGH DATA TO BE ABOUT ANYTHING, and the single-yellow
+  // side often does not have it. The incident staged here is deliberately
+  // dangerous — it is the only way to get a flag out in qualifying — so it sits
+  // on the racing line and its posts show DOUBLE yellow. The single-yellow
+  // bucket is then whatever fell either side of it, and it has been as low as
+  // ONE (car, sector) pair. That one pair reported a 85.3% lift, which is not a
+  // car lifting: it is a car that had stopped, or one crawling out of a run-off,
+  // averaged over a sector with nothing to compare it against. On that evidence
+  // the ordering check failed for a long time while every simulated car in the
+  // field was in fact obeying both flags correctly.
+  //
+  // A statistic computed from one sample is not a measurement, and asserting on
+  // it is not a test. Twenty pairs is the same order as the double-yellow side
+  // usually collects, and below it the probe says so instead of guessing.
+  const MIN_PAIRS = 20;
+  if (singles !== null && singlePairs < MIN_PAIRS) {
+    console.log('  ' + 'single yellow'.padEnd(32) +
+      `only ${singlePairs} car-sector pairs — not enough to judge, not asserted`);
+  } else if (singles !== null && singles < 0.03) {
     fail(`single yellow produces only a ${pct(singles)} lift — not a discernible reduction`);
   }
-  if (doubles !== null && singles !== null && doubles <= singles) {
+  if (doubles !== null && singles !== null && singlePairs >= MIN_PAIRS &&
+      doubles <= singles) {
     fail(`double yellow lift ${pct(doubles)} is not greater than single yellow ${pct(singles)}`);
   }
   if (m.illegalPasses > 0) {
@@ -698,6 +801,15 @@ console.log('\nVIRTUAL SAFETY CAR (Bahrain, 10 laps — benign incident, Art. 56
 
   const drop = reportPace(m, 'GREEN', 'VSC', 'VSC vs green');
   const ratio = reportLapRatio(m, 'VSC', 'VSC lap time');
+  if (m.vscGreenToLineM.length > 0) {
+    // The contrast case, reported rather than asserted. A VSC ends "at any time
+    // between 10 and 15 seconds" after the warning and the cars are wherever
+    // they are (Art. 56.7 / B5.12.4); there is nothing to require of the place,
+    // and requiring one would be importing the safety car's rule.
+    console.log('  ' + 'green shown with the leader'.padEnd(32) +
+      m.vscGreenToLineM.map((d) => d.toFixed(0) + 'm').join(', ') +
+      ' from the Line (unconstrained — Art. 56.7 / B5.12.4)');
+  }
   console.log('  ' + 'passes under the VSC'.padEnd(32) + m.illegalIn('VSC'));
   console.log('  ' + 'passes as the flag came out'.padEnd(32) + m.transitionalPasses);
   console.log('  ' + 'passes under a local yellow'.padEnd(32) + m.illegalIn('YEL') + ' / ' +
@@ -705,6 +817,13 @@ console.log('\nVIRTUAL SAFETY CAR (Bahrain, 10 laps — benign incident, Art. 56
   console.log('  ' + 'passes of a car that had gone off'.padEnd(32) + m.passesOfDisabledCars);
   console.log('  ' + 'passes under green'.padEnd(32) + m.greenPasses);
   console.log('  ' + 'delta penalties issued'.padEnd(32) + m.deltaPenalties);
+  if (m.deltaPenalties > MAX_DELTA_PENALTIES) {
+    fail(
+      `${m.deltaPenalties} delta penalties issued in one race under the VSC — ` +
+      `Art. 56.5 / B5.12.2b is one decision from a four-item menu, not a charge per ` +
+      `marshalling sector`,
+    );
+  }
   for (const d of m.passDetail) console.log('      ' + d);
   console.log('  race control:');
   for (const msg of m.messages.slice(0, 8)) console.log('    ' + msg);
@@ -774,6 +893,38 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
     console.log('    ' + phase.padEnd(16) + secs.toFixed(1) + 's');
   }
 
+  // WHERE THE SAFETY CAR PERIOD ENDED.
+  //
+  // "As the Safety Car is approaching the Pit Entry Road the SC boards will be
+  // withdrawn and, other than on the last lap of the TTCS, as the leader
+  // approaches the Line the yellow flags will be withdrawn and a green flag
+  // and/or green light panel will be displayed at the Line" — 2026 Section B
+  // Art. B5.13.6 / 2025 Sporting Regs Art. 55.15, final paragraph.
+  //
+  // The green is at the LINE. It is the one thing about a safety car period that
+  // a VSC does not share — Art. 56.7 / B5.12.4 puts the VSC's green wherever the
+  // cars happen to be, ten to fifteen seconds after the warning — and the game
+  // had them the same until it was reported: "the vsc ending can happen whenever
+  // but safety car ends at the end of the lap".
+  //
+  // The window is generous because the article's own word is APPROACHES: the
+  // flag is out before the leader gets there, or nobody could see it and go.
+  const SC_GREEN_WINDOW_M = 400;
+  if (m.scGreenToLineM.length > 0) {
+    const worst = Math.max(...m.scGreenToLineM);
+    console.log('  ' + 'green shown with the leader'.padEnd(32) +
+      m.scGreenToLineM.map((d) => d.toFixed(0) + 'm').join(', ') + ' from the Line');
+    if (worst > SC_GREEN_WINDOW_M) {
+      fail(
+        `a safety car period went green with the leader ${worst.toFixed(0)}m from the Line — ` +
+        `Art. 55.15 / B5.13.6 shows the green AT the Line, and that is the whole ` +
+        `difference between a safety car and a VSC`,
+      );
+    }
+  } else {
+    fail('no safety car period ended during the measurement — the withdrawal is not covered');
+  }
+
   console.log('  ' + 'lapped cars at the wave'.padEnd(32) +
     (m.waveHappened ? m.lappedAtWave : 'no wave — nobody was a lap down'));
   if (m.waveHappened) {
@@ -800,6 +951,25 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
   }
   if (m.illegalIn('SC') > 0) {
     fail(`${m.illegalIn('SC')} passes completed under the safety car — Art. 55.8 forbids it`);
+  }
+
+  // HOW MANY PENALTIES A NEUTRALISATION HANDS OUT.
+  //
+  // "the stewards may impose either a 5-Second Penalty, a 10-Second Penalty, a
+  // Drive-Through Penalty or a Stop-and-Go Penalty on any driver who fails to
+  // stay above the minimum time" (Art. 55.7 and 56.5 / B5.13.2b and B5.12.2b) is
+  // one decision from a menu. It was implemented as a charge per marshalling
+  // sector, and there are twenty of those a lap: measured over two races at
+  // Monza, 262 penalties, 256 of them from the delta check, none at all from the
+  // stewards or track limits, and fifteen of twenty cars carrying one. One car
+  // held twelve.
+  console.log('  ' + 'delta penalties issued'.padEnd(32) + m.deltaPenalties);
+  if (m.deltaPenalties > MAX_DELTA_PENALTIES) {
+    fail(
+      `${m.deltaPenalties} delta penalties issued in one race under the safety car — ` +
+      `Art. 55.7 / B5.13.2b is one decision from a four-item menu, not a charge per ` +
+      `marshalling sector`,
+    );
   }
 }
 

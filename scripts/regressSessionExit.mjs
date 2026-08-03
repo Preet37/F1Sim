@@ -35,7 +35,36 @@ try {
   process.exit(0);
 }
 
-const PORT = 5391;
+// A free port, chosen per run.
+//
+// This used to be a hardcoded 5391 with `--strictPort`, which meant exactly one
+// copy of this regression could run on a machine at a time. With several agents
+// working in parallel worktrees, the second and every subsequent run died at the
+// wait below with `vite did not start in 40s` — a message that says nothing
+// about the real cause and sent two separate investigations chasing machine
+// load instead.
+//
+// Vite does not accept `--port 0`, so the port is taken from the OS here: bind
+// a throwaway server to port 0, read what we were given, release it, and hand
+// that number to vite. There is a theoretical race between releasing and vite
+// binding; in practice nothing else on the machine is grabbing ephemeral ports
+// in that window, and `--strictPort` makes a collision fail loudly rather than
+// silently serving on a port the test is not looking at.
+//
+// `REGRESS_EXIT_PORT` overrides it.
+async function freePort() {
+  const net = await import('node:net');
+  return await new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+const PORT = Number(process.env.REGRESS_EXIT_PORT || await freePort());
 const server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -43,9 +72,13 @@ const shutdown = () => { try { server.kill('SIGTERM'); } catch { /* already gone
 process.on('exit', shutdown);
 
 await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error('vite did not start in 40s')), 40000);
+  const timer = setTimeout(
+    () => reject(new Error(`vite did not start in 60s on port ${PORT}`)),
+    60000,
+  );
   server.stdout.on('data', (b) => {
-    if (String(b).includes('ready in') || String(b).includes(`:${PORT}`)) { clearTimeout(timer); resolve(); }
+    const s = String(b);
+    if (s.includes('ready in') || s.includes(`:${PORT}`)) { clearTimeout(timer); resolve(); }
   });
   server.on('error', reject);
 });

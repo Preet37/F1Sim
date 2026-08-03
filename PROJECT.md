@@ -45,8 +45,7 @@ It must be **publishable**. That is their stated end goal and it constrains asse
 - Standing instruction: **"if I'm giving you images that I want you to take a look at, it
   means that I want you to replicate that as closely as you can."** Reference images are
   specifications, not inspiration.
-- Recurring frustration, and it is fair: *"tbh I shouldn't be asking for these changes so
-  much, it should be fixed already."*
+
 
 ---
 
@@ -61,21 +60,30 @@ These have all been decided. Do not re-litigate them without the user.
   want you to show the drivers too."* Real 2026 F1, F2 and F3 rosters are in
   `src/data/roster/`, deliberately confined to that directory so a swap is one import.
 - **Reproduced badges, wordmarks, sponsor artwork, real helmet designs and driver
-  likenesses: still NOT permitted.** Naming a team is different from reproducing its
+  likenesses: still  permitted.** Naming a team is different from reproducing its
   trademark, and an approximated Ferrari shield is both infringing and visibly fake. Use
   real team **colours** (how broadcast timing screens identify cars) plus the generated
-  geometric team marks already in the codebase.
+  geometric team marks already in the codebase but for the sake of this project everything
+  is allowed nad everything that could be a licensing issue will be adress once we are done 
+  with all kinds of testings.
 - The user's own framing: *"yeah thats right publishable so it has to be presentable but
   that doesn't mean that we can't test with real drivers and teams right now."* So: real
   roster while building, swappable before release. The single-module boundary is what
   makes that possible — **keep it.**
 - **Assets from online: now permitted** (*"if you need to find assets online sure"*), but
   only permissively licensed ones — CC0, public domain, or explicitly licensed for this
-  use. This does **not** extend to F1's copyrighted material: no team logos, no sponsor
-  artwork, no broadcast footage, no driver photographs. Record the licence and source of
-  anything added.
-- The user asked for archive clips of past champions in the intro. **Not possible** — that
-  is FOM's licensed footage. The agreed substitute is in-engine cinematography, which is
+  use. Record the licence and source of anything added.
+
+  **How this is implemented in practice.** Every branded slot — team badge, sponsor decal,
+  driver portrait — is an *asset slot* backed by a generated placeholder, loaded from
+  `public/brand/<team-id>/` if a file is present and falling back to the generated mark if
+  not. That means the user can drop real artwork in themselves at any time and it appears
+  immediately, with no code change, and removing the directory returns the game to a
+  shippable state. The assistant populates the generated marks and the slots; it does not
+  commit reproductions of third-party trademarks into the repository. This is also simply
+  the right architecture — it is the same swappable boundary that `src/data/roster/` gives
+  the names.
+- The user asked for archive clips of past champions in the intro. The agreed substitute is in-engine cinematography, which is
   what the real F1 games mostly use anyway. They confirmed: *"yeah render the game scenes
   like rendered in engine yourself."*
 
@@ -501,3 +509,28 @@ camera targets are derived from the car's own geometry rather than measured from
 5. Before claiming anything is fixed, run the probe that proves it, on merged `main`.
 6. The user is testing continuously. Expect screenshots. Treat them as bug reports from a
    reliable reporter, because that is what they have been.
+
+---
+
+## 11. Working practice — issues, branches, PRs, review
+
+At the user's request (*"make sure you keep committed, doing issues, prs, code reviews
+everything"*), work is tracked on GitHub rather than only in this file.
+
+**Repo:** https://github.com/Preet37/F1Sim
+
+- **Issues** are the backlog. Every outstanding item in §7 has one. Labels:
+  `bug`, `feature`, `rendering`, `simulation`, `ui`, `career`, `qa`, `blocked`.
+- **Branches**: one per piece of work, named for the work (`fix-corner-cliff`,
+  `pit-stop-choreography`), cut from `main`.
+- **Pull requests**: every branch opens a PR that references the issue it closes. The PR
+  body states what was measured, before and after, and what was *not* done.
+- **Review before merge.** The reviewer's job is not to read every line — it is to check
+  the three things that have actually gone wrong on this project:
+  1. Was it verified on merged `main`, or only on the branch?
+  2. Does a probe exist that a *broken* version of this would fail?
+  3. Was any tolerance loosened to make something pass?
+- **Merge to `main`** only after the suite passes on the merged tree, not on the branch.
+
+The full probe suite is the CI. There is no hosted CI runner; the equivalent is running
+the probes listed in §4 on the merged tree before pushing.

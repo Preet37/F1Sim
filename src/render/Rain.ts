@@ -64,15 +64,50 @@ const BOX_H = 55;
 const FALL_MIN_MS = 6.0;
 const FALL_MAX_MS = 9.2;
 
+/**
+ * How the rain is DRAWN, as opposed to how much of it there is.
+ *
+ * Added for the title sequence, which needs the same weather in a completely
+ * different picture: a car standing in a dark hall three metres from the lens,
+ * where the race's settings — tuned against a bright track at 300km/h with the
+ * nearest drops faded out to a distance of seven metres — put every drop
+ * either behind the fade or below the noise floor, and the rain was invisible.
+ * Absent, every value is the race's, so nothing about a session changes.
+ */
+export interface RainStyle {
+  /** Multiplies the drawn opacity. */
+  gain?: number;
+  /** Metres at which a drop reaches full opacity. The race wants 7; a close,
+   *  slow camera wants much less or the whole volume is faded away. */
+  nearM?: number;
+  /** Streak colour. */
+  colour?: number;
+  /**
+   * Side and height of the volume, metres.
+   *
+   * The default 90m box is sized for a car covering eighty metres a second: it
+   * has to be wider than anything the camera can outrun in a frame. A stage
+   * where the subject never moves wants a fraction of that, because the drop
+   * COUNT is fixed — the same 1600 drops in a 90m box are one per sixty-six
+   * cubic metres and invisible, and in a 26m box they are rain.
+   */
+  boxM?: number;
+  boxH?: number;
+}
+
 export class RainCurtain {
   readonly mesh: THREE.LineSegments;
   private readonly material: THREE.ShaderMaterial;
   private readonly maxDrops: number;
+  private readonly gain: number;
   /** How much of the volume is currently drawn, 0..1. */
   private intensity = 0;
 
-  constructor(quality: 'low' | 'high') {
+  constructor(quality: 'low' | 'high', style: RainStyle = {}) {
     this.maxDrops = quality === 'high' ? MAX_DROPS_HIGH : MAX_DROPS_LOW;
+    this.gain = style.gain ?? 1;
+    const boxM = style.boxM ?? BOX_M;
+    const boxH = style.boxH ?? BOX_H;
 
     const n = this.maxDrops;
     const seed = new Float32Array(n * 2 * 3);
@@ -81,9 +116,9 @@ export class RainCurtain {
     const size = new Float32Array(n * 2);
 
     for (let i = 0; i < n; i++) {
-      const sx = (Math.random() - 0.5) * BOX_M;
-      const sy = Math.random() * BOX_H;
-      const sz = (Math.random() - 0.5) * BOX_M;
+      const sx = (Math.random() - 0.5) * boxM;
+      const sy = Math.random() * boxH;
+      const sz = (Math.random() - 0.5) * boxM;
       // Drop size, which sets both the fall speed and the streak length.
       const s = Math.random();
       // `rank` is a stable 0..1 per drop, compared against the intensity in the
@@ -120,8 +155,13 @@ export class RainCurtain {
         uIntensity: { value: 0 },
         /** Wind, m/s, in world XZ. Slants the rain, which is most of the look. */
         uWind: { value: new THREE.Vector2(2.2, 0.9) },
-        uColour: { value: new THREE.Color(0.72, 0.78, 0.86) },
+        uColour: {
+          value: style.colour !== undefined
+            ? new THREE.Color(style.colour) : new THREE.Color(0.72, 0.78, 0.86),
+        },
         uOpacity: { value: 0.34 },
+        /** Distance at which a drop reaches full opacity. See `RainStyle`. */
+        uNear: { value: style.nearM ?? 7.0 },
       },
       vertexShader: /* glsl */`
         attribute vec3 aSeed;
@@ -132,10 +172,11 @@ export class RainCurtain {
         uniform vec3 uCam;
         uniform float uIntensity;
         uniform vec2 uWind;
+        uniform float uNear;
         varying float vFade;
 
-        const float BOX = ${BOX_M.toFixed(1)};
-        const float BOXH = ${BOX_H.toFixed(1)};
+        const float BOX = ${boxM.toFixed(1)};
+        const float BOXH = ${boxH.toFixed(1)};
 
         void main() {
           // Drops beyond the current intensity do not exist. Collapsing both
@@ -181,7 +222,8 @@ export class RainCurtain {
           // one thing that makes screen-space rain read as a decal stuck to the
           // camera rather than as weather in the world.
           float d = -mv.z;
-          vFade = smoothstep(1.5, 7.0, d) * (1.0 - smoothstep(BOX * 0.34, BOX * 0.5, d));
+          vFade = smoothstep(uNear * 0.21, uNear, d)
+            * (1.0 - smoothstep(BOX * 0.34, BOX * 0.5, d));
           gl_Position = projectionMatrix * mv;
         }
       `,
@@ -224,7 +266,7 @@ export class RainCurtain {
     // the very first drops of a shower appear before the road has darkened.
     this.intensity = Math.min(1, Math.pow(Math.max(rainRate, 0), 0.7));
     this.material.uniforms.uIntensity.value = this.intensity;
-    this.material.uniforms.uOpacity.value = 0.22 + rainRate * 0.2;
+    this.material.uniforms.uOpacity.value = (0.22 + rainRate * 0.2) * this.gain;
     this.mesh.visible = this.intensity > 0.005;
   }
 

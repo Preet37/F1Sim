@@ -32,9 +32,24 @@ try {
   process.exit(0);
 }
 
-const PORT = 5393;
-const server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], {
-  stdio: ['ignore', 'pipe', 'pipe'],
+// Port 0: the OS picks, and the banner tells us which.
+//
+// Same reason as `regressSessionExit.mjs` — a fixed port with `--strictPort`
+// means only one copy of this can run on a machine, and with several agents in
+// parallel worktrees the losers die on a timeout whose message blames startup
+// speed rather than the collision that actually happened.
+const FIXED_PORT = Number(process.env.REGRESS_CAREER_PORT || 0);
+let PORT = FIXED_PORT;
+const server = spawn(
+  'npx',
+  FIXED_PORT
+    ? ['vite', '--port', String(FIXED_PORT), '--strictPort']
+    : ['vite', '--port', '0'],
+  { stdio: ['ignore', 'pipe', 'pipe'] },
+);
+server.stdout.on('data', (b) => {
+  const m = String(b).match(/localhost:(\d+)/);
+  if (m) PORT = Number(m[1]);
 });
 const shutdown = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } };
 process.on('exit', shutdown);
@@ -49,15 +64,20 @@ process.on('exit', shutdown);
  * Polling the URL is both simpler and honest about what is being waited for.
  */
 {
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + 60000;
   for (;;) {
-    try {
-      const res = await fetch(`http://localhost:${PORT}/`);
-      if (res.ok) break;
-    } catch {
-      // Not listening yet.
+    // `PORT` is 0 until the banner names it, and there is nothing to poll yet.
+    if (PORT) {
+      try {
+        const res = await fetch(`http://localhost:${PORT}/`);
+        if (res.ok) break;
+      } catch {
+        // Not listening yet.
+      }
     }
-    if (Date.now() > deadline) throw new Error('vite did not answer on ' + PORT + ' in 45s');
+    if (Date.now() > deadline) {
+      throw new Error(`vite did not answer in 60s (port ${PORT || 'never announced'})`);
+    }
     await new Promise((r) => setTimeout(r, 300));
   }
 }
@@ -111,18 +131,53 @@ page.on('dialog', async (d) => { dialogs.push(d.message()); await d.accept(); })
  * resolve `body`. The test then reports a career-mode failure when the career is
  * perfectly fine and the browser is simply busy drawing.
  */
-const URL = `http://localhost:${PORT}/?quality=low`;
+/**
+ * `?fresh=1` is what makes the FIRST RUN testable.
+ *
+ * The front door now depends on whether a driver exists on this device, and a
+ * headless browser inherits whatever the previous run of this file left in
+ * localStorage — so without this the second run of the harness would take the
+ * returning path, and the first-run path, which is the one that was missing
+ * entirely, would never be exercised again. It empties the profile index
+ * before the first frame is drawn.
+ */
+const URL = `http://localhost:${PORT}/?quality=low&fresh=1`;
+/** Everything after the first load: the driver now exists and must persist. */
+const RETURN_URL = `http://localhost:${PORT}/?quality=low`;
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 try {
   // Either surface counts as "the game booted": on a first run the opening
   // sequence is what is on screen, and it is skipped a few lines below.
-  await page.waitForSelector('.screen .page, .intro', { timeout: 20000 });
+  //
+  // THIRTY SECONDS, not twenty. The first thing a new player now sees is an
+  // in-engine title sequence — a car, a rig of coloured light and real rain —
+  // and under the software rasteriser this harness runs on, building it
+  // occasionally takes past twenty seconds on a loaded machine. The wait is
+  // for the game to be READY, not a statement about how fast it is; frame cost
+  // is measured on a real GPU by `probe:menucost` and `probe:renderperf`.
+  await page.waitForSelector('.screen .page, .intro', { timeout: 30000 });
 } catch (e) {
   // A boot failure is the single most important thing this harness can report,
-  // and a bare "selector not found" hides the exception that caused it.
+  // and a bare "selector not found" hides the exception that caused it. What
+  // is wanted is the SHAPE of the page — which of the game's layers got built
+  // — rather than four hundred characters of the HUD's markup, which is what
+  // this printed before and told nobody anything.
   console.error('The game did not reach a screen. Page errors:');
   for (const err of pageErrors) console.error('  ' + err);
-  console.error('Body was: ' + (await page.locator('body').innerHTML()).slice(0, 400));
+  const shape = await page.evaluate(`(() => {
+    const app = document.getElementById('app');
+    const screen = document.querySelector('.screen');
+    const intro = document.querySelector('.intro');
+    return {
+      appChildren: app ? [...app.children].map((c) => c.className || c.tagName) : 'no #app',
+      screenChildren: screen ? screen.children.length : 'no .screen',
+      intro: intro ? intro.getBoundingClientRect().width + 'x'
+        + intro.getBoundingClientRect().height : 'no .intro',
+      loading: document.getElementById('loading')?.className ?? 'gone',
+      canvases: document.querySelectorAll('canvas').length,
+    };
+  })()`);
+  console.error('Page shape: ' + JSON.stringify(shape));
   throw e;
 }
 
@@ -188,11 +243,80 @@ await page.waitForSelector('.screen .page', { timeout: 20000 });
  */
 const FIRST = 'Ondrej';
 const LAST = 'Zdravkovic';
+/** The screen's text, reused throughout. Declared here because the front-door
+ *  assertions below run before the career ones that used to declare it. */
+let text = '';
+
+/**
+ * THE FRONT DOOR.
+ *
+ * A browser that has never run this game has no driver, and the first thing it
+ * asks is who is playing. Before this existed the game opened straight onto a
+ * menu that greeted whoever happened to be in the most recent career save —
+ * which is what the person playing it noticed: "it seems that i am logging in
+ * with Preet Karia somehow".
+ *
+ * Asserted as a FIRST RUN, not merely as a screen that exists: nothing may be
+ * offered to continue, because nothing has been played.
+ */
+console.log('\nA FIRST RUN ASKS WHO IS DRIVING');
+
+check((await bodyText()).includes('who is driving'),
+  'a browser with no driver opens on the question, not on a menu');
+check((await bodyText()).includes('no account'),
+  'and it says plainly that there is no account behind it');
+check(await page.locator('.sg-portrait .portrait').count() > 0,
+  'with a driver on it, drawn');
+check(await page.locator('.menu-item').count() === 0,
+  'the main menu is NOT what a first run opens on');
+
+{
+  const names = page.locator('.screen .sg-field input');
+  check(await names.count() >= 2, 'it asks for a name');
+  await names.nth(0).fill(FIRST);
+  await names.nth(1).fill(LAST);
+  await page.waitForTimeout(150);
+}
+await clickByText('.btn', 'Start driving');
+await page.waitForSelector('.mm', { timeout: 20000 });
+text = await bodyText();
+check(text.includes(LAST.toLowerCase()),
+  'making a driver lands on the menu, greeting them by their own name');
+check(text.includes('no career yet'),
+  'and the menu is honest that they have not raced yet');
+check(await page.locator('.idchip').count() > 0,
+  'the driver is on the front page as something you can press');
+check(pageErrors.length === 0, 'the first run threw nothing (' + pageErrors.join(' | ') + ')');
+
+/**
+ * AND THERE IS A WAY TO STOP BEING THEM.
+ *
+ * The other half of the question — "do I need to logout someway or some form?"
+ * — and the answer this game can honestly give, since it has no server.
+ */
+console.log('\nTHERE IS A WAY TO BE SOMEBODY ELSE');
+
+await page.locator('.idchip').first().click({ force: true, noWaitAfter: true });
+await page.waitForTimeout(350);
+text = await bodyText();
+check(text.includes('no account'),
+  'the drivers screen states that there is no account rather than implying one');
+check(text.includes(LAST.toLowerCase()), 'the driver is on the rack');
+check(await page.locator('.drv-new').count() > 0, 'and there is a way to add another');
+check(await page.locator('.btn.danger').count() > 0, 'and a way to delete this one');
+check(pageErrors.length === 0, 'the drivers screen threw nothing (' + pageErrors.join(' | ') + ')');
+await clickByText('.navback', '');
+await page.waitForTimeout(300);
 
 console.log('\nA CAREER CAN BE CREATED');
 
 await clickByText('.menu-item', 'Start Career');
 await page.waitForTimeout(300);
+// The signing screen is prefilled from the driver who is playing, which is the
+// whole point of there being a driver: it is the same person, not a second
+// form asking the same questions.
+check((await bodyText()).includes(LAST.toLowerCase()),
+  'the signing screen opens as the driver who is playing');
 check((await bodyText()).includes('formula 3'),
   'the create screen names the tier the career starts in');
 check(await page.locator('.sg-portrait .portrait').count() > 0,
@@ -213,7 +337,7 @@ if (await inputs.count() >= 2) {
 await clickByText('.btn', 'Take the seat');
 await page.waitForTimeout(500);
 
-let text = await bodyText();
+text = await bodyText();
 check(text.includes(FIRST.toLowerCase()) && text.includes(LAST.toLowerCase()),
   'the hub shows the driver');
 check(await page.locator('.dcard .portrait').count() > 0,
@@ -246,7 +370,7 @@ await page.waitForTimeout(400);
     `the session queue is on disk (${saved?.sessions} sessions)`);
 }
 // And it is still there after a reload, which is the whole point.
-await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.goto(RETURN_URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.screen .page', { timeout: 20000 });
 await clickByText('.menu-item', 'Continue');
 await page.waitForTimeout(500);
@@ -376,7 +500,7 @@ const before = await page.evaluate(() => {
   };
 });
 
-await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.goto(RETURN_URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.screen .page', { timeout: 20000 });
 await page.waitForTimeout(400);
 check(await page.locator('.intro').count() === 0,
