@@ -397,9 +397,20 @@ export function engineOffers(
   });
 }
 
-/** Breaking a supply contract early. Outside the cap, and it hurts. */
+/**
+ * Breaking a supply contract early. Outside the cap, and it hurts.
+ *
+ * NO FLOOR ON `yearsLeft`. This used to be `Math.max(1, yearsLeft)` while
+ * `Career.signPowerUnit` inlined the same arithmetic without one — two copies
+ * of one formula that already disagreed, and the exported copy was the wrong
+ * one: a contract with zero years left has run out, and charging 45% of a
+ * season for tearing up a deal that has already expired is a fee for nothing.
+ * The caller gates on `powerUnitYearsLeft > 0`, so the floor could only ever
+ * have fired in the case where it is incorrect. One definition now, here,
+ * because the engine deal is this module's subject.
+ */
 export function engineBreakFeeUsd(unit: PowerUnit, yearsLeft: number): number {
-  return Math.round(unit.costPerSeasonUsd * 0.45 * Math.max(1, yearsLeft));
+  return Math.round(unit.costPerSeasonUsd * 0.45 * yearsLeft);
 }
 
 // ===========================================================================

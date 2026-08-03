@@ -436,6 +436,22 @@ export function offSeasonStories(
 // What you are being asked to decide
 // ===========================================================================
 
+/**
+ * Every screen a decision can send a player to.
+ *
+ * A RUNTIME LIST RATHER THAN A BARE UNION, because a union member that nothing
+ * emits is invisible. This shipped with 'market' and 'livery' in the union and
+ * neither reachable: `Briefing` had a button label and a route for both, and
+ * `main.ts` wired both to a screen, for a decision that could not be produced.
+ * `probeNews` now walks this list and requires that every entry on it was
+ * actually emitted somewhere in the sweep, which is a check that cannot be
+ * written against a type. 'livery' is gone because no state in a career ever
+ * demands a repaint; 'market' stayed because a team-mate out of contract does.
+ */
+export const DECISION_SCREENS = ['hub', 'hq', 'market', 'engine', 'prep'] as const;
+
+export type DecisionScreen = typeof DECISION_SCREENS[number];
+
 export interface Decision {
   /** One line, in the imperative. What to do. */
   label: string;
@@ -444,7 +460,7 @@ export interface Decision {
   /** How urgent, which decides the order and the colour. */
   urgency: 'now' | 'soon' | 'idle';
   /** Which screen answers it. The caller routes it. */
-  screen: 'hub' | 'hq' | 'market' | 'engine' | 'livery' | 'prep';
+  screen: DecisionScreen;
 }
 
 /**
@@ -452,9 +468,16 @@ export interface Decision {
  *
  * A management screen that shows a player nine numbers and no next action is a
  * screen they will leave. This reads the actual state of the career and returns
- * the decisions that are genuinely open right now, most urgent first — an idle
- * department, an unspent preparation slot, a cost cap about to be missed, a
- * team-mate whose contract is up, cash running out.
+ * the decisions that are genuinely open right now, most urgent first.
+ *
+ * EXACTLY WHAT IT EMITS, and nothing it does not: an unspent preparation slot,
+ * an idle department, a development ban still to serve, a bank nearly empty, an
+ * engine deal that has run out, a team-mate out of contract, and — outside My
+ * Team — the promotion rule. This list used to also claim a team-mate whose
+ * contract is up while emitting no such thing; that decision now exists, which
+ * is what made the claim true. The cost cap is deliberately NOT here: the
+ * headroom gauge is on the factory screen itself, above the buttons that spend
+ * it, which is a better place to be told than a job list one screen away.
  *
  * Every entry names a consequence rather than a rule. "Aerodynamics is idle" is
  * a fact; "Aerodynamics is idle — nothing is being built for the car" is a
@@ -521,6 +544,23 @@ export function openDecisions(state: CareerState, roundsLeft: number): Decision[
           + 'chance of not finishing. Reputation decides who will talk to you.',
         urgency: 'soon',
         screen: 'engine',
+      });
+    }
+
+    // THE SECOND CAR. The doc comment above has always listed "a team-mate
+    // whose contract is up" and this is the code that makes it true; without it
+    // 'market' was a screen no decision could route to. The team-mate scores
+    // constructors' points, so an expired contract is a championship problem
+    // and not an administrative one.
+    const mate = state.world.tiers.F1.drivers.find((d) => d.id === t.teammateDriverId);
+    if (mate && !mate.retired && mate.contractYears <= 0) {
+      out.push({
+        label: `${mate.firstName} ${mate.lastName} is out of contract`,
+        why: 'The second car scores constructors\u2019 points, and prize money is paid '
+          + 'on where the team finishes rather than where you do. Re-sign them or '
+          + 'find somebody quicker.',
+        urgency: 'soon',
+        screen: 'market',
       });
     }
   }

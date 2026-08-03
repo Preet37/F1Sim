@@ -36,6 +36,7 @@ import { Career } from '../src/career/Career';
 import { findDriver, findTeam } from '../src/career/World';
 import { seasonComplete, simulateRound, sortedStandings } from '../src/career/Season';
 import { DEPARTMENT_IDS, type DepartmentId } from '../src/career/MyTeam';
+import { DECISION_SCREENS } from '../src/career/Newsroom';
 import type { Story } from '../src/career/Newsroom';
 
 const failures: string[] = [];
@@ -51,7 +52,20 @@ function checkOnce(ok: boolean, kind: string, msg: string): void {
   else if (n === 4) fail(`${kind}: ...and more`);
 }
 
-const SCREENS = new Set(['hub', 'hq', 'market', 'engine', 'livery', 'prep']);
+/**
+ * Every screen a decision is allowed to route to — READ FROM THE SOURCE, not
+ * hardcoded here.
+ *
+ * This used to be a literal set written in the probe, and it was a superset of
+ * what `openDecisions` could actually produce: it listed 'market' and 'livery',
+ * neither of which any decision emitted, so a route wired up in `Briefing` and
+ * in `main.ts` for a decision that did not exist passed cleanly. A check whose
+ * expected values are wider than the real ones cannot fail. See PROJECT.md
+ * §3.2.
+ */
+const SCREENS = new Set<string>(DECISION_SCREENS);
+/** Which of them were actually emitted, anywhere in a hundred career-years. */
+const screensSeen = new Set<string>();
 
 let stories = 0;
 let leads = 0;
@@ -181,6 +195,7 @@ for (let c = 0; c < 10; c++) {
       // --- 6. The decisions are honest -----------------------------------
       for (const d of career.decisions()) {
         decisions++;
+        screensSeen.add(d.screen);
         checkOnce(SCREENS.has(d.screen), 'unknown-screen',
           `${where}: a decision routes to "${d.screen}", which is not a screen`);
         checkOnce(d.label.trim().length > 0 && d.why.trim().length > 0, 'empty-decision',
@@ -243,6 +258,16 @@ check(factoryStories > 0, 'no factory story was ever generated');
 check(transferStories > 50,
   `only ${transferStories} paddock stories — the silly season is not being reported`);
 check(decisions > 100, `only ${decisions} decisions offered — the player is rarely told what to do`);
+
+// EVERY DECLARED SCREEN HAS TO HAVE BEEN REACHED. This is the half of the check
+// that the old hardcoded set could not do: a member of `DECISION_SCREENS` that
+// nothing emits across a hundred career-years is dead, and dead routing in this
+// project has twice turned out to be a real bug rather than an untidy one.
+const unreached = DECISION_SCREENS.filter((s) => !screensSeen.has(s));
+console.log(`decision screens reached: ${[...screensSeen].sort().join(', ')}`);
+check(unreached.length === 0,
+  `no decision ever routed to ${unreached.join(', ')} — `
+  + 'declared in DECISION_SCREENS, wired up in Briefing, and unreachable');
 
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);

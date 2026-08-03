@@ -1,6 +1,6 @@
 import './briefing.css';
 import type { Career } from '../career/Career';
-import type { Decision, Story } from '../career/Newsroom';
+import type { Decision, DecisionScreen, Story } from '../career/Newsroom';
 
 /**
  * WHAT JUST HAPPENED, AND WHAT YOU ARE BEING ASKED TO DECIDE.
@@ -20,14 +20,11 @@ import type { Decision, Story } from '../career/Newsroom';
  * about an event that did not occur.
  */
 
-export interface BriefingRoutes {
-  hub?: () => void;
-  hq?: () => void;
-  market?: () => void;
-  engine?: () => void;
-  livery?: () => void;
-  prep?: () => void;
-}
+/**
+ * Where each decision's button goes. Keyed on `DecisionScreen`, so a screen
+ * removed from that list is a compile error here rather than a dead route.
+ */
+export type BriefingRoutes = Partial<Record<DecisionScreen, () => void>>;
 
 /**
  * The open decisions, most urgent first.
@@ -71,7 +68,6 @@ function labelFor(d: Decision): string {
     case 'hq': return 'The factory';
     case 'market': return 'The market';
     case 'engine': return 'Suppliers';
-    case 'livery': return 'Paint shop';
     case 'prep': return 'Prepare';
     default: return 'Open';
   }

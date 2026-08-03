@@ -10,8 +10,8 @@ import {
   AMBITION, COST_CAP_USD, DEPARTMENT_IDS, MAX_FACILITY_LEVEL, MAX_STAFF,
   MIN_STAFF, NEW_TEAM_CHASSIS, PIT_CREW_STEP_USD, STAFF_WAGE_USD,
   STARTING_BUDGET_USD, applyUpgrade, breachPenaltyFor, capSpent,
-  commercialIncomePerRound, defaultDepartments, emptyLedger, engineOffers,
-  facilityUpgradeCostUsd, facilityUpkeepUsd, factoryAnnualCostUsd,
+  commercialIncomePerRound, defaultDepartments, emptyLedger, engineBreakFeeUsd,
+  engineOffers, facilityUpgradeCostUsd, facilityUpkeepUsd, factoryAnnualCostUsd,
   generateFreeAgents, investInPitCrew, prizeMoneyFor, projectCostUsd,
   projectGain, projectRounds, qcFailureChance,
   type Ambition, type BreachPenalty, type DepartmentId, type UpgradeProject,
@@ -97,10 +97,30 @@ function fmtM(usd: number): string {
 export class Career {
   readonly state: CareerState;
   private rng: Rng;
+  /**
+   * The factory's own randomness, deliberately NOT `this.rng`.
+   *
+   * WHY A SECOND STREAM. `this.rng` is the world's: it runs the championship,
+   * the off-season and the narrative events. The quality-control roll in
+   * `startProject` used to draw from it, which meant that commissioning an
+   * upgrade advanced the world's stream — so two careers founded on the same
+   * seed, one developing and one idle, no longer raced the same championship.
+   * Every result after the first commission differed for a reason that had
+   * nothing to do with the car.
+   *
+   * That is not a tidiness argument. `probeMyTeam` invariant 7 compares a
+   * developing career against an idle one to prove that building the car is
+   * worth doing, and with the streams shared it was measuring RNG divergence:
+   * it PASSED with the upgrade block in `World.performanceOf` hard-disabled,
+   * i.e. with the factory completely disconnected from the car. See
+   * PROJECT.md §3.2.
+   */
+  private factoryRng: Rng;
 
   constructor(state: CareerState) {
     this.state = state;
     this.rng = new Rng(state.seed ^ 0x2f6a1b3c);
+    this.factoryRng = new Rng(state.seed ^ 0x5be3c19d);
     installWorld(state.world);
   }
 
@@ -1180,7 +1200,7 @@ export class Career {
       costUsd: quote.costUsd,
       roundsLeft: quote.rounds,
       gain: quote.gain,
-      willFailQc: this.rng.chance(qcFailureChance(AMBITION[ambition], dept)),
+      willFailQc: this.factoryRng.chance(qcFailureChance(AMBITION[ambition], dept)),
       startedRound: this.round,
     };
     t.projects.push(project);
@@ -1357,7 +1377,7 @@ export class Career {
       const current = engineOffers(t.teamId, this.state.season.year, 100)
         .find((o) => o.unit.id === t.powerUnitId);
       if (current) {
-        const fee = Math.round(current.unit.costPerSeasonUsd * 0.45 * t.powerUnitYearsLeft);
+        const fee = engineBreakFeeUsd(current.unit, t.powerUnitYearsLeft);
         if (fee > t.cashUsd) {
           return {
             ok: false,
@@ -1448,16 +1468,6 @@ export class Career {
     t.liveryMark = design.mark;
     team.colour = design.colour;
     team.accent = design.accent;
-    this.refreshGrid();
-  }
-
-  /** Renames the team. The timing tower, the pit board and the grid all follow. */
-  renameTeam(name: string, shortName: string, code: string): void {
-    const t = this.state.team;
-    const team = this.myTeamRecord();
-    if (!t || !team) return;
-    t.name = name; t.shortName = shortName; t.code = code;
-    team.name = name; team.shortName = shortName; team.code = code;
     this.refreshGrid();
   }
 

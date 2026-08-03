@@ -1480,7 +1480,6 @@ class Game {
         hq: () => this.showTeamHQ(),
         engine: () => this.showEngineDeal(),
         market: () => this.showDriverMarket(),
-        livery: () => this.showLiveryEditor(),
         prep: () => this.showPreparation(),
         hub: () => this.showCareerHub(),
       },
@@ -1713,7 +1712,6 @@ class Game {
       hq: () => this.showTeamHQ(),
       engine: () => this.showEngineDeal(),
       market: () => this.showDriverMarket(),
-      livery: () => this.showLiveryEditor(),
       prep: () => this.showPreparation(),
     });
     newsFeed(body, career, 5);
