@@ -410,6 +410,7 @@ check(served === DRY_COMPOUNDS.length * 2, `${served} of ${DRY_COMPOUNDS.length 
   let backAfterSteps = -1;
   let compoundWhenBack: string | null = null;
   let reachedLane = false;
+  let travelledM = 0;
   for (let i = 0; i < Math.round(60 / PHYSICS_DT); i++) {
     driver.drive(PHYSICS_DT, controls);
     engine.step();
@@ -418,10 +419,21 @@ check(served === DRY_COMPOUNDS.length * 2, `${served} of ${DRY_COMPOUNDS.length 
       compoundWhenBack = player.pitCompoundRequest;
     }
     if (player.inPitLane) reachedLane = true;
+    travelledM = Math.max(travelledM, (player.s - startS + track.length) % track.length);
     if (player.retired || player.pitStops > 0) break;
   }
   console.log(`driver waves it off  -> request back after ${backAfterSteps < 0 ? 'never' : backAfterSteps + ' step(s)'}` +
-    ` compound=${compoundWhenBack} lane=${reachedLane ? 'yes' : 'no'} stops=${player.pitStops}`);
+    ` compound=${compoundWhenBack} lane=${reachedLane ? 'yes' : 'no'} stops=${player.pitStops}` +
+    ` drove ${travelledM.toFixed(0)}m`);
+
+  // THE VACUITY GUARD, and it is not optional. "The car did not pit" is also
+  // what a car that crashed 200m after the wave-off reports, and this section
+  // would then go green having proved nothing — which is the exact failure the
+  // first attempt at `diag:pitchoice` shipped. The car has to actually reach
+  // and pass the pit entry, 900m away, with the wave-off standing.
+  check(!player.retired && travelledM > 900,
+    `the car never reached the pit entry (drove ${travelledM.toFixed(0)}m of 900m, ` +
+    `retired=${player.retired}), so the wave-off was never tested`);
 
   check(backAfterSteps < 0,
     `the driver waved the stop off and the wall put it back ${backAfterSteps} step(s) later`);
