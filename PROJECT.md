@@ -1177,6 +1177,18 @@ Both leading candidates are now eliminated by measurement, and **nobody is on wh
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
 - Deleting a branch one commit before its tip.
+- **Writing "this does NOT close #N" in a commit message closes #N.** GitHub's keyword
+  parser reads `close #35` straight out of a sentence asserting the opposite, and it does
+  not care about the negation in front of it. On 2026-08-03 this silently closed **two
+  issues that agents had deliberately kept open** and documented at length as unfinished:
+  #35 (rival lap times withheld from the live tower — a *different* mechanism from the
+  DNF-truncation bug that was fixed) and #22 (people bodies below the neck: podium arms
+  are stick rectangles, the garage crew are armless torsos). Both were reopened.
+  **Never put `close`, `closes`, `fixed` or `resolves` adjacent to an issue number unless
+  you mean it** — say "left open: #35" or "#35 is a separate mechanism" instead. And when
+  a merge lands, check `gh issue list --state closed` against what you intended to close;
+  an issue wrongly marked done is how a known bug gets forgotten, which is exactly the
+  failure this file exists to prevent.
 - Completion notifications not always arriving — an agent finished and sat idle while
   counted as in-flight. **Check branch state directly rather than waiting.**
 - **Killed agents leave their work on anonymous branches and nobody ever looks.** On
