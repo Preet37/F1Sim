@@ -34,6 +34,7 @@
     "probe:neutralplayer": "tsx scripts/probeNeutralPlayer.ts",
     "probe:pitlimiter": "tsx scripts/probePitLimiter.ts",
     "probe:racesweep": "tsx scripts/raceSweep.ts",
+    "probe:racelog": "tsx scripts/probeRaceLog.ts",
     "regress:laps": "tsx scripts/regressLapCounting.ts",
     "regress:results": "tsx scripts/regressClassification.ts",
     "regress:exit": "node scripts/regressSessionExit.mjs",

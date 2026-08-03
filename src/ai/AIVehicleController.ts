@@ -1650,6 +1650,35 @@ export class AIVehicleController {
     // In clean air the bound is hundreds of metres per second and binds nothing.
     // That is the design: this is not a caution term, it is a floor.
     const hz = p.hazard;
+    /**
+     * The speed to plan against the car in front at.
+     *
+     * NOT its current speed, and that difference is a corner's worth of closing
+     * rate. Both bounds below solve `v² = v_lead² + 2 a d`, and feeding them the
+     * lead car's speed RIGHT NOW asserts that it will still be doing it when we
+     * arrive. On a straight that is true. Into a braking zone it is the one
+     * moment it is most wrong: the car ahead is about to shed two hundred km/h
+     * for a corner it is already turning into, and a driver planning against the
+     * speed it is doing on the way in has planned to arrive where it used to be.
+     *
+     * Measured at Spa, where 63% of all the contact in a race happened at La
+     * Source and on the two hundred metres of braking in front of it — every
+     * lap, in a race whose opening lap was clean. That is not a start-line
+     * accident and it is not two cars racing for an apex; it is the field
+     * arriving at a hairpin at the end of a straight having each planned against
+     * the last car's straight-line speed.
+     *
+     * So take the lower of what the car ahead is doing and what the road allows
+     * where it is. This is the same `speedTargetAt` the corner-braking scan uses
+     * one block below, asked at the other car's position rather than at our own,
+     * and it is what a driver means by "he has to brake for the same corner I
+     * do". It binds nowhere else: on a straight the road allows far more than
+     * anybody is doing, the minimum is the other car's own speed, and the bound
+     * is the enormous number it has always been in clean air.
+     */
+    const leadPlanMs = hz === null ? 0 : (inLane
+      ? hz.speedMs
+      : Math.min(hz.speedMs, this.speedTargetAt(car, s + hz.gapM, p)));
     if (hz !== null) {
       const standoff = inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M;
       // The pit lane gets a measured deceleration rather than the computed one.
@@ -1661,7 +1690,7 @@ export class AIVehicleController {
       // Planned at slightly less than everything the car has, so the demand
       // shows up as a lift before it has to show up as a stamp on the pedal.
       targetSpeed = Math.min(
-        targetSpeed, safeFollowSpeedMs(hz.gapM, hz.speedMs, decel * 0.72, standoff),
+        targetSpeed, safeFollowSpeedMs(hz.gapM, leadPlanMs, decel * 0.72, standoff),
       );
     }
 
@@ -1727,7 +1756,7 @@ export class AIVehicleController {
     // nobody is confident about the back of another car.
     if (hz !== null) {
       const a = requiredDecelMs2(
-        speed, hz.gapM, hz.speedMs, inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M,
+        speed, hz.gapM, leadPlanMs, inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M,
       );
       if (a > aReq) aReq = a;
     }
