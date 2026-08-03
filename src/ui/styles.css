@@ -2482,9 +2482,10 @@ canvas#view {
      sliver, a pit sheet does not fit in the 181 pixels left between the tower
      and the top of the glass — it is 191 tall. Lifting it clear of the mirrors
      is not negotiable and shrinking the sheet is not this file's to do, so the
-     rail moves sideways instead: into the 434-pixel gap between the two panes
-     in the driver's eye, 261 in the cockpit, where it has the whole height of
-     the frame again.
+     rail moves sideways instead: into the 388-pixel gap between the two panes
+     in the driver's eye, 227 in the cockpit, where it has the whole height of
+     the frame again. The cockpit is what sizes it — 227 pixels less the 44 the
+     cards slide in from is 183, and the sheet is laid out in 176.
 
      Everything that was sharing the bottom strip with it stands down for the
      two seconds this lasts. The tyre panel goes because the sheet IS the tyre
@@ -2492,7 +2493,7 @@ canvas#view {
      question being answered. The camera buttons move right of the rail and
      stay, because a player who cannot reach them is stuck. */
   .hud.pit-open[data-mirrors] .hud-notices {
-    --rail-w: 196px;
+    --rail-w: 176px;
     left: calc(var(--mirror-l) + var(--safe-l));
     width: calc(var(--rail-w) + var(--slide));
     bottom: calc(6px + var(--safe-b));
