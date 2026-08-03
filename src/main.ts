@@ -3519,7 +3519,14 @@ class Game {
       sub: engine.track.def.officialName + ' · ' + engine.weather.label,
       meta: [
         ['Session', engine.config.name],
-        ['Runners', String(engine.standings.length)],
+        // The cars that took part in THIS segment, not the whole entry list.
+        //
+        // `standings` is every car entered for the weekend, so a Q2 board
+        // headed itself "Runners 20" while the list two inches below it
+        // correctly said "15 running" — the same screen contradicting itself
+        // about the one number the knockout is about. Q2 and Q3 run a reduced
+        // field and `participants` is what the engine itself places on track.
+        ['Runners', String(engine.participants.length)],
       ],
       // The session is over, so all three sectors are done.
       rule: { ...this.circuitRule(engine.track.def), at: 3 },
