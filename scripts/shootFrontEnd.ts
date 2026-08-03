@@ -91,7 +91,26 @@ async function main(): Promise<void> {
     const page: Page = await browser.newPage();
     page.on('pageerror', (e) => errors.push(`${vp.name}: ${(e as Error).message}`));
     page.on('console', (m) => {
-      if (m.type() === 'error') errors.push(`${vp.name}: console ${m.text()}`);
+      if (m.type() !== 'error') return;
+      // CHROME'S FAVICON REQUEST IS NOT THE FRONT END'S FAULT.
+      //
+      // This probe was exiting 1 on every run with three identical lines —
+      // one per viewport — reading `console Failed to load resource: the
+      // server responded with a status of 404 (Not Found)`, and the text of a
+      // console error is the same for a missing icon and a missing module, so
+      // the report said nothing about which. MEASURED rather than assumed on
+      // 2026-08-03, by listening on `response` and printing every non-2xx URL
+      // the front end produces: there is exactly one, and it is
+      // `404 /favicon.ico`. Chrome requests an icon from every document
+      // whether one is referenced or not, `index.html` references none and
+      // `public/` contains only `textures/`, so this fires on `main` and has
+      // nothing to do with the front end being photographed.
+      //
+      // Matched on the URL, for the reason above, and this is the same
+      // exclusion `probe:smoke` has carried since issue #62 with the same
+      // reasoning. Nothing else is filtered: a missing module still fails.
+      if (/\/favicon\.ico(\?|$)/.test(m.location().url ?? '')) return;
+      errors.push(`${vp.name}: console ${m.text()} <${m.location().url ?? 'no url'}>`);
     });
     await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 2 });
 
