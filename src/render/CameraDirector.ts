@@ -427,7 +427,15 @@ export class CameraDirector {
     // `lateral * tan(bank)` above or below it — 1.63m at Zandvoort. The eye
     // rides the car, so the camera has to use the same surface the car does or
     // an onboard shot at Hugenholtz looks out from under the road.
-    const carY = bankedCarGroundY(track, car.s, car.lateral);
+    // THE DRAWN track-space pose, not the solver's last step — issue #54. `s`
+    // and `lateral` are the only route to a height on a swept ribbon, so
+    // reading the stepped pair here put a STAIRCASE under the viewpoint while
+    // the car it is following glided: 2, 2, 3, 2, 3 steps of climb per frame at
+    // 50fps. That is why the report was *"jittering happening for the track"* —
+    // the plan error cancels in screen space for the car being followed and
+    // this one does not, because it moves the eye. `probe:framerate`, section
+    // WORLD SMOOTHNESS, measures exactly this line.
+    const carY = bankedCarGroundY(track, car.renderS, car.renderLateral);
 
     // Reversing: the useful view is the one the car is going towards.
     //
@@ -725,7 +733,7 @@ export class CameraDirector {
         // the geometry that causes it, and cutting every three seconds or so is
         // what a broadcast director does anyway.
         const spacing = 220;
-        const nextAnchor = Math.floor(car.s / spacing) * spacing;
+        const nextAnchor = Math.floor(car.renderS / spacing) * spacing;
         if (nextAnchor !== this.tracksideAnchorS) {
           this.tracksideAnchorS = nextAnchor;
           // Alternate sides so consecutive shots are not identical.
@@ -815,7 +823,22 @@ export class CameraDirector {
     // underside of the tarmac at the barrier's back face, which reads as the
     // car having fallen through the world. Clamping to a minimum height above
     // the road at the CAR's position costs nothing and makes it impossible.
-    const roadY = track.elevationAt(car.s);
+    //
+    // AGAINST THE BANKED SURFACE, not the centreline's elevation — found by
+    // `probe:framerate` while measuring issue #54, and it is the same mistake
+    // issue #3 fixed in `carGroundY`: on a banked corner the asphalt under the
+    // car is not at the centreline's height. At Zandvoort's Hugenholtz a car on
+    // the low side of 18 degrees stands 0.48m BELOW the centreline, so a floor
+    // written against the centreline sat 0.83m above the road and the driver's
+    // eye — which rides 0.77m up — spent the corner pinned to it. Pinned, the
+    // eye stops tracking the car and starts tracking `elevationAt(s)` alone,
+    // and it pops off the clamp the moment the car moves back up the banking:
+    // measured at 52mm of second difference in one frame at 50fps, four times
+    // anything else on the calendar and the largest single judder left in the
+    // scene after the interpolation fix. Against the surface the car is
+    // actually standing on, the clamp does what its comment says — it stops the
+    // chase camera going under the road — and stops lifting an onboard eye.
+    const roadY = bankedCarGroundY(track, car.renderS, car.renderLateral);
     const minY = roadY + MIN_CAMERA_HEIGHT_M;
     if (this.camera.position.y < minY) this.camera.position.y = minY;
 
@@ -994,7 +1017,7 @@ export class CameraDirector {
     // your head does. Fourteen degrees, damped at 2.4 per second so it leads
     // the car into the corner instead of snapping to it.
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
-    const aheadHeading = track.headingAt(car.s + lookAheadM);
+    const aheadHeading = track.headingAt(car.renderS + lookAheadM);
     const target = clamp(
       wrapAngle(aheadHeading - car.renderHeading) * DRIVER_HEAD.lookGain,
       -DRIVER_HEAD.lookMax, DRIVER_HEAD.lookMax,
@@ -1066,7 +1089,7 @@ export class CameraDirector {
     // feel like a driver leaning into a corner and little enough that the car
     // still frames the shot.
     const lookAheadM = clamp(25 + p.speedMs * 1.1, 30, 120);
-    const aheadHeading = track.headingAt(car.s + lookAheadM);
+    const aheadHeading = track.headingAt(car.renderS + lookAheadM);
     const target = clamp(wrapAngle(aheadHeading - car.renderHeading) * 0.30, -0.20, 0.20);
     this.headYaw = damp(this.headYaw, target, 2.6, dt);
 
