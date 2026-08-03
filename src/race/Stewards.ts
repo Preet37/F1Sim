@@ -142,10 +142,30 @@ const CONVERGENCE_WINDOW_S = 0.7;
 /**
  * Lateral separation below which the two cars were on the same line, metres.
  *
- * Not an inside/outside dispute at all, so DSG Points A and B have nothing to
- * say about it and the contact falls through to the following-car test.
+ * Below this there is no inside and no outside, so DSG Points A and B have
+ * nothing to say and the contact falls through to the following-car test.
+ *
+ * MEASURED, AND IT USED TO BE FAR TOO WIDE. At 0.9m this was quietly throwing
+ * away most of the corner contacts in a race. Over a calendar, thirty-eight
+ * incidents ended in no further action and twenty-four of them died in the
+ * following-car test having never reached a guideline at all — "not on the same
+ * line" fourteen times and "side by side, no corner to own" ten — against ONE
+ * that reached the corner-priority test and was declined on its own margin. The
+ * bench was not being careful; it was not looking.
+ *
+ * Two cars actually in contact are at most about two metres apart across the
+ * road and are usually much less, and a car half a metre up the inside on the
+ * way into a corner is exactly what Points A and B are about. There is no
+ * minimum lateral separation anywhere in the guidelines, and there should not
+ * be one here either beyond the width needed for "inside" to mean anything.
+ * Forty centimetres is a fifth of a car.
+ *
+ * Widening the door does not make the bench freer with penalties, because it is
+ * not the door that decides: `CLEAR_PRIORITY_M` and `CLEAR_CONVERGENCE_M` still
+ * have to be cleared, and a case that cannot clear them comes out as a racing
+ * incident WITH A STATED REASON instead of as a shrug about a straight.
  */
-const SAME_LINE_M = 0.9;
+const SAME_LINE_M = 0.4;
 
 /** Longitudinal separation at corner entry beyond which they were not fighting. */
 const ENGAGED_GAP_M = 14;
@@ -637,6 +657,11 @@ interface Evidence {
    */
   consequenceA: boolean;
   consequenceB: boolean;
+  /** The measurements behind those two, kept so a verdict can state them. */
+  paceDropA: number;
+  paceDropB: number;
+  wentOffA: boolean;
+  wentOffB: boolean;
   aftermathDone: boolean;
 }
 
@@ -725,6 +750,21 @@ export class Stewards {
   /** How many incidents have been noted this session. */
   noted = 0;
 
+  /**
+   * Every contact reported, counted by severity in tenths. Diagnostic.
+   *
+   * Two of the numbers in this file are calibrated rather than regulated —
+   * `JUDGED_SEVERITY` and `CONSEQUENCE_PACE_DROP` — and a calibrated number is
+   * exactly the thing that goes stale when the world underneath it changes. It
+   * has already happened once: a rebuilt car, a rewritten weather model and a
+   * fix to which cars are collidable at all moved the penalty rate by a factor
+   * of seven without a line of this file changing. So the means to re-derive
+   * them ships with them. `npm run probe:stewards` prints both distributions.
+   */
+  readonly severityBands = new Int32Array(10);
+  /** The worst pace drop measured on a car that was hit, in hundredths. */
+  readonly paceDropBands = new Int32Array(10);
+
   /** Scratch for the evidence gatherer. Nothing else may hold on to these. */
   private readonly scratchA = blankSnapshot();
   private readonly scratchB = blankSnapshot();
@@ -749,6 +789,8 @@ export class Stewards {
     this.verdicts.length = 0;
     this.noted = 0;
     this.recorder.reset();
+    this.severityBands.fill(0);
+    this.paceDropBands.fill(0);
     for (let i = 0; i < this.squeeze.length; i++) {
       this.squeeze[i] = null;
       this.excursion[i] = null;
@@ -771,6 +813,8 @@ export class Stewards {
    * recorder has the contact instant in its window.
    */
   reportContact(a: CarEntry, b: CarEntry, severity: number, time: number): void {
+    const band = Math.min(9, Math.max(0, Math.floor(severity * 10)));
+    this.severityBands[band]++;
     if (severity < JUDGED_SEVERITY) return;
     if (this.pending.length >= 16) return;
     this.pending.push({ a: a.index, b: b.index, severity, time });
@@ -1094,6 +1138,7 @@ export class Stewards {
       beforeA: blankSnapshot(), beforeB: blankSnapshot(),
       leadDecelMs2: 0,
       consequenceA: false, consequenceB: false, aftermathDone: false,
+      paceDropA: 0, paceDropB: 0, wentOffA: false, wentOffB: false,
     };
 
     if (!this.recorder.read(aIndex, now, ev.contactA)) return ev;
@@ -1182,27 +1227,45 @@ export class Stewards {
     const ev = inc.ev;
     ev.aftermathDone = true;
     if (!ev.ok) return;
-    ev.consequenceA = this.sufferedSomething(inc.aIndex, ev.contactA, cars, inc.time, now);
-    ev.consequenceB = this.sufferedSomething(inc.bIndex, ev.contactB, cars, inc.time, now);
+    this.measureAftermath(inc.aIndex, ev.contactA, cars, inc.time, now, ev, 'A');
+    this.measureAftermath(inc.bIndex, ev.contactB, cars, inc.time, now, ev, 'B');
+    ev.consequenceA = ev.wentOffA || ev.paceDropA > CONSEQUENCE_PACE_DROP;
+    ev.consequenceB = ev.wentOffB || ev.paceDropB > CONSEQUENCE_PACE_DROP;
+    const dropA = Math.min(9, Math.max(0, Math.floor(ev.paceDropA * 100 / 5)));
+    const dropB = Math.min(9, Math.max(0, Math.floor(ev.paceDropB * 100 / 5)));
+    this.paceDropBands[dropA]++;
+    this.paceDropBands[dropB]++;
   }
 
-  private sufferedSomething(
-    index: number, atContact: Snapshot, cars: readonly CarEntry[], from: number, now: number,
-  ): boolean {
+  /**
+   * The worst thing that happened to one car in the seconds after the contact.
+   *
+   * Recorded as a magnitude rather than decided as a boolean, so that the
+   * threshold above it can be re-derived from a season's distribution instead
+   * of guessed again — and so a verdict of no further action can say by how
+   * much it missed.
+   */
+  private measureAftermath(
+    index: number, atContact: Snapshot, cars: readonly CarEntry[],
+    from: number, now: number, ev: Evidence, which: 'A' | 'B',
+  ): void {
     const car = cars[index];
-    if (car.retired) return true;
+    let off = car.retired;
+    let worstDrop = car.retired ? 1 : 0;
+    const paceBefore = paceOf(atContact);
     for (let t = from; t <= now + 1e-6; t += 1 / SAMPLE_HZ) {
       if (!this.recorder.read(index, t, this.scratchA)) continue;
       if (this.scratchA.t < from - 1e-6) continue;
       const s = this.scratchA;
-      // Put off the road.
-      if (s.offTrack) return true;
-      // Lost a place.
-      if (s.position > atContact.position) return true;
+      // Put off the road, or dropped a place: both are the whole answer on
+      // their own, and neither is a matter of degree.
+      if (s.offTrack || s.position > atContact.position) off = true;
       // Spun, or dragged down to a pace the road does not explain.
-      if (paceOf(atContact) - paceOf(s) > CONSEQUENCE_PACE_DROP) return true;
+      const drop = paceBefore - paceOf(s);
+      if (drop > worstDrop) worstDrop = drop;
     }
-    return false;
+    if (which === 'A') { ev.wentOffA = off; ev.paceDropA = worstDrop; }
+    else { ev.wentOffB = off; ev.paceDropB = worstDrop; }
   }
 
   // -------------------------------------------------------------------------
@@ -1408,7 +1471,7 @@ export class Stewards {
       // The overtaking car was entitled to room. The defender is at fault only
       // if the defender is the one that closed on it.
       if (closedBy !== defenderIndex) return nfa('the entitled car was the one that moved');
-      if (!this.costSomething(inc, overtakerIndex)) return nfa('contact without consequence');
+      if (!this.costSomething(inc, overtakerIndex)) return nfa(this.noConsequence(inc, overtakerIndex));
       return {
         kind: 'penalty', offence: 'CAUSING A COLLISION',
         againstIndex: defenderIndex, victimIndex: overtakerIndex,
@@ -1421,7 +1484,7 @@ export class Stewards {
     // The overtaking car was not entitled to room, so the defender was free to
     // take its line. Fault only if the overtaker is the one that closed.
     if (closedBy !== overtakerIndex) return nfa('the defending car was the one that moved');
-    if (!this.costSomething(inc, defenderIndex)) return nfa('contact without consequence');
+    if (!this.costSomething(inc, defenderIndex)) return nfa(this.noConsequence(inc, defenderIndex));
     return {
       kind: 'penalty', offence: 'CAUSING A COLLISION',
       againstIndex: overtakerIndex, victimIndex: defenderIndex,
@@ -1463,7 +1526,7 @@ export class Stewards {
     if (ev.leadDecelMs2 > REAR_END_LEAD_DECEL_MS2) {
       return nfa('the car in front braked abnormally');
     }
-    if (!this.costSomething(inc, leaderIndex)) return nfa('contact without consequence');
+    if (!this.costSomething(inc, leaderIndex)) return nfa(this.noConsequence(inc, leaderIndex));
 
     return {
       kind: 'penalty', offence: 'CAUSING A COLLISION',
@@ -1475,6 +1538,13 @@ export class Stewards {
   /** Did the contact cost the named car anything? See `Evidence.consequenceA`. */
   private costSomething(inc: OpenIncident, victimIndex: number): boolean {
     return victimIndex === inc.aIndex ? inc.ev.consequenceA : inc.ev.consequenceB;
+  }
+
+  /** ...and if not, by how much it missed, which is what a reader wants next. */
+  private noConsequence(inc: OpenIncident, victimIndex: number): string {
+    const drop = victimIndex === inc.aIndex ? inc.ev.paceDropA : inc.ev.paceDropB;
+    return 'contact without consequence: pace drop ' + drop.toFixed(3) +
+      ' against ' + CONSEQUENCE_PACE_DROP;
   }
 
   /**

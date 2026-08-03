@@ -2973,6 +2973,13 @@ export class RaceEngine {
           b.physics.yawRate -= severity * 0.55 * (nx * 0.4 + 0.2) * (bShare * 2);
           this.reportImpact(a.retired ? b : a, severity);
 
+          // Reported before the damage gate, not inside it. The stewards keep
+          // their own threshold (`JUDGED_SEVERITY`) and it is a calibrated
+          // number, so they have to be able to see the contacts BELOW it to
+          // know whether it is still in the right place. Two gates on the same
+          // quantity in two files is how one of them goes stale unnoticed.
+          this.raceControl.reportContact(a, b, severity, this.time);
+
           if (severity > 0.35) {
             // Work out which face of each car was struck. The contact normal
             // points from a to b, so a is hit on the side facing b and b on the
@@ -2981,12 +2988,6 @@ export class RaceEngine {
             // damage wings and gearboxes.
             this.applyContactDamage(a, severity, zoneFor(a.physics.heading, nx, nz));
             this.applyContactDamage(b, severity, zoneFor(b.physics.heading, -nx, -nz));
-            // Reported to the stewards rather than announced here. The bulletin
-            // is the same one it always was — race control raises it, worded
-            // identically, from `Stewards.openIncident` — but it now carries the
-            // index of a car and an incident that will be decided, instead of
-            // being a dead end with `carIndex: -1` that nothing could follow up.
-            this.raceControl.reportContact(a, b, severity, this.time);
           }
         }
       }

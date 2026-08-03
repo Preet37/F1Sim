@@ -41,7 +41,9 @@ import {
   CAR_HALF_WIDTH_M, CAR_WIDTH_M, MIRROR_AHEAD_OF_ORIGIN_M,
   insideRoomMarginM, outsideRoomMarginM, racingRoomM, tariffSeconds,
 } from '../src/race/DrivingStandards';
-import { buildCornerTable, cornerAt, type CornerFrame } from '../src/race/Stewards';
+import {
+  buildCornerTable, cornerAt, JUDGED_SEVERITY, type CornerFrame,
+} from '../src/race/Stewards';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
@@ -777,6 +779,11 @@ interface Tally {
   /** Decisions arising on the opening lap, where a race's contacts pile up. */
   firstLapPenalties: number;
   racedLaps: number;
+  /** The two calibrated thresholds' underlying distributions. */
+  severityBands: number[];
+  paceDropBands: number[];
+  /** Why the bench declined, counted. */
+  declined: Map<string, number>;
 }
 
 const PLAYER_INDEX = 7;
@@ -786,6 +793,8 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
     races: 0, contactsSeen: 0, noted: 0, nfa: 0, giveBack: 0, penalties: 0,
     penaltiesOnPlayer: 0, notedOnPlayer: 0, byOffence: new Map(), againstCar: [],
     playerFinished: 0, firstLapPenalties: 0, racedLaps: 0,
+    severityBands: new Array(10).fill(0), paceDropBands: new Array(10).fill(0),
+    declined: new Map(),
   };
 
   for (const def of CIRCUITS) {
@@ -820,7 +829,16 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
       if (!player.retired) tally.playerFinished++;
       if (!bench) continue;
       tally.noted += bench.noted;
+      for (let i = 0; i < 10; i++) {
+        tally.severityBands[i] += bench.severityBands[i];
+        tally.paceDropBands[i] += bench.paceDropBands[i];
+      }
       for (const v of bench.verdicts) {
+        if (v.kind === 'no-further-action') {
+          // Keep the shape of the reason, not its numbers.
+          const key = v.because.replace(/[-0-9.]+/g, 'N');
+          tally.declined.set(key, (tally.declined.get(key) ?? 0) + 1);
+        }
         if (v.kind === 'no-further-action') tally.nfa++;
         else if (v.kind === 'give-position-back') tally.giveBack++;
         else {
@@ -838,8 +856,8 @@ function sweepCalendar(laps: number, seeds: number[]): Tally {
 }
 
 function checkCalendar(): void {
-  const LAPS = 5;
-  const t = sweepCalendar(LAPS, [20260729]);
+  const LAPS = SWEEP_LAPS;
+  const t = sweepCalendar(LAPS, SWEEP_SEEDS);
   const perRace = (n: number) => (n / Math.max(1, t.races)).toFixed(2);
 
   console.log('');
@@ -866,29 +884,109 @@ function checkCalendar(): void {
   const laterLaps = Math.max(1, t.racedLaps - t.races);
   const perLap = later / laterLaps;
   const gp = t.firstLapPenalties / t.races + perLap * 56;
-  console.log(`  of those, on the opening lap          ${t.firstLapPenalties}`);
+  // AND ITS ERROR BAR, which matters more than the number. `later` is a count
+  // of rare events over a few dozen race-laps, and at the default sweep it is
+  // typically nought, one or two. Two events is plus or minus a hundred per
+  // cent, so this figure can read 3.0 one week and 0.4 the next with nothing
+  // having changed — which is exactly what happened, and it cost a round trip
+  // to work out that the estimator was moving rather than the bench.
+  //
+  // Poisson: the standard error on a count of k is sqrt(k), and with k small the
+  // upper bound is what carries the information. sqrt(k+1) keeps k = 0 honest
+  // rather than claiming a rate of exactly zero from having seen nothing.
+  const lo = Math.max(0, later - Math.sqrt(later + 1));
+  const hi = later + Math.sqrt(later + 1);
+  const gpLo = t.firstLapPenalties / t.races + (lo / laterLaps) * 56;
+  const gpHi = t.firstLapPenalties / t.races + (hi / laterLaps) * 56;
+  console.log(`  of those, on the opening lap          ${t.firstLapPenalties}` +
+    ` = ${(t.firstLapPenalties / t.races).toFixed(2)} a race`);
   console.log(`  after the opening lap                 ${later} over ${laterLaps} race-laps` +
     ` = ${perLap.toFixed(3)} a lap`);
-  console.log(`  implied for a 57-lap Grand Prix       ${gp.toFixed(1)} penalties`);
+  console.log(`  implied for a 57-lap Grand Prix       ${gp.toFixed(1)} penalties` +
+    `  (${gpLo.toFixed(1)} to ${gpHi.toFixed(1)} on ${later} event${later === 1 ? '' : 's'})`);
+  if (later < 5) {
+    console.log(`  ...on too few events to assert on. STEWARDS_LAPS=20 ` +
+      `STEWARDS_SEEDS=1,2,3 buys a real one.`);
+  }
+
+  // The two calibrated thresholds, and what the world under them looks like.
+  // A number that was derived from a distribution has to be re-derivable from
+  // it, or the next person to change the car has no way of knowing they moved
+  // it. See `Stewards.severityBands`.
+  const totalContacts = t.severityBands.reduce((a, b) => a + b, 0);
+  console.log('');
+  console.log(`  CONTACT SEVERITY over ${totalContacts} contacts` +
+    `  (judged above ${JUDGED_SEVERITY})`);
+  for (let i = 0; i < 10; i++) {
+    if (t.severityBands[i] === 0) continue;
+    const bar = '#'.repeat(Math.min(40, Math.round(t.severityBands[i] * 40 / totalContacts)));
+    console.log(`    ${(i / 10).toFixed(1)}-${((i + 1) / 10).toFixed(1)}  ` +
+      `${String(t.severityBands[i]).padStart(5)}  ${bar}`);
+  }
+  const judged = t.severityBands.slice(4).reduce((a, b) => a + b, 0) +
+    Math.round(t.severityBands[3] * 0.5);
+  console.log(`    above the gate  ~${judged} of ${totalContacts}` +
+    ` = ${(judged * 100 / Math.max(1, totalContacts)).toFixed(1)}%`);
+
+  const totalDrops = t.paceDropBands.reduce((a, b) => a + b, 0);
+  console.log(`  PACE DROP after a judged contact, over ${totalDrops} cars`);
+  for (let i = 0; i < 10; i++) {
+    if (t.paceDropBands[i] === 0) continue;
+    const bar = '#'.repeat(Math.min(40, Math.round(t.paceDropBands[i] * 40 / totalDrops)));
+    console.log(`    ${(i * 0.05).toFixed(2)}-${((i + 1) * 0.05).toFixed(2)}  ` +
+      `${String(t.paceDropBands[i]).padStart(5)}  ${bar}`);
+  }
+  console.log('  WHY THE BENCH DECLINED');
+  for (const [k, n] of [...t.declined].sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${String(n).padStart(4)}  ${k}`);
+  }
 
   // The bounds. These are the claim, and they are the thing that has to keep
   // being true.
   check(t.noted > 0, 'a whole calendar produced no incidents at all — the bench is not wired in');
-  const penPerRace = t.penalties / Math.max(1, t.races);
-  check(penPerRace <= 1.5,
-    `${penPerRace.toFixed(2)} penalties a race is more than a Grand Prix produces`);
-  // The number that actually matters, because these are five-lap races and a
-  // Grand Prix is not five laps. A real season runs at one to three driving
-  // penalties a race; below half of one and the bench has stopped working.
-  check(gp >= 0.5 && gp <= 6,
-    `${gp.toFixed(1)} penalties implied for a full-distance race is outside one to three ` +
-    `by enough to be wrong`);
+
+  // WHAT IS ASSERTED, AND WHY IT IS NOT THE HEADLINE NUMBER.
+  //
+  // The tempting assertion is a band around the full-distance figure. It is the
+  // wrong one: at the default sweep that figure rests on nought to two events
+  // and swings by an order of magnitude on noise, so a band around it fails for
+  // reasons that have nothing to do with the code and passes for the same. What
+  // follows asserts the quantities that have enough events behind them to mean
+  // something, and treats the extrapolation as a reading rather than a gate.
+  const penaltiesPerRace = t.penalties / Math.max(1, t.races);
+  const lap1PerRace = t.firstLapPenalties / Math.max(1, t.races);
+
+  // The opening lap has one event per race behind it, so eleven races is a real
+  // sample. A Grand Prix produces a first-lap penalty perhaps one time in two.
+  check(lap1PerRace <= 1.2,
+    `${lap1PerRace.toFixed(2)} opening-lap penalties a race is more than the sport produces`);
+
+  // The bench must be alive. Not a rate — a floor on the raw count, which is the
+  // one thing a small sample can speak to: a whole calendar of racing with
+  // nobody penalised for anything means the rules are not connected.
+  check(t.penalties >= 2,
+    `${t.penalties} penalties in ${t.races} races — the bench has stopped finding anything`);
+
+  // And it must not be freer than the sport. An upper bound only: over-
+  // penalising is the failure that ruins a race for the player, under-
+  // penalising is a miss, and the two do not deserve the same alarm.
+  check(penaltiesPerRace <= 1.5,
+    `${penaltiesPerRace.toFixed(2)} penalties a race is more than a Grand Prix produces`);
+  check(gpHi <= 8,
+    `even the optimistic end of the full-distance estimate is ${gpHi.toFixed(1)} penalties`);
+
   check(t.nfa + t.giveBack >= t.penalties * 2,
     'a majority of incidents should end without a penalty, and this one does not');
-  if (t.penalties >= 8) {
-    check(share <= 0.30,
+
+  // The single most important number in the block, and it is asserted at a much
+  // lower event count than the rest because a bench biased toward the player is
+  // worse than a bench that misses things.
+  if (t.penalties >= 4) {
+    check(share <= 0.35,
       `${(share * 100).toFixed(0)}% of penalties fall on one car in twenty — the bench is ` +
-      `biased toward the player`);
+      `biased toward the driven car`);
+  }
+  if (t.penalties >= 8) {
     check(spread >= 3, 'every penalty in a season fell on the same handful of cars');
   }
 }
@@ -903,6 +1001,26 @@ function checkCalendar(): void {
  * eleven full races to find that out again costs twenty minutes a try.
  */
 const STAGED_ONLY = process.env.STEWARDS_PROBE === 'staged';
+
+/**
+ * How much racing the calendar sweep does.
+ *
+ * `STEWARDS_LAPS` and `STEWARDS_SEEDS` exist because the rate this probe
+ * measures is a COUNT OF RARE EVENTS, and the default sweep does not produce
+ * enough of them to say much. Eleven five-lap races leave forty-four race-laps
+ * after the opening one, over which two penalties is a typical result — and two
+ * events is plus or minus a hundred per cent. The same sweep can therefore
+ * report "three penalties in a Grand Prix" one week and "nought point four" the
+ * next with nothing having changed, which is exactly what happened.
+ *
+ * So the default is cheap enough to run on every change and its assertions are
+ * written to survive that noise; and when a threshold actually has to be
+ * re-derived, `STEWARDS_LAPS=20 STEWARDS_SEEDS=1,2,3` buys the sample that
+ * makes the number mean something.
+ */
+const SWEEP_LAPS = Number(process.env.STEWARDS_LAPS ?? 5);
+const SWEEP_SEEDS = (process.env.STEWARDS_SEEDS ?? '20260729')
+  .split(',').map((s) => Number(s.trim()));
 
 console.log('THE STEWARDS');
 console.log('');
