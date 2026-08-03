@@ -54,6 +54,22 @@ export interface TeamSeasonReport {
   closingCashUsd: number;
 }
 
+/** The answer to "can this be paid for, and is it allowed". */
+export interface CommitCheck {
+  /** Affordable AND permitted. False for an unconfirmed cap breach. */
+  ok: boolean;
+  /** Affordable, but it would take the season past the cost cap. */
+  overCap: boolean;
+  reason: string;
+  /**
+   * The refusal is a cap breach the player may still choose to make.
+   *
+   * The screen turns this into a confirmation naming the penalty, and retries
+   * with `allowBreach`. Anything without it is a plain refusal.
+   */
+  needsConfirmation?: boolean;
+}
+
 /** Dollars as millions, to one decimal. Every money string in the mode uses it. */
 function fmtM(usd: number): string {
   return (usd / 1e6).toFixed(1);
@@ -954,11 +970,7 @@ export class Career {
    * a decision the player is entitled to make deliberately, so `overCap` is
    * reported rather than refused — the caller confirms it, naming the penalty.
    */
-  canCommit(costUsd: number, opts: { underCap: boolean }): {
-    ok: boolean;
-    overCap: boolean;
-    reason: string;
-  } {
+  canCommit(costUsd: number, opts: { underCap: boolean }): CommitCheck {
     const t = this.state.team;
     if (!t) return { ok: false, overCap: false, reason: 'Not a My Team career.' };
     if (costUsd > t.cashUsd) {
@@ -976,6 +988,64 @@ export class Career {
       };
     }
     return { ok: true, overCap: false, reason: '' };
+  }
+
+  /**
+   * The gate every commitment goes through.
+   *
+   * WHY THIS IS SEPARATE FROM `canCommit`, AND WHY IT HAD TO BE. `canCommit`
+   * reports; this one decides. The first version of this code had only the
+   * reporter, and every commit path checked its `ok` field — which is TRUE for
+   * an over-cap commitment, because being able to afford something and being
+   * allowed to buy it are different questions. So a career that spent
+   * aggressively sailed straight past the cost cap to $160M of a $135M ceiling
+   * without anything stopping it, and `probe:myteam` reported exactly that on
+   * its first run: "committed $160.2M against a $135M cap without being
+   * stopped". The cap was a displayed number, which is the one thing this whole
+   * design says a management system must never be.
+   *
+   * A breach is still a decision the player is entitled to make — it is a real
+   * thing teams do — so it is not forbidden. It requires `allowBreach`, which
+   * the screen only passes after a confirmation naming the penalty.
+   */
+  private gate(costUsd: number, underCap: boolean, allowBreach: boolean): CommitCheck {
+    const check = this.canCommit(costUsd, { underCap });
+    if (!check.ok) return check;
+    if (check.overCap && !allowBreach) {
+      return { ok: false, overCap: true, reason: check.reason, needsConfirmation: true };
+    }
+    return check;
+  }
+
+  /** The five manufacturers, and whether each will deal with this team today. */
+  engineOffers(): ReturnType<typeof engineOffers> {
+    const t = this.state.team;
+    return engineOffers(
+      t?.teamId ?? this.state.teamId,
+      this.state.season.year,
+      this.state.narrative.reputation);
+  }
+
+  /**
+   * Who the player could put in the second car.
+   *
+   * Two sources, and both are real people in this save's world rather than a
+   * list of names on a screen: drivers who currently hold no seat — reserves,
+   * anyone the market left over — and a generated pool of free agents for this
+   * season. Whoever is signed becomes a `WorldDriver` and races.
+   */
+  driverMarket(): WorldDriver[] {
+    const world = this.state.world;
+    const mate = this.teammate();
+    const seatless = TIER_ORDER.flatMap((tier) => world.tiers[tier].drivers)
+      .filter((d) => !d.retired && d.reserve && d.id !== this.state.playerDriverId
+        && d.id !== mate?.id);
+    // Seeded on the season as well as the career, so the market changes between
+    // years rather than offering the same eight people for a decade.
+    const fresh = generateFreeAgents(
+      new Rng((this.state.seed ^ 0x63a1d7f5) + this.state.season.year * 7919),
+      6, this.state.season.year);
+    return [...seatless, ...fresh].sort((a, b) => b.skill - a.skill);
   }
 
   /** What a project would cost and deliver, before it is commissioned. */
@@ -1005,9 +1075,10 @@ export class Career {
    * a media day — are what determined it, rather than a coin flip four rounds
    * later that nothing could have influenced.
    */
-  startProject(department: DepartmentId, ambition: Ambition, efficiency = false): {
-    ok: boolean; reason: string; project?: UpgradeProject;
-  } {
+  startProject(
+    department: DepartmentId, ambition: Ambition, efficiency = false,
+    opts: { allowBreach?: boolean } = {},
+  ): { ok: boolean; reason: string; needsConfirmation?: boolean; project?: UpgradeProject } {
     const t = this.state.team;
     if (!t) return { ok: false, reason: 'Not a My Team career.' };
     if (t.developmentBanRounds > 0) {
@@ -1025,8 +1096,10 @@ export class Career {
     }
 
     const quote = this.quoteProject(department, ambition, efficiency);
-    const check = this.canCommit(quote.costUsd, { underCap: true });
-    if (!check.ok) return { ok: false, reason: check.reason };
+    const check = this.gate(quote.costUsd, true, opts.allowBreach ?? false);
+    if (!check.ok) {
+      return { ok: false, reason: check.reason, needsConfirmation: check.needsConfirmation };
+    }
 
     const dept = t.departments[department];
     const project: UpgradeProject = {
@@ -1064,7 +1137,9 @@ export class Career {
   }
 
   /** Takes on or lets go staff, charged pro-rata for the rest of the season. */
-  changeStaff(department: DepartmentId, delta: number): { ok: boolean; reason: string } {
+  changeStaff(
+    department: DepartmentId, delta: number, opts: { allowBreach?: boolean } = {},
+  ): { ok: boolean; reason: string; needsConfirmation?: boolean } {
     const t = this.state.team;
     if (!t) return { ok: false, reason: 'Not a My Team career.' };
     const dept = t.departments[department];
@@ -1082,8 +1157,10 @@ export class Career {
     const cost = Math.round(change * STAFF_WAGE_USD * remaining);
 
     if (cost > 0) {
-      const check = this.canCommit(cost, { underCap: true });
-      if (!check.ok) return { ok: false, reason: check.reason };
+      const check = this.gate(cost, true, opts.allowBreach ?? false);
+      if (!check.ok) {
+        return { ok: false, reason: check.reason, needsConfirmation: check.needsConfirmation };
+      }
     }
     dept.staff = target;
     t.cashUsd -= cost;
@@ -1095,7 +1172,9 @@ export class Career {
   }
 
   /** Builds the next level of a facility. Capital cost, under the cap. */
-  upgradeFacility(department: DepartmentId): { ok: boolean; reason: string } {
+  upgradeFacility(
+    department: DepartmentId, opts: { allowBreach?: boolean } = {},
+  ): { ok: boolean; reason: string; needsConfirmation?: boolean } {
     const t = this.state.team;
     if (!t) return { ok: false, reason: 'Not a My Team career.' };
     const dept = t.departments[department];
@@ -1103,8 +1182,10 @@ export class Career {
       return { ok: false, reason: 'This facility is already at level ' + MAX_FACILITY_LEVEL + '.' };
     }
     const cost = facilityUpgradeCostUsd(dept.level);
-    const check = this.canCommit(cost, { underCap: true });
-    if (!check.ok) return { ok: false, reason: check.reason };
+    const check = this.gate(cost, true, opts.allowBreach ?? false);
+    if (!check.ok) {
+      return { ok: false, reason: check.reason, needsConfirmation: check.needsConfirmation };
+    }
 
     dept.level++;
     t.cashUsd -= cost;
@@ -1129,12 +1210,16 @@ export class Career {
    * stops to make. Six hundredths a step is not a rounding error over a season:
    * it is the difference between a two-stop being worth it and not.
    */
-  investInPitCrew(): { ok: boolean; reason: string } {
+  investInPitCrew(opts: { allowBreach?: boolean } = {}): {
+    ok: boolean; reason: string; needsConfirmation?: boolean;
+  } {
     const t = this.state.team;
     const team = this.myTeamRecord();
     if (!t || !team) return { ok: false, reason: 'Not a My Team career.' };
-    const check = this.canCommit(PIT_CREW_STEP_USD, { underCap: true });
-    if (!check.ok) return { ok: false, reason: check.reason };
+    const check = this.gate(PIT_CREW_STEP_USD, true, opts.allowBreach ?? false);
+    if (!check.ok) {
+      return { ok: false, reason: check.reason, needsConfirmation: check.needsConfirmation };
+    }
     if (!investInPitCrew(team)) {
       return { ok: false, reason: 'This crew is as quick as a crew gets.' };
     }

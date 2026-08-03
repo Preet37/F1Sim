@@ -1176,7 +1176,7 @@ function paintHelmet(p: Panel, spec: LiverySpec, flash: number): void {
 
 /** Colour for each flat swatch, derived from the team's three colours. */
 function swatchColour(
-  name: SwatchName, spec: LiverySpec, flash: number, d: LiveryDesign,
+  name: SwatchName, spec: LiverySpec, flash: number, _d: LiveryDesign,
 ): number {
   switch (name) {
     case 'body': return spec.colour;
@@ -1408,6 +1408,40 @@ function buildSurfaceMap(size: number, finish: LiveryFinish): THREE.Texture {
  *
  * @param size texture edge in pixels; 512 on desktop, 256 on the low tier
  */
+/**
+ * Paints the atlas into a canvas of the caller's, and allocates nothing.
+ *
+ * FOR THE EDITOR'S THUMBNAILS, and the reason they can be trusted. A family
+ * chip drawn by a second, simpler routine is a picture of what somebody thought
+ * the painter did; this is the painter. Six chips therefore cost six canvases
+ * and no GPU textures, no cache entries and no disposal, which matters because
+ * they are repainted on every keystroke that changes a colour.
+ */
+export function paintLiveryAtlas(
+  ctx: CanvasRenderingContext2D, spec: LiverySpec, size: number,
+  design: LiveryDesign = DEFAULT_LIVERY_DESIGN,
+): void {
+  const flash = contrastFlash(spec.colour, spec.accent);
+  const ink = readable(flash);
+
+  ctx.fillStyle = css(spec.colour);
+  ctx.fillRect(0, 0, size, size);
+
+  const mk = (name: PanelName) =>
+    new Panel(ctx, PANEL[name], size, PANEL_SIZE[name].lengthM, PANEL_SIZE[name].girthM);
+
+  paintBody(mk('body'), spec, flash, ink, design);
+  paintPod(mk('pod'), spec, flash, design);
+  paintAirbox(mk('airbox'), spec, flash, design);
+
+  for (const name of SWATCH_ORDER) {
+    new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash, design)));
+  }
+}
+
+/** Where the monocoque panel sits in the atlas, so a chip can crop to it. */
+export const BODY_PANEL_RECT = PANEL.body;
+
 export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   // The design comes from the call if there is one and from the registry
   // otherwise, which is how `CarMesh` — which knows nothing about families —

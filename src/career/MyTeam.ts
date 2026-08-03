@@ -92,13 +92,24 @@ export function commercialIncomePerRound(fanRating: number, rounds: number): num
 /**
  * A season of commercial revenue.
  *
- * $34M with nobody watching, $74M with everybody. Set against a fixed annual
- * bill of about $68M for a starting team, that spread is the difference between
- * a season that funds itself and one that eats the founding capital — which is
- * the pressure the whole mode is supposed to apply.
+ * $44M with nobody watching, $84M with everybody.
+ *
+ * THESE NUMBERS ARE A MEASUREMENT, NOT AN OPINION. The first pass had the floor
+ * at $34M, and `probe:myteam` reported the consequence over a hundred seasons:
+ * a starting team's fixed annual bill is about $68M and last place pays $22M, so
+ * a team that developed NOTHING AT ALL still lost about $8M a season and was
+ * insolvent by its third. Eighty-five projects were commissioned across a
+ * hundred seasons; the mode was a countdown rather than a budget.
+ *
+ * At $44M the back of the grid breaks even and every place gained in the
+ * constructors' table is worth two to five million of development. The cost cap
+ * only becomes the binding constraint near the front — $70M of prize money plus
+ * $84M of commercial against a $68M bill and $87M of headroom — which is exactly
+ * where it binds in the real sport, and it is why `probe:myteam` tests the cap
+ * against a deliberately rich team rather than expecting a new one to reach it.
  */
 export function commercialIncomeAnnualUsd(fanRating: number): number {
-  return Math.round(34_000_000 + clamp(fanRating, 0, 100) / 100 * 40_000_000);
+  return Math.round(44_000_000 + clamp(fanRating, 0, 100) / 100 * 40_000_000);
 }
 
 // ===========================================================================
