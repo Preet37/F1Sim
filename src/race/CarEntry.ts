@@ -221,6 +221,24 @@ export class CarEntry {
   offTrackNow = false;
   disqualified = false;
 
+  /**
+   * Index of the car this driver has been told to let back past, or -1.
+   *
+   * The remedy in Art. B1.8.6 — "At the absolute discretion of the Race Director
+   * a driver may be given the opportunity to give back the whole of any
+   * advantage he gained by leaving the track" — and the only outcome of a
+   * stewards' investigation that is neither a penalty nor nothing at all.
+   *
+   * Held on the car rather than inside `Stewards` because three separate things
+   * have to read it: the stewards, to notice it being obeyed; `RaceEngine`, to
+   * make an AI car actually obey it; and the HUD, to tell the player. It is
+   * cleared the moment the place is handed back, the moment the deadline passes
+   * — which converts it to a penalty — or the moment either car's race ends.
+   */
+  cedePositionTo = -1;
+  /** Session time by which `cedePositionTo` must have been satisfied. */
+  cedeDeadline = 0;
+
   // --- Race state ----------------------------------------------------------
   retired = false;
   retirementReason = '';
@@ -691,6 +709,59 @@ export class CarEntry {
       if (!p.served && (p.kind === 'drive-through' || p.kind === 'stop-go-10s')) return p;
     }
     return null;
+  }
+
+  /**
+   * Unserved 5- or 10-second time penalty, if any.
+   *
+   * Deliberately NOT part of `pendingServePenalty`. That one answers "does this
+   * car have to come to the pit lane", and a time penalty does not force a stop:
+   * Art. B1.9.5a lets the driver "elect not to stop, provided he carries out no
+   * further pit stop before the end of the TTCS", in which case the five seconds
+   * are added to the elapsed time instead. This one answers a different
+   * question — "if the car is stopping anyway, what does the crew owe" — and the
+   * answer is that they may not touch it for the duration.
+   */
+  pendingTimePenalty(): Penalty | null {
+    for (const p of this.penalties) {
+      if (!p.served && (p.kind === 'time-5s' || p.kind === 'time-10s')) return p;
+    }
+    return null;
+  }
+
+  /**
+   * Seconds the crew must stand back for at this stop, before any work.
+   *
+   * Art. B1.9.5c: "Whilst a Car is stationary in the Pit Lane as a result of
+   * incurring a 5-Second Penalty ... or a 10-Second Penalty ..., it may not be
+   * worked on until the Car has been stationary for the duration of the penalty.
+   * In this context, touching the Car or driver by hand or tools or equipment
+   * will all constitute working."
+   *
+   * This is why a five-second penalty costs a driver much more than five
+   * seconds: the stop itself happens afterwards, on top. Zero when there is
+   * nothing to serve, so a caller can add it unconditionally.
+   */
+  penaltyHoldS(): number {
+    const p = this.pendingTimePenalty();
+    return p === null ? 0 : p.timeS;
+  }
+
+  /**
+   * Marks a time penalty served in the pit box and takes it back off the clock.
+   *
+   * The seconds were added to `penaltySeconds` when the penalty was issued, so
+   * the tower could show the driver carrying it. Serving it in the box is the
+   * alternative to paying it at the flag, not an addition to it, so it comes
+   * back off here — otherwise a driver who did the right thing would be charged
+   * twice for it.
+   */
+  servePenaltyInBox(): number {
+    const p = this.pendingTimePenalty();
+    if (p === null) return 0;
+    p.served = true;
+    this.penaltySeconds = Math.max(0, this.penaltySeconds - p.timeS);
+    return p.timeS;
   }
 
   /** Estimated tyre wear per lap, from the last few laps. For the strategy UI. */
