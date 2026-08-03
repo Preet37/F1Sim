@@ -512,6 +512,19 @@ Two are large and load-bearing:
   `:911` and uses it **only to choose which sentence to print** (`:913-916`). A
   regression reintroducing the 47% frame-rate-dependent steering this very file
   documents finding is reported as prose, exit 0.
+- **`probeNeutralisation.ts`** is the expensive one. It contains no `check(` and
+  no `fail(` anywhere — it is a pure reporting script — and in this sweep it ran
+  for **over 40 minutes without finishing** before the harness timeout killed it
+  (it had reached row 5 of 9). So it is 40+ minutes of compute that cannot, by
+  construction, report a failure to `npm run`. It also defaults to **3 circuits**
+  (`zandvoort,silverstone,monaco` at `:86`), not eleven.
+
+  Its partial output is worth a second look by whoever owns neutralisation:
+  **13.8% – 38.1% of race distance run under a safety car or VSC** across three
+  circuits (32.5% and 38.1% on the 5-lap runs). That is far above a real season
+  and it would be caught automatically if this file had a threshold. Flagged, not
+  asserted — the probe was killed before printing whatever verdict it intends,
+  and it has none to print.
 
 ### B3 — `probe:renderperf` has no verdict and swallows page errors
 **Confidence: certain.** The only `throw`s are harness failures (no Chrome, no
@@ -737,6 +750,7 @@ are not meaningful. Results:
 | `probe:curvature`, `probe:handling`, `probe:framerate`, `probe:racingline`, `probe:turnin`, `probe:brakebalance`, `probe:attrition` | pass — **but see B2/B7**: several of these cannot fail |
 | `validate:race` | pass (killed twice by the OS under load before completing; passed when re-run alone) |
 | `validate:integrity` | killed under load, not re-run to completion |
+| `probe:neutral` | **did not finish in 40 minutes** and was killed by the sweep's own timeout, having reached 5 of 9 rows. Not a defect in it — its races are bounded by `MAX_STEPS` — but see B2: it has no assertions, so finishing would not have produced a verdict either |
 | `validate:flags` | **fail — 3 failures, pre-existing and documented.** Numbers stable: double-yellow lift 21.6% vs single-yellow 85.3%; median safety-car gap 219m against the ten-car-length limit; safety-car lap ×1.36 a green lap against a real ×1.6-2.0 |
 | `probe:hudtext` | **fail — pre-existing, but the recorded cause is wrong. See A3** |
 | `probe:finish` (new) | **fail — A1.** Re-confirmed on merged `main`: 1/19 completed the distance, 19/19 share the winner's time |
