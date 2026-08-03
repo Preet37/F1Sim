@@ -463,7 +463,7 @@ front-of-house screens most likely to be shown to someone are the two that do no
 The brief's second bug class. For each probe the question asked was: *what would
 have to break for this to fail, and can it actually observe that?*
 
-### B1 — `probe:racesweep` prints `FAIL` and exits 0
+### B1 — `probe:racesweep` prints `FAIL` and exits 0 — **fixed, see C8**
 **Confidence: certain.** `scripts/raceSweep.ts:108-111` computes
 `const failed = rows.filter((r) => r.failures.length > 0)`, prints each one, and
 never uses it again. There is no `process.exit` or `exitCode` anywhere in the
@@ -522,7 +522,7 @@ and worked around rather than reported: *"Left to itself the deep-linked player 
 has nobody driving it, and by the time the scene is worth photographing it is
 parked against a barrier under a virtual safety car."*
 
-### B6 — `probe:cameras` lies to the camera director about dt by 4×
+### B6 — `probe:cameras` lies to the camera director about dt by 4× — **fixed, see C9**
 **Confidence: certain.** `scripts/probeCameras.ts:108-114` steps the engine at
 `PHYSICS_DT` (1/120), samples every 8th step — 1/15 s of simulated time — and then
 calls `dir.update(1 / 60, …)`. The director's damping integrates at **one quarter**
