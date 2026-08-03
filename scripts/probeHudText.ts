@@ -25,7 +25,7 @@ import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
   pitCueText, radioExchange, relayed, repairableInBox, replyExchange,
   radioTurnSpec, setRadioVariantSeed, standingsCells,
-  teamLine, towerFit, towerWindow, weatherReadout,
+  teamLine, towerFit, towerWindow, weatherReadout, TOWER_RAIL_FLOOR_PX,
   type RadioTurn,
 } from '../src/ui/Hud';
 import { COMPONENT_IDS } from '../src/race/DamageModel';
@@ -191,23 +191,32 @@ if (fastest) {
  * tower is the tallest thing on the left rail and the one most able to do it,
  * so the arithmetic it is sized by is asserted rather than eyeballed.
  */
-const VIEWPORTS: [string, number, number, number][] = [
-  // name, width, height, px of rail that must be left below the panel.
-  //
-  // The clearance is not a guess. It is what the rail beneath the tower has to
-  // carry, and it came DOWN in the pass that moved the tyre, fuel and weather
-  // panels into the right-hand car column: what is left below the running
-  // order is the radio card (198px), the two live cues (30 each), the gaps
-  // between them, and the rail's own bottom offset clear of the mirror band.
-  ['desktop 1400x900', 1400, 900, 366],
-  ['wide desktop 1920x1080', 1920, 1080, 366],
-  ['laptop 1280x800', 1280, 800, 366],
-  ['landscape phone 844x390', 844, 390, 174],
-  ['landscape phone 740x360', 740, 360, 144],
-  ['portrait phone 390x844', 390, 844, 300],
+const VIEWPORTS: [string, number, number][] = [
+  ['desktop 1400x900', 1400, 900],
+  ['wide desktop 1920x1080', 1920, 1080],
+  ['laptop 1280x800', 1280, 800],
+  ['landscape phone 844x390', 844, 390],
+  ['landscape phone 740x360', 740, 360],
+  ['portrait phone 390x844', 390, 844],
 ];
 
-for (const [name, w, h, clearance] of VIEWPORTS) {
+// WHAT THE RAIL BELOW THE TOWER KEEPS, and this number came DOWN from 366 in
+// the pass that fixed issue #17. It used to be the rail's WORST case — a
+// full-size radio plate at 198px with two live cues under it — reserved on
+// every frame of every session whether or not anybody was transmitting, and
+// `probe:tower` measured what that cost: four rows of twenty on a 1280x800
+// laptop in the driver's eye, with 221 pixels of empty rail underneath.
+//
+// It is now the rail's FLOOR, imported from the HUD rather than restated here:
+// the smallest radio card `sizeRadioCard` will draw before `fitRail` throws it
+// away instead, plus the rail's own top mask, plus the gap under the panel.
+// Everything above that floor the rail borrows from the running order when it
+// has something to say and hands back when it does not — which is exactly what
+// `sizeRadioCard` was built to do, and `shoot:panels` is what asserts that a
+// card raised in the band that is left is on screen and legible.
+const RAIL_CLEARANCE = TOWER_RAIL_FLOOR_PX;
+
+for (const [name, w, h] of VIEWPORTS) {
   const fit = towerFit(w, h);
   const rowH = fit.compact ? 17 : 20;
   // Header, flag band, column rule, the fastest-lap strip along the foot, the
@@ -215,11 +224,15 @@ for (const [name, w, h, clearance] of VIEWPORTS) {
   // the circuit name and the column rule, which is where the difference between
   // the two comes from.
   //
-  // MEASURED WITH THE FLAG BAND OUT, which is the tallest the panel ever is.
-  // A budget written for the quiet frame is a budget that overflows on the one
-  // frame the driver most needs the panel to be readable.
-  const chrome = fit.compact ? 76 : 118;
+  // MEASURED WITH THE FLAG BAND OUT, which is the tallest the panel ever is,
+  // and measured on the laid-out panel by `probe:tower` rather than added up
+  // from the stylesheet: 148 on a desktop and 86 compact, against 109 and 55
+  // with the band away. These two numbers were 118 and 76 and were wrong in
+  // the dangerous direction — a budget written for the quiet frame is a budget
+  // that overruns on the one frame the driver most needs the panel.
+  const chrome = fit.compact ? 86 : 148;
   const bottom = 10 + chrome + fit.rows * rowH + 5;
+  const clearance = RAIL_CLEARANCE;
 
   check(fit.rows >= 4, `${name}: ${fit.rows} rows is not a running order`);
   check(bottom <= h - clearance,

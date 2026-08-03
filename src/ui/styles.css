@@ -373,7 +373,7 @@ canvas#view {
    left rail, and a tower sized to "as many as fit" grows straight down
    through the pit instruction. See `towerFit`. */
 .hud-tower {
-  --tower-cols: 3px 22px 20px minmax(0, 1fr) 0 52px 12px 32px;
+  --tower-cols: 3px 20px 18px minmax(0, 1fr) 52px 44px 12px 30px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
   width: 300px;
@@ -574,22 +574,27 @@ canvas#view {
    THE DATA WAS NEVER THE PROBLEM AND IT IS WORTH SAYING SO, because the
    obvious diagnosis is wrong. `standingsCells` has always returned a `best`
    for every car that has set a lap, computed from that car's own
-   `bestLapTime` and owing nothing to the player's; a probe now drives a
+   `bestLapTime` and owing nothing to the player's; `probe:hudtext` drives a
    qualifying session in which the player never moves and asserts all
    nineteen rivals' times are produced. They always were.
 
-   The row simply never drew them. It drew a GAP — a deficit to the quickest
-   lap — and a deficit is not a time. So a player watching qualifying saw
-   `+0.412` beside a driver and no lap anywhere on the panel, and read that,
-   correctly, as the tower refusing to show what everybody had done.
+   The row simply never drew them. First it drew a GAP and nothing else — a
+   deficit is not a time — and then, when the column was added, it was added
+   only to the sessions that are classified ON lap times, with
+   `.hud-tower:not(.is-timed) .tower-time { display: none }` and a zero-width
+   slot in the race template. Which means a RACE still showed nobody's lap:
+   measured by `probe:tower` at Monza with the player retired on the grid,
+   17 rivals had set a time and 17 of 17 rows drew a cell 0px wide with the
+   right string inside it. The player's own LAST and BEST were the only lap
+   times anywhere on the screen, which is exactly the report — "why are you
+   waiting on me to display their times that they did at other laps?"
 
-   A column, then, in the sessions that are ABOUT lap times: practice and
-   qualifying, where a broadcast tower shows the time and the deficit side by
-   side. In a race it collapses to zero width — a race's tower is intervals,
-   and a column of best laps down the side of one is a different graphic
-   about a different question. `is-timed` is written by `updateTower` from
-   the session kind, so the header and the cells cannot come apart. */
-.hud-tower.is-timed { --tower-cols: 3px 20px 18px minmax(0, 1fr) 56px 46px 12px 30px; }
+   ONE TEMPLATE, AND THE COLUMN IS IN IT. A lap time belongs to the car that
+   set it in every session there is; a race tower that shows the interval AND
+   the pace is what a broadcast shows, and it is the only arrangement with no
+   state in which a set time is withheld. The column carries each car's own
+   BEST — not its last — so the purple that marks the quickest lap of the
+   session sits on the number that earned it. */
 .tower-time {
   font-family: var(--font-data);
   font-size: 10.5px;
@@ -603,8 +608,6 @@ canvas#view {
    game, because that is the sport's own rule and it means the column needs no
    legend. */
 .tower-row.is-best .tower-time { color: var(--violet); }
-.hud-tower:not(.is-timed) .tower-time,
-.hud-tower:not(.is-timed) .c-time { display: none; }
 /* THE LEADER'S NUMBER IN A FILLED RED CELL. This is the one place in this
    game red does not mean "stopped", and it is deliberate: it is what a
    broadcast tower does, and it is the fastest way to find the front of the
@@ -2306,11 +2309,18 @@ canvas#view {
 @media (max-width: 620px) and (orientation: portrait) {
   .hud { font-size: 11px; }
 
-  .hud-tower { width: calc(50% - 14px); max-width: 176px; }
+  /* THE TWO PANELS DO NOT SPLIT THE EDGE EVENLY ANY MORE, and the reason is
+     measurable rather than aesthetic. At 176px the running order had 158px of
+     row to lay seven columns into and the driver-code column came out at 11px
+     — `probe:tower` measured 20px of every three-letter code cut off in a
+     race and the whole code cut off in qualifying. The timing panel beside it
+     carries four figures and three sector tiles and gives up 24 pixels
+     without losing anything. The pair still spans the same 352px it did. */
+  .hud-tower { width: 200px; max-width: 200px; }
 
   .hud-timing {
-    width: calc(50% - 14px);
-    max-width: 176px;
+    width: 152px;
+    max-width: 152px;
     padding: 5px 6px 6px;
   }
   .timing-lap { font-size: 19px; }
@@ -2731,19 +2741,34 @@ canvas#view {
    ends up hanging off the bottom of a 390px screen. The condition here and
    the condition in `towerFit` are deliberately written the same way round.
 
-   What is dropped, and why in this order: the best lap first (the gap is the
-   live number, the best lap is reference), then the driver's first name and
-   the team line. That is the order a broadcast lower-third sheds detail when
-   it gets narrow, and it leaves the two things that identify a car — its
-   colour and its surname — standing until the end. */
+   WHAT IS DROPPED HERE IS THE TEAM MARK, AND IT USED TO BE THE LAP TIME.
+   Both cannot fit: a portrait phone gives this panel about 190 pixels of
+   content and eight columns do not go into it. The mark is the one that goes,
+   because the row already carries the team as a livery-coloured bar down its
+   left edge and the mark is the same fact drawn twice — while the lap time is
+   the fact the player asked for and could not see anywhere (#35).
+
+   MEASURED, and this is why it is a template rather than a preference. Before
+   this rule existed the desktop's timed template won on a phone as well —
+   `.hud-tower.is-timed` outranks a media query on `.hud-tower` — so a portrait
+   phone in qualifying laid out 220 pixels of fixed columns in a 164-pixel row:
+   `probe:tower` measured the row OVERRUNNING THE PANEL BY 61px with the
+   driver-code column squeezed to ZERO, so every code on the board was cut off
+   entirely. In a race, on the seven-column template, the code column was 11px
+   and 20px of every code was cut off. Both are gone: the code column measures
+   38px here, which is a three-letter code with room to spare. */
 @media (max-width: 900px), (max-height: 470px) {
   .hud-tower {
-    --tower-cols: 3px 17px 15px minmax(0, 1fr) 44px 10px 26px;
+    --tower-cols: 3px 16px minmax(0, 1fr) 38px 32px 9px 22px;
     width: 232px;
     padding: 6px 6px 5px;
   }
-  .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 5px; }
-  .tower-cols { gap: 0 5px; padding: 0 3px 4px; margin-bottom: 3px; }
+  /* The mark's slot is not narrowed, it is removed: a `display: none` child
+     takes no grid column at all, so the seven columns above line up with the
+     seven cells that are left. */
+  .tower-mark, .c-mark { display: none; }
+  .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 4px; }
+  .tower-cols { gap: 0 4px; padding: 0 3px 4px; margin-bottom: 3px; }
   /* The column rule goes, and so does the circuit name. Six columns, three of
      them a colour bar, a badge and a single letter, do not need labelling —
      and fifteen pixels of header is most of a row on a screen 390 pixels
@@ -2764,6 +2789,7 @@ canvas#view {
   .tower-pos { font-size: 9.5px; padding: 1px 0; }
   .tower-mark { width: 15px; height: 15px; }
   .tower-code { font-size: 10.5px; letter-spacing: 0.04em; }
+  .tower-time { font-size: 9.5px; }
   .tower-gap { font-size: 9.5px; }
   .tower-row.is-leader .tower-gap { font-size: 6.5px; letter-spacing: 0.06em; }
   .tower-tyre { font-size: 8px; }
@@ -2785,7 +2811,7 @@ canvas#view {
    graphic with three times this width to spend. */
 @media (min-width: 1500px) {
   .hud-tower {
-    --tower-cols: 3px 24px 22px minmax(0, 1fr) 58px 14px 36px;
+    --tower-cols: 3px 24px 22px minmax(0, 1fr) 62px 52px 14px 36px;
     width: 340px;
   }
   .hud-notices { --rail-w: 340px; }

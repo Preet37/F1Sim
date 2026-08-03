@@ -1584,13 +1584,20 @@ export class Hud {
     //
     // One layout read, on the frames where the row count or the flag band has
     // actually changed. `Hud.update` does not measure anything.
-    // A Lap Time Classified Session gets the lap-time column; a race does not.
-    // One class write per session, not per frame.
-    const timed = engine.config.kind !== 'race';
-    const shape = shown + '|' + (this.flagBandShown ? 'f' : '') + (timed ? 't' : '');
+    //
+    // THE LAP-TIME COLUMN IS NO LONGER SWITCHED BY SESSION KIND, and that is
+    // issue #35. It used to be `kind !== 'race'`, and `.hud-tower:not(
+    // .is-timed) .tower-time` set the cell to `display: none` — so in a race
+    // every row carried the right lap time in a cell zero pixels wide.
+    // Measured on today's build, Monza, player retired on the grid with no lap
+    // of their own: 17 rivals had set a time and 17 of 17 rows drew none of
+    // them. A lap time belongs to the car that set it in every session there
+    // is, which is what the player asked for — "why are you waiting on me to
+    // display their times that they did at other laps?" — and the column is in
+    // one template now, so there is no state in which it can be hidden.
+    const shape = shown + '|' + (this.flagBandShown ? 'f' : '');
     if (shape !== this.lastTowerShape) {
       this.lastTowerShape = shape;
-      this.tower.classList.toggle('is-timed', timed);
       const bottom = Math.round(this.tower.getBoundingClientRect().bottom);
       if (bottom > 0) this.root.style.setProperty('--rail-top', bottom + 8 + 'px');
     }
@@ -3302,14 +3309,44 @@ function enterNextFrame(card: HTMLElement): void {
 }
 
 /**
+ * What the rail below the running order keeps for itself, in pixels.
+ *
+ * THIS IS A FLOOR AND IT USED TO BE A WORST CASE, and that difference is
+ * issue #17. The rail's tallest possible content is a full-size radio plate
+ * (198px) with two live cues under it, and `towerFit` reserved room for all of
+ * it on every frame of every session — so a tower on a 1280x800 laptop was
+ * sized against 366 pixels of cards that are on screen for a few seconds of a
+ * race and absent for the rest of it. Under the mirror cameras, where the
+ * whole left column already lifts by up to a third of the viewport, that
+ * permanent reservation is what took the running order down to FOUR ROWS.
+ *
+ * The floor is what the rail needs to keep working, not what it needs to look
+ * its best: `RADIO_CARD_MIN_PX` is the size `sizeRadioCard` shrinks the plate
+ * to before `fitRail` throws it away instead, `RAIL_MASK_PX` is the fade at
+ * the top of the band that nothing may be laid out into, and 8 is the gap the
+ * tower leaves under itself. Everything above that floor the rail borrows from
+ * the running order when it has something to say, and hands back when it does
+ * not — which is what `sizeRadioCard` and `fitRail` were built to do.
+ */
+export const TOWER_RAIL_FLOOR_PX = RADIO_CARD_MIN_PX + RAIL_MASK_PX + 8;
+
+/**
+ * A bound on the row count, against a viewport nobody has thought about.
+ *
+ * Not a design decision: the field is the cap and `updateTower` applies it.
+ * Twenty-six is every seat in Formula 1 plus a full Formula 2 top-up, which is
+ * the largest grid `probe:fieldsize` builds.
+ */
+const MAX_TOWER_ROWS = 26;
+
+/**
  * How many rows the tower shows, and whether they are the single-line kind.
  *
  * Bounded at both ends and on purpose. The floor stops a short viewport
- * showing two cars, which answers nothing. The ceiling is the interesting one:
- * the left rail also carries the weather, the car state and the pit
- * instruction, and a tower sized to "everything that fits" grows straight
- * through them. Fourteen rows is what is left after that reservation on a
- * 900px screen, and it is more of the field than anyone reads at speed.
+ * showing two cars, which answers nothing. The ceiling is a sanity bound and
+ * nothing more — the real cap is the size of the field, which `updateTower`
+ * applies, because a running order that stops before the last car is the
+ * reported fault.
  *
  * Pure, and exported, so `probe:hudtext` can assert the landscape-phone case —
  * this repo has a history of HUD panels running off the bottom of a 390px
@@ -3326,24 +3363,31 @@ export function towerFit(
   // 22 rather than 26 on a desktop. Four pixels a row is three more cars, and
   // a broadcast tower row is tighter than this one was.
   const rowH = compact ? 17 : 20;
-  // The panel's own header block and column rule, PLUS the whole rail beneath
-  // it: the notice stack, the weather bug and the car state. This number is
-  // the reason the tower is not simply "as many rows as fit" — the rest of
-  // the left rail has to exist somewhere, and a tower sized to the viewport
-  // grows straight down through the pit instruction.
+  // What is NOT available to the rows: the panel's own top offset (10), its
+  // header block, flag band, column rule and fastest-lap strip, the 5px break
+  // under a pinned leader, and the rail's floor beneath the panel.
   //
-  // IT CAME DOWN BY A HUNDRED AND EIGHTY PIXELS, from two changes in the same
-  // pass. The rail used to reserve room for a stack of up to two principal's
-  // cards ON TOP OF the broadcast plate, and now carries exactly one card,
-  // because two people cannot transmit on one radio at once. And the tyre,
-  // fuel and weather panels have moved out of this column entirely, into the
-  // CAR column on the right where they belong — see `.hud-carstate`. Both are
-  // pixels handed straight back to the running order, which is what pays for
-  // "why can I only see like 4 cars on the leaderboard".
-  // The compact figure is unchanged: on a phone the tyre and weather panels are
-  // repositioned by their own media queries rather than by this column, so
-  // moving them on a desktop bought the phone nothing.
-  const reserved = compact ? 260 : 500;
+  // THE CHROME IS MEASURED WITH THE FLAG BAND OUT — 148 on a desktop and 86
+  // compact, read off the laid-out panel by `probe:tower`, against 109 and 55
+  // with the band away. A budget written for the quiet frame is a budget that
+  // overruns on the one frame the driver most needs this panel: a safety car
+  // raises the band by 39 pixels and every row below it moves down.
+  //
+  // IT CAME DOWN BY TWO HUNDRED AND TWENTY SEVEN PIXELS, and every one of them
+  // is a car on the board. The rail's share used to be its WORST CASE — a
+  // full-size radio plate and two live cues, 366px — held in reserve on every
+  // frame whether or not anybody was transmitting. Measured on today's build
+  // at 1280x800: fifteen rows of twenty in the chase camera with 242px of
+  // empty rail under the panel, and FOUR rows in the driver's eye with 221px
+  // empty. That is the reported fault, in pixels:
+  //
+  //   "why can I only see like 4 cars on the leaderboard, where is everyone
+  //    and all the cars?"
+  //
+  // See `TOWER_RAIL_FLOOR_PX` for why a floor is the honest reservation and a
+  // worst case is not.
+  const chrome = compact ? 86 : 148;
+  const reserved = 10 + chrome + 5 + TOWER_RAIL_FLOOR_PX;
   const fits = Math.floor((h - floorPx - reserved) / rowH);
   // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
   // glass in shot the bottom of the frame is not the HUD's to use — see
@@ -3354,16 +3398,15 @@ export function towerFit(
   // pixels is not a rail. The other sixteen cars can wait for a straight; the
   // car about to be alongside cannot.
   const min = floorPx > 0 ? 4 : compact ? 4 : 6;
-  // THE CEILINGS WENT UP because the reported fault was the ceiling.
-  //
-  //   "why can I only see like 4 cars on the leaderboard, where is everyone
-  //    and all the cars?"
-  //
-  // Twenty on a desktop is the whole field, so a full-height screen now
-  // windows nothing at all — which is the only arrangement that cannot hide
-  // the fight. Twelve on a phone is half again what it was.
+  // THE CEILING IS NOT A DESIGN DECISION ANY MORE. It was twenty on a desktop
+  // and twelve on a phone, and twelve is what a portrait phone drew — half the
+  // field, with 430 pixels of unused rail beneath it, measured. The size of
+  // the field is the only cap the panel should have, and `updateTower` applies
+  // it (`Math.min(standings.length, capped)`); what is left here is a bound
+  // against absurdity, because a row count that grows without limit on a very
+  // tall viewport is a panel nobody has thought about.
   return {
-    rows: Math.max(min, Math.min(fits, compact ? 12 : 20)),
+    rows: Math.max(min, Math.min(fits, MAX_TOWER_ROWS)),
     compact,
   };
 }
