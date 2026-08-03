@@ -215,7 +215,7 @@ Run `npm run` to list. The important ones:
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
-| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
+| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
 - **`probe:handling` 4, `probe:drivability` 4, `probe:racingline` 3 — NEW, and new only in the
@@ -1197,13 +1197,42 @@ set of routes, so "you cannot get there" is a named failure rather than a note.
   exist and nothing reads them back; a reputation model behind them is the publicist and
   the agencies that §7 records as not built. Routing the room is this work. Furnishing it
   is not, and it is still open.
-- **Proved red by removing one route.** Deleting the `Into the garage` button from
-  `showPaddock` and leaving everything else in place:
-  `REQUIRED "Garage" is UNREACHABLE: the route [Paddock > Into the garage] broke — a button
-  on it is gone` **and** `screen "garage" is in the required set and the walk never opened
-  it`. Both messages name it. Restored, both go.
+- **Proved red by removing one route — and read the caveat.** Deleting the `Into the
+  garage` button from `showPaddock` and leaving everything else in place, the walk reaches
+  the paddock, cannot go on, and prints
+
+  ```
+  MISSING   Garage   [Paddock > Into the garage]
+  ```
+
+  which is the required-set check firing and naming the route. It is emitted on the same
+  branch that pushes `REQUIRED "Garage" is UNREACHABLE: the route [Paddock > Into the
+  garage] broke — a button on it is gone` onto the failure list, so observing it means the
+  failure was recorded. **What was NOT observed is the failure list itself**, because both
+  attempts at the broken run died before the end: the first to `probe:smoke`'s own
+  crash-recovery bug at load average 40 (found by this, and fixed — see the bullet below),
+  the second to a 120-second navigation timeout at load average **116**, which is a
+  statement about the machine and not about the probe. A third attempt was not affordable:
+  the box went to load 134–181 with other agents on it, which is §8's over-parallelising
+  note happening in real time. **The second half of the proof — that the coverage block
+  also reports `screen "garage" is in the required set and the walk never opened it` — is
+  therefore read off the code path rather than off a run, and is flagged here as such
+  rather than being written up as if it had been measured.**
 - **`regress:exit` was reporting a working pause menu as six failures — and the pause menu
   was never the defect.** Full account under issue #25 in §7.
+- **The same defect was in `probe:smoke`'s own crash recovery, one level up, and it was
+  found by this work rather than reasoned about.** `noteCrash` was one `await boot()`, and
+  `boot()` starts by calling `page.url()` and `page.evaluate` on the tab that has just
+  died — so when the tab was genuinely gone rather than merely reloading, the recovery
+  threw `Attempted to use detached Frame` **from inside the catch block handling the first
+  crash**, and the exception escaped every handler. At load average 40 that killed the
+  break-verification run *after* it had printed its finding and *before* it could print
+  the failure list. The tab is now a factory, so a dead one is replaced by one carrying
+  the same viewport, error collectors, dialog handler and storage seed; and the top-level
+  catch calls `process.exit` rather than only setting `exitCode`, because the vite server
+  and the browser are both created inside `main` and neither is closed on the error path —
+  so a crashed run **hung** instead of failing, and had to be killed by hand. **A harness
+  that turns a result into a stack trace is the shape of bug this whole branch is about.**
 
 ### People (issues #18, #22)
 - **Every team principal was "Pit wall".** `Hud.PRINCIPALS` was a table keyed on the ten
