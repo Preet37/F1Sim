@@ -186,6 +186,7 @@ Run `npm run` to list. The important ones:
 | `probe:traffic` | Contacts per car-lap |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
+| `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
 | `probe:qualiboard` | Knockout qualifying: board and grid agree |
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:season` | 100 career-years |
