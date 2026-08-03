@@ -4,6 +4,7 @@ import type { CarEntry } from './CarEntry';
 import { RECOVERY_FAST_SECTION_MS, RECOVERY_TRACKSIDE_M } from './Recovery';
 import type { DebrisField } from './DebrisField';
 import { Stewards, type StewardsNotice } from './Stewards';
+import { SafetyCar } from './SafetyCar';
 import type { Offence } from './DrivingStandards';
 
 /**
@@ -96,22 +97,55 @@ export function worseSignal(a: FlagSignal, b: FlagSignal): FlagSignal {
  * it as one boolean is what makes a simulated safety car feel like a speed limit
  * rather than like a safety car.
  *
- *   BUNCHING      Field forming up behind the car, ten car lengths apart.
- *                 2025 Sporting Regs Art. 55.7 / 2026 Section B Art. B5.13.2b.
+ *   DEPLOYING     The order has been given. The message, the "SC" panels and the
+ *                 waved yellows at every post are already out, and the car is
+ *                 running down the pit lane to join. 2026 Section B Art. B5.13.1
+ *                 / 2025 Sporting Regs Art. 55.4 and 55.6.
+ *   PICKING_UP    On the circuit with its orange lights on, gathering the field.
+ *                 It "will join the track ... regardless of where the leader is"
+ *                 (B5.13.1 / Art. 55.6), so what it picks up may not be the
+ *                 leader; the green light orders the cars between it and the
+ *                 leader past until it is (B5.13.4a / Art. 55.9).
+ *   BUNCHING      Leader behind it, field forming up, ten car lengths apart.
+ *                 B5.13.2b and B5.13.5a / Art. 55.7 and 55.10.
  *   WAVING_LAPPED "LAPPED CARS MAY NOW OVERTAKE": every car lapped by the
  *                 leader is REQUIRED to pass the cars on the lead lap and the
- *                 safety car itself. Art. 55.14 / B5.13.4c.
+ *                 safety car itself. B5.13.4c / Art. 55.14.
  *   IN_THIS_LAP   "SAFETY CAR IN THIS LAP", orange lights extinguished. The
  *                 leader now dictates the pace and may fall back beyond the
- *                 maximum gap. Art. 55.15 / B5.13.6.
- *   RESTART       Green at the Line. Overtaking is still forbidden until each
- *                 car has itself passed the Line. Art. 55.8 / B5.13.2c.
+ *                 maximum gap. B5.13.6 / Art. 55.15.
+ *   ENDING        The safety car has entered the Pit Entry Road and the SC
+ *                 boards have been withdrawn — but the race is NOT green yet.
+ *                 The yellow flags stay out until the leader reaches the Line,
+ *                 and it is there that the green is shown. B5.13.6, final
+ *                 paragraph / Art. 55.15, final paragraph.
+ *   RESTART       Green shown at the Line. Overtaking is still forbidden for
+ *                 each car until it has itself passed the Line. B5.13.2c /
+ *                 Art. 55.8.
+ *
+ * THE PHASE THAT WAS MISSING IS `ENDING`, and it is the whole of the difference
+ * between the two neutralisations. A VSC ends wherever the cars happen to be:
+ * the panels go green "at any time between 10 and 15 seconds" after the warning
+ * and "drivers may continue racing immediately" (B5.12.4 / Art. 56.7). A safety
+ * car period does not. It ends at a PLACE — "as the leader approaches the Line
+ * the yellow flags will be withdrawn and a green flag and/or green light panel
+ * will be displayed at the Line" — and the player is right that the game had
+ * them the same:
+ *
+ *   "the vsc ending can happen whenever but safety car ends at the end of the
+ *    lap"
+ *
+ * Before this, the race went green the instant the safety car reached the pit
+ * entry, wherever on the lap the leader was.
  */
 export type SafetyCarPhase =
   | 'none'
+  | 'deploying'
+  | 'picking-up'
   | 'bunching'
   | 'waving-lapped'
   | 'in-this-lap'
+  | 'ending'
   | 'restart';
 
 export type PenaltyKind =
@@ -337,15 +371,46 @@ const VSC_PACE_SCALE = 0.5;
 const SC_BUNCHING_PACE_SHARE = 0.38;
 
 /**
- * How far ahead of the leader the safety car joins the circuit, metres.
+ * How far short of the pit exit the leader has to be for the car to be released,
+ * metres.
  *
- * Enough road that a leader arriving at racing speed cannot get past it while
- * it slows down. A car doing 85 m/s braking to a 35 m/s safety car pace covers
- * about 130m more than the safety car does over the same period; 250 gives that
- * a wide margin at every circuit and is still close enough that the pick-up
- * happens within a few seconds rather than over a lap.
+ * The safety car sits at the end of the pit lane with its lights on and is let
+ * go when the leader is close enough behind that it will come out in front of
+ * them and be caught within a few seconds. That is a judgement the Race Director
+ * makes — B1.3.3e gives them "the use of the Safety Car" — and this number is
+ * what makes it: enough road that a leader arriving at racing speed cannot get
+ * past before it has pulled out and slowed down, and little enough that the
+ * pick-up happens on this lap rather than the next one.
+ *
+ * A car doing 85 m/s braking to a 35 m/s safety car pace covers about 130m more
+ * than the safety car does over the same period, so anything under that is a
+ * release into the leader's braking zone. Four hundred metres gives it a wide
+ * margin at every circuit.
  */
-const SC_PICKUP_LEAD_M = 250;
+const SC_RELEASE_WINDOW_M = 400;
+
+/**
+ * The longest the order to deploy may go unexecuted, seconds.
+ *
+ * The car has a pit lane to run down and then a leader to wait for, and the wait
+ * is a judgement that can be wrong. The regulation's own position is that it
+ * does not wait at all — it "will join the track ... regardless of where the
+ * leader is" (B5.13.1 / Art. 55.6) — so a wait that has gone on longer than the
+ * car would have taken to reach the leader anyway is not a wait any more, and it
+ * goes.
+ */
+const SC_SCRAMBLE_BACKSTOP_S = 45;
+
+/**
+ * How close to the Line the leader has to be for the green to be shown, metres.
+ *
+ * "as the leader APPROACHES the Line ... a green flag and/or green light panel
+ * will be displayed at the Line" (B5.13.6 / Art. 55.15). Approaching, not on:
+ * the flag is out before the leader gets there, which is what makes it possible
+ * to see it and go. A hundred metres is about two seconds at the pace the leader
+ * is winding up to.
+ */
+const SC_GREEN_AT_LINE_M = 100;
 
 /**
  * How much quicker than the neutralised pace a car catching the queue may run.
@@ -448,20 +513,29 @@ export class RaceControlManager {
   // --- Safety car ----------------------------------------------------------
   /** Which step of the safety car procedure is in force. */
   scPhase: SafetyCarPhase = 'none';
+
   /**
-   * The safety car itself, as a position on the lap.
+   * The safety car itself.
    *
    * A safety car period is a car on the circuit that the field queues behind,
    * not a global speed limit, and the difference shows: the leader has to catch
    * it, everyone else has to catch the leader, and the concertina that produces
-   * is most of what a safety car does to a race.
+   * is most of what a safety car does to a race. See `src/race/SafetyCar.ts` for
+   * why it is not a `CarEntry`.
+   *
+   * Public because the render layer draws it and the probes measure it. It is
+   * read-only to both: every order it takes comes from this file.
    */
-  scS = 0;
-  scLap = 0;
+  readonly safetyCar: SafetyCar;
+
+  /** Where the safety car is on the lap, metres. */
+  get scS(): number { return this.safetyCar.s; }
+  /** Which lap of the circuit the safety car is on. */
+  get scLap(): number { return this.safetyCar.lap; }
   /** How fast it is going, m/s. See `safetyCarPaceMs`. */
-  scSpeedMs = 0;
-  /** True while the safety car is physically on the circuit. */
-  scOnTrack = false;
+  get scSpeedMs(): number { return this.safetyCar.onTrack ? this.safetyCar.speedMs : 0; }
+  /** True while the safety car is physically on the racing surface. */
+  get scOnTrack(): boolean { return this.safetyCar.onTrack; }
   /**
    * Maximum gap to the car ahead, metres. Ten car lengths, or twenty when the
    * Race Director has declared low visibility.
@@ -494,6 +568,22 @@ export class RaceControlManager {
   private scTimer = 0;
   /** Road left before the safety car reaches the pit entry, metres. */
   private scToEntryM = 0;
+  /**
+   * Seconds the order to deploy has been outstanding.
+   *
+   * The car has to get out of the pit lane, and the pit lane is a real distance
+   * at a real speed. This is only a backstop against a lane so long, or an exit
+   * so placed, that it never arrives.
+   */
+  private scScrambleS = 0;
+  /**
+   * The lap the leader was on when the safety car entered the Pit Entry Road.
+   *
+   * The green comes out when the leader next reaches the Line, and "reaches the
+   * Line" has to survive the leader changing identity between two steps in a
+   * bunched field — so it is held as a lap number rather than as a car.
+   */
+  private scGreenLap = -1;
   /** Seconds until the VSC panels go green. Negative when not ending. */
   private vscGreenIn = -1;
   /** Track wetness, supplied by the engine. Drives the low-visibility call. */
@@ -527,6 +617,7 @@ export class RaceControlManager {
 
   constructor(track: TrackSpline, rng?: () => number) {
     this.track = track;
+    this.safetyCar = new SafetyCar(track);
     // Deterministic by default: a replayed race must neutralise identically.
     this.rng = rng ?? (() => 0.5);
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags.push('green');
@@ -554,8 +645,8 @@ export class RaceControlManager {
     this.raceFinished = false;
     this.messages.length = 0;
     this.scPhase = 'none';
-    this.scOnTrack = false;
-    this.scSpeedMs = 0;
+    this.safetyCar.reset();
+    this.scScrambleS = 0;
     this.lappedCarsWaved = false;
     this.pitExitClosed = false;
     this.pitEntryClosed = false;
@@ -589,6 +680,12 @@ export class RaceControlManager {
     if (local === 'yellow' || local === 'double-yellow' || local === 'red') return local;
     if (this.neutralisation === 'safety-car') return 'safety-car';
     if (this.neutralisation === 'vsc') return 'vsc';
+    // The safety car has gone in but the race is not green yet. "As the Safety
+    // Car is approaching the Pit Entry Road the SC boards will be withdrawn
+    // and ... as the leader approaches the Line the yellow flags will be
+    // withdrawn" — B5.13.6 / Art. 55.15. Two withdrawals, and between them the
+    // posts show a yellow and no SC board, which is this line.
+    if (this.neutralisation === 'sc-ending') return 'yellow';
     if (this.sessionFlag === 'chequered') return 'chequered';
     return 'green';
   }
@@ -972,13 +1069,18 @@ export class RaceControlManager {
       // safety car — sessions are red-flagged instead.
       this.neutralisation = 'none';
       this.scPhase = 'none';
-      this.scOnTrack = false;
+      this.safetyCar.reset();
       return;
     }
 
-    if (this.neutralisation === 'safety-car') {
+    if (this.neutralisation === 'safety-car' || this.neutralisation === 'sc-ending') {
       this.runSafetyCar(dt, cars, standings, sessionTime);
       return;
+    }
+    // Still driving itself back down the pit lane after the period has ended.
+    // The renderer is drawing it, so it has to keep moving.
+    if (this.safetyCar.visible) {
+      this.safetyCar.advance(dt, 0, this.track.def.pitLane.lateralOffsetM);
     }
     if (this.neutralisation === 'vsc') {
       this.runVirtualSafetyCar(dt, sessionTime);
@@ -1014,7 +1116,7 @@ export class RaceControlManager {
     // often spent a third of the race behind a safety car that the regulations
     // would never have deployed.
     if (dangerous || this.activeIncidents >= 3) {
-      this.deploySafetyCar(standings, sessionTime);
+      this.deploySafetyCar(sessionTime);
     } else {
       this.deployVirtualSafetyCar(sessionTime);
     }
@@ -1066,33 +1168,26 @@ export class RaceControlManager {
   // Safety car — Art. 55 / B5.13
   // -------------------------------------------------------------------------
 
-  private deploySafetyCar(standings: readonly CarEntry[], sessionTime: number): void {
+  private deploySafetyCar(sessionTime: number): void {
     this.neutralisation = 'safety-car';
-    this.scPhase = 'bunching';
+    this.scPhase = 'deploying';
     this.vscTargetMs = SC_PACE_MS;
     this.neutralisedScale = SC_PACE_SCALE;
-    this.scOnTrack = true;
     this.scTimer = SC_MIN_BUNCH_S;
+    this.scScrambleS = 0;
     this.lappedCarsWaved = false;
     this.scWaveLap = -1;
     this.pitExitClosed = false;
-
-    // The car joins the circuit "regardless of where the leader is"
-    // (Art. 55.4 / B5.13.1). Modelled as joining just ahead of the leader,
-    // which is where it ends up once it has picked the leader up and is the
-    // only part of that the field can observe.
-    //
-    // AHEAD, with room. It used to join exactly ON the leader, and a leader
-    // arriving at 300 km/h needs a couple of hundred metres to come down to
-    // safety car pace — so it was past the safety car before it had slowed, and
-    // the "queue" then formed up behind a car that was itself in front of the
-    // thing it was supposed to be queueing behind. `SC_PICKUP_LEAD_M` is more
-    // road than that deceleration can eat.
-    const leader = standings.length > 0 ? standings[0] : null;
-    this.scS = leader ? (leader.s + SC_PICKUP_LEAD_M) % this.track.length : 0;
-    this.scLap = leader ? leader.lap : 0;
-    this.scSpeedMs = SC_PACE_MS;
     this.scToEntryM = Infinity;
+
+    // The car leaves its garage and runs down the pit lane. Everything the
+    // drivers see happens NOW and not when it arrives: "the message 'SAFETY CAR
+    // DEPLOYED' will be sent to all Competitors, all FIA light panels will
+    // display 'SC', all marshal's posts will display waved yellow flags and 'SC'
+    // boards, and the Safety Car will join the track with its orange lights
+    // illuminated regardless of where the leader is" — B5.13.1 / Art. 55.4 and
+    // 55.6. One sentence, and the order inside it is the order here.
+    this.safetyCar.scramble();
 
     this.log('SAFETY CAR DEPLOYED', 'critical', sessionTime);
 
@@ -1127,22 +1222,81 @@ export class RaceControlManager {
     this.scTimer -= dt;
 
     const leader = standings.length > 0 ? standings[0] : null;
+    const sc = this.safetyCar;
 
-    // The safety car itself circulates at the neutralised pace.
-    if (this.scOnTrack) {
-      this.scSpeedMs = this.safetyCarPaceMs(leader);
-      const travelled = this.scSpeedMs * dt;
-      this.scS += travelled;
+    // Where it runs: off the racing line, on the pit-lane side of the road, so
+    // the queue behind it is legible and so it is already on the correct side
+    // when it peels into the entry road.
+    const pitSign = Math.sign(this.track.def.pitLane.lateralOffsetM) || -1;
+    const before = sc.s;
+    sc.advance(
+      dt,
+      this.safetyCarPaceMs(leader, standings),
+      SafetyCar.runningLine(this.track.halfWidthAt(sc.s), pitSign),
+    );
+    if (sc.onTrack) {
+      let travelled = sc.s - before;
+      if (travelled < -this.track.length * 0.5) travelled += this.track.length;
       this.scToEntryM -= travelled;
-      if (this.scS >= this.track.length) {
-        this.scS -= this.track.length;
-        this.scLap++;
-      }
-    } else {
-      this.scSpeedMs = 0;
     }
 
     switch (this.scPhase) {
+      case 'deploying': {
+        // The car is running down the pit lane. The field is already
+        // neutralised — the boards and the message went out with the order, and
+        // that is the sentence's own order in B5.13.1 — so nothing here is
+        // waiting for the car to arrive.
+        //
+        // WHEN IT PULLS OUT. It is released so that it picks the leader up:
+        // held at the exit line with its lights on until the leader is close
+        // enough behind that it will come out in front of them and be caught
+        // within a few seconds. That timing is the Race Director's — B1.3.3e
+        // gives them authority over "the use of the Safety Car" and B1.2.1j
+        // appoints a driver to execute it — and it is what actually happens on
+        // television.
+        //
+        // It is a MODELLING CHOICE and the regulation admits the other case:
+        // the car "will join the track ... regardless of where the leader is"
+        // (B5.13.1 / Art. 55.6), and when that picks up the wrong car the green
+        // light on the safety car orders the cars between it and the leader past
+        // (B5.13.4a / Art. 55.9). That remedy exists precisely because the
+        // release is a judgement that can be got wrong. Simulating the judgement
+        // being got RIGHT is both the common case and the one the player is
+        // asking for — "the safety car should be in front of the leader" — and
+        // it avoids inventing a second overtaking exemption to correct a mistake
+        // this simulation need not make.
+        //
+        // The backstop is the regulation's own case, and it is why the phase
+        // that follows still has to pick the leader up rather than assume it.
+        this.scScrambleS += dt;
+        const ready = sc.readyToJoin;
+        const gapToExit = leader
+          ? loopDelta(leader.s, this.track.def.pitLane.exitS, this.track.length)
+          : -1;
+        const leaderArriving = gapToExit >= 0 && gapToExit < SC_RELEASE_WINDOW_M;
+        if ((ready && leaderArriving) || this.scScrambleS > SC_SCRAMBLE_BACKSTOP_S) {
+          sc.join(leader ? leader.lap : 0);
+          this.scPhase = 'picking-up';
+        }
+        return;
+      }
+
+      case 'picking-up': {
+        // On the circuit with the orange lights on, waiting to be caught. The
+        // phase ends when the leader is actually behind it — which is the first
+        // half of the condition the regulation puts on the whole deployment:
+        // "the Safety Car shall be used at least until the leader is behind it
+        // and all remaining F1 Cars are queued behind them" (B5.13.5a /
+        // Art. 55.10). The second half is `bunching`.
+        if (!leader) return;
+        const toSafetyCar = loopDelta(leader.s, sc.s, this.track.length);
+        if (toSafetyCar >= 0 && toSafetyCar <= this.maxQueueGapM * 3) {
+          this.scPhase = 'bunching';
+          this.scTimer = SC_MIN_BUNCH_S;
+        }
+        return;
+      }
+
       case 'bunching': {
         // "The Safety Car ... shall be used at least until the leader is behind
         // it and all remaining cars are lined up behind them" —
@@ -1196,22 +1350,68 @@ export class RaceControlManager {
       }
 
       case 'in-this-lap': {
-        // The safety car peels into the pit entry road at the end of this lap.
+        // The safety car peels into the Pit Entry Road at the end of this lap.
         // From the moment the orange lights go out the leader dictates the pace
-        // (Art. 55.15 / B5.13.6) — modelled by taking the car off the circuit,
-        // which releases the queue's speed cap and hands the pace to the leader.
+        // (Art. 55.15 / B5.13.6), which is what `queueGapLimitM` reads.
+        //
+        // WHAT THIS DOES NOT DO ANY MORE IS GO GREEN. It used to, right here,
+        // the instant the safety car reached the pit entry — wherever on the lap
+        // the leader happened to be. That is the VSC's rule applied to the
+        // safety car, and it is exactly the difference the player reported:
+        //
+        //   "the vsc ending can happen whenever but safety car ends at the end
+        //    of the lap"
+        //
+        // The regulation puts the green at a PLACE. "As the Safety Car is
+        // approaching the Pit Entry Road the SC boards will be withdrawn and,
+        // other than on the last lap of the TTCS, as the leader approaches the
+        // Line the yellow flags will be withdrawn and a green flag and/or green
+        // light panel will be displayed at the Line" (B5.13.6 final paragraph /
+        // Art. 55.15 final paragraph). Two events, in that order, at two
+        // different points on the lap — and the second one is at the Line.
         if (this.scToEntryM <= 0) {
-          this.scOnTrack = false;
-          this.scPhase = 'restart';
-          this.neutralisation = 'none';
+          sc.returnToPits();
+          this.scPhase = 'ending';
+          // The SC boards come down with the car. The speed cap goes with them:
+          // the thing the field was queued behind has gone and the leader is
+          // now setting the pace, so there is nothing left to hold them to.
+          //
+          // `neutralisation` does NOT go to 'none'. The race is not green: the
+          // yellows are still out, overtaking is still forbidden, and the pit
+          // lane is still restricted to tyres. `'sc-ending'` is that state, and
+          // it is why the enumeration has always had a fourth member.
+          this.neutralisation = 'sc-ending';
           this.vscTargetMs = 0;
           this.neutralisedScale = 0;
           // "no driver may overtake another F1 Car on the track ... until they
           // pass the Line for the first time after the Safety Car has entered
           // the Pit Entry Road" — Art. 55.8 / B5.13.2c. Each car carries the
-          // obligation individually until it has itself crossed the Line.
+          // obligation individually until it has itself crossed the Line, and
+          // this is the moment the article names.
           for (const car of cars) car.holdUntilLine = !car.retired;
-          this.log('GREEN FLAG — track clear at the Line', 'info', sessionTime);
+          this.scGreenLap = leader ? leader.lap : -1;
+          this.log('SAFETY CAR IN — track clear', 'warning', sessionTime);
+        }
+        return;
+      }
+
+      case 'ending': {
+        // Waiting for the leader to reach the Line, which is where the green is
+        // shown. "as the leader approaches the Line the yellow flags will be
+        // withdrawn and a green flag and/or green light panel will be displayed
+        // at the Line" — B5.13.6 / Art. 55.15.
+        //
+        // The backstop is the field being gone: with nobody circulating there is
+        // no leader to approach anything, and a race cannot be left neutralised
+        // for ever because the last car retired on the lap the safety car came
+        // in.
+        if (!leader) {
+          this.greenAtTheLine(sessionTime);
+          return;
+        }
+        const toLine = this.track.length - leader.s;
+        if (toLine <= SC_GREEN_AT_LINE_M || leader.lap > this.scGreenLap) {
+          this.greenAtTheLine(sessionTime);
         }
         return;
       }
@@ -1219,6 +1419,24 @@ export class RaceControlManager {
       default:
         return;
     }
+  }
+
+  /**
+   * The green flag at the Line, and the end of the safety car period.
+   *
+   * Not the end of every obligation: `holdUntilLine` is still set on every car
+   * and is cleared individually as each one crosses, because "no driver may
+   * overtake ... until they pass the Line for the first time" is a per-car
+   * requirement (B5.13.2c / Art. 55.8). The leader is racing while a car half a
+   * lap back still is not.
+   */
+  private greenAtTheLine(sessionTime: number): void {
+    this.scPhase = 'restart';
+    this.neutralisation = 'none';
+    this.vscTargetMs = 0;
+    this.neutralisedScale = 0;
+    this.scGreenLap = -1;
+    this.log('GREEN FLAG — green at the Line', 'info', sessionTime);
   }
 
   /**
@@ -1245,24 +1463,55 @@ export class RaceControlManager {
    * the field is still bunching it backs off toward a crawl until the leader
    * has closed onto it. That is exactly what the real car does, and it is why
    * the first lap behind a safety car is the slowest one.
+   *
+   * IT WAITS FOR THE WHOLE FIELD, NOT FOR THE LEADER. That is the third bug and
+   * the one that kept `validate:flags` red for as long as it has been. The crawl
+   * used to end the moment the LEADER was within a few car lengths — but the
+   * regulation's condition has two halves, and the second is "and all remaining
+   * F1 Cars are queued behind them". Once the leader was aboard, the safety car
+   * went to full pace, the leader went with it, and the nineteen cars strung out
+   * over the rest of the lap were left to close a kilometre of road at the only
+   * margin they are allowed — `SC_CATCHUP_MULT`, forty per cent over the queue
+   * pace, which is about ten metres a second of closing speed. Measured at
+   * Monza: a median form-up gap of 219m against a 56m limit, 88% of samples
+   * over it, and a bunching phase that ran for 185 seconds and then gave up on
+   * its own escape hatch without ever forming a queue.
+   *
+   * A real safety car does the opposite: it drives slowly for as long as it
+   * takes, and the whole field concertinas onto it. So the crawl is now driven
+   * by the LAST car in the queue rather than the first, and it lifts only as
+   * that car closes. Slowing the front of a queue is the only thing that
+   * shortens the back of it.
    */
-  private safetyCarPaceMs(leader: CarEntry | null): number {
-    const line = this.track.targetSpeed[this.track.indexAt(this.scS)];
+  private safetyCarPaceMs(leader: CarEntry | null, standings: readonly CarEntry[]): number {
+    const sc = this.safetyCar;
+    if (!sc.onTrack) return 0;
+    const line = this.track.targetSpeed[this.track.indexAt(sc.s)];
     const pace = Math.min(line * SC_PACE_SCALE, SC_PACE_MS);
 
     // Only while the queue is still forming. Once it has, the safety car sets
     // the pace and the field holds station on it.
-    if (this.scPhase !== 'bunching' || !leader) return pace;
-    const behind = loopDelta(leader.s, this.scS, this.track.length);
-    // Leader ahead of the safety car, or far enough back that slowing down
-    // would take a whole extra lap to help — neither is a gap to close this
-    // way. A quarter of a lap rather than a half, because at a half the test
-    // cannot tell "the leader is a long way behind" from "the leader is a long
-    // way in front", and it answered the wrong one.
-    if (behind < 0 || behind > this.track.length * 0.25) return pace;
-    // Full pace once the leader is within a few car lengths; a slow cruise
-    // while it is a long way off, so the gap actually closes.
-    const t = clamp01((behind - this.maxQueueGapM) / (this.maxQueueGapM * 4));
+    if (!leader) return pace;
+    if (this.scPhase !== 'bunching' && this.scPhase !== 'picking-up') return pace;
+
+    // How far back the queue reaches. Measured from the safety car to the car
+    // furthest behind it that is still expected to join — which is every
+    // running car except the ones a lap down, who are the next phase's problem
+    // and are explicitly not required to be here (see `fieldFormedUp`).
+    const len = this.track.length;
+    let tail = 0;
+    for (const car of standings) {
+      if (car.retired || car.inPitLane) continue;
+      if (car !== leader && this.isLapped(car, leader)) continue;
+      let behind = loopDelta(car.s, sc.s, len);
+      if (behind < 0) behind += len;
+      if (behind > tail) tail = behind;
+    }
+
+    // The queue as it should be: every car within the limit of the one ahead.
+    // While the real one is longer than that, the safety car slows down.
+    const want = this.maxQueueGapM * Math.max(standings.length, 2);
+    const t = clamp01((tail - want) / (len * 0.35));
     return pace * (1 - t * (1 - SC_BUNCHING_PACE_SHARE));
   }
 
@@ -1423,7 +1672,18 @@ export class RaceControlManager {
       car.deltaSectorPartial = true;
       return;
     }
-    if (this.neutralisation === 'none' || car.inPitLane) {
+    // The delta obligation has an end, and the regulation states it: drivers
+    // must stay above the minimum time "from the time at which all Competitors
+    // have been sent the 'SAFETY CAR DEPLOYED' message until the time that each
+    // F1 Car crosses the first safety car line for the second time"
+    // (B5.13.2b / Art. 55.7). Once the safety car has gone in, what governs is
+    // a different sentence with no number in it — "drivers must proceed at a
+    // pace which involves no erratic acceleration or braking" (B5.13.6 /
+    // Art. 55.15) — and timing the leader against a minimum while it is winding
+    // the field up for the restart penalises it for doing what that sentence
+    // asks. There is also nothing left to time against: the cap is zero.
+    if (this.neutralisation === 'none' || this.neutralisation === 'sc-ending' ||
+        car.inPitLane) {
       car.deltaSectorTime = 0;
       car.deltaSectorIndex = -1;
       car.deltaSectorPartial = true;
@@ -1894,6 +2154,8 @@ export class RaceControlManager {
     if (this.neutralisation !== 'safety-car') return 0;
     // A car in the pit lane is not in the queue.
     if (car.inPitLane || car.retired) return 0;
+    // Nothing to queue behind yet: the safety car is still in the pit lane.
+    if (this.scPhase === 'deploying') return 0;
     if (isLeader && this.scPhase === 'in-this-lap') return 0;
     return this.maxQueueGapM;
   }
@@ -1922,6 +2184,7 @@ export class RaceControlManager {
   get flagSeverity(): number {
     if (this.sessionFlag === 'red') return 1;
     if (this.neutralisation === 'safety-car') return 0.85;
+    if (this.neutralisation === 'sc-ending') return 0.55;
     if (this.neutralisation === 'vsc') return 0.6;
     let worst = 0;
     for (const f of this.sectorFlags) {

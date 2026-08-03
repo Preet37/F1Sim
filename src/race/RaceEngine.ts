@@ -2004,8 +2004,39 @@ export class RaceEngine {
     return afterStart >= 0 && beforeEnd >= 0;
   }
 
+  /**
+   * The lap the RACE is on. Never goes down.
+   *
+   * "Each lap completed while the Safety Car is deployed will be counted as a
+   * lap of the TTCS" (2026 Section B Art. B5.13.7 / 2025 Sporting Regs
+   * Art. 55.16), and identically for the VSC (B5.12.5 / Art. 56.8). The counter
+   * is not suspended by a neutralisation and it does not run backwards.
+   *
+   * IT USED TO. Not because a lap was ever missed — measured with a staged
+   * safety car at Monza, every geometric crossing of the Line scored a lap and
+   * the two counts agreed exactly — but because this read `standings[0].lap`
+   * live, and under a safety car `standings[0]` is not a stable car. The order
+   * is sorted on `totalDistance` (see `ordersBefore`), a bunched field puts
+   * twenty cars nose to tail inside a kilometre, and two cars either side of the
+   * Line are then metres apart in distance and a whole lap apart on the counter.
+   * The sort flickers between them at 20Hz and the number the player is looking
+   * at goes 7, 6, 7, 6. That is the report, exactly:
+   *
+   *   "when there is a safety car, doesn't mean that the lap isn't continued —
+   *    like they crossed the line but were still on lap 6 for some reason. it
+   *    should've updated right to the next lap."
+   *
+   * A lap is a thing that has happened. Once any car has completed one, the race
+   * is on the next one, and nothing that happens afterwards un-completes it —
+   * which is what a latch says and what a live read of a flickering sort does
+   * not.
+   */
+  private raceLapLatch = 0;
+
   private leaderLap(): number {
-    return this.standings.length > 0 ? this.standings[0].lap : 0;
+    const live = this.standings.length > 0 ? this.standings[0].lap : 0;
+    if (live > this.raceLapLatch) this.raceLapLatch = live;
+    return this.raceLapLatch;
   }
 
   // =========================================================================
@@ -2289,10 +2320,16 @@ export class RaceEngine {
    */
   private applyNeutralisationAssist(car: CarEntry, c: VehicleControls): void {
     const rc = this.raceControl;
-    if (!this.neutralisationAssist ||
+    // `vscTargetMs` and not `neutralisation !== 'none'`: once the safety car has
+    // entered the Pit Entry Road there is no cap left to hold — the leader
+    // dictates the pace (Art. 55.15 / B5.13.6) — even though the race is still
+    // neutralised in every other sense. A limiter armed with a cap of zero would
+    // stop the car dead.
+    if (!this.neutralisationAssist || rc.vscTargetMs <= 0 ||
         rc.neutralisation === 'none' || car.inPitLane || car.retired || !this.started) {
       c.speedLimitMs = 0;
       car.neutralLimitMs = 0;
+      car.neutralAssist.reset();
       return;
     }
 
@@ -2331,10 +2368,25 @@ export class RaceEngine {
       return Math.min(line, grip);
     }, limit);
 
-    c.speedLimitMs = Math.min(plan.ceilingMs, hold);
+    // Both halves of the assist are rate-limited, and neither used to be. See
+    // `NeutralisedAssistState` for the measurement: a pedal that moved half its
+    // travel in one 8ms step, fourteen hundred times a race, and a setpoint that
+    // moved 22 m/s between two consecutive steps. That is the swerve.
+    //
+    // The pedal is also capped by the grip the tyres have left after cornering,
+    // which is `brakeLimitFraction` — the friction circle's own answer, and the
+    // same number the AI brakes just underneath. A demand above it does not brake
+    // the car harder; it saturates an axle, and the axle it saturates takes its
+    // lateral force with it.
+    car.neutralAssist.advance(
+      PHYSICS_DT, plan.brake, Math.min(plan.ceilingMs, hold),
+      car.physics.brakeLimitFraction,
+    );
+
+    c.speedLimitMs = car.neutralAssist.ceilingMs;
     car.neutralLimitMs = c.speedLimitMs;
-    if (plan.brake > c.brake) {
-      c.brake = plan.brake;
+    if (car.neutralAssist.brake > c.brake) {
+      c.brake = car.neutralAssist.brake;
       c.throttle = 0;
     }
   }

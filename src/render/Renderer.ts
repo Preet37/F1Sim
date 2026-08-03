@@ -16,6 +16,7 @@ import { PostFX } from './PostFX';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
 import { MarshalPosts } from './MarshalPost';
+import { buildSafetyCar, type SafetyCarVisual } from './SafetyCarMesh';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 // One threshold, read by the simulation (which files the debris and raises the
@@ -188,6 +189,18 @@ export class Renderer {
    * nobody can prove is working, which is how this one stayed broken.
    */
   readonly carVisuals: CarVisual[] = [];
+  /**
+   * The safety car.
+   *
+   * Deliberately NOT in `carVisuals`. That array is index-parallel with
+   * `engine.cars` — the debris code looks a pile's owner up by index, the
+   * effects director sizes its skid-mark budget on `cars.length`, and the audio
+   * engine indexes it the same way — so a twenty-third entry that is not a
+   * competitor would silently corrupt all three. It is a scene fixture like the
+   * marshal posts and the pit box marker, and it is built, updated and disposed
+   * alongside them.
+   */
+  private safetyCar: SafetyCarVisual | null = null;
   /** Bodywork lying on the circuit. One draw call, session-lifetime. */
   private wreckage: Wreckage | null = null;
   private readonly canvas: HTMLCanvasElement;
@@ -580,6 +593,11 @@ export class Renderer {
       this.scene.add(this.pitBox.root);
     }
 
+    // The safety car, parked in its garage until race control sends it out.
+    this.safetyCar = buildSafetyCar(this.quality);
+    this.safetyCar.root.visible = false;
+    this.scene.add(this.safetyCar.root);
+
     this.wreckage = new Wreckage();
     this.scene.add(this.wreckage.mesh);
 
@@ -868,6 +886,11 @@ export class Renderer {
       this.marshalPosts.dispose();
       this.marshalPosts = null;
     }
+    if (this.safetyCar) {
+      this.scene.remove(this.safetyCar.root);
+      this.safetyCar.dispose();
+      this.safetyCar = null;
+    }
     for (const v of this.carVisuals) {
       this.scene.remove(v.root);
       v.dispose();
@@ -1091,6 +1114,7 @@ export class Renderer {
     // The marshal panels. Cheap: the colour buffer is only touched on the frame
     // a sector's flag actually changes.
     this.marshalPosts?.update(engine.raceControl);
+    this.syncSafetyCar(dt, engine);
 
     // The radial blur converges on the point the car is heading for, not the
     // centre of the screen. In a corner the vanishing point swings wide, and
@@ -1385,6 +1409,38 @@ export class Renderer {
   }
 
   /** Copies simulation state onto the visuals. */
+  /**
+   * Puts the safety car where race control says it is.
+   *
+   * Exactly as one-way as everything else in this file: the simulation owns an
+   * `(s, lateral, speed, lamps)` state on `RaceControlManager.safetyCar` and this
+   * reads it. The one piece of arithmetic done here rather than there is the
+   * conversion to world space, because the track spline is the render layer's
+   * to interrogate and a course vehicle's position on the lap is not.
+   */
+  private syncSafetyCar(dt: number, engine: RaceEngine): void {
+    const v = this.safetyCar;
+    if (!v) return;
+    const sc = engine.raceControl.safetyCar;
+    v.root.visible = sc.visible;
+    if (!sc.visible) return;
+
+    const track = engine.track;
+    const p = track.tmpA;
+    track.toWorld(sc.s, sc.lateral, p);
+    // `carGroundY` and not the bare elevation: the road surface sits 20mm above
+    // the terrain and a vehicle placed on the terrain has its wheels in it.
+    v.root.position.set(p.x, carGroundY(track.elevationAt(sc.s)), p.y);
+    v.root.rotation.y = track.headingAt(sc.s);
+
+    // Wheels turn at the speed the car is doing. A course car whose wheels are
+    // stationary while it circulates is the single most obvious tell there is.
+    const spin = (sc.speedMs / 0.35) * dt;
+    for (const w of v.wheelSpin) w.rotation.x += spin;
+
+    v.setLights(dt, sc.orangeLights, sc.greenLight);
+  }
+
   private syncCars(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     const track = engine.track;
     // BOTH onboard modes, not just 'cockpit'. The T-cam is mounted on the roll

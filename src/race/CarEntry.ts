@@ -8,6 +8,7 @@ import { createProjection, type TrackProjection } from '../track/TrackSpline';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { Driver, Team } from '../data/teams';
 import type { CompoundId } from '../data/tires';
+import { NeutralisedAssistState } from '../physics/NeutralisedLimiter';
 import { CarDamage } from './DamageModel';
 import { RecoveryOperation } from './Recovery';
 import type { Penalty } from './RaceControlManager';
@@ -451,6 +452,16 @@ export class CarEntry {
    * independently derived one that could disagree with it.
    */
   neutralLimitMs = 0;
+  /**
+   * The neutralised assist's own memory: the pedal it is holding and the ceiling
+   * it is holding, both rate-limited.
+   *
+   * One per car and allocated with the car, because the per-step path must not
+   * allocate. Only the player's is ever driven — the nineteen AI cars fold the
+   * same limit into their own target speed — but every car carries one so that
+   * whichever car is the player's needs no special case.
+   */
+  readonly neutralAssist = new NeutralisedAssistState();
   deltaSectorTime = 0;
   /** Marshalling sector being timed, or -1 when not under a neutralisation. */
   deltaSectorIndex = -1;
