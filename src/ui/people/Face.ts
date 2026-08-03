@@ -342,9 +342,9 @@ export function headArt(look: PersonLook, opts: HeadOptions): HeadArt {
       + `r="${f1(hw * 0.30)}" fill="url(#${uid}-hair)"/>`;
   } else if (look.hair === 'tied') {
     back += `<path fill="url(#${uid}-hair)" d="`
-      + `M ${f1(cx - hw * 0.2)} ${f1(A + H * 0.24)} L ${f1(cx + hw * 0.2)} ${f1(A + H * 0.24)}`
-      + ` C ${f1(cx + hw * 0.5)} ${f1(A + H * 0.62)} ${f1(cx + hw * 0.42)} ${f1(C - H * 0.02)} ${f1(cx + hw * 0.10)} ${f1(C + H * 0.08)}`
-      + ` C ${f1(cx - hw * 0.10)} ${f1(C - H * 0.06)} ${f1(cx - hw * 0.16)} ${f1(A + H * 0.60)} ${f1(cx - hw * 0.2)} ${f1(A + H * 0.24)} Z"/>`;
+      + `M ${f1(cx - hw * 0.3)} ${f1(A + H * 0.22)} L ${f1(cx + hw * 0.3)} ${f1(A + H * 0.22)}`
+      + ` C ${f1(cx + hw * 1.02)} ${f1(A + H * 0.46)} ${f1(cx + hw * 0.94)} ${f1(C - H * 0.02)} ${f1(cx + hw * 0.46)} ${f1(C + H * 0.14)}`
+      + ` C ${f1(cx + hw * 0.20)} ${f1(C - H * 0.10)} ${f1(cx - hw * 0.24)} ${f1(A + H * 0.58)} ${f1(cx - hw * 0.3)} ${f1(A + H * 0.22)} Z"/>`;
   }
 
   // -- Ears ---------------------------------------------------------------

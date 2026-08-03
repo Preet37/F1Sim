@@ -340,7 +340,7 @@ const ROLES: Readonly<Record<PersonRole, RoleProfile>> = {
     ageRange: [0.0, 0.3],
     hair: ['shaved', 'crop', 'crop', 'side', 'swept', 'volume', 'curls', 'tied', 'long'],
     facialHair: ['none', 'none', 'none', 'stubble', 'goatee'],
-    eyewear: ['none', 'none', 'none', 'none', 'shades'],
+    eyewear: ['none'],
     headwear: ['none', 'none', 'cap', 'capBack'],
     buildRange: [0.22, 0.58],
   },

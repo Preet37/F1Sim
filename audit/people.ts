@@ -5,6 +5,23 @@ import {
   COMPLEXIONS, HAIR_PIGMENTS, HAIR_STYLES, FACIAL_HAIR, EYEWEAR, HEADWEAR,
   look, lookFromSeed, type PersonLook,
 } from '../src/ui/people/Look';
+import { principalFor, fullName } from '../src/ui/people/Cast';
+import { buildPressConference } from '../src/ui/PressConference';
+
+/** The eleven, with the colours the roster actually carries. */
+const F1_TEAMS = [
+  { id: 'mclaren', name: 'McLaren', colour: '#ff8000', accent: '#111f4a' },
+  { id: 'ferrari', name: 'Ferrari', colour: '#e8002d', accent: '#f2f3f5' },
+  { id: 'red-bull', name: 'Red Bull', colour: '#1e2a63', accent: '#e30613' },
+  { id: 'mercedes', name: 'Mercedes', colour: '#00a19c', accent: '#0d1218' },
+  { id: 'aston-martin', name: 'Aston Martin', colour: '#00594f', accent: '#cedc00' },
+  { id: 'williams', name: 'Williams', colour: '#1868db', accent: '#f2f3f5' },
+  { id: 'racing-bulls', name: 'Racing Bulls', colour: '#2b4562', accent: '#e30613' },
+  { id: 'audi', name: 'Audi', colour: '#bb0a30', accent: '#101820' },
+  { id: 'alpine', name: 'Alpine', colour: '#0090d0', accent: '#f5478c' },
+  { id: 'haas', name: 'Haas', colour: '#b6babd', accent: '#e30613' },
+  { id: 'cadillac', name: 'Cadillac', colour: '#0b1b2b', accent: '#c9a227' },
+];
 
 /**
  * Every person this game can draw, on one wall.
@@ -142,11 +159,141 @@ function sheet(): void {
   }
 }
 
+// ===========================================================================
+// The eleven principals, side by side
+// ===========================================================================
+
+/**
+ * The wall the complaint is settled on.
+ *
+ * "why does it seem like the same person as the team principal for all the
+ *  teams?" — this is the answer, and it is only an answer if all eleven are
+ *  visible at once. `probe:people` asserts the same thing numerically.
+ */
+function principals(): void {
+  app.innerHTML = '';
+  app.className = 'audit-sheet';
+  const head = el('div', 'audit-head', app);
+  el('div', 'audit-title', head, 'Eleven principals');
+  el('div', 'audit-sub', head,
+    'One per team, in their own kit. No two share a silhouette, and probe:people fails the build if they do.');
+
+  const row = el('div', 'audit-row', app);
+  for (const t of F1_TEAMS) {
+    const p = principalFor(t.id);
+    const c = el('div', 'audit-cell', row);
+    c.appendChild(faceSvg(p.look, {
+      size: 168, crop: 'bust', suit: t.colour, accent: t.accent, team: t.colour,
+      uid: 'pr-' + t.id,
+    }));
+    el('div', 'audit-cap', c, fullName(p));
+    el('div', 'audit-cap', c, t.name);
+  }
+
+  el('div', 'audit-label', app, 'The teams nobody authored');
+  el('div', 'audit-sub', app,
+    'Every junior team, straight off the generator. The old code returned "Pit wall" for all of them.');
+  const row2 = el('div', 'audit-row', app);
+  for (const id of ['invicta', 'prema-f2', 'art-f2', 'campos-f2', 'mp-f2', 'rodin-f2',
+    'dams-f2', 'hitech-f2', 'trident-f2', 'var-f2', 'aix-f2']) {
+    const p = principalFor(id);
+    const c = el('div', 'audit-cell', row2);
+    c.appendChild(faceSvg(p.look, { size: 120, uid: 'jr-' + id }));
+    el('div', 'audit-cap', c, fullName(p));
+  }
+}
+
+// ===========================================================================
+// The press conference
+// ===========================================================================
+
+function presser(): void {
+  app.innerHTML = '';
+  app.className = '';
+  const screen = el('div', 'screen lit', app);
+  const page = el('div', 'page', screen);
+  const bar = el('div', 'topbar', page);
+  el('div', 'navback-gap', bar);
+  const titles = el('div', 'topbar-titles', bar);
+  el('div', 'tab', titles, 'Monza · Round 8');
+  el('h1', 'page-title', titles, 'Press conference');
+  const body = el('div', 'page-body', page);
+
+  buildPressConference(body, {
+    circuitName: 'Monza',
+    tierName: 'Formula 1',
+    seriesName: 'World Championship',
+    round: 'Round 8 · Post-race',
+    seed: 88,
+    panel: [
+      {
+        id: 'PLAYER', firstName: 'Ondrej', lastName: 'Zdravkovic', code: 'ZDR',
+        teamName: 'Williams', colour: 0x1f56d6, accent: 0xf2f3f5, isPlayer: true,
+        raceNumber: 27,
+        helmet: { family: 'blade', base: 0xff7a1a, stripe: 0x111f4a, trim: 0xf2f3f5, visor: 'gold' },
+      },
+      {
+        id: 'norris', firstName: 'Lando', lastName: 'Norris', code: 'NOR',
+        teamName: 'McLaren', colour: 0xff7a1a, accent: 0x111f4a, raceNumber: 4,
+      },
+      {
+        id: 'leclerc', firstName: 'Charles', lastName: 'Leclerc', code: 'LEC',
+        teamName: 'Ferrari', colour: 0xe11d2e, accent: 0xffc61a, raceNumber: 16,
+      },
+    ],
+    questions: [
+      {
+        id: 'q1',
+        text: 'You were quicker than your teammate all weekend and still finished behind '
+          + 'him. Is that the car, or is that the pit wall?',
+        answers: [
+          {
+            id: 'a1', tone: 'warm',
+            text: 'The car was mine to drive and I did not get it done. That is on me.',
+            effects: [{ label: 'Chassis morale', value: 8 }, { label: 'Fan rating', value: -2 }],
+          },
+          {
+            id: 'a2', tone: 'cool',
+            text: 'We took the strategy we had the information for. It did not fall our way.',
+            effects: [{ label: 'Pressure', value: -4 }],
+          },
+          {
+            id: 'a3', tone: 'hot',
+            text: 'You saw the same race I did. Ask the people who made the call.',
+            effects: [
+              { label: 'Strategy morale', value: -12 },
+              { label: 'Fan rating', value: 6 },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'q2',
+        text: 'Your contract is up at the end of the season. Have you spoken to anybody else?',
+        answers: [
+          { id: 'b1', tone: 'cool', text: 'I am concentrating on the next eight races.' },
+          {
+            id: 'b2', tone: 'sharp',
+            text: 'Everybody talks to everybody. That is the paddock.',
+            effects: [{ label: 'Team trust', value: -6 }, { label: 'Market interest', value: 10 }],
+          },
+          {
+            id: 'b3', tone: 'warm', text: 'I want to stay. They know that.',
+            effects: [{ label: 'Team trust', value: 9 }],
+            unavailable: undefined,
+          },
+        ],
+      },
+    ],
+    onAnswer: (q, a) => console.log('answered', q.id, a.id),
+  });
+}
+
 declare global {
   interface Window { __people: { show(name: string): boolean } }
 }
 
-const SCENES: Record<string, () => void> = { sheet };
+const SCENES: Record<string, () => void> = { sheet, principals, presser };
 
 window.__people = {
   show(name: string): boolean {

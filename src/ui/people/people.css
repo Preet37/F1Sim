@@ -14,6 +14,57 @@
 
 .person-face { display: block; }
 
+/* Type inside an SVG. Fill, not colour, and the same three registers the rest
+   of the interface uses — the name face for names, the figure face for data. */
+.fig-number {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: 26px;
+  letter-spacing: 0.02em;
+}
+
+.pc-room { display: block; width: 100%; height: 100%; }
+
+/* The step-and-repeat. Low contrast on purpose: it is a wall behind people, and
+   a backdrop that competes with the panel is a backdrop nobody looked past. */
+.pc-wall-mark {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 118%;
+  font-size: 15px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  fill: rgba(226, 238, 255, 0.065);
+}
+
+.pc-wall-tick { fill: none; stroke: rgba(226, 238, 255, 0.08); stroke-width: 1.9; }
+
+.pc-round {
+  font-family: var(--font-data);
+  font-size: 15px;
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  fill: rgba(226, 238, 255, 0.30);
+}
+
+.pc-plate-name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 114%;
+  font-size: 21px;
+  letter-spacing: 0.03em;
+  fill: #f2f6fb;
+}
+
+.pc-plate-team {
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  fill: rgba(226, 238, 255, 0.44);
+}
+
 /* ---------------------------------------------------------------------------
    The press conference
    ---------------------------------------------------------------------------
