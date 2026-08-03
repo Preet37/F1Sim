@@ -5,7 +5,7 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { formatLapTime } from '../src/core/MathUtils';
 import { cutLine, qualifyingStrip, timingBoard, timingRow } from '../src/ui/TimingRow';
 import { PHYSICS_DT } from '../src/core/SimClock';
-import { Hud } from '../src/ui/Hud';
+import { Hud, mirrorPaneBoxes } from '../src/ui/Hud';
 import { PitStopPrompt } from '../src/ui/PitStopPrompt';
 
 /**
@@ -30,6 +30,8 @@ declare global {
       hud(scene: string): Promise<void>;
       hudReport(): Record<string, unknown>;
       railReport(): Record<string, unknown>;
+      camera(mode: string): void;
+      mirrorReport(mode: string): Record<string, unknown>;
     };
   }
 }
@@ -249,6 +251,71 @@ function railReport(): Record<string, unknown> {
 }
 
 /**
+ * Every HUD box against the mirror panes, and whether any of them collides.
+ *
+ * THE SAME TREATMENT THE RAIL GETS, and for the same reason. The mirrors had
+ * been mounted sideways since they were written; on the frame they were fixed,
+ * the weather bug was lying across the left pane in the driver's eye and the
+ * tyre panel across it in the cockpit. That is a fix that does not land, and it
+ * is four numbers to decide — so it is decided here rather than by looking at a
+ * screenshot of the wrong corner.
+ *
+ * The pane boxes come from `mirrorPaneBoxes`, which is the same table the
+ * stylesheet lays the bottom band out against, so the picture and the assertion
+ * cannot disagree.
+ */
+function mirrorReport(mode: string): Record<string, unknown> {
+  const root = hud?.root;
+  if (!root) return {};
+  const panes = mirrorPaneBoxes(mode, window.innerWidth, window.innerHeight);
+  if (panes.length === 0) return { panes: [], overlaps: [] };
+
+  interface Box { name: string; x: number; y: number; w: number; h: number }
+  const boxes: Box[] = [];
+  const add = (name: string, e: HTMLElement) => {
+    const cs = getComputedStyle(e);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) < 0.05) return;
+    const r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    boxes.push({ name, x: r.x, y: r.y, w: r.width, h: r.height });
+  };
+  for (const child of root.children) {
+    const e = child as HTMLElement;
+    const cls = e.className.split(' ').filter((c) => c !== 'hud-panel')[0] ?? '';
+    // The touch overlay and the help sheet are full-screen by construction —
+    // the first is a hit region with nothing drawn in it, and the second is a
+    // modal the player has asked for and is not driving under.
+    if (cls === 'hud-touch' || cls === 'hud-help') continue;
+    add('.' + cls, e);
+  }
+  // The rail's children individually as well as the rail's own band: a card
+  // may slide out of the band's foot even when the band itself is clear.
+  for (const c of root.querySelectorAll<HTMLElement>('.hud-alert, .hud-control, .hud-radiocard, .hud-pit-cue, .hud-neutral-cue')) {
+    add('.' + c.className.split(' ')[0], c);
+  }
+
+  const overlaps: string[] = [];
+  const T = 1;
+  for (const p of panes) {
+    for (const b of boxes) {
+      const ox = Math.min(p.x + p.w, b.x + b.w) - Math.max(p.x, b.x);
+      const oy = Math.min(p.y + p.h, b.y + b.h) - Math.max(p.y, b.y);
+      if (ox > T && oy > T) {
+        overlaps.push(b.name + ' over ' + p.name +
+          ' by ' + Math.round(ox) + 'x' + Math.round(oy) + 'px');
+      }
+    }
+  }
+  return {
+    panes: panes.map((p) => p.name + ' [' +
+      [p.x, p.y, p.w, p.h].map((v) => Math.round(v)).join(',') + ']'),
+    boxes: boxes.map((b) => b.name + ' [' +
+      [b.x, b.y, b.w, b.h].map((v) => Math.round(v)).join(',') + ']'),
+    overlaps,
+  };
+}
+
+/**
  * The three full-screen boards, off a real session.
  *
  * Every row here is built by the game's own `timingRow` / `timingBoard` /
@@ -405,6 +472,21 @@ window.__panels = {
   },
 
   railReport,
+
+  /**
+   * Points the HUD at a camera, exactly as `Main.cycleCamera` does.
+   *
+   * Then repaints, because the running order's ROW COUNT depends on the camera
+   * — `towerFit` takes the mirror band as a parameter and drops to four rows
+   * under it — and a report taken before the next frame would measure a
+   * fourteen-row tower in a layout that has been sized for four.
+   */
+  camera(mode: string): void {
+    hud?.setCameraMode(mode);
+    if (hud && hudEngine && hudCar) hud.update(hudEngine, hudCar, hudInput, 60, 240);
+  },
+
+  mirrorReport,
 
   show(name: string, teamId: string, circuitId: string): void {
     const team = getTeam(teamId);
