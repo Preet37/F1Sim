@@ -5,7 +5,15 @@ import {
   pitLossS, plannedStrategy, startingCompound, stintLife, strategyOptions, strategySummary,
   type StrategyOption,
 } from '../race/Strategy';
-import { principalOf, principalSvg, teamMarkSvg, weatherGlyphSvg } from './Hud';
+import { teamMarkSvg, weatherGlyphSvg } from './Hud';
+// The principal is a PERSON, from `people/`, not the fixed pictogram that used
+// to live in `Hud.ts`. `Hud.principalOf` was keyed on the ten invented team ids
+// and career mode installs the real roster, so for every team the player will
+// ever drive for it fell through to the literal string "Pit wall" behind one
+// shared silhouette — issue #18. `principalDiscSvg` is signature-compatible
+// apart from also reading `team.id`, which this call site already has.
+import { principalDiscSvg } from './people/PrincipalCard';
+import { principalNameOf } from './people/Cast';
 
 /**
  * The race plan, before the lights.
@@ -52,9 +60,9 @@ export function buildStrategyScreen(parent: HTMLElement, opts: StrategyScreenOpt
 
   const speaker = el('div', 'strat-speaker', head);
   const portrait = el('div', 'strat-portrait', speaker);
-  portrait.appendChild(principalSvg(team));
+  portrait.appendChild(principalDiscSvg(team, { headset: true }));
   const bubble = el('div', 'strat-bubble', speaker);
-  el('div', 'strat-who', bubble, principalOf(team.id) + ' · Team principal');
+  el('div', 'strat-who', bubble, principalNameOf(team.id) + ' · Team principal');
   el('div', 'strat-say', bubble, principalLine(team, drivers, track, laps));
 
   // --- Conditions ---------------------------------------------------------

@@ -88,7 +88,9 @@
     "probe:menucost": "tsx scripts/probeMenuCost.ts",
     "probe:pitcrew": "tsx scripts/probePitCrew.ts",
     "audit:pitlane": "tsx scripts/auditPitLane.ts",
-    "diag:pitchoice": "tsx scripts/diagPitChoice.ts"
+    "diag:pitchoice": "tsx scripts/diagPitChoice.ts",
+    "shoot:people": "tsx scripts/shootPeople.ts",
+    "probe:people": "tsx scripts/probePeople.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
