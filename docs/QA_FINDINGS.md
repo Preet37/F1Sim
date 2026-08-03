@@ -258,6 +258,20 @@ report a conclusion it could not support.
 `7f1f3da`, with the same result. **Verified as not my `FORCE_COLOR` problem**
 (finding B9): this probe spawns nothing and parses no banner.
 
+**Corroborated from an unrelated probe.** `validate:integrity`, run separately
+and passing, exercises the pit lane on its own terms and reports:
+
+```
+pit lane (bahrain, 44 laps)  stops=25  serviced=20/20  servicedTwice=5/20
+                             reEnteredLane=5/20  speedingPenalties=0
+```
+
+**20 of 20 cars serviced, five of them twice.** So pit stops are not broken in
+general — they work perfectly when the crew decides, which is exactly the one
+case `probe:pitstop` passes. That narrows A2c considerably without needing the
+isolation diagnostic: the failure is specific to a stop carrying an explicit
+player request, not to pit stops as a mechanism.
+
 If it is the product rather than the harness, it means **choosing your own tyre
 is what stops your pit stop working** — which would be worth knowing before the
 pit-stop choreography work lands on top of it.
@@ -980,7 +994,7 @@ ones.**
 | 1 | `probe:racesweep` | **13/55 — A2b.** Was passing only because it had no exit code |
 | 1 | `regress:career` | **not the game — my `FORCE_COLOR`, finding B9.** Now fixed and passing |
 | 143 | `validate:race` | killed by the OS under load average 118; **passes when re-run alone** |
-| 143 | `validate:integrity` | killed by the OS under load; re-run separately |
+| 143 | `validate:integrity` | killed by the OS under load; **passes when re-run alone** — "PASS — no integrity failures", all 11 circuits, zero offside, zero through-walls |
 | 142 | `probe:neutral` | hit my own 40-minute alarm; has no assertions anyway (B2) |
 
 So of ten red lines, **three were my own instrument or the machine**, two were
@@ -1002,7 +1016,7 @@ are not meaningful. Results:
 | `regress:laps`, `regress:results`, `regress:exit` | pass |
 | `regress:career` | **failed in the sweep, and it was my instrument, not the game** — see B9. Passes on every assertion once `FORCE_COLOR` is unset, and passes with it set after the C10 fix |
 | `validate:race` | pass (killed twice by the OS under load before completing; passed when re-run alone) |
-| `validate:integrity` | killed under load, not re-run to completion |
+| `validate:integrity` | **pass.** Killed under load in the sweep; re-run alone it reports "PASS — no integrity failures" on all eleven circuits with zero offside, zero through-walls and walled-in fractions an order of magnitude under the threshold |
 | `probe:racesweep` | **fail — 13 of 55 races, see A2b.** Newly visible: it had no exit code until this pass |
 | `probe:neutral` | **did not finish in 40 minutes** and was killed by the sweep's own timeout, having reached 5 of 9 rows. Not a defect in it — its races are bounded by `MAX_STEPS` — but see B2: it has no assertions, so finishing would not have produced a verdict either |
 | `validate:flags` | **fail — 3 failures, pre-existing and documented.** Numbers stable: double-yellow lift 21.6% vs single-yellow 85.3%; median safety-car gap 219m against the ten-car-length limit; safety-car lap ×1.36 a green lap against a real ×1.6-2.0 |
