@@ -36,8 +36,12 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
  *   DROPOUT    that a poor link actually produces silence, and how much.
  *   SPEECH     that boundary events exist, how far `onstart` leads the first
  *              audible word, and whether the fallback clock's estimator is
- *              still calibrated.
- *   VOICES     that the four speakers resolve to distinct, non-novelty voices.
+ *              still calibrated — three utterances a line, median taken, every
+ *              sample printed, because a single sample of a short line measures
+ *              the speech service's mood rather than the constant.
+ *   VOICES     that ONE MALE voice is chosen, that it is the same one every
+ *              time, and that it came off the preference list rather than off
+ *              the front of whatever `getVoices()` happened to return.
  *   API        the event contract the HUD types against — including the ONE
  *              CLAIM the whole design rests on, that `speech` is emitted on the
  *              first `boundary` and not on `onstart`; the interrupt path, which
@@ -333,24 +337,56 @@ async function main(): Promise<void> {
     let leadSeen = -1;
     let boundaries = 0;
 
+    // EACH LINE THREE TIMES, AND THE MEDIAN.
+    //
+    // NOT A LOOSENED TOLERANCE — the bar below is still 25%,
+    // `SPEECH_CHARS_PER_SEC` is untouched, and the number this produces is
+    // LOWER than the single-sample one, not higher. It is a better measurement
+    // of the same quantity, and taking it showed what the noise actually was.
+    //
+    // Single-sample runs of "Understood" measured 427, 630 and 735 ms on an
+    // idle machine — +-25% against a 25% bar, so the check flapped red on a
+    // healthy tree. Three samples in a row measure 606 / 609 / 615. The spread
+    // was never in the estimator and never in the speech rate: it is the FIRST
+    // utterance after the synthesiser has been idle, the same cold start that
+    // makes `onstart` lead the first word by 1.9 s once and 105 ms thereafter,
+    // and which `BOUNDARY_GRACE_UNKNOWN_MS` already exists to survive. One
+    // sample of a ten-character line is mostly that overhead; the median of
+    // three outvotes it.
+    //
+    // Every sample is printed, so the spread stays visible rather than being
+    // collapsed into a number that looks more certain than it is. A check that
+    // goes red on four runs in ten of a healthy tree teaches people to ignore
+    // it, which is the same damage as a check that cannot go red at all.
+    const REPEATS = 3;
     for (const text of lines) {
-      const timing: SpeechTiming = await page.evaluate(
-        (t) => window.RADIO_PROBE.measureSpeechTiming(t, 1.08), text,
-      );
-      if (!timing.ok) {
-        notes.push(`speech did not complete for "${text.slice(0, 24)}...": ${timing.reason}`);
+      const samples: SpeechTiming[] = [];
+      for (let r = 0; r < REPEATS; r++) {
+        const t: SpeechTiming = await page.evaluate(
+          (x) => window.RADIO_PROBE.measureSpeechTiming(x, 1.08), text,
+        );
+        if (t.ok) samples.push(t);
+      }
+      if (!samples.length) {
+        notes.push(`speech did not complete for "${text.slice(0, 24)}..."`);
         continue;
       }
-      boundaries += timing.boundaryCount;
-      const lead = timing.firstBoundaryMs - timing.onstartMs;
-      if (timing.boundaryCount > 0 && lead > leadSeen) leadSeen = lead;
-      const err = Math.abs(timing.estimateMs - timing.measuredMs) / Math.max(timing.measuredMs, 1);
+      for (const t of samples) {
+        boundaries += t.boundaryCount;
+        const lead = t.firstBoundaryMs - t.onstartMs;
+        if (t.boundaryCount > 0 && lead > leadSeen) leadSeen = lead;
+      }
+      const spans = samples.map((t) => t.measuredMs).sort((a, b) => a - b);
+      const median = spans[Math.floor(spans.length / 2)];
+      const estimate = samples[0].estimateMs;
+      const err = Math.abs(estimate - median) / Math.max(median, 1);
       if (err > worstErr) worstErr = err;
+      const first = samples[0];
       console.log(`        "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}"`);
-      console.log(`          onstart ${timing.onstartMs}, first word ${timing.firstBoundaryMs}, `
-        + `end ${timing.onendMs}, ${timing.boundaryCount} words`);
-      console.log(`          spoken ${timing.measuredMs} ms, estimated ${Math.round(timing.estimateMs)} ms `
-        + `(${(err * 100).toFixed(1)}% off)`);
+      console.log(`          onstart ${first.onstartMs}, first word ${first.firstBoundaryMs}, `
+        + `end ${first.onendMs}, ${first.boundaryCount} words`);
+      console.log(`          spoken ${spans.join(' / ')} ms (median ${median}), `
+        + `estimated ${Math.round(estimate)} ms (${(err * 100).toFixed(1)}% off the median)`);
     }
 
     check(boundaries > 0, 'boundary events fire', `${boundaries} word events across ${lines.length} lines`);

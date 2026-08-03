@@ -24,7 +24,7 @@ import { PHYSICS_DT } from '../src/core/SimClock';
 import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
   pitCueText, radioExchange, relayed, repairableInBox, replyExchange,
-  setRadioVariantSeed, standingsCells,
+  radioTurnSpec, setRadioVariantSeed, standingsCells,
   teamLine, towerFit, towerWindow, weatherReadout,
   type RadioTurn,
 } from '../src/ui/Hud';
@@ -545,6 +545,32 @@ check(replyExchange('lapsed', 'Hard').some((t) => t.who === 'wall'),
   }
   check(shared === '',
     `two different answers produce the same reply: "${shared}"`);
+}
+
+// THE DRIVER IS THE PLAYER, SO THE DRIVER IS NOT SPOKEN.
+//
+//   "i just atp wouldn't say anything for the audio if its a conversation
+//    because you don't need to be saying what the driver says ykwim?"
+//
+// `probe:radio` measures that `TeamRadio` CAN run a transmission unvoiced and
+// that it still paces it. This asserts that this file actually asks for one —
+// a different question, and the one a refactor would break silently.
+{
+  let voicedDriver = '';
+  let silentWall = '';
+  for (const m of MOMENTS) {
+    for (const turns of variantsOf(m, radioExchange)) {
+      for (const t of turns) {
+        const spec = radioTurnSpec(t);
+        if (t.who === 'driver' && spec.voiced !== false) voicedDriver = t.line;
+        if (t.who === 'wall' && spec.voiced === false) silentWall = t.line;
+        check(spec.text === t.line, `the spoken text is not the drawn text: "${t.line}"`);
+      }
+    }
+  }
+  check(voicedDriver === '',
+    `the driver's own line would be said out loud: "${voicedDriver}"`);
+  check(silentWall === '', `the pit wall would be silent on: "${silentWall}"`);
 }
 
 {

@@ -9,7 +9,9 @@ import type {
   FlagSignal, RaceControlMessage, RaceNotice, TeamNote,
 } from '../race/RaceControlManager';
 import { TrackMap } from './TrackMap';
-import { TeamRadio, type RadioEvent, type RadioSpeaker } from '../audio/TeamRadio';
+import {
+  TeamRadio, type RadioEvent, type RadioSpeaker, type RadioTurnSpec,
+} from '../audio/TeamRadio';
 
 /**
  * Telemetry HUD, timing tower, team radio and touch overlay.
@@ -2573,9 +2575,7 @@ export class Hud {
     // it, nothing says it — see `RadioSpeakOptions.voiced`, and the player's
     // own reasoning: "you don't need to be saying what the driver says".
     const ids = this.radio.speakExchange(
-      shown.map((t) => ({
-        speaker: SPEAKER_OF[t.who], text: t.line, voiced: t.who !== 'driver',
-      })),
+      shown.map(radioTurnSpec),
       { priority: 0, tag: 'hud-card' },
     );
     this.radioRowOf.clear();
@@ -3061,6 +3061,25 @@ const SPEAKER_OF: Record<'driver' | 'wall', RadioSpeaker> = {
   driver: 'driver',
   wall: 'engineer',
 };
+
+/**
+ * One turn of the card, as the radio wants it.
+ *
+ * Exported and pure so `probe:hudtext` can assert the WIRING rather than the
+ * capability. `TeamRadio` supports unvoiced transmissions and `probe:radio`
+ * measures that support; neither of them says anything about whether this file
+ * actually asks for one. A one-line regression here — `voiced: true`, or the
+ * flag dropped in a refactor — would put a synthesised stranger back on the
+ * player's own replies and pass both probes.
+ */
+export function radioTurnSpec(turn: RadioTurn): RadioTurnSpec {
+  return {
+    speaker: SPEAKER_OF[turn.who],
+    text: turn.line,
+    // "you don't need to be saying what the driver says ykwim?"
+    voiced: turn.who !== 'driver',
+  };
+}
 
 /**
  * The rail's top fade, in pixels.
