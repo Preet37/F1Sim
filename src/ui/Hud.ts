@@ -9,6 +9,9 @@ import type {
   FlagSignal, RaceControlMessage, RaceNotice, TeamNote,
 } from '../race/RaceControlManager';
 import { TrackMap } from './TrackMap';
+import {
+  TeamRadio, type RadioEvent, type RadioSpeaker, type RadioTurnSpec,
+} from '../audio/TeamRadio';
 
 /**
  * Telemetry HUD, timing tower, team radio and touch overlay.
@@ -184,12 +187,55 @@ export class Hud {
   private readonly radioTurnRows: HTMLElement[] = [];
   /** Timers for the card currently on screen, cleared when it is replaced. */
   private radioTimers: number[] = [];
-  /** The typewriter's own interval, separate so it can be cancelled alone. */
-  private radioTypeTimer = 0;
 
-  /** The mute control, and the voice it switches. */
-  private radioMute!: HTMLElement;
-  private readonly voice = new RadioVoice();
+  // --- The radio, and the clock the card types to --------------------------
+  /**
+   * THE ONE RADIO.
+   *
+   * This class used to own a second one — `RadioVoice`, a private
+   * `speechSynthesis` client with its own 🔊 pip and its own
+   * `localStorage['f1sim.radioVoice']` flag — beside `TeamRadio`, which is the
+   * real one. Two implementations of one feature, two off-switches for it, and
+   * both of them calling `cancel()` on the same global synthesiser, so
+   * whichever spoke second silenced the other. Deleted. The switch is
+   * `GameSettings.teamRadioVoice` on the Audio tab of Settings, and this is the
+   * only client.
+   *
+   * The typewriter is driven off this object's `word` events rather than off an
+   * interval of its own, which is the seam the previous version of this file
+   * left open in `speechRate`'s note: *"when the radio audio lands, the thing
+   * to do is write the utterance's real duration here."* That turned out to be
+   * the wrong shape of answer — a rate is a guess about a line, and a
+   * `boundary` event is the synthesiser telling us which characters it has
+   * actually said. So there is no rate any more. There is one clock.
+   *
+   * Injected where there is one to inject — `main.ts` hands over the
+   * `AudioEngine`'s instance, which is the one attached to the mix and the only
+   * one that can make a sound. A HUD built by a probe harness with no audio
+   * engine gets one of its own instead, silent but with the same clock, so the
+   * card types at the right pace everywhere and there is never a second
+   * typewriter implementation for the no-audio case.
+   */
+  private radio: TeamRadio;
+  /** Non-null only while the HUD is running on a radio it made itself. */
+  private ownRadio: TeamRadio | null;
+  private unsubscribeRadio: (() => void) | null = null;
+  /** Transmission id -> which row of the card it is being typed into. */
+  private radioRowOf = new Map<number, number>();
+  /** Transmissions of the exchange on screen that have not ended yet. */
+  private radioPending = new Set<number>();
+  /** Whether the card on screen is holding for an answer. */
+  private radioAsking = false;
+  /**
+   * Whether there is a transmission the card is currently carrying.
+   *
+   * Separate from whether the card is DISPLAYED, because those are now two
+   * different things: `fitRail` parks the card when the rail's band is too
+   * short for it and `sizeRadioCard` brings it back when the band grows, and
+   * neither of them is allowed to decide that the transmission is over. Only
+   * the dwell and a replacement do that.
+   */
+  private radioLive = false;
 
   // --- The answer affordance ------------------------------------------------
   /**
@@ -299,11 +345,14 @@ export class Hud {
   /** Called when the on-screen menu button is used. */
   onMenuPressed: (() => void) | null = null;
 
-  constructor(parent: HTMLElement) {
+  constructor(parent: HTMLElement, radio?: TeamRadio) {
     this.root = document.createElement('div');
     this.root.className = 'hud';
+    this.ownRadio = radio ? null : new TeamRadio();
+    this.radio = radio ?? (this.ownRadio as TeamRadio);
     this.build();
     parent.appendChild(this.root);
+    this.unsubscribeRadio = this.radio.addListener((ev) => this.onRadioEvent(ev));
 
     // The HUD is pointer-events:none so it never blocks the driving surface;
     // these two controls opt back in.
@@ -318,11 +367,24 @@ export class Hud {
     wire(this.menuButton, () => this.onMenuPressed?.());
     wire(this.radioYes, () => this.answerRadio(true));
     wire(this.radioNo, () => this.answerRadio(false));
-    wire(this.radioMute, () => {
-      this.voice.enabled = !this.voice.enabled;
-      this.radioMute.textContent = this.voice.enabled ? '🔊' : '🔇';
-      if (!this.voice.enabled) this.voice.stop();
-    });
+  }
+
+  /**
+   * Points the card at the radio that can actually make a sound.
+   *
+   * The app shell owns the `AudioEngine`, which owns the one `TeamRadio` that
+   * is attached to the mix; the HUD is built before audio has been unlocked, so
+   * it starts on a silent one of its own and is handed the real one here. The
+   * throwaway is disposed rather than left holding timers.
+   */
+  useRadio(radio: TeamRadio): void {
+    if (radio === this.radio) return;
+    this.unsubscribeRadio?.();
+    this.hideRadioCard(true);
+    this.ownRadio?.dispose();
+    this.ownRadio = null;
+    this.radio = radio;
+    this.unsubscribeRadio = radio.addListener((ev) => this.onRadioEvent(ev));
   }
 
   private el(cls: string, parent: HTMLElement, text = ''): HTMLElement {
@@ -696,12 +758,14 @@ export class Hud {
     const who = this.el('radio-who', head);
     this.radioDriver = this.el('radio-driver', who, '');
     this.el('radio-title', who, 'Radio');
-    // The voice switch, on the card rather than buried in a settings screen,
-    // because the moment somebody wants it off is the moment it is talking.
-    this.radioMute = this.el('radio-mute', head);
-    this.radioMute.textContent = this.voice.enabled ? '🔊' : '🔇';
-    this.radioMute.setAttribute('role', 'switch');
-    this.radioMute.setAttribute('aria-label', 'Team radio voice');
+    // There is no voice switch here any more. There used to be — a 🔊 pip in
+    // this header, on the argument that the moment somebody wants the radio to
+    // stop talking is the moment it is talking — and it was the second of two
+    // independent off-switches for one feature, the other being in Settings.
+    // Two switches for one thing is worse than an inconvenient one, so the
+    // Settings row is the survivor: it is the one that persists with the rest
+    // of the player's settings rather than in a `localStorage` flag of its own,
+    // and it is the one whose click can prime the speech engine for iOS.
     this.el('radio-rule', this.radioCard);
 
     // THE WAVEFORM, behind the words, in the team's colour at low alpha.
@@ -1773,6 +1837,11 @@ export class Hud {
     if (this.pitSheetOpen) {
       for (const c of this.alertCards.slice()) this.dismissAlert(c, true);
     }
+    // BEFORE EVICTING ANYTHING, MAKE THE CARD FIT. See `sizeRadioCard`. This
+    // is ordered first deliberately: the eviction below is correct as a last
+    // resort and was wrong as a first one, and the difference between the two
+    // was a player who could not see any of their radio at all.
+    this.sizeRadioCard();
     // Bounded so a card taller than the whole band cannot spin here.
     for (let guard = 0; guard < 8; guard++) {
       if (this.railOverflowPx() <= 0) return;
@@ -1781,19 +1850,134 @@ export class Hud {
         continue;
       }
       if (this.radioCard.style.display !== 'none') {
-        // The card is the one item on this rail that is atmosphere rather than
-        // instruction, so it is the first thing evicted when the band is short
-        // — and it is evicted OUTRIGHT rather than parked, which is a real cost
-        // worth naming: a player who glances in a mirror mid-transmission loses
-        // the rest of it. Restoring it when the band grows back was tried and
-        // withdrawn; the restore and the eviction are two measurements of a
-        // band whose height changes under both of them, and the two raced. See
-        // the note in the handover.
-        this.hideRadioCard(true);
+        // PARKED, not destroyed. The card is the one item on this rail that is
+        // atmosphere rather than instruction, so it is the first thing to go
+        // when the band is short — but it comes back when the band does, which
+        // is what `sizeRadioCard` handles at the top of this function. It used
+        // to be evicted outright, and a player who glanced in a mirror
+        // mid-transmission lost the rest of it permanently.
+        setStyle(this.radioCard, 'display', 'none');
         continue;
       }
       return;
     }
+  }
+
+  /**
+   * Sizes the radio card to the room the rail actually has.
+   *
+   *   "that text box i told u to make it a square and make it bigger its so
+   *    hard to read"
+   *   "also i cant see any of the messages bruh"
+   *
+   * THE SECOND ONE IS THE BUG AND IT WAS ALREADY MEASURED. `shoot:panels` has
+   * been reporting *"the radio card is not on screen in a 248px band"* on
+   * desktop and *"in a 348px band"* in portrait as a known failure, and the
+   * cause is arithmetic: the card is 176px, the neutralisation cue is 45, the
+   * pit cue is 30 and two gaps are 16, which is 267 pixels of content in a 248
+   * pixel band. `fitRail` is permitted to throw the radio card away when the
+   * rail overruns — it is the one item on the rail that is atmosphere rather
+   * than instruction — so nineteen pixels of overflow deleted the whole
+   * feature, silently, and the player saw nothing.
+   *
+   * NINETEEN PIXELS SMALLER IS LEGIBLE. NOT THERE IS NOT. So the card is sized
+   * to what is left after everything that cannot be evicted has taken its
+   * share, floored at `RADIO_CARD_MIN_PX` — a header, a rule and two turns,
+   * below which it stops being worth drawing — and capped at the size the
+   * stylesheet asks for, which is the square. It only ever shrinks below that
+   * when the alternative is disappearing.
+   *
+   * The WIDTH follows the height at the plate's own aspect so the shape
+   * survives: a card that shrinks in one axis only becomes the letterbox this
+   * whole pass replaced, and `shoot:panels` fails that too — correctly.
+   *
+   * One `getBoundingClientRect` per rail change, in the same pass `fitRail`
+   * was already making.
+   */
+  private sizeRadioCard(): void {
+    // A card that was never raised, or one the dwell has taken away for good.
+    if (!this.radioLive) return;
+    const cs = getComputedStyle(this.radioCard);
+    const maxH = parseFloat(cs.getPropertyValue('--radio-h-max'));
+    const maxW = parseFloat(cs.getPropertyValue('--radio-w-max'));
+    // A viewport whose stylesheet does not ask for a fixed plate — the
+    // landscape phone, where the card is deliberately a letterbox whose height
+    // is its content. Nothing to size.
+    if (!(maxH > 0) || !(maxW > 0)) return;
+
+    const band = this.notices.getBoundingClientRect().height;
+    if (band <= 0) return;
+    const gap = parseFloat(getComputedStyle(this.notices).rowGap) || 0;
+    // THE CARD IS COUNTED WHETHER OR NOT IT IS CURRENTLY SHOWING, and that is
+    // load-bearing rather than tidy. `room` has to be INVARIANT to the card's
+    // own parked state or this function oscillates: a parked card is one fewer
+    // flex child, so it is one fewer `gap`, so `room` is a few pixels larger
+    // while parked than while shown. With the band sitting between the two
+    // values the card unparks, is re-measured, no longer fits, parks, changes
+    // the `enforceRailBudget` key, and comes straight back — for ever, one flip
+    // per frame. Excluding only its HEIGHT and never its slot removes the loop
+    // by construction.
+    let others = 0;
+    let n = 0;
+    for (const child of this.notices.children) {
+      const e = child as HTMLElement;
+      if (e === this.radioCard) { n++; continue; }
+      const h = e.getBoundingClientRect().height;
+      if (h < 1) continue;
+      n++;
+      others += h;
+    }
+    // THE MASK COMES OFF THE TOP. `.hud-notices` fades its first 28 pixels to
+    // transparent so a clipped stack reads as "there is more above this"
+    // rather than as a rendering fault — and the radio card is the TOPMOST
+    // child, so a card sized into the full band has its own header sitting in
+    // that fade. That is half of "i cant see any of the messages": the card
+    // was on screen and its first line was being faded out.
+    //
+    // It also buys back the eight pixels the rail's own top overlaps the
+    // running order by, which `shoot:panels` reports as
+    // `.hud-tower x .hud-radiocard by 186x8px` the moment the rail is full
+    // enough to reach up there.
+    const room = band - others - (n > 1 ? (n - 1) * gap : 0) - RAIL_MASK_PX;
+
+    // PARKED, NOT DESTROYED — and this is the second half of "i cant see any
+    // of the messages".
+    //
+    // The band's foot rises by up to a third of the viewport the moment the
+    // camera picks up the mirrors, so in portrait a card raised in a 348 pixel
+    // band was being measured a fraction of a second later in a seventy pixel
+    // one, thrown out, and never seen again — `shoot:panels` reported exactly
+    // that as "the radio card is not on screen in a 348px band", in a band it
+    // fits in three times over. Restoring it was tried once before and
+    // withdrawn because the restore and the eviction were two measurements of
+    // a band that moved under both of them, and they raced.
+    //
+    // They cannot race now. The card's height is a FUNCTION of the room left
+    // by the children that cannot be evicted, so restoring it and then sizing
+    // it can only ever produce a card that fits: `others + gaps + h` is at
+    // most `band - RAIL_MASK_PX`, so the loop in `fitRail` finds no overflow
+    // and does not park it again. Below the floor it stays parked, which is
+    // the landscape phone and is a measured trade rather than a bug.
+    if (room < RADIO_CARD_MIN_PX) {
+      if (this.radioCard.style.display !== 'none') {
+        setStyle(this.radioCard, 'display', 'none');
+      }
+      return;
+    }
+    if (this.radioCard.style.display === 'none') {
+      setStyle(this.radioCard, 'display', 'block');
+    }
+
+    const h = Math.max(RADIO_CARD_MIN_PX, Math.min(maxH, room));
+    const w = Math.min(maxW, h * (maxW / maxH));
+    this.radioCard.style.setProperty('--radio-h', h.toFixed(1) + 'px');
+    this.radioCard.style.setProperty('--radio-w', w.toFixed(1) + 'px');
+    // The header's type follows the plate — see `.radio-head` in styles.css.
+    // At 129 of a wanted 176 the driver's surname at full size no longer fits
+    // the narrower card and wraps mid-word, which reads as a broken graphic
+    // rather than as a small one. The TURNS are deliberately not scaled: the
+    // complaint was that the words were hard to read.
+    this.radioCard.style.setProperty('--radio-scale', (h / maxH).toFixed(3));
   }
 
   /** How far the rail's contents overrun its band, pixels. */
@@ -2238,8 +2422,12 @@ export class Hud {
     if (ex.length === 0) return;
     for (const t of this.radioTimers) window.clearTimeout(t);
     this.radioTimers.length = 0;
-    window.clearInterval(this.radioTypeTimer);
-    this.voice.stop();
+    // Whatever was being said is over. `cancelAll` ends the live transmission
+    // and empties the queue, so the card that is about to be raised cannot have
+    // the previous one's words typed into it.
+    this.radioRowOf.clear();
+    this.radioPending.clear();
+    this.radio.cancelAll();
 
     if (this.markedTeam !== player.team.id) {
       this.radioMark.textContent = '';
@@ -2256,6 +2444,8 @@ export class Hud {
     setText(this.radioDriver, player.driver.lastName);
     setClass(this.radioCard, 'hud-radiocard tone-' + tone);
 
+    this.radioLive = true;
+    this.radioAsking = asking;
     if (asking) {
       setStyle(this.radioClock, 'width', '100%');
       setStyle(this.radioChoice, 'display', 'block');
@@ -2271,10 +2461,32 @@ export class Hud {
     enterNextFrame(this.radioCard);
     this.fitRail();
 
-    // A question stands for as long as the offer does — its own clock, not the
-    // card's — because taking the buttons away underneath somebody who is still
-    // deciding is exactly the fault the two-clock note is about.
-    const dwell = asking ? Math.max(this.radioDwellMs, 20_000) : this.radioDwellMs;
+    // THE DWELL STARTS WHEN THE TALKING STOPS, not when the card appears — see
+    // `armDwell`. A card that starts its eight seconds at the moment it is
+    // raised was correct while the typewriter ran at a fixed 45 characters a
+    // second and every exchange was over in three; it is wrong now that the
+    // words arrive at the pace they are spoken, because a four-turn exchange
+    // takes about twelve seconds to say and the card would have left before the
+    // last man finished his sentence. `armDwell` is called from the `end` of
+    // the last transmission.
+    //
+    // The exception is a card with nobody talking on it at all, which is what
+    // an exchange the radio declined leaves behind: arm it now or it never
+    // leaves.
+    if (this.radioPending.size === 0) this.armDwell();
+  }
+
+  /**
+   * Starts the card's countdown. Called once the last word has been said.
+   *
+   * A question stands for as long as the offer does — its own clock, not the
+   * card's — because taking the buttons away underneath somebody who is still
+   * deciding is exactly the fault the two-clock note is about.
+   */
+  private armDwell(): void {
+    for (const t of this.radioTimers) window.clearTimeout(t);
+    this.radioTimers.length = 0;
+    const dwell = this.radioAsking ? Math.max(this.radioDwellMs, 20_000) : this.radioDwellMs;
     this.radioTimers.push(window.setTimeout(() => {
       this.radioCard.classList.add('leaving');
       this.radioTimers.push(window.setTimeout(() => this.hideRadioCard(true), 440));
@@ -2351,10 +2563,12 @@ export class Hud {
   }
 
   /**
-   * Types the exchange in, one turn at a time, and speaks each turn as it lands.
+   * Hands the exchange to the radio, which types it back one word at a time.
    *
    * "make it more animated like typing/scrolling animation of the text. and
    *  maybe we can get a voice saying what the thing says."
+   * "you have to type it out in a typewriter animation as well as say what it
+   *  actually says like volume wise."
    *
    * WHY TYPING IS THE RIGHT ANIMATION HERE rather than a fade or a slide: a
    * radio transmission arrives OVER TIME. Somebody is speaking and you are
@@ -2362,19 +2576,28 @@ export class Hud {
    * only thing that separates a transmission from a caption. A card that
    * appears whole is a subtitle.
    *
-   * ONE INTERVAL for the whole exchange, not one per row. Four intervals racing
-   * each other on a card that can be replaced mid-run is four ways to leak a
-   * timer, and this card is replaced mid-run routinely — a safety car during a
-   * strategy call is a normal Sunday.
+   * THERE IS NO TIMER IN THIS FUNCTION, AND THAT IS THE WHOLE CHANGE. It used
+   * to run a 66 ms `setInterval` at a fixed 45 characters a second and fire the
+   * voice once, at `at === 0`, per turn — two clocks, started together and free
+   * to drift, with the voice's own clock the one nobody could see. Measured,
+   * `speechSynthesis` does not even begin making a sound until about 1.1 s
+   * after `onstart`, so the typewriter ran a second and a bit ahead of the
+   * words for the whole of the first line. Now the synthesiser reports which
+   * characters it has said, in `boundary` events, and `TeamRadio` forwards them
+   * as `word`. The reveal cannot drift from the voice because it IS the voice.
    *
-   * `Hud.update` never touches any of this. The typewriter writes one
-   * `textContent` roughly thirty times a second for two or three seconds a
-   * transmission, on an element with no children, and stops.
+   * With the voice switched off — the default — the same events arrive from
+   * `TeamRadio`'s estimated clock, which is calibrated against real speech by
+   * `scripts/probeRadio.ts`. The card types at the pace the line would be
+   * spoken at whether or not anybody is speaking it.
+   *
+   * `Hud.update` never touches any of this.
    */
   private typeExchange(ex: RadioTurn[]): void {
     const rows = this.radioTurnRows;
+    const shown = ex.slice(0, rows.length);
     for (const [i, row] of rows.entries()) {
-      const turn = ex[i];
+      const turn = shown[i];
       if (!turn) { setStyle(row, 'display', 'none'); continue; }
       setStyle(row, 'display', 'block');
       setClass(row, 'radio-turn is-' + turn.who);
@@ -2382,73 +2605,95 @@ export class Hud {
     }
 
     // Somebody who has asked for less motion gets the whole transmission at
-    // once. The words are the content; the typing is the atmosphere.
-    if (prefersReducedMotion()) {
+    // once. The words are the content; the typing is the atmosphere. The voice
+    // still runs — reduced motion is a statement about movement, not about
+    // sound — so the exchange is still queued; the rows are simply filled up
+    // front and the `word` events land on text that is already there.
+    const still = prefersReducedMotion();
+    if (still) {
       for (const [i, row] of rows.entries()) {
-        const turn = ex[i];
+        const turn = shown[i];
         if (turn) row.textContent = '“' + turn.line + '”';
       }
-      this.voice.say(ex);
-      return;
     }
 
-    let turn = 0;
-    let at = 0;
-    let pause = 0;
-    // The clock. `speechRate` is a property rather than a constant because the
-    // right answer to "how fast does this type" is "exactly as fast as it is
-    // being spoken" — text appearing at the speed of the voice reading it is
-    // the whole difference between an effect and a transmission. Until the
-    // audio layer lands, `speechRate` is a measured estimate of synthesised
-    // speech at the rate `RadioVoice` sets; when it lands, whoever owns the
-    // audio writes the real figure here and nothing else in this file changes.
-    const perTick = Math.max(1, Math.round(this.speechRate * TYPE_TICK_MS / 1000));
-    this.radioTypeTimer = window.setInterval(() => {
-      if (pause > 0) { pause--; return; }
-      const t = ex[turn];
-      const row = rows[turn];
-      if (!t || !row) { window.clearInterval(this.radioTypeTimer); return; }
-      if (at === 0) this.voice.sayOne(t);
-      at += perTick;
-      row.textContent = '“' + t.line.slice(0, at) + (at < t.line.length ? '' : '”');
-      if (at >= t.line.length) {
-        turn++;
-        at = 0;
-        // A beat between turns, because two people talking do not overlap and
-        // an exchange that runs together reads as one person rambling.
-        pause = TYPE_TURN_GAP_TICKS;
+    // `speakExchange` is what keeps a four-turn conversation together: the
+    // turns share a tag and a priority, so a safety car either supersedes the
+    // whole exchange or waits for it, and no third party can land in the middle
+    // of two people talking.
+    // `voiced: false` on the driver's half. The card shows it, the clock paces
+    // it, nothing says it — see `RadioSpeakOptions.voiced`, and the player's
+    // own reasoning: "you don't need to be saying what the driver says".
+    const ids = this.radio.speakExchange(
+      shown.map(radioTurnSpec),
+      { priority: 0, tag: 'hud-card' },
+    );
+    this.radioRowOf.clear();
+    this.radioPending.clear();
+    for (const [i, id] of ids.entries()) {
+      this.radioRowOf.set(id, i);
+      this.radioPending.add(id);
+    }
+    this.radioReveal = still ? 'whole' : 'typed';
+
+    // A TURN THE RADIO DECLINED STILL HAS TO READ. `speak` returns null when
+    // the tab is hidden, so a card raised in a backgrounded tab would type
+    // nothing and then sit there for its whole dwell as four empty rows when
+    // the player came back. Anything without a transmission behind it is
+    // revealed whole, which is the same backstop `end` provides for a turn that
+    // produced no words.
+    if (ids.length < shown.length) {
+      for (const [i, row] of rows.entries()) {
+        const turn = shown[i];
+        if (turn && i >= ids.length) row.textContent = '“' + turn.line + '”';
       }
-    }, TYPE_TICK_MS);
+    }
   }
 
+  /** Whether the rows are being typed or were filled up front. */
+  private radioReveal: 'typed' | 'whole' = 'typed';
+
   /**
-   * How fast the words arrive, characters a second.
+   * THE CLOCK, arriving.
    *
-   * THE SEAM FOR THE AUDIO LAYER, and it is deliberately a property on the HUD
-   * rather than a constant in this module. A typewriter running at a fixed rate
-   * beside a voice running at its own is two clocks that drift apart over a
-   * four-turn exchange, and the drift is exactly what makes the effect read as
-   * decoration. The rate that is right is the rate the line is being SPOKEN at.
-   *
-   * The default is measured rather than chosen: `RadioVoice` sets `rate` to
-   * about 1.2, and English synthesised speech at 1.0 runs near 14 characters a
-   * second, so 45 is a shade ahead of the voice — which is the correct place to
-   * be, because a word half-drawn when it is heard reads as lag and a word
-   * drawn a beat early reads as a caption keeping up.
-   *
-   * When the radio audio lands, the thing to do is write the utterance's real
-   * duration here — `line.length / durationS` — at the moment it starts. That
-   * is one assignment and no other change to this file.
+   * One listener for the whole card. `word` carries the character range the
+   * synthesiser has actually uttered, so the reveal is a `slice` of the line at
+   * exactly the point the voice has reached; `end` reveals the rest, which is
+   * the backstop for the real cases that produce no words at all — a platform
+   * with no `boundary` events, or a turn cut off by something more urgent.
    */
-  speechRate = 45;
+  private onRadioEvent(ev: RadioEvent): void {
+    const row = this.radioRowOf.get(ev.transmission.id);
+    if (row === undefined) return;
+    const el = this.radioTurnRows[row];
+    if (!el) return;
+    const line = ev.transmission.text;
+
+    if (ev.type === 'word' && this.radioReveal === 'typed') {
+      const to = Math.min(line.length, ev.charIndex + ev.charLength);
+      el.textContent = '“' + line.slice(0, to) + (to < line.length ? '' : '”');
+      return;
+    }
+    if (ev.type === 'end') {
+      // Whole line, whatever the words did or did not say.
+      el.textContent = '“' + line + '”';
+      this.radioPending.delete(ev.transmission.id);
+      this.radioRowOf.delete(ev.transmission.id);
+      // The last man has stopped talking. Now the card may start counting down.
+      if (this.radioPending.size === 0) this.armDwell();
+    }
+  }
 
   private hideRadioCard(now = false): void {
     if (!now) { this.radioCard.classList.add('leaving'); return; }
     for (const t of this.radioTimers) window.clearTimeout(t);
     this.radioTimers.length = 0;
-    window.clearInterval(this.radioTypeTimer);
-    this.voice.stop();
+    this.radioRowOf.clear();
+    this.radioPending.clear();
+    this.radio.cancelAll();
     this.question = null;
+    this.radioAsking = false;
+    this.radioLive = false;
     setStyle(this.radioChoice, 'display', 'none');
     this.radioCard.classList.remove('entering', 'leaving');
     setStyle(this.radioCard, 'display', 'none');
@@ -2853,26 +3098,68 @@ const RADIO_LIFE_MS = 8000;
 const RADIO_TURNS_SHOWN = 4;
 
 /**
- * The typewriter's tick.
+ * The smallest the radio card may be squeezed to before it is evicted instead.
  *
- * A tick rather than a per-character timer so the whole transmission is one
- * interval: fifteen writes a second on one element with no children is a
- * thousandth of the frame budget, and it stops when the words run out. How
- * many characters land per tick is not a constant — see `Hud.speechRate`,
- * which exists so the words can arrive at the speed they are being spoken.
+ * A header, the rule, and two turns of two lines each at the desktop metrics:
+ * 22 + 11 + 4 x 13 + 20 of padding is 105, so 104 is the floor and anything
+ * under it is a plate with the words cut off, which is not worth the rail it
+ * stands on. See `Hud.sizeRadioCard` — above this the card SHRINKS, below it
+ * `fitRail` throws it away as it always did.
  */
-const TYPE_TICK_MS = 66;
-/** Ticks of silence between one person finishing and the next starting. */
-const TYPE_TURN_GAP_TICKS = 5;
+const RADIO_CARD_MIN_PX = 104;
+
+/**
+ * Who each half of an exchange sounds like.
+ *
+ * The card tells the two apart by COLOUR — the driver in his team's colour, the
+ * pit wall in white — and colour does not survive being spoken, so out loud
+ * they are told apart by voice, rate and pitch. `TeamRadio.SPEAKERS` owns those
+ * three; this is the only thing the HUD has to know about them.
+ *
+ * There is no typewriter tick constant here any more. The reveal is driven by
+ * `RadioEvent.word`, which carries the character range the synthesiser has
+ * actually said — see `Hud.typeExchange`.
+ */
+const SPEAKER_OF: Record<'driver' | 'wall', RadioSpeaker> = {
+  driver: 'driver',
+  wall: 'engineer',
+};
+
+/**
+ * One turn of the card, as the radio wants it.
+ *
+ * Exported and pure so `probe:hudtext` can assert the WIRING rather than the
+ * capability. `TeamRadio` supports unvoiced transmissions and `probe:radio`
+ * measures that support; neither of them says anything about whether this file
+ * actually asks for one. A one-line regression here — `voiced: true`, or the
+ * flag dropped in a refactor — would put a synthesised stranger back on the
+ * player's own replies and pass both probes.
+ */
+export function radioTurnSpec(turn: RadioTurn): RadioTurnSpec {
+  return {
+    speaker: SPEAKER_OF[turn.who],
+    text: turn.line,
+    // "you don't need to be saying what the driver says ykwim?"
+    voiced: turn.who !== 'driver',
+  };
+}
+
+/**
+ * The rail's top fade, in pixels.
+ *
+ * `.hud-notices` masks its first 28 pixels to transparent so that a stack too
+ * tall for its band reads as "there is more above this" instead of as a card
+ * sheared off by an invisible edge. Anything allocated into it is read three
+ * quarters of, so it is not room and nothing may be sized into it.
+ */
+const RAIL_MASK_PX = 28;
 
 /**
  * Slack subtracted from the rail's band before it is divided into cards.
  *
- * The gaps between the rail's children plus the top of the mask, which fades
- * the first 28 pixels of whatever reaches it. A card allocated into that fade
- * is a card the driver reads three quarters of.
+ * The gaps between the rail's children plus the top of the mask.
  */
-const RAIL_GAPS_PX = 36;
+const RAIL_GAPS_PX = RAIL_MASK_PX + 8;
 
 /**
  * The shortest a pop-up is ever laid out at, in pixels.
@@ -2896,131 +3183,6 @@ const PIT_OPEN_ROWS = 8;
 function prefersReducedMotion(): boolean {
   return typeof matchMedia === 'function'
     && matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-// ===========================================================================
-// THE VOICE
-// ===========================================================================
-
-/**
- * The radio, out loud.
- *
- * "and maybe we can get a voice saying what the thing says."
- *
- * `speechSynthesis` is the only way to do this that needs no assets, no network
- * and no licence — every browser this game runs in has it, including iOS
- * Safari. It is also, being honest about it, not good: the voices are flat, the
- * pacing is wrong for radio, and on some platforms the first utterance of a
- * session is swallowed while the engine warms up. It is behind a switch on the
- * card for that reason, and the switch remembers.
- *
- * THREE RULES, and each one is a real failure mode rather than defensiveness.
- *
- * NEVER A BACKLOG. `speak` queues, and a queue is exactly wrong for radio: a
- * safety car during a strategy call would leave the driver listening to a stop
- * being offered thirty seconds after the stop stopped being possible. Every
- * transmission cancels the last one, so what is audible is always what is on
- * screen.
- *
- * NEVER WHEN THE TAB IS HIDDEN. A browser that keeps synthesising into a
- * backgrounded tab is a browser talking to somebody who has walked away, and it
- * is the single most obnoxious thing a web page can do.
- *
- * TWO VOICES, PICKED ONCE. The driver and the pit wall are told apart on the
- * card by colour; out loud they are told apart by pitch and rate, because
- * colour does not survive being spoken. Enumerating voices is a synchronous
- * call that can return an empty list until the engine has loaded, so the choice
- * is made lazily and cached.
- */
-class RadioVoice {
-  private on: boolean;
-  private voices: SpeechSynthesisVoice[] | null = null;
-
-  constructor() {
-    // DEFAULT OFF, and that is a judgement about quality rather than about
-    // discoverability. `speechSynthesis` voices are flat, badly paced for
-    // radio, and were reported as "kinda creepy" — which is the correct
-    // reaction to a machine reading a person's lines. So the card has to be
-    // fully legible and satisfying with no audio at all: the typewriter, the
-    // pacing and the writing carry it, and the voice is an option somebody can
-    // turn on from the switch in the card's header. Nothing is load-bearing on
-    // it. See `RadioVoice`'s header for the rest of that argument.
-    this.on = readFlag('f1sim.radioVoice', false);
-  }
-
-  get enabled(): boolean { return this.on; }
-
-  set enabled(v: boolean) {
-    this.on = v;
-    writeFlag('f1sim.radioVoice', v);
-  }
-
-  /** Speaks a whole exchange at once. Used only on the reduced-motion path. */
-  say(turns: readonly RadioTurn[]): void {
-    if (!this.usable()) return;
-    speechSynthesis.cancel();
-    for (const t of turns) this.utter(t);
-  }
-
-  /** Speaks one turn, as the typewriter reaches it. */
-  sayOne(turn: RadioTurn): void {
-    if (!this.usable()) return;
-    this.utter(turn);
-  }
-
-  stop(): void {
-    if (typeof speechSynthesis === 'undefined') return;
-    speechSynthesis.cancel();
-  }
-
-  private usable(): boolean {
-    if (!this.on) return false;
-    if (typeof speechSynthesis === 'undefined') return false;
-    // The tab is not being looked at. Nothing is spoken into an empty room.
-    if (typeof document !== 'undefined' && document.hidden) return false;
-    return true;
-  }
-
-  private utter(turn: RadioTurn): void {
-    const u = new SpeechSynthesisUtterance(turn.line);
-    // Radio is fast and clipped. The default rate reads a shopping list.
-    u.rate = turn.who === 'wall' ? 1.24 : 1.16;
-    // The driver has a helmet, a headrest and 300km/h of noise around them; the
-    // wall has a headset in a garage. Pitch is the cheapest way to say so.
-    u.pitch = turn.who === 'wall' ? 0.92 : 1.06;
-    u.volume = 0.85;
-    const v = this.pick(turn.who);
-    if (v) u.voice = v;
-    speechSynthesis.speak(u);
-  }
-
-  private pick(who: 'driver' | 'wall'): SpeechSynthesisVoice | null {
-    if (this.voices === null) {
-      const all = speechSynthesis.getVoices();
-      // An empty list means the engine has not finished loading. Do not cache
-      // it — the next transmission will find one.
-      if (all.length === 0) return null;
-      this.voices = all.filter((v) => v.lang.startsWith('en'));
-      if (this.voices.length === 0) this.voices = all;
-    }
-    if (this.voices.length === 0) return null;
-    // Two different voices if the platform has two, the same one at two pitches
-    // if it does not. Deterministic, so the driver does not change voice
-    // between transmissions.
-    return this.voices[who === 'wall' ? 0 : this.voices.length - 1] ?? null;
-  }
-}
-
-/** Local storage that cannot throw. Private browsing and quota both do. */
-function readFlag(key: string, fallback: boolean): boolean {
-  try {
-    const v = localStorage.getItem(key);
-    return v === null ? fallback : v === '1';
-  } catch { return fallback; }
-}
-
-function writeFlag(key: string, v: boolean): void {
-  try { localStorage.setItem(key, v ? '1' : '0'); } catch { /* ignore */ }
 }
 
 // ===========================================================================
@@ -4374,68 +4536,242 @@ export interface RadioTurn {
   line: string;
 }
 
+/**
+ * ===========================================================================
+ * WHY THE RADIO KEPT SAYING THE SAME THING
+ * ===========================================================================
+ *
+ *   "also the radio messages have to vary why is it always the same message?"
+ *   "Also still seems like you have the same statement when something happens,
+ *    we need to vary it up, like once you gotta ask if they okay or maybe
+ *    another time, u say like better luck next time, or like im sorry we'll
+ *    have to retrire the car here."
+ *
+ * THE CAUSE WAS NOT A SEEDED RANDOM RETURNING THE SAME INDEX, and it was not
+ * one message crowding the queue. It was simpler and worse than either: THERE
+ * WAS NO SELECTION AT ALL. `radioExchange` was a switch in which every branch
+ * returned one hard-coded array — a search for `Math.random`, a seed or an
+ * index anywhere in it returned nothing — so the pool for each situation was
+ * of size one and there was nothing to choose between. Every retirement in the
+ * game's history said "Are you okay? Talk to me.", because that was the only
+ * thing it could say.
+ *
+ * That is why BOTH halves are fixed here and neither alone would have looked
+ * fixed: `pickExchange` is the selection, and the arrays below are the pool.
+ *
+ * THE VARIANTS ARE DIFFERENT REGISTERS, NOT SYNONYMS. The player's three
+ * examples for a retirement are concern, consolation and the call itself made
+ * apologetically — three different things a person might say, not three ways
+ * of phrasing one. A pool of paraphrases would read as a thesaurus and would
+ * have been the wrong fix.
+ */
+
+/**
+ * Which variant each situation is on. Keyed by situation, not by moment.
+ *
+ * ROTATES RATHER THAN RANDOMISES, because random repeats. Three variants
+ * chosen uniformly give the same line twice in a row one time in three, which
+ * is exactly the complaint, and a player who hears it twice concludes there is
+ * one line whatever the pool actually holds. Cycling guarantees a run of N
+ * before anything comes round again.
+ */
+const variantCursor = new Map<string, number>();
+
+/**
+ * Where each situation's cycle starts, so two sessions do not open identically.
+ *
+ * Random once per page load rather than per pick: within a session the rotation
+ * is what stops repeats, and between sessions this is what stops the game
+ * always greeting a new player with the same first line.
+ */
+let variantSeed = Math.floor(Math.random() * 0x7fffffff);
+
+/**
+ * Fixes the rotation, for a harness that needs the same words twice.
+ *
+ * Exported for probes and screenshot sweeps. Nothing in `src/` calls it: a
+ * game with a deterministic radio is the bug this whole section is about.
+ */
+export function setRadioVariantSeed(n: number): void {
+  variantSeed = n >>> 0;
+  variantCursor.clear();
+}
+
+/** How many authored variants a situation has. For the probe. */
+export function radioVariantCount(key: string): number {
+  return VARIANT_COUNTS[key] ?? 0;
+}
+
+/** The next variant for `key`, never the one before it. */
+function pickExchange(key: string, options: readonly RadioTurn[][]): RadioTurn[] {
+  VARIANT_COUNTS[key] = options.length;
+  if (options.length <= 1) return options[0] ?? [];
+  const prev = variantCursor.get(key);
+  const next = prev === undefined
+    ? variantSeed % options.length
+    : (prev + 1) % options.length;
+  variantCursor.set(key, next);
+  return options[next];
+}
+
+/** Filled in as situations are reached, so the probe can count the pool. */
+const VARIANT_COUNTS: Record<string, number> = {};
+
+const wall = (line: string): RadioTurn => ({ who: 'wall', line });
+const drv = (line: string): RadioTurn => ({ who: 'driver', line });
+
 export function radioExchange(m: RadioMoment): RadioTurn[] {
   switch (m.kind) {
     case 'pit': {
       // The wall's closing line is the same in every case because it is the
       // only instruction: box, and this is what is going on. What changes is
       // what the driver says first, and it may only claim what is true.
-      const box: RadioTurn = { who: 'wall', line: 'Box box. ' + m.compound + ' on the left.' };
+      //
+      // EVERY VARIANT ALTERNATES AND ENDS ON `box`. That is not a stylistic
+      // choice: the card draws the driver in his team's colour and the wall in
+      // white and labels neither, so two turns from the same speaker in a row
+      // read as one line that wrapped. `probe:hudtext` fails on it, and it now
+      // fails on it for every variant rather than for whichever one the
+      // rotation happened to be on.
+      const box = wall('Box box. ' + m.compound + ' on the left.');
       const laps = m.lapsLeft > 0 ? 'And box, ' + m.lapsLeft + ' laps.' : 'And box, box.';
+      const toGo = m.lapsLeft > 0 ? m.lapsLeft + ' laps to go.' : 'These are the last laps.';
       switch (m.reason) {
         case 'tyres':
-          return [
-            { who: 'driver', line: 'These rears are going away. How many more?' },
-            { who: 'wall', line: laps },
-            { who: 'driver', line: 'I can hold on a bit longer.' },
-            box,
-          ];
+          return pickExchange('pit:tyres', [
+            [
+              drv('These rears are going away. How many more?'),
+              wall(laps),
+              drv('I can hold on a bit longer.'),
+              box,
+            ],
+            [
+              drv('I can feel the rears going on entry.'),
+              wall('They are done — it is costing you four tenths a lap. ' + laps),
+              drv('Understood.'),
+              box,
+            ],
+            [
+              drv('I have got nothing left out of the slow corners.'),
+              wall('That is the rears. We have to take new ones. ' + laps),
+              drv('Right. Your call.'),
+              box,
+            ],
+          ]);
         case 'damage':
-          return [
-            { who: 'driver', line: 'Something is not right with the car.' },
-            { who: 'wall', line: 'We can see it. Box this lap and we fix it.' },
-            { who: 'driver', line: 'How much is that going to cost me?' },
-            box,
-          ];
+          return pickExchange('pit:damage', [
+            [
+              drv('Something is not right with the car.'),
+              wall('We can see it. Box this lap and we fix it. ' + laps),
+              drv('How much is that going to cost me?'),
+              box,
+            ],
+            [
+              drv('It is driveable, but it moves around under braking.'),
+              wall('We see the damage on the data. It will not last. ' + laps),
+              drv('Your call.'),
+              box,
+            ],
+            [
+              drv('Did I pick something up back there?'),
+              wall('You did, and it is not going to hold together. ' + laps),
+              drv('Right. Coming in.'),
+              box,
+            ],
+          ]);
         case 'weather':
-          return [
-            { who: 'driver', line: 'I am on the wrong tyre out here.' },
-            { who: 'wall', line: 'Agreed. Box box, we are changing you over.' },
-            { who: 'driver', line: 'Is anyone else coming in?' },
-            box,
-          ];
+          return pickExchange('pit:weather', [
+            [
+              drv('I am on the wrong tyre out here.'),
+              wall('Agreed. Box box, we are changing you over. ' + laps),
+              drv('Is anyone else coming in?'),
+              box,
+            ],
+            [
+              drv('I have no grip anywhere on this tyre.'),
+              wall('Conditions have moved past it. Changing you over. ' + laps),
+              drv('About time.'),
+              box,
+            ],
+            [
+              drv('It is getting worse every lap out here.'),
+              wall('We can see it on the radar. The crossover is now. ' + laps),
+              drv('Copy.'),
+              box,
+            ],
+          ]);
         case 'penalty':
-          return [
-            { who: 'driver', line: 'What is the penalty for?' },
-            { who: 'wall', line: 'We argue about it later. Serve it this lap.' },
-            { who: 'driver', line: 'That is not on me.' },
-            box,
-          ];
+          return pickExchange('pit:penalty', [
+            [
+              drv('What is the penalty for?'),
+              wall('We argue about it later. Serve it this lap. ' + laps),
+              drv('That is not on me.'),
+              box,
+            ],
+            [
+              drv('Are we appealing this?'),
+              wall('After the flag. Right now we serve it with the stop. ' + laps),
+              drv('Understood. Not happy about it.'),
+              box,
+            ],
+            [
+              drv('Do I have to take it now?'),
+              wall('Stewards have confirmed it. Serve it and we move on. ' + laps),
+              drv('Copy.'),
+              box,
+            ],
+          ]);
         case 'strategy':
-          return [
-            { who: 'driver', line: 'My tyres are okay — can I extend? How many laps left?' },
-            { who: 'wall', line: laps },
-            { who: 'driver', line: "I don't wanna stop." },
-            box,
-          ];
+          return pickExchange('pit:strategy', [
+            [
+              drv('My tyres are okay — can I extend? How many laps left?'),
+              wall(laps),
+              drv("I don't wanna stop."),
+              box,
+            ],
+            [
+              drv('How are we looking on strategy?'),
+              wall('This is our window, and ' + toGo + ' ' + laps),
+              drv('I am quick on these.'),
+              box,
+            ],
+            [
+              drv('Do I have to come in now?'),
+              wall('Miss this and we come out in traffic. ' + laps),
+              drv('Then let us take it.'),
+              box,
+            ],
+          ]);
       }
     }
     // A NEUTRALISATION IS PROCEDURAL, so the exchange is short and it is about
     // the two things the driver in the car genuinely does not have: what caused
     // it, and what it has done to their race.
-    case 'safety-car':
-      return [
-        { who: 'driver', line: 'Safety car — what have we got?' },
-        {
-          who: 'wall',
-          line: m.lostS >= 0.5
-            ? 'Car off, marshals on the track. Your ' + m.lostS.toFixed(1) +
-              ' seconds is gone — everybody is together.'
-            : 'Car off, marshals on the track. Close up, ten car lengths.',
-        },
-        { who: 'driver', line: 'And we restart where?' },
-        { who: 'wall', line: 'P' + m.position + '. Nothing lost on track position.' },
-      ];
+    case 'safety-car': {
+      const cost = m.lostS >= 0.5
+        ? 'Your ' + m.lostS.toFixed(1) + ' seconds is gone — everybody is together.'
+        : 'Close up, ten car lengths.';
+      return pickExchange('safety-car', [
+        [
+          drv('Safety car — what have we got?'),
+          wall('Car off, marshals on the track. ' + cost),
+          drv('And we restart where?'),
+          wall('P' + m.position + '. Nothing lost on track position.'),
+        ],
+        [
+          wall('Safety car, safety car. There is a car in the barrier.'),
+          drv('Anyone hurt?'),
+          wall('He is out and walking. ' + cost),
+          drv('Copy. Still P' + m.position + ', then.'),
+        ],
+        [
+          wall('Safety car deployed. Get behind it and mind the cold tyres.'),
+          drv('What happened?'),
+          wall('Incident on track. ' + cost + ' You hold P' + m.position + '.'),
+          drv('Copy that.'),
+        ],
+      ]);
+    }
 
     case 'vsc':
       // THE LINE THIS WHOLE PASS WAS REPORTED OVER used to sit here, and it was
@@ -4444,35 +4780,61 @@ export function radioExchange(m: RadioMoment): RadioTurn[] {
       // what has happened and what it costs them, which is what they now ask
       // for and what they now get. Their own number is a separate moment,
       // because at this one it does not exist yet.
-      return [
-        { who: 'driver', line: 'What have we got?' },
-        { who: 'wall', line: 'Car stopped at ' + m.where + '. Marshals are recovering it.' },
-        { who: 'driver', line: 'Am I losing anything?' },
-        { who: 'wall', line: 'No. Everyone is on the same delta. You hold P' + m.position + '.' },
-      ];
+      return pickExchange('vsc', [
+        [
+          drv('What have we got?'),
+          wall('Car stopped at ' + m.where + '. Marshals are recovering it.'),
+          drv('Am I losing anything?'),
+          wall('No. Everyone is on the same delta. You hold P' + m.position + '.'),
+        ],
+        [
+          wall('Virtual safety car. Car stopped at ' + m.where + '.'),
+          drv('Is it in a dangerous place?'),
+          wall('Off the line, but they want people out there. Nobody gains.'),
+          drv('Understood. Still P' + m.position + '.'),
+        ],
+        [
+          wall('VSC, VSC. Recovery at ' + m.where + ' — steady through there.'),
+          drv('What does it do to the order?'),
+          wall('Nothing. Unchanged, P' + m.position + ', the field is frozen.'),
+        ],
+      ]);
 
     // The driver's own number, once there is one. The user's own example of
     // what this should sound like: "delta positive", "you're plus one-two,
     // that's good", "you're negative, lift".
     case 'delta':
       if (m.marginS >= 0) {
-        return [
-          { who: 'driver', line: 'Give me the delta.' },
-          { who: 'wall', line: 'Positive. You are plus ' + m.marginS.toFixed(1) + '.' },
-          { who: 'driver', line: 'Happy with that?' },
-          { who: 'wall', line: 'Very. Hold exactly that and do not chase it.' },
-        ];
+        return pickExchange('delta:+', [
+          [
+            drv('Give me the delta.'),
+            wall('Positive. You are plus ' + m.marginS.toFixed(1) + '.'),
+            drv('Happy with that?'),
+            wall('Very. Hold exactly that and do not chase it.'),
+          ],
+          [
+            wall('Delta positive, plus ' + m.marginS.toFixed(1) + '. Good number.'),
+            drv('I will sit here then.'),
+            wall('Do. There is nothing to win and a penalty to lose.'),
+          ],
+        ]);
       }
-      return [
-        { who: 'wall', line: 'You are negative — minus ' + Math.abs(m.marginS).toFixed(1) + '. Lift.' },
-        { who: 'driver', line: 'Lifting.' },
-        {
-          who: 'wall',
-          line: m.breaches > 0
+      return pickExchange('delta:-', [
+        [
+          wall('You are negative — minus ' + Math.abs(m.marginS).toFixed(1) + '. Lift.'),
+          drv('Lifting.'),
+          wall(m.breaches > 0
             ? 'That is ' + m.breaches + ' against you. One more and they penalise it.'
-            : 'Stay above it now. They only give you one.',
-        },
-      ];
+            : 'Stay above it now. They only give you one.'),
+        ],
+        [
+          wall('Delta negative, minus ' + Math.abs(m.marginS).toFixed(1) + '. Lift now.'),
+          drv('Coming back to it.'),
+          wall(m.breaches > 0
+            ? 'You have ' + m.breaches + ' of these now. They act on the next one.'
+            : 'Get it back before the line and we say no more about it.'),
+        ],
+      ]);
 
     // THE ENDING. Every phase below is a specific instruction in the
     // regulations and each one changes what the driver has to do; see
@@ -4483,66 +4845,130 @@ export function radioExchange(m: RadioMoment): RadioTurn[] {
           // Art. 56.7 / B5.12.4. The wall may say a green is coming and must
           // not say when — the window is drawn at random inside ten to fifteen
           // seconds precisely so the restart cannot be timed.
-          return [
-            { who: 'wall', line: 'VSC ending. VSC ending.' },
-            { who: 'driver', line: 'How long?' },
-            { who: 'wall', line: 'They will not tell us. Temperature into the tyres now.' },
-          ];
+          return pickExchange('ending:vsc', [
+            [
+              wall('VSC ending. VSC ending.'),
+              drv('How long?'),
+              wall('They will not tell us. Temperature into the tyres now.'),
+            ],
+            [
+              wall('Green is coming. We get no countdown, so be ready for it.'),
+              drv('Understood. Building temperature.'),
+              wall('Good. Watch the man in front, not the boards.'),
+            ],
+          ]);
         case 'unlapping':
           // Art. 55.14 / B5.13.4c, and the two halves of it are opposite
           // instructions to two halves of the field.
           return m.mustUnlap
-            ? [
-              { who: 'wall', line: 'You are cleared to unlap. Go now, get round the queue.' },
-              { who: 'driver', line: 'All the way to the back?' },
-              { who: 'wall', line: 'All the way. Safety car is in at the end of the next lap.' },
-            ]
-            : [
-              { who: 'wall', line: 'Lapped cars coming through. Let them go, do not fight it.' },
-              { who: 'driver', line: 'And the restart?' },
-              { who: 'wall', line: 'End of the next lap. Start building your gap now.' },
-            ];
+            ? pickExchange('ending:unlap-go', [
+              [
+                wall('You are cleared to unlap. Go now, get round the queue.'),
+                drv('All the way to the back?'),
+                wall('All the way. Safety car is in at the end of the next lap.'),
+              ],
+              [
+                wall('Lapped cars may overtake. That is you — go, and quickly.'),
+                drv('On it, going now.'),
+                wall('Rejoin the back of the train before the safety car comes in.'),
+              ],
+            ])
+            : pickExchange('ending:unlap-hold', [
+              [
+                wall('Lapped cars coming through. Let them go, do not fight it.'),
+                drv('And the restart?'),
+                wall('End of the next lap. Start building your gap now.'),
+              ],
+              [
+                wall('Blue cars will come past. They are entitled to, leave them.'),
+                drv('Copy that.'),
+                wall('Once they are gone it is one more lap and we go racing.'),
+              ],
+            ]);
         case 'sc-in':
           // Art. 55.12 / B5.13.5c, and Art. 55.15 / B5.13.6 for what happens
           // the moment the lights go out.
-          return [
-            { who: 'wall', line: 'Safety car in this lap. Safety car in this lap.' },
-            { who: 'driver', line: 'Copy that.' },
-            { who: 'wall', line: 'Leader takes the pace from the lights. Get your gap now.' },
-          ];
+          return pickExchange('ending:sc-in', [
+            [
+              wall('Safety car in this lap. Safety car in this lap.'),
+              drv('Copy that.'),
+              wall('Leader takes the pace from the lights. Get your gap now.'),
+            ],
+            [
+              wall('Safety car is in at the end of this lap. Wake the tyres up.'),
+              drv('Working on them.'),
+              wall('Brakes too. The first corner will be busy.'),
+            ],
+          ]);
         case 'hold-line':
           // Art. 55.8 / B5.13.2c. Green is showing but the obligation runs per
           // car until each has crossed the Line, which is the fact a driver
           // looking at a green flag has no way of holding on to.
-          return [
-            { who: 'wall', line: 'Green, green — but no overtaking until you cross the Line.' },
-            { who: 'driver', line: 'And after that?' },
-            { who: 'wall', line: 'After that it is on. Go.' },
-          ];
+          return pickExchange('ending:hold-line', [
+            [
+              wall('Green, green — but no overtaking until you cross the Line.'),
+              drv('And after that?'),
+              wall('After that it is on. Go.'),
+            ],
+            [
+              wall('Track is green. You may not pass anybody before the Line.'),
+              drv('Understood, waiting for the Line.'),
+              wall('Then it is racing. Have the tyres ready for it.'),
+            ],
+          ]);
       }
       break;
 
     case 'chequered':
-      return [
-        { who: 'driver', line: "That's the flag. Where did we finish?" },
-        { who: 'wall', line: 'P' + m.position + '. Well driven.' },
-        { who: 'driver', line: 'We had more than that in it.' },
-        { who: 'wall', line: 'Bring it home. Cool the tyres on the in-lap.' },
-      ];
+      return pickExchange('chequered', [
+        [
+          drv("That's the flag. Where did we finish?"),
+          wall('P' + m.position + '. Well driven.'),
+          drv('We had more than that in it.'),
+          wall('Bring it home. Cool the tyres on the in-lap.'),
+        ],
+        [
+          wall('Chequered flag, chequered flag. P' + m.position + '.'),
+          drv('Thank you, lads. Good car today.'),
+          wall('Good drive. Bring it back to us in one piece.'),
+        ],
+        [
+          wall('That is the flag. You finish P' + m.position + '.'),
+          drv('Copy. Anything on the car?'),
+          wall('Nothing. Lift and coast on the in-lap and we will look.'),
+        ],
+      ]);
 
     case 'damage':
-      return [
-        { who: 'driver', line: 'Something let go — I can feel it in the high speed.' },
-        { who: 'wall', line: m.part + ' has taken a hit. Numbers are still good.' },
-        { who: 'driver', line: 'It does not feel good.' },
-        { who: 'wall', line: 'Keep going. We are watching it.' },
-      ];
+      return pickExchange('damage', [
+        [
+          drv('Something let go — I can feel it in the high speed.'),
+          wall(m.part + ' has taken a hit. Numbers are still good.'),
+          drv('It does not feel good.'),
+          wall('Keep going. We are watching it.'),
+        ],
+        [
+          wall('We are seeing something on the ' + m.part + '. How does it feel?'),
+          drv('Loose. It moves around under braking.'),
+          wall('Understood. Stay off the kerbs and we will watch it.'),
+        ],
+        [
+          drv('Did you see that? Something hit me.'),
+          wall(m.part + ', and it has cost you a little downforce.'),
+          drv('Can I keep going?'),
+          wall('For now. We tell you the moment that changes.'),
+        ],
+      ]);
 
-    // The one the modal used to say. Note what is NOT in it: no classification,
-    // no damage breakdown, no better luck next time. A principal on the radio
-    // says the three things that are true in the ten seconds after an accident
-    // — stop the car, are you alright, it is not your fault — and everything
-    // else waits until somebody asks for it.
+    // FOUR REGISTERS, and they are the player's own examples:
+    //
+    //   "like once you gotta ask if they okay or maybe another time, u say
+    //    like better luck next time, or like im sorry we'll have to retrire
+    //    the car here."
+    //
+    // Concern, consolation, and the call itself made apologetically — three
+    // different things a person says, not three phrasings of one. The fourth
+    // is the shortest and the most urgent, for a car that is still moving.
     case 'retired':
       // THE FIRST THING A TEAM SAYS IS NOT ABOUT THE CAR.
       //
@@ -4552,27 +4978,44 @@ export function radioExchange(m: RadioMoment): RadioTurn[] {
       //
       // Which is exactly the two-voice split this HUD already has, and it falls
       // out of it rather than needing a special case. The human question is the
-      // TEAM's — a person who has just watched somebody they know hit a barrier
-      // at speed asks whether they are hurt, and asks it before anything else.
-      // The ruling is RACE CONTROL's, in its own impersonal register, on the
-      // official strip; see `Hud.sayRetirement`.
+      // TEAM's; the ruling is RACE CONTROL's, in its own impersonal register,
+      // on the official strip — see `Hud.sayRetirement`.
       //
-      // Nothing here mentions points, classification or the rest of the season.
-      // The driver is still in the car.
-      return [
-        { who: 'wall', line: 'Are you okay? Talk to me.' },
-        { who: 'driver', line: "I'm okay. I'm okay." },
-        { who: 'wall', line: 'Good. Kill the switches and get out of the car.' },
-        { who: 'driver', line: 'Copy. Sorry, lads.' },
-      ];
+      // Nothing in any variant mentions points, classification or the rest of
+      // the season. The driver is still in the car.
+      return pickExchange('retired', [
+        [
+          wall('Are you okay? Talk to me.'),
+          drv("I'm okay. I'm okay."),
+          wall('Good. Kill the switches and get out of the car.'),
+          drv('Copy. Sorry, lads.'),
+        ],
+        [
+          wall('I am sorry — we have to retire the car here.'),
+          drv('Understood. Nothing I could have done.'),
+          wall('Nothing on you at all. Switches off and step out.'),
+          drv('Copy that.'),
+        ],
+        [
+          wall('That is our race done. Better luck next time out.'),
+          drv('I know. Sorry, lads.'),
+          wall('Do not be. Get out and we will pick it up on Monday.'),
+          drv('Copy, understood.'),
+        ],
+        [
+          wall('Stop the car. Stop the car.'),
+          drv('Stopping now.'),
+          wall('Are you hurt anywhere?'),
+          drv('No. I am fine.'),
+        ],
+      ]);
 
     // The strategist's case, and the only one that leaves the last word to the
     // driver — because the card gives them buttons and the last word is theirs.
+    // No variants: both lines come from `PitWall`, which wrote them about this
+    // particular stop. Varying somebody else's words would be inventing facts.
     case 'call':
-      return [
-        { who: 'wall', line: m.message },
-        { who: 'wall', line: m.reason },
-      ];
+      return [wall(m.message), wall(m.reason)];
   }
   return [];
 }
@@ -4590,29 +5033,61 @@ export function radioExchange(m: RadioMoment): RadioTurn[] {
  * every outcome, including the one where nobody answered at all — an offer has
  * a clock on it and a driver busy in traffic is a real thing that happens, so
  * lapsing is a decision too and gets a reply of its own.
+ *
+ * Varied on the same rotation as everything else, and this is the one the
+ * player meets most often in a race: a stop is offered several times over a
+ * distance and the reply used to be word for word identical every time.
+ *
+ * EVERY `no` VARIANT STILL PROMISES NEXT LAP, because that is the content the
+ * user asked for by name and not a turn of phrase — `probe:hudtext` requires it
+ * of all of them.
  */
 export function replyExchange(
   outcome: 'yes' | 'no' | 'lapsed', compound: string,
 ): RadioTurn[] {
+  const onLeft = compound ? compound + ' on the left.' : 'Crew are out.';
   switch (outcome) {
     case 'yes':
-      return [
-        { who: 'driver', line: 'Yeah, agreed. Coming in.' },
-        {
-          who: 'wall',
-          line: 'Box box. ' + (compound ? compound + ' on the left.' : 'Crew are out.'),
-        },
-      ];
+      return pickExchange('reply:yes', [
+        [
+          drv('Yeah, agreed. Coming in.'),
+          wall('Box box. ' + onLeft),
+        ],
+        [
+          drv('Copy, box this lap.'),
+          wall('Understood, crew are out. ' + onLeft),
+        ],
+        [
+          drv('Happy with that. Box.'),
+          wall('Box box, box box. ' + onLeft),
+        ],
+      ]);
     case 'no':
-      return [
-        { who: 'driver', line: 'Negative, staying out.' },
-        { who: 'wall', line: 'Copy, box next lap. Crew stay ready.' },
-      ];
+      return pickExchange('reply:no', [
+        [
+          drv('Negative, staying out.'),
+          wall('Copy, box next lap. Crew stay ready.'),
+        ],
+        [
+          drv('No, I want to stay out.'),
+          wall('Understood. Box next lap if the numbers still stand.'),
+        ],
+        [
+          drv('Not yet. Give me a couple more.'),
+          wall('Copy that — we box next lap instead. Crew stand by.'),
+        ],
+      ]);
     case 'lapsed':
-      return [
-        { who: 'wall', line: 'No answer, so we hold.' },
-        { who: 'wall', line: 'Same call next lap if the numbers stand.' },
-      ];
+      return pickExchange('reply:lapsed', [
+        [
+          wall('No answer, so we hold.'),
+          wall('Same call next lap if the numbers stand.'),
+        ],
+        [
+          wall('We did not hear you, so nothing has changed.'),
+          wall('Crew stay ready. We will put it to you again.'),
+        ],
+      ]);
   }
 }
 

@@ -47,6 +47,7 @@ import { IntroSequence, openingBeats } from './ui/IntroSequence';
 import { driverCard } from './ui/DriverPortrait';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
+import { TeamRadio } from './audio/TeamRadio';
 import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
 import { circuitSvg, circuitLoadingArt } from './ui/CircuitArt';
 import { buildSetupScreen, defaultSetupFor, setupSummary } from './ui/SetupScreen';
@@ -273,6 +274,14 @@ class Game {
     this.loadingText = document.getElementById('loading-text') as HTMLElement;
     this.loadingArt = document.getElementById('loading-art') as HTMLElement;
     this.settings = this.saves.loadSettings();
+    // The dead switch. `Hud.RadioVoice` kept its own on/off flag here, outside
+    // the settings file, and it was the second of two independent controls for
+    // one feature. Both it and the class are gone; the key is removed rather
+    // than merely ignored so that a stale value on an existing install cannot
+    // be resurrected by anybody who finds the string in this file's history and
+    // reads it "for backwards compatibility". `GameSettings.teamRadioVoice` is
+    // the only memory the spoken radio has.
+    try { localStorage.removeItem('f1sim.radioVoice'); } catch { /* private mode */ }
   }
 
   async start(): Promise<void> {
@@ -288,7 +297,11 @@ class Game {
       quality: forced ?? setting,
     });
 
-    this.hud = new Hud(document.getElementById('app') as HTMLElement);
+    // ONE RADIO. The HUD's typewriter and the spoken voice are the same object,
+    // so the words on the card and the words in the air cannot drift apart and
+    // there is only one thing to switch off. `AudioEngine` owns it because it
+    // owns the mix the transmission ducks; the HUD is the only listener.
+    this.hud = new Hud(document.getElementById('app') as HTMLElement, this.audio.radio);
     this.hud.setVisible(false);
     this.hud.onCameraPressed = () => this.cycleCamera();
     // The pit call is a latch on the CAR, not a value written into the
@@ -321,6 +334,7 @@ class Game {
       void this.audio.start().then(() => {
         this.audio.setVolume(this.settings.masterVolume);
         this.audio.setEnabled(this.settings.masterVolume > 0);
+        this.audio.radio.setEnabled(this.settings.teamRadioVoice);
       });
       window.removeEventListener('pointerdown', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
@@ -2604,6 +2618,42 @@ class Game {
               save();
             },
           });
+          // THE ONE SWITCH FOR THE SPOKEN RADIO. There used to be a second one
+          // — a 🔊 pip on the radio card itself, backed by its own
+          // `localStorage` flag and its own `speechSynthesis` client — and two
+          // off-switches for one feature is the complaint this whole piece of
+          // work exists to answer. The card's pip is gone; this row is the
+          // feature's only control and `GameSettings.teamRadioVoice` its only
+          // memory.
+          //
+          // It sits under Audio rather than in its own tab because it is a
+          // sound, but it is deliberately a separate row from the volume
+          // slider: everything else in the mix is synthesised from the
+          // simulation and this is the operating system's own voice, which
+          // cannot be routed through WebAudio and therefore cannot be
+          // processed on the way past. See `src/audio/RadioChain`.
+          //
+          // TURNING IT ON IS A USER GESTURE, and that matters on iOS. WebKit
+          // requires user activation before `speechSynthesis.speak()` will
+          // make a sound, and every call the radio makes afterwards is from a
+          // `setTimeout` — outside activation. `primeSpeech()` spends this
+          // click on a silent utterance so the engine is unlocked before the
+          // first transmission. See `TeamRadio.primeSpeech`.
+          if (TeamRadio.supported) {
+            k.toggle(panel, {
+              name: 'Spoken team radio',
+              note: 'Reads the pit wall and your driver aloud, in your device’s '
+                + 'own voice. The radio card types either way.',
+              value: s.teamRadioVoice,
+              onChange: (v) => {
+                s.teamRadioVoice = v;
+                if (v) this.audio.radio.primeSpeech();
+                this.audio.radio.setEnabled(v);
+                if (s.masterVolume > 0) this.audio.playUiClick();
+                save(); repaint();
+              },
+            });
+          }
         },
       },
       {

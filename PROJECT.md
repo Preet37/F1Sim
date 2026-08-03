@@ -199,20 +199,23 @@ Run `npm run` to list. The important ones:
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
-| `shoot:panels` | Measures HUD boxes; fails on overlap |
+| `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
+| `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
+| `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
 
 **Known-failing, all pre-existing and documented:**
-- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". **Do not go to
-  `RaceEngine.ts` ~2525** — the earlier "call site that never fires" diagnosis is wrong and
-  that code works. See §6 "Tooling" and issue #28: the probe never writes
-  `engine.playerControls`, so its own car parks and the stopped-car bug freezes the field.
+- ~~`probe:hudtext`~~ — **passes as of the `team-radio-voice` merge.** The bulletin failure
+  ("no team-owned bulletin was filed in a 20-minute race") is gone on the merged tree:
+  `team voice: 44 distinct lines across 31 events`. Issue #28's diagnosis was the right one
+  and whatever landed on `main` for it worked. **Do not go to `RaceEngine.ts` ~2525** — the
+  older "call site that never fires" diagnosis was wrong and that code works.
 - `validate:flags` — safety-car form-up, three failures, stable numbers.
-- `shoot:panels` — **5 rail + 2 mirror layout failures** (radio card off screen at desktop
-  and portrait; `hud-neutral-cue` clipped by 4px; `.hud-notices` over `mirror[R1]` by
-  26×72px on phone/pit-choice/cockpit). Confirmed pre-existing on `main` as of 2026-08-03
-  by running it with an unrelated branch's changes stashed and getting identical output.
+- `shoot:panels` — **2 rail + 2 mirror layout failures**, down from 5 + 2. The two radio-card
+  failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
+  hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
+  .hud-notices over mirror[R1] by 26×72px`. Both pre-existing and untouched by that work.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
@@ -269,6 +272,10 @@ Preserved verbatim because the phrasing carries information a summary loses.
 > *"the radio stuff is being covered by the pit options."*
 > *"whats this bullshit of holding the minimum every sector make the radios legit and smart think of it like a genuine interaction."*
 > *"that text box i told u to make it a square and make it bigger its so hard to read, and you have to type it out in a typewriter animation as well as say what it actually says like volume wise."*
+> *"also the radio messages have to vary why is it always the same message? also it seems like whatever the message is saying is so different than what the voice is saying, we also need one voice and use the male one not the female one i don't like that one. on top of that i cant see any of the messages bruh"*
+> *"this is so much better i just atp wouldn't say anything for the audio if its a conversation because you don't need to be saying what the driver says ykwim? but this is wayy better for sure."*
+> *"Also still seems like you have the same statement when something happens, we need to vary it up, like once you gotta ask if they okay or maybe another time, u say like better luck next time, or like im sorry we'll have to retrire the car here."*
+> *"also like i said get rid of the female voice. only keep the male voice"*
 > *"why does it seem like the same person as the team principal for all the teams?"*
 > *"why can I only see like 4 cars on the leaderboard, where is everyone and all the cars?"*
 > *"don't do this shit. just have the team radio in some message and then top right corner or smth just be like continue and then once the user presses continue you can check the stats and shit."*
@@ -642,6 +649,109 @@ controls (found: [])"* and *"every car that was still running set a time (0 of
   first-run-only via a flag set on their very first load, and the podium only fires after
   finishing a career *race*.
 
+### The team radio — one radio, one switch, one voice (issue #21)
+
+The audio chain was already the best-measured work on the project; it was
+connected to nothing, and `main` had grown a second spoken radio beside it.
+
+- **Two implementations, two off-switches, one `speechSynthesis`.** `Hud.RadioVoice`
+  (live, driven from the typewriter, 🔊 pip, `localStorage['f1sim.radioVoice']`) beside
+  `TeamRadio` (nothing called it). Both called `cancel()` on the same global singleton,
+  so **whichever spoke second killed the other**, and the issue's opening complaint —
+  *"whats this bullshit of holding the minimum every sector make the radios legit"* — was
+  installed twice over. `RadioVoice` is deleted, the flag key is actively removed at
+  startup so a stale value cannot be resurrected, and `GameSettings.teamRadioVoice` on the
+  Audio tab is the only control the feature has.
+- **The typewriter and the voice were two clocks, and the drift was arithmetic rather
+  than jitter.** `Hud.speechRate` was 45 characters a second beside a voice measured at
+  **16.8 c/s at rate 1.0** — about 20 c/s at the rate `RadioVoice` used. **2.2× too fast**,
+  so a four-turn exchange finished on screen in ~5.7 s against ~12.3 s of speech and the
+  card was showing a line the voice had not reached. That is exactly the report:
+  *"it seems like whatever the message is saying is so different than what the voice is
+  saying."* `speechRate`, `TYPE_TICK_MS` and the 66 ms `setInterval` are gone;
+  `Hud.typeExchange` reveals on `RadioEvent.word`, which carries the character range the
+  synthesiser says it has uttered. The reveal cannot drift from the voice because it *is*
+  the voice.
+- **`onstart` is not when the sound starts.** Measured on this machine: `onstart` leads
+  the first audible word by **875–1947 ms** on the first utterance of a session and ~105 ms
+  after it. `TeamRadio` emits `speech` on the first `boundary` for that reason — and the
+  claim is now **asserted** rather than commented. `RadioEvent.atMs` timestamps every
+  event; `probe:radio` requires `speech` and the first real `word` to land in the same task
+  (bar 50 ms; measured **0 ms**). **Re-broken deliberately** by moving `markSpeechStarted`
+  into `onstart`: the check goes red at **383 ms against a 50 ms bar**. Before the
+  timestamps, every ordering check stayed green through that break.
+- **The event stream is not the audio switch.** `speak()` returned `null` when disabled and
+  disabled is the default, so a HUD on this clock would have shown **no card at all**.
+  Events now always run; `enabled` governs only audibility. With the voice off the card
+  types on the estimated schedule at the same pace — a new `SILENT` section of `probe:radio`
+  measures the default configuration end to end (10 word events, all estimated, both turns
+  ending, 221 ms between them).
+- **The interrupt overlapped two squelches.** A higher-priority `speak` ran `stopActive()`
+  → `close()` and then fell through to `pump()` on the same tick, so `RadioChain.open`'s
+  `cancelScheduledValues(at)` wiped the key-up swell `close()` had just scheduled — the
+  "kssht", which is the single most diagnostic sound in the effect — on the path a driver
+  hears most, a safety car cutting off a strategy call. `finish` now arms `pumpNotBefore`
+  and every caller is held behind it. Measured: **222 ms** between the interrupted `end`
+  and the interrupter's `open`, against a 130 ms tail. The path had never been exercised.
+- **ONE VOICE, AND MALE.** Asked twice, the second time with *"like i said"* in front of it.
+  Four per-speaker preference lists resolved to **Daniel, Reed, Moira and Rishi** on macOS —
+  four people, two of them women. There is one `MALE_VOICES` list now, resolved once,
+  cached, shared by all four speakers, separated by rate and pitch alone. **There is no
+  fallback**: the obvious one — "first voice not on the known-female list" — is precisely
+  how a female voice gets in, and forcing the choice to `pool[0]` on this machine selects
+  **Samantha**, with `probe:radio` going red naming her. So either a name off `MALE_VOICES`
+  is present or **the radio does not speak and the card types in silence**.
+- **The driver's own half is not spoken.** *"you don't need to be saying what the driver
+  says ykwim?"* `voiced: false` on every driver turn. Not a skipped turn: it still emits
+  `open`/`word`/`end` and still takes as long as saying it would (**1638 ms** for a
+  25-character reply), because a card that flicks through one side of a conversation reads
+  as a fault.
+- **"why is it always the same message" — the pool was of size one.** Not a seeded RNG
+  returning the same index and not queue crowding: `radioExchange` was a switch in which
+  every branch returned one hard-coded array, with no selection of any kind. Both halves
+  are fixed — `pickExchange` **rotates** rather than randomises, because uniform random over
+  three variants repeats one time in three — and the pool goes **13 → 41 authored exchanges
+  across 13 situations**. The retirement variants are the player's own three registers:
+  concern, the call made apologetically, and consolation.
+- **`probe:hudtext` now visits every variant** off a fixed seed rather than whichever one
+  the cursor was on, and **`retired` is on its list for the first time**. Collapsing that
+  pool back to one left the probe entirely green before — which is how the repetition
+  survived a probe that already checked eleven other situations. Re-broken: *"radio moment
+  retired has 1 authored variant(s) — the pit wall says the same words every time this
+  happens."*
+- **"i cant see any of the messages bruh" — and `shoot:panels` had been saying so for
+  weeks.** Two causes, both fixed. (a) **Nineteen pixels.** A fixed 176px card plus a 45px
+  neutralisation cue plus a 30px pit cue plus two 8px gaps is 267 pixels in a 248 pixel
+  band, and `fitRail` is permitted to throw the radio card away — so the whole feature
+  vanished, silently. `Hud.sizeRadioCard` now sizes the card to the room the rail actually
+  has, floored at 104px and capped at the stylesheet's square, with the width following the
+  height so it cannot become the letterbox the probe also fails. It also subtracts the
+  rail's 28px top mask, which is what was fading the card's first line out and what the
+  screenshot showed as "cut off in the corner". (b) **Parked, not destroyed.** The band's
+  foot rises by up to a third of the viewport under the mirror cameras, so a card raised in
+  a 348px band was measured a moment later in a ~70px one, evicted, and never seen again.
+  Restoring it had been tried and withdrawn because the restore and the eviction raced;
+  they cannot now, because the height is a *function* of the room the un-evictable children
+  leave. **`shoot:panels`: 5 rail failures → 2**, and both remaining ones are pre-existing
+  and unrelated (`hud-neutral-cue` clipped by 4px; `.hud-notices` over `mirror[R1]`).
+- **The chain is built lazily.** `AudioEngine` was calling `radio.attach()` unconditionally
+  — twelve nodes including six biquads, a 2× oversampled WaveShaper, a compressor, a
+  looping noise source and an oscillator — in every session of every player, for a feature
+  that is off by default. `attach` now takes the context and the bus; the chain is built on
+  the first `setEnabled(true)` and kept after that.
+- **Also**: `speakExchange` was dead code and is now what the HUD calls for every card;
+  `isTransmitting`, `queueLength` and `attached` are deleted; the orphaned "Two seconds
+  clears that" comment above a 4000 ms constant and the "limiter's −20 dB threshold" note
+  against `LIMIT_THRESHOLD_DB = -8` are corrected.
+
+**What is NOT covered.** **iOS Safari has not been tested.** WebKit requires user activation
+before `speechSynthesis.speak()` and every call here is from a `setTimeout`, so
+`TeamRadio.primeSpeech()` spends the Settings-toggle click on a silent utterance — written
+from WebKit's documented rule and from the same pattern `main.ts` uses to unlock the
+`AudioContext`, and run on nothing but Chrome/macOS. If it is wrong, the symptom is a
+silent radio with a working card, which is the default experience anyway. Treat it as
+unverified.
+
 ### People (issues #18, #22)
 - **Every team principal was "Pit wall".** `Hud.PRINCIPALS` was a table keyed on the ten
   **invented** team ids the game shipped with (`apex`, `scuderia-rosso`, `meridian`);
@@ -779,12 +889,12 @@ against every threshold and so stops binding silently rather than throwing.
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
-| Radio/HUD | Square typewriter radio card, FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals. **The retirement flow has landed for every session kind — see §6.** |
+| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
+| Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
-| Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### Measured, deferred, and still true
@@ -798,8 +908,6 @@ against every threshold and so stops binding silently rather than throwing.
   `probe:banking` while measuring something else, counted and printed there, issue #37.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
-  but the *diagnosis* recorded here was wrong — see the correction in §6 under "Tooling".
 - `validate:flags` — safety-car form-up.
 - **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
   rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
@@ -807,6 +915,19 @@ against every threshold and so stops binding silently rather than throwing.
   weather work, and the number that would make a driver move is currently **zero**.
   Verified pre-existing on pristine `main` while working issue #32 — the pit-wall fixes do
   not touch it. **Nobody is on this.**
+- **The spoken radio is UNVERIFIED ON iOS SAFARI**, which is a stated target platform.
+  WebKit requires user activation before `speechSynthesis.speak()` and every call in
+  `TeamRadio` is from a `setTimeout`. `primeSpeech()` spends the Settings-toggle click on a
+  silent utterance to unlock the engine — written from WebKit's documented rule and from
+  the same pattern `main.ts` uses for the `AudioContext`, and **run on nothing but
+  Chrome/macOS**. Nobody has put it on a phone. The failure mode if it is wrong is a silent
+  radio with a working card, which is the default configuration anyway, so it is a low-cost
+  gap — but it is a gap and it is not a claim.
+- **On a platform with no voice on `MALE_VOICES`, the radio does not speak at all.**
+  Deliberate — see §6 — but it means the feature is silently unavailable on any platform
+  whose male voices are named something not on that list, and nobody has enumerated
+  Android's or Windows' full sets on real hardware. `probe:radio` fails loudly with
+  `certainty: 'none'` when it happens, and the fix is one line in the list.
 - **`diag:pitchoice` is a diagnostic, not a probe.** It prints a table and always exits 0 —
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
