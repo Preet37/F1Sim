@@ -327,24 +327,41 @@ derived from different cars.
 
 ---
 
-### A9 — A pit-lane speeding drive-through is issued in practice and qualifying
-**Severity: medium. Confidence: high on the missing check.**
-**File:** `src/race/RaceControlManager.ts:744`
+### A9 — Race penalties are issued in practice and qualifying: two of the three per-car checks never receive `isRace`
+**Severity: medium. Confidence: certain on the missing checks.**
+**File:** `src/race/RaceControlManager.ts:740-745`
 
 ```ts
-this.checkTrackLimits(car, i, sessionTime, isRace);
-this.checkPitLaneSpeed(car, i, sessionTime);      // isRace is in scope and not passed
+for (let i = 0; i < cars.length; i++) {
+  const car = cars[i];
+  if (car.retired) continue;
+  this.checkTrackLimits(car, i, sessionTime, isRace);   // gets it
+  this.checkPitLaneSpeed(car, i, sessionTime);          // does not
+  this.checkNeutralisationDelta(car, i, dt, sessionTime); // does not
+}
 ```
 
 `isRace` is a parameter of `update` (`:732`) and is threaded into
-`updateNeutralisation`, `checkTrackLimits` and `stewardsBench.update`.
-`checkPitLaneSpeed` (`:1699-1720`) is the one that does not receive it, and it
-unconditionally pushes `{ kind: 'drive-through' }` plus a `'critical'` race-control
-notice. In a non-race session `pendingServePenalty` short-circuits
+`updateNeutralisation`, `checkTrackLimits` and `stewardsBench.update`. The other
+two siblings on the same three lines never get it, and neither has any other
+session-kind guard — verified by reading both signatures
+(`:1699` and `:1413`).
+
+- **`checkPitLaneSpeed`** unconditionally pushes `{ kind: 'drive-through' }` plus
+  a `'critical'` race-control notice reading "DRIVE THROUGH PENALTY".
+- **`checkNeutralisationDelta`** unconditionally pushes `{ kind: 'time-5s' }` and
+  adds `car.penaltySeconds += 5` (`:1450-1457`) — the same code path as A4.
+
+In a non-race session `pendingServePenalty` short-circuits
 (`RaceEngine.ts:2037`) and `convertUnservedPenalties` only runs for races
-(`:3359`), so the penalty can be neither served nor converted — a phantom on the
-car and a false critical banner. This is the same session-kind blindness class as
-the qualifying DNF and out-lap deletion already in the record.
+(`:3359`), so neither penalty can be served nor converted: a phantom on the car
+and a false critical banner. A five-second *time* penalty is meaningless in a Lap
+Time Classified Session by construction. This is the same session-kind blindness
+class as the qualifying DNF and the out-lap lap-deletion already in the record.
+
+(Checked and *not* true: the breaches do not carry across sessions. `CarEntry` is
+constructed once per engine (`RaceEngine.ts:414`) and each session builds a new
+engine, so A4's latch is bounded by the session. Within a session it is not.)
 
 ---
 
