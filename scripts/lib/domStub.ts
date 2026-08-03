@@ -106,10 +106,21 @@ export function installCanvasStub(): void {
   };
   installDomStub();
   const doc = g.document!;
-  if (!doc.createElement) {
-    doc.createElement = (tag: string) =>
-      (tag === 'canvas' ? makeCanvas() : createElement(tag));
-  }
+  // Unconditionally, and that matters.
+  //
+  // This used to be guarded by `if (!doc.createElement)`, which was true back
+  // when `installDomStub` supplied only `createElementNS`. Once that was fixed
+  // to supply both, the guard became permanently false and the canvas branch
+  // was never installed — so `createElement('canvas')` returned a plain stub
+  // element and every probe that builds the paddock died on
+  // `canvas.getContext is not a function`.
+  //
+  // A guard that reads "install this if nothing else did" only works while
+  // nothing else does. Overriding is correct here: this function's whole
+  // purpose is to make canvases work, and it is called by the probes that need
+  // them.
+  doc.createElement = (tag: string) =>
+    (tag === 'canvas' ? makeCanvas() : createElement(tag));
   if (!g.OffscreenCanvas) {
     g.OffscreenCanvas = class { constructor() { return makeCanvas(); } };
   }

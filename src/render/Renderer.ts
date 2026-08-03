@@ -1511,9 +1511,13 @@ export class Renderer {
     const track = engine.track;
     const p = track.tmpA;
     track.toWorld(sc.s, sc.lateral, p);
-    // `carGroundY` and not the bare elevation: the road surface sits 20mm above
-    // the terrain and a vehicle placed on the terrain has its wheels in it.
-    v.root.position.set(p.x, carGroundY(track.elevationAt(sc.s)), p.y);
+    // `bankedCarGroundY` and not the bare elevation: the road surface sits 20mm
+    // above the terrain, so a vehicle placed on the terrain has its wheels in
+    // it — and on a banked corner the asphalt under the car is higher still the
+    // further out it sits, which is worth 1.56m at Zandvoort. The safety car
+    // leads the field through those corners, so it needs the same treatment the
+    // racing cars get.
+    v.root.position.set(p.x, bankedCarGroundY(track, sc.s, sc.lateral), p.y);
     v.root.rotation.y = track.headingAt(sc.s);
 
     // Wheels turn at the speed the car is doing. A course car whose wheels are

@@ -180,7 +180,7 @@ let totSteps = 0;
 for (const def of CIRCUITS) {
   const config: SessionConfig = {
     kind: 'race', name: 'rideheight', durationS: 0, laps: LAPS,
-    playerIndex: -1, standingStart: true, seed: SEED,
+    playerIndex: -1, standingStart: true, pitLaneStart: false, seed: SEED,
   };
   const engine = new RaceEngine(def, config);
   const maxSteps = Math.round((LAPS * def.referencePoleTimeS * 2.2) / PHYSICS_DT);

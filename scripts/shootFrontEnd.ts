@@ -89,7 +89,7 @@ async function main(): Promise<void> {
 
   for (const vp of VIEWPORTS) {
     const page: Page = await browser.newPage();
-    page.on('pageerror', (e: Error) => errors.push(`${vp.name}: ${e.message}`));
+    page.on('pageerror', (e) => errors.push(`${vp.name}: ${(e as Error).message}`));
     page.on('console', (m) => {
       if (m.type() === 'error') errors.push(`${vp.name}: console ${m.text()}`);
     });
