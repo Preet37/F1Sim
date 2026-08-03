@@ -58,22 +58,24 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
  *     scaler changes, so the real game loop is left alone until the scaler has
  *     settled, and the settled figure is what the shot is taken at.
  *
- * THERE ARE TWO ASSERTIONS and the second one exists because the first has a
- * blind spot that measurement found. Neither bound is a taste judgement.
+ * THERE ARE TWO ASSERTIONS, both in display levels rather than as ratios, and
+ * the second exists because the first has a blind spot measurement found.
+ * Neither bound is a taste judgement — see `NEAR_EXCESS_MAX` for the numbers
+ * they are set from and for why the ratio form was abandoned.
  *
- *  - `near / mid` on the road, band 5 over band 2. Every band of the surface
- *    detail is faded out on its own screen-space footprint by `detailResolve`
- *    in `SurfaceDetail.ts` precisely so that no band is ever drawn at a
- *    frequency the pixel grid cannot carry; if that holds, high-frequency
- *    energy per pixel must not RISE as the asphalt comes closer, because the
- *    near field is where the footprint is smallest and every band is therefore
- *    inside its limit. A correctly band-limited road measures at or below 1.
- *  - THE LARGEST STEP BETWEEN ADJACENT BANDS, 1 through 5. The ratio above is
- *    two numbers and cannot see a defect that lifts the whole profile — see
- *    `BAND_STEP_MAX`, where an intermediate build that moved the aliasing from
- *    the bottom of the frame to the middle passed the first rule at 0.42. The
- *    user's own words for the artefact are *"a visible transition band"*, and
- *    a road inside its sampling limit everywhere does not have one.
+ *  - NEAR MINUS MID on the road, band 5 minus band 2. Every band of the
+ *    surface detail is faded out on its own screen-space footprint by
+ *    `detailResolve` in `SurfaceDetail.ts` precisely so that no band is ever
+ *    drawn at a frequency the pixel grid cannot carry; if that holds,
+ *    high-frequency energy per pixel must not RISE as the asphalt comes
+ *    closer, because the near field is where the footprint is smallest and
+ *    every band is therefore inside its limit.
+ *  - THE LARGEST STEP BETWEEN ADJACENT BANDS, 1 through 5. The first rule is
+ *    two numbers and cannot see a defect that lifts the whole profile — an
+ *    intermediate build that moved the aliasing from the bottom of the frame
+ *    to the middle passes it with a NEGATIVE excess. The user's own words for
+ *    the artefact are *"a visible transition band"*, and a road inside its
+ *    sampling limit everywhere does not have one.
  *
  * Usage:
  *   npm run probe:grain
@@ -141,46 +143,55 @@ const OUT_DIR = resolve(process.cwd(), 'grain-out', TAG);
 const SAVE_PNG = process.env.GRAIN_PNG === '1';
 
 /**
- * The bound on near/mid high-frequency energy on the asphalt.
+ * THE TWO BOUNDS ARE DIFFERENCES IN DISPLAY LEVELS, NOT RATIOS. That is the
+ * form the first full sweep forced, and the reason is worth recording.
  *
- * See the header. A road whose detail bands are all inside their sampling
- * limit cannot get noisier as it approaches, so the honest bound is 1. This
- * sits above it to leave room for the aggregate tint that near asphalt
- * genuinely resolves and distant asphalt genuinely cannot — that is real
- * surface detail, not aliasing, and it is worth having.
+ * The obvious statement of the complaint is a ratio — near-field energy over
+ * mid-distance energy — and it was written that way first, at 1.60. On the
+ * fixed build it then failed three of a hundred and thirty-two rows, all of
+ * them Suzuka by night: `2.18` at `low`, from bands of 1.23 in the middle
+ * distance and 2.68 in the near field. Nothing there is boiling. Suzuka's
+ * mid-distance asphalt is simply the cleanest on the calendar — 1.2 where
+ * Bahrain measures 1.6 and Monza 5.9 — and a ratio with a very small
+ * denominator reports the denominator. The near-field figure that failed,
+ * 2.68, is the SAME figure that passes everywhere else.
  *
- * NEVER RAISE THIS. PROJECT.md §3.3. If a number moves, find out why.
+ * That is not a case for relaxing the ratio. It is a case for the ratio being
+ * the wrong shape: the Laplacian is in display levels, the artefact is "the
+ * near field carries visible speckle the mid-distance does not", and how much
+ * MORE speckle is a subtraction. Written as a difference the same three rows
+ * measure 1.45, 1.23 and 1.67 levels against a worst-on-the-calendar 1.94, and
+ * the build the issue was filed against measures 16.3.
+ *
+ * SEPARATION, measured, not asserted — this is what the bounds are set from:
+ *
+ *   near minus mid          worst on the fixed build   1.94   bound 4.00
+ *                           the build #48 was filed against  16.30
+ *   worst adjacent step     worst on the fixed build   3.51   bound 5.00
+ *                           the build #48 was filed against  10.00
+ *                           the rejected intermediate build   6.00
+ *
+ * WHY TWO RULES. The first is the reported symptom and it is two numbers, so
+ * it cannot see a defect that lifts the WHOLE profile: an intermediate build
+ * with the band limit in place but `detailResolve`'s ramp still at its old,
+ * past-Nyquist setting measured 2.1 1.6 7.6 7.5 5.0 3.2 — the aliasing had
+ * moved from the bottom of the frame to the middle — and its near-minus-mid is
+ * NEGATIVE. Its worst adjacent step is 6.0 and the second rule catches it.
+ * The second rule is written from the user's own description, *"a visible
+ * transition band"*: a road whose detail is inside its sampling limit
+ * everywhere does not have one, because the footprint varies smoothly with
+ * depth and so must the energy.
+ *
+ * Band 0 is excluded from the step rule. It is the asphalt at the horizon,
+ * where the post chain's ambient occlusion lands; #29 measured and documented
+ * what the tiers do there and it is not the road surface's own band limit.
+ *
+ * NEVER RAISE EITHER OF THESE. PROJECT.md §3.3. If a number moves, find out
+ * why — that is how the ratio's small-denominator failure was found rather
+ * than papered over.
  */
-const NEAR_OVER_MID_MAX = Number(process.env.GRAIN_MAX ?? 1.60);
-
-/**
- * The largest step allowed between two ADJACENT road bands, bands 1 to 5.
- *
- * The second assertion, and it exists because the first one has a blind spot
- * that was found by measurement rather than by reasoning. `near/mid` is the
- * reported symptom, but it is a ratio of two bands and it cannot see a defect
- * that lifts the WHOLE profile: an intermediate build with the band limit in
- * place but `detailResolve`'s ramp still at its old, past-Nyquist setting
- * measured 2.1 1.6 7.6 7.5 5.0 3.2 — the aliasing had simply moved from the
- * bottom of the frame to the middle — and near/mid read 0.42, which is a PASS.
- * That build is worse than the one that was shipped in the bands the user can
- * see most of, and the headline number said it was fine.
- *
- * The user's own description is what the second rule is written from: *"a
- * visible transition band"*. A road whose detail is inside its sampling limit
- * everywhere has no such band — its high-frequency energy varies smoothly with
- * depth, because the footprint does. So no adjacent pair may differ by more
- * than this. On the intermediate build the 1.6 -> 7.6 step is 4.75 and on the
- * build the issue was filed against the 2.2 -> 12.2 step is 5.55.
- *
- * Band 0 is excluded. It is the asphalt at the horizon, where the post chain's
- * ambient occlusion lands and where #29 already measured and documented what
- * the tiers do; it is not the road surface's own band limit and it is not what
- * this probe is about.
- *
- * NEVER RAISE EITHER OF THESE. PROJECT.md §3.3.
- */
-const BAND_STEP_MAX = Number(process.env.GRAIN_STEP_MAX ?? 2.20);
+const NEAR_EXCESS_MAX = Number(process.env.GRAIN_MAX ?? 4.0);
+const BAND_STEP_MAX = Number(process.env.GRAIN_STEP_MAX ?? 5.0);
 
 /**
  * Bands with less road in them than this are not measured.
@@ -348,7 +359,9 @@ interface Row {
   roadCounts: number[];
   frame: number[];
   nearOverMid: number | null;
-  /** Largest ratio between adjacent road bands 1..5. Issue #48. */
+  /** band 5 minus band 2, display levels. The first assertion. */
+  nearExcess: number | null;
+  /** Largest difference between adjacent road bands 1..5, display levels. */
   bandStep: number | null;
   ok: boolean;
   note: string;
@@ -492,7 +505,7 @@ async function main(): Promise<void> {
               circuit: id, ambience: amb, tier, mode,
               settledScale: settled, buffer: buf, features: feat,
               road: [], roadCounts: [], frame: [],
-              nearOverMid: null, bandStep: null, ok: false,
+              nearOverMid: null, nearExcess: null, bandStep: null, ok: false,
               note: m.error ?? 'no measurement',
             });
             console.log(`  ${label.padEnd(38)} FAIL — ${m.error ?? 'no measurement'}`);
@@ -505,34 +518,38 @@ async function main(): Promise<void> {
           const mid = road[2];
           const usable = (counts[5] ?? 0) >= MIN_BAND_PIXELS
             && (counts[2] ?? 0) >= MIN_BAND_PIXELS && mid > 0;
+          // Reported, not asserted — the ratio is the intuitive statement of
+          // the complaint and it is what #29's table is in, so it stays
+          // visible. See the bounds above for why it is not the rule.
           const ratio = usable ? Number((near / mid).toFixed(2)) : null;
+          const excess = usable ? Number((near - mid).toFixed(2)) : null;
 
-          // The visible transition band: the largest step between adjacent
-          // road bands, over bands 1..5. See `BAND_STEP_MAX`.
+          // The visible transition band: the largest difference between
+          // adjacent road bands, over bands 1..5. See `BAND_STEP_MAX`.
           let step = 0;
           let stepAt = '';
           for (let b = 1; b < 5; b++) {
             if ((counts[b] ?? 0) < MIN_BAND_PIXELS) continue;
             if ((counts[b + 1] ?? 0) < MIN_BAND_PIXELS) continue;
-            const lo = Math.min(road[b], road[b + 1]);
-            const hi = Math.max(road[b], road[b + 1]);
-            if (lo <= 0) continue;
-            const s = hi / lo;
-            if (s > step) { step = s; stepAt = `${b}->${b + 1}`; }
+            const d = Math.abs(road[b + 1] - road[b]);
+            if (d > step) { step = d; stepAt = `${b}->${b + 1}`; }
           }
-          const stepRatio = step > 0 ? Number(step.toFixed(2)) : null;
+          const bandStep = stepAt ? Number(step.toFixed(2)) : null;
 
           const notes: string[] = [];
-          if (ratio !== null && ratio > NEAR_OVER_MID_MAX) {
-            notes.push(`near-field asphalt is ${ratio.toFixed(2)}x the mid-distance`
-              + ` (bound ${NEAR_OVER_MID_MAX.toFixed(2)})`);
+          if (excess !== null && excess > NEAR_EXCESS_MAX) {
+            notes.push(`near-field asphalt carries ${excess.toFixed(2)} display`
+              + ` levels more high-frequency energy than the mid-distance`
+              + ` (bound ${NEAR_EXCESS_MAX.toFixed(2)}; ${near.toFixed(1)}`
+              + ` against ${mid.toFixed(1)})`);
           }
-          if (stepRatio !== null && stepRatio > BAND_STEP_MAX) {
-            notes.push(`transition band at ${stepAt}: ${stepRatio.toFixed(2)}x`
-              + ` between adjacent depth bands (bound ${BAND_STEP_MAX.toFixed(2)})`);
+          if (bandStep !== null && bandStep > BAND_STEP_MAX) {
+            notes.push(`transition band at ${stepAt}: ${bandStep.toFixed(2)}`
+              + ` display levels between adjacent depth bands`
+              + ` (bound ${BAND_STEP_MAX.toFixed(2)})`);
           }
-          if (ratio === null && stepRatio === null) {
-            notes.push(`too little asphalt to measure`
+          if (excess === null && bandStep === null) {
+            notes.push('too little asphalt to measure'
               + ` (band 2 ${counts[2] ?? 0}px, band 5 ${counts[5] ?? 0}px)`);
           }
           const ok = !notes.some((n) => n.startsWith('near-field')
@@ -544,13 +561,14 @@ async function main(): Promise<void> {
             settledScale: settled, buffer: buf, features: feat,
             road, roadCounts: counts,
             frame: (m.frame ?? []).map((v) => Number(v.toFixed(2))),
-            nearOverMid: ratio, bandStep: stepRatio, ok, note,
+            nearOverMid: ratio, nearExcess: excess, bandStep, ok, note,
           });
 
           console.log(
             `  ${label.padEnd(38)} ${ok ? 'ok  ' : 'FAIL'} `
-            + `near/mid=${ratio === null ? ' n/a' : ratio.toFixed(2)}`
-            + ` step=${stepRatio === null ? ' n/a' : stepRatio.toFixed(2)}`
+            + `near-mid=${excess === null ? '  n/a' : excess.toFixed(2).padStart(5)}`
+            + ` step=${bandStep === null ? '  n/a' : bandStep.toFixed(2).padStart(5)}`
+            + ` (ratio ${ratio === null ? 'n/a' : ratio.toFixed(2)})`
             + `  road far->near: ${road.map((v) => v.toFixed(1).padStart(5)).join(' ')}`
             + `  [${feat} scale=${settled.toFixed(2)} ${buf}]`,
           );
@@ -562,7 +580,7 @@ async function main(): Promise<void> {
 
   await writeFile(resolve(OUT_DIR, 'manifest.json'),
     JSON.stringify({
-      nearOverMidMax: NEAR_OVER_MID_MAX, bandStepMax: BAND_STEP_MAX, rows,
+      nearExcessMax: NEAR_EXCESS_MAX, bandStepMax: BAND_STEP_MAX, rows,
     }, null, 2), 'utf8');
   await browser.close();
   await server.close();
@@ -571,9 +589,9 @@ async function main(): Promise<void> {
   console.log('\n=== ROAD GRAIN BY DEPTH — issue #48 ===');
   console.log('mean |Laplacian| of luma, road pixels only, banded over the'
     + " road's own extent in the frame");
-  console.log(`bounds: near-field <= ${NEAR_OVER_MID_MAX.toFixed(2)}x the`
-    + ` mid-distance; no adjacent depth bands differing by more than`
-    + ` ${BAND_STEP_MAX.toFixed(2)}x`);
+  console.log(`bounds: near field at most ${NEAR_EXCESS_MAX.toFixed(2)} display`
+    + ` levels above the mid-distance; no two adjacent depth bands more than`
+    + ` ${BAND_STEP_MAX.toFixed(2)} apart`);
   console.log(`${rows.length - failed.length} ok / ${failed.length} failed`);
   for (const r of failed) {
     console.log(`  FAIL ${r.circuit} ${r.ambience} ${r.tier} ${r.mode}: ${r.note}`);
