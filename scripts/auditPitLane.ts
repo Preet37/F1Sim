@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   page.setDefaultTimeout(240_000);
 
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${(e as Error).message}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
 
   await page.goto(url, { waitUntil: 'load', timeout: 120_000 });
