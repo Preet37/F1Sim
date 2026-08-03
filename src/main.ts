@@ -33,7 +33,14 @@ import {
 import type { CareerEvent } from './career/Events';
 import { needsWorldRebuild } from './career/SaveCodec';
 import { playerIndexIn } from './career/Seat';
-import { buildCareerCreate } from './ui/CareerCreate';
+import { buildCareerCreate, type CreatedIdentity } from './ui/CareerCreate';
+import { buildTeamCreate, type TeamCreateHandle } from './ui/TeamCreate';
+import { buildLiveryEditor, type LiveryEditorHandle } from './ui/LiveryEditor';
+import { capGauge, driverMarket, engineDeal, mountTeamHQ } from './ui/TeamHQ';
+import { decisionList, newsFeed } from './ui/Briefing';
+import { buildPreparation } from './ui/Preparation';
+import { clearLiveryDesigns, registerLiveryDesign } from './render/Livery';
+import { coerceDesign } from './render/LiveryDesign';
 import { playerHelmet } from './career/CareerState';
 import { buildPodium } from './ui/Podium';
 import { IntroSequence, openingBeats } from './ui/IntroSequence';
@@ -80,6 +87,8 @@ type Screen =
   | 'intro'
   | 'career-create'
   | 'career-hub'
+  | 'team-create'
+  | 'team-hq'
   | 'session-select'
   | 'setup'
   | 'strategy'
@@ -122,6 +131,14 @@ class Game {
 
   private engine: RaceEngine | null = null;
   private career: Career | null = null;
+  /**
+   * A paint shop or team-creation screen currently on the page.
+   *
+   * It owns its own GL context, so it has to be released on the way out of the
+   * screen exactly the way `this.stage` is. `page()` is the choke point every
+   * screen build passes through, so that is where it is torn down.
+   */
+  private paintShop: { dispose(): void } | null = null;
   /** The opening sequence, while it is on screen. */
   private intro: IntroSequence | null = null;
   private careerId = 'slot1';
@@ -588,6 +605,8 @@ class Game {
     // the choke point every screen build passes through, so it is where the
     // stage is released.
     this.disposeStage();
+    this.paintShop?.dispose();
+    this.paintShop = null;
     this.screenRoot.innerHTML = '';
     this.screenRoot.classList.remove('lit');
     // The front of house corrects three of this chassis's decisions — it does
@@ -928,6 +947,16 @@ class Game {
       lead: !current,
       onSelect: () => this.showCareerCreate(),
     });
+    // The second door into a career, and it is a tile rather than a link
+    // because it is a mode and not a setting: you found the constructor, you
+    // drive for it, and everything the factory builds reaches the car through
+    // `TeamPerformance`. See `src/career/MyTeam.ts`.
+    tiles.push({
+      name: 'My Team',
+      figure: '$150M',
+      description: 'Own the outfit and drive for it. Twelfth on the grid, nothing built yet',
+      onSelect: () => this.showCareerCreate('myteam'),
+    });
     tiles.push({
       name: 'Quick Race',
       figure: CIRCUITS.length + ' circuits',
@@ -1015,6 +1044,45 @@ class Game {
    * has one — and three copies of the migration and error handling would be
    * three places for them to drift apart.
    */
+  /**
+   * Takes on a career, and tells the painter what its team's car looks like.
+   *
+   * THE LIVERY REGISTRATION IS THE POINT OF THIS EXISTING. A My Team save holds
+   * its pattern family, trim colour, finish and mark, and `CarMesh` — which
+   * knows a team only as two colours — looks the design up in a registry keyed
+   * on that colour pair. So it has to be registered before any car is built,
+   * and there are three places a career arrives from: created, loaded from the
+   * menu, and rebuilt from a version-1 save. All three come through here, so
+   * none of them can forget.
+   */
+  private adoptCareer(career: Career, id: string): void {
+    this.career = career;
+    this.careerId = id;
+    clearLiveryDesigns();
+    const t = career.state.team;
+    if (t) {
+      registerLiveryDesign(t.colour, t.accent, coerceDesign({
+        family: t.liveryFamily as never,
+        trim: t.trim,
+        finish: t.liveryFinish,
+        mark: t.liveryMark,
+      }));
+    }
+  }
+
+  /**
+   * Puts the career in memory down, and the paint with it.
+   *
+   * Switching driver, deleting a driver or abandoning a career leaves a My
+   * Team livery registered against a colour pair that nobody on the grid owns
+   * any more. `CarMesh` knows a team only as two colours, so the next career
+   * that happens to share them would be painted in somebody else's design.
+   */
+  private dropCareer(): void {
+    this.career = null;
+    clearLiveryDesigns();
+  }
+
   private openCareer(careerId: string): void {
     const result = this.profiles.loadCareer(careerId);
     if (!result.ok) {
@@ -1040,14 +1108,13 @@ class Game {
       rebuilt.state.narrative = result.state.narrative;
       rebuilt.state.history = result.state.history;
       rebuilt.syncPlayerIntoWorld();
-      this.career = rebuilt;
+      this.adoptCareer(rebuilt, careerId);
       alert('This career was started before the Formula 3 and Formula 2 '
         + 'championships existed. Your driver has been carried over; the '
         + 'season around them has been rebuilt.');
     } else {
-      this.career = new Career(result.state);
+      this.adoptCareer(new Career(result.state), careerId);
     }
-    this.careerId = careerId;
     this.profiles.touchCareer(careerId);
     this.showCareerHub();
   }
@@ -1088,7 +1155,7 @@ class Game {
         // The career in memory belonged to the driver who is no longer
         // playing. Leaving it loaded is how one driver's championship ends up
         // on another driver's front page.
-        this.career = null;
+        this.dropCareer();
         this.forgetWeekend();
         this.showMenu();
       },
@@ -1105,7 +1172,7 @@ class Game {
           + '? This cannot be undone.');
         if (!ok) return;
         if (this.profiles.active?.id === id) {
-          this.career = null;
+          this.dropCareer();
           this.forgetWeekend();
         }
         this.profiles.remove(id);
@@ -1116,7 +1183,7 @@ class Game {
       onOpenCareer: (profileId, careerId) => {
         if (profileId !== this.profiles.active?.id) {
           this.profiles.setActive(profileId);
-          this.career = null;
+          this.dropCareer();
           this.forgetWeekend();
         }
         this.openCareer(careerId);
@@ -1208,7 +1275,7 @@ class Game {
         // A driver made on a machine that has already been shown the titles is
         // not made to watch them again.
         if (this.settings.introSeen) this.profiles.noteIntroSeen(this.profiles.active!.id);
-        this.career = null;
+        this.dropCareer();
         this.forgetWeekend();
         this.showMenu();
       },
@@ -1218,43 +1285,66 @@ class Game {
     this.button(editing ? 'Save driver' : first ? 'Start driving' : 'Create driver',
       actions, () => create.submit(), 'btn primary');
   }
-  private showCareerCreate(): void {
+  /**
+   * Signing on: the driver, and — in My Team — the driver before the team.
+   *
+   * ONE SCREEN, TWO CONTRACTS. `mode` decides whether the seat on the right is
+   * the worst car in Formula 3 or an entry the player is about to found, and
+   * whether "next" goes to the championship or to `showTeamCreate`. Splitting
+   * it in two would mean two copies of the identity form, which is exactly how
+   * the helmet on the timing tower and the helmet in the car used to disagree.
+   */
+  private showCareerCreate(mode: 'driver' | 'myteam' = 'driver'): void {
     this.setScreen('career-create');
+    const owner = mode === 'myteam';
     const me = this.profiles.active;
     const { body, actions } = this.page({
       tab: 'Main Menu',
-      where: 'New Career',
-      title: 'New Career',
-      sub: me
-        ? 'One seat is open in Formula 3. It is the worst one on the grid, and it '
-          + 'is yours if you want it. You are signing as ' + me.firstName + ' '
-          + me.lastName + ' — change anything here and your driver changes with it.'
-        : 'One seat is open in Formula 3. It is the worst one on the grid, '
-          + 'and it is yours if you want it.',
+      where: owner ? 'My Team' : 'New Career',
+      title: owner ? 'My Team' : 'New Career',
+      sub: owner
+        ? 'You are the owner and the lead driver. First, the driver.'
+        : me
+          ? 'One seat is open in Formula 3. It is the worst one on the grid, and it '
+            + 'is yours if you want it. You are signing as ' + me.firstName + ' '
+            + me.lastName + ' — change anything here and your driver changes with it.'
+          : 'One seat is open in Formula 3. It is the worst one on the grid, '
+            + 'and it is yours if you want it.',
       back: () => this.showMenu(),
       // The three tiers, as the three sectors of a career.
-      rule: { parts: [9, 12, 11], at: 0 },
+      rule: owner ? { parts: [1, 1, 1], at: 0 } : { parts: [9, 12, 11], at: 0 },
     });
 
     // The seat a rookie is actually offered: the weakest Formula 3 team, which
     // is exactly what `Career.create` hands them. Read from the roster rather
     // than named here, so the screen and the career cannot disagree about which
-    // team is on the other end of the contract.
+    // team is on the other end of the contract. An owner-driver is joining
+    // Formula 1 as their own twelfth entry, so the grid they are measured
+    // against — and the numbers already taken on it — is that one.
     const f3 = REAL_ROSTER.tiers.F3;
+    const f1 = REAL_ROSTER.tiers.F1;
     const startTeam = f3.teams[f3.teams.length - 1];
 
     const create = buildCareerCreate(body, {
-      seat: {
-        teamName: startTeam.name,
-        tierName: TIER_CAR.F3.name,
-        rounds: f3.calendar.length,
-        colour: startTeam.colour,
-        accent: startTeam.accent,
-      },
+      seat: owner
+        ? {
+          teamName: 'Your own team',
+          tierName: TIER_CAR.F1.name,
+          rounds: f1.calendar.length,
+          colour: 0x0f4d35,
+          accent: 0xe0a72c,
+        }
+        : {
+          teamName: startTeam.name,
+          tierName: TIER_CAR.F3.name,
+          rounds: f3.calendar.length,
+          colour: startTeam.colour,
+          accent: startTeam.accent,
+        },
       // Numbers already on this grid. Choosing 22 and then discovering in the
       // first session that somebody else has it is not a discovery anybody
       // enjoys.
-      takenNumbers: f3.drivers.map((d) => d.raceNumber),
+      takenNumbers: (owner ? f1 : f3).drivers.map((d) => d.raceNumber),
       // PREFILLED FROM THE DRIVER WHO IS PLAYING. A player who made a helmet
       // ten minutes ago and is now told to make one again has been asked the
       // same question twice, and the second answer is the one that ends up on
@@ -1274,22 +1364,291 @@ class Game {
         // without one — an old deep link, a cleared profile index — gets one
         // made from what they just typed rather than an orphaned save.
         if (!this.profiles.active) this.profiles.create(id);
-        this.career = Career.create({
+        // The team is founded on the next screen, and the career with it. The
+        // driver has already been filed above, so an owner who backs out still
+        // keeps the person they just made.
+        if (owner) { this.showTeamCreate(id); return; }
+        this.adoptCareer(Career.create({
           firstName: id.firstName,
           lastName: id.lastName,
           nationality: id.nationality,
           raceNumber: id.raceNumber,
           helmet: id.helmet,
-        });
-        this.careerId = 'career-' + Date.now().toString(36);
-        this.profiles.saveCareer(this.careerId, this.career.state);
+        }), 'career-' + Date.now().toString(36));
+        this.profiles.saveCareer(this.careerId, this.career!.state);
         this.showCareerHub();
       },
     });
 
     applyIdentityColours(this.screenRoot, me?.helmet ?? null);
     this.spacer(actions);
-    this.button('Take the seat', actions, () => create.submit(), 'btn primary');
+    this.button(owner ? 'Next: the team' : 'Take the seat', actions,
+      () => create.submit(), 'btn primary');
+  }
+
+  /**
+   * Founding the constructor: name, livery, engine and the second car.
+   *
+   * The whole screen is `src/ui/TeamCreate.ts`. What stays here is the page
+   * chassis and the one button, exactly as with the driver's create screen —
+   * and the disposal, because the screen owns a GL context of its own and
+   * `page()` is the only place that knows a screen is being replaced.
+   */
+  private showTeamCreate(id: CreatedIdentity): void {
+    this.setScreen('team-create');
+    const seed = Math.floor(Date.now() % 2147483647);
+    const { body, actions } = this.page({
+      tab: 'My Team',
+      where: 'My Team',
+      title: 'Found the team',
+      sub: 'Name it, paint it, sign an engine and fill the second seat. '
+        + 'Everything here is spent out of the same $150M.',
+      back: () => this.showCareerCreate('myteam'),
+      rule: { parts: [1, 1, 1], at: 0 },
+    });
+
+    const create: TeamCreateHandle = buildTeamCreate(body, {
+      seed,
+      number: id.raceNumber,
+      driverCode: id.lastName.slice(0, 3).toUpperCase(),
+      quality: this.renderer.quality,
+      onSubmit: (team) => {
+        const career = Career.createMyTeam({
+          firstName: id.firstName,
+          lastName: id.lastName,
+          nationality: id.nationality,
+          raceNumber: id.raceNumber,
+          helmet: id.helmet,
+          seed,
+          team: {
+            name: team.name,
+            shortName: team.shortName,
+            code: team.code,
+            baseCountry: team.baseCountry,
+            colour: team.colour,
+            accent: team.accent,
+            trim: team.design.trim,
+            liveryFamily: team.design.family,
+            liveryFinish: team.design.finish,
+            liveryMark: team.design.mark,
+          },
+          teammate: team.teammate,
+          powerUnitId: team.powerUnitId,
+        });
+        this.adoptCareer(career, 'career-' + Date.now().toString(36));
+        this.profiles.saveCareer(this.careerId, career.state);
+        this.showCareerHub();
+      },
+    });
+    this.paintShop = create;
+
+    this.spacer(actions);
+    this.button('Enter the championship', actions, () => create.submit(), 'btn primary');
+  }
+
+  /**
+   * The factory: the cost cap, the books, three departments and the pit crew.
+   *
+   * Every commission on it moves a `TeamPerformance` field. See
+   * `src/career/MyTeam.ts` for the chain from a button here to `clBase`.
+   */
+  private showTeamHQ(): void {
+    const career = this.career;
+    if (!career?.myTeam) { this.showCareerHub(); return; }
+    this.setScreen('team-hq');
+    const t = career.myTeam;
+
+    const { body, actions } = this.page({
+      tab: t.name,
+      where: 'Team HQ',
+      title: 'Team HQ',
+      sub: 'What the factory is building, and what it is costing you.',
+      back: () => this.showCareerHub(),
+      meta: [
+        ['Round', Math.min(career.round + 1, career.calendar.length)
+          + ' / ' + career.calendar.length],
+        ['Bank', '$' + (t.cashUsd / 1e6).toFixed(1) + 'M'],
+      ],
+      rule: {
+        parts: [
+          Math.max(0, career.round), 1,
+          Math.max(0, career.calendar.length - career.round - 1),
+        ],
+        at: 1,
+      },
+    });
+
+    // MOUNTED ONCE AND REPAINTED IN PLACE. Rebuilding the page on every button
+    // press — which is what this did first — flashes the screen and throws the
+    // scroll position away on the busiest page in the mode. See `mountTeamHQ`.
+    mountTeamHQ(body, {
+      career,
+      onChange: () => this.profiles.saveCareer(this.careerId, career.state),
+      routes: {
+        hq: () => this.showTeamHQ(),
+        engine: () => this.showEngineDeal(),
+        market: () => this.showDriverMarket(),
+        prep: () => this.showPreparation(),
+        hub: () => this.showCareerHub(),
+      },
+    });
+
+    this.button('Paint shop', actions, () => this.showLiveryEditor(), 'btn ghost');
+    this.button('Engine deal', actions, () => this.showEngineDeal(), 'btn ghost');
+    this.button('Driver market', actions, () => this.showDriverMarket(), 'btn ghost');
+    this.spacer(actions);
+    this.button('Back to the hub', actions, () => this.showCareerHub(), 'btn primary');
+  }
+
+  /**
+   * Preparation between rounds.
+   *
+   * `Career.spendPrepSlot` has been implemented and documented and reachable
+   * from nowhere. Every branch of it moves something the simulation reads — a
+   * driver attribute the AI's own model uses, a department morale that decides
+   * what an upgrade costs and whether it passes quality control, a fan rating
+   * that decides commercial income — and none of it could be touched by
+   * anybody playing.
+   */
+  private showPreparation(): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('team-hq');
+    const { body, actions } = this.page({
+      tab: TIER_CAR[career.tier].shortName,
+      where: 'Preparation',
+      title: 'Between rounds',
+      sub: career.state.prepSlotsLeft + ' '
+        + (career.state.prepSlotsLeft === 1 ? 'slot' : 'slots')
+        + ' before the next race. Every one of these moves a number the car uses.',
+      back: () => this.showCareerHub(),
+      rule: {
+        parts: [
+          Math.max(0, career.round), 1,
+          Math.max(0, career.calendar.length - career.round - 1),
+        ],
+        at: 1,
+      },
+    });
+
+    // Mounted once and repainted in place, for the same reason Team HQ is:
+    // rebuilding the page on every press flashes the screen and throws the
+    // scroll away.
+    const prep = buildPreparation(body, {
+      career,
+      onChange: () => {
+        this.profiles.saveCareer(this.careerId, career.state);
+        prep.refresh();
+        slots.textContent = career.state.prepSlotsLeft + ' left';
+      },
+    });
+    const slots = this.el('div', 'mt-why', body, career.state.prepSlotsLeft + ' left');
+
+    this.spacer(actions);
+    this.button('Back to the hub', actions, () => this.showCareerHub(), 'btn primary');
+  }
+
+  /** Five suppliers, ranked on the numbers that reach the car. */
+  private showEngineDeal(): void {
+    const career = this.career;
+    if (!career?.myTeam) { this.showCareerHub(); return; }
+    this.setScreen('team-hq');
+    const { body, actions } = this.page({
+      tab: career.myTeam.name,
+      where: 'Engine deal',
+      title: 'Engine deal',
+      sub: 'Five manufacturers. Straight-line speed, deployment and reliability.',
+      back: () => this.showTeamHQ(),
+    });
+    capGauge(body, career);
+    engineDeal(body, {
+      career,
+      onChange: () => {
+        this.profiles.saveCareer(this.careerId, career.state);
+        this.showEngineDeal();
+      },
+    });
+    this.spacer(actions);
+    this.button('Back to the factory', actions, () => this.showTeamHQ(), 'btn primary');
+  }
+
+  /** Who could drive the second car. Real drivers, in this save's world. */
+  private showDriverMarket(): void {
+    const career = this.career;
+    if (!career?.myTeam) { this.showCareerHub(); return; }
+    this.setScreen('team-hq');
+    const { body, actions } = this.page({
+      tab: career.myTeam.name,
+      where: 'Driver market',
+      title: 'The second car',
+      sub: 'They race the same physics you do, and they score for the team.',
+      back: () => this.showTeamHQ(),
+    });
+    capGauge(body, career);
+    driverMarket(body, {
+      career,
+      onChange: () => {
+        this.profiles.saveCareer(this.careerId, career.state);
+        this.showDriverMarket();
+      },
+    });
+    this.spacer(actions);
+    this.button('Back to the factory', actions, () => this.showTeamHQ(), 'btn primary');
+  }
+
+  /**
+   * The paint shop.
+   *
+   * NO CAP GAUGE ON THIS SCREEN. Paint is not a development cost, and putting a
+   * money instrument on the one screen where nothing is spent would make it
+   * decoration everywhere else.
+   */
+  private showLiveryEditor(): void {
+    const career = this.career;
+    const t = career?.myTeam;
+    if (!career || !t) { this.showCareerHub(); return; }
+    this.setScreen('team-hq');
+    const { body, actions } = this.page({
+      tab: t.name,
+      where: 'Paint shop',
+      title: 'Paint shop',
+      sub: 'Six patterns, three colours, three finishes and a mark. '
+        + 'The car on the left is the one that goes racing.',
+      back: () => this.showTeamHQ(),
+    });
+
+    const editor: LiveryEditorHandle = buildLiveryEditor(body, {
+      initial: {
+        colour: t.colour,
+        accent: t.accent,
+        design: coerceDesign({
+          family: t.liveryFamily as never,
+          trim: t.trim,
+          finish: t.liveryFinish,
+          mark: t.liveryMark,
+        }),
+      },
+      number: career.state.player.raceNumber,
+      code: career.state.player.code,
+      quality: this.renderer.quality,
+    });
+    this.paintShop = editor;
+
+    this.spacer(actions);
+    this.button('Paint it', actions, () => {
+      const choice = editor.choice();
+      career.applyLivery({
+        colour: choice.colour,
+        accent: choice.accent,
+        trim: choice.design.trim,
+        family: choice.design.family,
+        finish: choice.design.finish,
+        mark: choice.design.mark,
+      });
+      registerLiveryDesign(choice.colour, choice.accent, choice.design);
+      this.profiles.saveCareer(this.careerId, career.state);
+      this.showTeamHQ();
+    }, 'btn primary');
   }
 
   private showCareerHub(): void {
@@ -1347,6 +1706,23 @@ class Game {
       note: TIER_CAR[s.tier].name + ' · ' + s.season.year
         + ' · round ' + round + ' of ' + career.calendar.length,
     });
+
+    // WHAT JUST HAPPENED, AND WHAT YOU ARE BEING ASKED TO DECIDE.
+    //
+    // Above the instruments, deliberately. The verdict on this mode was that it
+    // is not clear what is going on or what you are supposed to do, and the hub
+    // was the specific place that was true: it opened on six meters and a form
+    // table, and everything the simulation had just done — a part delivered, a
+    // championship position lost, a rival signed somebody, an idle factory —
+    // went unreported. Both blocks are generated from state that already
+    // exists; see `src/career/Newsroom.ts`.
+    decisionList(body, career, {
+      hq: () => this.showTeamHQ(),
+      engine: () => this.showEngineDeal(),
+      market: () => this.showDriverMarket(),
+      prep: () => this.showPreparation(),
+    });
+    newsFeed(body, career, 5);
 
     // Your own car, in your own garage.
     //
@@ -1434,9 +1810,17 @@ class Game {
     stat('Pace', (s.player.skill * 100).toFixed(0),
       'consistency ' + (s.player.consistency * 100).toFixed(0),
       { meter: s.player.skill * 100, band: band(s.player.skill * 100) });
-    stat('Contract', s.contractYears + (s.contractYears === 1 ? ' year' : ' years'),
-      s.seasonsInTier + ' ' + (s.seasonsInTier === 1 ? 'season' : 'seasons') +
-      ' in ' + TIER_CAR[s.tier].shortName);
+    // An owner-driver has no contract to run down — they own the seat — so the
+    // slot says what is actually true of them rather than printing the sentinel
+    // the career stores to mean "never expires".
+    if (career.myTeam) {
+      stat('Contract', 'Owner',
+        'you own ' + career.myTeam.shortName + ' and drive for it');
+    } else {
+      stat('Contract', s.contractYears + (s.contractYears === 1 ? ' year' : ' years'),
+        s.seasonsInTier + ' ' + (s.seasonsInTier === 1 ? 'season' : 'seasons') +
+        ' in ' + TIER_CAR[s.tier].shortName);
+    }
 
     // --- Form -------------------------------------------------------------
     // The rounds already run, as a timesheet. This is the most characteristic
@@ -1499,6 +1883,9 @@ class Game {
         'Every round has been run. Close the season to take your promotion, your ' +
         'contract offers and next year’s calendar.');
 
+      if (career.myTeam) {
+        this.button('Team HQ', actions, () => this.showTeamHQ(), 'btn ghost');
+      }
       this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
       this.spacer(actions);
       this.button('End Season', actions, () => {
@@ -1547,6 +1934,9 @@ class Game {
       this.button('Resume Weekend', actions, () => this.resumeWeekend(), 'btn ghost');
     }
 
+    if (career.myTeam) {
+      this.button('Team HQ', actions, () => this.showTeamHQ(), 'btn ghost');
+    }
     this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
     this.button('Practice Only', actions, () => {
       this.weekend = [this.sessionConfig('practice', 'Practice', circuit.id, 600, 0)];
@@ -2312,7 +2702,7 @@ class Game {
             if (!confirm('Delete every driver and every career stored in this browser? '
               + 'This cannot be undone.')) return;
             this.profiles.removeAll();
-            this.career = null;
+            this.dropCareer();
             this.forgetWeekend();
             this.showDriverCreate({ firstRun: true });
           });

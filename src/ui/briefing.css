@@ -1,0 +1,125 @@
+/*
+ * THE BRIEFING — what just happened, and what you are being asked to decide.
+ *
+ * The verdict on career mode was "it's not clear what's going on, what you're
+ * supposed to do, or how it works". These two blocks are the answer to the first
+ * two of those, and they are deliberately the FIRST thing on the screen, above
+ * the instruments. A management screen that opens on nine numbers and no next
+ * action is a screen people leave.
+ *
+ * The decisions are set as actions and the news as a broadcast feed, so the two
+ * are never confused for one another: one is a thing to do and the other is a
+ * thing that happened. Both inherit the house palette and both use the five
+ * signal colours with their existing meanings.
+ */
+
+/* ==========================================================================
+   DECISIONS
+   ========================================================================== */
+
+.decisions { display: grid; gap: 8px; margin-bottom: 16px; }
+
+.decision {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) auto;
+  gap: 0 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  box-shadow: var(--plate-lift);
+  overflow: hidden;
+}
+/* The urgency rail down the leading edge. Green is deliberately not used here:
+   nothing in this list is good news, it is all work. */
+.decision::before { content: ''; display: block; align-self: stretch; background: var(--ink-3); }
+.decision.now::before { background: var(--sig-red); }
+.decision.soon::before { background: var(--sig-yellow); }
+.decision-text { padding: 11px 0; min-width: 0; }
+.decision-label {
+  font-family: var(--font-display);
+  font-stretch: 116%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 13.5px;
+  letter-spacing: 0.02em;
+}
+.decision-why { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; line-height: 1.45; }
+.decision-go {
+  margin-right: 12px;
+  background: var(--carbon-3, #171c24);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  color: var(--ink);
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.decision-go:hover { border-color: var(--ink-3); }
+.decision-go:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+
+.decisions-clear {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  border: 1px dashed var(--line-2);
+  border-radius: 6px;
+  padding: 11px 13px;
+  margin-bottom: 16px;
+}
+
+/* ==========================================================================
+   THE NEWS
+   ========================================================================== */
+
+.news {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--carbon-1);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.newsitem {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 14px 11px;
+  border-top: 1px solid var(--line);
+}
+.newsitem:first-child { border-top: 0; }
+/* The player's own stories are lit and everybody else's are not. That single
+   distinction is what stops a feed of twelve lines reading as wallpaper. */
+.newsitem.mine { background: rgba(120, 220, 160, 0.045); }
+.newsitem-kind {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-top: 3px;
+  white-space: nowrap;
+}
+.newsitem.k-warning .newsitem-kind { color: var(--sig-red); }
+.newsitem.k-factory .newsitem-kind { color: var(--sig-purple, #b18cf0); }
+.newsitem.k-transfer .newsitem-kind,
+.newsitem.k-departure .newsitem-kind { color: var(--sig-yellow); }
+.newsitem-body { min-width: 0; }
+.newsitem-head {
+  font-family: var(--font-display);
+  font-stretch: 114%;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.newsitem.lead .newsitem-head { font-size: 19px; font-weight: 800; text-transform: uppercase; }
+.newsitem-detail { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; line-height: 1.45; }
+
+@media (max-width: 560px) {
+  .newsitem { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .decision { grid-template-columns: 3px minmax(0, 1fr); }
+  .decision-go { grid-column: 2; margin: 0 12px 11px 0; justify-self: start; }
+}

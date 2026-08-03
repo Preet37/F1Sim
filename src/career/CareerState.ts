@@ -2,6 +2,9 @@ import { clamp, clamp01 } from '../core/MathUtils';
 import { coerceHelmet, type HelmetDesign } from './Identity';
 import type { TierId } from '../data/roster';
 import type { CareerWorld, WorldDriver } from './World';
+import type {
+  DepartmentId, DepartmentState, Ledger, UpgradeProject,
+} from './MyTeam';
 import type { RoundResult, SeasonState, SeasonSummary } from './Season';
 
 /**
@@ -46,8 +49,12 @@ export const SAVE_VERSION = 2;
  *    exclusion separately from retirement under the 2026 regulations.
  * 3: `PlayerProfile.helmet`, once the player had a face.
  * 4: `CareerState.weekendInProgress`, so a weekend survives a reload.
+ * 5: `MyTeamState` grew a factory — departments, projects, an itemised ledger,
+ *    a three-colour livery and cap penalties. A driver career has `team: null`
+ *    and is entirely unaffected; a My Team career written by a build before this
+ *    one never existed, because My Team did not.
  */
-export const SAVE_MINOR = 4;
+export const SAVE_MINOR = 5;
 
 /** The player, as a driver. Mirrors `WorldDriver` because they are one. */
 export interface PlayerProfile {
@@ -116,25 +123,60 @@ export interface NarrativeState {
   firedEvents: string[];
 }
 
-/** The player's own constructor. Null unless the career is My Team. */
+/**
+ * The player's own constructor. Null unless the career is My Team.
+ *
+ * PLAIN DATA, AND NO IMPORT FROM THE RENDERER. The livery is stored as a family
+ * name, three colours and a finish rather than as anything `src/render/Livery.ts`
+ * defines, because that module imports three.js and this one is loaded by every
+ * headless probe. A save schema that drags a WebGL dependency behind it is a
+ * save schema that cannot be tested in a script.
+ */
 export interface MyTeamState {
   teamId: string;
   name: string;
   shortName: string;
   code: string;
+  baseCountry: string;
+
+  /** The three-colour palette. See `src/render/Livery.ts` for what paints them. */
   colour: number;
   accent: number;
-  /** Livery design id and palette. See `src/render/Livery.ts`. */
+  trim: number;
+  /** Pattern family id, one of `LIVERY_FAMILIES`. */
   liveryFamily: string;
-  liveryTrim: number;
   liveryFinish: 'gloss' | 'satin' | 'matte';
+  /** Which generated geometric mark the team carries, 0..n. */
+  liveryMark: number;
 
+  /** Cash in the bank. Can go negative; the career says so plainly when it does. */
   cashUsd: number;
-  /** Development spend committed this season, against the cap. */
-  capSpentUsd: number;
+  /** This season's ledger, itemised. See `src/career/MyTeam.ts`. */
+  ledger: Ledger;
+
+  /** The three departments: facility level, headcount, morale. */
+  departments: Record<DepartmentId, DepartmentState>;
+  /** Upgrade projects in the factory right now. */
+  projects: UpgradeProject[];
+  /** Monotonic, so no two projects in a career ever share an id. */
+  nextProjectId: number;
+
   powerUnitId: string;
   powerUnitYearsLeft: number;
+  /** The second car. A real driver record in this save's world. */
   teammateDriverId: string;
+
+  /**
+   * Rounds of a development ban still to serve.
+   *
+   * The consequence of a major cost-cap breach, carried across the off-season,
+   * which is the whole reason it is stored rather than recomputed: the penalty
+   * for last season's spending has to survive into a season whose ledger has
+   * been reset.
+   */
+  developmentBanRounds: number;
+  /** Constructors' points deducted this season by a cap penalty. */
+  pointsDeducted: number;
 }
 
 /**

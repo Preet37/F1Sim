@@ -191,6 +191,9 @@ Run `npm run` to list. The important ones:
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:gearbox` | The gear a key press puts you in, and that you can get back out of it. The **only** probe that drives `KeyboardEvent → InputController → playerControls → VehiclePhysics` instead of hand-building a controls literal — which is exactly why `probe:drivability` and `probe:handling` could not have caught issue #45 |
 | `probe:season` | 100 career-years |
+| `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
+| `probe:news` | Every headline checked against `simulateRound`'s own result, 100 career-years |
+| `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
@@ -215,6 +218,15 @@ Run `npm run` to list. The important ones:
   (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
   work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
   says the grip difference driving that is currently zero.
+- `probe:framing` — **56 failures, and they are new**, introduced deliberately by correcting
+  the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
+  cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
+  in §7. **This is a probe that got stricter, not a feature that broke.**
+- `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
+  racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
+  regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
+  **byte-identical** failure lists. Everything structural in the probe still passes at 20,
+  22 and 24 cars. Issue #44.
 
 ---
 
@@ -390,7 +402,34 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - Mirror housing was lofted **widest 30mm in front of the glass**. Pane 74×32mm →
   **150×46mm** (150 is the FIA minimum). Then the cap fix revealed the housing's rear cap
   was a solid disc the size of the aperture — once drawn, **it was the mirror.**
-- **Driver's-eye view** added, held to `probe:framing` like the others.
+- **Driver's-eye view** added — *"imagine from the perception of the driver's lenses"* —
+  and held to `probe:framing` like the others, on all eleven circuits in both frame shapes.
+  The eye is at car-local **(0, 0.770, 0.165)**, 0.58m forward and 0.21m below the roll-hoop
+  pod the `cockpit` mode uses, pitched 1.98° down. **The targets are geometry-derived, not
+  reference-derived** — see §9: there is no genuine F1 driver's-eye onboard on disk, so
+  every number is solved against the car's own modelled parts (the wheel rim's top bar at
+  y = 0.703, the halo crown at 0.812, the helmet crown at 0.828) rather than read off a
+  frame. What it measures: **halo crown 41–44% of frame height against a horizon at 46–48**
+  — crown *above* the horizon, the exact inverse of the two pod cameras, which carry it
+  below at 59–66; rails leaving through the **sides** rather than the bottom; panes at
+  **10–22% of frame width** against the cockpit's 7–10 and the T-cam's 5–7, with the hoop
+  across **0%** of them.
+- **The sky was clipped out of the mirror feed.** The sky is a dome of radius 3600 dropped
+  onto the main camera each frame; a mirror's far plane is `MIRROR_FAR` = 120, so every
+  triangle of it was clipped and what was left was the renderer's clear colour, `0x0a0c10`.
+  **The top half of both panes was solid black in daylight for as long as the feed had
+  existed.** Every earlier pass asked whether the feed *contained* anything — it did: a
+  strip of road under a black void. Now clears to `scene.fog.color`, which is already what
+  the far end of the pane fades into, so there is no seam. Two state changes, no draw calls.
+- **The mirror lens was 42° vertical, which on the feed's aspect is 91° across** — a rival
+  25m back was two and a half pixels of pane. Now **28° vertical = 78.2° across** on a pane
+  rebuilt to the FIA minimum 150×46mm: same horizontal angle, twice the glass, ~2.1× the
+  on-glass size of a car 25m back.
+- **`probe:framing` was reading the rig mid-lens-transition.** Every mode starts on the
+  chase camera's 39° lens and damps toward its own; twenty frames of settling caught the
+  driver's eye at **56.50° instead of 63.65°** (converged; 300 frames gives the same
+  number), the cockpit at 38.96 against 40.07 and the T-cam at 42.78 against 45.49. Now
+  settled for two seconds. **This made the probe stricter, not looser** — see §7.
 - Reverse-camera jitter: slip angle measured against the car's nose, so a reversing car
   sat on ±π and the sign flipped every time the wheel moved — a **66° lurch per frame.**
 
@@ -569,6 +608,68 @@ overrule it in either direction.**
   journalists are invented people from invented name pools, deliberately so, because the
   press-conference system puts sentences in their mouths.
 
+### My Team (issue #23, landed on merged `main` 2026-08-03)
+
+The mode the user asked for in their own words: *"You act as both the team owner and the
+lead driver. You design the car livery, sign sponsors, choose an engine supplier, hire a
+teammate, and build a racing empire from the ground up."* Budget, a cost cap, a factory
+with three departments, an engine contract, a second driver, a livery editor, a newsroom.
+
+**The chain is `WorldTeam.upgrades` → `performanceOf` → `specForTeam` →
+`getTeam().performance`, and `TeamPerformance` is still the only channel.** `VehicleSpec.ts`
+is unmodified and `MyTeam.ts` imports nothing from `physics/` or `render/`. Every
+commission moves a field the simulation integrates: one concept project each moved
+`clBase 3.128 → 3.231`, `icePowerW 556644 → 570998`, `baseMu 1.6405 → 1.6927`.
+
+**What the merge nearly shipped.** The branch was cut before `ProfileStore` existed and
+founded careers by writing straight to `SaveManager`. On merged `main` that saves the
+bytes and files them under nobody: **a My Team career would have been absent from
+"Continue" and from the driver rack the moment you left the tab.** Re-plumbed by hand
+through `ProfileStore.saveCareer`; `main.ts` now makes no direct career write at all.
+`shoot:myteam` asserts it end-to-end and **goes red when the one-line textual resolution is
+restored** — three failures per viewport, "it was saved to disk and filed under nobody".
+
+**Three probes that could not fail, all found and fixed:**
+- **`probe:myteam` invariant 7 passed on a build with the factory disconnected from the
+  car.** `startProject` drew its quality-control roll from the world's RNG stream, so a
+  developing career and an idle one stopped racing the same championship and the check was
+  measuring RNG divergence. With upgrades hard-disabled it read "1.0 constructors' points
+  against 0.3" and **passed**. `Career.factoryRng` is now a separate stream: 3.4 vs 0.3
+  working, **0.3 vs 0.3 and RED** with the same break. Cost: `probe:news` moved
+  5595 → 5525 stories, attributed by reverting that single line and getting 5595 back.
+- **`probe:news` checked a superset it hardcoded itself.** `Decision.screen` declared
+  `'market'` and `'livery'`; `openDecisions` emitted neither, and both had a button label
+  and a route wired up for a decision that could not exist. `DECISION_SCREENS` is now a
+  runtime constant the union derives from, the probe reads it instead of restating it, and
+  asserts every entry was **actually emitted** across 100 career-years. `'market'` gained
+  the team-mate-out-of-contract decision its own doc comment had always promised;
+  `'livery'` was deleted.
+- **`audit:livery` could not go red.** It commented that its control shot "must be
+  identical to `audit:car`'s `day-high--hero`" and never compared them. It now sha256s all
+  three views and fails on a difference — proved by repainting the default livery and
+  watching all three go red.
+
+**Two real bugs the new coverage found:**
+- **The cost cap could be crossed without a confirmation.** `upgradeFacility` charged the
+  new level's upkeep to `ledger.facilityUsd` *after* the gate had approved the capital cost
+  alone. Approved at $28.0M of headroom, spent $31.4M: **$138.4M against a $135.0M cap.**
+  Now gated on `cost + extraUpkeep`.
+- **The cap fine left no ledger trace**, and neither it nor the prize was inside any
+  measurement window — both land inside `endSeason`, after invariant 2 closes and before
+  the ledger is emptied. `Ledger.fineUsd` added, `TeamSeasonReport.closingLedger` carries
+  the books across the audit, and the whole season now reconciles including the settle.
+
+**Dead code removed** (the pattern that shipped twice before as `TIER_INFO.carPace` and
+`alongsideLeft/Right`): `Career.renameTeam`, no callers; and `engineBreakFeeUsd`, which had
+no callers while `signPowerUnit` inlined the same formula **with a different one** —
+`Math.max(1, yearsLeft)` against raw `yearsLeft`. The exported copy was the wrong one: it
+charges 45% of a season for tearing up a contract that has already expired.
+
+`probe:save` gained a My Team case — 21 named fields and all 8 ledger lines, proved red by
+dropping `ledger` from the encoder — and `SaveCodec.backfill` now defends the My Team
+block, because one missing ledger line turns the cost cap into `NaN`, which compares false
+against every threshold and so stops binding silently rather than throwing.
+
 ### Tooling
 - **`scripts/` is now typechecked.** `tsconfig.scripts.json` covers `scripts` and `audit`
   as a *separate* project — separate so `@types/node` cannot leak into `src/` and let
@@ -610,7 +711,7 @@ overrule it in either direction.**
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
-| Career/story | My Team, facility, livery editor, press/morale/sponsors, rivalries, the full world |
+| Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### Measured, deferred, and still true
 - **AI pace ~1.43× reference.** The oldest open item in the project.
@@ -636,6 +737,37 @@ overrule it in either direction.**
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
   `probe:pitstop` §1 and §6.
+- **`probe:framing` now fails 56 assertions, and all 56 are new and true.** Correcting the
+  probe's settling time from 20 frames to 2 seconds (§6) opened every onboard lens to where
+  it actually sits in play, and that moved the picture:
+  - **54 are `MIRROR_PANES` keep-out escapes** in `src/ui/Hud.ts`, on all eleven circuits
+    in all three onboard modes. A wider lens carries a pane that sits below centre *up* the
+    frame by 1–2 points, and the keep-out rectangles were measured against the narrow lens
+    — the same rectangle 7f1f3da widened for banking. The HUD is laid out against it, and
+    `shoot:panels` is laid out against the HUD, so this belongs to the HUD owner. **Not a
+    reason to move the rectangle without re-running `shoot:panels`.**
+  - **1 is a real framing defect:** at Suzuka on 16:9 the cockpit camera's left halo rail
+    leaves through the **side** of the frame at 87% of frame height — the "black pipe
+    running off the edge of the screen" complaint. Only a settled lens shows it. It is also
+    the case that would have been *concealed* had the rails-exit threshold been moved from
+    the bottom eighth to the bottom fifth, which is why it was not moved.
+  - **1 is a driver's-eye pane reading 22.5% of frame width at Monaco** against a 22.0
+    bound. A band question, not a geometry question, but it has not been re-derived.
+- **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
+  measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
+  previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
+
+### Landed with My Team but deliberately not built
+- **Sponsors are not a system.** `commercialIncomePerRound` is the team's baseline revenue
+  and is labelled as such in the code. Named brands with minimum fan ratings, signing
+  bonuses, contract objectives and their names painted down the car are Layer 4 of
+  `docs/CAREER_MODE.md` and do not exist. The user asked for sponsors by name.
+- **No press conferences, publicist, marketer, PA, manager or agencies.** The newsroom
+  generates true statements about things that happened; nobody speaks to the player.
+- **A team-mate's contract can run out and be re-signed, but there is no wider transfer
+  negotiation** — no offers to the player, no rival teams bidding for their seat.
+- `Career.spendPrepSlot` is reachable now, but the preparation screen is the only place
+  the narrative layer is touched by the player.
 
 ### The swerving (#46) is NOT the gearbox (#45), and it is NOT the frame-rate fix
 Reported in the same message as #45 — *"additionally, the car is swerving a lot I thought

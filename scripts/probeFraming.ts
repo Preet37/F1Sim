@@ -85,6 +85,24 @@ interface Target {
    */
   railExit: 'bottom' | 'side';
   /**
+   * Which side of the HORIZON the crown of the hoop falls on.
+   *
+   * The one number that says which FAMILY of onboard a mode belongs to, and the
+   * only assertion here that a driver's eye quietly slid back onto the roll
+   * hoop could not pass. From a pod above the driver you are looking DOWN over
+   * the hoop and its crown sits below the horizon; from the seat you are
+   * looking UP at it and it arcs across the sky. Both of those are what the
+   * view IS, not how it is tuned.
+   *
+   * `crownPct` cannot express it, and not by a small margin: the driver's band
+   * is 30-52 per cent and its horizon band is 40-54, so the two OVERLAP and a
+   * crown at 51 against a horizon at 44 satisfies both while being the wrong
+   * photograph. They also move together — raise the pitch and both slide down
+   * the frame — which is exactly how a camera can drift out of the car with
+   * every percentage in range.
+   */
+  crownVsHorizon: 'above' | 'below';
+  /**
    * How far off centre a mirror pane may land, percentage of frame WIDTH.
    *
    * A mirror outside the frame is not a mirror. This is checked in BOTH frame
@@ -184,6 +202,7 @@ const TARGETS: Record<string, Target> = {
     horizonPct: [40, 54],
     occludePct: [2.0, 16.0],
     railExit: 'side',
+    crownVsHorizon: 'above',
     // 99 means "the whole pane is inside the frame", because what is measured
     // is where its CENTRE lands and 100 is the edge. On 16:9 that centre reaches
     // 93 to 96 per cent of frame width — hard against the edge, which is where
@@ -207,6 +226,7 @@ const TARGETS: Record<string, Target> = {
     horizonPct: [34, 50],
     occludePct: [1.0, 9.0],
     railExit: 'bottom',
+    crownVsHorizon: 'below',
     mirrorMaxXPct: 96,
     // Half the driver's, because the eye is nearly twice as far from the pane.
     panePct: [6.0, 13.0],
@@ -224,6 +244,7 @@ const TARGETS: Record<string, Target> = {
     horizonPct: [34, 50],
     occludePct: [1.0, 7.0],
     railExit: 'bottom',
+    crownVsHorizon: 'below',
     mirrorMaxXPct: 96,
     panePct: [4.0, 9.0],
     // 80 before, and it was the worst number on the car: from 0.8m further back
@@ -682,9 +703,37 @@ for (const def of CIRCUITS) {
     for (const mode of MODES) {
       const dir = new CameraDirector(w / h);
       dir.setMode(mode);
-      // Let the rig settle exactly as it does in the game before it is read.
-      for (let i = 0; i < 20; i++) dir.update(1 / 60, car, engine.track, engine.world);
+      // Let the rig SETTLE before it is read. TWO SECONDS, NOT A THIRD OF ONE,
+      // and this is a correction to the instrument rather than a tolerance.
+      //
+      // Every mode in `CameraDirector` starts on the chase camera's 39-degree
+      // lens and damps exponentially toward its own, so a rig read after twenty
+      // frames is read MID-TRANSITION. Measured here, at Monaco, by printing
+      // `camera.fov` at the moment of measurement (`FRAMING_FOV=1`):
+      //
+      //                 20 frames   120 frames   300 frames
+      //   driver          56.50       63.65        63.65
+      //   cockpit         38.96       40.07        40.07
+      //   onboard-t       42.78       45.49        45.49
+      //
+      // The driver's eye was being measured SEVEN DEGREES narrow, and 120
+      // frames is converged to two decimal places — 300 gives the same number,
+      // so this is the resting lens and not a longer transient. A third of a
+      // second is a state the player sees for a third of a second after
+      // pressing the camera button; every other second of play is the right
+      // column. Reading the left column measured a photograph nobody takes.
+      //
+      // It makes this probe STRICTER, not looser: it is what turns up the
+      // Suzuka cockpit rail leaving through the side at 87 per cent of frame
+      // height, and the mirror keep-out rectangles being described against a
+      // lens that is one to seven degrees narrow than the one in play.
+      //
+      // `FRAMING_SETTLE` overrides it for diagnosis only. Nothing may be quoted
+      // from a run that sets it.
+      const SETTLE = Number(process.env.FRAMING_SETTLE ?? 120);
+      for (let i = 0; i < SETTLE; i++) dir.update(1 / 60, car, engine.track, engine.world);
       const cam = dir.camera;
+      if (process.env.FRAMING_FOV) console.log(`FOV ${frameName} ${mode} ${cam.fov.toFixed(2)}`);
       cam.updateMatrixWorld(true);
       cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
 
@@ -716,6 +765,24 @@ for (const def of CIRCUITS) {
       }
       if (m.horizon < TARGET.horizonPct[0] || m.horizon > TARGET.horizonPct[1]) {
         bad.push(`horizon at ${m.horizon.toFixed(0)}% of frame height`);
+      }
+      // Which side of the horizon the crown falls on. See `crownVsHorizon`:
+      // this is the assertion an eye that has climbed back out onto the roll
+      // hoop cannot pass, and the one the crown and horizon bands cannot make
+      // between them because they overlap.
+      //
+      // Both are percentages DOWN the frame, so a smaller number is higher up.
+      const crownAbove = m.crownPct < m.horizon;
+      if (TARGET.crownVsHorizon === 'above' && !crownAbove) {
+        bad.push(
+          `the halo's crown is BELOW the horizon (crown ${m.crownPct.toFixed(0)}%, horizon ` +
+          `${m.horizon.toFixed(0)}%) — this eye is looking down over the hoop, not up at it`,
+        );
+      } else if (TARGET.crownVsHorizon === 'below' && crownAbove) {
+        bad.push(
+          `the halo's crown is ABOVE the horizon (crown ${m.crownPct.toFixed(0)}%, horizon ` +
+          `${m.horizon.toFixed(0)}%) — this camera has dropped inside the hoop`,
+        );
       }
       // Rails leaving by the side are the fault in the two modes that look AT
       // the hoop and the requirement in the one that sits inside it.

@@ -349,6 +349,33 @@ const FACTORS: Record<string, Factor> = {
     aLabel: 'post on', a: '(() => { const p = window.__game.renderer.post; p.__saved = p.__saved || p.composer; p.composer = p.__saved; })()',
     bLabel: 'post off', b: '(() => { const p = window.__game.renderer.post; p.__saved = p.__saved || p.composer; p.composer = null; })()',
   },
+  /**
+   * What the driver's-eye view costs, against the chase camera, in one session.
+   *
+   * A separate run per camera cannot answer this. Two full runs of this probe
+   * an hour apart on the same build came back six frames a second apart with
+   * IDENTICAL draw calls and triangle counts, because the machine had been
+   * rendering flat out for an hour in between and was thermally a different
+   * machine. The paired mode alternates the two arms every 1.5 seconds and
+   * takes the median of the per-cycle DIFFERENCES, so drift that slow cancels
+   * out of every pair.
+   *
+   * It is also the honest comparison. The driver's eye is a 58-degree lens
+   * where the chase is 39, so it holds more of the circuit in the frustum, and
+   * it is an onboard mode so it pays for the mirror feed as well. Both of those
+   * belong in the number.
+   */
+  cam: {
+    name: "driver's eye vs chase",
+    aLabel: 'chase', a: "window.__game.renderer.director.setMode('chase')",
+    bLabel: 'driver eye', b: "window.__game.renderer.director.setMode('driver')",
+  },
+  /** The same, against the cockpit camera, which already pays for the mirrors. */
+  camonboard: {
+    name: "driver's eye vs cockpit",
+    aLabel: 'cockpit', a: "window.__game.renderer.director.setMode('cockpit')",
+    bLabel: 'driver eye', b: "window.__game.renderer.director.setMode('driver')",
+  },
   shadow: {
     name: 'shadow map re-render',
     aLabel: 'shadows live', a: '(() => { const r = window.__game.renderer.renderer; r.shadowMap.autoUpdate = true; })()',

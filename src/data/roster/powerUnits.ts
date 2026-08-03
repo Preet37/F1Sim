@@ -151,6 +151,19 @@ export function getPowerUnit(id: string): PowerUnit {
 }
 
 /**
+ * The supplier a screen falls back to when no offer is open.
+ *
+ * IT LIVES HERE BECAUSE THIS DIRECTORY IS THE IP BOUNDARY. PROJECT.md §3 keeps
+ * every real 2026 team, driver and manufacturer name inside `src/data/roster/`
+ * so swapping the whole lot for fictional ones is one import; a screen in
+ * `src/ui/` that names `'redbull-ford'` in a fallback puts a real manufacturer
+ * outside that boundary and quietly makes the swap a two-place edit. Derived
+ * from the list rather than written out again, so it cannot name a unit that
+ * does not exist and it survives the roster being replaced wholesale.
+ */
+export const FALLBACK_POWER_UNIT_ID: string = POWER_UNITS[0].id;
+
+/**
  * The effective multipliers a team gets from its supply deal.
  *
  * Split out from the record itself because a works team and a customer running
