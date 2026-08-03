@@ -47,6 +47,72 @@ const HIDE_HUD = process.env.SHARP_HUD !== '1';
 /** Entry index of the car the camera follows. Car 0 has nobody driving it. */
 const FOCUS_CAR = Number(process.env.SHARP_CAR ?? 6);
 const OUT_DIR = resolve(process.cwd(), 'sharp-out', TAG);
+/**
+ * Extra query appended to the deep link, e.g. `SHARP_QUERY=quality=low`.
+ *
+ * Added for issue #29. Every shot this harness has ever taken was of whatever
+ * tier the developing machine detected, which is `high` on every desktop — so
+ * the sharpness record for this project describes an image no phone has ever
+ * been shown. `?quality=`, `?post=`, `?shadows=`, `?msaa=` and `?res=` are all
+ * read by `main.ts`, so any tier can now be photographed.
+ */
+const EXTRA_QUERY = process.env.SHARP_QUERY ? '&' + process.env.SHARP_QUERY : '';
+
+/**
+ * HIGH-FREQUENCY ENERGY BY DEPTH BAND — the instrument for issue #48.
+ *
+ * The report is near-field asphalt reading as dense speckle while the same road
+ * at the horizon reads smooth, with a visible transition band. That is the
+ * signature of texture aliasing at a grazing angle rather than of a frame rate,
+ * and the way to tell the two apart is to measure how the high-frequency
+ * content is distributed DOWN the frame rather than averaged over it: aliasing
+ * puts it in the bottom bands and leaves the top clean, whereas noise from a
+ * screen-space pass (the grade pass's twelve-tap AO, say) is spread evenly.
+ *
+ * Read back INSIDE the animation frame that drew it. The context has no
+ * `preserveDrawingBuffer`, so a `drawImage` on the next task gets an empty
+ * canvas — the same trap the screenshot below works around by leaving the loop
+ * running. Sampled at the canvas's own pixels, which is the composited image
+ * including the upscale from whatever the resolution scaler settled on, so what
+ * is measured is what a player on that tier is shown.
+ */
+const GRAIN_SRC = `(() => {
+  window.__game.__grain = (bands) => new Promise((res) => {
+    const g = window.__game;
+    requestAnimationFrame(() => {
+      g.renderer.render(1 / 60, 1, g.engine, g.__focus);
+      const src = document.querySelector('canvas');
+      const w = src.width, h = src.height;
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const cx = cv.getContext('2d', { willReadFrequently: true });
+      cx.drawImage(src, 0, 0);
+      const out = [];
+      for (let b = 0; b < bands; b++) {
+        const y0 = Math.floor((h * b) / bands) + 1;
+        const y1 = Math.floor((h * (b + 1)) / bands) - 1;
+        if (y1 <= y0) { out.push(0); continue; }
+        const d = cx.getImageData(0, y0, w, y1 - y0).data;
+        const bw = w, bh = y1 - y0;
+        let sum = 0, n = 0;
+        // Mean absolute Laplacian of luma. Insensitive to a smooth gradient —
+        // which the road is — and maximal on single-pixel speckle, which is
+        // what is being reported.
+        for (let y = 1; y < bh - 1; y++) {
+          for (let x = 1; x < bw - 1; x += 2) {
+            const i = (y * bw + x) * 4;
+            const L = (p) => 0.2126 * d[p] + 0.7152 * d[p + 1] + 0.0722 * d[p + 2];
+            const c = L(i);
+            const lap = 4 * c - L(i - 4) - L(i + 4) - L(i - bw * 4) - L(i + bw * 4);
+            sum += Math.abs(lap); n++;
+          }
+        }
+        out.push(n ? sum / n : 0);
+      }
+      res(out);
+    });
+  });
+})()`;
 
 function chromePath(): string {
   const candidates = [
@@ -67,6 +133,12 @@ interface ShotRecord {
   settledScale: number;
   shotScale: number;
   buffer: string;
+  /** The tier and switches that actually drew this frame. See `SHARP_QUERY`. */
+  tier?: string;
+  /** Mean absolute Laplacian of luma, six horizontal bands, top first. */
+  grainByBand?: number[];
+  /** Near-field band over middle-distance band. Issue #48. */
+  nearOverMid?: number;
 }
 
 async function main(): Promise<void> {
@@ -102,7 +174,7 @@ async function main(): Promise<void> {
   const manifest: ShotRecord[] = [];
 
   for (const id of CIRCUIT_IDS) {
-    await page.goto(`${url}?circuit=${id}&session=race&rolling=1&laps=5&seed=7`, {
+    await page.goto(`${url}?circuit=${id}&session=race&rolling=1&laps=5&seed=7${EXTRA_QUERY}`, {
       waitUntil: 'load', timeout: 180_000,
     });
     await page.waitForFunction(
@@ -203,13 +275,28 @@ async function main(): Promise<void> {
         await page.evaluate('window.__game.__stop = true');
         await drawing;
         await writeFile(resolve(OUT_DIR, name), png);
+        // Issue #48. Six horizontal bands, top of the frame first, so band 5 is
+        // the near-field road the report is about and band 2-3 is the middle
+        // distance it is being compared against.
+        await page.evaluate(GRAIN_SRC);
+        const grain = await page.evaluate('window.__game.__grain(6)') as number[];
+        const tier = await page.evaluate(
+          '(() => { const f = window.__game.renderer.features;'
+          + ' return f.tier + (f.post ? "+post" : "") + (f.shadows ? "+shadow" : "")'
+          + ' + (f.msaa ? "+msaa" : ""); })()') as string;
         manifest.push({
           file: name, circuit: id, mode,
           settledScale: settled, shotScale: state.scale, buffer: state.buf,
+          tier, grainByBand: grain.map((g) => Number(g.toFixed(2))),
+          nearOverMid: grain[2] > 0 ? Number((grain[5] / grain[2]).toFixed(2)) : 0,
         });
         console.log(
           `${name.padEnd(32)} settled=${settled.toFixed(2)} ` +
-          `shot=${state.scale.toFixed(2)} buffer=${state.buf}`,
+          `shot=${state.scale.toFixed(2)} buffer=${state.buf} tier=${tier}`,
+        );
+        console.log(
+          `    grain top->bottom: ${grain.map((g) => g.toFixed(1)).join('  ')}`
+          + `   near/mid=${grain[2] > 0 ? (grain[5] / grain[2]).toFixed(2) : 'n/a'}`,
         );
       }
     }

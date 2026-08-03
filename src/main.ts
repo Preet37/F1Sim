@@ -12,6 +12,10 @@ import {
 import { CIRCUITS, getCircuit } from './data/tracks/circuits';
 import { TEAMS, getTeam, DRIVERS, type Driver, type Team } from './data/teams';
 import { Renderer } from './render/Renderer';
+import {
+  RESOLUTION_CHOICES, TIER_LABEL, normaliseTier,
+  type GraphicsPref, type QualityTier,
+} from './render/QualityTiers';
 import { CarStage } from './render/CarStage';
 import { CAMERA_LABELS, CAMERA_MODES, type CameraMode } from './render/CameraDirector';
 import { setRubberLine } from './render/SurfaceDetail';
@@ -139,6 +143,14 @@ class Game {
    * touched a switch.
    */
   private settingsTab: SettingsTabId = 'opposition';
+  /**
+   * What the last graphics change could NOT apply on the spot. Video tab only.
+   *
+   * Held across the repaint because the screen is rebuilt from scratch after
+   * every change, so the answer `setGraphics` gave would otherwise be gone
+   * before it could be read.
+   */
+  private pendingVideo: { needsReload: boolean; needsNewSession: boolean } | null = null;
 
   /**
    * The car standing on the reveal stage behind a menu, or null.
@@ -240,17 +252,36 @@ class Game {
   }
 
   async start(): Promise<void> {
-    // ?quality=low|high overrides both the saved setting and auto-detection.
+    // ?quality=low|medium|high overrides both the saved setting and detection.
     // Needed for headless verification, where the software rasteriser cannot
     // afford the shadow pass, and useful for anyone whose device is misdetected.
-    const qs = new URLSearchParams(window.location.search).get('quality');
-    const forced = qs === 'low' || qs === 'high' ? qs : undefined;
-    const setting = this.settings.quality === 'auto' ? undefined : this.settings.quality;
+    // `?post=`, `?shadows=`, `?msaa=` and `?res=` do the same for the
+    // individual switches, which is what `probe:graphics` drives.
+    const qs = new URLSearchParams(window.location.search);
+    const forced = normaliseTier(qs.get('quality'));
+    const pref = (k: string): GraphicsPref => {
+      const v = qs.get(k);
+      return v === 'on' || v === '1' ? 'on' : v === 'off' || v === '0' ? 'off' : 'auto';
+    };
+    const res = Number(qs.get('res'));
 
     this.renderer = new Renderer({
       canvas: this.canvas,
-      quality: forced ?? setting,
+      // A query tier beats the saved one; `auto` in both means auto.
+      quality: qs.has('quality') ? forced : this.settings.quality,
+      graphics: {
+        post: qs.has('post') ? pref('post') : this.settings.graphics.post,
+        shadows: qs.has('shadows') ? pref('shadows') : this.settings.graphics.shadows,
+        msaa: qs.has('msaa') ? pref('msaa') : this.settings.graphics.msaa,
+        resolution: Number.isFinite(res) && res > 0 ? res : this.settings.graphics.resolution,
+      },
     });
+    // The adaptive pass moves the tier during a session, so the Video tab has
+    // to be told rather than assumed — otherwise the "Running now" readout is
+    // stale exactly when it is most interesting.
+    this.renderer.onQualityChange = () => {
+      if (this.screen === 'settings') this.showSettings();
+    };
 
     this.hud = new Hud(document.getElementById('app') as HTMLElement);
     this.hud.setVisible(false);
@@ -491,7 +522,7 @@ class Game {
     try {
       const stage = new CarStage({
         ...livery,
-        quality: this.renderer.quality,
+        quality: this.renderer.menuQuality,
         // A car turning on the spot forever is precisely the continuous
         // motion this setting exists to switch off. Parked at the three-
         // quarter angle instead, and the render loop never starts.
@@ -869,7 +900,7 @@ class Game {
       // catch a frame of it. See `IntroOptions.timeScale`.
       timeScale: Number(
         new URLSearchParams(window.location.search).get('introslow')) || 1,
-      quality: this.renderer.quality,
+      quality: this.renderer.menuQuality,
       // The rig behind the car in the rain is the player's own colours when
       // there is a player, and cold sodium when there is not — which is what a
       // first run looks like, because there is nobody to light it for yet.
@@ -2193,33 +2224,127 @@ class Game {
         id: 'video',
         label: 'Video',
         title: 'Video',
-        note: 'What the renderer is allowed to spend. Auto measures the device '
-          + 'and picks; the other two override it from the next session onwards.',
+        note: 'What the renderer is allowed to spend. Auto starts from what the '
+          + 'device says and then measures what it can actually hold; the four '
+          + 'switches below override the tier one item at a time.',
+        // ISSUE #29. What was here offered `auto | low | high` and said a change
+        // needed a new session. Both halves were wrong: two tiers cannot
+        // describe a phone — `low` withheld the post chain, the shadow map, MSAA
+        // and half the geometry as one indivisible decision, and every
+        // touch-primary device got it — and three of the four are changeable
+        // where you stand. Everything here goes through `Renderer.setGraphics`,
+        // which returns what it could not apply, and this screen says so rather
+        // than claiming a change that has not happened.
         build: (panel, k) => {
+          const r = this.renderer;
+          const f = r.features;
+          // Pushes the whole preference state at the renderer. Idempotent, so
+          // every control can call the same function.
+          const push = () => {
+            const applied = r.setGraphics(s.quality, s.graphics);
+            save();
+            this.pendingVideo = applied;
+            repaint();
+          };
           k.choice(panel, {
             name: 'Quality',
             value: s.quality,
             options: [
-              { id: 'auto' as const, label: 'Auto', note: 'Measured from the device.' },
+              {
+                id: 'auto' as const, label: 'Auto',
+                note: 'Starts from what the device reports and then measures it. '
+                  + 'A browser will not say how fast a phone is — every iPhone '
+                  + 'reports the same core count — so this watches the frame '
+                  + 'time instead and moves up or down on what it finds.',
+              },
               {
                 id: 'low' as const, label: 'Low',
-                note: 'No shadows, no antialiasing, fewer particles. For a phone or '
-                  + 'an old laptop.',
+                note: 'No post-processing, no shadows, no antialiasing, fewer '
+                  + 'particles and simpler geometry. For a device that is '
+                  + 'struggling.',
+              },
+              {
+                id: 'medium' as const, label: 'Medium',
+                note: 'Full geometry and the post-processing chain — bloom, the '
+                  + 'colour grade and contact shading — without the shadow map '
+                  + 'or antialiasing, which are the two most expensive items.',
               },
               {
                 id: 'high' as const, label: 'High',
-                note: 'Shadows, antialiasing, reflections and the full weather effects.',
+                note: 'Everything: shadows, antialiasing, the full post chain and '
+                  + 'the complete weather effects.',
               },
             ],
-            onChange: (v) => { s.quality = v; save(); repaint(); },
+            onChange: (v) => { s.quality = v as 'auto' | QualityTier; push(); },
           });
+
+          // The four switches. Each is `auto` — follow the tier — or forced.
+          const sw = (
+            name: string, key: 'post' | 'shadows' | 'msaa', on: boolean, note: string,
+          ) => {
+            k.choice(panel, {
+              name,
+              value: s.graphics[key],
+              options: [
+                { id: 'auto' as const, label: 'Auto', note: note + ' Following the tier: currently ' + (on ? 'on' : 'off') + '.' },
+                { id: 'on' as const, label: 'On', note },
+                { id: 'off' as const, label: 'Off', note },
+              ],
+              onChange: (v) => { s.graphics[key] = v as GraphicsPref; push(); },
+            });
+          };
+          sw('Post-processing', 'post', f.post,
+            'Bloom, the colour grade and contact occlusion. Four full-screen '
+            + 'passes over the drawing buffer.');
+          sw('Shadows', 'shadows', f.shadows,
+            'Real sun shadows. Draws the scene a second time into a depth map '
+            + 'every frame.');
+          sw('Antialiasing', 'msaa', f.msaa,
+            'Four-sample MSAA on the geometry edges. This one is an attribute '
+            + 'of the graphics context and only changes when the page reloads.');
+
+          k.choice(panel, {
+            name: 'Resolution limit',
+            value: s.graphics.resolution === 'auto' ? 'auto' : String(s.graphics.resolution),
+            options: [
+              {
+                id: 'auto', label: 'Auto',
+                note: 'Up to full resolution; the renderer lowers it on its own '
+                  + 'when frames get slow and raises it again when they do not.',
+              },
+              ...RESOLUTION_CHOICES.map((v) => ({
+                id: String(v),
+                label: Math.round(v * 100) + '%',
+                note: 'Never draw above ' + Math.round(v * 100) + '% of the native '
+                  + 'resolution. The renderer may still go below it.',
+              })),
+            ],
+            onChange: (v) => {
+              s.graphics.resolution = v === 'auto' ? 'auto' : Number(v);
+              push();
+            },
+          });
+
+          const pend = this.pendingVideo;
           k.block(panel, {
             head: 'Running now',
-            line: this.renderer.quality === 'high' ? 'High' : 'Low',
-            note: 'A change takes effect when the next session starts — the '
-              + 'renderer builds its shadow maps and its post-processing chain '
-              + 'once, and rebuilding them mid-lap would drop the frame the '
-              + 'change was meant to save.',
+            line: TIER_LABEL[f.tier]
+              + (f.adaptive ? ' — auto, measured' : ' — set by you')
+              + '  ·  post ' + (f.post ? 'on' : 'off')
+              + '  ·  shadows ' + (f.shadows ? 'on' : 'off')
+              + '  ·  AA ' + (f.msaa ? 'on' : 'off')
+              + '  ·  ' + Math.round(r.resolutionScale * 100) + '% of '
+              + Math.round(f.maxResolutionScale * 100) + '%',
+            note: pend?.needsReload
+              ? 'Antialiasing changes when the page is reloaded — it is fixed '
+                + 'when the graphics context is created and cannot be moved on a '
+                + 'live one. Everything else on this page is already in effect.'
+              : pend?.needsNewSession
+                ? 'The tier is in effect; the extra geometry detail arrives with '
+                  + 'the next session, because the circuit and the cars are built '
+                  + 'once and rebuilding them here would stall for seconds.'
+                : 'In effect now. The post chain, the shadows and the resolution '
+                  + 'limit all change without ending the session.',
           });
         },
       },
