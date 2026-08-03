@@ -114,7 +114,9 @@ page.on('dialog', async (d) => { dialogs.push(d.message()); await d.accept(); })
 const URL = `http://localhost:${PORT}/?quality=low`;
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 try {
-  await page.waitForSelector('.screen .page', { timeout: 20000 });
+  // Either surface counts as "the game booted": on a first run the opening
+  // sequence is what is on screen, and it is skipped a few lines below.
+  await page.waitForSelector('.screen .page, .intro', { timeout: 20000 });
 } catch (e) {
   // A boot failure is the single most important thing this harness can report,
   // and a bare "selector not found" hides the exception that caused it.
@@ -146,24 +148,76 @@ const bodyText = async () => {
   return lastScreen.toLowerCase();
 };
 
+/**
+ * THE OPENING SEQUENCE, AND THE SKIP.
+ *
+ * Deliberately not suppressed with `?intro=0`, which exists for the harnesses
+ * that are not testing it. The skip button is what stands between a new player
+ * and fourteen seconds of titles they did not ask for, and a skip that quietly
+ * stopped working is exactly the kind of failure nothing else here would catch.
+ *
+ * It is asserted to be present IMMEDIATELY, because "the skip appears after two
+ * seconds" is the same defect as no skip at all.
+ */
+console.log('\nTHE OPENING SEQUENCE CAN BE SKIPPED');
+
+{
+  const intro = page.locator('.intro');
+  if (await intro.count() > 0) {
+    const skip = page.locator('.intro-skip');
+    check(await skip.count() > 0, 'the skip button exists on the first frame');
+    check(await skip.isVisible().catch(() => false), 'and it is visible');
+    await skip.click({ force: true, noWaitAfter: true });
+    await page.waitForTimeout(400);
+    check(await page.locator('.intro').count() === 0, 'clicking it ends the sequence');
+    check(pageErrors.length === 0,
+      'the opening sequence threw nothing (' + pageErrors.join(' | ') + ')');
+  } else {
+    check(false, 'the opening sequence played on a first run');
+  }
+}
+await page.waitForSelector('.screen .page', { timeout: 20000 });
+
+/**
+ * THE NAME.
+ *
+ * A name that appears nowhere in `src/data/roster/`, so every assertion below
+ * is evidence that it came from the create screen and from nowhere else. This
+ * is the browser half of `probe:identity`: that probe proves the name reaches
+ * the simulation, and this proves it reaches the screens.
+ */
+const FIRST = 'Ondrej';
+const LAST = 'Zdravkovic';
+
 console.log('\nA CAREER CAN BE CREATED');
 
 await clickByText('.menu-item', 'Start Career');
 await page.waitForTimeout(300);
 check((await bodyText()).includes('formula 3'),
   'the create screen names the tier the career starts in');
+check(await page.locator('.sg-portrait .portrait').count() > 0,
+  'there is a driver on the create screen, drawn');
 
-// The name fields, then begin.
-const inputs = page.locator('.screen .field input');
+// The name fields, then sign.
+const inputs = page.locator('.screen .sg-field input');
+check(await inputs.count() >= 2, 'the create screen asks for a name');
 if (await inputs.count() >= 2) {
-  await inputs.nth(0).fill('Probe');
-  await inputs.nth(1).fill('Tester');
+  await inputs.nth(0).fill(FIRST);
+  await inputs.nth(1).fill(LAST);
+  await page.waitForTimeout(150);
+  // The code on the portrait is derived live from the surname. If this is
+  // wrong, nothing downstream can be right.
+  const code = (await page.locator('.sg-code').innerText().catch(() => '')).trim();
+  check(code === 'ZDR', `the portrait's code follows the surname as it is typed (${code})`);
 }
-await clickByText('.btn', 'Begin Career');
+await clickByText('.btn', 'Take the seat');
 await page.waitForTimeout(500);
 
 let text = await bodyText();
-check(text.includes('probe') && text.includes('tester'), 'the hub shows the driver');
+check(text.includes(FIRST.toLowerCase()) && text.includes(LAST.toLowerCase()),
+  'the hub shows the driver');
+check(await page.locator('.dcard .portrait').count() > 0,
+  'the hub shows the driver as a person, not only as a name');
 check(/Round\s*1/i.test(text) || text.includes('next up'), 'the hub shows the next round');
 check(text.includes('promotion'), 'the hub states the promotion rule the career runs on');
 check(pageErrors.length === 0, 'creating a career threw nothing (' + pageErrors.join(' | ') + ')');
@@ -176,6 +230,10 @@ text = await bodyText();
 const rowCount = await page.locator('.trow').count();
 check(rowCount >= 18, `the championship table has a full grid in it (${rowCount} rows)`);
 check(text.includes('championship'), 'the standings screen is the standings screen');
+// THE ASSERTION THIS WHOLE HARNESS EXISTS FOR. The championship the player is
+// in has to contain the player, under the name they typed.
+check(text.includes(LAST.toLowerCase()),
+  'the player is in the championship table under their own name');
 check(pageErrors.length === 0, 'the standings screen threw nothing (' + pageErrors.join(' | ') + ')');
 
 await clickByText('.navback', '');
@@ -200,6 +258,36 @@ for (let i = 0; i < 30; i++) {
 }
 check(simulated >= 8, `a whole season could be simulated from the hub (${simulated} rounds)`);
 check(pageErrors.length === 0, 'simulating a season threw nothing (' + pageErrors.join(' | ') + ')');
+
+/**
+ * THE RESULTS ARE WRITTEN, AND THEY ARE THE PLAYER'S.
+ *
+ * Read from the career itself rather than scraped off a screen, because the
+ * question is whether the RESULT exists in the state that gets saved — a hub
+ * that renders a round it did not record is exactly the failure this is looking
+ * for. `window.__game` is already exposed for `regress:exit`.
+ */
+{
+  const recorded = await page.evaluate(() => {
+    const c = window.__game?.career;
+    if (!c) return null;
+    const ts = c.state.season.tiers[c.state.tier];
+    return {
+      rounds: ts.results.length,
+      inEvery: ts.results.every((r) => r.order.includes(c.state.playerDriverId)),
+      name: c.state.player.firstName + ' ' + c.state.player.lastName,
+      points: ts.standings.find((e) => e.driverId === c.state.playerDriverId)?.points ?? -1,
+    };
+  });
+  check(recorded !== null, 'the career is reachable from the page');
+  if (recorded) {
+    check(recorded.rounds >= 8, `every round is recorded in the season (${recorded.rounds})`);
+    check(recorded.inEvery, 'the player is in the classification of every one of them');
+    check(recorded.name === FIRST + ' ' + LAST,
+      `the career holds the typed name (${recorded.name})`);
+    check(recorded.points >= 0, 'the player has a standings row with points in it');
+  }
+}
 
 text = await bodyText();
 check(text.includes('season complete') || text.includes('end season'),
@@ -228,16 +316,58 @@ check(pageErrors.length === 0, 'starting the next season threw nothing (' + page
 
 console.log('\nTHE CAREER SURVIVES A RELOAD');
 
+// What the career held before the reload, to compare against afterwards. A
+// reload that loses a season's results is the failure, and "the hub still says
+// my name" does not detect it.
+const before = await page.evaluate(() => {
+  const c = window.__game?.career;
+  if (!c) return null;
+  return {
+    year: c.state.season.year,
+    tier: c.state.tier,
+    teamId: c.state.teamId,
+    history: c.state.history.length,
+    code: c.state.player.code,
+    number: c.state.player.raceNumber,
+    nationality: c.state.player.nationality,
+    helmet: JSON.stringify(c.state.player.helmet ?? null),
+  };
+});
+
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.screen .page', { timeout: 20000 });
 await page.waitForTimeout(400);
+check(await page.locator('.intro').count() === 0,
+  'the opening sequence does not play a second time');
 await clickByText('.menu-item', 'Continue');
 await page.waitForTimeout(600);
 text = await bodyText();
-check(text.includes('probe') && text.includes('tester'),
+check(text.includes(FIRST.toLowerCase()) && text.includes(LAST.toLowerCase()),
   'the saved career loads back with its driver');
 check(!dialogs.some((d) => /could not be loaded|damaged/i.test(d)),
   'loading it raised no error dialog (' + dialogs.join(' | ') + ')');
+
+const after = await page.evaluate(() => {
+  const c = window.__game?.career;
+  if (!c) return null;
+  return {
+    year: c.state.season.year,
+    tier: c.state.tier,
+    teamId: c.state.teamId,
+    history: c.state.history.length,
+    code: c.state.player.code,
+    number: c.state.player.raceNumber,
+    nationality: c.state.player.nationality,
+    helmet: JSON.stringify(c.state.player.helmet ?? null),
+  };
+});
+check(before !== null && after !== null, 'both sides of the reload could be read');
+if (before && after) {
+  for (const key of Object.keys(before)) {
+    check(before[key] === after[key],
+      `${key} survives the reload (${before[key]} -> ${after[key]})`);
+  }
+}
 check(pageErrors.length === 0, 'reloading threw nothing (' + pageErrors.join(' | ') + ')');
 
 await browser.close();

@@ -452,8 +452,23 @@
   background: var(--carbon-0);
   overflow: hidden;
 }
-.intro-stage { position: absolute; inset: 0; }
+/*
+ * EVERY LAYER HERE IS EXPLICITLY STACKED, and that is not tidiness.
+ *
+ * `.stage-canvas` carries `z-index: 1` of its own — it has to, because on the
+ * menu it sits behind a column of text — and that was enough to put the car on
+ * top of the skip button even though the button comes later in the document.
+ * `elementFromPoint` at the button's centre returned the canvas: the skip was
+ * drawn, was visible, was in the tab order, and could not be clicked. The
+ * browser regression now checks this by clicking it rather than by looking at
+ * it, which is the only way that class of fault is ever caught.
+ */
+.intro-stage { position: absolute; inset: 0; z-index: 0; }
 .intro-stage canvas { width: 100%; height: 100%; display: block; }
+.intro::before { z-index: 2; }
+.intro-copy { z-index: 3; }
+.intro-skip { z-index: 4; }
+.intro-bar { z-index: 4; }
 
 /* The pool of light on the floor, and the darkness at the edges. Composited in
    CSS rather than in GL for the same reason the car stage does it: resolution

@@ -308,10 +308,17 @@ class Game {
       // A deep link is used for headless verification and to jump straight into a
       // session, so it goes past the garage briefing rather than through it.
       this.launchSession(deepLink.circuitId);
-    } else if (!this.settings.introSeen) {
+    } else if (!this.settings.introSeen
+      && new URLSearchParams(window.location.search).get('intro') !== '0') {
       // FIRST RUN ONLY, and never in front of a deep link — a deep link is how
       // every headless harness in this repository reaches a session, and a
       // title sequence in front of one would break all of them.
+      //
+      // `?intro=0` suppresses it outright, for a harness that boots the MENU
+      // rather than a session and is not testing the opening. `regress:career`
+      // deliberately does not use it: it clicks the real skip button, because
+      // a skip that stopped working would otherwise strand every new player
+      // behind fourteen seconds of titles and nothing would notice.
       this.playIntro(() => this.showMenu());
     } else {
       this.showMenu();
