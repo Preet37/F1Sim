@@ -8,6 +8,7 @@ import { createProjection, type TrackProjection } from '../track/TrackSpline';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { Driver, Team } from '../data/teams';
 import type { CompoundId } from '../data/tires';
+import { NeutralisedAssistState } from '../physics/NeutralisedLimiter';
 import { CarDamage } from './DamageModel';
 import { RecoveryOperation } from './Recovery';
 import type { Penalty } from './RaceControlManager';
@@ -451,11 +452,36 @@ export class CarEntry {
    * independently derived one that could disagree with it.
    */
   neutralLimitMs = 0;
+  /**
+   * The neutralised assist's own memory: the pedal it is holding and the ceiling
+   * it is holding, both rate-limited.
+   *
+   * One per car and allocated with the car, because the per-step path must not
+   * allocate. Only the player's is ever driven — the nineteen AI cars fold the
+   * same limit into their own target speed — but every car carries one so that
+   * whichever car is the player's needs no special case.
+   */
+  readonly neutralAssist = new NeutralisedAssistState();
   deltaSectorTime = 0;
   /** Marshalling sector being timed, or -1 when not under a neutralisation. */
   deltaSectorIndex = -1;
   /** Marshalling sectors completed below the minimum time. */
   deltaBreaches = 0;
+  /**
+   * True once this car has been penalised for the delta in the neutralisation
+   * currently in force.
+   *
+   * The whole of the cap. "the stewards may impose either a 5-Second Penalty, a
+   * 10-Second Penalty, a Drive-Through Penalty or a Stop-and-Go Penalty on any
+   * driver who fails to stay above the minimum time" (2026 Art. B5.13.2b and
+   * B5.12.2b / 2025 Art. 55.7 and 56.5) is one decision from a menu, not a
+   * charge levied per marshalling sector — and there are twenty of those a lap.
+   * Cleared when a neutralisation begins; see `RaceControlManager.penaliseDelta`
+   * for what it cost while it did not exist.
+   */
+  deltaPenalisedThisPeriod = false;
+  /** How many separate neutralisations this car has been penalised in. */
+  deltaPeriodsPenalised = 0;
   /**
    * True while the sector being timed was joined part-way through, so its time
    * is a stub and must not be judged against a whole sector's minimum.

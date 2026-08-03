@@ -2004,8 +2004,49 @@ export class RaceEngine {
     return afterStart >= 0 && beforeEnd >= 0;
   }
 
+  /**
+   * The lap the RACE is on. Never goes down.
+   *
+   * "Each lap completed while the Safety Car is deployed will be counted as a
+   * lap of the TTCS" (2026 Section B Art. B5.13.7 / 2025 Sporting Regs
+   * Art. 55.16), and identically for the VSC (B5.12.5 / Art. 56.8). The counter
+   * is not suspended by a neutralisation and it does not run backwards.
+   *
+   * WHAT WAS MEASURED, AND WHAT WAS NOT. The report is:
+   *
+   *   "when there is a safety car, doesn't mean that the lap isn't continued —
+   *    like they crossed the line but were still on lap 6 for some reason. it
+   *    should've updated right to the next lap."
+   *
+   * The counter itself is not the fault and never was. Instrumented against
+   * every geometric crossing of the Line over full races at Monza with a staged
+   * safety car, the two counts agreed exactly: a hundred crossings under a
+   * neutralisation, a hundred laps credited, none missed. `updateProjection`
+   * reads no flag and no neutralisation state, and there is no gate anywhere on
+   * the path from a crossing to `lap++`. `regress:laps` now asserts that, in
+   * both directions, so it stays true.
+   *
+   * WHAT THIS FIXES IS THE OTHER HALF: the number is DERIVED, and it was derived
+   * live from `standings[0].lap`. The standings are sorted on `totalDistance`
+   * with no hysteresis (see `ordersBefore`) and a bunched field puts twenty cars
+   * nose to tail inside a kilometre, so two cars either side of the Line sit
+   * metres apart in distance and a whole lap apart on the counter. Whenever that
+   * sort resolves the other way at 20Hz, the published lap goes down. It is
+   * seed-dependent — a nine-hundred-second run at seed 5 does not produce it —
+   * which is exactly the kind of fault that is reported from a race clip and
+   * cannot be reproduced on demand.
+   *
+   * A lap is a thing that has happened. Once any car has completed one, the race
+   * is on the next one, and nothing afterwards un-completes it. A latch says
+   * that; a live read of an unstable sort does not, whatever the counter
+   * underneath it is doing.
+   */
+  private raceLapLatch = 0;
+
   private leaderLap(): number {
-    return this.standings.length > 0 ? this.standings[0].lap : 0;
+    const live = this.standings.length > 0 ? this.standings[0].lap : 0;
+    if (live > this.raceLapLatch) this.raceLapLatch = live;
+    return this.raceLapLatch;
   }
 
   // =========================================================================
@@ -2289,10 +2330,16 @@ export class RaceEngine {
    */
   private applyNeutralisationAssist(car: CarEntry, c: VehicleControls): void {
     const rc = this.raceControl;
-    if (!this.neutralisationAssist ||
+    // `vscTargetMs` and not `neutralisation !== 'none'`: once the safety car has
+    // entered the Pit Entry Road there is no cap left to hold — the leader
+    // dictates the pace (Art. 55.15 / B5.13.6) — even though the race is still
+    // neutralised in every other sense. A limiter armed with a cap of zero would
+    // stop the car dead.
+    if (!this.neutralisationAssist || rc.vscTargetMs <= 0 ||
         rc.neutralisation === 'none' || car.inPitLane || car.retired || !this.started) {
       c.speedLimitMs = 0;
       car.neutralLimitMs = 0;
+      car.neutralAssist.reset();
       return;
     }
 
@@ -2331,10 +2378,25 @@ export class RaceEngine {
       return Math.min(line, grip);
     }, limit);
 
-    c.speedLimitMs = Math.min(plan.ceilingMs, hold);
+    // Both halves of the assist are rate-limited, and neither used to be. See
+    // `NeutralisedAssistState` for the measurement: a pedal that moved half its
+    // travel in one 8ms step, fourteen hundred times a race, and a setpoint that
+    // moved 22 m/s between two consecutive steps. That is the swerve.
+    //
+    // The pedal is also capped by the grip the tyres have left after cornering,
+    // which is `brakeLimitFraction` — the friction circle's own answer, and the
+    // same number the AI brakes just underneath. A demand above it does not brake
+    // the car harder; it saturates an axle, and the axle it saturates takes its
+    // lateral force with it.
+    car.neutralAssist.advance(
+      PHYSICS_DT, plan.brake, Math.min(plan.ceilingMs, hold),
+      car.physics.brakeLimitFraction,
+    );
+
+    c.speedLimitMs = car.neutralAssist.ceilingMs;
     car.neutralLimitMs = c.speedLimitMs;
-    if (plan.brake > c.brake) {
-      c.brake = plan.brake;
+    if (car.neutralAssist.brake > c.brake) {
+      c.brake = car.neutralAssist.brake;
       c.throttle = 0;
     }
   }
