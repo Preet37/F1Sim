@@ -239,6 +239,34 @@ export interface TeamPerformance {
   downforceMult: number;
   dragMult: number;
   mechanicalGripMult: number;
+  /**
+   * Scales the car's dry mass. Optional; 1.0, and absent, are the same car.
+   *
+   * This exists because `TeamPerformance` is the ENTIRE bandwidth between career
+   * mode and the simulation, and career mode now runs Formula 2 and Formula 3 by
+   * expressing them as teams. Without a mass term a Formula 3 car weighs what a
+   * Formula 1 car weighs, and no amount of power and downforce tuning can
+   * substitute for that, because mass and downforce do not act alike:
+   *
+   *   - downforce goes as v squared, so taking it away costs a car almost
+   *     nothing at 60km/h and everything at 250;
+   *   - mass is there at every speed, and what it costs is worst where the car
+   *     is slowest — traction out of a hairpin, and the transient before
+   *     downforce arrives.
+   *
+   * So a junior tier built only out of power and downforce comes out right at
+   * Monza and too slow at Zandvoort, which is exactly what `probe:tiers`
+   * measured: +12.7 and +20.1 per cent at Monza against +16.8 and +24.8 at
+   * Zandvoort, for targets of 13 and 19.
+   *
+   * OPTIONAL RATHER THAN REQUIRED, deliberately. Every existing caller builds
+   * this record by hand and none of them wanted a mass change; making the field
+   * required would have meant editing all of them to write `massMult: 1`, which
+   * is a lot of diff for no behaviour and one place to get it wrong. Absent
+   * means 798kg, and `probe:handling`, `probe:turnin` and `validate:physics` all
+   * report byte-identical numbers across this change.
+   */
+  massMult?: number;
   /** Scales tire wear — a car that is kind to its tires can run longer stints. */
   tireWearMult: number;
   /** Reliability: probability per race distance of a terminal failure. */
@@ -253,6 +281,7 @@ export interface TeamPerformance {
 export function specForTeam(perf: TeamPerformance, base: VehicleSpec = BASE_F1_SPEC): VehicleSpec {
   return {
     ...base,
+    dryMassKg: base.dryMassKg * (perf.massMult ?? 1),
     icePowerW: base.icePowerW * perf.powerMult,
     ersPowerW: base.ersPowerW * perf.ersMult,
     clBase: base.clBase * perf.downforceMult,

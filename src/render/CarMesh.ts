@@ -2082,9 +2082,28 @@ function buildShellParts(
         // is a 150mm-tall foot at beam-wing height that sweeps up over the next
         // 240mm. Fifty-eight per cent of the forward area goes, and the wing
         // stops reading as a billboard bolted to the air.
+        //
+        // A SECOND PASS OVER THE BOTTOM EDGE, and it is smaller than it looks
+        // like it should be, which is worth writing down. The forward foot was
+        // cut from a 328mm wall to 150mm last time and that is what stopped the
+        // plate reading as a slab hovering over the tyre. What was left was
+        // still carrying its full depth forward of the beam wing: the beam
+        // occupies z -2.08 to -2.25, and the plate ran down to y 0.372 and 0.366
+        // at z -1.95 and -2.04, which is 250mm of plate standing in clear air
+        // ahead of anything it braces. A real endplate's leading edge sweeps
+        // steeply back below the main plane and only the foot reaches forward.
+        // The trailing lower corner rises with it, the way a real one does.
+        //
+        // That is 0.2658 down to 0.2508 square metres of side-on silhouette per
+        // side — 5.6 per cent, measured off these stations. It is not more
+        // because there is not more to take: between the beam wing at 0.518 and
+        // the main plane at 0.745 a current endplate genuinely is a solid
+        // 227mm-tall panel across its whole chord, and the regulation volume
+        // (body Z 325..660, rolled tip 660..910) says so. The remaining dark
+        // area from side-on is the part that is supposed to be there.
         section(-1.86, 0.010, 0.386, 0.536, 0.42, { xc: xc - s * 0.004 }),
-        section(-1.95, 0.013, 0.372, 0.688, 0.30, { xc }),
-        section(-2.04, 0.015, 0.366, 0.858, 0.22, { xc }),
+        section(-1.95, 0.013, 0.428, 0.688, 0.30, { xc }),
+        section(-2.04, 0.015, 0.396, 0.858, 0.22, { xc }),
         // Full height, where the main plane attaches.
         section(-2.12, 0.016, 0.362, REAR_WING_TOP_Y, 0.20, { xc }),
         // The rolled tip: over the last 150mm the top edge turns inboard, the
@@ -2092,8 +2111,8 @@ function buildShellParts(
         // is RV-RW-TIP, and it is the single most recognisable piece of 2022
         // bodywork after the wheel covers.
         section(-2.24, 0.015, 0.368, REAR_WING_TOP_Y, 0.36, { xc: xc - s * 0.020 }),
-        section(-2.34, 0.013, 0.392, REAR_WING_TOP_Y - 0.014, 0.60, { xc: xc - s * 0.048 }),
-        section(-2.42, 0.010, 0.436, REAR_WING_TOP_Y - 0.042, 0.88, { xc: xc - s * 0.082 }),
+        section(-2.34, 0.013, 0.436, REAR_WING_TOP_Y - 0.014, 0.60, { xc: xc - s * 0.048 }),
+        section(-2.42, 0.010, 0.520, REAR_WING_TOP_Y - 0.042, 0.88, { xc: xc - s * 0.082 }),
       ], t.body - 8);
       // Carbon, like the plane it holds. In the accent colour these were two
       // half-metre coloured boards standing above the rear tyres, and from
@@ -2387,13 +2406,24 @@ function buildShellParts(
     const above = MIRROR_PANE_H * 0.5 + 0.0075;
     // Built about the glass: local +z is the mirror's normal, pointing back at
     // the driver, and local z = 0 is the reflective surface.
+    // THE LAST STATION IS BEHIND THE GLASS, not in front of it, and that is not
+    // a detail. `loft` caps its ends, and a cap across the widest station of
+    // this pod is a solid carbon disc the exact size of the aperture — mounted
+    // 4mm proud of the pane it would BE the mirror, and the driver would look
+    // at a black oval. (It was harmless for as long as `loft` wound its caps
+    // inward and back-face culling deleted them; fixing that is what surfaced
+    // it, and it would have hidden the old 74mm pane just as thoroughly.)
+    //
+    // So the pane sits at local z = 0 and the pod's rear face 6mm behind it,
+    // which puts the glass slightly PROUD of a surround that is 11mm wider than
+    // it all round: a pane in a frame, seen from the one seat that matters.
     const housing = small([
-      section(-0.104, halfW * 0.22, -below * 0.40, above * 0.46, 0.95),
-      section(-0.086, halfW * 0.46, -below * 0.64, above * 0.70, 0.85),
-      section(-0.062, halfW * 0.70, -below * 0.82, above * 0.86, 0.72),
-      section(-0.036, halfW * 0.87, -below * 0.93, above * 0.95, 0.60),
-      section(-0.014, halfW * 0.97, -below * 0.99, above * 0.99, 0.48),
-      section(0.004, halfW, -below, above, 0.42),
+      section(-0.114, halfW * 0.22, -below * 0.40, above * 0.46, 0.95),
+      section(-0.096, halfW * 0.46, -below * 0.64, above * 0.70, 0.85),
+      section(-0.072, halfW * 0.70, -below * 0.82, above * 0.86, 0.72),
+      section(-0.046, halfW * 0.87, -below * 0.93, above * 0.95, 0.60),
+      section(-0.024, halfW * 0.97, -below * 0.99, above * 0.99, 0.48),
+      section(-0.006, halfW, -below, above, 0.42),
     ], t.detail);
     p.tag(`mirror housing ${side < 0 ? 'L' : 'R'}`);
     housing.applyQuaternion(quaternion);
