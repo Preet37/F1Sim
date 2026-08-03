@@ -1336,6 +1336,12 @@ export class RaceEngine {
       car.prevX = car.physics.position.x;
       car.prevZ = car.physics.position.y;
       car.prevHeading = car.physics.heading;
+      // The same instant in TRACK space, which is where every height in the
+      // scene comes from. Recorded here so the five numbers the renderer
+      // interpolates between all describe the top of this one step — see
+      // `CarEntry.prevS` and issue #54.
+      car.prevS = car.s;
+      car.prevLateral = car.lateral;
       // Last thing before the step: the water and the surface under THIS car.
       this.applyLocalSurface(car);
       car.physics.step(dt, car.appliedControls, this.environment);
@@ -1383,6 +1389,8 @@ export class RaceEngine {
       car.renderX = car.physics.position.x;
       car.renderZ = car.physics.position.y;
       car.renderHeading = car.physics.heading;
+      car.renderS = car.s;
+      car.renderLateral = car.lateral;
     }
 
     // 4. Race control.
