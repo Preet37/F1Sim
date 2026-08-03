@@ -602,6 +602,25 @@ export function loft(
   if (capEnds) {
     // Cap with a fan to a centre point at each end. Without caps the body is
     // visibly hollow from any angle that sees into it.
+    //
+    // BOTH CAPS FACED INWARD, ON EVERY LOFT IN THE PROJECT, AND HAD SINCE THIS
+    // WAS WRITTEN. The winding below is correct for a section list whose z
+    // INCREASES; every list in CarMesh is authored front-to-back, so z
+    // decreases, and the two caps came out with their front faces pointing into
+    // the part. Back-face culling then removed them, and "capped" lofts were
+    // hollow after all — you looked through the end of one and out the far side
+    // of the car.
+    //
+    // It was found on the airbox. Its intake is a dark duct whose mouth is the
+    // first section's cap, and the mouth simply was not drawn: with the cap
+    // culled, what came through the hole was the engine cover's own upper
+    // surface a foot further back, in the team's paint. Three passes fixed "the
+    // airbox has no intake" by moving the duct around behind a skin that was
+    // never the thing hiding it.
+    //
+    // `dir` is +1 when the list runs the way the winding assumes and -1 when it
+    // runs the other way, which is how every part on this car is written.
+    const dir = sections[rings - 1].z > sections[0].z ? 1 : -1;
     let base = ringVerts;
     for (const front of [true, false]) {
       const s = front ? sections[0] : sections[rings - 1];
@@ -629,7 +648,7 @@ export function loft(
       for (let i = 0; i < capRing; i++) {
         const a = base + 1 + i;
         const b = base + 1 + ((i + 1) % capRing);
-        if (front) indices.push(base, b, a);
+        if (front === (dir > 0)) indices.push(base, b, a);
         else indices.push(base, a, b);
       }
       base += capRing + 1;
@@ -952,6 +971,32 @@ export function creased(geo: THREE.BufferGeometry, creaseDeg = 40): THREE.Buffer
  * linkage geometry is most of what makes an open-wheeler read as engineered
  * rather than as a toy.
  */
+/**
+ * A limb segment: a cylinder that TAPERS, between two points.
+ *
+ * `strut` takes one radius, which is right for a wishbone and wrong for an arm.
+ * A forearm is half again as thick at the elbow as it is at the wrist, and it is
+ * the narrowing into the glove that tells the eye which end is the hand — an
+ * untapered tube reads as plumbing, which is what the driver's arms read as the
+ * first time anything got close enough to see them.
+ */
+export function limb(
+  a: readonly number[], b: readonly number[],
+  r0: number, r1: number, radialSegments = 10,
+): THREE.BufferGeometry {
+  const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+  const len = Math.hypot(dx, dy, dz) || 1e-4;
+  // CylinderGeometry's first radius is its +y end, which is `b` after the
+  // rotation below.
+  const g = new THREE.CylinderGeometry(r1, r0, len, radialSegments, 1, false);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(dx / len, dy / len, dz / len),
+  ));
+  g.translate((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
+  return g;
+}
+
 export function strut(
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,

@@ -260,7 +260,32 @@ const VIEWS = {
   airbox: { pos: [2.0, 1.55, -0.4], at: [0, 0.78, -0.6], fov: 34 },
   frontWing: { pos: [1.9, 0.5, 4.2], at: [0, 0.2, 2.9], fov: 30 },
   cockpit: { pos: [1.5, 1.35, 1.5], at: [0, 0.62, 0.35], fov: 34 },
+  // The mirror, from the DRIVER'S OWN EYE — `DRIVER_EYE_X/Y/Z` in CockpitMesh,
+  // 0,0.770,0.165 — looking straight at the left pane. Every other view here is
+  // outside the car, and a mirror judged from outside the car is a mirror
+  // judged by the one party who never has to use it: three passes called the
+  // pods "small dark blisters on the shoulder, fine" while the aperture facing
+  // the driver was 77mm across. This is the shot that shows what he sees.
+  mirror: { pos: [0, 0.770, 0.165], at: [0.505, 0.578, 0.766], fov: 30 },
+  // The roll hoop's intake, head on. The airbox has been rebuilt three times
+  // for "there is no airbox" and every judgement was made from an oblique shot
+  // in which its mouth is edge-on; the fourth attempt found the mouth had never
+  // been drawn at all. This is the angle that answers the question.
+  hoop: { pos: [0.30, 1.02, 1.55], at: [0.0, 0.80, -0.40], fov: 26 },
   floor: { pos: [3.2, 0.22, -1.4], at: [0, 0.18, 0.4], fov: 30 },
+  // The driver's own eye, looking at his own hands. Not the same shot as
+  // `mirror` — that one looks sideways — and it is the one that catches the
+  // driver's ARMS, which nothing outside the car has ever been able to see and
+  // which the driver's-eye camera now puts in the bottom of every frame. The
+  // audit builds no cockpit, so this shows the coarse wheel and gloves that the
+  // rest of the field carries rather than the detailed pair; the arms are the
+  // same arms either way, and they are what this is for.
+  driverEye: { pos: [0, 0.770, 0.165], at: [0, 0.60, 0.75], fov: 62 },
+  // Straight down over the whole car. `top` is framed at fov 34, which at 8m
+  // covers 4.9m of a car that is 5.55m long — the front wing runs off the
+  // bottom of the frame, so the one shot that answers "are the proportions
+  // right" has never had both ends of the car in it. This one does.
+  plan: { pos: [0.02, 8.0, 0.35], at: [0, 0.35, 0.0], fov: 44 },
 } as const;
 
 type ViewName = keyof typeof VIEWS;
