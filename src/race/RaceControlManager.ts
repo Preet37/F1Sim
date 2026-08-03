@@ -384,10 +384,17 @@ const SC_BUNCHING_PACE_SHARE = 0.38;
  *
  * A car doing 85 m/s braking to a 35 m/s safety car pace covers about 130m more
  * than the safety car does over the same period, so anything under that is a
- * release into the leader's braking zone. Four hundred metres gives it a wide
- * margin at every circuit.
+ * release into the leader's braking zone.
+ *
+ * Nine hundred metres, not four. Measured at Monza a four-hundred-metre window
+ * is about thirteen seconds of opportunity in a hundred-and-fifteen-second
+ * neutralised lap, so on a random deployment the car sat in the lane for most of
+ * a minute waiting for a chance that the backstop usually took first. A real
+ * safety car is released a long way ahead of the leader — it has to get up to
+ * speed, and the field is closing on it at a hundred km/h of closing speed while
+ * it does.
  */
-const SC_RELEASE_WINDOW_M = 400;
+const SC_RELEASE_WINDOW_M = 900;
 
 /**
  * The longest the order to deploy may go unexecuted, seconds.
@@ -399,7 +406,7 @@ const SC_RELEASE_WINDOW_M = 400;
  * car would have taken to reach the leader anyway is not a wait any more, and it
  * goes.
  */
-const SC_SCRAMBLE_BACKSTOP_S = 45;
+const SC_SCRAMBLE_BACKSTOP_S = 30;
 
 /**
  * How close to the Line the leader has to be for the green to be shown, metres.
@@ -411,6 +418,26 @@ const SC_SCRAMBLE_BACKSTOP_S = 45;
  * is winding up to.
  */
 const SC_GREEN_AT_LINE_M = 100;
+
+/**
+ * How far clear one car must be of another before the pass is confirmed, metres.
+ *
+ * Half a car length. Under a safety car two cars run within a car length of each
+ * other for minutes at a time and the classification between them flickers; a
+ * deadband is what turns that flicker into nothing. See
+ * `checkNeutralisedOvertaking`.
+ */
+const NEUTRAL_PASS_CLEAR_M = CAR_LENGTH_M * 0.5;
+
+/**
+ * How close on the ROAD two cars must be for a change of order to be an
+ * overtake at all, metres.
+ *
+ * Two cars on the same lap can be half a circuit apart, and one pulling away
+ * from the other shows up as a change of classification without anybody having
+ * passed anybody. An overtake happens between cars that are next to each other.
+ */
+const NEUTRAL_PASS_PROXIMITY_M = 60;
 
 /**
  * How much quicker than the neutralised pace a car catching the queue may run.
@@ -833,6 +860,7 @@ export class RaceControlManager {
     this.wetness = wetness;
     this.updateIncidentFlags(cars, sessionTime, debris);
     this.updateNeutralisation(dt, cars, standings, sessionTime, isRace);
+    if (isRace) this.checkNeutralisedOvertaking(cars, sessionTime);
 
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i];
@@ -1309,6 +1337,18 @@ export class RaceControlManager {
         // fifty seconds bunching a field that needed two laps, and then come in
         // and restarted a race that had never formed up. The condition below is
         // the sentence the regulation actually contains.
+        //
+        // AND IT LEAVES WHEN THE HAZARD HAS GONE, NOT WHEN A CLOCK SAYS SO.
+        // `activeIncidents` is a count of `RecoveryOperation.warrantsNeutralisation`
+        // — an operation that is not finished AND puts people or a recovery
+        // vehicle where the racing cars run (see `src/race/Recovery.ts`). So the
+        // safety car is called in by the marshals finishing, which is the direct
+        // reading of the article that put it out there: it is deployed because
+        // "Competitors or officials are in immediate physical danger on or near
+        // the track" (B5.13.1 / Art. 55.3), and the moment nobody is, the reason
+        // has gone. A crane that takes three minutes holds it for three minutes
+        // and a car pushed behind a barrier in twenty seconds does not hold it
+        // at all, and neither number is written down anywhere in this file.
         if (this.scTimer > 0 || this.activeIncidents > 0) return;
         if (!leader) return;
         if (!this.fieldFormedUp(standings) && this.scTimer > -SC_MAX_BUNCH_EXTRA_S) return;
@@ -1640,6 +1680,119 @@ export class RaceControlManager {
     this.scToEntryM = Math.max(remaining, 60);
     this.log('SAFETY CAR IN THIS LAP', 'warning', sessionTime);
   }
+
+  /**
+   * Overtaking under a neutralisation, and the place being handed back.
+   *
+   * THE BAN. "no driver may overtake another F1 Car on the track, including the
+   * Safety Car, until they pass the Line for the first time after the Safety Car
+   * has entered the Pit Entry Road" (2026 Section B Art. B5.13.2c / 2025
+   * Sporting Regs Art. 55.8), and under the VSC "no driver may overtake another
+   * F1 Car on the track whilst the VSC procedure is in use" (B5.12.2c /
+   * Art. 56.6). Both articles then list their exceptions, and the exceptions are
+   * most of the rule — every one of them is implemented below.
+   *
+   * THE REMEDY IS THE PLACE, NOT A PENALTY. That is how this is actually
+   * refereed: a driver who gains a position under a neutralisation is told to
+   * hand it back, and only a driver who does not hand it back is penalised. The
+   * machinery for exactly that already exists — `CarEntry.cedePositionTo`, the
+   * stewards' `runCedeLoop` which watches it and fines five seconds if the
+   * deadline passes, and `RaceEngine.applyCedeInstruction` which makes an AI car
+   * obey it. Nothing here is new; this is a second source of the same
+   * instruction, and the reason it has to live in this file is that
+   * `Stewards.drainContacts` explicitly declines to judge anything under a
+   * neutralisation: "a contact under a neutralisation is a different offence
+   * (Art. B5.13/B5.12) that this module does not own".
+   *
+   * IT IS A CONFIRMED ORDER, NOT A COMPARISON OF CONSECUTIVE STEPS. Under a
+   * safety car two cars sit within a car length of each other for minutes and
+   * the classification flickers between them dozens of times a lap. Comparing
+   * one step against the last would issue a give-back order for every flicker.
+   * A car is only recorded as having passed another once it is clear of it by
+   * more than half a car length, which is the same deadband `validate:flags`
+   * uses to count the same event from the outside.
+   */
+  private checkNeutralisedOvertaking(cars: CarEntry[], sessionTime: number): void {
+    if (this.confirmedOrder.length !== cars.length) {
+      this.confirmedOrder = cars.map((c) => c.index);
+    }
+    const order = this.confirmedOrder;
+    const len = this.track.length;
+
+    // One bubble pass per step. A pass takes a second or two to complete and
+    // this runs at 120Hz, so a single pass per step keeps the order current at
+    // a cost of nineteen comparisons rather than a full sort.
+    for (let i = 0; i + 1 < order.length; i++) {
+      const b = cars[order[i]];
+      const a = cars[order[i + 1]];
+      if (a.totalDistance - b.totalDistance <= NEUTRAL_PASS_CLEAR_M) continue;
+
+      order[i] = a.index;
+      order[i + 1] = b.index;
+
+      // Not an overtake at all: a retirement, a pit stop, or two cars a long way
+      // apart on the road whose classification happened to cross.
+      if (a.retired || b.retired || a.inPitLane || b.inPitLane) continue;
+      const roadGap = loopDelta(b.s, a.s, len);
+      if (roadGap < 0 || roadGap > NEUTRAL_PASS_PROXIMITY_M) continue;
+
+      // Is the ban even in force for this car? `overtakingBannedAt` covers both
+      // neutralisations and the local yellows; `holdUntilLine` is the tail of a
+      // safety car period, where the race is green but this particular car has
+      // not yet reached the Line (B5.13.2c / Art. 55.8).
+      if (!this.overtakingBannedAt(a.s) && !a.holdUntilLine) continue;
+
+      // --- The exceptions -------------------------------------------------
+      // B5.13.2c-i and B5.13.4c / Art. 55.8a and 55.14: a car shown the green
+      // light is REQUIRED to pass. Ordering the place back would be punishing
+      // compliance with the instruction race control has just given.
+      if (a.mustUnlap) continue;
+      // B5.13.2c-viii and B5.12.2c-iv / Art. 55.8h and 56.6d: "if any F1 Car
+      // slows with an obvious problem". You cannot be required to queue behind a
+      // car that is no longer racing, and no steward has ever asked anyone to.
+      // The floor is the same one the AI uses to decide the car in front has
+      // stopped racing.
+      const bLine = this.track.targetSpeed[this.track.indexAt(b.s)];
+      const neutralFloor = this.neutralisation !== 'none' ? this.vscTargetMs * 0.5 : 0;
+      if (b.physics.speedMs < bLine * 0.45 || b.physics.speedMs < 14 ||
+          b.physics.speedMs < neutralFloor ||
+          Math.abs(b.lateral) > this.track.halfWidthAt(b.s)) {
+        continue;
+      }
+      // Already under an instruction about this car, or about anyone.
+      if (a.cedePositionTo >= 0) continue;
+
+      // --- The instruction ------------------------------------------------
+      a.cedePositionTo = b.index;
+      // A lap to do it in. The same window the stewards use for a give-back
+      // ordered after a contact, and for the same reason: a place is handed back
+      // at a sensible point on the circuit, not at the first corner.
+      a.cedeDeadline = sessionTime + Math.max(30, this.track.referenceLapTime);
+      this.log(
+        a.driver.code + ' — give the position back to ' + b.driver.code,
+        'warning', sessionTime, a.index,
+        {
+          feed: 'race-control',
+          notice: {
+            parties: [a.driver.code, b.driver.code],
+            where: 'SECTOR ' + (this.sectorIndexAt(a.s) + 1),
+            offence: this.neutralisation === 'vsc'
+              ? 'OVERTAKING UNDER VSC' : 'OVERTAKING UNDER SAFETY CAR',
+            status: 'POSITION TO BE GIVEN BACK',
+          },
+        },
+      );
+    }
+  }
+
+  /**
+   * The confirmed running order, by car index, with a deadband.
+   *
+   * Held here rather than derived from `standings` because `standings` is
+   * re-sorted at 20Hz with no hysteresis, and it is the hysteresis that is the
+   * whole point — see `checkNeutralisedOvertaking`.
+   */
+  private confirmedOrder: number[] = [];
 
   /**
    * Enforces the minimum time under a neutralisation.
@@ -2178,6 +2331,47 @@ export class RaceControlManager {
     if (this.vscTargetMs <= 0) return 0;
     return (this.track.length / MARSHAL_SECTORS) /
       (this.vscTargetMs * DELTA_REFERENCE_MARGIN);
+  }
+
+  // =========================================================================
+  // What the display layer reads
+  // =========================================================================
+  //
+  // The announcements a safety car period produces are the HUD's to word — it
+  // owns the rail, the timing and the voice. What it cannot do is derive the
+  // sequence, because the sequence is a state machine and the state machine is
+  // here. So this is the whole of the surface it needs, and it is deliberately
+  // small:
+  //
+  //   `neutralisation`      'none' | 'vsc' | 'safety-car' | 'sc-ending'
+  //   `scPhase`             the seven-step procedure, see `SafetyCarPhase`
+  //   `safetyCar`           the vehicle: `.station`, `.orangeLights`,
+  //                         `.greenLight`, `.visible`, `.onTrack`, `.s`, `.lap`
+  //   `lappedCarsWaved`     "LAPPED CARS MAY NOW OVERTAKE" has been sent
+  //   `lowVisibility`       "LOW VISIBILITY — MAXIMUM GAP TWENTY CAR LENGTHS"
+  //   `maxQueueGapM`        ten car lengths, or twenty
+  //   `pitExitClosed`       the exit is shut while unlapped cars rejoin
+  //   `minimumSectorTimeS`  the FIA ECU delta, the number a driver cannot read
+  //                         off a speedometer
+  //   `restartImminent`     the safety car has gone in and the green is coming
+  //                         at the Line
+  //
+  // Each maps to exactly one message in the regulations, and the mapping is in
+  // the doc comment of the thing it maps to.
+
+  /**
+   * The safety car has entered the Pit Entry Road and the green will be shown at
+   * the Line.
+   *
+   * The state that has no VSC equivalent, and the one the display most needs:
+   * between these two events the race is neither neutralised in the sense of a
+   * speed limit nor green, and the driver's obligation is a sentence rather than
+   * a number — "drivers must proceed at a pace which involves no erratic
+   * acceleration or braking nor any other manoeuvre which is likely to endanger
+   * other drivers or impede the restart" (B5.13.6 / Art. 55.15).
+   */
+  get restartImminent(): boolean {
+    return this.neutralisation === 'sc-ending';
   }
 
   /** 0..1 severity used to tint the HUD flag banner. */
