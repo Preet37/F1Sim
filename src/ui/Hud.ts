@@ -206,12 +206,16 @@ export class Hud {
    * `boundary` event is the synthesiser telling us which characters it has
    * actually said. So there is no rate any more. There is one clock.
    *
-   * It is constructed here rather than injected so that a HUD built by a probe
-   * harness with no `AudioEngine` still types at the right pace; `useRadio`
-   * swaps in the engine's instance, which is the one that can make a sound.
+   * Injected where there is one to inject — `main.ts` hands over the
+   * `AudioEngine`'s instance, which is the one attached to the mix and the only
+   * one that can make a sound. A HUD built by a probe harness with no audio
+   * engine gets one of its own instead, silent but with the same clock, so the
+   * card types at the right pace everywhere and there is never a second
+   * typewriter implementation for the no-audio case.
    */
   private radio: TeamRadio;
-  private ownRadio: TeamRadio;
+  /** Non-null only while the HUD is running on a radio it made itself. */
+  private ownRadio: TeamRadio | null;
   private unsubscribeRadio: (() => void) | null = null;
   /** Transmission id -> which row of the card it is being typed into. */
   private radioRowOf = new Map<number, number>();
@@ -341,8 +345,8 @@ export class Hud {
   constructor(parent: HTMLElement, radio?: TeamRadio) {
     this.root = document.createElement('div');
     this.root.className = 'hud';
-    this.ownRadio = new TeamRadio();
-    this.radio = radio ?? this.ownRadio;
+    this.ownRadio = radio ? null : new TeamRadio();
+    this.radio = radio ?? (this.ownRadio as TeamRadio);
     this.build();
     parent.appendChild(this.root);
     this.unsubscribeRadio = this.radio.addListener((ev) => this.onRadioEvent(ev));
@@ -374,7 +378,8 @@ export class Hud {
     if (radio === this.radio) return;
     this.unsubscribeRadio?.();
     this.hideRadioCard(true);
-    if (this.radio === this.ownRadio) this.ownRadio.dispose();
+    this.ownRadio?.dispose();
+    this.ownRadio = null;
     this.radio = radio;
     this.unsubscribeRadio = radio.addListener((ev) => this.onRadioEvent(ev));
   }
