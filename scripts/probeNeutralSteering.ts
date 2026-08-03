@@ -70,6 +70,18 @@ const MAX_REVERSAL_RATIO = 1.5;
  */
 const MAX_YAW_STEP_DEG_S = 2.5;
 
+/**
+ * The most the limiter's own setpoint may move between two consecutive steps.
+ *
+ * The limiter sheds speed at a bounded rate — a full g, `PIT_LIMITER_MAX_DECEL_G`
+ * — so at 120Hz it can follow about 0.08 m/s of setpoint per step. Anything much
+ * above that is a number the car is chasing rather than holding, and the
+ * measured defect was 22 m/s: eighty km/h in eight milliseconds. A quarter of a
+ * metre per second is three times what the limiter can track and still small
+ * enough to catch the class of fault.
+ */
+const MAX_SETPOINT_STEP_MS = 0.25;
+
 /** A driver who does not know the race has been neutralised. */
 class BlindDriver {
   private readonly ai: AIVehicleController;
@@ -101,52 +113,105 @@ class BlindDriver {
   }
 }
 
+/**
+ * A car turning faster than this is not being measured, deg/s.
+ *
+ * THE FIRST VERSION OF THIS PROBE MEASURED CRASHES. It took the worst
+ * single-step change in yaw rate over a whole race and reported twenty thousand
+ * degrees a second — under green as well as under the safety car, at every
+ * circuit — because a car that hits a barrier, is placed on the grid or spins in
+ * traffic changes heading by a large fraction of a turn between two steps, and
+ * one such event dominates a maximum taken over four hundred thousand of them.
+ * A statistic that a single collision can set is not a measurement of a limiter.
+ *
+ * So: a car rotating faster than a hundred degrees a second has stopped being
+ * driven and is excluded, the samples either side of any gap are not compared
+ * across it, and what is reported is a high quantile rather than a maximum.
+ */
+const SPINNING_DEG_S = 100;
+
 /** One regime's worth of heading history. */
 class Trace {
   seconds = 0;
   reversals = 0;
-  worstYawStepDegS = 0;
   /** Worst single-step jump in the limiter's own setpoint, m/s per step. */
   worstSetpointStepMs = 0;
   /** Steps the brake pedal moved by more than half its travel. */
   pedalJumps = 0;
   samples = 0;
+  /** Steps discarded because the car was spinning or the trace had a gap. */
+  discarded = 0;
 
   private prevHeading = NaN;
-  private prevRate = 0;
-  private prevBrake = 0;
+  private prevRate = NaN;
+  private prevBrake = NaN;
   private prevLimit = 0;
+  private prevStep = -2;
+  /** Every yaw-rate step seen, for the quantile. */
+  private readonly yawSteps: number[] = [];
 
-  /** Yaw rate in deg/s at this step, from the heading only. */
-  record(heading: number, brake: number, limitMs: number): void {
+  /**
+   * @param step the physics step index, so a gap in the trace is visible. Two
+   *        samples either side of a pit stop are not consecutive and the change
+   *        between them is not a step.
+   */
+  record(step: number, heading: number, brake: number, limitMs: number): void {
     this.seconds += PHYSICS_DT;
     this.samples++;
-    if (!Number.isNaN(this.prevHeading)) {
-      let d = heading - this.prevHeading;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      const rate = (d / PHYSICS_DT) * (180 / Math.PI);
-      const step = Math.abs(rate - this.prevRate);
-      if (step > this.worstYawStepDegS) this.worstYawStepDegS = step;
+    const continuous = step === this.prevStep + 1;
+    this.prevStep = step;
+
+    if (!continuous || Number.isNaN(this.prevHeading)) {
+      this.prevHeading = heading;
+      this.prevRate = NaN;
+      this.prevBrake = brake;
+      this.prevLimit = limitMs;
+      this.discarded++;
+      return;
+    }
+
+    let d = heading - this.prevHeading;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    const rate = (d / PHYSICS_DT) * (180 / Math.PI);
+    this.prevHeading = heading;
+
+    if (Math.abs(rate) > SPINNING_DEG_S) {
+      // Off the road, in a barrier or spinning. Nothing here is about a limiter.
+      this.prevRate = NaN;
+      this.prevBrake = brake;
+      this.prevLimit = limitMs;
+      this.discarded++;
+      return;
+    }
+
+    if (!Number.isNaN(this.prevRate)) {
+      this.yawSteps.push(Math.abs(rate - this.prevRate));
       if (Math.sign(rate) !== Math.sign(this.prevRate) &&
           Math.abs(rate) > REVERSAL_RATE_DEG_S &&
           Math.abs(this.prevRate) > REVERSAL_RATE_DEG_S) {
         this.reversals++;
       }
-      this.prevRate = rate;
       if (Math.abs(brake - this.prevBrake) > 0.5) this.pedalJumps++;
       if (this.prevLimit > 0 && limitMs > 0) {
         const ds = Math.abs(limitMs - this.prevLimit);
         if (ds > this.worstSetpointStepMs) this.worstSetpointStepMs = ds;
       }
     }
-    this.prevHeading = heading;
+    this.prevRate = rate;
     this.prevBrake = brake;
     this.prevLimit = limitMs;
   }
 
   get reversalsPerS(): number {
     return this.seconds > 1 ? this.reversals / this.seconds : 0;
+  }
+
+  /** The 99.9th percentile step in yaw rate, deg/s. */
+  get yawStepP999(): number {
+    if (this.yawSteps.length < 100) return 0;
+    const sorted = this.yawSteps.slice().sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.999))];
   }
 }
 
@@ -228,12 +293,16 @@ function run(circuit: string, laps: number, seed: number, assist: boolean): Run 
     // walking pace produces enormous yaw rates for millimetres of travel.
     if (player.physics.speedMs < 12) continue;
 
+    // On the road. A car in the gravel changes direction for reasons that have
+    // nothing to do with a limiter.
+    if (Math.abs(player.lateral) > engine.track.halfWidthAt(player.s) + 0.5) continue;
+
     const brake = player.appliedControls.brake;
     const limit = player.appliedControls.speedLimitMs;
     if (rc.neutralisation !== 'none') {
-      neutral.record(player.physics.heading, brake, limit);
+      neutral.record(step, player.physics.heading, brake, limit);
     } else {
-      green.record(player.physics.heading, brake, limit);
+      green.record(step, player.physics.heading, brake, limit);
     }
   }
 
@@ -244,7 +313,7 @@ function line(label: string, t: Trace): string {
   return '    ' + label.padEnd(26) +
     (t.seconds.toFixed(0) + 's').padStart(7) +
     (t.reversalsPerS.toFixed(2) + '/s').padStart(10) +
-    (t.worstYawStepDegS.toFixed(2) + '°/s').padStart(11) +
+    (t.yawStepP999.toFixed(2) + '°/s').padStart(11) +
     ('  pedal jumps ' + t.pedalJumps).padStart(18) +
     ('  setpoint step ' + t.worstSetpointStepMs.toFixed(1) + 'm/s').padStart(26);
 }
@@ -275,32 +344,47 @@ for (const cs of CASES) {
     continue;
   }
 
-  const ratio = on.green.reversalsPerS > 0
-    ? on.neutral.reversalsPerS / on.green.reversalsPerS : 0;
-  console.log('    ' + ('reversal ratio vs green  x' + ratio.toFixed(2)).padStart(38));
+  // THE CONTROL IS THE SAME LAPS WITHOUT THE ASSIST, not the green laps. Green
+  // laps are driven at racing speed through the same corners and have more
+  // steering in them per second by nature; comparing against them measures the
+  // pace, not the limiter. What isolates the assist is the identical
+  // neutralisation with it switched off.
+  const ratio = off.neutral.reversalsPerS > 0
+    ? on.neutral.reversalsPerS / off.neutral.reversalsPerS : 0;
+  const yawRatio = off.neutral.yawStepP999 > 0
+    ? on.neutral.yawStepP999 / off.neutral.yawStepP999 : 0;
+  console.log('    ' + ('vs the same laps without the assist: ' +
+    'reversals x' + ratio.toFixed(2) + ', yaw step x' + yawRatio.toFixed(2)).padStart(70));
 
-  if (ratio > MAX_REVERSAL_RATIO) {
-    fail(`${cs.circuit}: the limited car changes direction x${ratio.toFixed(2)} as often as ` +
-      `the same driver under green (${on.neutral.reversalsPerS.toFixed(2)}/s vs ` +
-      `${on.green.reversalsPerS.toFixed(2)}/s) — the limiter is fighting the car`);
-  }
-  if (on.neutral.worstYawStepDegS > MAX_YAW_STEP_DEG_S) {
-    fail(`${cs.circuit}: the limited car's yaw rate jumped ` +
-      `${on.neutral.worstYawStepDegS.toFixed(2)}°/s in a single step ` +
-      `(limit ${MAX_YAW_STEP_DEG_S}) — something arrived whole instead of building`);
-  }
-  // The assist is the suspect, so it is named: if the car is calm without it
-  // and fighting with it, the neutralisation is not what is doing this.
-  if (off.neutral.seconds > 20 && off.neutral.reversalsPerS > 0 &&
-      on.neutral.reversalsPerS > off.neutral.reversalsPerS * MAX_REVERSAL_RATIO) {
+  // A ratio of two very small numbers is noise, and under a safety car both are
+  // small — a queue at 40% of racing pace barely changes direction at all. The
+  // absolute rate has to be worth comparing before the comparison means
+  // anything.
+  const MEANINGFUL_PER_S = 0.15;
+  if (off.neutral.reversalsPerS >= MEANINGFUL_PER_S && ratio > MAX_REVERSAL_RATIO) {
     fail(`${cs.circuit}: turning the assist ON multiplies the direction changes by ` +
-      `x${(on.neutral.reversalsPerS / off.neutral.reversalsPerS).toFixed(2)} — ` +
+      `x${ratio.toFixed(2)} (${on.neutral.reversalsPerS.toFixed(2)}/s against ` +
+      `${off.neutral.reversalsPerS.toFixed(2)}/s over the same neutralisation) — ` +
       `it is the assist and not the neutralisation`);
   }
+  if (yawRatio > MAX_REVERSAL_RATIO && on.neutral.yawStepP999 > MAX_YAW_STEP_DEG_S) {
+    fail(`${cs.circuit}: with the assist on, the yaw rate's 99.9th-percentile single-step ` +
+      `change is ${on.neutral.yawStepP999.toFixed(2)}°/s against ` +
+      `${off.neutral.yawStepP999.toFixed(2)}°/s without it — the limiter is turning the car`);
+  }
+  // The direct measurement of the defect, and the one that caught it: a brake
+  // pedal that moves more than half its travel between two 8ms steps.
   if (on.neutral.pedalJumps > off.neutral.pedalJumps + 10) {
     fail(`${cs.circuit}: the assist moved the brake pedal more than half its travel in one ` +
       `step ${on.neutral.pedalJumps} times (${off.neutral.pedalJumps} without it) — ` +
       `a pedal that steps like that is a pedal the car cannot absorb`);
+  }
+  // And the setpoint it is holding. A limiter bounded to a g cannot follow a
+  // number that moves faster than a g.
+  if (on.neutral.worstSetpointStepMs > MAX_SETPOINT_STEP_MS) {
+    fail(`${cs.circuit}: the limiter's own setpoint moved ` +
+      `${on.neutral.worstSetpointStepMs.toFixed(1)} m/s between two consecutive steps ` +
+      `(limit ${MAX_SETPOINT_STEP_MS}) — the car is chasing a number that has already moved`);
   }
 }
 

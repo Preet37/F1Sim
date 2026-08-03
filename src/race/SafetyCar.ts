@@ -77,7 +77,18 @@ const SC_LANE_PACE_SHARE = 0.9;
  * Where a real safety car sits with its engine running: at the end of the lane,
  * short of the exit line, so that when the order comes it is already rolling.
  */
-const SC_HOLD_SHORT_M = 30;
+const SC_HOLD_SHORT_M = 40;
+
+/**
+ * Where it starts from when the order comes, as a share of the pit lane.
+ *
+ * Its bay is partway down the lane, alongside the garages, not on the exit line
+ * — so being deployed involves actually driving out, which is the thing the
+ * player asked to see: "have it come out on the circuit and lead the way".
+ * Sitting it on the exit line would make the deployment a car appearing from
+ * nowhere, which is what the state machine already did.
+ */
+const SC_BAY_SHARE = 0.45;
 
 /** Acceleration and braking the safety car uses, m/s². A road car, not an F1 car. */
 const SC_ACCEL_MS2 = 4.5;
@@ -131,7 +142,7 @@ export class SafetyCar {
   reset(): void {
     const pit = this.track.def.pitLane;
     this.station = 'garage';
-    this.s = this.holdS;
+    this.s = this.bayS;
     this.lateral = pit.lateralOffsetM;
     this.lap = 0;
     this.speedMs = 0;
@@ -145,6 +156,15 @@ export class SafetyCar {
     const pit = this.track.def.pitLane;
     return ((pit.exitS - SC_HOLD_SHORT_M) % this.track.length + this.track.length) %
       this.track.length;
+  }
+
+  /** Its bay, partway down the lane alongside the garages. */
+  private get bayS(): number {
+    const pit = this.track.def.pitLane;
+    const len = this.track.length;
+    let lane = pit.exitS - pit.entryS;
+    if (lane < 0) lane += len;
+    return ((pit.entryS + lane * SC_BAY_SHARE) % len + len) % len;
   }
 
   /** True while it is somewhere the player could see it. */
@@ -171,16 +191,16 @@ export class SafetyCar {
     this.stationS = 0;
     this.orangeLights = true;
     this.greenLight = false;
-    this.s = this.holdS;
+    this.s = this.bayS;
     this.lateral = this.track.def.pitLane.lateralOffsetM;
     this.speedMs = 0;
   }
 
-  /** True once it has run down the lane and is sitting at the exit line. */
+  /** True once it has run down the lane and is waiting at the end of it. */
   get readyToJoin(): boolean {
     if (this.station !== 'scrambling') return false;
-    const toExit = loopDelta(this.s, this.track.def.pitLane.exitS, this.track.length);
-    return toExit <= 1;
+    const toHold = loopDelta(this.s, this.holdS, this.track.length);
+    return toHold <= 2;
   }
 
   /**
@@ -231,13 +251,18 @@ export class SafetyCar {
         return false;
 
       case 'scrambling': {
-        const toExit = loopDelta(this.s, pit.exitS, len);
-        // Slows to a stop at the exit line and waits there for the order to
-        // pull out, which is what a real one does — it is released into a gap.
-        target = toExit <= 0 ? 0
+        // Runs down the lane and stops at the holding point, then waits there
+        // for the order to pull out — which is what a real one does, because it
+        // is released into a gap rather than simply let go.
+        //
+        // The square root is the constant-deceleration solution: the fastest it
+        // may be doing now to still be stopped at the line. Same shape as the
+        // pit entry's own braking profile, for the same reason.
+        const toHold = loopDelta(this.s, this.holdS, len);
+        target = toHold <= 0 ? 0
           : Math.min(
             pit.speedLimitKph / 3.6 * SC_LANE_PACE_SHARE,
-            Math.sqrt(2 * SC_ACCEL_MS2 * Math.max(toExit, 0)),
+            Math.sqrt(2 * SC_ACCEL_MS2 * toHold),
           );
         targetLateral = pit.lateralOffsetM;
         break;

@@ -174,6 +174,10 @@ export function buildSafetyCar(quality: 'low' | 'high' = 'high'): SafetyCarVisua
   bin.add(chamferBox(HALF_WIDTH * 1.42, 0.06, 1.70, 0.03), L.body,
     0, ROOF_Y + 0.005, FRONT_AXLE_Z - 1.05);
 
+  // The light bar's plinth, through the bin so it costs no draw call of its own.
+  bin.add(chamferBox(1.10, 0.07, 0.16, 0.02), L.trim,
+    0, ROOF_Y + 0.09, FRONT_AXLE_Z - 1.00);
+
   // Splitter and rear diffuser: the two flat black planes that read as a
   // performance car's aero even in silhouette.
   bin.add(chamferBox(HALF_WIDTH * 1.78, 0.05, 0.36, 0.02), L.trim,
@@ -276,30 +280,26 @@ export function buildSafetyCar(quality: 'low' | 'high' = 'high'): SafetyCarVisua
   // for the pass signal.
   const barY = ROOF_Y + 0.09;
   const barZ = FRONT_AXLE_Z - 1.00;
-  // Not through the bin: it needs a plain colour rather than a vertex-coloured
-  // one, and one small mesh is cheaper than teaching the bin about it.
-  const plinth = new THREE.Mesh(
-    chamferBox(1.10, 0.07, 0.16, 0.02),
-    new THREE.MeshStandardMaterial({
-      color: SAFETY_CAR_LIVERY.trim, roughness: 0.8, metalness: 0.1,
-    }),
-  );
-  plinth.position.set(0, barY, barZ);
-  root.add(plinth);
-
+  // The two amber lenses are ONE mesh of two boxes, not two meshes. Every draw
+  // call this vehicle costs is a draw call twenty-two racing cars are not
+  // getting, and the whole car is seven: the merged body, four wheels that have
+  // to turn independently, and the two lamp colours.
   const amberMat = new THREE.MeshBasicMaterial({ toneMapped: false, color: L.lampOff });
   const greenMat = new THREE.MeshBasicMaterial({ toneMapped: false, color: L.lampOff });
-  const lensGeo = new THREE.BoxGeometry(0.24, 0.06, 0.14);
-  const lenses: THREE.Mesh[] = [];
+  const amberGeos: THREE.BufferGeometry[] = [];
   for (const x of [-0.40, 0.40]) {
-    const m = new THREE.Mesh(lensGeo, amberMat);
-    m.position.set(x, barY + 0.005, barZ);
-    root.add(m);
-    lenses.push(m);
+    const g = new THREE.BoxGeometry(0.24, 0.06, 0.14);
+    g.translate(x, barY + 0.005, barZ);
+    amberGeos.push(g);
   }
-  const greenLens = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.06, 0.10), greenMat);
-  greenLens.position.set(0, barY + 0.005, barZ - 0.05);
-  root.add(greenLens);
+  const amberBin = new PartsBin();
+  for (const g of amberGeos) amberBin.addRaw(g, L.amber);
+  const amberGeo = amberBin.merge();
+  if (amberGeo) root.add(new THREE.Mesh(amberGeo, amberMat));
+
+  const greenGeo = new THREE.BoxGeometry(0.20, 0.06, 0.10);
+  greenGeo.translate(0, barY + 0.005, barZ - 0.05);
+  root.add(new THREE.Mesh(greenGeo, greenMat));
 
   // Flash rate. Fast enough to read as a warning beacon and slow enough not to
   // strobe: real bar lamps run at two to three flashes a second per side, and
@@ -313,13 +313,11 @@ export function buildSafetyCar(quality: 'low' | 'high' = 'high'): SafetyCarVisua
 
   const setLights = (dt: number, orange: boolean, green: boolean): void => {
     phase = (phase + dt * FLASH_HZ) % 1;
-    // Alternating halves: the left pair is lit for the first half of the cycle
-    // and the right pair for the second. One material each would be two more
-    // draw calls, so the two lenses share a material and the alternation is
-    // done by moving the whole bar's colour between the two peaks — which at
-    // this size and distance is indistinguishable and costs nothing.
-    const lit = orange && phase < 0.5;
-    (lenses[0].material as THREE.MeshBasicMaterial).color.copy(lit ? amberOn : off);
+    // A double flash per cycle: two short pulses close together and then a gap,
+    // which is what a bar lamp does and what makes it read as one at a distance
+    // rather than as a bulb going on and off.
+    const lit = orange && (phase < 0.16 || (phase > 0.26 && phase < 0.42));
+    amberMat.color.copy(lit ? amberOn : off);
     greenMat.color.copy(green ? greenOn : off);
   };
 
