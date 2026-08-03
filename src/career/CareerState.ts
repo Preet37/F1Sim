@@ -1,4 +1,5 @@
 import { clamp, clamp01 } from '../core/MathUtils';
+import { coerceHelmet, type HelmetDesign } from './Identity';
 import type { TierId } from '../data/roster';
 import type { CareerWorld, WorldDriver } from './World';
 import type { RoundResult, SeasonState, SeasonSummary } from './Season';
@@ -44,7 +45,7 @@ export const SAVE_VERSION = 2;
  * 2: `RoundResult.disqualified`, once the race engine started modelling
  *    exclusion separately from retirement under the 2026 regulations.
  */
-export const SAVE_MINOR = 2;
+export const SAVE_MINOR = 3;
 
 /** The player, as a driver. Mirrors `WorldDriver` because they are one. */
 export interface PlayerProfile {
@@ -53,6 +54,17 @@ export interface PlayerProfile {
   code: string;
   nationality: string;
   raceNumber: number;
+
+  /**
+   * The helmet the player designed. See `src/career/Identity.ts` for why a
+   * helmet is the protagonist of this career mode and not a face.
+   *
+   * OPTIONAL, WHICH IS THE WHOLE POINT OF `saveMinor`. A career started before
+   * the designer existed has no helmet in it and must still open; it is given a
+   * default rolled from its own seed on load, so that career gets a helmet of
+   * its own rather than everybody's being the same one.
+   */
+  helmet?: HelmetDesign;
 
   skill: number;
   aggression: number;
@@ -196,6 +208,18 @@ export function playerAsWorldDriver(state: CareerState): WorldDriver {
     salaryUsd: 500_000,
     reserve: false,
   };
+}
+
+/**
+ * The player's helmet, whatever state the save is in.
+ *
+ * The one accessor everything draws from, so a career from before the designer
+ * existed, a career hand-edited into nonsense and a career created five minutes
+ * ago all produce a helmet that can be painted. A drawing routine that has to
+ * check for `undefined` is a drawing routine that will eventually be given one.
+ */
+export function playerHelmet(state: CareerState): HelmetDesign {
+  return coerceHelmet(state.player.helmet, state.seed);
 }
 
 /** Applies a bounded change to a narrative quantity. */

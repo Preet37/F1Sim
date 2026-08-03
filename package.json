@@ -69,7 +69,8 @@
     "audit:circuits": "tsx scripts/auditCircuits.ts",
     "audit:corners": "tsx scripts/auditCorners.ts",
     "audit:shoulders": "tsx scripts/auditShoulders.ts",
-    "audit:car": "tsx scripts/auditCar.ts"
+    "audit:car": "tsx scripts/auditCar.ts",
+    "shoot:career": "tsx scripts/shootCareer.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

@@ -33,6 +33,9 @@ import {
 import type { CareerEvent } from './career/Events';
 import { needsWorldRebuild } from './career/SaveCodec';
 import { playerIndexIn } from './career/Seat';
+import { buildCareerCreate } from './ui/CareerCreate';
+import { playerHelmet } from './career/CareerState';
+import { driverCard } from './ui/DriverPortrait';
 import { SaveManager, type GameSettings } from './career/SaveManager';
 import { AudioEngine } from './audio/AudioEngine';
 import { buildPaddock, PADDOCK_ORDER, type PaddockHandle } from './ui/Paddock';
@@ -857,89 +860,63 @@ class Game {
     }
   }
 
+  /**
+   * The front door.
+   *
+   * The screen itself is `src/ui/CareerCreate.ts`: a driver you make, standing
+   * on the left and changing as you make them, rather than three text fields
+   * and three boxes explaining the rules of the mode. What stays here is the
+   * page chassis, the car stage and the one button, because those are the
+   * things `Main` owns.
+   */
   private showCareerCreate(): void {
     this.setScreen('career-create');
     const { body, actions } = this.page({
       tab: 'Main Menu',
       where: 'New Career',
       title: 'New Career',
-      sub: 'You start in Formula 3 with a junior team. Earn a Formula 1 seat, then a championship.',
+      sub: 'One seat is open in Formula 3. It is the worst one on the grid, '
+        + 'and it is yours if you want it.',
       back: () => this.showMenu(),
       // The three tiers, as the three sectors of a career.
       rule: { parts: [9, 12, 11], at: 0 },
     });
 
-    this.el('div', 'section-title', body, 'Driver');
-    const form = this.el('div', 'row', body);
-    const mk = (label: string, value: string): HTMLInputElement => {
-      const f = this.el('div', 'field', form);
-      const l = document.createElement('label');
-      l.textContent = label;
-      f.appendChild(l);
-      const i = document.createElement('input');
-      i.type = 'text';
-      // Named, so a browser's autofill and a password manager leave them alone,
-      // and so the mobile keyboard comes up as a plain one rather than guessing.
-      i.autocomplete = 'off';
-      i.spellcheck = false;
-      i.value = value;
-      f.appendChild(i);
-      return i;
-    };
-    const first = mk('First name', 'Alex');
-    const last = mk('Last name', 'Carter');
-    const nat = mk('Nationality', 'United Kingdom');
+    // The seat a rookie is actually offered: the weakest Formula 3 team, which
+    // is exactly what `Career.create` hands them. Read from the roster rather
+    // than named here, so the screen and the career cannot disagree about which
+    // team is on the other end of the contract.
+    const f3 = REAL_ROSTER.tiers.F3;
+    const startTeam = f3.teams[f3.teams.length - 1];
 
-    this.el('div', 'section-title', body, 'What happens next');
-    const grid = this.el('div', 'stat-grid', body);
-    const step = (label: string, value: string, meta: string) => {
-      const s = this.el('div', 'stat', grid);
-      this.el('div', 'stat-label', s, label);
-      this.el('div', 'stat-value', s, value);
-      this.el('div', 'stat-meta', s, meta);
-    };
-    step('Starting tier', TIER_CAR.F3.shortName, 'A junior seat, and a car to match');
-    step('Promotion', 'Top two go up', 'F3 to F2 to F1, at the end of every season');
-    step('Calendar', '9 rounds', 'One season to finish in the top two');
-
-    // The car you will actually be handed. `Career.create` starts every
-    // career at the back of the grid in number 47, so this is not an
-    // illustration — it is the machine, in the livery, with the number on it.
-    // The real seat: the weakest Formula 3 team, which is exactly what
-    // `Career.create` hands a rookie. It used to show the last entry of the
-    // static Formula 1 grid — a different car, in a different championship, in
-    // colours the player would never see again.
-    const f3Teams = REAL_ROSTER.tiers.F3.teams;
-    const startTeam = f3Teams[f3Teams.length - 1];
-    this.el('div', 'section-title', body, 'The seat on offer');
-    const bay = this.el('div', 'garagebay', body);
-    const bayInfo = this.el('div', 'garagebay-info', bay);
-    const plate = this.el('div', 'nameplate', bayInfo);
-    plate.style.setProperty('--team', hexColour(startTeam.colour));
-    plate.innerHTML =
-      '<span class="nameplate-rank">47</span>' +
-      '<span class="nameplate-name">' + escapeHtml(startTeam.name) + '</span>';
-    this.el('div', 'garagebay-line', bayInfo,
-      TIER_CAR.F3.shortName + ' · the only seat you are offered');
-    this.mountStage('panel', {
-      colour: startTeam.colour,
-      accent: startTeam.accent,
-      number: 47,
-      code: startTeam.code,
-    }, bay);
+    const create = buildCareerCreate(body, {
+      seat: {
+        teamName: startTeam.name,
+        tierName: TIER_CAR.F3.name,
+        rounds: f3.calendar.length,
+        colour: startTeam.colour,
+        accent: startTeam.accent,
+      },
+      // Numbers already on this grid. Choosing 22 and then discovering in the
+      // first session that somebody else has it is not a discovery anybody
+      // enjoys.
+      takenNumbers: f3.drivers.map((d) => d.raceNumber),
+      onSubmit: (id) => {
+        this.career = Career.create({
+          firstName: id.firstName,
+          lastName: id.lastName,
+          nationality: id.nationality,
+          raceNumber: id.raceNumber,
+          helmet: id.helmet,
+        });
+        this.careerId = 'career-' + Date.now().toString(36);
+        this.saves.save(this.careerId, this.career.state);
+        this.showCareerHub();
+      },
+    });
 
     this.spacer(actions);
-    this.button('Begin Career', actions, () => {
-      const f = first.value.trim() || 'Alex';
-      const l = last.value.trim() || 'Carter';
-      this.career = Career.create({
-        firstName: f, lastName: l,
-        nationality: nat.value.trim() || 'United Kingdom',
-      });
-      this.careerId = 'career-' + Date.now().toString(36);
-      this.saves.save(this.careerId, this.career.state);
-      this.showCareerHub();
-    }, 'btn primary');
+    this.button('Take the seat', actions, () => create.submit(), 'btn primary');
   }
 
   private showCareerHub(): void {
@@ -974,6 +951,28 @@ class Game {
         ],
         at: 1,
       },
+    });
+
+    // YOU, before your car.
+    //
+    // The hub used to open on a garage bay and six columns of figures, and a
+    // career about a person had no person anywhere in it — "there is no figure,
+    // there is no person, and there's no rendering happening of an actual
+    // person". The card is the same driver the create screen made and the same
+    // one that stands on the podium, so the protagonist is continuous across
+    // the mode instead of being a string in a page title.
+    driverCard(body, {
+      helmet: playerHelmet(s),
+      firstName: s.player.firstName,
+      lastName: s.player.lastName,
+      code: s.player.code,
+      nationality: s.player.nationality,
+      raceNumber: s.player.raceNumber,
+      teamName: team.name,
+      colour: team.colour,
+      accent: team.accent,
+      note: TIER_CAR[s.tier].name + ' · ' + s.season.year
+        + ' · round ' + round + ' of ' + career.calendar.length,
     });
 
     // Your own car, in your own garage.

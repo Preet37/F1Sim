@@ -114,7 +114,10 @@ const config: SessionConfig = {
   playerIndex: playerIndexIn(field, career.state.playerDriverId),
   standingStart: false,
   pitLaneStart: true,
-  seed: 0x51d0c7,
+  // A dry seed. The weather is drawn from the session seed, and a wet Monza
+  // turns a 1:57 into a 3:12 — true, but it makes the lap time printed by
+  // this probe read like a bug in the car when it is a bug in nothing.
+  seed: 90210,
 };
 
 const engine = new RaceEngine(getCircuit(CIRCUIT), config, field);

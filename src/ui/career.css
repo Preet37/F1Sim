@@ -1,0 +1,490 @@
+/*
+ * CAREER — the driver, the signing, and the podium.
+ *
+ * A SEPARATE STYLESHEET, AND WHY. `styles.css` is five and a half thousand
+ * lines and belongs to the HUD work happening in parallel. Everything here is
+ * new surface — a portrait, a create sequence, a podium — so it lives in its
+ * own file, imported by the modules that need it, exactly as `setup.css` and
+ * `controller.css` already do. Nothing below overrides an existing selector.
+ *
+ * It inherits the house style rather than inventing one: the hall and its
+ * carbon surfaces, the one warm key light, the five signal colours with fixed
+ * meanings, Archivo wide for names and the system monospace for every figure.
+ * All of those are custom properties declared on `:root` in `styles.css` and
+ * are used here, never redefined.
+ *
+ * THE ONE THING THIS FILE ADDS TO THE PALETTE is `--me`: the player's own
+ * helmet colour. It is the only colour in this game chosen by the person
+ * playing it, and it is confined to the screens that are about them — the
+ * signing, the hub's nameplate, the podium. It is never used to mean anything;
+ * the five signals keep their monopoly on meaning. It is used to mean YOU.
+ */
+
+/* ==========================================================================
+   The portrait
+   ========================================================================== */
+
+.portrait {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* The number on the chest patch, in the figure face like every other number. */
+.portrait-number {
+  font-family: var(--font-data);
+  font-size: 20px;
+  font-weight: 700;
+  fill: #f2f6fb;
+  letter-spacing: 0.02em;
+}
+
+.natplate { display: block; height: auto; }
+.natplate-code {
+  font-family: var(--font-data);
+  font-size: 13px;
+  font-weight: 700;
+  fill: #fff;
+  letter-spacing: 0.08em;
+}
+
+/* ==========================================================================
+   THE DRIVER CARD
+   ==========================================================================
+
+   The unit that carries a person from screen to screen. A portrait standing in
+   its own pool of light, the name in the broadcast register, and the country,
+   the team and the number along the bottom. */
+
+.dcard {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--team, var(--ink-3));
+  border-radius: 8px;
+  background:
+    radial-gradient(64% 120% at 12% 0%,
+      rgba(var(--key), 0.10), transparent 62%),
+    linear-gradient(180deg, var(--carbon-2), var(--carbon-1));
+  box-shadow: var(--plate-lift-hi);
+  padding: 12px 16px 12px 12px;
+}
+.dcard-art {
+  position: relative;
+  align-self: end;
+  margin-bottom: -12px;
+}
+.dcard-art .portrait { display: block; width: 100%; height: auto; }
+.dcard-text { min-width: 0; }
+.dcard-code {
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  color: var(--me, var(--ink-2));
+}
+.dcard-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  line-height: 1.04;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.dcard-name i { display: block; font-style: normal; font-weight: 400; font-size: 15px; color: var(--ink-2); }
+.dcard-name b { display: block; font-weight: 800; font-size: 27px; text-transform: uppercase; }
+.dcard-foot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.dcard-foot .natplate { width: 27px; flex: none; }
+.dcard-team {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dcard-num {
+  margin-left: auto;
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: 22px;
+  line-height: 1;
+  transform: skewX(var(--lean));
+}
+.dcard-note { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
+
+@media (max-width: 560px) {
+  .dcard { grid-template-columns: 88px minmax(0, 1fr); gap: 12px; }
+  .dcard-name b { font-size: 22px; }
+}
+
+/* ==========================================================================
+   THE SIGNING — the new-career screen
+   ==========================================================================
+
+   Two columns: the driver you are making, and the controls that make them.
+   The driver column is sticky on a desktop, so the thing being designed never
+   scrolls off while you are designing it, and stacks on top on a phone.
+
+   `--me` and `--me-2` are set on the root of this screen by `CareerCreate.ts`
+   from the player's own shell and pattern colours. They are the only place in
+   the game a colour means "you". */
+
+.signing {
+  display: grid;
+  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+/* --- The driver --------------------------------------------------------- */
+
+.sg-showcase { position: sticky; top: 4px; }
+
+/* The plinth: the car-launch pool of light this whole interface is set in,
+   with a person standing in it instead of a car. */
+.sg-plinth {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 10px 0;
+  background:
+    radial-gradient(120% 78% at 50% 4%,
+      rgba(var(--key), 0.13), rgba(var(--key), 0.02) 42%, transparent 70%),
+    linear-gradient(180deg, var(--carbon-2), var(--carbon-0));
+  box-shadow: var(--plate-lift-hi);
+  overflow: hidden;
+}
+/* The floor the light pools on. One ellipse, in the player's own colour, at
+   an opacity where it is atmosphere rather than a spotlight gel. */
+.sg-plinth::after {
+  content: '';
+  position: absolute;
+  left: 8%; right: 8%; bottom: -14%;
+  height: 34%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--me, #4a5666), transparent 76%);
+  opacity: 0.30;
+  pointer-events: none;
+}
+.sg-portrait { position: relative; }
+.sg-portrait .portrait { display: block; width: 100%; height: auto; }
+
+/* --- The name plate ----------------------------------------------------- */
+
+.sg-idcard { padding: 14px 4px 0; }
+.sg-code {
+  font-family: var(--font-data);
+  font-size: 12px;
+  letter-spacing: 0.34em;
+  color: var(--me, var(--ink-2));
+  text-shadow: 0 0 18px color-mix(in srgb, var(--me, #fff) 45%, transparent);
+}
+.sg-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  line-height: 1.02;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.sg-name i { display: block; font-style: normal; font-weight: 400; font-size: 17px; color: var(--ink-2); }
+.sg-name b { display: block; font-weight: 800; font-size: 30px; text-transform: uppercase; letter-spacing: 0.005em; }
+.sg-below {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.sg-nat { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sg-nat .natplate { width: 30px; flex: none; }
+.sg-natname {
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sg-num {
+  margin-left: auto;
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--ink);
+  transform: skewX(var(--lean));
+}
+
+/* --- The controls ------------------------------------------------------- */
+
+.sg-panel { min-width: 0; }
+.sg-section { margin: 26px 0 12px; }
+.sg-section:first-child { margin-top: 0; }
+.sg-section-title {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 14px;
+  border-top: 1px solid var(--line-2);
+  padding-top: 10px;
+}
+.sg-section-note { font-size: 12.5px; color: var(--ink-3); margin-top: 3px; }
+
+.sg-fields { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+.sg-field { flex: 1 1 190px; min-width: 0; }
+.sg-field label {
+  display: block;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+.sg-field input,
+.sg-field select {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--carbon-1);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  padding: 9px 10px;
+  appearance: none;
+}
+.sg-field select {
+  /* One chevron, drawn rather than downloaded. */
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-2) 50%),
+    linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 30px;
+}
+.sg-field input:focus-visible,
+.sg-field select:focus-visible {
+  outline: 2px solid var(--sig-white);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+/* --- The pattern families ----------------------------------------------- */
+
+.sg-families {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+}
+.sg-family {
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 4px 5px;
+  cursor: pointer;
+  display: block;
+  color: var(--ink-2);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.sg-family:hover { border-color: var(--line-2); background: var(--carbon-2); }
+.sg-family.on {
+  border-color: var(--me, var(--sig-white));
+  background: var(--carbon-3);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--me, var(--sig-white)) inset;
+}
+.sg-family:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+.sg-family-art { display: block; }
+.sg-family-art .portrait { width: 100%; height: auto; }
+.sg-family-name {
+  display: block;
+  font-family: var(--font-data);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sg-note { font-size: 12.5px; color: var(--ink-3); margin: 8px 0 4px; min-height: 1.2em; }
+
+/* --- The paint ---------------------------------------------------------- */
+
+.sg-paints { margin-top: 10px; }
+.sg-paintrow { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; }
+.sg-paintlabel {
+  flex: none;
+  width: 62px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.sg-pigments { display: flex; flex-wrap: wrap; gap: 5px; }
+.sg-pigment {
+  width: 25px;
+  height: 25px;
+  border-radius: 4px;
+  border: 1px solid rgba(6, 8, 11, 0.7);
+  background: var(--pig);
+  cursor: pointer;
+  padding: 0;
+}
+.sg-pigment.on { box-shadow: 0 0 0 2px var(--carbon-0), 0 0 0 4px var(--sig-white); }
+.sg-pigment:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 3px; }
+
+.sg-visors { display: flex; gap: 6px; flex-wrap: wrap; }
+.sg-visor {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: var(--visor);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.sg-visor.on { color: var(--ink); box-shadow: 0 0 0 1px var(--sig-white) inset; }
+.sg-visor:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+
+.sg-dice {
+  margin-top: 6px;
+  background: none;
+  border: 1px dashed var(--line-2);
+  border-radius: 5px;
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.sg-dice:hover { color: var(--ink); border-color: var(--ink-3); }
+.sg-dice:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 1px; }
+
+/* --- The seat ----------------------------------------------------------- */
+
+.sg-seat {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--team, var(--ink-3));
+  border-radius: 6px;
+  background: var(--carbon-1);
+  box-shadow: var(--plate-lift);
+  padding: 14px 16px;
+}
+.sg-seat-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sg-seat-team {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 18px;
+  letter-spacing: 0.02em;
+}
+.sg-seat-tier {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.sg-seat-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 12px 0 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.sg-fact-label {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.sg-fact-value { font-size: 14px; color: var(--ink); margin-top: 2px; }
+.sg-seat-line { font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
+
+@media (max-width: 780px) {
+  .signing { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .sg-showcase {
+    position: static;
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 14px;
+    align-items: center;
+  }
+  .sg-idcard { padding-top: 0; }
+  .sg-name b { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sg-family { transition: none; }
+}
+
+/* ==========================================================================
+   The audit sheet — `audit/career.html` only
+   ========================================================================== */
+
+.audit-sheet {
+  background: var(--carbon-0);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  padding: 28px 32px 60px;
+  min-height: 100vh;
+}
+.audit-head { margin-bottom: 26px; }
+.audit-title {
+  font-family: var(--font-display);
+  font-stretch: 120%;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 26px;
+}
+.audit-sub { color: var(--ink-2); font-size: 13px; margin-top: 4px; }
+.audit-label {
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 30px 0 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.audit-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; }
+.audit-row.tight { gap: 10px; }
+.audit-cell {
+  background: var(--carbon-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  box-shadow: var(--plate-lift);
+
+}
+.audit-cap {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-top: 8px;
+  text-align: center;
+}
+.audit-pigment { width: 56px; height: 34px; border-radius: 3px; }
