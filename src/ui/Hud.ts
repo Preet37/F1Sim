@@ -87,6 +87,7 @@ export class Hud {
 
   private speed!: HTMLElement;
   private gear!: HTMLElement;
+  private gearMode!: HTMLElement;
   private rpmFill!: HTMLElement;
   private rpmValue!: HTMLElement;
   private drsBadge!: HTMLElement;
@@ -477,8 +478,18 @@ export class Hud {
 
     const wheelRow = this.el('hud-wheelrow', bottom);
 
-    const gearDisc = this.el('hud-geardisc', wheelRow);
+    // The gear disc, and under it which gearbox the player is driving.
+    //
+    // Issue #45: a number key used to be a permanent, invisible mode change —
+    // press 4 on a menu and the car was in manual for the rest of the session
+    // with nothing anywhere on screen saying so. The mode is now a caption on
+    // the one element a driver already looks at, which is the least a mode can
+    // cost and still be a mode. It sits in the gap under the numeral inside the
+    // 58px disc rather than taking a new box, so no other panel moves.
+    const gearCol = this.el('hud-gearcol', wheelRow);
+    const gearDisc = this.el('hud-geardisc', gearCol);
     this.gear = this.el('hud-gear', gearDisc, 'N');
+    this.gearMode = this.el('hud-gearmode', gearCol, 'AUTO');
 
     const stats = this.el('hud-wheelstats', wheelRow);
     const speedCell = this.el('hud-cell', stats);
@@ -602,6 +613,12 @@ export class Hud {
       '<span class="k">&larr; &rarr;</span><span>Steer</span>' +
       '<span class="k">Shift</span><span>DRS (when available)</span>' +
       '<span class="k">E</span><span>ERS mode</span>' +
+      // The gearbox. Both lines are here because issue #45 was, in the end, a
+      // documentation failure as much as a code one: the number keys latched
+      // manual mode permanently and the only way out was a `0` that appeared
+      // in no menu, on no screen and in no help text.
+      '<span class="k">1&ndash;8</span><span>Select a gear (switches to manual)</span>' +
+      '<span class="k">G</span><span>Gearbox: automatic / manual</span>' +
       '<span class="k">C</span><span>Camera</span>' +
       '<span class="k">L</span><span>Request pit stop, or wave it off</span>' +
       '<span class="k">T</span><span>Pit sheet: next tyre</span>' +
@@ -1088,6 +1105,11 @@ export class Hud {
       : String(p.gear);
     setText(this.gear, gearLabel);
     setClass(this.gear, 'hud-gear' + (p.inReverse ? ' reverse' : ''));
+    // Which gearbox, straight off the input layer rather than off a copy — a
+    // second source of truth for a mode is how the mode goes invisible again.
+    const manual = input.gearMode === 'manual';
+    setText(this.gearMode, manual ? 'MANUAL' : 'AUTO');
+    setClass(this.gearMode, 'hud-gearmode' + (manual ? ' manual' : ''));
 
     setStyle(this.rpmFill, 'width', (p.rpmFraction * 100).toFixed(1) + '%');
     const rpmClass = p.rpmFraction > 0.965 ? 'hud-rpmfill rpm-red'

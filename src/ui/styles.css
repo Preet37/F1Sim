@@ -2126,6 +2126,21 @@ canvas#view {
 }
 .hud-gear.reverse { color: var(--warn); }
 
+/* Which gearbox the player is driving, captioned under the disc.
+   Kept to the disc's own width so the wheel row's layout is unchanged — see
+   `shoot:panels`, which fails on overlap. AUTO is deliberately quiet: it is the
+   default and a HUD that shouts its default trains people to stop reading it.
+   MANUAL is not, because it is a state the player chose and can leave. */
+.hud-gearcol { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 0 0 58px; }
+.hud-gearmode {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  color: rgba(232, 236, 244, 0.5);
+}
+.hud-gearmode.manual { color: var(--accent, #ffd23f); }
+
 .hud-wheelstats { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; justify-content: space-around; }
 .hud-cell { display: flex; flex-direction: column; align-items: center; min-width: 0; }
 .hud-celllabel {
@@ -2367,8 +2382,10 @@ canvas#view {
     padding: 5px 6px 6px;
   }
   .hud-wheelrow { gap: 5px; }
+  .hud-gearcol { flex-basis: 42px; gap: 1px; }
   .hud-geardisc { width: 42px; height: 42px; flex-basis: 42px; border-width: 2px; }
   .hud-gear { font-size: 25px; }
+  .hud-gearmode { font-size: 8px; letter-spacing: 0.06em; }
   .hud-wheelstats { gap: 5px; }
   .hud-cell { min-width: 0; }
   .hud-celllabel { font-size: 8px; letter-spacing: 0.04em; }
@@ -2550,8 +2567,10 @@ canvas#view {
     padding: 5px 6px 6px;
   }
   .hud-wheelrow { gap: 6px; }
+  .hud-gearcol { flex-basis: 42px; gap: 1px; }
   .hud-geardisc { width: 42px; height: 42px; flex-basis: 42px; border-width: 2px; }
   .hud-gear { font-size: 25px; }
+  .hud-gearmode { font-size: 8px; letter-spacing: 0.06em; }
   .hud-wheelstats { gap: 6px; }
   .hud-cell { min-width: 0; }
   .hud-celllabel { font-size: 8px; }

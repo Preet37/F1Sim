@@ -22,6 +22,7 @@
     "validate:integrity": "tsx scripts/probeIntegrity.ts",
     "probe:curvature": "tsx scripts/probeCurvature.ts",
     "probe:handling": "tsx scripts/probeHandling.ts",
+    "probe:gearbox": "tsx scripts/probeGearbox.ts",
     "probe:framerate": "tsx scripts/probeFrameRate.ts",
     "validate:world": "tsx scripts/probeWorld.ts",
     "probe:racingline": "tsx scripts/probeRacingLine.ts",

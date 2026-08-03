@@ -472,6 +472,14 @@ class Game {
     const inSession = s === 'racing';
     this.screenRoot.classList.toggle('hidden', inSession);
     this.hud.setVisible(inSession);
+    // Keys are driving inputs only while there is a car to drive. `attach` runs
+    // once at startup and its window listener is live on every screen, so
+    // without this a digit pressed on the career page selected a gear and an `E`
+    // changed the ERS mode, silently, for the session that had not started yet.
+    // That is the route by which issue #45 was reached — "trying to run
+    // something on the careers page". Everything this object produces is already
+    // read only while `screen === 'racing'`, so nothing else changes.
+    this.input.enabled = inSession;
     // The pause menu belongs to the track and to nothing else. Leaving without
     // clearing it would strand a modal over the menus.
     if (!inSession && this.pauseMenu?.visible) {
@@ -5282,17 +5290,36 @@ class Game {
         if (this.input.pitRepairTogglePressed) this.pitPrompt.toggleRepair(engine);
         if (this.input.pitConfirmPressed) this.pitPrompt.confirm();
 
+        // The manual selector follows the gearbox.
+        //
+        // A sequential selector's position IS the gear — there is nowhere else
+        // for it to be — and after issue #45 the gearbox can move on its own
+        // even in manual, because the limiter backstop in `VehiclePhysics`
+        // upshifts a car that has run out of revs whatever mode it is in. Left
+        // unsynced, the request would still name the gear the driver picked ten
+        // seconds ago, so asking for it AGAIN would be no change at all and do
+        // nothing. Written after `input.update` has already published this
+        // frame's press, and keystrokes cannot interleave with a synchronous
+        // frame, so this can never overwrite an input the player has just made.
+        if (this.input.gearMode === 'manual') {
+          this.input.gearRequest = Math.max(1, player.physics.gear);
+        }
+
         // Paddle shifts. Resolved here rather than in the input layer because
         // "one gear up" only means something against the gear the gearbox is
-        // actually in, and this is the only place that knows it. Selecting 1st
-        // clears the manual request the same way the 0 key does, so a player
-        // who wants the automatic back does not have to find another control.
+        // actually in, and this is the only place that knows it. A paddle means
+        // manual from here on — there is no automatic gearbox in the real sport
+        // — which `selectGear` records and the HUD prints, and `G` or `0` gives
+        // the automatic back. The old comment here claimed selecting 1st cleared
+        // the manual request "the same way the 0 key does"; it never did.
+        // `clamp(from - 1, 1, 8)` from first gear is first gear, so the only way
+        // out was a key that appeared in no help text.
         if (this.input.shiftUpPressed || this.input.shiftDownPressed) {
           const dir = this.input.shiftUpPressed ? 1 : -1;
           const from = this.input.gearRequest > 0
             ? this.input.gearRequest
             : Math.max(1, player.physics.gear);
-          this.input.gearRequest = clamp(from + dir, 1, 8);
+          this.input.selectGear(clamp(from + dir, 1, 8));
           engine.playerControls.gearRequest = this.input.gearRequest;
         }
 
