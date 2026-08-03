@@ -187,8 +187,10 @@ Run `npm run` to list. The important ones:
 | `shoot:panels` | Measures HUD boxes; fails on overlap |
 
 **Known-failing, all pre-existing and documented:**
-- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". Traced to an
-  engine call site that never fires (`RaceEngine.ts` ~2525). **Real bug, unfixed.**
+- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". **Do not go to
+  `RaceEngine.ts` ~2525** — the earlier "call site that never fires" diagnosis is wrong and
+  that code works. See §6 "Tooling" and issue #28: the probe never writes
+  `engine.playerControls`, so its own car parks and the stopped-car bug freezes the field.
 - `validate:flags` — safety-car form-up, three failures, stable numbers.
 
 ---
@@ -417,6 +419,23 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   first-run-only via a flag set on their very first load, and the podium only fires after
   finishing a career *race*.
 
+### Tooling
+- **`scripts/` is now typechecked.** `tsconfig.scripts.json` covers `scripts` and `audit`
+  as a *separate* project — separate so `@types/node` cannot leak into `src/` and let
+  browser code reach for `process`, `fs` and `Buffer` and still compile. Wired into both
+  `npm run typecheck` and `npm run build`. **Proved it can fail** rather than assumed: a
+  planted `const x: number = "string"` in `scripts/probeGamepad.ts` produced
+  `TS2322 … Found 1 error` and a non-zero exit. The gap that let committed merge-conflict
+  markers ship inside an audit script is closed; `check:conflicts` is no longer the only
+  guard. (Issue #7, closed 2026-08-03.)
+- **The `probe:hudtext` diagnosis in this document was wrong.** It was recorded here and in
+  issue #5 as "an engine call site that never fires (`RaceEngine.ts` ~2525)". Issue #28
+  establishes that the call site is working code: the probe builds a race with
+  `playerIndex: 0` and never writes `engine.playerControls`, so its player car parks on the
+  grid, the stopped-car bug freezes the whole field, and nothing happens that would file a
+  bulletin. **An agent sent to that call site will find nothing wrong.** Confirmation that
+  fixing #28 turns the probe green is pending on the #28 branch.
+
 ---
 
 ## 7. What is still wrong — the honest list
@@ -446,11 +465,9 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   narrowing the road, which moves the speed solver, `validate:limits` and `probe:racingline`.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug.**
+- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
+  but the *diagnosis* recorded here was wrong — see the correction in §6 under "Tooling".
 - `validate:flags` — safety-car form-up.
-- **`tsconfig` includes only `src`**, so nothing in `scripts/` is typechecked. This let
-  committed merge-conflict markers through once. `check:conflicts` now guards that specific
-  failure but the general gap remains.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not
