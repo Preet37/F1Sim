@@ -451,6 +451,13 @@ for (const [distance, a] of perDistance) {
 
 console.log('');
 console.log('  the real sport, per Grand Prix:   1-2 retired,  ~1-3 penalties across 20 cars');
+// The mean is not what a player complains about. They complain about the race
+// they sat through, and the report this probe exists for was a screenshot of
+// one race — so the worst of the sweep is quoted beside the average.
+for (const [distance, a] of perDistance) {
+  console.log(`  worst single ${distance} race:      ${a.worstRetired} retired, ` +
+    `${a.worstPenalisedCars} of 20 carrying a penalty`);
+}
 
 for (const [distance, a] of perDistance) {
   console.log('');
