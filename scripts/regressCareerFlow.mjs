@@ -32,9 +32,24 @@ try {
   process.exit(0);
 }
 
-const PORT = 5393;
-const server = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], {
-  stdio: ['ignore', 'pipe', 'pipe'],
+// Port 0: the OS picks, and the banner tells us which.
+//
+// Same reason as `regressSessionExit.mjs` — a fixed port with `--strictPort`
+// means only one copy of this can run on a machine, and with several agents in
+// parallel worktrees the losers die on a timeout whose message blames startup
+// speed rather than the collision that actually happened.
+const FIXED_PORT = Number(process.env.REGRESS_CAREER_PORT || 0);
+let PORT = FIXED_PORT;
+const server = spawn(
+  'npx',
+  FIXED_PORT
+    ? ['vite', '--port', String(FIXED_PORT), '--strictPort']
+    : ['vite', '--port', '0'],
+  { stdio: ['ignore', 'pipe', 'pipe'] },
+);
+server.stdout.on('data', (b) => {
+  const m = String(b).match(/localhost:(\d+)/);
+  if (m) PORT = Number(m[1]);
 });
 const shutdown = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } };
 process.on('exit', shutdown);
@@ -49,15 +64,20 @@ process.on('exit', shutdown);
  * Polling the URL is both simpler and honest about what is being waited for.
  */
 {
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + 60000;
   for (;;) {
-    try {
-      const res = await fetch(`http://localhost:${PORT}/`);
-      if (res.ok) break;
-    } catch {
-      // Not listening yet.
+    // `PORT` is 0 until the banner names it, and there is nothing to poll yet.
+    if (PORT) {
+      try {
+        const res = await fetch(`http://localhost:${PORT}/`);
+        if (res.ok) break;
+      } catch {
+        // Not listening yet.
+      }
     }
-    if (Date.now() > deadline) throw new Error('vite did not answer on ' + PORT + ' in 45s');
+    if (Date.now() > deadline) {
+      throw new Error(`vite did not answer in 60s (port ${PORT || 'never announced'})`);
+    }
     await new Promise((r) => setTimeout(r, 300));
   }
 }
