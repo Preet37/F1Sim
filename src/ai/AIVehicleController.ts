@@ -1668,12 +1668,24 @@ export class AIVehicleController {
      *   car-to-car contacts    20.0 -> 28.0 a race    WORSE, 2 of 3 seeds
      *   retirements             3.00 -> 3.67 a race   worse
      *
-     * Pace was untouched — Bahrain's fastest race lap identical to the digit,
-     * 1:56.917, with the same 197 overtakes — so it is not a caution tax. The
-     * mechanism appears to be concertina: a field that brakes earlier for the
-     * car in front bunches harder into the corner and then touches more once it
-     * is there. Excursions are an intermediate quantity; retirements and
-     * contacts are what the player sees, and both moved the wrong way.
+     * And `validate:race` at Monaco, which is where it showed up worst — the
+     * tightest circuit on the calendar, so the most to bunch:
+     *
+     *   finishers of 20         15 -> 0     with the change, nobody finished
+     *   retirements              5 -> 8
+     *   position swaps         277 -> 485   a field shuffling, not racing
+     *
+     * Pace itself was never the cost: Bahrain's fastest race lap is 1:56.917
+     * either way, identical to the digit. It is not a caution tax, it is a
+     * concertina — a field that brakes earlier for the car in front arrives at
+     * the corner bunched harder and touches more once it is there. Excursions
+     * are an intermediate quantity; finishers, retirements and contacts are what
+     * the player sees, and all three moved the wrong way.
+     *
+     * (Overtakes at Bahrain read 181 without and 197 with. Do not read that as
+     * the change buying overtaking — at Monaco the same counter went to 485 for
+     * a race no one finished, which is what a bunched field does to a
+     * position-swap count.)
      *
      * The braking-zone error above is real and still unfixed. Whatever fixes it
      * has to not bunch the field to do it.
