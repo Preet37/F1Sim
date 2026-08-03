@@ -2,6 +2,7 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CameraDirector, CAMERA_MODES, type CameraMode } from '../src/render/CameraDirector';
 import { CIRCUITS } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
+import { bankedCarGroundY } from '../src/render/TrackMesh';
 import type { Obstacle } from '../src/track/WorldObstacles';
 
 /**
@@ -99,6 +100,8 @@ for (const def of CIRCUITS) {
 
   const hits: Hit[] = [];
   let underground = 0;
+  let worstUnderM = 0;
+  let worstUnderMode = '';
 
   for (const mode of CAMERA_MODES) {
     const dir = new CameraDirector(16 / 9);
@@ -121,8 +124,27 @@ for (const def of CIRCUITS) {
       dir.update(8 * PHYSICS_DT, car, engine.track, engine.world);
       const p = dir.camera.position;
 
-      const roadY = engine.track.elevation[engine.track.indexAt(car.s)];
-      if (p.y < roadY - UNDERGROUND_M) underground++;
+      // THE ROAD UNDER THE CAR, not the centreline's elevation.
+      //
+      // Corrected while fixing issue #54, and it is the same mistake `carGroundY`
+      // made before issue #3: on a banked corner the asphalt is not at the
+      // centreline's height. At Zandvoort a car on the low side of 18 degrees
+      // stands up to 2.5m BELOW the centreline, so a camera riding with it is
+      // 2.5m under a datum that is nowhere near the surface — and this check
+      // read that as the camera being underground. It could not fire before
+      // because `CameraDirector` clamped every camera to `centreline + 0.35`,
+      // which is also the bug that clamp turned out to be: a floor above the
+      // road pins an onboard eye to itself. With the clamp measured against
+      // the banked surface the camera legitimately goes below the centreline,
+      // and the only honest datum for "underground" is the surface the car is
+      // standing on. `probe:banking` forbids the flat rule everywhere in src/
+      // for exactly this reason.
+      const roadY = bankedCarGroundY(engine.track, car.s, car.lateral);
+      if (p.y < roadY - UNDERGROUND_M) {
+        underground++;
+        const depth = roadY - p.y;
+        if (depth > worstUnderM) { worstUnderM = depth; worstUnderMode = mode; }
+      }
 
       engine.world.obstacles.query(p.x, p.z, 1, scratch);
       for (const i of scratch) {
@@ -153,8 +175,14 @@ for (const def of CIRCUITS) {
     );
   }
   if (underground > 0) {
-    console.log(def.id.padEnd(14) + `${underground} samples below the road surface`);
-    failures.push(`${def.id}: a camera went underground on ${underground} samples`);
+    console.log(
+      def.id.padEnd(14) + `${underground} samples below the road surface, worst ` +
+      `${worstUnderM.toFixed(2)}m (${worstUnderMode})`,
+    );
+    failures.push(
+      `${def.id}: the ${worstUnderMode} camera went ${worstUnderM.toFixed(2)}m under the ` +
+      `road on ${underground} samples`,
+    );
   }
 }
 
