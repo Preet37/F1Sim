@@ -205,6 +205,7 @@ Run `npm run` to list. The important ones:
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
+| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
 - ~~`probe:hudtext`~~ — **passes as of the `team-radio-voice` merge.** The bulletin failure
@@ -972,7 +973,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Area | What |
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
-| Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
+| Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
@@ -981,6 +982,71 @@ against every threshold and so stops binding silently rather than throwing.
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
+
+### `probe:smoke` had never opened the front end it claimed to cover — issue #62
+
+The probe whose own header said *"the menus, the career screens and the settings pages had
+no automated coverage whatsoever"* reported
+
+```
+15 screens walked
+PASS — every reachable front-end screen renders and throws nothing.
+```
+
+having opened **the first-run driver screen and thirteen helmet colours**.
+`grep -icE "setting|driver|career|garage|paddock"` over a full run's log returned **0**.
+Every front-end change merged since it was written had counted it as cover, and at its
+default depth it spent **35 minutes** re-photographing that one screen in permutations
+(`Dark > Gold`, `Plain > Starburst`, …). This is PROJECT.md §3.2 in its worst form: not a
+probe that *would* pass a broken feature, a probe that never looks at the code under test.
+
+**Three causes, and each needed its own fix.**
+
+- **It booted with EMPTY storage**, so it started *inside* the first-run flow rather than on
+  the front page. There is one button out of that flow and every other button on it repaints
+  a helmet. It is also why `Continue` and `Team HQ` were unreachable in principle — both are
+  conditional on a saved career, and an empty browser has none. The walk now makes a driver
+  and two careers **through the real buttons**, captures the storage they leave, and restores
+  it before every later boot, so the walk starts on the front page of an established install.
+- **It de-duplicated screens by NAME** — the label of the button that led to them. Identity
+  is now what a screen *is*: the shell's own `Screen` id, plus the headings the page prints,
+  plus the SET of buttons on it. The button that was clicked appears nowhere in the key.
+  Thirteen colours collapse to one; the eight settings tabs stay eight; the five screens that
+  all report `team-hq` (factory, paint shop, engine deal, driver market, preparation) stay
+  five, because the heading separates them. **Asserted, not assumed:** the walk clicks all 61
+  controls on the driver screen and fails if any one of them reads as a different screen.
+- **Nothing said which screens it was supposed to reach**, so reaching none was
+  indistinguishable from a pass. There is now a **required set of 28 routes**, each of which
+  must open *and land on the screen id and heading it names* — the three `team-hq` rooms
+  would otherwise all pass by falling back to the factory.
+
+**Measured on merged `main`, same machine, same software rasteriser:**
+
+| | old | new |
+|---|---|---|
+| distinct screens | **15**, of which 14 are one screen | **35** |
+| screen ids reached, of 20 declared | **2** (`driver-create`, `menu`) | **15** |
+| Settings / drivers / career / paddock / Team HQ | none | all |
+| wall clock, default depth | **35 min** | **11.1 min** (665s; `SMOKE_FREE_S=0` gives the whole of the part that can go red in ~4 min) |
+
+**Proved it goes red, and the contrast is the artefact.** `buildSettingsScreen` was made to
+throw on entry — a screen the old crawl had never opened. The old probe: `15 screens walked`
+/ `PASS — every reachable front-end screen renders and throws nothing`, **exit 0, 97s**. The
+new probe on the same build: **exit 1**, twelve failures, naming the throw
+(`"settings · Settings" threw: uncaught: TypeError`), all eight tabs and the controller page
+as `UNREACHABLE`, and `screen "controller" is in the required set and the walk never opened
+it`.
+
+**What the walk found now that it looks:** nothing that throws. Thirty-five screens, zero
+uncaught exceptions, zero `console.error`, no blank screens. It also **corroborates #38
+independently** — `PressConference.ts` and `GarageScene.ts` have no import, no screen id and
+no button in `src/main.ts`, so no walk of the front end can reach them — and it prints the
+five declared screen ids it does **not** reach and why: `intro` (deliberately skipped,
+`regress:career` clicks the real skip button), and `simulating`, `racing`, `results` and
+`event`, which all require a session to be launched. That is other probes' ground
+(`probe:framing`, `probe:hudtext`, `shoot:panels`, `probe:qualiretire`) and the boundary is
+stated rather than silently crossed. **The retirement flow is on the same list**: it needs an
+accident, and `probe:qualiretire` stages one.
 
 ### Measured, deferred, and still true
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
