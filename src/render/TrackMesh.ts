@@ -166,6 +166,17 @@ export const Y_ROAD = 0.02;
 export const ROAD_SURFACE_Y = Y_ROAD;
 
 /**
+ * Name carried by the mesh of the racing surface itself.
+ *
+ * The asphalt is one merged strip among nine surfaces in the circuit group, and
+ * `probe:banking` has to raycast THAT ONE to ask what height the road is drawn
+ * at under a car. Exported so the probe imports the name rather than matching a
+ * literal or counting children — the same reason `Terrain` exports
+ * `GROUND_MESH_NAME`.
+ */
+export const ROAD_MESH_NAME = 'road-asphalt';
+
+/**
  * The y a car's ORIGIN must sit at for its tyres to stand on the drawn asphalt.
  *
  * A function rather than a constant the caller adds, so that `probe:carrig` can
@@ -1872,7 +1883,8 @@ export function buildTrackMeshes(
     addMesh(root, marks, false, geometries, materials, detail, SURFACES.paint, 2);
   }
 
-  addMesh(root, road, false, geometries, materials, detail, SURFACES.asphalt);
+  addMesh(root, road, false, geometries, materials, detail, SURFACES.asphalt, 0,
+    ROAD_MESH_NAME);
   // Biased in the order they are stacked: kerbs over paint over road over
   // run-off, so a depth tie anywhere in that stack resolves the way the
   // millimetres say it should.
@@ -2302,6 +2314,15 @@ function addMesh(
    * kerb skirt far enough to win on depth would lift it visibly off the ground.
    */
   depthBias = 0,
+  /**
+   * Name given to the finished mesh, for the surfaces a probe has to FIND.
+   *
+   * Empty for everything else. `probe:banking` raycasts the drawn asphalt to
+   * check that a car is standing on it, and it cannot ask for "the third
+   * vertex-coloured child" — that is an identification a reordering silently
+   * inverts. Same reason `Terrain` exports `GROUND_MESH_NAME`.
+   */
+  name = '',
 ): void {
   const geo = builder.build();
   if (!geo) return;
@@ -2319,6 +2340,7 @@ function addMesh(
   // lighting or post-processing disguises.
   detail.apply(mat, profile);
   const mesh = new THREE.Mesh(geo, mat);
+  if (name) mesh.name = name;
   mesh.receiveShadow = true;
   mesh.frustumCulled = false; // one object spanning the whole circuit
   root.add(mesh);

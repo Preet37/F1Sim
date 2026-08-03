@@ -1,30 +1,67 @@
 /**
- * DO THE CARS STAND ON THE BANKED ROAD, OR ON THE CENTRELINE'S HEIGHT?
+ * DO THE CARS STAND ON THE ROAD THAT IS DRAWN, OR ON THE CENTRELINE'S HEIGHT?
  *
  * `carGroundY` took the centreline's elevation and added the road's thickness.
  * That is right in the middle of the road and wrong everywhere else, because a
  * banked road is TILTED: the asphalt `lateral` metres off the centreline sits
  * `lateral * tan(bank)` above or below the centreline, and a car standing on it
- * has to sit there too.
+ * has to sit there too. Two circuits on the calendar are banked enough for it to
+ * matter and one of them — Zandvoort, 18 degrees through Hugenholtz and the
+ * final turn — is banked enough that it was the largest positioning error in the
+ * game.
  *
- * Two circuits on the calendar are banked enough for it to matter, and one of
- * them is banked enough that the error is the largest positioning defect in the
- * game. This probe measures, per circuit:
+ * ---------------------------------------------------------------------------
+ * Why this builds the circuit instead of doing the arithmetic
+ * ---------------------------------------------------------------------------
  *
- *   the drawn asphalt height under a car at a given lateral offset, taken from
- *   `bankHeight` — the SAME function `buildTrackMeshes` sweeps the road with —
- *   against the height each rule places the car's origin at.
+ * The first version of this probe computed the height of the asphalt as
+ * `elevation + bankHeight(...) + ROAD_SURFACE_Y` and compared it against
+ * `bankedCarGroundY`. Both sides of that comparison ARE the placement rule. It
+ * stays green with the banking taken out of the ROAD MESH, and green again with
+ * every car in the game placed by the flat rule, because it never looked at a
+ * triangle and it never looked at a caller. A probe whose two sides are the same
+ * expression is a tautology — the same shape of mistake as the racing-line probe
+ * that flew the reference car at the reference car's own line.
  *
- * The old rule's error is a number the renderer never knew it had. The new
- * rule's must be zero by construction, and this asserts it: if the car is
- * placed with anything other than the road's own arithmetic, they will diverge.
+ * So it does two things that can fail:
+ *
+ *  1. IT RAYCASTS THE DRAWN ASPHALT. `buildTrackMeshes` is run for real on every
+ *     circuit and the mesh named `ROAD_MESH_NAME` is shot from above at the
+ *     point where a car would be standing. The answer is the y of a triangle the
+ *     player can see, compared against the y the placement rule puts the car's
+ *     origin at. Take the banking out of either side and the two disagree.
+ *
+ *  2. IT CHECKS WHO IS ALLOWED TO USE THE FLAT RULE. `carGroundY` knows nothing
+ *     about lateral offset and is right only on the centreline, so outside
+ *     `TrackMesh.ts` — which owns both — nothing in `src/` may call it. That is
+ *     the half of the defect with no geometry in it: the mesh can be perfect and
+ *     the cars still placed by the wrong function, which is the state issue #3
+ *     described.
+ *
+ * Sampling is at the mesh's own node stride, so each ray lands on a row of mesh
+ * vertices and the comparison is exact rather than an argument about how a chord
+ * sags across a quad.
  *
  * Run: npm run probe:banking
  */
 
-import { CIRCUITS } from '../src/data/tracks/circuits';
-import { TrackSpline } from '../src/track/TrackSpline';
-import { bankHeight, carGroundY, bankedCarGroundY, ROAD_SURFACE_Y } from '../src/render/TrackMesh';
+import * as THREE from 'three';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { installCanvasStub } from './lib/domStub';
+
+// The renderer paints signage and surface-detail textures into canvases as it
+// builds. None of that is measured here, but it has to succeed before there are
+// any triangles — hence the stub, installed BEFORE the render modules load, and
+// hence the dynamic imports: a static `import` is hoisted above this call.
+installCanvasStub();
+
+const { CIRCUITS } = await import('../src/data/tracks/circuits');
+const { TrackSpline } = await import('../src/track/TrackSpline');
+const { buildWorldModel } = await import('../src/track/WorldObstacles');
+const {
+  carGroundY, bankedCarGroundY, buildTrackMeshes, ROAD_SURFACE_Y, ROAD_MESH_NAME,
+} = await import('../src/render/TrackMesh');
 
 function pad(s: string, w: number): string { return s.padStart(w); }
 function padr(s: string, w: number): string { return s.padEnd(w); }
@@ -40,42 +77,134 @@ function padr(s: string, w: number): string { return s.padEnd(w); }
  */
 const RACING_OFFSET_FRAC = 0.8;
 
-console.log('\n' + '='.repeat(94));
-console.log('BANKING — is a car placed on the road it is standing on?');
-console.log('='.repeat(94));
+/**
+ * Node stride the road mesh is built at on the `high` tier.
+ *
+ * Sampling on the stride puts every ray on a row of mesh vertices, where the
+ * drawn surface and the spline agree exactly. Off the stride the two differ by
+ * the sag of a chord across a 6m quad, which is real but is a tessellation
+ * question and not the one this probe asks.
+ */
+const MESH_STEP = 2;
+
+/**
+ * How far from the local elevation a hit still counts as THIS piece of road.
+ *
+ * Suzuka crosses over itself and several circuits run back alongside a lower
+ * section, so a ray fired down at a point on the road can pass through another
+ * leg of the lap on the way. Hits further than this from the local elevation
+ * belong to that other leg and are discarded; of what remains the HIGHEST is
+ * taken, because the surface a car stands on is the topmost one under it.
+ *
+ * Not "the hit nearest the elevation", which was tried and is wrong: at Suzuka's
+ * crossover the two legs are drawn 20mm apart in height, and nearest-in-
+ * elevation picked the OTHER leg's asphalt by 0.3mm and reported a 20mm error
+ * against a road that was drawn exactly right. Nor "nearest to where the car is
+ * being placed", which would choose the triangle that makes the answer come out
+ * green. Five metres is far wider than any error this is looking for — the worst
+ * on the calendar was 1.56m — so the window cannot hide one.
+ */
+const SAME_ROAD_M = 5;
+
+console.log('\n' + '='.repeat(102));
+console.log('BANKING — is a car placed on the asphalt that is DRAWN under it?');
+console.log('='.repeat(102));
 console.log(`Road thickness ${(ROAD_SURFACE_Y * 1000).toFixed(0)}mm. Cars sampled at ` +
-  `${(RACING_OFFSET_FRAC * 100).toFixed(0)}% of half-width, both sides, every node.`);
-console.log('"error" is how far the car origin sits from the drawn asphalt under it.\n');
+  `${(RACING_OFFSET_FRAC * 100).toFixed(0)}% of half-width, both sides, every ${MESH_STEP} nodes.`);
+console.log('Asphalt height is RAYCAST off the built road mesh. "error" is how far the car');
+console.log('origin sits from the triangle underneath it.\n');
 
 console.log(
-  padr('circuit', 14) + pad('max bank', 10) + pad('banked m', 10) +
+  padr('circuit', 14) + pad('max bank', 10) + pad('banked', 8) + pad('rays', 8) +
+  pad('overlap', 9) +
   '  |' + pad('OLD max err', 13) + pad('OLD mean', 10) +
   '  |' + pad('NEW max err', 13) + pad('NEW mean', 10),
 );
 
 let worstOld = 0, worstOldAt = '';
 let worstNew = 0, worstNewAt = '';
+let misses = 0;
+let missDetail = '';
+let overlaps = 0;
+let worstOverlapM = 0;
+let worstOverlapAt = '';
+
+const down = new THREE.Vector3(0, -1, 0);
+const origin = new THREE.Vector3();
+const ray = new THREE.Raycaster();
+ray.far = 2000;
 
 for (const def of CIRCUITS) {
   const t = new TrackSpline(def);
+  const world = buildWorldModel(t);
+  const meshes = buildTrackMeshes(t, 'high', world);
+  const road = meshes.root.getObjectByName(ROAD_MESH_NAME) as THREE.Mesh | undefined;
+  if (!road) {
+    console.log(`FAIL — no mesh named ${ROAD_MESH_NAME} at ${def.id}. The asphalt cannot be found.`);
+    process.exitCode = 1;
+    meshes.dispose();
+    continue;
+  }
+
   let maxBank = 0;
   let bankedNodes = 0;
+  let sampled = 0;
+  let circuitOverlaps = 0;
   let oldMax = 0, oldSum = 0;
   let newMax = 0, newSum = 0;
   let n = 0;
 
-  for (let i = 0; i < t.count; i++) {
+  for (let i = 0; i < t.count; i += MESH_STEP) {
     const s = t.dist[i];
     const bank = t.banking[i];
+    sampled++;
     if (Math.abs(bank) > maxBank) maxBank = Math.abs(bank);
     if (Math.abs(bank) > 1e-6) bankedNodes++;
 
     const hw = t.width[i] * 0.5;
     for (const side of [-1, 1]) {
       const lateral = side * hw * RACING_OFFSET_FRAC;
-      // The road the mesh actually draws under this point. Same call
-      // `buildTrackMeshes` makes for its own vertices.
-      const asphalt = t.elevation[i] + bankHeight(bank, lateral, hw) + ROAD_SURFACE_Y;
+      const x = t.px[i] + t.nx[i] * lateral;
+      const z = t.pz[i] + t.nz[i] * lateral;
+
+      // What the player can see: the height of the triangle under the car.
+      origin.set(x, t.elevation[i] + 500, z);
+      ray.set(origin, down);
+      const hits = ray.intersectObject(road, false);
+      let asphalt = -Infinity;
+      let inWindow = 0;
+      for (const h of hits) {
+        if (Math.abs(h.point.y - t.elevation[i]) > SAME_ROAD_M) continue;
+        inWindow++;
+        if (h.point.y > asphalt) asphalt = h.point.y;
+      }
+      if (inWindow === 0) {
+        misses++;
+        if (!missDetail) missDetail = `${def.id} s=${s.toFixed(0)} lat=${lateral.toFixed(1)}`;
+        continue;
+      }
+      // TWO PIECES OF ASPHALT AT ONE POINT. The lap crosses itself and neither
+      // leg is drawn as a bridge, so there is genuinely no single answer to
+      // "what is the road height here" — Suzuka's crossover draws its two legs
+      // within a few centimetres of each other. That is a real defect and a
+      // separate one; it is counted and printed rather than charged to the
+      // banking rule, which cannot be measured at a point where the question
+      // is ambiguous.
+      if (inWindow > 1) {
+        overlaps++;
+        circuitOverlaps++;
+        const gapTop = asphalt;
+        let gapBottom = Infinity;
+        for (const h of hits) {
+          if (Math.abs(h.point.y - t.elevation[i]) > SAME_ROAD_M) continue;
+          if (h.point.y < gapBottom) gapBottom = h.point.y;
+        }
+        if (gapTop - gapBottom > worstOverlapM) {
+          worstOverlapM = gapTop - gapBottom;
+          worstOverlapAt = `${def.id} s=${s.toFixed(0)}`;
+        }
+        continue;
+      }
 
       // What each rule places the car's origin at.
       const oldY = carGroundY(t.elevationAt(s));
@@ -90,33 +219,80 @@ for (const def of CIRCUITS) {
       if (eNew > worstNew) { worstNew = eNew; worstNewAt = `${def.id} s=${s.toFixed(0)}`; }
     }
   }
+  meshes.dispose();
 
   const m = (v: number): string => v.toFixed(3) + 'm';
   console.log(
     padr(def.id, 14) +
     pad(((maxBank * 180) / Math.PI).toFixed(1) + 'deg', 10) +
-    pad(((100 * bankedNodes) / t.count).toFixed(0) + '%', 10) +
+    pad(((100 * bankedNodes) / sampled).toFixed(0) + '%', 8) +
+    pad(String(n), 8) + pad(String(circuitOverlaps), 9) +
     '  |' + pad(m(oldMax), 13) + pad(m(oldSum / n), 10) +
     '  |' + pad(m(newMax), 13) + pad(m(newSum / n), 10),
   );
 }
 
-console.log('\n' + '-'.repeat(94));
-console.log(`worst error, OLD rule: ${worstOld.toFixed(3)}m  (${worstOldAt})`);
-console.log(`worst error, NEW rule: ${worstNew.toFixed(3)}m  (${worstNewAt})`);
-console.log('');
+console.log('\n' + '-'.repeat(102));
+console.log(`worst error, OLD rule (centreline height): ${worstOld.toFixed(3)}m  (${worstOldAt})`);
+console.log(`worst error, NEW rule (bankedCarGroundY):  ${worstNew.toFixed(3)}m  (${worstNewAt})`);
+if (misses > 0) {
+  console.log(`rays that found no asphalt within ${SAME_ROAD_M}m of the elevation: ${misses}` +
+    ` (first: ${missDetail})`);
+}
+if (overlaps > 0) {
+  console.log(`samples with two pieces of asphalt drawn at them: ${overlaps}, worst separation ` +
+    `${worstOverlapM.toFixed(3)}m (${worstOverlapAt}). Not a banking error — the lap crosses`);
+  console.log('itself and neither leg is drawn as a bridge. Excluded from the figures above.');
+}
 
-// The new rule is not "better", it is EXACT — it calls the same function the
-// road mesh is swept with. A residue here means the car and the road have been
-// allowed to disagree again, which is the whole defect.
+/** Every `.ts` file under a directory, recursively. */
+function tsFilesUnder(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) tsFilesUnder(p, out);
+    else if (entry.endsWith('.ts')) out.push(p);
+  }
+  return out;
+}
+
+const OWNER = join('src', 'render', 'TrackMesh.ts');
+const strays: string[] = [];
+for (const file of tsFilesUnder('src')) {
+  if (file.endsWith(OWNER)) continue;
+  const src = readFileSync(file, 'utf8');
+  src.split('\n').forEach((line, k) => {
+    // The CALL, not the word: comments across the renderer refer to
+    // `carGroundY` by name and should keep doing so.
+    if (/(^|[^a-zA-Z.`])carGroundY\s*\(/.test(line) && !/^\s*(\*|\/\/)/.test(line)) {
+      strays.push(`${file}:${k + 1}  ${line.trim()}`);
+    }
+  });
+}
+console.log('');
+if (strays.length > 0) {
+  console.log('FAIL — the flat, centreline-only rule is called outside TrackMesh.ts:');
+  for (const s of strays) console.log(`  ${s}`);
+  console.log('Anything placed at a lateral offset must go through `bankedCarGroundY`.');
+  process.exitCode = 1;
+} else {
+  console.log('Call sites: `carGroundY` is called only inside TrackMesh.ts; every placement');
+  console.log('elsewhere in src/ goes through `bankedCarGroundY`.');
+}
+
+// The new rule is not "better", it is EXACT — the road mesh and the car are
+// swept by the same `bankHeight`. A residue here means the car and the road have
+// been allowed to disagree again, which is the whole defect.
 const TOL_M = 0.002;
-if (worstNew > TOL_M) {
+console.log('');
+if (misses > 0) {
+  console.log(`FAIL — ${misses} sample points have no asphalt drawn under them.`);
+  process.exitCode = 1;
+} else if (worstNew > TOL_M) {
   console.log(`FAIL — the car is still off the drawn asphalt by up to ${worstNew.toFixed(3)}m.`);
   console.log('The placement must go through the same `bankHeight` the mesh does.');
   process.exitCode = 1;
 } else {
-  console.log(`PASS — cars stand on the asphalt within ${(TOL_M * 1000).toFixed(0)}mm everywhere,`);
-  console.log('including on 18 degrees of banking at Zandvoort. The residue is the interpolation');
-  console.log('between nodes, not a disagreement about where the road is.');
+  console.log(`PASS — cars stand on the drawn asphalt within ${(TOL_M * 1000).toFixed(0)}mm on all`);
+  console.log(`${CIRCUITS.length} circuits, including on 18 degrees of banking at Zandvoort.`);
 }
 console.log('');
