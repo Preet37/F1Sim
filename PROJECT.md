@@ -182,6 +182,7 @@ Run `npm run` to list. The important ones:
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part attached; wheels at y=0; nothing floating |
+| `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
@@ -433,6 +434,76 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   settled for two seconds. **This made the probe stricter, not looser** — see §7.
 - Reverse-camera jitter: slip angle measured against the car's nose, so a reversing car
   sat on ±π and the sign flipped every time the wheel moved — a **66° lurch per frame.**
+
+### The world juddering vertically — the half of the render pose #9 did not carry (issue #54)
+
+> *"also not sure if you see this jittering happening for the track like there are lags
+> or something"* — and they said the **track**, not the cars, which is the whole diagnosis.
+
+#9 interpolated the render pose between physics steps and its doc comment states the
+intent: *"Every consumer below — the cars, the cameras, the effects, the shadow frustum,
+the motion-blur focus — reads the render pose, and they must all read the same one."*
+**The intent was not met, because the pose was three numbers.** `renderX`, `renderZ` and
+`renderHeading` place a car in PLAN. Every HEIGHT in the scene comes from the other two —
+the road is a swept ribbon, so the only way to ask how high the asphalt is under a car is
+`bankedCarGroundY(track, s, lateral)` — and `s`/`lateral` were raw 120Hz solver state at
+every one of them: the car mesh, the camera's own eye, the tyre smoke, the shadow frustum,
+the racing line. So the drawn world was a continuous function of wall-clock time
+horizontally and a **staircase vertically**, #9's own 2, 2, 3, 2, 3 rotated 90°. And
+because the CAMERA's height came from the same stepped pair, the error was applied to the
+viewpoint instead of cancelling in screen space the way it does for the car being followed
+— which is exactly why it reads as the world bobbing rather than the cars juddering.
+
+- **The diagnosis in the issue was written from the code, and the measurement confirmed it
+  exactly.** On the build the bug was filed against, the "stepped" and "interpolated"
+  columns of the new probe section are **identical to four decimal places on all 44 rows**,
+  which is the signature of a render pose with no vertical component and of nothing else.
+- **`CarEntry` now carries `prevS`/`prevLateral` and `renderS`/`renderLateral`**, written
+  in the same place and on the same step as the plan pose. The rule moved out of
+  `Renderer` into **`src/render/RenderPose.ts`** so that a probe can drive the real one.
+  `s` is lerped **the short way round the lap**, exactly as heading is round ±π, and the
+  `TELEPORT_M` snap now covers along-the-lap and across-the-lap jumps as well as plan ones
+  — which also catches a projection that jumps with no teleport behind it, as at Suzuka's
+  crossover (#37).
+- **Measured: `probe:framerate`, new "WORLD SMOOTHNESS" section.** The real
+  `CameraDirector` on a real `RaceEngine`, a **full lap** of each of the eleven circuits at
+  **50 and 85fps** — neither divides 120 — reading the camera's own world Y and taking its
+  per-frame second difference. Worst |d2| at 50fps, stepped → interpolated: **Spa 123.8mm →
+  11.5mm, COTA 92.9 → 5.7, Monaco 47.5 → 3.6, Red Bull Ring 32.1 → 3.0, Interlagos 25.1 →
+  2.2, Suzuka 18.5 → 1.9, Zandvoort 36.1 → 12.3.** RMS falls **20–30×** on every circuit
+  with a gradient (Spa 15.0mm → 0.7mm, COTA 13.2 → 0.6, Monaco 8.6 → 0.3). Bahrain is
+  4.2mm → 4.2mm and that is correct: it is flat, there is no gradient for a staircase to be
+  a staircase OF, and it is why the issue says do not verify there.
+- **The bound is derived from the world model, not from the output.** Every circuit is
+  stored as a polyline with a node every **3.00m**, elevation interpolated linearly, so the
+  drawn road creases at every node and a camera crossing one gets a real step in vertical
+  velocity. Worst node kink on the calendar is 0.0057 of gradient (Spa, at the foot of Eau
+  Rouge, also the steepest road at **18.7%**), worth 9.2mm in a 50fps frame at 80 m/s;
+  Zandvoort's 18° banking against the projection's own per-node lateral kink measures
+  12.3mm. The bound is **20mm**, and the artefact it is there to catch is 124mm.
+- **Proved it can go red, twice.** Pointing the camera's `carY` back at `car.s`/`car.lateral`:
+  **24 of 44 rows red**, the interpolated column collapsing exactly onto the stepped one —
+  *"spa driver 50fps: the camera's height moves 123.8mm of second difference at s=866m,
+  bound 20mm"*. Restoring the old camera floor: **3 rows red at Zandvoort**, 52.4mm.
+- **A second, independent judder the probe found on its own.** The camera's "never below
+  the road" floor was measured against the **centreline's** elevation. On the low side of
+  18° banking the road is up to 2.5m below the centreline, so the floor sat **0.83m above
+  the asphalt** and the driver's eye — which rides 0.77m up — spent Hugenholtz **pinned to
+  it**, tracking `elevationAt(s)` instead of the car and popping off as the car climbed
+  back: **52.4mm in one frame, four times anything else on the calendar.** Same mistake as
+  issue #3, one line, now measured against `bankedCarGroundY`. **Zandvoort 52.4mm → 12.3mm.**
+- **`probe:cameras` had the same datum error and it was hiding behind the same clamp.** Its
+  "underground" check asks whether the camera is 1.5m below `elevation[indexAt(car.s)]`,
+  which on banking is nowhere near the road; it could never fire while the clamp held every
+  camera at `centreline + 0.35`, and the moment the clamp was corrected it produced **10
+  false positives at Zandvoort**. Now measured against `bankedCarGroundY` — the rule
+  `probe:banking` already forbids departing from anywhere in `src/` — and it prints the
+  worst depth and the mode rather than a bare count. **All eleven circuits clear.**
+- **What was NOT interpolated, deliberately: the safety car.** `Renderer.syncSafetyCar`
+  draws it from `sc.s`/`sc.lateral`, and its X and Z come from `toWorld(sc.s, …)` too — so
+  unlike a racing car it is stepped in **all three axes**, not just in height. Giving it a
+  render pose means a `prevS`/`prevLateral` on `SafetyCar` itself, which is race-side code
+  the in-flight safety-car work owns. Listed in §7.
 
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
@@ -781,7 +852,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
 | Radio/HUD | Square typewriter radio card, FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals. **The retirement flow has landed for every session kind — see §6.** |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
-| Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
+| Race authenticity | Sparks/skid marks/brake lights/DRS flaps, remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
 | Radio audio | Radio-processed synthesised speech, shared clock with the typewriter |
@@ -796,6 +867,24 @@ against every threshold and so stops binding silently rather than throwing.
   s=2280–2298 and s=4649–4667 have two pieces of asphalt within 0.159m; neither leg of the
   figure-of-eight is a bridge, so a car on the lower one sinks into the upper one. Found by
   `probe:banking` while measuring something else, counted and printed there, issue #37.
+- **`car.s` advances further than the car travels, on every circuit, hundreds of times a
+  lap. Issue #66.** Found by the new `probe:framerate` "WORLD SMOOTHNESS" section while
+  measuring #54, and it is a **simulation-side** discontinuity, not a drawing one: `s` is
+  the projection of the car onto the centreline, so how far it may advance for a given
+  metre travelled is fixed by geometry — between `plan × (1 − |lateral·κ|)` and
+  `plan / (1 − |lateral·κ|)`. Outside that envelope the projection has moved without the
+  car moving. Measured over one lap at 50fps: **Monza 602 frames, worst +1.30m at s=620m;
+  Red Bull Ring 453, +1.10m; Suzuka 678, +0.89m; Bahrain 595, +0.72m** — every circuit,
+  including the flat ones, so it is not the crossover case (#37) and not banking. Anything
+  that reads a height, a sector, a gap or a marshal post off `s` inherits it. The probe
+  **excludes those frames from both of its columns and prints them** rather than swallowing
+  them, so the exclusion is visible and the count is the measurement. **Nobody is on this.**
+- **The safety car is drawn from stepped state in all three axes.** `Renderer.syncSafetyCar`
+  takes its position from `toWorld(sc.s, sc.lateral)` and its height from
+  `bankedCarGroundY(sc.s, sc.lateral)`, none of which is interpolated — so under a
+  neutralisation the one vehicle everybody is looking at is the one still juddering. It
+  needs a `prevS`/`prevLateral` on `SafetyCar` itself, which is race-side code the
+  in-flight safety-car work owns; #54 deliberately did not reach into it.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
 - `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
