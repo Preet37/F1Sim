@@ -484,7 +484,14 @@ unable to upshift or downshift. Two independent latches, either of which alone w
   `VehiclePhysics`: 6 of 25 red, §1 back to *"finished in gear 4, expected 8"* and
   *"26.42s stranded"*. Deleting `input.enabled = inSession` from `main.ts`: 1 red on the
   wiring check — added precisely because everything else in §7 tests the gate and nothing
-  tested that anything closes it.
+  tested that anything closes it. A **third** break — publishing the raw `gearRequest`
+  instead of gating it on the mode — was **not** load-bearing (still 25 of 25), because the
+  mode split already holds the number at 0 in automatic. Recorded rather than hidden: the
+  mode's value is discoverability and display; the physics edge plus the backstop is what
+  makes the car drivable.
+- **The HUD caption costs nothing.** `shoot:panels` after the change: **5 rail + 2 mirror
+  failures, and 27 scenes reporting `no overlap`** — the same seven this document already
+  records as pre-existing, with the same wording and the same 4px and 26×72px numbers.
 
 ### Race rules
 - **No DNF in qualifying.** Qualifying is a *Lap Time Classified Session*; Art. B2.4.3b
