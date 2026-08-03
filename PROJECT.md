@@ -208,6 +208,7 @@ Run `npm run` to list. The important ones:
 | `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
+| `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
 | `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
@@ -699,6 +700,86 @@ viewpoint instead of cancelling in screen space the way it does for the car bein
   unlike a racing car it is stepped in **all three axes**, not just in height. Giving it a
   render pose means a `prevS`/`prevLateral` on `SafetyCar` itself, which is race-side code
   the in-flight safety-car work owns. Listed in §7.
+
+### The crashed car that shook, and sank its wheels into the road (issue #58)
+
+> *"one the wheels are in the ground not sure how thats possible, second there is a lot of
+> shaking back and forth even tho the car has crashed which it shouldnt do, third the
+> speedometer is in N?"* — from a screen recording.
+
+The issue proposed that all three were **one** contact-resolution state that never
+converges. **That hypothesis is wrong, and disproving it is the first result.** A retired
+car is not stepped at all — `RaceEngine.step` opens with `if (car.retired) continue` — so
+there is no contact loop to fail to converge and its solver state is frozen by
+construction. #28's agent measured exactly that and handed the issue back, correctly. Both
+real defects are in the **drawing** of that frozen state, they are independent of each
+other, and neither is in `src/physics/`.
+
+**1. The shaking: `prev` is never refreshed for a car the engine does not step.**
+`updateRenderPoses` draws every car at `prev + (now − prev) × alpha`, and `prev` is
+captured in `RaceEngine.step` immediately before `physics.step`. **Four branches of that
+loop `continue` before the capture** — a retired car, a car sitting the period out, a car
+on its release timer, and the whole field before the lights go out. For those the pair
+never advances again: it stays at the top of the last step the car *was* stepped on while
+`physics.position` holds the end of that step, and the two differ by one step of travel
+plus the barrier push-out — **311mm at Monza off a 293 km/h accident.** `alpha` is the
+accumulator's remainder and sweeps 0..1 as the display beats against 120Hz, so the wreck is
+**drawn sliding back and forth across its final step, every frame, for the rest of the
+session.** It cannot decay, because nothing about it is a transient, and it is below
+`TELEPORT_M` so the snap that exists for placements does not catch it.
+- Measured by the new `probe:crashrest` §1, driving the **real** `SimClock` and the **real**
+  `updateRenderPoses`, at 50 and 85fps with frame jitter — neither rate divides 120:
+  **Monza 296.7mm of movement in a single frame, Zandvoort 180.8mm, Monaco 79.0mm, Spa
+  55.7mm**, mean 201/123/54/38mm. The **vertical** half is there too, which is #54's
+  channel: **Spa 11.9mm, Monaco 10.8mm, Zandvoort 3.5mm per frame.**
+- Fixed by `CarEntry.holdPose()` — prev := now — called on the retired branch and inside
+  `holdOnGrid`, which covers the other three. **All eight rows go to 0.00mm.** The
+  interpolation itself is untouched and was never wrong; what was wrong is that the
+  invariant *"prev is where the car was at the top of this step"* had not been made to hold
+  for a car that is standing still.
+
+**2. The wheels: the wreck's lean is applied about the origin, and the origin is the
+road.** A wreck has no accelerations, so the roll and pitch that make a running car look
+loaded up both fall to zero and it would sit dead level; `Renderer.syncCars` gives it a
+settled lean from its own index instead, up to **0.075 rad of roll and 0.045 of pitch**.
+That rotation is about the car's origin — which is the contact-patch plane, the thing
+`bankedCarGroundY` puts *exactly* on the drawn asphalt (#3, 2mm on eleven circuits). So
+every contact point on the low side goes straight through the surface: the outer edge of a
+front tyre is **962mm** from the roll axis and the front axle is **1800mm** from the pitch
+axis. **Measured against the drawn triangles, worst car of twenty: 164.2mm at Monza,
+Zandvoort and Spa, 163.9mm at Monaco — 46% of a 360mm tyre, buried.**
+- `src/render/CarAttitude.ts` now owns the lean and a `groundLift`, in its own module for
+  the same reason `RenderPose.ts` is: **so a probe can drive the real rule.** The lift is
+  the depth of the deepest of the eight contact points under the rotation *as actually
+  applied* — which is why it takes the heading as an argument (see §7).
+- **Applied to a wreck only, deliberately.** A running car's roll and pitch model the BODY
+  moving on its suspension while the tyres stay planted, and this rig cannot express that:
+  `Renderer` places the whole visual at one height and nothing moves the body relative to
+  the wheels (`CarMesh.frontCornerForProbe` says so in as many words). Lifting the whole
+  car under braking would draw it hopping off the road — a worse artefact than the one it
+  fixes, and transient in a way a wreck's permanent lean is not.
+- **`probe:crashrest` §2b reads the source**, because §2 computes the root height itself and
+  would therefore stay green with the renderer's call deleted — the tautology §3.2 exists
+  to prevent. Same shape of second check as `probe:banking`'s call-site rule.
+
+**3. The `N` is correct, and this is the deliberate decision the issue asked for.**
+`Hud.update` reads `N` below 0.6 m/s with the throttle shut. A write-off is stopped dead —
+`onSolidImpact` calls `physics.stop()` precisely so the HUD does not keep reading a speed
+for a car pinned against a barrier — so the rule fires and the answer it gives is the right
+one: FIA Technical Regulations Art. 12.4 requires a retired car to be left with a neutral
+selector reachable from outside so marshals can move it, which is why every broadcast
+onboard of a stopped car reads N. `probe:crashrest` §3 asserts it **and asserts that it is
+stable over 120 steps** rather than flickering against the gear the car died in — measured
+`N` on all four circuits, one distinct label each, against frozen physics gears of 1, 1, 2
+and 1. **`src/ui/Hud.ts` was not touched** (held by #17/#35), and does not need to be.
+
+**Proved red three ways.** Removing `holdPose` from the retired branch: **16 of 16 §1
+checks red**, with the numbers above. Making `groundLift` return zero: **4 of 4 §2 checks
+red at 164.2mm**. Deleting the renderer's call to it: **2 of 4 §2b wiring checks red** while
+§2 stayed green, which is the whole reason §2b exists.
+
+`probe:banking`, `probe:carrig`, `probe:rideheight`, `probe:recovery`, `probe:blockage`,
+`probe:gearbox` and `validate:world` are all unchanged and passing.
 
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
@@ -1357,6 +1438,50 @@ against every threshold and so stops binding silently rather than throwing.
   that reads a height, a sector, a gap or a marshal post off `s` inherits it. The probe
   **excludes those frames from both of its columns and prints them** rather than swallowing
   them, so the exclusion is visible and the count is the measurement. **Nobody is on this.**
+- **EVERY CAR IS DRAWN LEVEL WITH THE WORLD, on a road that is neither flat nor level.
+  Issue #71.** Found by `probe:crashrest` while measuring #58, and it is much the larger
+  half of *"the wheels are in the ground"*. `Renderer.syncCars` sets the car root's
+  `rotation.y` from the heading and its `rotation.x`/`rotation.z` from the car's own
+  accelerations — **and from nothing about the surface under it.** The origin is placed
+  correctly (`bankedCarGroundY`; `probe:banking` holds it to 2mm on eleven circuits) and the
+  car is then drawn horizontal, so on any gradient the downhill axle goes under the asphalt
+  and on any banking the low-side tyre does. It is pure geometry: a 3.6m wheelbase on Spa's
+  18.7% gradient buries an axle **1.8 × 0.187 = 337mm**, and a 1.925m track on Zandvoort's
+  18° buries a tyre **0.9625 × tan(18°) = 313mm**. Raycast against the drawn triangles at
+  the racing offset, worst on the lap, with **no lean at all**: **Monaco 434mm, Zandvoort
+  396mm, Spa 341mm, Monza 15mm** (Monza is flat, which is why a Monza-only check would
+  report this as fine). This is #3 one level up — the placement rule is right *at the
+  origin* and the car is rigid, so being right at one point is not being right.
+  **Not fixed here, and the reason is contention rather than difficulty:** the fix is to
+  give the car the road's own attitude, and `CameraDirector` carries a line-for-line copy of
+  the same two expressions (`rigRoll`/`rigPitch`, with a comment saying the two must not
+  disagree), the cockpit eye offset is rotated by them, and `probe:framing` — 56 known
+  failures, owned by the HUD work — is laid out against where that puts the halo. It is one
+  shared rule in `src/render/CarAttitude.ts` plus one line in each consumer, and it should
+  be done with `probe:framing` and `probe:cameras` watching. **Nobody is on this.**
+- **The car's pitch is applied about the WORLD x axis, so half the circuit gets it as
+  roll.** `Renderer` writes the three angles onto an `Object3D`, whose Euler order is the
+  default `'XYZ'` — that is `RX · RY · RZ`, so the yaw is applied *before* the pitch and the
+  pitch axis is therefore world-x rather than the car's own lateral axis. A car heading
+  along +x receives its braking pitch as pure roll; a car heading along +z receives it
+  correctly. `CameraDirector.updateCockpit` builds the identical Euler in the identical
+  order, so the camera and the car agree with each other and both are wrong together, which
+  is why it has never shown as a mismatch. The correct order is `'YXZ'`. `CarAttitude
+  .groundLift` deliberately computes against the rotation that is *actually applied* rather
+  than the one that was meant, so #58's fix is exact either way — but the underlying
+  ordering is still wrong. Same file boundary and same reviewers as the item above; **filed
+  with it under #71. Nobody is on this.**
+- **A car standing OFF the road is placed on the road's plane, and mostly that is fine.**
+  Checked while working #58 because it was the obvious candidate for "a crashed car is on a
+  different placement path", and **it is not**: the run-off strip is swept at
+  `elevation + bankHeight`, which is the same surface `bankedCarGroundY` returns, so within
+  the laterals a car can actually reach (bounded by `world.containment`) the car origin is
+  within **42mm at Monza, 43mm at Spa, 39mm at Monaco and 310mm at Zandvoort** of the
+  topmost drawn surface under it — the Zandvoort figure being the banking runout, where
+  `bankHeight`'s exponential taper and the mesh's own taper disagree. An earlier sampling of
+  this that ignored the containment line reported errors of **1.5m at Spa and 5.1m at
+  Monaco**; those laterals are behind the barriers and no car can be there, and the numbers
+  are recorded here only so nobody re-derives them and files a bug that is not one.
 - **The safety car is drawn from stepped state in all three axes.** `Renderer.syncSafetyCar`
   takes its position from `toWorld(sc.s, sc.lateral)` and its height from
   `bankedCarGroundY(sc.s, sc.lateral)`, none of which is interpolated — so under a
