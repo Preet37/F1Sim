@@ -507,16 +507,21 @@ const MAX_CONTACTS_PER_RACE = 12.0;
 /**
  * Sanctionable track-limit excursions per car-lap.
  *
- * The real figure is tiny. Austria 2023 is the outlier every commentator still
- * cites — 1,200 reported excursions over 71 laps and 20 cars, of which about
- * 80 were sanctionable after review, which is 0.06 a car-lap on the worst day
- * the rule has ever had. An ordinary Grand Prix is an order of magnitude below
- * that. The bound here is set at Austria's, because a field that is off the
- * road more often than the worst race in the rule's history is producing the
- * penalty column the player was complaining about, and no amount of tuning the
- * penalty ladder fixes a car that cannot stay on the circuit.
+ * Derived from the ladder rather than picked. `onTrackLimitInfraction` warns on
+ * the first two, shows a black-and-white flag on the third and issues a five
+ * second penalty on the FOURTH and on every one after it. So the rate at which
+ * the field leaves the road becomes a penalty rate at exactly the point where
+ * the average car reaches four excursions over a Grand Prix — four over the
+ * longest race on the calendar is 4/53, and above it the ladder starts
+ * converting an ordinary lap into a stream of penalties for half the field.
+ *
+ * Which is also roughly where the sport sits: Austria 2023, the worst day the
+ * rule has ever had, produced about eighty sanctionable excursions over 71 laps
+ * and 20 cars — 0.06 a car-lap — and an ordinary Grand Prix is an order of
+ * magnitude below that. Two independent derivations landing in the same place
+ * is the reason to trust the number.
  */
-const MAX_STRIKES_PER_CAR_LAP = 0.06;
+const MAX_STRIKES_PER_CAR_LAP = 4 / 53;
 
 for (const [distance, a] of perDistance) {
   const retired = a.retired / a.races;
