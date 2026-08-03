@@ -863,6 +863,7 @@ against every threshold and so stops binding silently rather than throwing.
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
+| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
 | Radio/HUD | Square typewriter radio card, FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals. **The retirement flow has landed for every session kind — see §6.** |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |

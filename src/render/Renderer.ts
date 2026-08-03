@@ -499,10 +499,12 @@ export class Renderer {
     this.tierPref = tier;
     this.prefs = { ...prefs };
     const next = resolveGraphics(tier, this.prefs, this.signals);
-    // A tier change made by hand cancels whatever the adaptive pass had
-    // decided; a change back to `auto` re-arms it from the tier now in force
-    // rather than from the detection, because the device has since been
-    // measured and that measurement is better information than the guess.
+    // A change made by hand clears the adaptive pass's latch, so a tier it
+    // had given up on can be tried again. Switching back to `auto` restarts
+    // from detection rather than from whatever the pass had measured — the
+    // measurement is better information, but it was taken under the tier the
+    // player has just changed, and carrying it forward would mean `auto` did
+    // something different depending on what you had it set to first.
     this.autoLatchedCeiling = null;
     this.applyResolved(next);
     return {

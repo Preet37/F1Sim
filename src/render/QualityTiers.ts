@@ -306,9 +306,24 @@ export function normaliseTier(raw: unknown): 'auto' | QualityTier {
  * Frame cost above which the adaptive pass gives a tier back, in ms.
  *
  * Above `DROP_MS` (20ms, 50fps) in `Renderer`, because the resolution scaler
- * gets first refusal. Losing a quarter of the pixels is cheaper to look at
- * than losing the whole post chain, so resolution moves first and the tier
- * only moves when resolution has run out of room.
+ * gets first refusal: `updateAutoTier` will not demote until the scaler is at
+ * `MIN_SCALE`. That ordering is MEASURED, not assumed, and it is the single
+ * most important number in this file.
+ *
+ * Paired A/B on an Apple M5 at 390x844 @ dpr 2 — the pixel count a phone
+ * actually draws — comparing the post chain at half scale against no chain at
+ * full scale, which is exactly the choice this ordering makes:
+ *
+ *     Bahrain  3.63ms vs 4.99ms   27% CHEAPER with the chain
+ *     Monaco   5.17ms vs 4.99ms    6% dearer
+ *     Spa      3.90ms vs 5.51ms   29% CHEAPER with the chain
+ *
+ * and on `probe:sharpness`'s grain metric the same half-scale `medium` frame
+ * measures 32.8 in the mid-distance against `low` at full scale's 63.6, and
+ * 6.8 at the horizon against 20.3. **Giving up pixels to keep the chain is
+ * cheaper AND cleaner than giving up the chain to keep the pixels.** Reversing
+ * this ordering would make the picture worse at no saving, which is what the
+ * binary tier did to every phone for a year.
  */
 export const AUTO_DEMOTE_MS = 24;
 /**
