@@ -1,0 +1,258 @@
+/* ===========================================================================
+   The people, and the rooms they stand in.
+   ===========================================================================
+
+   Its own stylesheet rather than more of `styles.css`, for the reason every
+   other satellite sheet in this project exists: the base sheet is the language
+   and this is a dialect. Nothing here redefines a token, a signal colour or a
+   panel recipe — they are all inherited — and nothing here is loaded unless a
+   screen with a person on it is opened.
+
+   THE LIGHT IS THE SAME LIGHT. `--key` is warm, above and to the left, and it
+   governs the portrait painter in `Face.ts` as well as every surface below.
+   =========================================================================== */
+
+.person-face { display: block; }
+
+/* ---------------------------------------------------------------------------
+   The press conference
+   ---------------------------------------------------------------------------
+
+   The signature screen, and the one that had to earn a room rather than a
+   panel. It is built as three layers in depth, which is the whole trick: a
+   backdrop the panel is lit against, the panel itself, and a foreground of
+   journalists' heads cut off by the bottom edge. Take the foreground away and
+   it is three portraits in a row; leave it in and it is a photograph taken from
+   the fourth row of a press room, which is what it is meant to be.
+   --------------------------------------------------------------------------- */
+
+.presser {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+/* --- The room ------------------------------------------------------------ */
+
+.presser-room {
+  position: relative;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--carbon-0);
+  box-shadow: var(--plate-lift-hi);
+  /* 21:9. A press conference is a wide shot; a square one is a passport photo
+     of three people. */
+  aspect-ratio: 21 / 9;
+  min-height: 190px;
+  isolation: isolate;
+}
+
+.presser-room svg { display: block; width: 100%; height: 100%; }
+
+/* --- The question -------------------------------------------------------- */
+
+.presser-ask {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 13px 15px;
+  background: var(--carbon-2);
+  border-radius: 3px;
+  border-left: 3px solid var(--sig-yellow);
+  box-shadow: var(--plate-lift);
+}
+
+.presser-ask-face {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--carbon-3);
+}
+
+.presser-ask-face svg { width: 100%; height: auto; display: block; }
+
+.presser-ask-body { min-width: 0; flex: 1 1 auto; }
+
+.presser-ask-who {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+
+.presser-ask-who b { color: var(--ink-2); font-weight: 600; }
+
+.presser-q {
+  font-family: var(--font-ui);
+  font-size: 15.5px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+/* --- The answers ---------------------------------------------------------
+   Three at most, stacked, each stating what it costs. The brief for this
+   screen is explicit that consequences are "stated plainly rather than hidden
+   behind a hint", so the cost line is not a tooltip and not a hover. */
+
+.presser-answers { display: flex; flex-direction: column; gap: 8px; }
+
+.presser-answer {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink-3);
+  border-radius: 3px;
+  background: var(--carbon-1);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.presser-answer:hover,
+.presser-answer:focus-visible {
+  background: var(--carbon-2);
+  border-left-color: var(--sig-white);
+}
+
+.presser-answer:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.presser-answer:active { transform: translateY(1px); }
+
+/* The tone rail: the one colour on the button, and it means what it means
+   everywhere else in this interface. */
+.presser-answer.tone-warm { border-left-color: var(--sig-green); }
+.presser-answer.tone-cool { border-left-color: var(--sig-white); }
+.presser-answer.tone-sharp { border-left-color: var(--sig-yellow); }
+.presser-answer.tone-hot { border-left-color: var(--sig-red); }
+
+.presser-answer[disabled] { opacity: 0.4; cursor: default; }
+
+.presser-cost {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin-top: 7px;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.presser-cost .up { color: var(--sig-green); }
+.presser-cost .down { color: var(--sig-red); }
+
+.presser-picked {
+  padding: 12px 15px;
+  border-left: 3px solid var(--sig-white);
+  background: var(--carbon-2);
+  border-radius: 3px;
+  font-family: var(--font-ui);
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.presser-step {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+@media (max-width: 720px) {
+  .presser-room { aspect-ratio: 16 / 9; min-height: 150px; }
+  .presser-q { font-size: 14px; }
+  .presser-answer { font-size: 13.5px; padding: 9px 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .presser-answer { transition: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   The principal's card
+   ---------------------------------------------------------------------------
+
+   A drop-in for the silhouette-on-a-disc that used to head the radio card. Same
+   footprint, same disc, a person inside it instead of a pictogram.
+   --------------------------------------------------------------------------- */
+
+.pcard { display: flex; gap: 12px; align-items: center; min-width: 0; }
+
+.pcard-face {
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  position: relative;
+  background: var(--carbon-3);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.16);
+}
+
+.pcard-face svg { display: block; width: 100%; height: auto; }
+
+.pcard-text { min-width: 0; }
+
+.pcard-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  font-stretch: 112%;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pcard-role {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+
+/* ---------------------------------------------------------------------------
+   The podium
+   ---------------------------------------------------------------------------
+
+   `Podium.ts` owns the steps. This owns the people standing on them: a figure
+   per step, sized off the step's height so the winner is genuinely taller in
+   frame, and a strip of photographers along the foot of the stage.
+   --------------------------------------------------------------------------- */
+
+.pod-figure { display: block; width: 100%; height: auto; }
+
+.pod-stage {
+  position: relative;
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--carbon-1), var(--carbon-0));
+}
+
+.pod-stage svg { display: block; width: 100%; height: auto; }
+
+/* ---------------------------------------------------------------------------
+   The garage
+   --------------------------------------------------------------------------- */
+
+.garage {
+  position: relative;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--carbon-0);
+  box-shadow: var(--plate-lift-hi);
+}
+
+.garage svg { display: block; width: 100%; height: auto; }
