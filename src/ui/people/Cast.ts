@@ -99,7 +99,7 @@ const F1_CAST: Readonly<Record<string, CastEntry>> = {
     hair: 'bald', eyewear: 'rect', headwear: 'none', age: 0.58, build: 0.62, complexion: 's2',
     facialHair: 'none', jaw: 0.82, headWidth: 0.72, turn: 0.34,
   }),
-  ferrari: cast('Elena', 'Brambilla', 'Italy', {
+  ferrari: cast('Giulia', 'Ranieri', 'Italy', {
     hair: 'side', hairPigment: 'jet', age: 0.42, build: 0.34, complexion: 's3',
     facialHair: 'none', eyewear: 'none', headwear: 'none', jaw: 0.32, faceLength: 0.42, turn: -0.42,
   }),
@@ -119,7 +119,7 @@ const F1_CAST: Readonly<Record<string, CastEntry>> = {
     hair: 'curls', hairPigment: 'chestnut', headwear: 'none', age: 0.36, build: 0.36, complexion: 's1',
     facialHair: 'none', eyewear: 'none', headWidth: 0.4, turn: 0.62,
   }),
-  'racing-bulls': cast('Nino', 'Carbone', 'Italy', {
+  'racing-bulls': cast('Matteo', 'Ferrante', 'Italy', {
     hair: 'shaved', hairPigment: 'jet', facialHair: 'beard', headwear: 'none', age: 0.3,
     build: 0.58, complexion: 's4', eyewear: 'none', jaw: 0.76, turn: -0.5,
   }),
