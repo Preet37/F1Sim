@@ -187,7 +187,7 @@ export class EffectsDirector {
       // all leave from the contact patch, and the contact patch stands on the
       // asphalt mesh. See `carGroundY` — the cars themselves had the same
       // 20mm error and it put every tyre inside the tarmac.
-      const y = bankedCarGroundY(track, car.s, car.lateral);
+      const y = bankedCarGroundY(track, car.renderS, car.renderLateral);
 
       const dist = Math.hypot(x - cameraPos.x, z - cameraPos.z);
       if (!car.isPlayer && dist > CULL_DISTANCE) continue;
@@ -199,7 +199,7 @@ export class EffectsDirector {
       // car that has moved off the rubbered line onto the wetter part of the
       // road throws more spray, which is both true and a useful signal to the
       // driver behind about where the water is.
-      const localWet = surface.waterAt(track.indexAt(car.s), car.lateral);
+      const localWet = surface.waterAt(track.indexAt(car.renderS), car.renderLateral);
       this.updateCar(dt, car, fx, x, y, z, lod, localWet);
     }
 

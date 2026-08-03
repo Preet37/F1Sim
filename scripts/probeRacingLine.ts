@@ -265,10 +265,24 @@ function shortName(n: string): string {
 
 console.log('\n\n=== the same measurement, driver-in-the-loop ===\n');
 console.log('A credulous driver — full throttle on green, maximum braking on anything');
-console.log('else — flown at every corner. Reported, not asserted: past the point the');
-console.log('colour turns, what happens is about the driver, not the display.\n');
+console.log('else — flown at every corner.');
+console.log('');
+console.log('This section used to be REPORTED AND NOT ASSERTED, on the grounds that past');
+console.log('the point the colour turns what happens is about the driver rather than the');
+console.log('display. That reasoning is right and the conclusion drawn from it was not:');
+console.log('it left six circuits sitting at worst loads ABOVE 1.00 — the car leaves the');
+console.log('road — with nothing failing, while the user\'s complaint was, in their own');
+console.log('words, "if the racing line is green how did i go off the track?".');
+console.log('');
+console.log('What is asserted now is the half that IS the display\'s: the colour the road');
+console.log('was showing at the instant the car ran out of grip. Green there means the');
+console.log('overlay was still saying "you are fine" while the tyres were not, and that');
+console.log('is a lie however clumsy the driver. Amber or red there means the driver was');
+console.log('told and drove into it anyway, which is not the overlay\'s fault and is not');
+console.log('asserted on.\n');
 console.log(
   'circuit'.padEnd(14) + 'corners'.padStart(8) + 'worst load'.padStart(12) +
+  '  colour then'.padStart(14) +
   '   longitudinal-only would be'.padStart(30) +
   '   graded vs reference car'.padStart(27),
 );
@@ -279,6 +293,11 @@ console.log(
  */
 const REALISTIC = SCENARIOS[3];
 
+/** Circuits where the car exceeded its grip while the road ahead still read green. */
+const greenLies: string[] = [];
+/** Circuits where it exceeded its grip having already been warned. */
+const warnedAnyway: string[] = [];
+
 for (const def of CIRCUITS) {
   const track = new TrackSpline(def);
   const line = new RacingLine(track);
@@ -287,18 +306,52 @@ for (const def of CIRCUITS) {
   let now = 0;
   let old = 0;
   let asRef = 0;
+  let nowColour = 'GREEN';
+  let nowS = 0;
+  /** Worst load reached while the road ahead was still green. */
+  let worstGreen = 0;
+  let worstGreenS = 0;
   for (const ci of corners) {
-    now = Math.max(now, flyAt(track, line, ci, true, cap).load);
+    const r = flyAt(track, line, ci, true, cap);
+    if (r.load > now) { now = r.load; nowColour = r.colourAtWorst; nowS = r.atS; }
+    if (r.colourAtWorst === 'GREEN' && r.load > worstGreen) {
+      worstGreen = r.load; worstGreenS = r.atS;
+    }
     old = Math.max(old, flyAt(track, line, ci, false, cap).load);
     // The control that names the bug this change fixed: the same real car,
     // flown at a display that is still colouring for the reference car.
     asRef = Math.max(asRef, flyAt(track, line, ci, true, cap, track.solverParams).load);
   }
+  if (worstGreen > G_TOLERANCE) {
+    greenLies.push(
+      `${def.id}: asked for ${(worstGreen * 100).toFixed(0)}% of the grip it has at ` +
+      `s=${worstGreenS.toFixed(0)}m with the road ahead still reading GREEN`,
+    );
+  } else if (now > G_TOLERANCE) {
+    warnedAnyway.push(`${def.id} ${now.toFixed(3)} (${nowColour} at s=${nowS.toFixed(0)}m)`);
+  }
   console.log(
     def.id.padEnd(14) + String(corners.length).padStart(8) +
-    now.toFixed(3).padStart(12) + old.toFixed(3).padStart(30) +
+    now.toFixed(3).padStart(12) + nowColour.padStart(14) +
+    old.toFixed(3).padStart(30) +
     asRef.toFixed(3).padStart(27),
   );
+}
+
+console.log('');
+if (greenLies.length === 0) {
+  console.log('PASS — a driver in the loop never exceeded the grip his car had while the');
+  console.log('       road in front of him was green, on any of the eleven circuits');
+} else {
+  console.log(`FAILURES (${greenLies.length}) — green was still promising grip the car did not have:`);
+  for (const f of greenLies) console.log(`  - ${f}`);
+  process.exitCode = 1;
+}
+if (warnedAnyway.length > 0) {
+  console.log('');
+  console.log('Reported, not asserted — over the limit but the colour had already turned,');
+  console.log('so the driver was told and drove into it anyway:');
+  for (const w of warnedAnyway) console.log(`  - ${w}`);
 }
 
 // ===========================================================================
@@ -457,7 +510,7 @@ function flyAt(
    * for a car with 9-30% more grip than it has.
    */
   colourCap: CarCapability = cap,
-): { load: number; atS: number } {
+): { load: number; atS: number; colourAtWorst: string } {
   const RUN_UP_M = 700;
   const STEP_M = 2;
   const REACTION_S = 0.2;
@@ -483,10 +536,12 @@ function flyAt(
 
   let load = 0;
   let atS = s;
+  let atColour = 'GREEN';
 
   const steps = Math.round((RUN_UP_M + 60) / STEP_M);
   for (let n = 0; n < steps; n++) {
     const [r, g] = colourAhead(line, s, v, colourCap);
+    const readsNow = reads(r, g);
     // Suppressing the lateral half of the test cannot be done from out here, so
     // the control run reproduces the old rule directly: brake only once the
     // corner stops being reachable under the old flat deceleration.
@@ -550,9 +605,13 @@ function flyAt(
     if (travelledM >= RUN_UP_M - SCORE_BEFORE_M) {
       const grip = track.corneringSpeedForCar(track.indexAt(s), cap);
       const ask = v / Math.max(grip, 1);
-      if (ask > load) { load = ask; atS = s; }
+      // The colour recorded is the one the driver was being shown when they
+      // arrived at the sample, i.e. before this step's steering happened. That
+      // is the whole question: was the road green at the moment the car ran out
+      // of grip, or had it already gone amber and the driver ignored it?
+      if (ask > load) { load = ask; atS = s; atColour = readsNow; }
     }
   }
 
-  return { load, atS };
+  return { load, atS, colourAtWorst: atColour };
 }

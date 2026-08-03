@@ -75,6 +75,21 @@ export class CarEntry {
   prevZ = 0;
   /** Heading at the top of the step, so the swept footprint rotates with it. */
   prevHeading = 0;
+  /**
+   * Track-space pose at the top of the step, for the render interpolation.
+   *
+   * `prevX`/`prevZ`/`prevHeading` are the car in PLAN and are all the swept
+   * collision test needs. Nothing in the scene takes its HEIGHT from them:
+   * the road is a swept ribbon, so how high the asphalt is under a car is a
+   * question about where it is along the lap and across the road, and it is
+   * answered from `s` and `lateral` (`bankedCarGroundY`). Interpolating the
+   * plan and stepping the height draws a world that glides horizontally and
+   * climbs a staircase vertically — issue #54. Written in the same place and
+   * on the same step as the three above so the five cannot disagree about
+   * which instant they describe.
+   */
+  prevS = 0;
+  prevLateral = 0;
 
   // --- Render pose ---------------------------------------------------------
   /**
@@ -95,10 +110,21 @@ export class CarEntry {
    * probe that drives `CameraDirector` directly — sees the physics pose and
    * behaves exactly as it did before. The renderer then overwrites them once
    * per frame with the interpolated pose, before anything reads them.
+   *
+   * FIVE NUMBERS, NOT THREE. `renderS` and `renderLateral` are the vertical
+   * half of the same pose: every height in the scene — the car's own wheels,
+   * the camera's eye, the tyre smoke, the shadow frustum — is
+   * `bankedCarGroundY(track, s, lateral)`, so leaving those two stepped left
+   * the world bobbing while the cars glided. Issue #54; `Renderer.syncCars`
+   * and `CameraDirector.update` read all five and must read the same five.
    */
   renderX = 0;
   renderZ = 0;
   renderHeading = 0;
+  /** Distance along the lap the car is DRAWN at, metres. In [0, length). */
+  renderS = 0;
+  /** Lateral offset the car is DRAWN at, +left, metres. */
+  renderLateral = 0;
 
   // --- Timing --------------------------------------------------------------
   /** Completed laps. */
@@ -327,7 +353,17 @@ export class CarEntry {
    * the pits, which is what lets a car lose the same wing twice in a race.
    */
   readonly partsShed: boolean[] = [false, false, false, false];
-  /** Seconds spent stationary off the road, for the beached-car timeout. */
+  /**
+   * Seconds this car has been stationary, wherever it is standing.
+   *
+   * NOT "stationary off the road", which is what it used to be and what made a
+   * car stopped on the racing line invisible to everything that deals with a
+   * stopped car. It is one fact — this car is not moving — and the three things
+   * that read it each apply their own rule to it: `RaceEngine.checkStranded`
+   * retires it (sooner on the road than in the gravel),
+   * `RaceControlManager.updateIncidentFlags` puts the boards out, and the
+   * perception sweep tells the cars behind there is something to go round.
+   */
   stuckTimer = 0;
   /** Seconds since retiring, before marshals clear the car. */
   recoveryTimer = 0;

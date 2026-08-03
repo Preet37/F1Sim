@@ -111,6 +111,12 @@ import { PHYSICS_DT, SimClock } from '../src/core/SimClock';
 import { DEFAULT_INPUT_CONFIG, InputController } from '../src/input/InputController';
 import { VehiclePhysics, type EnvironmentState, type VehicleControls } from '../src/physics/VehiclePhysics';
 import { BASE_F1_SPEC } from '../src/physics/VehicleSpec';
+// The last section drives a real race on real geometry through the real camera
+// rig. See "WORLD SMOOTHNESS" at the foot of this file.
+import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
+import { CameraDirector, type CameraMode } from '../src/render/CameraDirector';
+import { updateRenderPoses } from '../src/render/RenderPose';
+import { CIRCUITS } from '../src/data/tracks/circuits';
 
 /** The ceiling `SimClock` enforces. Not exported, so restated here. */
 const MAX_STEPS_PER_FRAME = 8;
@@ -1079,6 +1085,425 @@ console.log('    15fps   1 frame of 60 — frame 18, with `saturated` set. 15fps
 console.log('            8-step ceiling, so rounding tips one frame to 9 steps, the accumulator');
 console.log('            is discarded and 8.3ms of simulation never happens. That is mechanism C');
 console.log('            below, measured here as the 0.667m of ground the car never covered.');
+
+// ===========================================================================
+// WORLD SMOOTHNESS — is the camera's HEIGHT a continuous function of time?
+// ===========================================================================
+//
+// The section above measures the drawn pose in PLAN. This one measures the
+// half of the same pose that issue #9 did not carry: height.
+//
+// "also not sure if you see this jittering happening for the track like there
+// are lags or something" — the user, on a screen recording, saying the TRACK
+// judders rather than the cars. That distinction is the whole diagnosis. Every
+// height in the scene is `bankedCarGroundY(track, s, lateral)` — the car's own
+// wheels, the tyre smoke, the shadow frustum, and THE CAMERA'S OWN EYE — and
+// `s`/`lateral` were raw 120Hz solver state. So the scene was a continuous
+// function of wall-clock time horizontally and a staircase vertically, and
+// because the staircase was applied to the VIEWPOINT it did not cancel in
+// screen space the way the plan error did for the car being followed. The
+// world bobs; the car does not.
+//
+// THE METRIC is the second difference of the camera's world Y between drawn
+// frames: |y[k+1] - 2 y[k] + y[k-1]|. It is chosen because the two hypotheses
+// separate by MECHANISM rather than by magnitude:
+//
+//   a genuinely continuous height gives d2 ~ y''(t) dt^2, which SHRINKS with
+//   the frame period — the road's own vertical acceleration under a car is a
+//   few tens of m/s^2 at worst, so at 50fps that is millimetres;
+//
+//   a staircase gives d2 of order one physics step's worth of elevation change
+//   — 0.67m of ground at 80 m/s times the local gradient — every time the
+//   accumulator hands out 3 steps instead of 2, INDEPENDENT of the frame
+//   period. At Eau Rouge, a 17% gradient, that is 0.11m per frame of pure
+//   invention.
+//
+// So the bound below is derived from the road rather than tuned to the output:
+// see WORLD_D2_BOUND_M.
+//
+// THE FRAME RATES ARE 50 AND 85 and neither divides 120, deliberately. 50fps
+// is the measured operating point (`probe:renderperf`: ~50fps at 72-90% of
+// native with 22 cars) and is the furthest a frame can sit from a whole number
+// of steps; 85fps shares no factor with 120, so its stagger pattern is long and
+// irregular rather than a clean alternation.
+//
+// THE CONTROL RUNS IN THE SAME PASS. `updateRenderPoses(cars, length, 1)` is
+// what the renderer did before any interpolation existed — an alpha of 1 is the
+// last completed step — so the "stepped" column is the real rule called with
+// the real argument rather than a restatement of it, and both columns are
+// driven by the same cars on the same lap in the same engine. If the fix is
+// ever reverted the two columns become identical again, which is exactly what
+// this probe reported on the build the bug was filed against.
+//
+// NOTHING HERE RESTATES THE HEIGHT RULE. The number measured is
+// `CameraDirector.camera.position.y` after a real `CameraDirector.update`,
+// driven by a real `RaceEngine` on real surveyed geometry. A probe that
+// computed `bankedCarGroundY` itself would pass with every call site in the
+// renderer still reading the stepped pose — which is the failure mode PROJECT
+// §3.2 exists to prevent, and the one `probe:banking` was caught in.
+
+console.log('\n' + '='.repeat(96));
+console.log("WORLD SMOOTHNESS — per-frame second difference of the CAMERA'S HEIGHT");
+console.log('='.repeat(96));
+console.log('All eleven circuits, a FULL LAP each, at two frame rates that do not divide 120.');
+console.log('A camera riding a car over a continuous road accelerates vertically at a few tens of');
+console.log('m/s^2, so |d2| is millimetres. A staircase invents one physics step of climb on the');
+console.log('frames that get an extra step: centimetres, and it does not shrink with the period.');
+
+/**
+ * Bound on the per-frame second difference of the camera's height, metres.
+ *
+ * DERIVED FROM THE WORLD MODEL, not tuned to the output. The floor under this
+ * measurement is not the physics and it is not the drawing — it is the fact
+ * that the circuit is stored as a POLYLINE. Elevation, banking and the
+ * centreline's own normal are all held per node, 3.00m apart on every circuit
+ * (printed in the table below), and interpolated linearly between them. So the
+ * drawn road has a crease at every node: the gradient steps there, and a camera
+ * crossing one gets a genuine step in its vertical velocity. That is in the
+ * WORLD — the road mesh is built from the same arrays — and no amount of
+ * interpolating the pose can or should remove it.
+ *
+ * Sized from the circuits themselves, all measured by this probe:
+ *
+ *   ELEVATION. Worst node kink on the calendar is 0.0057 of gradient (Spa, at
+ *   the foot of Eau Rouge, which is also the steepest road on the calendar at
+ *   18.7%). A car at 80 m/s covers 1.6m in a 50fps frame, so crossing it is
+ *   worth 0.0057 * 1.6 = 9.2mm.
+ *
+ *   BANKING against the projection's own lateral. Zandvoort holds 18 degrees
+ *   through Hugenholtz, where tan(bank) = 0.32 multiplies every kink in the
+ *   car's cross-track position — and the cross-track position is measured
+ *   against a normal that rotates 6.9 degrees per node in a corner that tight.
+ *   Measured worst: 12.3mm.
+ *
+ * 0.020m covers both with margin. For scale, the artefact this section exists
+ * to detect — one 120Hz step of climb handed to the wrong frame — measures
+ * 124mm at Spa, 93mm at COTA and 47mm at Monaco: two and a half to six times
+ * the bound. The two hypotheses are nowhere near each other.
+ *
+ * ONE BOUND AT BOTH FRAME RATES, and it is the 50fps figure. Every honest term
+ * above scales with the frame period and the staircase does not, so at 85fps
+ * the bound is generous — deliberately, because a bound a genuinely smooth
+ * camera fails is worse than no bound.
+ *
+ * WHAT THIS CANNOT SEE. On a flat circuit the staircase is small in absolute
+ * terms — Bahrain's stepped column is 4mm, a quarter of this bound — because
+ * there is no gradient for it to be a staircase OF. That is not a gap in the
+ * bound, it is the reason the issue says not to verify at Bahrain: there is
+ * nothing to see there, and a circuit with nothing to see passing proves
+ * nothing. See WORLD_MUST_SEE.
+ */
+const WORLD_D2_BOUND_M = 0.020;
+
+/**
+ * Modes measured.
+ *
+ * 'driver' is the driver's eye: rigidly bolted to the chassis, no damping
+ * between the road's height and the lens, so it is the worst case and it is
+ * what a player looking out of the car sees. 'chase' is the default following
+ * camera and damps toward its target, which ATTENUATES a staircase without
+ * removing it — included so the report says what this looks like through a
+ * filter as well as without one.
+ */
+const WORLD_MODES: CameraMode[] = ['driver', 'chase'];
+
+/** Frame rates, neither a divisor of 120. */
+const WORLD_RATES = [50, 85];
+
+/** Seconds of racing before anything is measured, so the cars are up to speed. */
+const WORLD_WARMUP_S = 12;
+/**
+ * Each run watches a FULL LAP, not a fixed slice of one.
+ *
+ * A 30-second window at Spa covers about a fifth of the lap and the first draft
+ * of this section drew its Spa numbers from a stretch that does not include Eau
+ * Rouge — the single steepest piece of road on the calendar and the reason the
+ * issue names Spa at all. That is PROJECT §3.5 ("check all eleven circuits")
+ * repeating one circuit down: a slice is not a circuit. The cap is a backstop
+ * for a car that gets stuck rather than a window.
+ */
+const WORLD_LAP_CAP_S = 170;
+/** Frames discarded at the start of each run while the rig settles onto the car. */
+const WORLD_SETTLE_FRAMES = 120;
+
+/**
+ * Circuits the CONTROL must fail on for this section to mean anything.
+ *
+ * The size of the artefact is one physics step of climb, which is the local
+ * GRADIENT times 0.67m of ground at 80 m/s — so the circuits that can see it
+ * are the steep ones, and which those are is measured rather than assumed. The
+ * table this section prints ranks every circuit by the steepest gradient in
+ * its stored profile: Spa 18.7%, COTA 15.6%, Monaco 13.7%, then a gap to the
+ * Red Bull Ring at 9.4%. Those three are the list.
+ *
+ * If the stepped column is inside the bound on any of them, this measurement
+ * has gone blind and a green interpolated column proves nothing — so that is
+ * itself a failure. Bahrain (0.8% gradient) is deliberately NOT on the list: it
+ * is flat, it has concealed a road-surface bug in this project before (PROJECT
+ * §6, the black seams), and a flat circuit passing is not evidence.
+ */
+const WORLD_MUST_SEE = ['spa', 'cota', 'monaco'];
+
+const WORLD_CONFIG: SessionConfig = {
+  kind: 'race',
+  name: 'world smoothness',
+  durationS: 0,
+  laps: 20,
+  playerIndex: -1,
+  standingStart: false,
+  pitLaneStart: false,
+  seed: 54,
+};
+
+interface WorldResult {
+  /** Worst |second difference| of camera height, metres. */
+  maxD2: number;
+  /** RMS second difference, metres. */
+  rmsD2: number;
+  /** Where the worst one happened, metres round the lap. */
+  atS: number;
+  /** Frames that contributed to the metric. */
+  samples: number;
+}
+
+/**
+ * One circuit at one frame rate: every mode, both placement rules, one engine.
+ *
+ * All the directors see the identical engine on the identical frame; the only
+ * difference between the two rules is the alpha the render pose was built with.
+ * Sharing the engine is not just cheaper — it means the two columns cannot be
+ * compared across two different races.
+ */
+function runWorldSmoothness(
+  def: (typeof CIRCUITS)[number], fps: number,
+): {
+  rows: Map<CameraMode, { interp: WorldResult; stepped: WorldResult }>;
+  shakeFrames: number; jumpFrames: number; worstJump: number; worstJumpS: number;
+  geometry: { spacingM: number; maxSlope: number; maxKink: number };
+} {
+  const engine = new RaceEngine(def, WORLD_CONFIG);
+  for (let i = 0; i < Math.round(WORLD_WARMUP_S / PHYSICS_DT); i++) engine.step();
+
+  const car = engine.cars[0];
+  const track = engine.track;
+  const dirs = WORLD_MODES.map((mode) => {
+    const interp = new CameraDirector(16 / 9);
+    const stepped = new CameraDirector(16 / 9);
+    interp.setMode(mode);
+    stepped.setMode(mode);
+    return { mode, interp, stepped, yI: [] as number[], yS: [] as number[] };
+  });
+
+  const clock = new SimClock();
+  clock.advance(0);
+  const periodMs = 1000 / fps;
+  const dt = periodMs / 1000;
+
+  const sAt: number[] = [];
+  // The camera shakes ON PURPOSE when the car is over a kerb or has locked a
+  // wheel (`p.vibration`, a 55 rad/s oscillator added to the lens position).
+  // That is an effect, not judder, and at 50fps it lands in the same band as
+  // the artefact being measured — so frames with any vibration on them are
+  // excluded from the metric rather than being allowed to set the bound.
+  const quiet: boolean[] = [];
+
+  let nowMs = 0;
+  let shakeFrames = 0;
+  let jumpFrames = 0;
+  let worstJumpS = 0;
+  let worstJump = 0;
+  const fromDistance = car.totalDistance;
+  while (nowMs < WORLD_LAP_CAP_S * 1000 && car.totalDistance - fromDistance < track.length) {
+    nowMs += periodMs;
+    const steps = clock.advance(nowMs);
+    const x0 = car.physics.position.x, z0 = car.physics.position.y, s0 = car.s;
+    for (let i = 0; i < steps; i++) engine.step();
+
+    // DID THE PROJECTION JUMP? — see the note below `WORLD_D2_BOUND_M`.
+    //
+    // `s` is not the car's odometer, it is the projection of the car onto the
+    // centreline, and the two are related by geometry: a car `lateral` metres
+    // from the centreline on a corner of curvature `k` covers `1 - lateral*k`
+    // of the centreline's advance per metre it travels, so `ds` legitimately
+    // sits between `plan * (1 - |lateral k|)` and `plan / (1 - |lateral k|)`.
+    // Anything outside that envelope is the projection moving without the car
+    // moving, which no placement rule can smooth: the height the simulation
+    // says the car is at genuinely jumped. Those frames are excluded from BOTH
+    // columns — identically, since both are driven by this one engine — and
+    // counted, because a projection that jumps is a real defect in its own
+    // right (issue #37 is the extreme case of it, at Suzuka's crossover).
+    const plan = Math.hypot(car.physics.position.x - x0, car.physics.position.y - z0);
+    let ds = car.s - s0;
+    if (ds < -track.length * 0.5) ds += track.length;
+    else if (ds > track.length * 0.5) ds -= track.length;
+    const bend = Math.max(0.2, 1 - Math.abs(car.lateral * track.curvature[track.indexAt(car.s)]));
+    // The 20mm slack covers a step's worth of the car sliding sideways, which
+    // adds plan distance that is not advance along the lap.
+    const jumped = ds > plan / bend + 0.02 || ds < plan * bend - 0.02;
+    if (jumped) {
+      jumpFrames++;
+      const over = ds - plan / bend;
+      if (over > worstJump) { worstJump = over; worstJumpS = car.s; }
+    }
+
+    updateRenderPoses(engine.cars, track.length, clock.interpolationAlpha);
+    for (const d of dirs) {
+      d.interp.update(dt, car, track, engine.world);
+      d.yI.push(d.interp.camera.position.y);
+    }
+    // Alpha = 1: the last completed physics step, which is what the renderer
+    // drew before interpolation existed.
+    updateRenderPoses(engine.cars, track.length, 1);
+    for (const d of dirs) {
+      d.stepped.update(dt, car, track, engine.world);
+      d.yS.push(d.stepped.camera.position.y);
+    }
+
+    const shaking = car.physics.vibration > 1e-6;
+    if (shaking) shakeFrames++;
+    quiet.push(!shaking && !jumped);
+    sAt.push(car.s);
+  }
+
+  const measure = (y: number[]): WorldResult => {
+    let maxD2 = 0, atS = 0, sq = 0, n = 0;
+    for (let k = WORLD_SETTLE_FRAMES; k < y.length - 1; k++) {
+      if (!quiet[k - 1] || !quiet[k] || !quiet[k + 1]) continue;
+      const d2 = Math.abs(y[k + 1] - 2 * y[k] + y[k - 1]);
+      sq += d2 * d2;
+      n++;
+      if (d2 > maxD2) { maxD2 = d2; atS = sAt[k]; }
+    }
+    return { maxD2, rmsD2: n > 0 ? Math.sqrt(sq / n) : 0, atS, samples: n };
+  };
+
+  const rows = new Map<CameraMode, { interp: WorldResult; stepped: WorldResult }>();
+  for (const d of dirs) rows.set(d.mode, { interp: measure(d.yI), stepped: measure(d.yS) });
+
+  // The road as it is actually stored, which is where the bound comes from.
+  // The gradient between two nodes, and how much that gradient STEPS from one
+  // pair to the next: a crease in the drawn surface that any camera crossing
+  // it must follow.
+  const n = track.elevation.length;
+  const spacingM = track.length / n;
+  let maxSlope = 0, maxKink = 0, prevSlope = 0;
+  for (let i = 0; i <= n; i++) {
+    const slope = (track.elevation[(i + 1) % n] - track.elevation[i % n]) / spacingM;
+    if (Math.abs(slope) > maxSlope) maxSlope = Math.abs(slope);
+    if (i > 0 && Math.abs(slope - prevSlope) > maxKink) maxKink = Math.abs(slope - prevSlope);
+    prevSlope = slope;
+  }
+
+  return { rows, shakeFrames, jumpFrames, worstJump, worstJumpS, geometry: { spacingM, maxSlope, maxKink } };
+}
+
+console.log(
+  '\n' + padr('circuit', 13) + padr('mode', 8) + padr('rate', 7) +
+  pad('STEPPED max', 13) + pad('rms', 9) +
+  pad('INTERP max', 12) + pad('rms', 9) + pad('n', 6) + '  worst at',
+);
+
+const worldFailures: string[] = [];
+let worstInterpD2 = 0, worstInterpWhere = '';
+let worstSteppedD2 = 0, worstSteppedWhere = '';
+/** Rows where the stepped control was NOT over the bound — see WORLD_MUST_SEE. */
+const blindRows: string[] = [];
+const sawItOn = new Set<string>();
+
+/** Projection jumps seen, for the report at the foot of the section. */
+const projectionJumps: string[] = [];
+/** The stored road, per circuit — the geometry the bound is derived from. */
+const geometryRows: string[] = [];
+
+for (const def of CIRCUITS) {
+  for (const fps of WORLD_RATES) {
+    const { rows, shakeFrames, jumpFrames, worstJump, worstJumpS, geometry } = runWorldSmoothness(def, fps);
+    if (fps === WORLD_RATES[0]) {
+      geometryRows.push(
+        padr(def.id, 13) + pad(geometry.spacingM.toFixed(2) + 'm', 9) +
+        pad((geometry.maxSlope * 100).toFixed(1) + '%', 11) +
+        pad(geometry.maxKink.toFixed(4), 10) +
+        pad((geometry.maxKink * 1.6 * 1000).toFixed(1) + 'mm', 12),
+      );
+    }
+    if (jumpFrames > 0) {
+      projectionJumps.push(
+        `${def.id} @${fps}fps: ${jumpFrames} frames where \`s\` advanced past what the car ` +
+        `travelled, worst +${worstJump.toFixed(2)}m at s=${worstJumpS.toFixed(0)}m`,
+      );
+    }
+    for (const mode of WORLD_MODES) {
+      const { interp, stepped } = rows.get(mode)!;
+      const where = `${def.id} ${mode} ${fps}fps`;
+      console.log(
+        padr(def.id, 13) + padr(mode, 8) + padr(`${fps}fps`, 7) +
+        pad(stepped.maxD2.toFixed(4), 13) + pad(stepped.rmsD2.toFixed(4), 9) +
+        pad(interp.maxD2.toFixed(4), 12) + pad(interp.rmsD2.toFixed(4), 9) +
+        pad(String(interp.samples), 6) +
+        `  s=${interp.atS.toFixed(0)}m` + (shakeFrames > 0 ? ` (${shakeFrames} shaken)` : '') +
+        (interp.maxD2 > WORLD_D2_BOUND_M ? '  <== FAIL' : ''),
+      );
+      if (interp.maxD2 > worstInterpD2) { worstInterpD2 = interp.maxD2; worstInterpWhere = where; }
+      if (stepped.maxD2 > worstSteppedD2) { worstSteppedD2 = stepped.maxD2; worstSteppedWhere = where; }
+      if (interp.maxD2 > WORLD_D2_BOUND_M) {
+        worldFailures.push(
+          `${where}: the camera's height moves ${(interp.maxD2 * 1000).toFixed(1)}mm of second ` +
+          `difference at s=${interp.atS.toFixed(0)}m, bound ${(WORLD_D2_BOUND_M * 1000).toFixed(0)}mm`,
+        );
+      }
+      if (stepped.maxD2 > WORLD_D2_BOUND_M) sawItOn.add(def.id);
+      else blindRows.push(where);
+    }
+  }
+}
+
+console.log(
+  '\n  THE ROAD AS IT IS STORED — where the bound comes from. Elevation is held per node and\n' +
+  '  interpolated linearly, so the drawn surface creases at every node and any camera\n' +
+  '  crossing one follows the crease. The last column is what that crease is worth in one\n' +
+  '  50fps frame at 80 m/s, and it is a floor no placement rule can go below.\n',
+);
+console.log(
+  '  ' + padr('circuit', 13) + pad('nodes', 9) + pad('max grade', 11) +
+  pad('max kink', 10) + pad('d2 floor', 12),
+);
+for (const row of geometryRows) console.log('  ' + row);
+
+console.log(`\n  worst second difference, stepped:      ${worstSteppedD2.toFixed(4)} m  (${worstSteppedWhere})`);
+console.log(`  worst second difference, interpolated: ${worstInterpD2.toFixed(4)} m  (${worstInterpWhere})`);
+console.log(`  bound: ${WORLD_D2_BOUND_M.toFixed(4)} m — derived from the polyline the road is stored as,`);
+console.log('  in the comment on WORLD_D2_BOUND_M and in the table above, not from these rows.');
+
+if (projectionJumps.length > 0) {
+  console.log(
+    '\n  EXCLUDED, and reported rather than swallowed — frames where the SIMULATION\'s own `s`\n' +
+    '  moved further than the car did, so the height it asks for genuinely jumped:\n    ' +
+    projectionJumps.join('\n    '),
+  );
+}
+
+if (blindRows.length > 0) {
+  console.log(
+    `\n  The control stayed inside the bound on ${blindRows.length} rows, which prove nothing:\n    ` +
+    blindRows.join('\n    '),
+  );
+}
+for (const id of WORLD_MUST_SEE) {
+  if (!sawItOn.has(id)) {
+    worldFailures.push(
+      `${id}: the STEPPED control is inside the bound, so this measurement has gone blind — ` +
+      'a green interpolated column on the steepest circuit on the calendar is not evidence',
+    );
+  }
+}
+
+if (worldFailures.length === 0) {
+  console.log('\n  PASS — the drawn world is a continuous function of time vertically as well as in plan.');
+} else {
+  console.log('\n  FAILURES — the world judders vertically (issue #54):');
+  for (const f of worldFailures) console.log(`    - ${f}`);
+  process.exitCode = 1;
+}
 
 console.log('\n' + '='.repeat(96));
 console.log('VERDICT');
