@@ -1569,15 +1569,6 @@ export class Stewards {
     this.wire.penalise(offender, tariffSeconds(offence, inc.severity), offence, inc.where, now);
   }
 
-  /**
-   * How long a driver has to hand the place back.
-   *
-   * The regulations do not put a number on it — Art. B1.8.6 gives the Race
-   * Director "absolute discretion" to offer the opportunity at all — and in
-   * practice the instruction is expected to be obeyed within the lap. So: a lap,
-   * measured on this circuit's own reference time, with a floor for the very
-   * short ones.
-   */
   /** Files a penalty that did not come from an investigation into the ledger. */
   private recordPenalty(
     against: number, victim: number, lap: number, now: number, because: string,
@@ -1589,6 +1580,15 @@ export class Stewards {
     });
   }
 
+  /**
+   * How long a driver has to hand the place back.
+   *
+   * The regulations do not put a number on it — Art. B1.8.6 gives the Race
+   * Director "absolute discretion" to offer the opportunity at all — and in
+   * practice the instruction is expected to be obeyed within the lap. So: a lap,
+   * measured on this circuit's own reference time, with a floor for the very
+   * short ones.
+   */
   private cedeWindowS(): number {
     return Math.max(30, this.track.referenceLapTime);
   }
