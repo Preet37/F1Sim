@@ -76,6 +76,31 @@ export interface CareerCreateOptions {
     colour: number;
     accent: number;
   };
+  /**
+   * Whether to show the seat panel at all.
+   *
+   * False when this screen is being used to MAKE A DRIVER rather than to sign
+   * a contract — the first-run welcome, and the editor reached from the
+   * drivers rack. Neither of those is an offer of a seat, and a panel headed
+   * "What is actually on offer" on a screen where nothing is on offer is the
+   * kind of leftover that makes an interface feel assembled rather than
+   * designed. The colours are still used, because the driver on the left is
+   * wearing the race suit either way.
+   */
+  showSeat?: boolean;
+  /**
+   * The driver this screen opens on.
+   *
+   * ADDED SO THAT MAKING A DRIVER AND SIGNING A CONTRACT ARE NOT TWO PEOPLE.
+   * The front end now has a profile — a name, a nationality, a number and a
+   * helmet that belong to the person playing — and signing for a team is the
+   * same screen editing the same driver rather than a second form asking the
+   * same questions and quietly overwriting the answers.
+   *
+   * Omitted on a first run, where there is genuinely nobody yet and the
+   * defaults below are what somebody starts from.
+   */
+  initial?: Partial<CreatedIdentity>;
   /** Called whenever anything changes, so the caller can repaint a car stage. */
   onChange?: (id: CreatedIdentity) => void;
   /** Called when the player commits. */
@@ -98,13 +123,23 @@ export function buildCareerCreate(
   const seed = opts.seed ?? ((Math.random() * 0x7fffffff) | 0);
   const numbers = availableNumbers(opts.takenNumbers ?? []);
 
+  const from = opts.initial;
+  // The number has to survive the taken-numbers filter: a driver who already
+  // races as 63 must still be 63 when they open this screen, even though 63 is
+  // "taken" — by them.
+  const wanted = from?.raceNumber;
   const state: CreatedIdentity = {
-    firstName: DEFAULT_FIRST,
-    lastName: DEFAULT_LAST,
-    nationality: 'United Kingdom',
-    raceNumber: numbers.includes(47) ? 47 : (numbers[0] ?? 47),
-    helmet: defaultHelmet(seed),
+    firstName: from?.firstName || DEFAULT_FIRST,
+    lastName: from?.lastName || DEFAULT_LAST,
+    nationality: from?.nationality || 'United Kingdom',
+    raceNumber: wanted !== undefined ? wanted
+      : numbers.includes(47) ? 47 : (numbers[0] ?? 47),
+    helmet: from?.helmet ? { ...from.helmet } : defaultHelmet(seed),
   };
+  if (wanted !== undefined && !numbers.includes(wanted)) {
+    numbers.push(wanted);
+    numbers.sort((a, b) => a - b);
+  }
 
   root.classList.add('signing');
 
@@ -132,10 +167,10 @@ export function buildCareerCreate(
   // --- You ---------------------------------------------------------------
   section(panel, 'You', 'The name that goes on the timing tower.');
   const names = el('div', 'sg-fields', panel);
-  const first = textField(names, 'Given name', DEFAULT_FIRST, (v) => {
+  const first = textField(names, 'Given name', state.firstName, (v) => {
     state.firstName = v; repaint();
   });
-  const last = textField(names, 'Surname', DEFAULT_LAST, (v) => {
+  const last = textField(names, 'Surname', state.lastName, (v) => {
     state.lastName = v; repaint();
   });
 
@@ -221,19 +256,21 @@ export function buildCareerCreate(
   paints.appendChild(dice);
 
   // --- The seat ----------------------------------------------------------
-  section(panel, 'The seat', 'What is actually on offer, and what it is worth.');
-  const seat = el('div', 'sg-seat', panel);
-  seat.style.setProperty('--team', hex(opts.seat.colour));
-  const seatHead = el('div', 'sg-seat-head', seat);
-  el('div', 'sg-seat-team', seatHead, opts.seat.teamName);
-  el('div', 'sg-seat-tier', seatHead, opts.seat.tierName);
-  const seatFacts = el('div', 'sg-seat-facts', seat);
-  fact(seatFacts, 'Calendar', opts.seat.rounds + ' rounds');
-  fact(seatFacts, 'To go up', 'Finish in the top two');
-  fact(seatFacts, 'If you do not', 'Four seasons here and the seat is gone');
-  el('div', 'sg-seat-line', seat,
-    'It is the slowest car in the championship. Every driver who has ever '
-    + 'reached Formula 1 started somewhere like it.');
+  if (opts.showSeat !== false) {
+    section(panel, 'The seat', 'What is actually on offer, and what it is worth.');
+    const seat = el('div', 'sg-seat', panel);
+    seat.style.setProperty('--team', hex(opts.seat.colour));
+    const seatHead = el('div', 'sg-seat-head', seat);
+    el('div', 'sg-seat-team', seatHead, opts.seat.teamName);
+    el('div', 'sg-seat-tier', seatHead, opts.seat.tierName);
+    const seatFacts = el('div', 'sg-seat-facts', seat);
+    fact(seatFacts, 'Calendar', opts.seat.rounds + ' rounds');
+    fact(seatFacts, 'To go up', 'Finish in the top two');
+    fact(seatFacts, 'If you do not', 'Four seasons here and the seat is gone');
+    el('div', 'sg-seat-line', seat,
+      'It is the slowest car in the championship. Every driver who has ever '
+      + 'reached Formula 1 started somewhere like it.');
+  }
 
   // =========================================================================
   // Painting

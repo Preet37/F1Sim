@@ -56,7 +56,7 @@ async function main(): Promise<void> {
 
   const page: Page = await browser.newPage();
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
     // See `shootPanels.ts`: matched on the URL, because the message for a

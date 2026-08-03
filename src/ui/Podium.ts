@@ -1,5 +1,8 @@
 import './career.css';
+import './people/people.css';
 import { driverPortraitSvg } from './DriverPortrait';
+import { figureSvg } from './people/Figure';
+import { lookFor, type PersonLook } from './people/Look';
 import { hex, helmetForDriver, type HelmetDesign } from '../career/Identity';
 
 /**
@@ -38,6 +41,8 @@ export interface PodiumEntry {
   isPlayer: boolean;
   /** The player's designed helmet. Omitted for the AI, which derives one. */
   helmet?: HelmetDesign;
+  /** Overrides the generated face. Rarely needed. */
+  look?: PersonLook;
 }
 
 export interface PodiumSpec {
@@ -90,11 +95,35 @@ export function buildPodium(parent: HTMLElement, spec: PodiumSpec): HTMLElement 
     const helmet = e.helmet ?? helmetForDriver(e.driverId);
     step.style.setProperty('--me', hex(helmet.base));
 
+    // THE HELMET COMES OFF ON THE PODIUM.
+    //
+    // This step used to carry the helmet-and-shoulders bust from
+    // `DriverPortrait.ts`, and it was the one screen where that drawing was
+    // saying the wrong thing. A driver in a car is a helmet — that argument is
+    // made in `career/Identity.ts` and it is right. A driver on the top step is
+    // a person holding a trophy with their helmet in the other hand, and the
+    // first thing that happens up there, before the anthem, is that the helmet
+    // comes off. So this is a figure: race suit in the team's colours, one arm
+    // up, the trophy in it, and the helmet tucked at their side so the design
+    // the player made is still on the screen.
     const art = document.createElement('div');
     art.className = 'pod-art';
-    art.appendChild(driverPortraitSvg(helmet, {
-      suit: e.colour, accent: e.accent, uid: 'pod-' + pos,
-    }));
+    const fig = figureSvg(e.look ?? lookFor(e.driverId, 'driver'), {
+      uid: 'pod-' + pos,
+      suit: hex(e.colour),
+      accent: hex(e.accent),
+      team: hex(e.colour),
+      pose: 'raised',
+      trophy: (['gold', 'silver', 'bronze'] as const)[pos] ?? 'bronze',
+    });
+    fig.setAttribute('class', 'person-figure pod-figure');
+    art.appendChild(fig);
+
+    // The helmet, at the hip, at a size that reads as an object being carried
+    // rather than as a second portrait.
+    const lid = driverPortraitSvg(helmet, { bust: false, uid: 'podh-' + pos });
+    lid.setAttribute('class', 'pod-helmet');
+    art.appendChild(lid);
     step.appendChild(art);
 
     const block = document.createElement('div');

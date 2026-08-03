@@ -27,10 +27,10 @@ export interface ResponsePoint { hz: number; db: number; }
  * Magnitude response of the chain, dB, normalised to its own in-band plateau.
  *
  * One short offline render per frequency. The drive level is deliberately tiny
- * (0.02, which the saturation lifts to about 0.053 and the limiter's -20 dB
- * threshold therefore never sees) so that what is being measured is the FILTER
- * and not the compressor's gain reduction. Measuring a band-pass through an
- * engaged limiter would flatten exactly the skirts we care about.
+ * — 0.02, which is -34 dBFS, so it stays far under `LIMIT_THRESHOLD_DB` (-8 dB)
+ * and the limiter never engages on it — so that what is being measured is the
+ * FILTER and not the compressor's gain reduction. Measuring a band-pass through
+ * an engaged limiter would flatten exactly the skirts we care about.
  */
 export async function measureResponse(freqs: number[]): Promise<ResponsePoint[]> {
   const out: ResponsePoint[] = [];
@@ -212,42 +212,108 @@ export function measureSpeechTiming(text: string, rate: number): Promise<SpeechT
   });
 }
 
+export interface RadioEventRecord {
+  type: string;
+  id: number;
+  speaker?: string;
+  reason?: string;
+  ci?: number;
+  est?: boolean;
+  /**
+   * `performance.now()` when the event was emitted, relative to the start of
+   * the exercise.
+   *
+   * THE POINT OF THIS FIELD. Without it the only thing assertable about the
+   * event stream is the ORDER, and the order is the same whether `speech` is
+   * emitted on the first `boundary` (correct) or on `onstart` (1.1 s early,
+   * and the exact fault `TeamRadio` exists to prevent) — because `onstart`
+   * precedes the first word too. With it, `speech` and the first real `word`
+   * can be required to land in the same task.
+   */
+  atMs: number;
+}
+
 export interface ExerciseResult {
-  events: { type: string; id: number; speaker?: string; reason?: string; ci?: number; est?: boolean }[];
+  events: RadioEventRecord[];
+  /** Phase 1: two accepted messages plus one that must go stale. */
   spokenIds: number[];
   droppedStale: boolean;
+  /** Phase 2: the transmission that got cut off, and the one that cut it. */
+  interruptedId: number | null;
+  interrupterId: number | null;
+  /** Phase 3: the ids `speakExchange` returned, in order. */
+  exchangeIds: number[];
+  /** Whether the voice was actually available on this machine. */
+  spoken: boolean;
 }
 
 /**
  * Drives the real `TeamRadio` against a real AudioContext, end to end.
  *
  * Everything else in this file measures a part. This exercises the contract the
- * HUD actually consumes — that `open` precedes `speech`, that `speech` precedes
- * any word, that words only ever move forwards, that `end` is last, and that
- * two transmissions never interleave. Those are the properties the typewriter
- * relies on, and none of them is visible in a rendered buffer.
+ * HUD actually consumes — that `open` precedes `speech`, that `speech` lands on
+ * the first real word rather than a second before it, that words only ever move
+ * forwards, that `end` is last, and that two transmissions never interleave.
+ * Those are the properties the typewriter relies on and none of them is visible
+ * in a rendered buffer.
  *
- * It also checks the dropping. A message given a one-millisecond lifetime while
- * another is being spoken must never be heard.
+ * Three phases, because three different things go wrong:
+ *
+ *   1. QUEUE AND DROP.   Two messages spoken in order, and one given a
+ *      one-millisecond lifetime while another is talking, which must never be
+ *      heard.
+ *   2. INTERRUPT.        Something more urgent arriving mid-sentence. This path
+ *      was previously unexercised, and it held a real bug: the interrupter
+ *      keyed down at the same context time as the interrupted message's key-up,
+ *      and `RadioChain.open`'s `cancelScheduledValues` deleted the key-up
+ *      swell. What is measured here is the SPACING — how long after one
+ *      transmission's `end` the next one's `open` arrives.
+ *   3. EXCHANGE.         `speakExchange`, which is what the HUD calls for every
+ *      card, and which was likewise never exercised.
  */
 export async function exerciseRadio(): Promise<ExerciseResult> {
   const { TeamRadio: TR } = await import('../src/audio/TeamRadio');
   const ctx = new AudioContext();
   await ctx.resume();
   const radio = new TR();
-  const out: ExerciseResult = { events: [], spokenIds: [], droppedStale: false };
+  const out: ExerciseResult = {
+    events: [], spokenIds: [], droppedStale: false,
+    interruptedId: null, interrupterId: null, exchangeIds: [],
+    spoken: TR.supported && speechSynthesis.getVoices().length > 0,
+  };
 
+  const t0 = performance.now();
   radio.attach(ctx, ctx.destination, () => { /* ducking is measured elsewhere */ });
   radio.setEnabled(true);
   radio.setVolume(1);
 
   radio.addListener((ev) => {
-    const base = { type: ev.type, id: ev.transmission.id, speaker: ev.transmission.speaker };
+    const base = {
+      type: ev.type, id: ev.transmission.id, speaker: ev.transmission.speaker,
+      // `ev.atMs` is `performance.now()` taken inside `TeamRadio.emit`, so the
+      // reading is the class's own and not this harness's view of when the
+      // callback ran.
+      atMs: Math.round(ev.atMs - t0),
+    };
     if (ev.type === 'word') out.events.push({ ...base, ci: ev.charIndex, est: ev.estimated });
     else if (ev.type === 'end') out.events.push({ ...base, reason: ev.reason });
     else out.events.push(base);
   });
 
+  /** Waits until `done()` or `ms` have passed. */
+  const until = (done: () => boolean, ms: number): Promise<void> => new Promise((res) => {
+    const from = performance.now();
+    const tick = (): void => {
+      if (done() || performance.now() - from > ms) return res();
+      setTimeout(tick, 60);
+    };
+    tick();
+  });
+
+  const ended = (id: number | null): boolean =>
+    id !== null && out.events.some((e) => e.id === id && e.type === 'end');
+
+  // --- 1. Queue, order and drop ---------------------------------------------
   const a = radio.speak('Box box this lap.', { speaker: 'engineer' });
   // Queued behind `a` with a lifetime it cannot possibly survive: by the time
   // `a` has finished this is long dead and must be dropped unspoken.
@@ -256,23 +322,143 @@ export async function exerciseRadio(): Promise<ExerciseResult> {
   if (a !== null) out.spokenIds.push(a);
   if (b !== null) out.spokenIds.push(b);
 
-  await new Promise<void>((res) => {
-    const t0 = performance.now();
-    const tick = (): void => {
-      const done = out.events.filter((e) => e.type === 'end' && e.reason === 'complete').length;
-      if (done >= 2 || performance.now() - t0 > 20000) return res();
-      setTimeout(tick, 100);
-    };
-    tick();
-  });
+  await until(
+    () => out.events.filter((e) => e.type === 'end' && e.reason === 'complete').length >= 2,
+    20000,
+  );
 
   out.droppedStale = out.events.some(
     (e) => e.id === stale && e.type === 'end' && e.reason === 'stale',
   ) && !out.events.some((e) => e.id === stale && e.type === 'speech');
 
+  // --- 2. Interrupt ----------------------------------------------------------
+  // Long enough that there is no chance of it finishing on its own before the
+  // safety car call arrives.
+  const c = radio.speak(
+    'Target lap time is one minute thirty four point two, and we are looking at '
+    + 'the car behind for the next five laps.',
+    { speaker: 'engineer', priority: 0, ttlMs: 20000 },
+  );
+  out.interruptedId = c;
+  // Wait until it is genuinely mid-transmission — not merely queued — so that
+  // what follows is an interrupt rather than a reordering of the queue.
+  await until(() => out.events.some((e) => e.id === c && e.type === 'speech'), 12000);
+  const d = radio.speak('Safety car safety car.', {
+    speaker: 'control', priority: 5, ttlMs: 20000,
+  });
+  out.interrupterId = d;
+  await until(() => ended(d), 20000);
+
+  // --- 3. A whole exchange ---------------------------------------------------
+  //
+  // THE DRIVER'S TURN IS UNVOICED, exactly as `Hud.typeExchange` sends it:
+  //
+  //   "i just atp wouldn't say anything for the audio if its a conversation
+  //    because you don't need to be saying what the driver says ykwim?"
+  //
+  // It must still produce `open`, `word` and `end` and must still take about as
+  // long as saying it would — a card that flicks instantly through the reply
+  // reads as a bug — so the probe checks that turn two's words are all
+  // ESTIMATED while turn one's come from real boundaries.
+  out.exchangeIds = radio.speakExchange([
+    { speaker: 'engineer', text: 'Box box. Soft on the left.' },
+    { speaker: 'driver', text: 'Understood, box this lap.', voiced: false },
+  ], { tag: 'exchange', ttlMs: 20000 });
+  await until(
+    () => out.exchangeIds.length > 0 && out.exchangeIds.every((id) => ended(id)),
+    25000,
+  );
+
   radio.dispose();
   await ctx.close();
   return out;
+}
+
+/**
+ * The same class with the voice switched OFF, which is the default state.
+ *
+ * This is the check that the event stream and the audio switch are two
+ * different things. An earlier version returned `null` from `speak` when
+ * disabled, so a HUD driven off this clock would have received no `open`, no
+ * `word` and no `end`, and would have shown NO CARD AT ALL to the overwhelming
+ * majority of players — which is not a subtle failure, and nothing tested it.
+ */
+export async function exerciseSilent(): Promise<ExerciseResult> {
+  const { TeamRadio: TR } = await import('../src/audio/TeamRadio');
+  const ctx = new AudioContext();
+  await ctx.resume();
+  const radio = new TR();
+  const out: ExerciseResult = {
+    events: [], spokenIds: [], droppedStale: false,
+    interruptedId: null, interrupterId: null, exchangeIds: [], spoken: false,
+  };
+  const t0 = performance.now();
+  radio.attach(ctx, ctx.destination, () => { /* nothing to duck */ });
+  // NOT enabled. This is the shipped default.
+  radio.setVolume(1);
+  radio.addListener((ev) => {
+    const base = {
+      type: ev.type, id: ev.transmission.id, speaker: ev.transmission.speaker,
+      atMs: Math.round(ev.atMs - t0),
+    };
+    if (ev.type === 'word') out.events.push({ ...base, ci: ev.charIndex, est: ev.estimated });
+    else if (ev.type === 'end') out.events.push({ ...base, reason: ev.reason });
+    else out.events.push(base);
+  });
+
+  out.exchangeIds = radio.speakExchange([
+    { speaker: 'engineer', text: 'Box box. Soft on the left.' },
+    { speaker: 'driver', text: 'Understood, box this lap.' },
+  ], { tag: 'silent', ttlMs: 20000 });
+
+  await new Promise<void>((res) => {
+    const from = performance.now();
+    const tick = (): void => {
+      const done = out.exchangeIds.length > 0 && out.exchangeIds.every(
+        (id) => out.events.some((e) => e.id === id && e.type === 'end'),
+      );
+      if (done || performance.now() - from > 20000) return res();
+      setTimeout(tick, 60);
+    };
+    tick();
+  });
+
+  radio.dispose();
+  await ctx.close();
+  return out;
+}
+
+/**
+ * What the one-male-voice search found on this platform.
+ *
+ * Reported rather than assumed, because `SpeechSynthesisVoice` has no gender
+ * field and the choice is therefore made from a hard-coded list of names — the
+ * kind of thing that is right on the machine it was written on. See
+ * `TeamRadio.voiceReport`.
+ */
+export function voiceReport(): Record<string, unknown> {
+  const radio = new TeamRadio();
+  const ctx = new OfflineAudioContext(1, 128, SR);
+  radio.attach(ctx, ctx.destination, () => { /* no ducking in a probe */ });
+  const first = radio.voiceReport();
+  // RESOLVED ONCE AND STABLE. A race engineer who is a different man each time
+  // he keys up is a worse bug than any individual choice of man, and the
+  // resolution runs lazily on every transmission — so it is asked four times
+  // here and the probe requires four identical answers. Twice on this instance
+  // and twice on a fresh one, because the two failure modes are different: a
+  // cache that does not hold, and a choice that is not deterministic.
+  const again = radio.voiceReport();
+  const other = new TeamRadio();
+  const octx = new OfflineAudioContext(1, 128, SR);
+  other.attach(octx, octx.destination, () => { /* no ducking in a probe */ });
+  const fresh = other.voiceReport();
+  const fresh2 = other.voiceReport();
+  return {
+    ...first,
+    stable: first.name === again.name && first.name === fresh.name
+      && first.name === fresh2.name,
+    resolutions: [first.name, again.name, fresh.name, fresh2.name],
+  };
 }
 
 /** Which voice each speaker resolved to on this platform. */
@@ -297,7 +483,9 @@ declare global {
       waitForVoices: typeof waitForVoices;
       measureSpeechTiming: typeof measureSpeechTiming;
       describeVoices: typeof describeVoices;
+      voiceReport: typeof voiceReport;
       exerciseRadio: typeof exerciseRadio;
+      exerciseSilent: typeof exerciseSilent;
       CONSTANTS: typeof CONSTANTS;
     };
   }
@@ -305,5 +493,6 @@ declare global {
 
 window.RADIO_PROBE = {
   measureResponse, measureTransmission, probeSpeechApi, waitForVoices,
-  measureSpeechTiming, describeVoices, exerciseRadio, CONSTANTS,
+  measureSpeechTiming, describeVoices, voiceReport, exerciseRadio, exerciseSilent,
+  CONSTANTS,
 };

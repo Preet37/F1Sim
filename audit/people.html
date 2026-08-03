@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>People harness</title>
+  <link rel="stylesheet" href="/src/ui/styles.css" />
+  <!-- `styles.css` pins the document to the viewport and hides overflow, because
+       a racing game must never scroll. A contact sheet is not a racing game, and
+       without this the full-page screenshot is one screen tall. -->
+  <style>
+    html, body { margin: 0; padding: 0; height: auto !important; overflow: visible !important; }
+    /* `#app` is pinned to the viewport for the game. A wall of faces is taller
+       than a viewport by design. */
+    #app.audit-sheet { position: static !important; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/audit/people.ts"></script>
+</body>
+</html>

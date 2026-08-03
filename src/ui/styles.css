@@ -373,7 +373,7 @@ canvas#view {
    left rail, and a tower sized to "as many as fit" grows straight down
    through the pit instruction. See `towerFit`. */
 .hud-tower {
-  --tower-cols: 3px 22px 20px minmax(0, 1fr) 52px 12px 32px;
+  --tower-cols: 3px 22px 20px minmax(0, 1fr) 0 52px 12px 32px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
   width: 300px;
@@ -558,12 +558,53 @@ canvas#view {
    the row, so hiding a column at a breakpoint hides its label with it and the
    two cannot come apart. */
 .c-gap { text-align: right; }
+.c-time { text-align: right; }
 
 .tower-row {
-  height: 26px;
+  height: 20px;
   border-radius: 5px;
   margin-bottom: 1px;
 }
+
+/* --- The lap time column ----------------------------------------------
+   "if other cars have completed their lap and I haven't, you should still be
+    showing their times?? why are you waiting on me to display their times
+    that they did at other laps?"
+
+   THE DATA WAS NEVER THE PROBLEM AND IT IS WORTH SAYING SO, because the
+   obvious diagnosis is wrong. `standingsCells` has always returned a `best`
+   for every car that has set a lap, computed from that car's own
+   `bestLapTime` and owing nothing to the player's; a probe now drives a
+   qualifying session in which the player never moves and asserts all
+   nineteen rivals' times are produced. They always were.
+
+   The row simply never drew them. It drew a GAP — a deficit to the quickest
+   lap — and a deficit is not a time. So a player watching qualifying saw
+   `+0.412` beside a driver and no lap anywhere on the panel, and read that,
+   correctly, as the tower refusing to show what everybody had done.
+
+   A column, then, in the sessions that are ABOUT lap times: practice and
+   qualifying, where a broadcast tower shows the time and the deficit side by
+   side. In a race it collapses to zero width — a race's tower is intervals,
+   and a column of best laps down the side of one is a different graphic
+   about a different question. `is-timed` is written by `updateTower` from
+   the session kind, so the header and the cells cannot come apart. */
+.hud-tower.is-timed { --tower-cols: 3px 20px 18px minmax(0, 1fr) 56px 46px 12px 30px; }
+.tower-time {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: right;
+  color: var(--ink);
+  overflow: hidden;
+}
+/* The quickest lap of the session is purple, here and everywhere else in this
+   game, because that is the sport's own rule and it means the column needs no
+   legend. */
+.tower-row.is-best .tower-time { color: var(--violet); }
+.hud-tower:not(.is-timed) .tower-time,
+.hud-tower:not(.is-timed) .c-time { display: none; }
 /* THE LEADER'S NUMBER IN A FILLED RED CELL. This is the one place in this
    game red does not mean "stopped", and it is deliberate: it is what a
    broadcast tower does, and it is the fastest way to find the front of the
@@ -950,11 +991,44 @@ canvas#view {
 .hud-ersbar { height: 5px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; }
 .hud-ersfill { height: 100%; width: 100%; background: var(--violet); }
 
-/* --- Bottom left: tyres and fuel ------------------------------------- */
+/* --- Tyres and fuel: the CAR column, on the right --------------------
+   "this information should be to the right with the rest of the car
+    information."
+
+   Correct, and it is the organising principle of the whole HUD rather than a
+   preference. The left column is the TEAM — the running order, the pit wall,
+   race control, the decisions somebody else is making about your race. The
+   right column is the CAR — the wheel, the gaps, the damage, and now the
+   tyres and the fuel, which are the two most car-shaped numbers on the
+   screen. They had been bottom-left since the first version and the reason
+   was layout convenience, not meaning.
+
+   It buys something as well as meaning it. The left column had the tower,
+   the rail, the weather and the car state stacked in it on a 900px screen,
+   and the tower and the radio card were competing for the same pixels — the
+   running order could show twelve cars or the radio card could be a square,
+   not both. Moving the car's own readouts to the car's own column is what
+   pays for both of the things that were reported:
+
+     "why can I only see like 4 cars on the leaderboard"
+     "that text box i told u to make it a square and make it bigger"
+
+   THE COLUMN HAS A FLOOR AND IT IS THE MIRRORS. In the driver's eye the right
+   pane reaches from 68.5% to 93% of frame height — on a 900px screen that is
+   y=616 downwards — so every panel in this column has to finish above it. The
+   column is therefore laid out as a stack that ends by 615, not as things
+   hung off the bottom edge, and `shoot:panels` measures it every run. See
+   `MIRROR_PANES`.
+
+   Beside the damage diagram rather than under it: the diagram is 92px of a
+   244px column and the 142 left over is exactly a tyre panel. */
 .hud-carstate {
-  bottom: calc(10px + var(--safe-b));
-  left: calc(10px + var(--safe-l));
-  min-width: 158px;
+  top: calc(446px + var(--safe-t));
+  right: calc(96px + var(--safe-r));
+  left: auto;
+  bottom: auto;
+  width: 148px;
+  min-width: 0;
 }
 .hud-tyreheader { display: flex; justify-content: space-between; align-items: center; }
 .hud-compound { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; }
@@ -1090,7 +1164,12 @@ canvas#view {
      have already read. The top is the deepest the tower can ever reach; see
      `towerFit`. */
   top: var(--rail-top, max(300px, 50vh));
-  bottom: calc(172px + var(--safe-b));
+  /* 172 down to 86. The car state and the weather bug used to be stacked
+     under this band in the same column and the rail stopped above them; both
+     have moved to the CAR column on the right, which is where they mean
+     something. The 86 that remains is the mirror band's own clearance — see
+     `MIRROR_PANES` — and it is checked by `shoot:panels`, not guessed. */
+  bottom: calc(86px + var(--safe-b));
   /* Flush with the tower above it: the rail is one column, not two. */
   --rail-w: 336px;
   /* Room to slide in from. `overflow: hidden` above clips BOTH axes, so a card
@@ -1226,19 +1305,59 @@ canvas#view {
 
    No sanctioning body's mark appears anywhere in it. The words are the
    authority. */
+/* THE OFFICIAL STRIP.
+
+     "this doesn't look good, I showed you an image of the FIA, you should
+      replicate that font and color and completely."
+
+   What was here was a dark ROUNDED card with a yellow bar down its left
+   edge and three stacked blocks in it — the shape of a notification. The
+   reference is a horizontal strip:
+
+     ┌──────┬─────────────────────────────────────────────┐
+     │  ⬤   │ RACE CONTROL: TURN 8 INCIDENT INVOLVING …   │
+     │ mark │ NOTED - IMPEDING                            │
+     └──────┴─────────────────────────────────────────────┘
+
+   Squared corners everywhere — no radius on the plate, none on the mark
+   block. A darker navy block at the left carrying the governing body's
+   mark, then the message. `RACE CONTROL:` bold and the incident CONTINUING
+   ON THE SAME LINE, with the facts smaller beneath. White on navy,
+   condensed, tight, uppercase. No accent bar of any colour: the tone is
+   carried by the words, which is how an official notice works.
+
+   The mark is the game's own device, not the FIA roundel — see
+   `governingMarkSvg`. */
 .hud-control {
-  padding: 8px 11px 9px;
-  border-radius: 4px;
-  background: rgba(10, 12, 16, 0.93);
-  border: 1px solid var(--card-line);
-  border-left: 3px solid var(--sig-white);
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  border-radius: 0;
+  /* The reference navy, and it is a NAVY rather than the neutral near-black
+     everything else in this HUD is plated on. That difference is most of
+     what identifies the strip at a glance. */
+  background: #0a1738;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: var(--plate-lift);
   transform: translateX(0);
   opacity: 1;
+  overflow: hidden;
   transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.16, 0.9, 0.3, 1);
 }
+/* The mark block: a darker panel at the left, square, the full height of the
+   strip. */
+.control-badge {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  padding: 0 8px;
+  background: #061029;
+  color: #fff;
+}
+.control-badge svg { display: block; width: 22px; height: 22px; }
+.control-body { flex: 1 1 auto; min-width: 0; padding: 7px 11px 8px; }
 /* It drops in from above rather than sliding in from the left. The rail's
    cards come from the edge they live on; the noticeboard's come down from the
    top of the frame, which is where a broadcast banner comes from and is the
@@ -1249,43 +1368,33 @@ canvas#view {
    else there. See `Hud.mountControl` for when that happens. */
 .hud-alerts .hud-control.entering { transform: translateX(-30px); }
 .hud-alerts .hud-control.leaving { transform: translateX(-16px); }
-.hud-control.tone-warn { border-left-color: var(--sig-yellow); }
-.hud-control.tone-urgent { border-left-color: var(--sig-red); }
 
-.control-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
-.control-mark {
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.2em;
-  color: var(--ink-3);
-  border: 1px solid var(--line-2);
-  border-radius: 3px;
-  padding: 2px 6px;
-  white-space: nowrap;
-}
+/* One line, opening bold and running straight on. The chip that used to sit
+   above this is gone: the reference sets `RACE CONTROL:` as the first words
+   of the sentence, not as a label over it, and that is most of why the strip
+   reads as an announcement rather than as a card with a title. */
 .control-headline {
   font-family: var(--font-display);
   font-size: 12.5px;
-  font-weight: 800;
-  font-stretch: 112%;
-  letter-spacing: 0.05em;
-  line-height: 1.2;
-  color: var(--ink);
-  text-transform: uppercase;
-}
-.control-detail {
-  margin-top: 4px;
-  font-family: var(--font-data);
-  font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--ink-2);
+  font-stretch: 88%;
+  letter-spacing: 0.015em;
+  line-height: 1.16;
+  color: #fff;
   text-transform: uppercase;
-  line-height: 1.35;
 }
-.hud-control.tone-urgent .control-detail { color: #ffc9ce; }
-.hud-control.tone-warn .control-detail { color: #ffe9a0; }
+.control-label { font-weight: 900; }
+.control-detail {
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  font-stretch: 88%;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.72);
+  text-transform: uppercase;
+  line-height: 1.25;
+}
 
 /* --- A decision, rather than a note -----------------------------------
    Race control has two states and a broadcast draws them differently. The
@@ -1307,16 +1416,9 @@ canvas#view {
   overflow: hidden;
 }
 .control-seg { display: flex; align-items: center; padding: 7px 9px; min-width: 0; }
-.is-penalty .control-mark {
-  border: 0;
-  border-radius: 0;
-  background: rgba(255, 255, 255, 0.05);
-  align-self: stretch;
-  writing-mode: horizontal-tb;
-  max-width: 62px;
-  line-height: 1.15;
-  white-space: normal;
-}
+/* The same mark block as the note, so an investigation and a decision read as
+   one system rather than as two graphics that happen to share a rail. */
+.control-seg.control-badge { padding: 0 8px; }
 .control-penalty {
   flex: 0 0 auto;
   flex-direction: column;
@@ -1373,9 +1475,7 @@ canvas#view {
 }
 
 /* --- The radio card ---------------------------------------------------
-   THE BROADCAST PLATE, which is a different object from the square
-   social-media radio card and is the one that belongs on screen while
-   somebody is driving. Three lines tall, dark navy, and built as:
+   THE BROADCAST PLATE, built as:
 
      SURNAME        heavy caps, right-aligned, in the TEAM'S COLOUR
      RADIO          heavy white caps under it, team mark beside it
@@ -1395,15 +1495,82 @@ canvas#view {
    The mark is this game's own generated geometry, keyed to the team and
    drawn in the team's colour. No real badge is reproduced.
 
-   Deliberately rare: five engine events fire it, each a moment a broadcast
-   would actually play. See `updateRadioCard`. */
+   WHY IT IS A SQUARE NOW.
+
+     "this has to be a square man, its gotta be slightly better"
+
+   Correct, and the reason is structural rather than aesthetic. The card was
+   the rail's full 336px wide and three lines tall — a letterbox — and a
+   letterbox has room for two turns. Two turns can only ever be the END of
+   an argument, so the card could show a driver being overruled but never
+   the push-back that earned it. A square carries four, which is the whole
+   exchange, and it carries the answer buttons underneath without the
+   question and the reply being on different screens.
+
+   `aspect-ratio` with a `min-height` rather than a fixed height: the
+   content is text of unknown length in an unknown font, and a card that
+   clips its last line to stay square is a card that has chosen its own
+   proportions over what it was built to say. The square is the floor.
+
+   It is NOT square on a landscape phone, and that is deliberate. The rail's
+   band there is under a hundred pixels tall between the running order and
+   the safe area, and a 250px card in it would be clipped — which is exactly
+   what `shoot:panels` measures and fails on. See the media queries at the
+   foot of this file. */
 .hud-radiocard {
   --team: var(--sig-white);
-  padding: 8px 11px 10px;
-  /* Square-ish. This is the one card in the rail that is a clip rather than
-     a graphic, and the near-right-angle is what says so beside the broadcast
-     radii on everything around it. */
+  padding: 9px 12px 11px;
+  /* The near-right-angle is what says "clip" rather than "graphic" beside
+     the broadcast radii on everything around it. */
   border-radius: 4px;
+  /* Square, floor not ceiling, and MEASURED against the band rather than
+     chosen. `align-self` keeps it off the rail's full width, because a square
+     336px across is 336px tall and there is no viewport in this game with
+     that much rail in it: on a 1400x900 desktop under a safety car the band
+     between the running order and the live cues is about 262 pixels, and the
+     cue takes thirty of them. A 238px card measured 276 with the cue and
+     `fitRail` threw it out — correctly, and silently, which is how a card
+     ends up never appearing at all. 216 is what fits. */
+  align-self: flex-start;
+  /* THE SIZE IS MEASURED, NOT WRITTEN. These two are the card at its BIGGEST —
+     what it wants to be when the rail has room — and `Hud.sizeRadioCard`
+     writes `--radio-w` / `--radio-h` under them when it does not.
+
+     The reason is a reported bug, and the report is blunt: "i cant see any of
+     the messages bruh". `shoot:panels` had been printing the same thing for
+     weeks as a known failure — "the radio card is not on screen in a 248px
+     band" on desktop and in a 348px one in portrait — because `fitRail` is
+     allowed to THROW THE CARD AWAY when the rail overruns its band, and a
+     fixed 176px card plus a 45px neutralisation cue plus a 30px pit cue plus
+     two 8px gaps is 267 pixels in a 248 pixel band. Nineteen pixels, and the
+     player never saw a word.
+
+     A card that shrinks by nineteen pixels is legible. A card that is not
+     there is not. So the height is now the room the rail actually has, floored
+     at `RADIO_CARD_MIN_PX`, and the width follows it so the plate keeps its
+     shape rather than becoming the letterbox this pass replaced. Eviction is
+     still there, as the last resort it should always have been. */
+  --radio-w-max: 208px;
+  --radio-h-max: 176px;
+  width: var(--radio-w, var(--radio-w-max));
+  /* A FIXED HEIGHT, not a minimum, and this is the part that was wrong twice.
+
+     MEASURED AGAINST THE WORST BAND rather than chosen: on a 1400x900 desktop
+     under a safety car the rail's band is 248px and the neutralisation cue in
+     it takes 45, so the card has 195 to live in. A 198px card was thrown out by
+     `fitRail` for three pixels, silently.
+
+     But a MINIMUM height was the deeper fault. The card is measured by
+     `fitRail` at the moment it is raised — when the typewriter has written
+     nothing and every row is empty — and then it GROWS for the next two seconds
+     as the words arrive. By the time the fourth turn had wrapped to two lines
+     the plate was 9px taller than the band that had just accepted it, and
+     nothing re-measures. A broadcast plate is a fixed size; the words are cut
+     to it (`.radio-turn` clamps to two lines) rather than the plate stretching
+     to them, so what `fitRail` measures is what ends up on screen. */
+  height: var(--radio-h, var(--radio-h-max));
+  display: flex;
+  flex-direction: column;
   background: rgba(8, 12, 22, 0.95);
   border: 1px solid var(--card-line);
   backdrop-filter: blur(14px) saturate(1.2);
@@ -1445,19 +1612,154 @@ canvas#view {
 /* The accent rule, in the team's colour, dividing the header from the words. */
 .radio-rule { height: 2px; background: var(--team); margin: 7px 0 7px; }
 
+/* The waveform, behind the words, in the team's colour. Low enough that the
+   text sits cleanly on it and present enough that the card reads as a
+   recording rather than as a caption — which is the one thing it is for. */
+.radio-wave {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 26%;
+  height: 44px;
+  fill: var(--team);
+  opacity: 0.13;
+  pointer-events: none;
+}
+
+/* The words fill the square and the answer row sits under them, so a card
+   with three short turns in it does not leave the buttons floating in the
+   middle of the plate. Above the waveform. */
+.radio-turns {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+  /* The plate is a fixed size and the words are cut to it. A turn that would
+     push the card taller than the band it was measured into is a turn that
+     gets clipped instead — see the note on `.hud-radiocard`'s height. */
+  overflow: hidden;
+}
+.radio-head, .radio-rule, .radio-choice { position: relative; z-index: 1; }
+
+/* The tone, as a hairline along the top edge rather than a bar down the side.
+   The card is one channel now, so the accent cannot be doing attribution —
+   only urgency. `info` gets nothing at all, because most of what a pit wall
+   says is not urgent and a card that is always flagged flags nothing. */
+.hud-radiocard { position: relative; overflow: hidden; }
+.hud-radiocard::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: transparent;
+}
+.hud-radiocard.tone-warn::before { background: var(--sig-yellow); }
+.hud-radiocard.tone-urgent::before { background: var(--sig-red); }
+.hud-radiocard.tone-go::before { background: var(--sig-green); }
+
 .radio-turn {
   font-family: var(--font-display);
-  font-size: 11.5px;
+  font-size: 10.8px;
   font-weight: 800;
   font-stretch: 108%;
-  letter-spacing: 0.02em;
-  line-height: 1.24;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
   text-transform: uppercase;
   text-wrap: pretty;
+  /* Two lines a turn, and then it stops. Four turns of unbounded length is a
+     card of unbounded height, and an unbounded card on this rail is a card
+     `fitRail` throws away — so the shape that carries the whole exchange has
+     to be the shape that guarantees it fits. `radioExchange` is written to
+     this budget; `probe:hudtext` fails any line over 110 characters. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* The typewriter's cursor: a caret in the speaker's own colour on the row
+     currently being written. It is one pseudo-element and it disappears the
+     moment the row is complete, which is what a transmission arriving
+     actually looks like — see `typeExchange`. */
+  position: relative;
 }
-.radio-turn + .radio-turn { margin-top: 4px; }
+.radio-turn + .radio-turn { margin-top: 5px; }
 .radio-turn.is-driver { color: var(--team); }
 .radio-turn.is-wall { color: #fff; }
+
+/* --- The answer -------------------------------------------------------
+   "the conversation between the team and me should go two ways right not
+    just one?"
+
+   The one place in the HUD where the driver replies. Two buttons that say
+   what will HAPPEN rather than yes and no — a driver reading this in
+   peripheral vision at 300km/h should not have to reconstruct which way
+   round the question was phrased — and a rule under them that drains as
+   the offer runs out.
+
+   The drain is a WIDTH on a solid bar rather than a number counting down,
+   because a countdown reads as a quiz and this is a man asking a question.
+   It is written once a second at most; see `updateQuestion`. */
+.radio-choice { flex: 0 0 auto; margin-top: 9px; }
+.radio-ask {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+.radio-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.radio-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  text-align: center;
+  padding: 7px 4px;
+  border-radius: 3px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 850;
+  font-stretch: 110%;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--card-line);
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+/* The affirmative takes the team's colour, because saying yes to the wall is
+   the team's own decision being carried out. Declining is a neutral outline:
+   it is a legitimate answer, not a warning. */
+.radio-btn.is-yes {
+  background: var(--team);
+  border-color: var(--team);
+  color: #06090f;
+}
+.radio-btn.is-no { background: transparent; color: #fff; }
+.radio-btn:active { transform: translateY(1px); }
+.radio-btn.is-no:hover { border-color: #fff; }
+/* The keyboard has to be able to reach a decision with a deadline on it. */
+.radio-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+.radio-clock {
+  height: 2px;
+  margin-top: 7px;
+  background: var(--team);
+  width: 100%;
+  transition: width 0.9s linear;
+}
+
+/* The voice switch. Small, unlabelled and in the header, because the moment
+   somebody wants the radio to stop talking is the moment it is talking —
+   which is a bad moment to be told to open a settings screen. */
+.radio-mute {
+  pointer-events: auto;
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.radio-mute:hover { opacity: 1; }
+.radio-mute:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 /* --- The two live cards, pinned to the bottom of the stack ------------
    Everything above them is transient. These are not: they carry numbers that
@@ -1540,10 +1842,17 @@ canvas#view {
    speed, and standing in the middle of the frame while it failed. Same three
    facts, in the shape a broadcast uses — a drawn sky, the condition in a
    solid pill, the two temperatures under it. */
+/* It goes with the car for the same reason the tyres do: air and track
+   temperature are read against tyre temperature and against nothing else, and
+   the two were in different columns. That also empties the left column below
+   the running order, which is what lets the rail carry a square radio card and
+   the tower carry the whole field at once. */
 .hud-weather {
   position: absolute;
-  left: calc(10px + var(--safe-l));
-  bottom: calc(116px + var(--safe-b));
+  right: calc(10px + var(--safe-r));
+  left: auto;
+  top: calc(388px + var(--safe-t));
+  bottom: auto;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1893,11 +2202,20 @@ canvas#view {
    instruction now has to live. */
 .hud-damage {
   position: absolute;
-  top: calc(400px + var(--safe-t));
+  /* Down 52px to make room for the weather bug, which came across from the
+     left column with the tyres. The stack in this column runs timing, wheel,
+     gaps, buttons, conditions, then the car's physical state — and it has to
+     finish above the mirror band at 68.5% of frame height. */
+  top: calc(446px + var(--safe-t));
   right: calc(10px + var(--safe-r));
   left: auto;
   bottom: auto;
-  width: 92px;
+  /* 84 rather than 92, and the eight pixels are load-bearing: the diagram is
+     drawn to a 100x170 viewBox, so its height is 1.7x whatever width it is
+     given, and at 92 the panel finished at y=634 on a 900px screen — eighteen
+     pixels into the driver's right mirror pane, which starts at 68.5%. The
+     column has a hard floor and this is the panel that sits on it. */
+  width: 84px;
   padding: 7px 8px 8px;
   display: flex;
   flex-direction: column;
@@ -1982,15 +2300,33 @@ canvas#view {
   .control-headline { font-size: 11.5px; }
   .alert-portrait { width: 32px; height: 32px; }
   .alert-line { font-size: 11.5px; }
-  .hud-radiocard { padding: 7px 10px 9px; }
+  /* Portrait keeps the square — the rail's band here is the full height
+     between the two top panels and the car state, which is comfortably more
+     than the card needs. Slightly smaller, because everything is. */
+  .hud-radiocard {
+    padding: 7px 10px 9px;
+    /* The maxima, not the size. `Hud.sizeRadioCard` measures the band and
+       writes `--radio-w` / `--radio-h` under these. */
+    --radio-w-max: 232px;
+    --radio-h-max: 214px;
+  }
   .radio-driver, .radio-title { font-size: 13px; }
   .radio-turn { font-size: 11px; }
+  .radio-btn { font-size: 11.5px; padding: 6px 4px; }
   .hud-pit-cue, .hud-neutral-cue { font-size: 10px; padding: 6px 10px; gap: 7px; }
   .hud-pit-cue.cue-box { font-size: 12.5px; }
 
   /* Where the conditions strip used to be dropped to, and for the same
      reason: the top centre is fully occupied in portrait. */
   .hud-weather {
+    /* Back to the bottom edge on a phone. The desktop stack has it fifth in
+       the right-hand column; in portrait that column is 176px wide and already
+       full, so the base rule's `top` has to be undone explicitly — an element
+       with both `top` and `bottom` set stretches, and that is what put the
+       weather bug through the notice rail. */
+    top: auto;
+    right: auto;
+    left: calc(10px + var(--safe-l));
     bottom: calc(150px + var(--safe-b));
     padding: 6px 12px 6px 9px;
     gap: 9px;
@@ -2010,6 +2346,8 @@ canvas#view {
   }
 
   .hud-carstate {
+    top: auto;
+    right: auto;
     bottom: calc(10px + var(--safe-b));
     left: calc(10px + var(--safe-l));
     width: calc(50% - 16px);
@@ -2162,14 +2500,42 @@ canvas#view {
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  /* The radio card does not appear at this height at all — `showRadioCard`
-     declines it — but the rules are kept so a taller phone in the same width
-     band still gets a proportionate card. */
-  .hud-radiocard { padding: 6px 9px 8px; }
+  /* THE SQUARE IS OFF HERE, and this is the honest limit of the shape.
+
+     390 pixels of height leaves the rail a 94-pixel band between the running
+     order and the tyre panel. A 238-pixel square in it is not a square, it is
+     a card with two thirds of itself outside the band — and `shoot:panels`
+     measures exactly that and fails the sweep on it. So on a landscape phone
+     the card goes back to the broadcast letterbox it was: the header, the
+     rule, and the two turns that carry the push-back and the answer.
+
+     Rows three and four are hidden rather than not built, so the same
+     `typeExchange` runs on every viewport and nothing in the script has to
+     know what shape it is being read on. */
+  .hud-radiocard {
+    padding: 6px 9px 8px;
+    /* Both overridden outright rather than through the custom properties, so
+       the measured square is switched OFF here and the letterbox is the shape.
+       `sizeRadioCard` still writes the properties; nothing reads them. */
+    width: 100%;
+    /* The letterbox again on a landscape phone, and its height is its content:
+       two turns and a header is short enough that it cannot outgrow the band
+       the way the square could. */
+    height: auto;
+    align-self: stretch;
+  }
   .radio-mark { width: 18px; height: 18px; }
   .radio-driver, .radio-title { font-size: 12px; }
   .radio-rule { margin: 5px 0; }
   .radio-turn { font-size: 10px; }
+  .radio-turn:nth-child(n+3) { display: none !important; }
+  /* The answer survives the compression, because a question the driver
+     cannot answer on a phone is worse than no question. The prompt line goes
+     — the buttons say what they do. */
+  .radio-ask { display: none; }
+  .radio-choice { margin-top: 5px; }
+  .radio-btn { padding: 5px 4px; font-size: 10.5px; }
+  .radio-clock { margin-top: 4px; }
   /* One line each, as tight as they read. Every pixel taken here is a pixel
      the pop-up above them does not get — see `Hud.maxAlerts`, which divides
      what is left rather than guessing from the viewport. */
@@ -2186,6 +2552,8 @@ canvas#view {
      the tyre panel it costs the rail nothing, and it is still in the bottom
      band where a broadcast puts it. */
   .hud-weather {
+    top: auto;
+    right: auto;
     left: calc(276px + var(--safe-l));
     bottom: calc(74px + var(--safe-b));
     padding: 5px 11px 5px 8px;
@@ -2222,7 +2590,15 @@ canvas#view {
   .hud-ersrow .hud-ersbar { height: 6px; }
   .hud-erslabel { font-size: 8px; }
 
-  .hud-carstate { bottom: calc(6px + var(--safe-b)); min-width: 0; width: 138px; padding: 5px 7px; }
+  .hud-carstate {
+    top: auto;
+    right: auto;
+    left: calc(10px + var(--safe-l));
+    bottom: calc(6px + var(--safe-b));
+    min-width: 0;
+    width: 138px;
+    padding: 5px 7px;
+  }
   .hud-tyrelabel { width: 26px; font-size: 8px; }
   .hud-tyretemp { width: 30px; font-size: 9px; }
   .hud-fuelrow { font-size: 9px; }
@@ -2414,11 +2790,16 @@ canvas#view {
 
 /* The left column, lifted whole. The rail's top comes up with it, because a
    band whose foot has risen 274 pixels and whose head has not is a band with
-   nothing in it. */
-.hud[data-mirrors] .hud-carstate { bottom: calc(10px + var(--safe-b) + var(--floor)); }
-.hud[data-mirrors] .hud-weather { bottom: calc(116px + var(--safe-b) + var(--floor)); }
+   nothing in it.
+
+   The tyre panel, the weather bug and the damage diagram are NOT lifted any
+   more: they are anchored to the top of the right-hand column now rather than
+   hung off the bottom edge, and a top-anchored stack that already finishes
+   above 68.5% of frame height has nothing to lift clear of. Lifting them by
+   the band's height was what put the weather bug through the damage diagram
+   under the T-cam. */
 .hud[data-mirrors] .hud-notices {
-  bottom: calc(172px + var(--safe-b) + var(--floor));
+  bottom: calc(86px + var(--safe-b) + var(--floor));
 }
 /* The camera name and the frame counter sit under the right-hand column and
    are the only two things in the bottom-right corner that survive. */
@@ -2427,9 +2808,15 @@ canvas#view {
 
 /* --- Portrait -------------------------------------------------------- */
 @media (max-width: 620px) and (orientation: portrait) {
-  .hud[data-mirrors] .hud-carstate { bottom: calc(10px + var(--safe-b) + var(--floor)); }
-  .hud[data-mirrors] .hud-damage { bottom: calc(10px + var(--safe-b) + var(--floor)); }
-  .hud[data-mirrors] .hud-weather { bottom: calc(150px + var(--safe-b) + var(--floor)); }
+  .hud[data-mirrors] .hud-carstate {
+    top: auto;
+    bottom: calc(10px + var(--safe-b) + var(--floor));
+  }
+  .hud[data-mirrors] .hud-damage { top: auto; bottom: calc(10px + var(--safe-b) + var(--floor)); }
+  .hud[data-mirrors] .hud-weather {
+    top: auto;
+    bottom: calc(150px + var(--safe-b) + var(--floor));
+  }
   /* Never above the gap readout, which holds the strip under the wheel panel
      in portrait — so here the measured tower bottom is a floor rather than the
      answer. The exception is a stop being chosen: the tower has already given
@@ -2509,6 +2896,8 @@ canvas#view {
     bottom: calc(6px + var(--safe-b) + var(--floor));
   }
   .hud[data-mirrors] .hud-carstate {
+    top: auto;
+    right: auto;
     left: max(280px, calc(var(--mirror-l) + 6px));
     bottom: calc(6px + var(--safe-b) + var(--floor));
   }
@@ -4855,15 +5244,58 @@ table.standings tr.me td.who { font-weight: 700; }
   .pitchip { min-height: 42px; }
 }
 
-/* === Retirement ========================================================
-   Shown over the track when the player's own race ends in an accident.
+/* === Retirement: the corner bar ========================================
+   THE RACE CASE, and it is two buttons.
 
-   It is a full-bleed overlay rather than a card in the corner because a
-   retirement is not a notification — it is the end of the session, and the
-   player needs to be told so plainly that there is no ambiguity about what
-   just happened. The previous behaviour said nothing at all: the car stopped
-   being drawn and the player was left looking at an empty circuit trying to
-   work out whether the game had crashed.
+     "why do we still have this thing, I thought we talked about, remove the
+      retired. its just a radio message about you having to retire and then
+      top right continue or watch the race, and once the user presses
+      continue the stats show up."
+
+   Asked three times. What it replaces is the full-bleed panel below — cause,
+   worst component, corner, lap, classification and a bar chart of twelve
+   damaged parts, filed at the player two seconds after an accident they were
+   in, over the top of the car they most wanted to be looking at. Every number
+   on it is correct and none of it was asked for.
+
+   So: the principal says it on the radio, these two sit in the top-right
+   corner, and the numbers wait. Top right specifically, and the HUD's timing
+   panel stands down to make room (`.hud.is-retired`) — lap time, delta and
+   sector times for a car in a barrier are three readouts of nothing.
+
+   Above the HUD's z-index and pointer-events:auto, because the HUD is
+   transparent to the pointer by construction and these are the only two
+   things on screen the player can now do.
+   ==================================================================== */
+.retirebar {
+  position: absolute;
+  top: calc(12px + var(--safe-t));
+  right: calc(12px + var(--safe-r));
+  z-index: 46;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.16, 0.9, 0.3, 1);
+}
+.retirebar.shown { opacity: 1; transform: translateY(0); }
+.retirebar .btn { min-height: 34px; padding: 0 14px; font-size: 11px; }
+
+/* The timing panel goes while the player is out. It occupies the corner the
+   decision is now in, and everything on it reads zero. */
+.hud.is-retired .hud-timing { display: none; }
+
+@media (max-height: 470px) {
+  .retirebar { top: calc(8px + var(--safe-t)); right: calc(8px + var(--safe-r)); gap: 6px; }
+  .retirebar .btn { min-height: 28px; padding: 0 10px; font-size: 10px; }
+}
+
+/* === Retirement: the standing-session panel ============================
+   Practice and qualifying only, now. A driver whose car is in the barrier in
+   Q1 has NOT had their session's result decided — Art. B2.4.3a classifies
+   them on the lap they set — and that is a genuinely complicated thing to be
+   told, so it is still told at length.
 
    It fades in over the live scene rather than replacing it, so the wreck and
    the debris stay visible behind the words explaining them. That is the whole

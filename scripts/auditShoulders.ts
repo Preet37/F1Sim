@@ -175,7 +175,7 @@ async function main(): Promise<void> {
     await page.bringToFront();
     await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
     page.setDefaultTimeout(20 * 60_000);
-    page.on('pageerror', (e) => errors.push(`${id} pageerror: ${e.message}`));
+    page.on('pageerror', (e) => errors.push(`${id} pageerror: ${String(e)}`));
     page.on('console', (m) => {
       if (m.type() === 'error' && !m.text().includes('404')) {
         errors.push(`${id} console: ${m.text()}`);

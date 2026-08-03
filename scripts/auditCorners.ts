@@ -132,7 +132,7 @@ async function main(): Promise<void> {
     await p2.bringToFront();
     await p2.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
     p2.setDefaultTimeout(240_000);
-    p2.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    p2.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
     p2.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
     await p2.goto(url, { waitUntil: 'load', timeout: 120_000 });
     await p2.waitForFunction('!!window.__audit', { timeout: 120_000 });

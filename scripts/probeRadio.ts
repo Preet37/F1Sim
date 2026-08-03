@@ -20,6 +20,10 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
  *              The entire design is built around that being true and it should
  *              fail loudly the day it stops being true, rather than staying
  *              pessimistic forever out of habit.
+ *   SILENT     that with the voice switched OFF — which is the default, and is
+ *              therefore what nearly every player has — the event stream still
+ *              runs and the radio card still types. The event stream and the
+ *              audio switch are two different things and this is what says so.
  *   BAND       that the measured -3 dB points are at 300 Hz and 3.4 kHz, not
  *              merely that filters with those numbers written on them exist.
  *              Six cascaded sections put the real edge 40% away from the
@@ -34,9 +38,17 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
  *              audible word, and whether the fallback clock's estimator is
  *              still calibrated.
  *   VOICES     that the four speakers resolve to distinct, non-novelty voices.
+ *   API        the event contract the HUD types against — including the ONE
+ *              CLAIM the whole design rests on, that `speech` is emitted on the
+ *              first `boundary` and not on `onstart`; the interrupt path, which
+ *              must wait for the key-up tail before keying down again; and
+ *              `speakExchange`, which is what the HUD calls for every card.
  *
  *   npm run probe:radio
  *   RADIO_HEADFUL=1 npm run probe:radio     watch it, and hear it
+ *   RADIO_ALLOW_NO_VOICES=1 …               accept a run on a machine with no
+ *                                           system voices. Without it, no
+ *                                           voices is a FAILURE — see below.
  */
 
 function chromePath(): string {
@@ -141,7 +153,7 @@ async function main(): Promise<void> {
 
   const page: Page = await browser.newPage();
   const pageErrors: string[] = [];
-  page.on('pageerror', (e) => pageErrors.push(e.message));
+  page.on('pageerror', (e) => pageErrors.push((e as Error).message));
   await page.goto(url, { waitUntil: 'networkidle0' });
   await page.waitForFunction('window.RADIO_PROBE !== undefined', { timeout: 30_000 });
 
@@ -253,14 +265,60 @@ async function main(): Promise<void> {
   check(quiet >= 40, 'link actually drops out', `${quiet} ms of silence mid-transmission`);
   check(badBed > bedMean, 'poor link is noisier', `bed ${badBed.toFixed(5)} vs ${bedMean.toFixed(5)} on a good link`);
 
+  // --------------------------------------------------------- THE SILENT PATH
+  // FIRST, because it is the shipped default and because it needs no voices.
+  // The radio ships OFF. If the event stream were gated on the audio switch —
+  // and it was, `speak()` returned null when disabled — the radio card would
+  // never appear for the overwhelming majority of players, and every check
+  // below this one would still be green because they all turn the voice on.
+  console.log('\nSILENT — the card with the voice switched off, which is the default');
+  const silent = await page.evaluate(() => window.RADIO_PROBE.exerciseSilent());
+  const silentWords = silent.events.filter((e) => e.type === 'word');
+  const silentEnds = silent.events.filter((e) => e.type === 'end');
+  check(silent.exchangeIds.length === 2, 'exchange accepted with the voice off',
+    `${silent.exchangeIds.length} of 2 turns queued`);
+  check(silent.events.some((e) => e.type === 'open'), 'open still emitted',
+    `${silent.events.filter((e) => e.type === 'open').length} transmissions opened`);
+  check(silentWords.length > 0, 'typewriter still has a clock',
+    `${silentWords.length} word events, all from the estimated schedule`);
+  check(silentWords.every((e) => e.est === true), 'and they are the estimated ones',
+    `${silentWords.filter((e) => e.est).length} of ${silentWords.length} estimated`);
+  check(silentEnds.length === 2, 'and every turn ends',
+    `${silentEnds.length} of 2 ended, reasons: ${silentEnds.map((e) => e.reason).join(', ')}`);
+  if (silent.exchangeIds.length === 2) {
+    const firstEnd = silent.events.find(
+      (e) => e.id === silent.exchangeIds[0] && e.type === 'end');
+    const secondOpen = silent.events.find(
+      (e) => e.id === silent.exchangeIds[1] && e.type === 'open');
+    const span = silent.events.filter((e) => e.type === 'end').at(-1)?.atMs ?? 0;
+    console.log(`        the whole exchange took ${span} ms of card time`);
+    if (firstEnd && secondOpen) {
+      console.log(`        turn 2 keyed down ${secondOpen.atMs - firstEnd.atMs} ms after turn 1 ended`);
+    }
+  }
+
   // ------------------------------------------------------------------ SPEECH
   console.log('\nSPEECH — the clock the HUD types to');
   const voiceCount = await page.evaluate(() => window.RADIO_PROBE.waitForVoices());
   console.log(`        ${voiceCount} voices after waiting for enumeration`);
 
   if (voiceCount === 0) {
-    notes.push('no voices on this machine; speech timing not measured');
-    console.log('        skipped: this browser reports no voices at all');
+    // NOT A QUIET SKIP. This used to `continue` past the entire SPEECH, VOICES
+    // and API section and then print "radio: all checks passed" — a green run
+    // that had measured nothing about the half of this feature that involves a
+    // voice. A probe that reports success for work it did not do is worse than
+    // no probe, so the absence of voices is now a FAILURE unless the operator
+    // says otherwise, and says so on the command line where it is visible.
+    const allowed = !!process.env.RADIO_ALLOW_NO_VOICES;
+    check(allowed, 'a voice to measure',
+      allowed
+        ? 'none on this machine; RADIO_ALLOW_NO_VOICES is set, so the SPEECH, '
+          + 'VOICES and API sections below were NOT RUN'
+        : 'this browser reports no voices at all, so the boundary clock, the '
+          + 'voice assignment and the whole event contract went UNMEASURED. '
+          + 'Run on a machine with system voices, or set RADIO_ALLOW_NO_VOICES=1 '
+          + 'to accept an unmeasured run.');
+    if (allowed) notes.push('SPEECH / VOICES / API were skipped: no voices on this machine');
   } else {
     // Several lines of different shapes, because one line calibrates a constant
     // to itself. A short instruction, a long one, and one with no punctuation
@@ -296,34 +354,77 @@ async function main(): Promise<void> {
     }
 
     check(boundaries > 0, 'boundary events fire', `${boundaries} word events across ${lines.length} lines`);
+    // NOT A CHECK. This was `check(true, 'onstart leads the first word by', ...)`
+    // — a hardcoded pass that printed a four-figure number and could not go red
+    // on any value of it, including zero. It is a MEASUREMENT, so it is printed
+    // as one. What is actually asserted about it is in the API section below:
+    // that `speech` is emitted on the first boundary rather than on `onstart`,
+    // which is the thing this number makes matter.
     if (leadSeen >= 0) {
-      check(true, 'onstart leads the first word by', `${leadSeen} ms`);
+      console.log(`        onstart leads the first audible word by up to ${leadSeen} ms`);
       if (leadSeen > 250) {
-        console.log(`        NOTE: onstart leads the first audible word by up to ${leadSeen} ms. `
-          + 'A typewriter started on onstart would run that far ahead of the voice; '
-          + 'TeamRadio emits its `speech` event on the first boundary for this reason.');
+        console.log('        A typewriter started on onstart would run that far ahead of '
+          + 'the voice; TeamRadio emits `speech` on the first boundary for this reason, '
+          + 'and the API section asserts that it still does.');
       }
     }
     check(worstErr < 0.25, 'fallback clock still calibrated',
       `worst line ${(worstErr * 100).toFixed(1)}% off`);
 
     // ---------------------------------------------------------------- VOICES
-    console.log('\nVOICES — who ends up sounding like whom');
+    //
+    // ONE VOICE, AND MALE. Reported by the player, in those words, after
+    // hearing four different people — two of them women — in one garage:
+    //
+    //   "we also need one voice and use the male one not the female one i
+    //    don't like that one."
+    //
+    // This section used to assert the opposite: `distinct >= 3`, "speakers are
+    // distinguishable", which the old per-speaker preference lists passed by
+    // producing exactly the thing that was then complained about. The check is
+    // now inverted, and the reason it is worth writing down is that the old one
+    // was not wrong on its own terms — it was measuring a decision nobody had
+    // checked with the person who has to listen to it.
+    console.log('\nVOICES — one voice, and it has to be the male one');
+    const vr = await page.evaluate(() => window.RADIO_PROBE.voiceReport());
     const who = await page.evaluate(() => window.RADIO_PROBE.describeVoices());
+    console.log(`        chosen:     ${vr.name} ${vr.lang} `
+      + `(certainty: ${vr.certainty}, from ${vr.candidates} voices)`);
     for (const [speaker, desc] of Object.entries(who)) {
       console.log(`        ${speaker.padEnd(10)} ${desc}`);
     }
     const names = Object.values(who).map((d) => d.split(' [')[0]);
     const distinct = new Set(names).size;
-    // On a platform with plenty of voices the speakers must not collapse onto
-    // one. On a platform with one voice they necessarily do, and rate/pitch is
-    // the whole differentiation — which is why this only asserts when there is
-    // a choice to be made.
-    if (voiceCount >= 8) {
-      check(distinct >= 3, 'speakers are distinguishable', `${distinct} distinct voices of 4 speakers`);
-    } else {
-      notes.push(`only ${voiceCount} voices; speakers separated by rate and pitch alone`);
-    }
+    check(distinct === 1, 'every speaker uses the same voice',
+      `${distinct} distinct voice(s) across 4 speakers: ${[...new Set(names)].join(', ')}`);
+    // The four are still four people, and with one voice the ONLY thing left
+    // making them four is rate and pitch — so those must actually differ.
+    const rates = new Set(Object.values(who).map((d) => d.slice(d.indexOf('rate='))));
+    check(rates.size === 4, 'and is separated by rate and pitch',
+      `${rates.size} distinct rate/pitch pairs of 4 speakers`);
+
+    // The voice must not be one we know to be female. `certainty` says how the
+    // choice was arrived at, and only 'male' means it came off the preference
+    // list; 'unknown' is an unrecognised voice on an unrecognised platform and
+    // is reported rather than hidden, because claiming it is male would be a
+    // claim about something never measured.
+    const female = /\b(samantha|victoria|karen|moira|tessa|fiona|serena|kate|allison|ava|susan|zoe|nicky|veena|isha|shelley|flo|martha|matilda|nathalie|nora|zira|hazel|eva|linda|heera|catherine)\b/i;
+    check(!female.test(String(vr.name)), 'and it is not a known female voice',
+      `${vr.name}, certainty '${vr.certainty}'`);
+    check(vr.certainty === 'male', 'and it came off the male preference list',
+      vr.certainty === 'male'
+        ? `${vr.name} is on MALE_VOICES`
+        : `certainty is '${vr.certainty}' — MALE_VOICES matched nothing among the `
+          + `${vr.candidates} voices this platform offers, so THE RADIO IS SILENT `
+          + 'even with the setting on. That is deliberate: a voice picked because '
+          + 'it happened to be first is how a female voice gets in, and the player '
+          + "has asked twice for it not to. Add this platform's male voice to "
+          + 'MALE_VOICES.');
+    // A voice that changes between transmissions is a worse fault than any
+    // particular voice. Four resolutions, two instances, one answer.
+    check(vr.stable === true, 'and it is the same voice every time',
+      (vr.resolutions as string[]).join(' / '));
+
     const denied = /\b(bells|boing|zarvox|trinoids|bubbles|cellos|jester|organ|whisper|wobble|bad news|albert|fred|ralph)\b/i;
     check(!names.some((n) => denied.test(n)), 'no novelty voices chosen', names.join(', '));
 
@@ -371,6 +472,123 @@ async function main(): Promise<void> {
     const estimated = evs.filter((e) => e.type === 'word' && e.est).length;
     console.log(`        ${evs.length} events, ${wordCount} words `
       + `(${estimated} from the fallback clock, ${wordCount - estimated} from real boundaries)`);
+
+    // ------------------------------------------- THE CLAIM THE DESIGN RESTS ON
+    //
+    // "emit `speech` on the first `boundary`, never on `onstart`". Everything
+    // in `TeamRadio` is arranged around that one sentence and NOTHING TESTED
+    // IT: the ordering checks above pass either way, because `onstart` precedes
+    // the first word too, and the only other mention of it was a `check(true,
+    // ...)` that printed a number it could not fail on.
+    //
+    // `speech` and the first real `word` are emitted from the same synchronous
+    // block inside `markSpeechStarted`/`onboundary`, so their timestamps must
+    // be a task apart at most. `onstart` fires roughly a second earlier — this
+    // run measured it at the number printed in the SPEECH section above — so
+    // moving `markSpeechStarted` into `onstart` puts three figures between
+    // them and this goes red naming the gap.
+    const SAME_TASK_MS = 50;
+    let worstGap = -1;
+    let checked = 0;
+    let missing = 0;
+    for (const id of [...ex.spokenIds, ...ex.exchangeIds]) {
+      const mine = evs.filter((e) => e.id === id);
+      const speech = mine.find((e) => e.type === 'speech');
+      const firstReal = mine.find((e) => e.type === 'word' && e.est === false);
+      // A transmission whose words all came from the fallback clock says
+      // nothing about the boundary path and is not evidence either way.
+      if (!speech || !firstReal) { missing++; continue; }
+      checked++;
+      const gap = firstReal.atMs - speech.atMs;
+      if (gap > worstGap) worstGap = gap;
+    }
+    if (checked === 0) {
+      check(false, 'speech lands on the first boundary',
+        `no transmission produced a real boundary word (${missing} ran on the `
+        + 'estimated clock), so the claim this whole class is built on went '
+        + 'unmeasured. This is the boundary-less-platform path; it is a valid '
+        + 'state for the CODE and not a valid state for the PROBE.');
+    } else {
+      check(worstGap >= 0 && worstGap < SAME_TASK_MS,
+        'speech lands on the first boundary',
+        `worst gap between \`speech\` and the first real word: ${worstGap} ms `
+        + `across ${checked} transmission(s), bar ${SAME_TASK_MS} ms. `
+        + `\`onstart\` is ${leadSeen} ms earlier than that word.`);
+    }
+
+    // ------------------------------------------------------------- INTERRUPT
+    //
+    // Never exercised before this. Two things are being asserted: that a
+    // higher-priority call really does cut the engineer off, and that it does
+    // not key down on top of his key-up.
+    //
+    // `RadioChain.open` begins with `cancelScheduledValues(at)`, which deletes
+    // every ramp at or after `at` — including the swell `close()` scheduled
+    // microseconds earlier if the two land on the same context time. That swell
+    // is the "kssht", which is the single most diagnostic sound in the whole
+    // effect. `TeamRadio.finish` arms a guard for exactly this and the
+    // interrupt path used to run straight past it.
+    const cEnd = evs.find((e) => e.id === ex.interruptedId && e.type === 'end');
+    const dOpen = evs.find((e) => e.id === ex.interrupterId && e.type === 'open');
+    check(ex.interrupterId !== null && cEnd?.reason === 'cancelled',
+      'urgent call cuts the engineer off', `interrupted transmission ended '${cEnd?.reason}'`);
+    if (cEnd && dOpen) {
+      const gap = dOpen.atMs - cEnd.atMs;
+      check(gap >= constants.SQUELCH_CLOSE_MS,
+        'and waits for the key-up tail',
+        `${gap} ms between the interrupted end and the interrupter's key-down, `
+        + `against a ${constants.SQUELCH_CLOSE_MS} ms squelch tail`);
+    } else {
+      check(false, 'and waits for the key-up tail', 'the interrupt never happened');
+    }
+
+    // -------------------------------------------------------------- EXCHANGE
+    //
+    // `speakExchange` is what the HUD calls for every card, and it was dead
+    // code with no caller and no test.
+    const exOpens = ex.exchangeIds.map((id) => evs.find((e) => e.id === id && e.type === 'open'));
+    const exEnds = ex.exchangeIds.map((id) => evs.find((e) => e.id === id && e.type === 'end'));
+    check(ex.exchangeIds.length === 2, 'exchange queued as two transmissions',
+      `${ex.exchangeIds.length} turns`);
+    check(exEnds.every((e) => e !== undefined), 'both turns of the exchange ran',
+      `${exEnds.filter(Boolean).length} of ${ex.exchangeIds.length} ended`);
+    if (exEnds[0] && exOpens[1]) {
+      const gap = exOpens[1].atMs - exEnds[0].atMs;
+      check(gap >= constants.SQUELCH_CLOSE_MS, 'and the turns do not run together',
+        `${gap} ms between one speaker finishing and the next keying down`);
+    }
+
+    // ------------------------------------------------- THE DRIVER'S OWN HALF
+    //
+    //   "i just atp wouldn't say anything for the audio if its a conversation
+    //    because you don't need to be saying what the driver says ykwim?"
+    //
+    // The driver is the player, so his replies are never said out loud. But
+    // they are still TRANSMISSIONS: the card types them at the pace they would
+    // have been spoken at, because an exchange that flicks instantly through
+    // one side of itself reads as a fault. So the check is not "no events" —
+    // it is that the words arrived and every one of them came from the
+    // estimated clock rather than from a synthesiser.
+    if (ex.exchangeIds.length === 2) {
+      const wallWords = evs.filter((e) => e.id === ex.exchangeIds[0] && e.type === 'word');
+      const drvWords = evs.filter((e) => e.id === ex.exchangeIds[1] && e.type === 'word');
+      const drvOpen = evs.find((e) => e.id === ex.exchangeIds[1] && e.type === 'open');
+      const drvEnd = evs.find((e) => e.id === ex.exchangeIds[1] && e.type === 'end');
+      check(drvWords.length > 0 && drvWords.every((e) => e.est === true),
+        "the driver's half is typed but not spoken",
+        `${drvWords.length} word events, ${drvWords.filter((e) => e.est).length} estimated`);
+      check(wallWords.some((e) => e.est === false), "and the wall's half still is",
+        `${wallWords.filter((e) => e.est === false).length} of ${wallWords.length} `
+        + 'words from real boundaries');
+      if (drvOpen && drvEnd) {
+        // "Understood, box this lap." at the driver's rate is about 1.3 s of
+        // speech; anything near zero means the reply was skipped rather than
+        // paced, which is the failure this whole flag exists to avoid.
+        const span = drvEnd.atMs - drvOpen.atMs;
+        check(span > 600, 'and it takes as long as saying it would',
+          `${span} ms from key-down to end for a ${'Understood, box this lap.'.length}-character reply`);
+      }
+    }
   }
 
   await browser.close();

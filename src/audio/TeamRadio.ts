@@ -10,6 +10,32 @@ import { clamp, clamp01 } from '../core/MathUtils';
  * off the same clock as the speech.
  *
  * ===========================================================================
+ * ONE RADIO, ONE SWITCH — AND THE SWITCH IS NOT THIS CLOCK
+ * ===========================================================================
+ *
+ * There is exactly one spoken radio in this game and exactly one control for
+ * it: `GameSettings.teamRadioVoice`, on the Audio tab. The HUD used to carry a
+ * second implementation with a second off-switch of its own (a 🔊 pip on the
+ * card, backed by `localStorage['f1sim.radioVoice']`), and the two of them
+ * fought over `speechSynthesis` — a global singleton that both called
+ * `cancel()` on, so whichever spoke second killed the other. That is gone.
+ * `src/ui/Hud.ts` now listens to this class and nothing else.
+ *
+ * THE EVENT STREAM IS NOT THE AUDIO SWITCH. `speak` is accepted, `open`,
+ * `speech`, `word` and `end` are all emitted, and the typewriter runs at the
+ * pace the line would be spoken at, WHETHER OR NOT THE VOICE IS ON. Turning
+ * the voice off has to leave a working radio card, because the card is the
+ * feature and the voice is a garnish on it — an earlier version of this class
+ * returned `null` from `speak` when disabled, and since disabled is the
+ * default, a HUD driven off this clock would have shown no card at all.
+ *
+ * With the voice on, the clock comes from the synthesiser's own `boundary`
+ * events (see below). With it off, it comes from `estimateSpeechMs` and
+ * `runEstimatedClock` — the same schedule, measured against real speech by
+ * `scripts/probeRadio.ts`. The card reads the same either way; only the sound
+ * is missing.
+ *
+ * ===========================================================================
  * THE ONE MEASUREMENT THAT DICTATES THE DESIGN
  * ===========================================================================
  *
@@ -66,17 +92,26 @@ export type RadioSpeaker = 'engineer' | 'principal' | 'control' | 'driver';
 /**
  * How each person sounds.
  *
- * `prefer` is matched against `SpeechSynthesisVoice.name` in order, so the
- * first name present on the platform wins. The lists are deliberately long and
- * cross-platform: macOS and iOS ship Daniel and Moira, Windows ships the
- * Microsoft voices, Android and desktop Chrome ship the Google ones. When none
- * of them exist — or when the platform offers exactly one voice, which is the
- * common case on locked-down Android — `rate` and `pitch` alone still separate
- * the four speakers, which is why they are set to audibly different values
- * rather than to small tasteful offsets.
+ * ONE VOICE, AND IT IS MALE. Reported directly:
+ *
+ *   "we also need one voice and use the male one not the female one i don't
+ *    like that one."
+ *
+ * This used to give each speaker its own `prefer` list, and on macOS that
+ * resolved to four different voices — Daniel, Reed, Moira and Rishi — two of
+ * which are female and one of which is a different accent again. Four people in
+ * one garage is not what was asked for. Every speaker now resolves to the SAME
+ * voice, chosen once from `MALE_VOICES`, and the four are separated by `rate`
+ * and `pitch` alone.
+ *
+ * That separation is not a consolation prize: it is the only differentiation
+ * that works on the platforms that matter least — a locked-down Android with
+ * exactly one system voice was always going to sound like one person — so it
+ * was already carrying the load everywhere except macOS. The values are set to
+ * audibly different figures rather than to small tasteful offsets for that
+ * reason.
  */
 interface SpeakerProfile {
-  prefer: readonly string[];
   rate: number;
   pitch: number;
   /** Ducking depth applied to the rest of the mix while this person talks. */
@@ -84,35 +119,75 @@ interface SpeakerProfile {
 }
 
 const SPEAKERS: Record<RadioSpeaker, SpeakerProfile> = {
-  // The race engineer. British, unflappable, slightly quick because he is
-  // reading numbers off a screen while the car is moving.
-  engineer: {
-    prefer: ['Daniel', 'Google UK English Male', 'Microsoft George', 'Microsoft Ryan',
-      'Arthur', 'Oliver', 'Rocko (English (United Kingdom))', 'Microsoft David'],
-    rate: 1.08, pitch: 0.95, duck: 0.55,
-  },
-  // The team principal. Older, lower, slower — he is not in a hurry and the
+  // The race engineer. Unflappable, slightly quick because he is reading
+  // numbers off a screen while the car is moving. He is the default and he says
+  // most of what gets said, so he is the one at the natural rate and pitch.
+  engineer: { rate: 1.08, pitch: 0.95, duck: 0.55 },
+  // The team principal. Older, lower, slower — he is not in a hurry, and the
   // contrast with the engineer is the point.
-  principal: {
-    prefer: ['Microsoft David', 'Arthur', 'Reed (English (United Kingdom))', 'Daniel',
-      'Google UK English Male', 'Rocko (English (United States))'],
-    rate: 0.90, pitch: 0.75, duck: 0.6,
-  },
-  // Race control. Official, flat, and deliberately not one of the team's own
-  // voices — a different accent does more than any amount of processing to say
-  // "this is not your garage talking".
-  control: {
-    prefer: ['Moira', 'Tessa', 'Karen', 'Microsoft Zira', 'Google US English',
-      'Samantha', 'Shelley (English (United Kingdom))'],
-    rate: 1.0, pitch: 1.02, duck: 0.65,
-  },
-  // The player's own driver, in a helmet at 300 km/h.
-  driver: {
-    prefer: ['Rishi', 'Alex', 'Microsoft Mark', 'Google US English', 'Karen',
-      'Samantha', 'Flo (English (United States))'],
-    rate: 1.15, pitch: 1.08, duck: 0.5,
-  },
+  principal: { rate: 0.90, pitch: 0.74, duck: 0.6 },
+  // Race control. Official and flat. It cannot be a different ACCENT any more
+  // — there is one voice — so it is a different DELIVERY: dead level pitch and
+  // an unhurried rate, which is what a read-out from an official channel
+  // sounds like next to a man watching a car.
+  control: { rate: 0.98, pitch: 1.00, duck: 0.65 },
+  // The player's own driver, in a helmet at 300 km/h: quick and up in pitch,
+  // which is what talking under load does to a voice.
+  driver: { rate: 1.18, pitch: 1.12, duck: 0.5 },
 };
+
+/**
+ * The voice, in order of preference. MALE, on every platform we ship to.
+ *
+ * There is no gender field on `SpeechSynthesisVoice`. The spec has `name`,
+ * `lang`, `voiceURI`, `localService` and `default`, and that is the whole
+ * interface — so "use the male one" cannot be expressed as a query and has to
+ * be expressed as a LIST. This is that list, ordered so the best voice present
+ * on each platform wins:
+ *
+ *   macOS / iOS      Daniel, Arthur, Oliver, Alex, Aaron, Reed, Gordon, Rishi
+ *   Windows          Microsoft George, Ryan, Guy, David, Mark
+ *   Chrome / Android Google UK English Male, and the network en-GB-x-gbb voices
+ *
+ * Names are matched exactly first and by prefix second, because Chrome reports
+ * Apple's voices as "Daniel" on some versions and "Daniel (English (United
+ * Kingdom)))" on others, and the same voice must not be missed over a suffix.
+ */
+const MALE_VOICES: readonly string[] = [
+  'Daniel', 'Google UK English Male', 'Microsoft George', 'Microsoft Ryan',
+  'Microsoft Guy', 'Arthur', 'Oliver', 'Gordon', 'Reed', 'Alex', 'Aaron',
+  'Microsoft David', 'Microsoft Mark', 'Rishi', 'Lee', 'Tom', 'Rocko',
+  'en-GB-Standard-B', 'en-gb-x-gbb', 'en-us-x-iom',
+];
+
+/**
+ * Voices known to be female, so a FALLBACK cannot quietly land on one.
+ *
+ * The list above is a preference; this one is a prohibition, and it exists
+ * because the two failure modes are not symmetric. Missing a male voice costs
+ * an accent. Falling back onto a female voice is the specific thing that was
+ * reported, and a fallback that can produce it is a fallback that will produce
+ * it on somebody's machine.
+ *
+ * Where neither list matches — an unknown voice on an unknown platform — the
+ * voice is used but `voiceReport().certainty` says `'unknown'`, because
+ * claiming a voice is male on the strength of not recognising its name would be
+ * a claim about something never measured. Where every candidate is on THIS
+ * list, nothing is chosen at all and the system default is used, and the report
+ * says so. `scripts/probeRadio.ts` prints the report on every run.
+ */
+const FEMALE_VOICES = new Set([
+  'samantha', 'victoria', 'karen', 'moira', 'tessa', 'fiona', 'serena', 'kate',
+  'allison', 'ava', 'susan', 'zoe', 'nicky', 'veena', 'isha', 'kathy',
+  'princess', 'shelley', 'flo', 'grandma', 'martha', 'matilda', 'nathalie',
+  'nora', 'anna', 'ellen', 'amelie', 'joana', 'luciana', 'melina', 'milena',
+  'paulina', 'sara', 'yuna', 'ting-ting', 'mei-jia', 'kyoko', 'carmit',
+  'damayanti', 'ioana', 'kanya', 'laila', 'lana', 'lesya', 'montse', 'zosia',
+  'zuzana', 'sin-ji', 'alva', 'amira', 'satu', 'yelda',
+  'microsoft zira', 'microsoft hazel', 'microsoft eva', 'microsoft linda',
+  'microsoft heera', 'microsoft susan', 'microsoft catherine',
+  'google us english', 'google uk english female',
+]);
 
 /**
  * Voices that exist on macOS and iOS and must never be chosen.
@@ -132,17 +207,20 @@ const DENIED_VOICES = new Set([
   'whisper', 'wobble', 'zarvox',
 ]);
 
+/**
+ * A voice's name reduced to the token the lists are keyed on.
+ *
+ * Chrome reports the same Apple voice as "Daniel" and as
+ * "Daniel (English (United Kingdom))" depending on version, so the parenthesised
+ * part is dropped before matching. The Microsoft and Google names are multi-word
+ * and are matched whole.
+ */
+function voiceKey(name: string): string {
+  return name.replace(/\s*\(.*$/, '').trim().toLowerCase();
+}
+
 // --- Timing ----------------------------------------------------------------
 
-/**
- * How long to wait for a `boundary` event before deciding this platform does
- * not send them.
- *
- * Measured worst case on macOS Chrome is 1.13 s between `onstart` and the first
- * boundary. Two seconds clears that with margin without leaving the card
- * sitting blank for an embarrassing length of time when boundaries really are
- * absent.
- */
 /**
  * How long to wait for a `boundary` event before falling back, while it is
  * still unknown whether this platform sends them at all.
@@ -239,6 +317,33 @@ export interface RadioSpeakOptions {
    * in the queue twice with two different numbers.
    */
   tag?: string;
+  /**
+   * Whether this line is SAID OUT LOUD. Default true.
+   *
+   * `false` runs the whole transmission — the events, the typewriter clock,
+   * the timing — with no voice and no squelch behind it. The card types the
+   * line at the pace it would have been spoken at, and nothing is audible.
+   *
+   * WHAT IT IS FOR, in the player's own words:
+   *
+   *   "i just atp wouldn't say anything for the audio if its a conversation
+   *    because you don't need to be saying what the driver says ykwim?"
+   *
+   * The driver is the player. Hearing a synthesised stranger say your own
+   * replies back to you is the one part of this that cannot be improved by a
+   * better voice, and every real onboard has the same asymmetry: the pit wall
+   * arrives over the radio and the driver's own half is just... you. So
+   * `src/ui/Hud.ts` marks every `driver` turn unvoiced.
+   *
+   * NOT THE SAME AS SKIPPING THE TURN, and that distinction is the whole
+   * reason this is a flag on a real transmission rather than a `continue` in
+   * the HUD. A reply takes time to say. If the card snapped through the silent
+   * turns it would type the wall's line at a speaking pace and then flick
+   * instantly through the answer, which reads as a bug. The estimated clock
+   * paces it exactly as if it were being spoken, off the same schedule the
+   * voice would have used.
+   */
+  voiced?: boolean;
 }
 
 export interface RadioTransmission {
@@ -249,6 +354,8 @@ export interface RadioTransmission {
   readonly leadMs: number;
   /** Best estimate of the spoken duration, ms. Not authoritative — words are. */
   readonly estimatedMs: number;
+  /** Whether this line is said out loud. See `RadioSpeakOptions.voiced`. */
+  readonly voiced: boolean;
 }
 
 export type RadioEndReason = 'complete' | 'cancelled' | 'error' | 'stale' | 'hidden';
@@ -272,7 +379,7 @@ export type RadioEndReason = 'complete' | 'cancelled' | 'error' | 'stale' | 'hid
  * off by something more urgent — and a typewriter that only ever advances on
  * `word` would leave those half-typed on screen. `end` is the backstop.
  */
-export type RadioEvent =
+type RadioEventBody =
   | { type: 'open'; transmission: RadioTransmission }
   | { type: 'speech'; transmission: RadioTransmission }
   | {
@@ -281,12 +388,34 @@ export type RadioEvent =
     }
   | { type: 'end'; transmission: RadioTransmission; reason: RadioEndReason };
 
+/**
+ * Every event carries `atMs`, a `performance.now()` reading taken as it is
+ * emitted.
+ *
+ * NOT DECORATION, AND NOT FOR THE HUD — which never reads it. It exists so the
+ * central claim of this file can be ASSERTED rather than asserted-about.
+ * "`speech` is emitted on the first `boundary`, never on `onstart`" is the one
+ * measurement the whole design rests on, and without timestamps the only thing
+ * a test can check is the ORDER of the events — which is identical either way,
+ * because `onstart` also precedes the first word. Moving `markSpeechStarted`
+ * into `onstart` reintroduces a 1.1-second desync between the voice and the
+ * typewriter and leaves every ordering check green.
+ *
+ * With timestamps, `scripts/probeRadio.ts` can require that `speech` and the
+ * first real boundary land in the SAME TASK — they are emitted from the same
+ * synchronous block, so anything more than a few milliseconds apart means
+ * somebody moved one of them. See the SPEECH section of that probe.
+ */
+export type RadioEvent = RadioEventBody & { atMs: number };
+
 export type RadioListener = (ev: RadioEvent) => void;
 
 /** One line in a multi-turn exchange. */
 export interface RadioTurnSpec {
   speaker: RadioSpeaker;
   text: string;
+  /** See `RadioSpeakOptions.voiced`. Default true. */
+  voiced?: boolean;
 }
 
 interface QueueItem {
@@ -301,11 +430,14 @@ export type DuckFn = (depth: number, seconds: number) => void;
 
 export class TeamRadio {
   private ctx: BaseAudioContext | null = null;
+  private destination: AudioNode | null = null;
   private chain: RadioChain | null = null;
   private duckFn: DuckFn | null = null;
 
   private enabled = false;
   private volume = 1;
+  /** Held here so it survives being set before the chain is built. */
+  private linkQuality = 1;
 
   private readonly queue: QueueItem[] = [];
   private readonly listeners = new Set<RadioListener>();
@@ -319,7 +451,17 @@ export class TeamRadio {
   private timers: number[] = [];
   private sawBoundary = false;
   private speechStarted = false;
+  /** Whether the current transmission was actually handed to the synthesiser. */
+  private spoke = false;
   private lastCharEnd = 0;
+  /** True while the chain is keyed for the current transmission. */
+  private chainOpen = false;
+  /**
+   * Wall-clock time before which nothing new may key down.
+   *
+   * Armed by `finish` and read by `pump`. See the note in `pump`.
+   */
+  private pumpNotBefore = 0;
 
   /**
    * Whether this platform sends `boundary` events, learned rather than assumed.
@@ -332,8 +474,18 @@ export class TeamRadio {
   private boundarySupport: 'unknown' | 'yes' | 'no' = 'unknown';
 
   private voices: SpeechSynthesisVoice[] = [];
-  private resolved = new Map<RadioSpeaker, SpeechSynthesisVoice | null>();
   private voicesReady = false;
+  /**
+   * THE voice — one, shared by all four speakers. See `voiceFor`.
+   *
+   * `voiceResolved` is separate from `voice !== null` because null is a real
+   * answer: it means "no male voice on this platform, use the system default",
+   * and re-running the search every transmission to arrive at null again would
+   * be work for nothing.
+   */
+  private voice: SpeechSynthesisVoice | null = null;
+  private voiceResolved = false;
+  private voiceCertainty: 'male' | 'none' | 'no-voices' = 'no-voices';
 
   private onVoicesChanged = (): void => { this.refreshVoices(); };
   private onVisibility = (): void => {
@@ -360,12 +512,22 @@ export class TeamRadio {
   /**
    * Connects the link to the mix. Called once the AudioContext exists, which is
    * to say once a user gesture has unlocked audio.
+   *
+   * DOES NOT BUILD THE CHAIN. `RadioChain` is twelve nodes including six
+   * biquads, a 2× oversampled WaveShaper, a compressor, a looping noise source
+   * and an oscillator, and this feature is OFF BY DEFAULT — so building it here
+   * put all of that in the render graph of every session ever played, for a
+   * player who had never asked for it. It is built on the first `setEnabled`
+   * instead, which is a settings click and therefore has a whole frame to
+   * spare, and once built it stays: rebuilding per transmission would move the
+   * allocation into the middle of a race, which is the more expensive mistake.
    */
   attach(ctx: BaseAudioContext, destination: AudioNode, duck: DuckFn): void {
-    if (this.chain) return;
+    if (this.destination) return;
     this.ctx = ctx;
-    this.chain = new RadioChain(ctx, destination);
+    this.destination = destination;
     this.duckFn = duck;
+    if (this.enabled) this.ensureChain();
     if (TeamRadio.supported) {
       this.refreshVoices();
       // getVoices() is asynchronous on every platform and SLOW on macOS Chrome:
@@ -380,21 +542,70 @@ export class TeamRadio {
     }
   }
 
-  get attached(): boolean { return this.chain !== null; }
-  get isTransmitting(): boolean { return this.active !== null; }
-  get queueLength(): number { return this.queue.length; }
+  /** Builds the link's nodes, once, the first time anybody wants a sound. */
+  private ensureChain(): RadioChain | null {
+    if (this.chain) return this.chain;
+    const ctx = this.ctx;
+    const destination = this.destination;
+    if (!ctx || !destination) return null;
+    this.chain = new RadioChain(ctx, destination);
+    this.chain.setLinkQuality(this.linkQuality);
+    return this.chain;
+  }
 
   /**
    * Off by default. A synthesised voice is a matter of taste in a way that an
    * engine note is not, and the honest assessment of this feature is that it is
    * good but not unarguably good — so it is the player's call, not ours.
+   *
+   * THIS IS THE AUDIO SWITCH AND NOTHING ELSE. Turning it off silences the
+   * voice, the squelch and the noise bed; it does not stop transmissions being
+   * queued, does not stop the events, and does not take the radio card off the
+   * screen. A message already being spoken carries on typing on the estimated
+   * clock rather than vanishing mid-sentence.
    */
   setEnabled(on: boolean): void {
+    if (this.enabled === on) return;
     this.enabled = on;
-    if (!on) this.cancelAll('cancelled');
+    if (on) this.ensureChain();
+    else this.silenceActive();
   }
 
   get isEnabled(): boolean { return this.enabled; }
+
+  /**
+   * Spends a user gesture on unlocking the speech engine.
+   *
+   * WHY THIS EXISTS: iOS SAFARI. WebKit requires user activation before
+   * `speechSynthesis.speak()` will produce sound, and every call this class
+   * makes is from a `setTimeout` — deliberately, because the words have to
+   * follow the key-down squelch by `SPEECH_LEAD_MS` — which is outside the
+   * activation window. Left alone, the radio would be silent on iOS and would
+   * look exactly like the setting not working.
+   *
+   * The Settings toggle click IS a gesture, so it is spent here on a silent,
+   * near-instant utterance whose only purpose is to be the first `speak()` of
+   * the session and to happen inside activation. Everything after it inherits
+   * the unlocked engine.
+   *
+   * HONESTY, because this is a claim about a platform: this has NOT been run on
+   * real iOS hardware. It is written from WebKit's documented activation rule
+   * and from the same priming pattern the AudioContext unlock in `main.ts`
+   * uses. On a platform that does not need it, it costs one inaudible
+   * utterance. See PROJECT.md §7 — it is listed there as untested.
+   */
+  primeSpeech(): void {
+    if (!TeamRadio.supported) return;
+    try {
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0;
+      // Rate 10 rather than 1 so it is over before the player's finger is off
+      // the switch; a primer that occupies the synthesiser is a primer that
+      // delays the first real line.
+      u.rate = 10;
+      window.speechSynthesis.speak(u);
+    } catch { /* a browser that refuses the primer will refuse the radio too */ }
+  }
 
   /** Follows the master volume so "Off" in settings silences the voice too. */
   setVolume(v: number): void {
@@ -406,7 +617,8 @@ export class TeamRadio {
    * 0.55 transmissions start breaking up.
    */
   setLinkQuality(q: number): void {
-    this.chain?.setLinkQuality(q);
+    this.linkQuality = clamp01(q);
+    this.chain?.setLinkQuality(this.linkQuality);
   }
 
   addListener(fn: RadioListener): () => void {
@@ -424,52 +636,109 @@ export class TeamRadio {
     if (!all.length) return;
     this.voices = all;
     this.voicesReady = true;
-    this.resolved.clear();
+    // The list arriving late is the normal case on macOS Chrome — measured, it
+    // was empty for 2.5 s after load and then held 180 voices. Anything decided
+    // before that was decided on no information, so it is decided again.
+    this.voiceResolved = false;
   }
 
   /**
-   * Picks a voice for a speaker, or null to mean "use the system default and
-   * lean entirely on rate and pitch".
+   * THE voice. One, for the whole game, and MALE.
+   *
+   *   "we also need one voice and use the male one not the female one i don't
+   *    like that one."
+   *   "also like i said get rid of the female voice. only keep the male voice."
+   *
+   * Said twice, the second time unprompted and with "like i said" in front of
+   * it. So this is not a preference to be balanced against having a voice at
+   * all: **a null return means NOTHING IS SPOKEN.** `begin` reads it and runs
+   * the transmission on the silent clock — the card still types, at the pace
+   * the line would have been said at, and nobody hears a stranger.
+   *
+   * WHAT WAS WRONG WITH THE OBVIOUS FALLBACK. The first version of this took
+   * "the first voice that is not on the known-female list" when `MALE_VOICES`
+   * matched nothing. That is exactly the mechanism that lets a female voice in:
+   * `FEMALE_VOICES` is a list of names somebody typed, `getVoices()` is
+   * platform-dependent and unbounded, and "whatever came first" on an unknown
+   * platform is a coin toss dressed up as a rule. There is no guess any more.
+   * Either a name off `MALE_VOICES` is present, or the radio does not speak.
+   *
+   * THE COST IS NAMED RATHER THAN HIDDEN: on a platform whose male voices are
+   * all called something not on that list, the spoken radio is silent even with
+   * the setting on. `voiceReport().certainty` says `'none'`, `probe:radio`
+   * prints it and fails, and the fix is to add that platform's voice to the
+   * list — one line, in a list written for exactly that.
+   *
+   * Resolved once and cached: a race engineer who is a different man each time
+   * he keys up is worse than any individual choice of man. The cache is only
+   * armed once `getVoices()` has actually returned something, because on macOS
+   * Chrome it returns an empty array for the first 2.5 seconds and caching that
+   * would mean permanent silence on the platform with the best voices.
    */
-  private voiceFor(speaker: RadioSpeaker): SpeechSynthesisVoice | null {
+  private voiceFor(): SpeechSynthesisVoice | null {
     if (!this.voicesReady) this.refreshVoices();
-    const cached = this.resolved.get(speaker);
-    if (cached !== undefined) return cached;
+    if (this.voiceResolved) return this.voice;
 
-    const profile = SPEAKERS[speaker];
-    const usable = this.voices.filter((v) => !DENIED_VOICES.has(v.name.trim().toLowerCase()));
+    if (!this.voices.length) {
+      // Not an answer, just an absence. Do NOT arm the cache — `voiceschanged`
+      // or the next call will try again.
+      this.voiceCertainty = 'no-voices';
+      return null;
+    }
+    this.voiceResolved = true;
+
+    const usable = this.voices.filter((v) => !DENIED_VOICES.has(voiceKey(v.name)));
     const english = usable.filter((v) => v.lang.toLowerCase().startsWith('en'));
     const pool = english.length ? english : usable;
 
-    let chosen: SpeechSynthesisVoice | null = null;
-    for (const want of profile.prefer) {
+    // The preference list, exact name first and prefix second. Nothing else.
+    for (const want of MALE_VOICES) {
       const hit = pool.find((v) => v.name === want)
+        ?? pool.find((v) => voiceKey(v.name) === want.toLowerCase())
         ?? pool.find((v) => v.name.toLowerCase().startsWith(want.toLowerCase()));
-      if (hit) { chosen = hit; break; }
+      // A name on the male list that is ALSO on the female list is a name
+      // somebody has got wrong. Refuse it rather than resolve the contradiction
+      // silently in favour of speaking.
+      if (hit && !FEMALE_VOICES.has(voiceKey(hit.name))) {
+        this.voice = hit;
+        this.voiceCertainty = 'male';
+        return this.voice;
+      }
     }
 
-    // Nothing preferred is installed. Spread the speakers across whatever this
-    // platform does have, by index, so that four speakers on a machine with
-    // four usable voices still get four different ones instead of all landing
-    // on the default.
-    if (!chosen && pool.length) {
-      const order: RadioSpeaker[] = ['engineer', 'principal', 'control', 'driver'];
-      const local = pool.filter((v) => v.localService);
-      const spread = local.length >= 2 ? local : pool;
-      chosen = spread[order.indexOf(speaker) % spread.length] ?? null;
-    }
+    // Nothing on the list is installed. Silence, and say so.
+    this.voice = null;
+    this.voiceCertainty = 'none';
+    return null;
+  }
 
-    this.resolved.set(speaker, chosen);
-    return chosen;
+  /**
+   * What the voice search actually found, for the probe and for the report.
+   *
+   * EXISTS SO THE CLAIM CAN BE CHECKED. "one male voice" is a promise about
+   * every platform this game runs on, and it is made from a hard-coded list of
+   * names because `SpeechSynthesisVoice` carries no gender. A list of names is
+   * exactly the kind of thing that is right on the machine it was written on
+   * and wrong everywhere else, so what it resolved to is reported rather than
+   * assumed. `scripts/probeRadio.ts` prints it and fails if it is female.
+   */
+  voiceReport(): { name: string; lang: string; certainty: string; candidates: number } {
+    const v = this.voiceFor();
+    return {
+      name: v ? v.name : '(silent — no male voice)',
+      lang: v ? v.lang : '',
+      certainty: this.voiceCertainty,
+      candidates: this.voices.length,
+    };
   }
 
   /** Diagnostics for the probe: who ended up sounding like what. */
   describeVoices(): Record<RadioSpeaker, string> {
     const out = {} as Record<RadioSpeaker, string>;
+    const v = this.voiceFor();
     for (const s of Object.keys(SPEAKERS) as RadioSpeaker[]) {
-      const v = this.voiceFor(s);
       const p = SPEAKERS[s];
-      out[s] = `${v ? v.name + ' [' + v.lang + ']' : '(system default)'} rate=${p.rate} pitch=${p.pitch}`;
+      out[s] = `${v ? v.name + ' [' + v.lang + ']' : '(silent — no male voice)'} rate=${p.rate} pitch=${p.pitch}`;
     }
     return out;
   }
@@ -481,12 +750,15 @@ export class TeamRadio {
   /**
    * Queues one transmission. Returns its id, or null if it was not accepted.
    *
-   * Not accepted covers: the radio is off, the browser cannot speak, the tab is
-   * hidden, or an identically tagged message is already waiting and this one
-   * replaced it.
+   * NOT GATED ON THE VOICE SETTING, and that is the point — see the header.
+   * A transmission is a thing that happens in the race; whether it is spoken
+   * aloud is a preference about the sound. The card, the typewriter and the
+   * events run either way.
+   *
+   * Not accepted covers exactly two things: the line is empty, or the tab is
+   * hidden and there is nobody to show it to.
    */
   speak(text: string, opts: RadioSpeakOptions = {}): number | null {
-    if (!this.enabled || !this.chain || !TeamRadio.supported) return null;
     if (typeof document !== 'undefined' && document.hidden) return null;
 
     const clean = text.trim().slice(0, MAX_LINE_CHARS);
@@ -502,6 +774,7 @@ export class TeamRadio {
       speaker,
       leadMs: SPEECH_LEAD_MS,
       estimatedMs: estimateSpeechMs(clean, SPEAKERS[speaker].rate),
+      voiced: opts.voiced !== false,
     };
 
     const item: QueueItem = {
@@ -527,6 +800,15 @@ export class TeamRadio {
     // Cut off something less important. Equal priority never interrupts —
     // stepping on the engineer mid-sentence to say something no more urgent is
     // worse than waiting the two seconds.
+    //
+    // `stopActive` runs `finish`, which keys the transmitter DOWN at
+    // `ctx.currentTime` and arms `pumpNotBefore`. The `pump` below therefore
+    // declines and the one `finish` scheduled starts the interrupting message
+    // after the key-up tail — which is the whole point. Without that guard the
+    // interrupt ran `RadioChain.open` at the same context time as the `close`
+    // before it, and `open`'s `cancelScheduledValues(at)` wipes every ramp at
+    // or after `at`: the entire key-up swell, deleted. Silently, on the path a
+    // driver hears most — a safety car cutting off a strategy call.
     if (this.active && priority > this.activePriority) {
       this.stopActive('cancelled');
     }
@@ -552,6 +834,7 @@ export class TeamRadio {
       const id = this.speak(turn.text, {
         ...opts,
         speaker: turn.speaker,
+        voiced: turn.voiced ?? opts.voiced,
         ttlMs: budget,
         tag: opts.tag ? `${opts.tag}#${i}` : undefined,
       });
@@ -578,7 +861,12 @@ export class TeamRadio {
    * spoken late. A backlog is never drained.
    */
   private pump(): void {
-    if (this.active || !this.chain || !this.enabled) return;
+    if (this.active) return;
+    // THE SQUELCH GUARD. Nothing may key down until the last key-up has had its
+    // tail. `finish` arms this and schedules the pump that clears it, so every
+    // caller here — a new `speak`, a turn of a `speakExchange`, an interrupt —
+    // is held behind the same 220 ms whether it knows about it or not.
+    if (now() < this.pumpNotBefore) return;
     if (typeof document !== 'undefined' && document.hidden) { this.cancelAll('hidden'); return; }
 
     const t = now();
@@ -596,10 +884,6 @@ export class TeamRadio {
   }
 
   private begin(item: QueueItem): void {
-    const chain = this.chain;
-    const ctx = this.ctx;
-    if (!chain || !ctx) return;
-
     const transmission = item.transmission;
     const profile = SPEAKERS[transmission.speaker];
     this.active = transmission;
@@ -607,32 +891,112 @@ export class TeamRadio {
     this.sawBoundary = false;
     this.speechStarted = false;
     this.lastCharEnd = 0;
+    this.chainOpen = false;
+    this.spoke = false;
 
-    // --- Key down ----------------------------------------------------------
-    const at = ctx.currentTime;
-    chain.open(at);
-    this.duckFn?.(profile.duck, 0.06);
+    // --- The audio half, which only exists when the player asked for it -----
+    //
+    // `transmission.voiced` is the second gate, and it is not the same gate.
+    // The setting is the player's; this one is the LINE's — the driver's own
+    // replies are never said aloud, because the driver is the player. An
+    // unvoiced line gets no squelch either: two bursts of hiss with nothing
+    // between them is not a transmission, it is a fault.
+    const voice = this.enabled && TeamRadio.supported && transmission.voiced
+      && this.voiceFor() !== null;
+    const chain = voice ? this.ensureChain() : null;
+    const ctx = this.ctx;
+    if (chain && ctx) {
+      const at = ctx.currentTime;
+      chain.open(at);
+      this.chainOpen = true;
+      this.duckFn?.(profile.duck, 0.06);
 
-    // A poor link breaks the message up. The dropouts are scheduled up front
-    // against the ESTIMATED length, because the real length is not known until
-    // the synthesiser has finished — and a dropout scheduled late would land
-    // after the squelch and sound like a separate glitch.
-    const q = chain.quality;
-    if (q < 0.55) {
-      const severity = clamp01((0.55 - q) / 0.55);
-      const span = transmission.estimatedMs / 1000;
-      const count = Math.min(3, 1 + Math.floor(severity * 3));
-      for (let i = 0; i < count; i++) {
-        const frac = (i + 0.7) / (count + 0.4);
-        chain.dropout(at + SPEECH_LEAD_MS / 1000 + span * frac, severity);
+      // A poor link breaks the message up. The dropouts are scheduled up front
+      // against the ESTIMATED length, because the real length is not known
+      // until the synthesiser has finished — and a dropout scheduled late would
+      // land after the squelch and sound like a separate glitch.
+      const q = chain.quality;
+      if (q < 0.55) {
+        const severity = clamp01((0.55 - q) / 0.55);
+        const span = transmission.estimatedMs / 1000;
+        const count = Math.min(3, 1 + Math.floor(severity * 3));
+        for (let i = 0; i < count; i++) {
+          const frac = (i + 0.7) / (count + 0.4);
+          chain.dropout(at + SPEECH_LEAD_MS / 1000 + span * frac, severity);
+        }
       }
     }
 
+    // --- The event half, which always runs ---------------------------------
     this.emit({ type: 'open', transmission });
 
-    // --- Speech ------------------------------------------------------------
-    // Delayed by the squelch lead so the operator keys up before talking.
-    this.after(SPEECH_LEAD_MS, () => this.utter(transmission, profile));
+    // Delayed by the squelch lead so the operator keys up before talking. The
+    // silent path waits the same beat, so a card raised with the voice off has
+    // the same rhythm as one raised with it on — the point of the whole design
+    // is that the two agree.
+    this.after(SPEECH_LEAD_MS, () => {
+      if (this.active !== transmission) return;
+      if (this.chainOpen && voice) this.utter(transmission, profile);
+      else this.runSilentTransmission(transmission, 0);
+    });
+  }
+
+  /**
+   * A transmission with no voice behind it: the estimated clock, and an ending.
+   *
+   * Used three ways — the voice is switched off, the browser cannot speak at
+   * all, and the player switches the voice off mid-sentence. In every case the
+   * card must keep typing at the pace the words would have been said, and must
+   * finish, because the HUD's dwell begins at `end`.
+   */
+  private runSilentTransmission(t: RadioTransmission, elapsedMs: number): void {
+    // Cleared so `runEstimatedClock`'s guard lets it run: a transmission that
+    // was speaking and is now not has already seen boundaries, and they are no
+    // longer coming.
+    this.sawBoundary = false;
+    this.markSpeechStarted(t);
+    const remaining = this.runEstimatedClock(t, elapsedMs);
+    this.after(remaining + 120, () => {
+      if (this.active === t) this.finish('complete');
+    });
+  }
+
+  /**
+   * Stops the sound without stopping the transmission.
+   *
+   * The player has turned the voice off while somebody is talking. Cutting the
+   * card off with them would be the wrong reading of that switch — they asked
+   * for quiet, not for the radio to stop working — so the words carry on at the
+   * pace they were being spoken at.
+   */
+  private silenceActive(): void {
+    const t = this.active;
+    if (this.activeUtterance && TeamRadio.supported) {
+      this.activeUtterance.onend = null;
+      this.activeUtterance.onerror = null;
+      this.activeUtterance.onboundary = null;
+      window.speechSynthesis.cancel();
+      this.activeUtterance = null;
+    }
+    this.closeChain();
+    if (!t) return;
+    // Whatever has already been revealed stays revealed; the clock picks up
+    // from there rather than restarting the line.
+    const done = t.text.length ? this.lastCharEnd / t.text.length : 1;
+    this.clearTimers();
+    this.runSilentTransmission(t, t.estimatedMs * clamp01(done));
+  }
+
+  /** Keys the transmitter up, if it was ever keyed down. */
+  private closeChain(): void {
+    if (!this.chainOpen) return;
+    this.chainOpen = false;
+    const ctx = this.ctx;
+    if (this.chain && ctx) this.chain.close(ctx.currentTime);
+    // Restored on the key-up squelch rather than after it: the engine coming
+    // back while the "kssht" is still going is exactly what an intercom does,
+    // and waiting for silence leaves an audible hole.
+    this.duckFn?.(0, 0.18);
   }
 
   private utter(transmission: RadioTransmission, profile: SpeakerProfile): void {
@@ -656,7 +1020,7 @@ export class TeamRadio {
     if (this.active !== transmission) return;
 
     const u = new SpeechSynthesisUtterance(transmission.text);
-    const voice = this.voiceFor(transmission.speaker);
+    const voice = this.voiceFor();
     if (voice) { u.voice = voice; u.lang = voice.lang; }
     u.rate = profile.rate;
     u.pitch = profile.pitch;
@@ -711,9 +1075,21 @@ export class TeamRadio {
       if (this.active === transmission) this.finish('error');
     });
 
+    this.spoke = true;
     window.speechSynthesis.speak(u);
   }
 
+  /**
+   * Emits `speech` — "the first word is audible now, start typing".
+   *
+   * CALLED FROM THE FIRST `boundary` AND NEVER FROM `onstart`. That single
+   * choice is the whole reason this class exists rather than the HUD calling
+   * `speechSynthesis.speak` itself, and it is asserted, not merely commented:
+   * `scripts/probeRadio.ts` reads `RadioEvent.atMs` and fails if `speech` and
+   * the first real `word` are not emitted in the same task. Moving this call
+   * into `onstart` puts them 1.1 s apart and the probe goes red naming the
+   * number.
+   */
   private markSpeechStarted(transmission: RadioTransmission): void {
     if (this.speechStarted) return;
     this.speechStarted = true;
@@ -730,15 +1106,15 @@ export class TeamRadio {
    * compressed into what is left rather than starting from zero and running
    * past the end of the speech.
    */
-  private runEstimatedClock(transmission: RadioTransmission, elapsedMs: number): void {
+  private runEstimatedClock(transmission: RadioTransmission, elapsedMs: number): number {
     const text = transmission.text;
+    const remaining = Math.max(transmission.estimatedMs * 0.5, transmission.estimatedMs - elapsedMs);
     const words: { index: number; length: number }[] = [];
     const re = /\S+/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) words.push({ index: m.index, length: m[0].length });
-    if (!words.length) return;
+    if (!words.length) return remaining;
 
-    const remaining = Math.max(transmission.estimatedMs * 0.5, transmission.estimatedMs - elapsedMs);
     const totalChars = words.reduce((s, w) => s + w.length, 0) || 1;
 
     let acc = 0;
@@ -756,6 +1132,7 @@ export class TeamRadio {
         });
       });
     }
+    return remaining;
   }
 
   /** Length of the word starting at `at`, for engines that omit charLength. */
@@ -776,7 +1153,13 @@ export class TeamRadio {
     // four-second grace that would otherwise have established it never gets to
     // run. Without this, a boundary-less platform whose lines are all short
     // would stay 'unknown' forever and never fall back at all.
-    if (reason === 'complete' && !this.sawBoundary && this.boundarySupport === 'unknown') {
+    //
+    // `spoke` is what keeps that inference honest. A transmission that ran with
+    // the voice switched off also completes with no boundaries, and it says
+    // NOTHING about the platform — concluding 'no' from it would poison the
+    // grace period for every line spoken after the player turned the voice on.
+    if (reason === 'complete' && this.spoke && !this.sawBoundary
+      && this.boundarySupport === 'unknown') {
       this.boundarySupport = 'no';
     }
 
@@ -785,18 +1168,15 @@ export class TeamRadio {
     this.activeUtterance = null;
     this.activePriority = -Infinity;
 
-    const ctx = this.ctx;
-    if (this.chain && ctx) this.chain.close(ctx.currentTime);
-    // Restored on the key-up squelch rather than after it: the engine coming
-    // back while the "kssht" is still going is exactly what an intercom does,
-    // and waiting for silence leaves an audible hole.
-    this.duckFn?.(0, 0.18);
+    this.closeChain();
 
     this.emit({ type: 'end', transmission, reason });
 
     // The next message starts after the squelch tail so two transmissions never
     // overlap and the key-up of one is not buried under the key-down of the
-    // next.
+    // next. Both halves matter: the timer starts it, and `pumpNotBefore` stops
+    // anything else starting it sooner.
+    this.pumpNotBefore = now() + SQUELCH_CLOSE_MS + 90;
     this.after(SQUELCH_CLOSE_MS + 90, () => this.pump(), true);
   }
 
@@ -835,7 +1215,8 @@ export class TeamRadio {
     this.timers.length = 0;
   }
 
-  private emit(ev: RadioEvent): void {
+  private emit(body: RadioEventBody): void {
+    const ev = { ...body, atMs: now() } as RadioEvent;
     for (const fn of this.listeners) {
       // One listener throwing must not take the audio down with it, nor stop
       // the other listeners from hearing about the transmission.

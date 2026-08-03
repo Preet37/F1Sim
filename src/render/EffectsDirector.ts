@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ParticleSystem } from './ParticleSystem';
 import { SkidMarks } from './SkidMarks';
 import { RainCurtain } from './Rain';
-import { carGroundY } from './TrackMesh';
+import { bankedCarGroundY } from './TrackMesh';
 import { clamp01 } from '../core/MathUtils';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -38,8 +38,14 @@ import type { CarEntry } from '../race/CarEntry';
 const SMOKE_SLIP_THRESHOLD = 3.2;
 /** Slip speed at which smoke is at full density. */
 const SMOKE_SLIP_FULL = 11;
-/** Slip speed at which a tyre starts leaving a mark. */
-const MARK_SLIP_THRESHOLD = 2.0;
+/**
+ * Wheelspin fraction above which a rear tyre starts laying rubber.
+ *
+ * `wheelSpin` is how far throttle exceeds the traction limit, so a few per cent
+ * is a driver feeding the power in properly and should leave nothing. 0.12 is
+ * the point at which the rear is genuinely lit up.
+ */
+const WHEELSPIN_MARK_THRESHOLD = 0.12;
 /** Beyond this distance from the camera, a car emits nothing. */
 const CULL_DISTANCE = 145;
 /** Within this distance, a car emits at full rate. */
@@ -170,14 +176,18 @@ export class EffectsDirector {
       if (!fx) continue;
       if (car.retired && car.recovered) continue;
 
-      const p = car.physics;
-      const x = p.position.x;
-      const z = p.position.y;
+      // The DRAWN pose, not the solver's last step. Smoke leaves the contact
+      // patch and rubber is laid under it, so an emitter reading the stepped
+      // position puts both up to 0.7m from the tyre that is supposed to have
+      // made them — and staggers them frame to frame in exactly the way
+      // `Renderer.updateRenderPoses` exists to stop.
+      const x = car.renderX;
+      const z = car.renderZ;
       // The DRAWN road, not the bare elevation: smoke, spray and plank sparks
       // all leave from the contact patch, and the contact patch stands on the
       // asphalt mesh. See `carGroundY` — the cars themselves had the same
       // 20mm error and it put every tyre inside the tarmac.
-      const y = carGroundY(track.elevationAt(car.s));
+      const y = bankedCarGroundY(track, car.s, car.lateral);
 
       const dist = Math.hypot(x - cameraPos.x, z - cameraPos.z);
       if (!car.isPlayer && dist > CULL_DISTANCE) continue;
@@ -207,8 +217,8 @@ export class EffectsDirector {
 
     // Car axes in world space. The physics stores heading as a yaw about the
     // vertical, so forward and right fall straight out of it.
-    const cos = Math.cos(p.heading);
-    const sin = Math.sin(p.heading);
+    const cos = Math.cos(car.renderHeading);
+    const sin = Math.sin(car.renderHeading);
     const fwdX = sin, fwdZ = cos;
     const rightX = cos, rightZ = -sin;
 
@@ -227,9 +237,9 @@ export class EffectsDirector {
     // Fronts and rears are handled separately because they fail for different
     // reasons: fronts lock under braking, rears light up on the throttle. Both
     // read their own slip speed from the physics.
-    const axles: Array<{ slip: number; along: number; isRear: boolean }> = [
-      { slip: p.frontSlipSpeed, along: front, isRear: false },
-      { slip: p.rearSlipSpeed, along: -rear, isRear: true },
+    const axles: Array<{ slip: number; along: number; isRear: boolean; lock: number }> = [
+      { slip: p.frontSlipSpeed, along: front, isRear: false, lock: p.frontLockup },
+      { slip: p.rearSlipSpeed, along: -rear, isRear: true, lock: p.rearLockup },
     ];
 
     for (const axle of axles) {
@@ -240,11 +250,39 @@ export class EffectsDirector {
 
       // A locked wheel is a special case: it is not rotating at all, so it
       // smokes far harder than the slip number alone suggests.
-      const lockBoost = !axle.isRear && p.wheelsLocked ? 4 : 0;
+      const lockBoost = axle.lock > 0 ? 4 * axle.lock : 0;
       const effective = slip + lockBoost;
 
       const smokeAmount = clamp01((effective - SMOKE_SLIP_THRESHOLD) / (SMOKE_SLIP_FULL - SMOKE_SLIP_THRESHOLD));
-      const markAmount = clamp01((effective - MARK_SLIP_THRESHOLD) / 5);
+
+      // --- What actually lays rubber -----------------------------------------
+      //
+      // "F1 CARS DON'T LEAVE MARKS UNLESS THEY LOCK UP." Correct, and this used
+      // to be `clamp01((slipSpeed - 2.0) / 5)` — a plain ramp off contact-patch
+      // slip speed with a 2 m/s threshold. Every car exceeds 2 m/s of slip in
+      // every corner of every lap; that is what a slip angle IS, and it is how
+      // a tyre generates lateral force at all. So all twenty cars painted a
+      // black line through all twenty corners, continuously, and the circuit
+      // was solid rubber within a couple of laps.
+      //
+      // A tyre only leaves a visible mark when it is NOT ROLLING at the road's
+      // speed. There are exactly two ways for that to happen and neither of
+      // them is cornering:
+      //
+      //   LOCK-UP — the wheel has stopped and the contact patch is being ground
+      //     along the road. The fronts do this under braking and it is the
+      //     flat-spot everyone remembers. `frontLockup`/`rearLockup` are zero
+      //     unless the axle is genuinely past its grip on the brakes.
+      //   WHEELSPIN — the rear wheel is turning faster than the car is moving,
+      //     out of a slow corner or off the line. `wheelSpin` is already the
+      //     amount by which throttle exceeds the traction limit.
+      //
+      // An ordinary slide contributes NOTHING here now. Sliding scrubs rubber
+      // off the tyre, but at four-wheel-drift slip angles it does not deposit a
+      // line you can see from a helicopter — and the report is right that it
+      // should not.
+      const spinMark = axle.isRear ? clamp01((p.wheelSpin - WHEELSPIN_MARK_THRESHOLD) / 0.35) : 0;
+      const markAmount = Math.max(axle.lock, spinMark);
 
       for (const side of [-1, 1]) {
         const wx = x + fwdX * axle.along + rightX * halfTrack * side;
@@ -254,7 +292,7 @@ export class EffectsDirector {
         // Only on a hard surface, and heavily suppressed in the wet: rubber
         // does not transfer through a film of water.
         const id = car.index * 4 + (axle.isRear ? 2 : 0) + (side > 0 ? 1 : 0);
-        const markOpacity = onTrack && p.surface !== 'pitlane'
+        const markOpacity = markAmount > 0 && onTrack && p.surface !== 'pitlane'
           ? markAmount * (1 - localWet * 0.85) * clamp01(speed / 6)
           : 0;
         this.skids?.report(id, wx, wz, rightX, rightZ, spec.tireRadiusM * 0.62, markOpacity, y);
@@ -342,31 +380,53 @@ export class EffectsDirector {
     }
 
     // --- Sparks -------------------------------------------------------------
-    // The plank grounds out when the floor is pushed down onto the road: high
-    // speed loads the car with downforce, and braking pitches it forward onto
-    // the front skids. Both terms are real numbers from the physics rather than
-    // a random sprinkle, which is why sparks show up in the right places — the
-    // end of a long straight and the bottom of a compression.
-    const aeroLoad = clamp01(p.currentDownforceN / Math.max(p.totalMassKg * 9.81, 1));
-    const pitch = clamp01(-p.longitudinalG / 3.2);
-    const bottoming = clamp01(aeroLoad * 0.75 + pitch * 0.5 - 0.55) * clamp01((speed - 45) / 40);
-    fx.compression = fx.compression * 0.86 + bottoming * 0.14;
+    //
+    // "SPARKS DON'T FLY UNTIL LIKE THE CAR IS BRAKING SO IDK WHY THEY ARE
+    // CONSTANTLY FLYING."
+    //
+    // They were constant, and the arithmetic says why. The trigger used to be
+    //
+    //   aeroLoad = clamp01(downforce / weight)
+    //   bottoming = clamp01(aeroLoad*0.75 + pitch*0.5 - 0.55) * clamp01((v-45)/40)
+    //
+    // and `aeroLoad` is a ratio that passes 1 at about 150km/h and is CLAMPED
+    // there, so from the first straight of the race onwards the first term was
+    // permanently 0.75. 0.75 - 0.55 = 0.20, which is greater than the 0.03 gate,
+    // for every car, on every straight, for the rest of the session — with or
+    // without the brake. The braking term could only ever add to something that
+    // was already firing, so braking made no visible difference and not braking
+    // did not stop it. It was a speed effect wearing a physics costume.
+    //
+    // Now it is contact. `plankLoad` is zero unless the skid blocks in the
+    // plank are actually on the road, and the ride-height model that decides
+    // that has downforce, fuel load, braking load transfer and kerb strikes in
+    // it — the four things that ground a real car. See `VehiclePhysics`.
+    //
+    // SPEED IS STILL REQUIRED, but as a separate and honest condition: sparks
+    // are struck by metal grinding along the road, so a car resting its floor
+    // on the ground in the pit lane does not make any. It is a plain ramp from
+    // 30 m/s rather than a term that can fire on its own.
+    const grinding = p.plankLoad * clamp01((speed - 30) / 25);
+    // Lightly low-passed, so the shower has some persistence over a crest
+    // rather than switching off between two steps. Much shorter than the old
+    // 0.86/0.14 filter, which took 13 frames to decay and smeared every strike
+    // into the next one.
+    fx.compression = fx.compression * 0.72 + grinding * 0.28;
 
-    if (fx.compression > 0.03 && onTrack) {
+    if (fx.compression > 0.02 && onTrack) {
       fx.sparkBudget += fx.compression * 90 * lod * dt;
       if (fx.sparkBudget >= 1) {
         const n = Math.min(6, Math.floor(fx.sparkBudget));
         fx.sparkBudget -= n;
+        // From the end that is actually down. A car on its front skids under
+        // braking throws sparks from under the nose; one bottoming at speed
+        // drags them from the back of the floor.
+        const along = p.frontPlankLoad > p.rearPlankLoad ? front * 0.5 : -rear * 0.4;
         this.particles.emitSparks(
-          x - fwdX * rear * 0.4, y, z - fwdZ * rear * 0.4,
+          x + fwdX * along, y, z + fwdZ * along,
           vx, vz, fx.compression, n,
         );
       }
-    }
-
-    // Kerbs kick the floor into the road hard enough to strike regardless.
-    if (p.surface === 'curb' && speed > 25 && Math.random() < dt * 14 * lod) {
-      this.particles.emitSparks(x - fwdX * rear * 0.5, y, z - fwdZ * rear * 0.5, vx, vz, 0.6, 3);
     }
 
     // --- Exhaust flame ------------------------------------------------------

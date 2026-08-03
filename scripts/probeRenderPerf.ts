@@ -280,12 +280,6 @@ function row(label: string, s: Stats): string {
   ].join('  ');
 }
 
-/** Freezes the scaler so an ablation is not confounded by it moving. */
-const PIN = (v: number): string =>
-  `(() => { const r = window.__game.renderer;
-     Object.getPrototypeOf(r).updateResolutionScale = function () {};
-     r.resolutionScale = ${v}; r.resize(); })()`;
-
 /**
  * Paired A/B factors, toggled INSIDE one running session.
  *
@@ -484,7 +478,7 @@ async function main(): Promise<void> {
   await page.bringToFront();
 
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   // Chrome asks every document for `/favicon.ico` whether one is referenced or
   // not, and this probe has no icon to give it — so a clean run reported a page
   // error every time. Matched on the failing URL rather than the message: the

@@ -142,6 +142,38 @@ const SURFACE_ROLL_DRAG: Record<SurfaceType, number> = {
 
 const G = 9.81;
 
+// --- Ride height ----------------------------------------------------------
+/**
+ * How far past the road the floor has to be trying to go to count as fully
+ * grounded, metres.
+ *
+ * The road stops the plank, so a "ride height" below zero is not a depth — it
+ * is how much travel the suspension wanted and did not get, which is what sets
+ * the force through the skid. 12mm is roughly the point at which the plank is
+ * carrying as much as the springs are and the car is riding on its floor: past
+ * that there is nothing more to give and the shower does not grow.
+ */
+const PLANK_FULL_INTERFERENCE_M = 0.012;
+/**
+ * Peak downward heave from riding a kerb, metres.
+ *
+ * A negative kerb is 50mm and a sausage more, but only a fraction reaches the
+ * floor — the tyre absorbs most of it. 30mm is enough to put the plank on the
+ * road from any normal ride height, which is what a car crossing a kerb does.
+ */
+const KERB_HEAVE_M = 0.030;
+
+/**
+ * Brake demand past the axle's grip, as a fraction, at which a lock-up is
+ * total: the wheel has stopped and the tyre is a skid pad.
+ *
+ * Detection starts at 0.04 — four per cent past the limit is a chirp — and this
+ * is where the grading tops out. 0.45 is a wheel being asked for half again
+ * what the road can give, which no amount of pedal modulation recovers from and
+ * which is what puts a flat spot on a tyre and a black line on the road.
+ */
+const LOCKUP_FULL_EXCESS = 0.45;
+
 // --- Barrier contact ------------------------------------------------------
 /** Restitution for a pure graze, where the velocity is parallel to the wall. */
 const BARRIER_RESTITUTION_GRAZE = 0.12;
@@ -436,6 +468,50 @@ export class VehiclePhysics {
   ersHarvestW = 0;
   /** True when a wheel has locked under braking. */
   wheelsLocked = false;
+  /**
+   * How hard each axle is locked, 0..1. Zero unless it is genuinely locked.
+   *
+   * `wheelsLocked` says only that SOMETHING is locked, which is not enough to
+   * decide what to draw: a locked front is a car sliding straight on at a
+   * corner with smoke off the inside front, and a locked rear is a car about to
+   * spin. They also lay rubber differently and in different places. Graded
+   * rather than boolean because a wheel a few per cent past the limit leaves a
+   * faint scuff and one fully stopped leaves a black line.
+   */
+  frontLockup = 0;
+  rearLockup = 0;
+
+  // --- Ride height and the plank -------------------------------------------
+  /**
+   * Height of the plank above the road under each axle, metres.
+   *
+   * Zero or below means the titanium skid blocks bolted into the plank are
+   * ON the road, which is the only thing that makes an F1 car spark. It falls
+   * with downforce (which goes as v squared), with fuel load, and — hardest and
+   * fastest — with the load transfer of a braking zone.
+   *
+   * See `staticRideHeightFrontM` and the block that computes these for the
+   * arithmetic that ties them to real grounding speeds.
+   */
+  frontRideHeightM = 0;
+  rearRideHeightM = 0;
+  /**
+   * How hard the floor is being driven into the road at each end, 0..1.
+   *
+   * The interference — how much further the floor WOULD have travelled if the
+   * road were not in the way — normalised over `PLANK_FULL_INTERFERENCE_M`.
+   * That is proportional to the force carried through the skid, which is what
+   * decides how much metal is being ground off it and therefore how big the
+   * shower is. Zero whenever the floor is clear of the road, which on most of
+   * most circuits is all of the time.
+   */
+  frontPlankLoad = 0;
+  rearPlankLoad = 0;
+
+  /** The harder-grounded end, which is the one throwing the sparks. */
+  get plankLoad(): number {
+    return Math.max(this.frontPlankLoad, this.rearPlankLoad);
+  }
   /** Magnitude of high-frequency vibration, 0..1, for camera shake and haptics. */
   vibration = 0;
   /** Understeer (negative) to oversteer (positive) balance, roughly -1..1. */
@@ -829,6 +905,56 @@ export class VehiclePhysics {
     if (loadFront < 0) loadFront = 0;
     if (loadRear < 0) loadRear = 0;
 
+    // --- Ride height, and whether the floor is on the road ------------------
+    //
+    // "SPARKS DON'T FLY UNTIL LIKE THE CAR IS BRAKING SO IDK WHY THEY ARE
+    // CONSTANTLY FLYING." They were constant because nothing in the game knew
+    // where the floor was. The effect was drawn from `downforce/weight` and a
+    // speed ramp, and downforce passes the car's own weight at about 150km/h
+    // and never comes back — so the term saturated on the first straight of
+    // every race and stayed saturated.
+    //
+    // What actually makes an F1 car spark is contact: the titanium skid blocks
+    // in the plank (Art. 3.5.9) touching the road. So the model computes the
+    // ride height and asks whether it has run out. Three things take it away,
+    // and they are the three the sport talks about:
+    //
+    //   DOWNFORCE, which goes as v squared, so a car sinks onto its floor at
+    //     the end of a straight and lifts off it again as it slows;
+    //   FUEL, ~110kg of it at the start of a race and none at the end, which is
+    //     why the first lap sparks and the last one does not;
+    //   LOAD TRANSFER, `a*m*h/L`, which under 5g of braking is worth more than
+    //     3kN onto the front axle — arriving exactly when the aero load is
+    //     still near its peak. That combination is the braking zone at the end
+    //     of a long straight, and it is where the sparks in any piece of
+    //     Formula 1 footage almost always are.
+    //
+    // Deflection is measured from the STATIC DRY condition, so the fuel load
+    // appears as a load rather than being silently baked into the ride height.
+    const fuelWeightN = weightN - spec.dryMassKg * G;
+    // Kerbs and crests: the one input that is not a slow load. A kerb throws
+    // the floor down onto the road hard enough to strike whatever the ride
+    // height was, which is why a car sparks over a sausage kerb at 120km/h and
+    // not at all on the straight before it. Driven from the same oscillator the
+    // vibration and the haptics use, so the strike, the shake and the rumble
+    // are the same event rather than three unrelated ones.
+    const heaveDisturbanceM = this.surface === 'curb'
+      ? KERB_HEAVE_M * clamp01(speed / 25) * Math.max(0, Math.sin(this.vibrationPhase))
+      : 0;
+
+    const extraFront = aeroFront - transferN + fuelWeightN * staticFrontFrac;
+    const extraRear = aeroRear + transferN + fuelWeightN * (1 - staticFrontFrac);
+    this.frontRideHeightM = spec.staticRideHeightFrontM
+      - extraFront / spec.heaveStiffnessFrontNPerM - heaveDisturbanceM;
+    this.rearRideHeightM = spec.staticRideHeightRearM
+      - extraRear / spec.heaveStiffnessRearNPerM - heaveDisturbanceM;
+
+    // Interference, not depth: the road stops the floor, so what this measures
+    // is how much further it was trying to go, which is proportional to the
+    // force now being carried by the skid instead of by the springs.
+    this.frontPlankLoad = clamp01(-this.frontRideHeightM / PLANK_FULL_INTERFERENCE_M);
+    this.rearPlankLoad = clamp01(-this.rearRideHeightM / PLANK_FULL_INTERFERENCE_M);
+
     // --- Surface and tire grip --------------------------------------------
     // Two independent things multiplied: what the car is driving ON (asphalt,
     // kerb, grass) and what condition that surface is IN (rubbered, dusty,
@@ -1080,15 +1206,22 @@ export class VehiclePhysics {
     // friction circle above has already capped the force, so this only records
     // the consequence: vibration, a flat spot, and lost stopping power.
     this.wheelsLocked = false;
+    this.frontLockup = 0;
+    this.rearLockup = 0;
     if (brake > 0.1 && absVx > 3) {
       const frontExcess = brakeForceFront / Math.max(capFront, 1) - 1;
       const rearExcess = brakeForceRear / Math.max(capRear, 1) - 1;
       if (frontExcess > 0.04) {
         this.wheelsLocked = true;
+        // Per axle and graded, not just the shared boolean. What lays rubber is
+        // how far past the limit the axle is and for how long, and the two ends
+        // do it for opposite reasons — see `frontLockup`.
+        this.frontLockup = clamp01(frontExcess / LOCKUP_FULL_EXCESS);
         this.frontTires.flatSpot(frontExcess, dt);
       }
       if (rearExcess > 0.04) {
         this.wheelsLocked = true;
+        this.rearLockup = clamp01(rearExcess / LOCKUP_FULL_EXCESS);
         this.rearTires.flatSpot(rearExcess, dt);
       }
     }

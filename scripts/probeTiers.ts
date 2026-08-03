@@ -37,7 +37,7 @@ import { formatLapTime } from '../src/core/MathUtils';
 import { clearGrid } from '../src/data/teams';
 import { TIER_ORDER, type TierId } from '../src/data/roster';
 import {
-  TIER_CAR, createWorld, installWorld, performanceOf, raceSeats, toDriver,
+  createWorld, installWorld, performanceOf, raceSeats, toDriver,
 } from '../src/career/World';
 import {
   applySetup, baselineSetupFor, specForTeam, BASE_F1_SPEC,

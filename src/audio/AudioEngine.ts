@@ -297,12 +297,12 @@ export class AudioEngine {
     this.radioBus.gain.value = 1;
     this.radioBus.connect(this.master);
 
-    // The link's twelve nodes are built here, once, rather than per
-    // transmission. They are silent when nobody is talking — the bed is gated
-    // to zero — so the cost is six biquads and a looping buffer read per render
-    // quantum, against twenty engine voices already running. Building them per
-    // message would trade that for an allocation in the middle of a race, which
-    // is the more expensive of the two mistakes.
+    // Hands the radio its context, its bus and the ducking hook. It does NOT
+    // build the link's twelve nodes — see `TeamRadio.attach`. The spoken radio
+    // is off by default, and six biquads, a 2x oversampled WaveShaper, a
+    // compressor, a looping noise source and an oscillator running in every
+    // session of every player who never turned it on is a cost with no buyer.
+    // The chain is built on the first `setEnabled(true)` and kept after that.
     this.radio.attach(ctx, this.radioBus, (depth, tau) => {
       this.ramp(this.duck.gain, 1 - clamp01(depth), tau);
     });
@@ -468,7 +468,12 @@ export class AudioEngine {
   setEnabled(on: boolean): void {
     this.enabled = on;
     if (this.ctx) this.ramp(this.master.gain, on ? this.volume : 0, 0.08);
-    if (!on) this.radio.cancelAll();
+    // The radio is NOT cancelled here. Silencing the game must not take the
+    // radio card off the screen — the words are the feature and the voice is a
+    // garnish on it, and a player who has slid the master volume to zero has
+    // asked for the first and not the second. `setVolume` has already pushed
+    // zero onto the utterance, which is not in this graph and cannot be reached
+    // by `master.gain`, so nothing is audible either way.
   }
 
   setVolume(v: number): void {
