@@ -261,6 +261,18 @@ export interface CarVisual {
    */
   frontFlaps: THREE.Object3D;
   brakeGlow: THREE.Mesh[];
+  /**
+   * The three regulation rear lights: one central, two in the endplate bodies.
+   *
+   * NOT brake lights. An F1 car does not have brake lights and never has —
+   * "brake light" appears nowhere in the 2025 or 2026 Technical or Sporting
+   * Regulations. These are rain lights, and Sporting Art. B1.5.5(a) (2025:
+   * Art. 26.11) requires them lit "at all times when using intermediate or
+   * wet-weather tyres". See `setRainLight`.
+   */
+  rainLights: THREE.Mesh[];
+  /** Switches all three rear lights. `flashPhase` is 0..1, for the pulse. */
+  setRainLight(on: boolean, flashPhase: number): void;
   /** The bodywork that can be knocked off, by name. */
   bodyParts: Record<BodyPartId, BodyPart>;
   /** Rolling radius, so the renderer knows the wheel's resting height. */
@@ -472,6 +484,17 @@ const LOD_NEAR_M = 34;
  * and no bodywork may cross that line anywhere between REAR_AXLE_Z ± TYRE_R.
  * See `WHEEL_CLEARANCE` below, which the floor and sidepod are checked against.
  */
+/**
+ * The rear lights when they are off: a dark red lens, not black.
+ *
+ * An unlit lens is still a red plastic moulding in daylight, and drawing it
+ * black would make a dry car look like it had three holes in the back of it.
+ * `setRainLight` adds to these rather than replacing them, so the lit colour
+ * clears the bloom threshold (1.55) and the unlit one is nowhere near it.
+ */
+const RAIN_LIGHT_OFF_RGB: readonly [number, number, number] = [0.16, 0.020, 0.016];
+const RAIN_LIGHT_OFF = new THREE.Color(...RAIN_LIGHT_OFF_RGB);
+
 const TYRE_R = 0.36;
 /**
  * The tyre's rolling radius, exported for `probe:carrig`.
@@ -3725,6 +3748,56 @@ export function buildCar(
   const rl = makeWheel(-REAR_HUB_X, REAR_AXLE_Z, true);
   const rr = makeWheel(REAR_HUB_X, REAR_AXLE_Z, true);
 
+  // --- Rear lights ---------------------------------------------------------
+  //
+  // THREE of them, because the regulations say three. F1 Technical Regulations
+  // 2026 Art. C14.3.1: "All cars must have three rear lights which... b. Are
+  // clearly visible from the rear. c. Can be switched on by the driver when
+  // seated normally in the car."
+  //
+  //   C14.3.2  the first light: rear face at least 750mm behind XDIF=0, its
+  //            centre on Y=0, and between Z=295 and Z=305. That is the one on
+  //            the crash structure, already modelled in the shell above.
+  //   C14.3.3  "Two further lights must be fitted, one on each side of the
+  //            car", within the rear wing endplate body, lying "in its entirety
+  //            between Z=700 and Z=870". (The 2025 band was Z=500..870; 2026
+  //            narrows it, and this car is a 2026 car.)
+  //
+  // These are NOT part of the merged livery shell, and they cannot be: the
+  // shell shares one material across the whole field, and a light has to be
+  // switchable per car. They are separate meshes with their own unlit material,
+  // exactly as the brake discs are, so `setRainLight` can drive them.
+  //
+  // Unlit, because a rain light in the spray is the brightest thing in the
+  // frame and a lit material would have it dim in its own shadow.
+  const rainLights: THREE.Mesh[] = [];
+  const rainLightMat = new THREE.MeshBasicMaterial({
+    color: RAIN_LIGHT_OFF,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  });
+  {
+    // The central lens sits on the crash structure at Z=300 -> y 0.300, on the
+    // same station as the shell's moulding so the two are one object to look at.
+    const lens = new THREE.PlaneGeometry(0.072, 0.030);
+    const centre = new THREE.Mesh(lens, rainLightMat);
+    centre.position.set(0, 0.335, -2.316);
+    centre.rotation.y = Math.PI;
+    root.add(centre);
+    rainLights.push(centre);
+    // The pair, in the endplate bodies. Z=785 is the middle of the permitted
+    // 700..870 band, and the lens normal is within 5 degrees of the X axis as
+    // C14.3.3(c) requires — here, exactly along it.
+    for (const side of [-1, 1]) {
+      const m = new THREE.Mesh(lens, rainLightMat);
+      m.position.set(side * 0.475, 0.785, -2.052);
+      m.rotation.y = Math.PI;
+      root.add(m);
+      rainLights.push(m);
+    }
+  }
+
   let detail: CarTier = quality;
 
   return {
@@ -3756,6 +3829,25 @@ export function buildCar(
     drsFlap: flapPivot,
     frontFlaps: frontFlapPivot,
     brakeGlow,
+    rainLights,
+    setRainLight(on: boolean, flashPhase: number): void {
+      // One material, three lenses — they are one circuit on a real car too.
+      //
+      // FLASHING is a property of the light unit, not of the regulations: the
+      // rear light is a Standard Supply Component (C14.3.4) whose specification
+      // lives in FIA-F1-DOC-025 and is not published, and the words "flash" and
+      // "flashing" appear nowhere in the Technical or Sporting Regulations in
+      // connection with it. So this is modelled on what the units visibly do on
+      // track rather than cited to an article, and it is deliberately a slow
+      // pulse between bright and half rather than a hard blink.
+      const level = on ? 0.55 + 0.45 * flashPhase : 0;
+      rainLightMat.color.setRGB(
+        RAIN_LIGHT_OFF_RGB[0] + level * 3.4,
+        RAIN_LIGHT_OFF_RGB[1] + level * 0.16,
+        RAIN_LIGHT_OFF_RGB[2] + level * 0.10,
+      );
+      rainLightMat.opacity = on ? 1 : 0.95;
+    },
     onboardHidden,
     shadow,
     cockpit,
