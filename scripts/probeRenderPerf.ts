@@ -42,6 +42,30 @@ const CIRCUIT_IDS = process.env.PERF_ONLY
 const SECONDS = Number(process.env.PERF_SECONDS ?? 14);
 const WARMUP_MS = Number(process.env.PERF_WARMUP ?? 6000);
 const PAIR = process.env.PERF_PAIR ?? '';
+/**
+ * `PERF_VIEWPORT=390x844x3` — CSS size and device pixel ratio to emulate.
+ *
+ * ADDED FOR ISSUE #29, and it is the difference between an interesting number
+ * and a usable one. Every measurement this harness has ever taken was at
+ * 1600x1000 on a desktop, which is about four megapixels; a phone in portrait
+ * is 390x844 CSS and the renderer caps its pixel ratio at 2, so it draws about
+ * 1.3 megapixels — a THIRD of the pixels. Every full-screen cost in the post
+ * chain is linear in that number, so a post-chain cost measured on the desktop
+ * overstates the phone's by roughly 3x, and the whole question the issue asks
+ * is whether a phone can afford the chain.
+ *
+ * This emulates the geometry only. It cannot make an M-series GPU into a
+ * phone's, and no honest reading of these numbers should pretend otherwise —
+ * what it gives is the cost of each factor at the pixel count a phone draws,
+ * on hardware whose absolute speed is stated.
+ */
+const VIEWPORT = (() => {
+  const v = process.env.PERF_VIEWPORT;
+  if (!v) return null;
+  const m = /^(\d+)x(\d+)(?:x([\d.]+))?$/.exec(v.trim());
+  if (!m) throw new Error(`PERF_VIEWPORT must be WxH or WxHxDPR, got ${v}`);
+  return { width: +m[1], height: +m[2], deviceScaleFactor: m[3] ? +m[3] : 1 };
+})();
 const CAMERA = process.env.PERF_CAMERA ?? '';
 const OUT_DIR = resolve(process.cwd(), 'perf-out');
 
@@ -307,6 +331,11 @@ const BLOOM_AT = (f: number): string =>
   `(() => { const r = window.__game.renderer; const c = r.renderer.getContext();
      r.post.bloom.setSize(c.drawingBufferWidth * ${f}, c.drawingBufferHeight * ${f}); })()`;
 
+const SAMPLES = (n: number): string =>
+  `(() => { const c = window.__game.renderer.post.composer; if (!c) return;
+     const t = c.renderTarget2; if (t.samples === ${n}) return;
+     t.samples = ${n}; t.dispose(); })()`;
+
 const SET_SCALE = (v: number): string =>
   `(() => { const r = window.__game.renderer; r.resolutionScale = ${v}; r.resize(); })()`;
 
@@ -348,6 +377,51 @@ const FACTORS: Record<string, Factor> = {
     name: 'whole post chain',
     aLabel: 'post on', a: '(() => { const p = window.__game.renderer.post; p.__saved = p.__saved || p.composer; p.composer = p.__saved; })()',
     bLabel: 'post off', b: '(() => { const p = window.__game.renderer.post; p.__saved = p.__saved || p.composer; p.composer = null; })()',
+  },
+  /**
+   * MSAA on the composer's scene target — which is where the multisampling
+   * actually happens whenever the post chain is on. The GL context's own
+   * `antialias` attribute cannot be toggled on a live context and is dead
+   * while a composer exists, so this is the only honest A/B for what four
+   * samples a pixel cost. Added for issue #29, where `medium` is defined as
+   * the post chain WITHOUT this.
+   *
+   * `dispose()` after moving `samples` is what forces the backend to
+   * reallocate the framebuffer; setting the field alone changes nothing until
+   * something else causes a resize.
+   */
+  msaa: {
+    name: 'MSAA on the scene target',
+    aLabel: '4 samples', a: SAMPLES(4),
+    bLabel: '1 sample ', b: SAMPLES(0),
+  },
+  /**
+   * THE DECISION IN ISSUE #29, AS ONE NUMBER.
+   *
+   * Arm A is what a phone would get on `medium` with the resolution scaler at
+   * its floor: the post chain, at a quarter of the pixels. Arm B is what every
+   * phone got before — no chain at all, at full resolution.
+   *
+   * Worth measuring as a single paired factor rather than composed from two
+   * separate ones, because the composition is where the reasoning would go
+   * wrong: the post chain's cost is very nearly linear in pixels and the
+   * scene's is not, so multiplying one measurement by a ratio taken from the
+   * other silently assumes the thing being tested.
+   *
+   * `probe:sharpness` supplies the other half — what each of these two LOOKS
+   * like — and the two together are the answer to "can a phone afford the
+   * picture".
+   */
+  tiertrade: {
+    name: 'medium@0.5 vs low@1.0',
+    aLabel: 'post on, scale 0.50 ',
+    a: `(() => { const r = window.__game.renderer; const p = r.post;
+      p.__saved = p.__saved || p.composer; p.composer = p.__saved;
+      r.resolutionScale = 0.5; r.resize(); })()`,
+    bLabel: 'post off, scale 1.00',
+    b: `(() => { const r = window.__game.renderer; const p = r.post;
+      p.__saved = p.__saved || p.composer; p.composer = null;
+      r.resolutionScale = 1; r.resize(); })()`,
   },
   shadow: {
     name: 'shadow map re-render',
@@ -475,6 +549,10 @@ async function main(): Promise<void> {
 
   const page: Page = await browser.newPage();
   page.setDefaultTimeout(300_000);
+  if (VIEWPORT) {
+    await page.setViewport(VIEWPORT);
+    console.log(`viewport ${VIEWPORT.width}x${VIEWPORT.height} @ dpr ${VIEWPORT.deviceScaleFactor}`);
+  }
   await page.bringToFront();
 
   const errors: string[] = [];

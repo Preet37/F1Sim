@@ -179,7 +179,8 @@ Run `npm run` to list. The important ones:
 
 | Command | What it proves |
 |---|---|
-| `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time |
+| `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
+| `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part attached; wheels at y=0; nothing floating |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
@@ -308,6 +309,87 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   moved in the audit.** Every audit PNG ever produced was shot at full resolution. The
   harness was photographing an image no player had ever seen.
 
+### Rendering: every phone was on the cheapest image the renderer can draw (issue #29)
+
+The tier was `touchPrimary || cores <= 4 ? 'low' : 'high'`, and `touchPrimary` is
+`matchMedia('(pointer: coarse)')` — so **every phone that has ever existed was `low`**, and
+`low` withheld the post-processing chain, the shadow map, MSAA and half the geometry as one
+indivisible decision, with no in-game control. This is the mirrors defect one level up, and
+the reporting device is a phone.
+
+**How much of "the graphics are utter dogshit" is the tier rather than the renderer?**
+Measured, not argued. `probe:sharpness` gained a grain metric — mean absolute Laplacian of
+luma in six horizontal bands, read back inside the frame that drew it, at the resolution
+the scaler actually settled on — and a `SHARP_QUERY` passthrough so a tier can be
+photographed at all. Bahrain, cockpit, identical frame, scale 1.00, buffer ~2940×1396:
+
+| tier | band 1 (horizon) | band 2 (mid-distance) | band 5 (near field) |
+|---|---|---|---|
+| `low` — what every phone got | **20.3** | **63.6** | 3.0 |
+| `low` + post chain, low detail | 2.1 | 18.7 | 6.7 |
+| `medium` (post, full detail, no MSAA) | 4.0 | 22.6 | 6.2 |
+| `medium` + MSAA | 1.7 | 15.5 | 5.8 |
+| `high` — what the developing machine got | 1.2 | 14.8 | 6.1 |
+
+**The phone's image carried 16× the high-frequency speckle at the horizon and 4.3× in the
+middle distance, and the cause is the missing post chain, not the renderer.** Turning post
+on and changing nothing else — geometry still at low detail, still no MSAA, still no
+shadows — recovers 9.7× of the horizon band and 3.4× of the mid-distance. Geometry detail
+contributes nothing measurable (low+post 18.7 against medium's 22.6, i.e. slightly worse).
+MSAA is worth a further ~1.5×. Chase view agrees within 10% on every row. This is the
+user's *"all of the other maps still have the weird black lines and grainy maps"* and it is
+a tier artefact.
+
+**Can a phone afford the chain? Yes — and it is not even a trade.** The obvious objection is
+that the post chain was 71% of frame time, so switching it on for phones would tank the
+device. Measured on an Apple M5 with GPU timer queries, in paired A/B inside one session, at
+**390×844 @ dpr 2 — the pixel count a phone actually draws**, not a desktop's:
+
+| | Bahrain | Monaco | Spa |
+|---|---|---|---|
+| scene alone (no chain) | 5.02ms | 4.90ms | 5.14ms |
+| scene + post chain | 9.78ms | 8.23ms | 10.98ms |
+| post chain costs | +4.26ms (1.9×) | +3.35ms (1.7×) | +5.68ms (2.1×) |
+| MSAA on top of that | +1.69ms | +1.32ms | +4.45ms |
+| **`medium` @ scale 0.50 vs `low` @ scale 1.00** | **3.63 vs 4.99ms — 27% CHEAPER** | 5.17 vs 4.99ms — 6% dearer | **3.90 vs 5.51ms — 29% CHEAPER** |
+
+The last row is the whole decision as one number, measured as one paired factor
+(`PERF_PAIR=tiertrade`) rather than composed from the others, and the spreads are tight
+(−1.82..−1.18, −1.15..+0.56, −1.95..−1.25). **The post chain at a quarter of the pixels
+costs the same or less than no chain at full resolution**, and the grain table above says
+`medium` at scale 0.50 still measures **32.8** in the mid-distance against `low` at scale
+1.00's **63.6**, and **6.8** at the horizon against **20.3** — 1.9× and 3.0× cleaner while
+being no more expensive. A phone was paying full price for the worse image.
+
+What landed:
+- **`src/render/QualityTiers.ts`** — one place that decides what every `quality === 'high'`
+  gate in `src/render/` means. Three tiers and four independent switches (post, shadows,
+  MSAA, resolution ceiling), because the four do not scale together and the binary tier
+  forced an all-or-nothing choice a phone always lost.
+- **Detection cannot solve this and does not pretend to.** `hardwareConcurrency` is clamped
+  on iOS — every iPhone reports the same small number whatever silicon is behind it — and
+  `deviceMemory` is not implemented in Safari at all. Any rule written on those reproduces
+  the bug. So `auto` starts from a floor it is confident about and then **measures**:
+  `Renderer.updateAutoTier` promotes a tier after 8s under budget *at the scaler's ceiling*
+  and demotes-and-latches when the resolution scaler has run out of room. Same shape as the
+  resolution scaler, which is the only thing in this renderer that has ever correctly
+  described the machine it was on. `auto` is still the default; it can no longer pin a phone
+  at `low`.
+- **`PostFX.enabled` was `quality === 'high'` and `readonly`.** The chain now builds and
+  tears down on demand, so the setting takes effect without ending the session.
+- **MSAA has two homes and they did not agree.** The GL context's `antialias` attribute is
+  what antialiases when the chain is off and is *dead* when it is on — the samples that cost
+  bandwidth then are the composer target's. Before three tiers existed the two could not
+  disagree; `medium` is post-without-MSAA and would silently have paid for four samples a
+  pixel. Both follow one switch now, and `probe:graphics` asserts both.
+- **`probe:graphics`, 67 checks**, reading the **GL context** — `getContextAttributes()
+  .antialias`, `shadowMap.enabled`, whether a composer was allocated, the target's
+  `samples`, the drawing-buffer size — rather than the settings object, because a build with
+  the wire cut has a settings object that agrees with itself perfectly. **Proved it goes
+  red:** deleting the arguments to `new Renderer` in `main.ts`, which is the exact bug the
+  issue describes, takes it from **67 ok / 0 failed to 48 ok / 19 failed**, and the three
+  tiers collapse to one GL configuration.
+
 ### The world
 - **Corner "cliffs":** the ground beyond every circuit was one flat quad at y = −0.62
   while circuits climb to 58m at Spa. The vertical skirt was as tall as the circuit was
@@ -385,7 +467,9 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   end. A 42mm-wide, 112mm-**tall** portrait sliver showing a 2.67:1 landscape feed sideways.
   Plus: the feed ran only in `cockpit` mode and only on the `high` tier, and the tier is
   `(pointer: coarse) || cores <= 4` — so **every phone is `low` and it had never run on the
-  reporting device at all.**
+  reporting device at all.** That second half was never a mirror bug: it was the tier, and
+  it was one of about a dozen gates behind it. See "every phone was on the cheapest image"
+  above and issue #29 — the tier itself is now three tiers and four switches.
 - Mirror housing was lofted **widest 30mm in front of the glass**. Pane 74×32mm →
   **150×46mm** (150 is the FIA minimum). Then the cap fix revealed the housing's rear cap
   was a solid disc the size of the aperture — once drawn, **it was the mirror.**
@@ -574,6 +658,36 @@ overrule it in either direction.**
 | Career/story | My Team, facility, livery editor, press/morale/sponsors, rivalries, the full world |
 
 ### Measured, deferred, and still true
+- **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
+  established the first half by measurement (§6). The second half is the reason `medium`
+  exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple
+  M5, toggled inside one session so drift cancels — **but the machine's load average was
+  17–52 on ten cores for the whole measurement window, so the absolute milliseconds are
+  inflated and only the ratios should be read**:
+
+  | factor, at DESKTOP 1600×1000 @ dpr 2 | Bahrain | Monaco | Spa |
+  |---|---|---|---|
+  | post chain on ÷ off | 1.5× *(spread 1.2–12.4 — unusable)* | **4.3×** (+21.4ms) | **5.1×** (+22.7ms) |
+  | MSAA 4x ÷ 1x on the scene target | 2.7× (+15.7ms) | 2.6× (+17.1ms) | 2.8× (+17.6ms) |
+  | shadow cascade re-render | 1.02× (+0.78ms) | 1.01× (+0.21ms) | 1.02× (+0.77ms) |
+  | resolution 1.00 ÷ 0.75 | 3.5× | 3.5× | 3.6× |
+
+  Three things follow. **(a)** The post chain is the most expensive item and its cost is very
+  nearly linear in pixels — the same factor at phone geometry is 1.7–2.1× rather than
+  4.3–5.1× (§6). Any budget derived from a desktop measurement overstates a phone's by about
+  three times, which is why `PERF_VIEWPORT` now exists and why the tier decision above was
+  taken at phone geometry. **(b)** The shadow cascade's *re-render* is free — 1–2% — so the
+  expensive part of shadows is the per-material sampling and the extra shader variant, which
+  this factor does not isolate and **nobody has measured**. `high` is defined on the
+  assumption that shadows are expensive and **that assumption is currently unbacked.**
+  **(c)** Resolution remains the best lever by a distance, which is why the tier only moves
+  after the resolution scaler has run out of room.
+- **The absolute frame times in this project have not been measured on a quiet machine in a
+  long time.** Every run for issue #29 was taken at load average 17–52 on a ten-core box
+  with other agents on it. Paired mode cancels drift that is *additive*; contention is
+  *multiplicative*, so it inflates both arms and therefore the delta. Ratios survive it.
+  **Anyone re-deriving a budget from a number in this document should re-measure at load
+  under 8 first.**
 - **AI pace ~1.43× reference.** The oldest open item in the project.
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
