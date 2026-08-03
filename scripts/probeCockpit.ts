@@ -48,7 +48,13 @@ const FRAMES: [string, number, number][] = [
  */
 const MODES = ['driver', 'cockpit', 'onboard-t'] as const;
 
-const OUT_DIR = resolve(process.cwd(), 'cockpit-out');
+// The low tier writes somewhere else, so a phone-tier run and a desktop-tier
+// run of the same circuit can be put side by side rather than overwriting each
+// other — which is the whole point of being able to shoot both.
+const OUT_DIR = resolve(
+  process.cwd(),
+  process.env.COCKPIT_QUALITY === 'low' ? 'cockpit-out-low' : 'cockpit-out',
+);
 
 interface Cost { ms: number; calls: number; triangles: number }
 
@@ -85,7 +91,10 @@ async function main(): Promise<void> {
   await server.listen();
   const addr = server.httpServer!.address();
   if (!addr || typeof addr === 'string') throw new Error('vite gave no port');
-  const url = `http://127.0.0.1:${addr.port}/audit/index.html`;
+  // `COCKPIT_QUALITY=low` photographs the tier every phone gets. See the
+  // `quality` parameter in audit/audit.ts for why that is not a detail.
+  const quality = process.env.COCKPIT_QUALITY === 'low' ? '?quality=low' : '';
+  const url = `http://127.0.0.1:${addr.port}/audit/index.html${quality}`;
 
   const browser: Browser = await puppeteer.launch({
     executablePath: chromePath(),

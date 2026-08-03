@@ -1453,6 +1453,8 @@ export function buildCockpit(accentColour: number, suitColour: number): CockpitV
   const mNormal = new THREE.Vector3();
   const mPos = new THREE.Vector3();
   const mLook = new THREE.Vector3();
+  /** The renderer's own clear colour, saved and restored around the feed. */
+  const mClear = new THREE.Color();
 
   const initMirrors = (): void => {
     for (let i = 0; i < mirrorPanes.length; i++) {
@@ -1523,11 +1525,44 @@ export function buildCockpit(accentColour: number, suitColour: number): CockpitV
       for (const p of mirrorPanes) p.visible = false;
       const prevTarget = renderer.getRenderTarget();
       const prevShadowAuto = renderer.shadowMap.autoUpdate;
+      const prevAlpha = renderer.getClearAlpha();
+      renderer.getClearColor(mClear);
+
+      // THE SKY IS NOT IN THIS FRUSTUM, AND THAT IS WHY EVERY MIRROR EVER
+      // PHOTOGRAPHED IN THIS PROJECT HAS HAD A BLACK RECTANGLE FOR A SKY.
+      //
+      // The sky is a dome of radius 3600 parented to nothing and dropped onto
+      // the main camera each frame (`Renderer.buildSky`, and the
+      // `sky.position.copy(cam.position)` in the frame loop). A mirror's far
+      // plane is `MIRROR_FAR` — 120, and 200 before that — so every triangle of
+      // the dome is beyond it and clipped away. What is left is the renderer's
+      // clear colour, which is 0x0a0c10: near black. So the top half of both
+      // panes, which is where a mirror aimed slightly down at the road puts the
+      // sky, has been solid black in daylight for as long as the feed has
+      // existed.
+      //
+      // That single fact does more to make a mirror read as dead than anything
+      // else in this file, and none of the previous passes could have found it,
+      // because every one of them was checking whether the feed CONTAINED
+      // anything. It did. It was a strip of road under a black void.
+      //
+      // Clearing to the scene's fog colour instead is exact rather than
+      // approximate: the fog colour is chosen to match the horizon (see
+      // `Renderer.applyAmbience`), and at 120m the fog has already carried
+      // everything in the pane most of the way to it. So the background is not
+      // a stand-in for the sky — it is the same haze the far end of the pane is
+      // already fading into, with no seam where the two meet. It costs two
+      // state changes and no draw calls, and it is right at night as well,
+      // where the fog colour is dark because the sky is.
+      const fog = scene.fog as { color?: THREE.Color } | null;
+      if (fog?.color) renderer.setClearColor(fog.color, 1);
+
       renderer.shadowMap.autoUpdate = false;
       renderer.setRenderTarget(mirrorTargets[i]);
       renderer.render(scene, cam);
       renderer.setRenderTarget(prevTarget);
       renderer.shadowMap.autoUpdate = prevShadowAuto;
+      renderer.setClearColor(mClear, prevAlpha);
       for (const p of mirrorPanes) p.visible = true;
     },
     mirrorTarget(side): THREE.WebGLRenderTarget | null {

@@ -27,5 +27,11 @@ reference/
 sharp-out/
 perf-out/
 weather-out/
-perf-out/
 .probe/
+
+# Same reasoning as cockpit-out: the phone-tier run of the same probe.
+cockpit-out-low/
+
+# Symlinks an agent worktree makes to the main checkout.
+/reference
+/node_modules
