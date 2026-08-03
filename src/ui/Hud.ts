@@ -2595,6 +2595,19 @@ export class Hud {
       this.radioPending.add(id);
     }
     this.radioReveal = still ? 'whole' : 'typed';
+
+    // A TURN THE RADIO DECLINED STILL HAS TO READ. `speak` returns null when
+    // the tab is hidden, so a card raised in a backgrounded tab would type
+    // nothing and then sit there for its whole dwell as four empty rows when
+    // the player came back. Anything without a transmission behind it is
+    // revealed whole, which is the same backstop `end` provides for a turn that
+    // produced no words.
+    if (ids.length < shown.length) {
+      for (const [i, row] of rows.entries()) {
+        const turn = shown[i];
+        if (turn && i >= ids.length) row.textContent = '“' + turn.line + '”';
+      }
+    }
   }
 
   /** Whether the rows are being typed or were filled up front. */
