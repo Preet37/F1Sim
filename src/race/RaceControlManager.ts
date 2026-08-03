@@ -409,6 +409,15 @@ const SC_RELEASE_WINDOW_M = 900;
 const SC_SCRAMBLE_BACKSTOP_S = 30;
 
 /**
+ * The longest the safety car may spend gathering the leader, seconds.
+ *
+ * Longer than a neutralised lap at every circuit in the game, so a pick-up that
+ * is going to happen has happened. See the `picking-up` case for what happened
+ * without it.
+ */
+const SC_MAX_PICKUP_S = 90;
+
+/**
  * How close to the Line the leader has to be for the green to be shown, metres.
  *
  * "as the leader APPROACHES the Line ... a green flag and/or green light panel
@@ -1318,7 +1327,21 @@ export class RaceControlManager {
         // Art. 55.10). The second half is `bunching`.
         if (!leader) return;
         const toSafetyCar = loopDelta(leader.s, sc.s, this.track.length);
-        if (toSafetyCar >= 0 && toSafetyCar <= this.maxQueueGapM * 3) {
+        // Bounded, and it has to be. If the backstop released the car with the
+        // leader already past the pit exit, the leader has to come the whole way
+        // round to get behind it — at a closing rate of a fraction of the
+        // neutralised pace, because the safety car is crawling to be caught.
+        // Measured at Bahrain with no bound at all, a safety car deployed on lap
+        // five was still picking the leader up at the chequered flag: it ate
+        // sixteen minutes of a twenty-eight minute race and never came in.
+        //
+        // A minute and a half is longer than a neutralised lap at every circuit
+        // in the game. Past it the next phase takes over, and the next phase
+        // wants the same thing — B5.13.5a's condition is "the leader is behind
+        // it AND all remaining F1 Cars are queued behind them", and `bunching`
+        // tests both with an escape of its own.
+        if ((toSafetyCar >= 0 && toSafetyCar <= this.maxQueueGapM * 3) ||
+            sc.stationS > SC_MAX_PICKUP_S) {
           this.scPhase = 'bunching';
           this.scTimer = SC_MIN_BUNCH_S;
         }

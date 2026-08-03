@@ -2012,24 +2012,34 @@ export class RaceEngine {
    * Art. 55.16), and identically for the VSC (B5.12.5 / Art. 56.8). The counter
    * is not suspended by a neutralisation and it does not run backwards.
    *
-   * IT USED TO. Not because a lap was ever missed — measured with a staged
-   * safety car at Monza, every geometric crossing of the Line scored a lap and
-   * the two counts agreed exactly — but because this read `standings[0].lap`
-   * live, and under a safety car `standings[0]` is not a stable car. The order
-   * is sorted on `totalDistance` (see `ordersBefore`), a bunched field puts
-   * twenty cars nose to tail inside a kilometre, and two cars either side of the
-   * Line are then metres apart in distance and a whole lap apart on the counter.
-   * The sort flickers between them at 20Hz and the number the player is looking
-   * at goes 7, 6, 7, 6. That is the report, exactly:
+   * WHAT WAS MEASURED, AND WHAT WAS NOT. The report is:
    *
    *   "when there is a safety car, doesn't mean that the lap isn't continued —
    *    like they crossed the line but were still on lap 6 for some reason. it
    *    should've updated right to the next lap."
    *
+   * The counter itself is not the fault and never was. Instrumented against
+   * every geometric crossing of the Line over full races at Monza with a staged
+   * safety car, the two counts agreed exactly: a hundred crossings under a
+   * neutralisation, a hundred laps credited, none missed. `updateProjection`
+   * reads no flag and no neutralisation state, and there is no gate anywhere on
+   * the path from a crossing to `lap++`. `regress:laps` now asserts that, in
+   * both directions, so it stays true.
+   *
+   * WHAT THIS FIXES IS THE OTHER HALF: the number is DERIVED, and it was derived
+   * live from `standings[0].lap`. The standings are sorted on `totalDistance`
+   * with no hysteresis (see `ordersBefore`) and a bunched field puts twenty cars
+   * nose to tail inside a kilometre, so two cars either side of the Line sit
+   * metres apart in distance and a whole lap apart on the counter. Whenever that
+   * sort resolves the other way at 20Hz, the published lap goes down. It is
+   * seed-dependent — a nine-hundred-second run at seed 5 does not produce it —
+   * which is exactly the kind of fault that is reported from a race clip and
+   * cannot be reproduced on demand.
+   *
    * A lap is a thing that has happened. Once any car has completed one, the race
-   * is on the next one, and nothing that happens afterwards un-completes it —
-   * which is what a latch says and what a live read of a flickering sort does
-   * not.
+   * is on the next one, and nothing afterwards un-completes it. A latch says
+   * that; a live read of an unstable sort does not, whatever the counter
+   * underneath it is doing.
    */
   private raceLapLatch = 0;
 
