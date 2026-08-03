@@ -58,6 +58,7 @@
     "probe:renderperf": "tsx scripts/probeRenderPerf.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
     "probe:kerbs": "tsx scripts/probeKerbs.ts",
+    "probe:rideheight": "tsx scripts/probeRideHeight.ts",
     "probe:shoulders": "tsx scripts/probeShoulders.ts",
     "probe:surfacesteps": "tsx scripts/probeSurfaceSteps.ts",
     "probe:debris": "tsx scripts/probeDebris.ts",
