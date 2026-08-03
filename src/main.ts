@@ -5445,6 +5445,30 @@ class Game {
   // classification's action bar.
 
   /**
+   * A driver's name as two proper-case parts, for a screen that prints it in
+   * prose as well as on a plate.
+   *
+   * `splitName` in `TimingRow.ts` is not this: it UPPER-CASES the surname,
+   * because a timing row is set in the broadcast's own typography. Feeding
+   * that to the podium put "Lewis HAMILTON won it" into the verdict sentence
+   * — the plate was right, since `Podium.ts` upper-cases it itself, and the
+   * sentence beside it was not. The career's own grid already holds both parts
+   * separately, so it is asked rather than a display string being taken apart.
+   */
+  private driverName(career: Career): (id: string) => { first: string; last: string } {
+    const grid = career.grid();
+    return (id) => {
+      const d = grid.find((g) => g.id === id);
+      if (d) return { first: d.firstName, last: d.lastName };
+      const full = career.displayName(id);
+      const at = full.lastIndexOf(' ');
+      return at > 0
+        ? { first: full.slice(0, at), last: full.slice(at + 1) }
+        : { first: '', last: full };
+    };
+  }
+
+  /**
    * The rostrum for a round the career has just recorded.
    *
    * The classification screen keeps its own inline podium and is untouched:
@@ -5461,6 +5485,7 @@ class Game {
     const me = s.playerDriverId;
     const myIndex = result.order.indexOf(me);
     const retired = result.retired.includes(me);
+    const nameOf = this.driverName(career);
 
     const { body, actions } = this.page({
       tab: TIER_CAR[s.tier].shortName + ' · Round ' + (result.round + 1),
@@ -5476,7 +5501,7 @@ class Game {
       top3: result.order.slice(0, 3).map((id, i) => {
         const d = grid.find((g) => g.id === id);
         const team = d ? getTeam(d.teamId) : getTeam(s.teamId);
-        const name = splitName(career.displayName(id));
+        const name = nameOf(id);
         return {
           driverId: id,
           firstName: name.first,
@@ -5530,8 +5555,9 @@ class Game {
     const me = s.playerDriverId;
     const myIndex = result.order.indexOf(me);
     const myPos = result.retired.includes(me) || myIndex < 0 ? 0 : myIndex + 1;
+    const nameOf = this.driverName(career);
     const winner = result.order[0];
-    const winnerName = winner ? career.displayName(winner) : 'the winner';
+    const winnerName = winner ? nameOf(winner).last : 'the winner';
 
     const { body, actions } = this.page({
       tab: circuit.name + ' · Round ' + (result.round + 1),
@@ -5647,7 +5673,7 @@ class Game {
       panel: panelIds.filter((id): id is string => !!id).map((id) => {
         const d = grid.find((g) => g.id === id);
         const team = d ? getTeam(d.teamId) : getTeam(s.teamId);
-        const name = splitName(career.displayName(id));
+        const name = nameOf(id);
         return {
           id,
           firstName: name.first,

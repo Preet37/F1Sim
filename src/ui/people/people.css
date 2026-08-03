@@ -324,16 +324,23 @@
    `GarageScene` draws the bay around an empty middle on purpose (see its own
    header): the canonical car is `CarStage.ts`, on its own canvas, and a second
    flat drawing of it here would drift from the real one inside a week. This is
-   where the real one stands. The numbers are read off the drawing — the floor
-   line is at y=452 of a 1200x675 stage and the bay's side walls close in at
-   about 18% either side — so the car sits ON the floor rather than in front of
-   it, and the crew at the bench behind it are not covered up.
+   where the real one stands. The numbers are read off the drawing — the wall
+   meets the floor at y=452 of a 1200x675 stage (67%) and the crew work at a
+   bench at y=556 (82%) — so the car stands on the garage floor in front of the
+   bench, clear of the principal at the left-hand edge.
+
+   THE BACKDROP IS THE BAY, so the stage must not bring its own. `.stage`
+   paints a cyclorama in `::before` — the graded wall a car is normally
+   photographed against — and inside the garage that is an opaque rectangle
+   cut out of the drawing this whole screen exists to show. It is suppressed
+   here and nowhere else.
 
    `inset` is restated rather than inherited because `.stage-panel`'s own box
    hangs 24% below its container, which is right for the career hub's bay and
    would put this car through the garage floor. */
-.garage-car { position: absolute; inset: 30% 17% 8% 17%; z-index: 1; }
+.garage-car { position: absolute; inset: 31% 21% 11% 25%; z-index: 1; }
 .garage-car .stage.stage-panel { inset: 0; }
+.garage-car .stage::before { display: none; }
 
 .gar-name {
   font-family: var(--font-display);
