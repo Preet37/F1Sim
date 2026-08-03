@@ -456,7 +456,7 @@ console.log('flat nor level. A 3.6m wheelbase on Spa\'s 18.7% gradient buries an
 console.log('a 1.925m track on Zandvoort\'s 18 degrees of banking buries a tyre 313mm. That is a');
 console.log('separate bug from this one — it applies to every car all the time, not to a wreck —');
 console.log('and fixing it means giving the car the road\'s attitude, which the cameras copy line');
-console.log('for line and probe:framing is laid out against. Filed separately; see PROJECT.md 7.');
+console.log('for line and probe:framing is laid out against. ISSUE #71; see PROJECT.md 7.');
 console.log('-'.repeat(100));
 
 console.log(`\n${checks} ok, ${failures.length} failed`);
