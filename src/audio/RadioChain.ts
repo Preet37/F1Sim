@@ -91,6 +91,29 @@ export const BAND_ORDER = 3;
  */
 export const CASCADE_EDGE_FACTOR = Math.pow(1 / (Math.pow(2, 1 / BAND_ORDER) - 1), 0.25);
 
+/**
+ * Butterworth Q for a `lowpass` or `highpass` biquad — IN DECIBELS.
+ *
+ * READ THIS BEFORE TYPING `Math.SQRT1_2` INTO A FILTER'S Q AGAIN.
+ *
+ * For `lowpass` and `highpass`, and only for those two types, the Web Audio
+ * spec interprets `BiquadFilterNode.Q` as a DECIBEL value: the coefficient
+ * maths uses `alpha = sin(w0) / (2 * 10^(Q/20))`. Every other filter type takes
+ * Q as a plain quality factor, which is why the mistake is so easy to make.
+ *
+ * Setting Q to 0.7071 — the number everyone knows as maximally flat — therefore
+ * asks for 0.7071 dB, an effective Q of 1.085, and a RESONANT PEAK just inside
+ * each corner. Cascading three of those at each end of the band built a filter
+ * with a 4 dB hump at 300 Hz, a 4 dB hump at 3.4 kHz and a scooped middle: a
+ * band-stop wearing a band-pass's constants, and the exact inverse of what the
+ * comment above claimed. It measured as -3 dB points at 216 Hz and 559 Hz.
+ *
+ * Nobody would have heard this as "the filter is wrong". It sounds like a
+ * slightly honky noise bed, which is entirely plausible for a radio, and it
+ * would have shipped. `scripts/probeRadio.ts` caught it in the first run.
+ */
+export const BUTTERWORTH_Q_DB = 20 * Math.log10(Math.SQRT1_2);
+
 // --- Squelch ---------------------------------------------------------------
 
 /**
@@ -151,17 +174,43 @@ export function saturationCurve(drive: number, n = 1024): Float32Array<ArrayBuff
   // `SharedArrayBuffer` — and `WaveShaperNode.curve` will not accept that.
   const curve = new Float32Array(new ArrayBuffer(n * 4));
   const k = Math.max(0.001, drive);
-  const norm = Math.tanh(k);
+  // Divided by `k`, NOT by `tanh(k)`.
+  //
+  // Normalising by `tanh(k)` maps full scale in to full scale out, which looks
+  // like the tidy choice and is wrong: it gives the curve a SMALL-SIGNAL GAIN
+  // of k/tanh(k), which at a drive of 2.6 is 2.63, or +8.4 dB. Everything
+  // downstream then arrives 8 dB hotter than the constants say, the limiter is
+  // permanently engaged instead of catching peaks, and it squashes the key-up
+  // squelch down to the key-down squelch's level — measured, a 5.2 dB
+  // difference between the two bursts came out as 0.5 dB the wrong way, which
+  // destroys the one detail the whole effect depends on.
+  //
+  // Dividing by `k` makes the curve unity at small signals and progressively
+  // compressive above them, which is what a saturator is. Full scale in comes
+  // out at tanh(k)/k = 0.38, and that 8.4 dB of headroom is the point.
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
-    curve[i] = Math.tanh(k * x) / norm;
+    curve[i] = Math.tanh(k * x) / k;
   }
   return curve;
 }
 
-/** Limiter. Hard ratio and a fast attack: a radio link does not breathe. */
-export const LIMIT_THRESHOLD_DB = -20;
-export const LIMIT_RATIO = 14;
+/**
+ * Limiter. Fast attack and a hard ratio: a radio link does not breathe.
+ *
+ * The threshold is -8 dB rather than the -20 dB it started at, and the reason
+ * is worth keeping. A limiter that everything sits above is not a limiter, it
+ * is a leveller: with the threshold at -20 dB the key-up burst (-6.9 dB) and
+ * the key-down burst (-12 dB) both came out at about -19 dB, five decibels of
+ * deliberate contrast flattened into half a decibel. At -8 dB only the key-up
+ * burst touches it, so the two ends of a transmission still sound different
+ * while nothing is allowed anywhere near full scale.
+ *
+ * The hard-limited CHARACTER of a comms link comes from `saturationCurve`,
+ * which is compressing continuously. This stage is protection.
+ */
+export const LIMIT_THRESHOLD_DB = -8;
+export const LIMIT_RATIO = 12;
 export const LIMIT_KNEE_DB = 2;
 export const LIMIT_ATTACK_S = 0.002;
 export const LIMIT_RELEASE_S = 0.09;
@@ -213,6 +262,18 @@ export class RadioChain {
   private linkQuality = 1;
   private disposed = false;
 
+  /**
+   * The bed level the last scheduled event aimed at.
+   *
+   * Tracked rather than read back off `bedGain.gain.value`, because an
+   * `AudioParam`'s `.value` reports the value AT THE MOMENT OF READING in a
+   * realtime context and the initial value in an offline one, where the whole
+   * transmission is scheduled before a single sample is rendered. Reading it
+   * back would make the chain behave differently under measurement than it does
+   * in the game, which would make the measurement worthless.
+   */
+  private bedTarget = 0;
+
   constructor(ctx: BaseAudioContext, destination: AudioNode, opts: RadioChainOptions = {}) {
     this.ctx = ctx;
     this.bedLevel = opts.bedLevel ?? BED_LEVEL;
@@ -230,7 +291,7 @@ export class RadioChain {
       const hp = ctx.createBiquadFilter();
       hp.type = 'highpass';
       hp.frequency.value = BAND_LOW_HZ / CASCADE_EDGE_FACTOR;
-      hp.Q.value = Math.SQRT1_2;
+      hp.Q.value = BUTTERWORTH_Q_DB;
       node = node.connect(hp);
       this.sections.push(hp);
     }
@@ -238,7 +299,7 @@ export class RadioChain {
       const lp = ctx.createBiquadFilter();
       lp.type = 'lowpass';
       lp.frequency.value = BAND_HIGH_HZ * CASCADE_EDGE_FACTOR;
-      lp.Q.value = Math.SQRT1_2;
+      lp.Q.value = BUTTERWORTH_Q_DB;
       node = node.connect(lp);
       this.sections.push(lp);
     }
@@ -306,6 +367,7 @@ export class RadioChain {
   open(at: number): number {
     if (this.disposed) return at;
     const bed = this.bedLevel * (1 + (1 - this.linkQuality) * 1.6);
+    this.bedTarget = bed;
     this.bedGain.gain.cancelScheduledValues(at);
     this.bedGain.gain.setValueAtTime(0, at);
     this.bedGain.gain.linearRampToValueAtTime(bed, at + BED_FADE_S);
@@ -328,12 +390,13 @@ export class RadioChain {
     // channel, which is louder than the link was, and that swell is half of why
     // the "kssht" reads as an ending rather than as a glitch.
     this.bedGain.gain.cancelScheduledValues(at);
-    this.bedGain.gain.setValueAtTime(this.bedGain.gain.value, at);
+    this.bedGain.gain.setValueAtTime(this.bedTarget, at);
     this.bedGain.gain.linearRampToValueAtTime(this.bedLevel * 2.2, at + tail * 0.45);
     this.bedGain.gain.linearRampToValueAtTime(0, at + tail);
     this.flutterGain.gain.cancelScheduledValues(at);
-    this.flutterGain.gain.setValueAtTime(this.flutterGain.gain.value, at);
+    this.flutterGain.gain.setValueAtTime(this.bedTarget * BED_FLUTTER, at);
     this.flutterGain.gain.linearRampToValueAtTime(0, at + tail);
+    this.bedTarget = 0;
     this.burst(at, tail, SQUELCH_CLOSE_LEVEL);
     return at + tail + 0.02;
   }
@@ -348,15 +411,35 @@ export class RadioChain {
     if (this.disposed) return at;
     const s = clamp01(severity);
     const dur = clamp(DROPOUT_MAX_S * (0.35 + s * 0.65), 0.04, DROPOUT_MAX_S);
+    const bed = this.bedLevel * (1 + (1 - this.linkQuality) * 1.6);
+
     const g = this.bedGain.gain;
     g.cancelScheduledValues(at);
-    g.setValueAtTime(g.value, at);
+    g.setValueAtTime(this.bedTarget, at);
     // Carrier lost: the receiver's AGC winds up onto open-channel noise...
     g.linearRampToValueAtTime(this.bedLevel * 3, at + 0.012);
     // ...and then the squelch gate slams, which is the actual silence.
     g.linearRampToValueAtTime(0, at + 0.03);
     g.setValueAtTime(0, at + dur);
-    g.linearRampToValueAtTime(this.bedLevel * (1 + (1 - this.linkQuality) * 1.6), at + dur + 0.03);
+    g.linearRampToValueAtTime(bed, at + dur + 0.03);
+
+    // THE FLUTTER HAS TO BE GATED TOO, and forgetting it is why the first
+    // version of this produced no silence at all.
+    //
+    // `flutterGain` is an audio-rate signal summed INTO `bedGain.gain`, so the
+    // param's final value is its scheduled value plus whatever the LFO is
+    // putting out. Ramping the scheduled value to zero therefore leaves the
+    // gain oscillating around zero at the flutter's amplitude — and since a
+    // gain may be negative, the bed carried straight on through the "silence",
+    // phase-inverted. Measured, the dropout produced 0 ms below the noise
+    // floor. Both have to reach zero for anything to actually stop.
+    const f = this.flutterGain.gain;
+    f.cancelScheduledValues(at);
+    f.setValueAtTime(this.bedTarget * BED_FLUTTER, at);
+    f.linearRampToValueAtTime(0, at + 0.03);
+    f.setValueAtTime(0, at + dur);
+    f.linearRampToValueAtTime(bed * BED_FLUTTER, at + dur + 0.03);
+
     return at + dur + 0.03;
   }
 

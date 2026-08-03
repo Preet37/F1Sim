@@ -143,21 +143,53 @@ const DENIED_VOICES = new Set([
  * sitting blank for an embarrassing length of time when boundaries really are
  * absent.
  */
-const BOUNDARY_GRACE_MS = 2000;
+/**
+ * How long to wait for a `boundary` event before falling back, while it is
+ * still unknown whether this platform sends them at all.
+ *
+ * Generous, because the cost of the two mistakes is wildly asymmetric. Falling
+ * back too early on a platform that DOES send boundaries starts the typewriter
+ * ahead of the voice, which is the exact failure this whole design exists to
+ * avoid. Falling back too late costs a late first line, once.
+ *
+ * It has to be generous because the lead is a cold-start effect and is not
+ * stable: measured across runs on the same machine, the gap between `onstart`
+ * and the first boundary was 918, 1030, 1959 and 2419 ms for the first
+ * utterance of the session, and around 105 ms for every one after it. Any fixed
+ * threshold tight enough to be useful is loose enough to be wrong sometimes,
+ * which is why this is only used until the answer is known.
+ */
+const BOUNDARY_GRACE_UNKNOWN_MS = 4000;
+
+/**
+ * The same wait once we have established this platform does not send
+ * boundaries. Short, because there is nothing to wait for.
+ */
+const BOUNDARY_GRACE_KNOWN_MS = 250;
 
 /**
  * Characters per second of speech at rate 1.0, for the fallback clock.
  *
- * Calibrated against real speech, not guessed: 62 characters in 4.97 s at
- * rate 1.1, with three sentence-ending stops. That solves to 12.8 characters
- * per second plus 180 ms per full stop, which predicts that line at 4.89 s
- * against 4.97 s measured — 1.6% low. `scripts/probeRadio.ts` re-measures this
- * against live speech on every run and fails if the estimator drifts past 20%,
- * because the fallback typewriter is only as good as this number.
+ * Calibrated against real speech across four lines of different lengths and
+ * punctuation, measured from the FIRST BOUNDARY to `onend` — not from
+ * `onstart`, which is what makes this number honest. An earlier version of it
+ * was fitted to an `onstart`-to-`onend` span and was therefore 30% slow,
+ * because that span includes the second or so the OS speech service spends
+ * warming up before it makes any sound. Measuring the wrong interval and
+ * fitting a constant to it is how a plausible number gets into a codebase.
+ *
+ * Measured, at rate 1.08 (characters, sentence stops, spoken ms):
+ *
+ *    62, 3, 3840      16.1 c/s      39, 1, 1971      19.8 c/s
+ *    69, 3, 4309      16.0 c/s      10, 0,  630      15.9 c/s
+ *
+ * Three of the four cluster at 16 c/s at rate 1.08; the short conversational
+ * one runs faster. 16.8 c/s plus 100 ms per stop fits all four within 14%.
+ * `scripts/probeRadio.ts` re-measures on every run and fails past 25%.
  */
-export const SPEECH_CHARS_PER_SEC = 12.8;
+export const SPEECH_CHARS_PER_SEC = 16.8;
 /** Extra time a sentence-ending stop adds, ms at rate 1.0. */
-export const SPEECH_SENTENCE_PAUSE_MS = 180;
+export const SPEECH_SENTENCE_PAUSE_MS = 100;
 
 /** Longest line we will hand to the synthesiser. See the note on Chrome above. */
 const MAX_LINE_CHARS = 220;
@@ -233,6 +265,12 @@ export type RadioEndReason = 'complete' | 'cancelled' | 'error' | 'stale' | 'hid
  *   end     the transmission is over, for the reason given. The key-up squelch
  *           is playing over the next ~130 ms, so a card that lingers briefly
  *           here is correct rather than late.
+ *
+ * THE LISTENER MUST REVEAL THE WHOLE LINE ON `end`, whatever the word events
+ * did or did not say. There are real cases with no word events at all — a short
+ * line on a platform that turns out not to send boundaries, or a message cut
+ * off by something more urgent — and a typewriter that only ever advances on
+ * `word` would leave those half-typed on screen. `end` is the backstop.
  */
 export type RadioEvent =
   | { type: 'open'; transmission: RadioTransmission }
@@ -282,6 +320,16 @@ export class TeamRadio {
   private sawBoundary = false;
   private speechStarted = false;
   private lastCharEnd = 0;
+
+  /**
+   * Whether this platform sends `boundary` events, learned rather than assumed.
+   *
+   * Asked once and remembered, because the question cannot be answered by
+   * feature detection: `onboundary` is present on the utterance prototype in
+   * every browser, including the ones that never fire it. The only way to know
+   * is to speak something and see.
+   */
+  private boundarySupport: 'unknown' | 'yes' | 'no' = 'unknown';
 
   private voices: SpeechSynthesisVoice[] = [];
   private resolved = new Map<RadioSpeaker, SpeechSynthesisVoice | null>();
@@ -623,6 +671,7 @@ export class TeamRadio {
       if (ev.name && ev.name !== 'word') return;
       if (!this.sawBoundary) {
         this.sawBoundary = true;
+        this.boundarySupport = 'yes';
         this.clearTimers();
         this.markSpeechStarted(transmission);
       }
@@ -643,10 +692,14 @@ export class TeamRadio {
     };
 
     // If no boundary arrives, this platform does not send them; fall back.
-    this.after(BOUNDARY_GRACE_MS, () => {
+    const grace = this.boundarySupport === 'no'
+      ? BOUNDARY_GRACE_KNOWN_MS
+      : BOUNDARY_GRACE_UNKNOWN_MS;
+    this.after(grace, () => {
       if (this.active !== transmission || this.sawBoundary) return;
+      this.boundarySupport = 'no';
       this.markSpeechStarted(transmission);
-      this.runEstimatedClock(transmission, BOUNDARY_GRACE_MS);
+      this.runEstimatedClock(transmission, grace);
     });
 
     // Last resort. If neither `onend` nor `onerror` ever fires — which Chrome
@@ -716,6 +769,17 @@ export class TeamRadio {
   private finish(reason: RadioEndReason): void {
     const transmission = this.active;
     if (!transmission) return;
+
+    // A transmission that ran to completion without ever reporting a word is
+    // proof this platform does not send boundaries, and it is the ONLY proof
+    // available for a short line: "Understood." is over in 630 ms, so the
+    // four-second grace that would otherwise have established it never gets to
+    // run. Without this, a boundary-less platform whose lines are all short
+    // would stay 'unknown' forever and never fall back at all.
+    if (reason === 'complete' && !this.sawBoundary && this.boundarySupport === 'unknown') {
+      this.boundarySupport = 'no';
+    }
+
     this.clearTimers();
     this.active = null;
     this.activeUtterance = null;
