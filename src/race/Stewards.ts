@@ -760,11 +760,20 @@ export class Stewards {
   update(
     cars: readonly CarEntry[], sessionTime: number, isRace: boolean, neutralised: boolean,
   ): void {
-    // Only a race. Art. B1.9.4 is the whole of what the stewards may do about an
-    // incident in a Lap Time Classified Session — delete a lap time, or drop the
-    // driver grid positions — and neither is a verdict about racing room. The
-    // guidelines apply in qualifying; the machinery in this file does not.
-    if (!isRace) return;
+    // Only a race gets a VERDICT. Art. B1.9.4 is the whole of what the stewards
+    // may do about an incident in a Lap Time Classified Session — delete a lap
+    // time, or drop the driver grid positions — and neither is a verdict about
+    // racing room. The guidelines apply in qualifying; the machinery in this
+    // file does not.
+    //
+    // The NOTE still goes out, because it always did: race control announcing a
+    // contact in Q1 is not a stewards' decision, it is race control saying it
+    // saw something. Losing that when the bulletin moved out of the contact
+    // solver would have been a silent regression in three session types.
+    if (!isRace) {
+      this.noteOnly(cars, sessionTime);
+      return;
+    }
 
     // The crowding scan is O(cars squared) and it can only see as far back as
     // the recorder, so there is nothing to be gained from running it more often
@@ -776,6 +785,28 @@ export class Stewards {
     this.drainContacts(cars, sessionTime, neutralised);
     this.deliberate(cars, sessionTime);
     this.runCedeLoop(cars, sessionTime);
+  }
+
+  /** Announces contacts without judging them. Practice and qualifying. */
+  private noteOnly(cars: readonly CarEntry[], now: number): void {
+    for (const c of this.pending) {
+      const a = cars[c.a];
+      const b = cars[c.b];
+      if (now - this.lastIncidentAt[c.a] < PER_CAR_COOLDOWN_S) continue;
+      this.lastIncidentAt[c.a] = now;
+      this.lastIncidentAt[c.b] = now;
+      this.noted++;
+      this.wire.file(
+        'Contact between ' + a.driver.code + ' and ' + b.driver.code,
+        'warning', now, c.a,
+        {
+          parties: [a.driver.code, b.driver.code],
+          where: (this.track.cornerNameAt(a.s) || '').toUpperCase(),
+          offence: 'CONTACT', status: 'NOTED',
+        },
+      );
+    }
+    this.pending.length = 0;
   }
 
   // -------------------------------------------------------------------------
