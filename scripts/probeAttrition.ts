@@ -74,7 +74,7 @@ for (const id of CIRCUITS_UNDER_TEST) {
   for (const seed of SEEDS) {
     const config: SessionConfig = {
       kind: 'race', name: 'attrition', durationS: 0, laps: LAPS,
-      playerIndex: -1, standingStart: true, seed,
+      playerIndex: -1, standingStart: true, pitLaneStart: false, seed,
     };
     const engine = new RaceEngine(def, config);
     const maxSteps = Math.round((LAPS * def.referencePoleTimeS * 3.2) / PHYSICS_DT);
@@ -108,10 +108,31 @@ for (const id of CIRCUITS_UNDER_TEST) {
   }
 
   const meanSurvivors = survivorsTotal / SEEDS.length;
-  const accident = reasons.get('Accident') ?? 0;
-  const beached = reasons.get('Beached') ?? 0;
+
+  // Classified by PREFIX, against the strings `RaceEngine` actually retires
+  // cars with. Exact-matching them was wrong in both directions and had been
+  // reporting a fiction:
+  //
+  //   'Accident'               matched, and was the only thing counted as one
+  //   'Accident damage'        counted as MECHANICAL
+  //   'Beached in the gravel'  counted as MECHANICAL — and because the test
+  //                            looked for the bare word 'Beached', which no car
+  //                            has ever retired with, the BEACHED column could
+  //                            not print anything but 0.0 on any circuit
+  //
+  // So two thirds of the accident column was filed under mechanical failures,
+  // which is the difference between "the cars keep breaking" and "the cars keep
+  // crashing" — opposite diagnoses with opposite fixes. Measured at Spa: what
+  // this reported as 2.0 mechanicals a race is beaching and accident damage,
+  // and the genuine mechanical count there is zero.
+  let accident = 0;
+  let beached = 0;
   let mech = 0;
-  for (const [reason, n] of reasons) if (reason !== 'Accident' && reason !== 'Beached') mech += n;
+  for (const [reason, n] of reasons) {
+    if (reason.startsWith('Beached')) beached += n;
+    else if (reason.startsWith('Accident')) accident += n;
+    else mech += n;
+  }
 
   console.log(
     '  ' + def.name.padEnd(14) +
@@ -161,7 +182,8 @@ console.log('\nCOMBINED LOAD — braking INTO a corner');
   };
   const controls = (over: Partial<VehicleControls> = {}): VehicleControls => ({
     throttle: 0, brake: 0, steer: 0, drsRequested: false,
-    ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0, ...over,
+    ersMode: 'balanced', gearRequest: 0, pitLimiter: false, speedLimitMs: 0, reverse: false,
+    ...over,
   });
 
   function turnIn(speedKph: number, radiusM: number, brake: number) {

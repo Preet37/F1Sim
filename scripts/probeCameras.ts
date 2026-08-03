@@ -111,7 +111,14 @@ for (const def of CIRCUITS) {
       // over tenths of a second, and cheap — but not so coarse that a clip
       // lasting half a second falls between two samples, which at 6Hz it did.
       if (step % 8 !== 0) continue;
-      dir.update(1 / 60, car, engine.track, engine.world);
+      // The REAL elapsed time between samples, not 1/60. Eight steps at
+      // PHYSICS_DT is 1/15s, so telling the director 1/60 made its damping
+      // integrate at a quarter of the true rate — and a camera that whips into
+      // a barrier during a fast transient then damps toward that position four
+      // times more slowly and may never reach it inside the sample window. The
+      // probe was systematically UNDER-reporting the one thing it exists to
+      // detect.
+      dir.update(8 * PHYSICS_DT, car, engine.track, engine.world);
       const p = dir.camera.position;
 
       const roadY = engine.track.elevation[engine.track.indexAt(car.s)];

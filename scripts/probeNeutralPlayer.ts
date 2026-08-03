@@ -201,7 +201,16 @@ function run(circuit: string, laps: number, seed: number, assist: boolean): Resu
     }
     r.deltaBreaches = player.deltaBreaches;
 
-    const neutral = rc.neutralisation !== 'none';
+    // A NEUTRALISATION WITH A PACE IN IT, which is not the same set of moments
+    // as `neutralisation !== 'none'`. Once the safety car has entered the Pit
+    // Entry Road the race is still neutralised — the yellows are out, overtaking
+    // is still forbidden, and `neutralisation` reads `'sc-ending'` — but there
+    // is no cap any more: "the first F1 Car in line behind the Safety Car may
+    // dictate the pace" (2025 Art. 55.15 / 2026 Art. B5.13.6), and the limiter
+    // is correctly disarmed. Counting those seconds as time the limiter should
+    // have been armed would fail this probe for the limiter doing exactly what
+    // the article requires.
+    const neutral = rc.vscTargetMs > 0 && rc.neutralisation !== 'none';
     if (rc.neutralisation !== regimeWas) {
       regimeWas = rc.neutralisation;
       regimeSince = engine.time;

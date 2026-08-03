@@ -37,6 +37,7 @@ function runRace(trackId: string, laps: number, seed: number): Row {
     laps,
     playerIndex: -1,
     standingStart: true,
+    pitLaneStart: false,
     seed,
   };
   const engine = new RaceEngine(def, config);
@@ -121,3 +122,12 @@ console.log(`  mean off-track           ${(sum((r) => r.offTrack) / n).toFixed(2
 console.log(`  mean pit stops           ${(sum((r) => r.pitStops) / n).toFixed(2)}`);
 console.log(`  mean lap/reference       ${(sum((r) => r.fastestLap / r.referenceLap) / n).toFixed(4)}`);
 console.log(`  mean spread              ${(sum((r) => r.spread) / n).toFixed(2)}`);
+
+// THE VERDICT. `failed` was computed and printed above and then never used
+// again, and there was no `process.exit` or `exitCode` anywhere in this file —
+// so a sweep that printed `FAIL bahrain/3: ...` for every race on every circuit
+// still returned success to `npm run`. A regression that emptied the grid, put
+// lap times at twice the reference or stopped anybody finishing was reported in
+// prose and passed. This is the same defect the report calls A12 — a value
+// computed for a purpose and never read for it — applied to the test suite.
+if (failed.length > 0) process.exitCode = 1;

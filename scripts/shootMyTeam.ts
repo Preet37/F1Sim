@@ -88,21 +88,26 @@ async function main(): Promise<void> {
     // useless for a screenshot sweep.
     const context = await browser.createBrowserContext();
     const page: Page = await context.newPage();
-    page.on('pageerror', (e) => errors.push(`${vp.name} pageerror: ${e.message}`));
+    page.on('pageerror', (e) => errors.push(`${vp.name} pageerror: ${(e as Error).message}`));
     page.on('console', (m) => {
       if (m.type() !== 'error') return;
       if (/favicon/.test(m.location().url ?? '')) return;
       errors.push(`${vp.name} console: ${m.text()}`);
     });
     await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
-    await page.goto(url, { waitUntil: 'load', timeout: 90_000 });
-    // The shell boots a renderer and may show an intro; wait for a menu.
+    // `?fresh=1` empties the profile index before anything is drawn and
+    // `?intro=0` suppresses the titles, so every viewport starts from the same
+    // first run rather than from whatever the last one left behind.
+    await page.goto(url + '?fresh=1&intro=0', { waitUntil: 'load', timeout: 90_000 });
     await page.waitForSelector('.page', { timeout: 90_000 });
     await sleep(900);
-    // Skip anything covering the menu on the first run.
-    for (const t of ['SKIP', 'Skip', 'Continue', 'Begin']) {
-      if (await clickText(page, t)) await sleep(500);
-    }
+
+    // THE FRONT DOOR IS A DRIVER, NOT A MENU. A first run on `main` opens on
+    // "Who is driving?" and the menu is behind it. This used to blind-click a
+    // list of plausible warm-up labels including 'Continue' — which on the
+    // current front page is the resume-career tile, i.e. a click that walks
+    // into a career the sweep is not photographing. Named step, or nothing.
+    if (await clickText(page, 'Start driving')) await sleep(900);
 
     const shot = async (name: string) => {
       await sleep(700);

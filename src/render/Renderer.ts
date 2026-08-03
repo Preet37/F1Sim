@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import { clamp, clamp01, damp } from '../core/MathUtils';
+import { clamp, clamp01, damp, wrapAngle } from '../core/MathUtils';
 import {
-  buildCar, disposeCarGeometryCache, BODY_PART_IDS, FRONT_X_MODE_RAD,
+  buildCar, disposeCarGeometryCache, actuationForTeam, BODY_PART_IDS,
   type BodyPartId, type CarVisual,
 } from './CarMesh';
 import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
-import { buildTrackMeshes, carGroundY, type TrackMeshes } from './TrackMesh';
+import { buildTrackMeshes, bankedCarGroundY, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
@@ -15,7 +15,9 @@ import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
+import { buildPitCrew, PIT_JACK_LIFT_M, type PitCrewScene } from './PitCrew';
 import { MarshalPosts } from './MarshalPost';
+import { buildSafetyCar, type SafetyCarVisual } from './SafetyCarMesh';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
 // One threshold, read by the simulation (which files the debris and raises the
@@ -49,6 +51,27 @@ import { PART_DETACH_HEALTH, PART_REPAIR_HEALTH } from '../race/DamageModel';
 
 /** Suspension health below which a corner starts visibly folding up. */
 const SUSPENSION_BEND_HEALTH = 0.62;
+
+/**
+ * Movement in one physics step beyond which the car was PLACED, not driven.
+ *
+ * The fastest thing on the circuit does about 100 m/s, which is 0.84m in a
+ * 120Hz step, and a barrier rebound resolves inside a step without moving the
+ * car far. 5m is six times the honest maximum and far below the smallest
+ * teleport there is (a pit-box placement moves tens of metres), so it separates
+ * the two cleanly with nothing near the boundary. See `updateRenderPoses`.
+ */
+const TELEPORT_M = 5;
+
+/**
+ * Rain-light pulse rate, Hz.
+ *
+ * NOT a regulation figure. The rear light is a Standard Supply Component
+ * (Art. C14.3.4) specified in FIA-F1-DOC-025, which is not published, and
+ * neither the Technical nor the Sporting Regulations say anything about a
+ * flashing mode. 2Hz is what the units visibly do on track.
+ */
+const RAIN_LIGHT_HZ = 2;
 
 /**
  * Tone-mapping exposure, by time of day.
@@ -179,6 +202,7 @@ export class Renderer {
   private paddock: PaddockScene | null = null;
   /** The player's own pit box, highlighted so they can find it. */
   private pitBox: PitBoxMarker | null = null;
+  private pitCrew: PitCrewScene | null = null;
   private marshalPosts: MarshalPosts | null = null;
   /**
    * Readable so the audit harness can find the car with the cockpit in it and
@@ -188,6 +212,18 @@ export class Renderer {
    * nobody can prove is working, which is how this one stayed broken.
    */
   readonly carVisuals: CarVisual[] = [];
+  /**
+   * The safety car.
+   *
+   * Deliberately NOT in `carVisuals`. That array is index-parallel with
+   * `engine.cars` — the debris code looks a pile's owner up by index, the
+   * effects director sizes its skid-mark budget on `cars.length`, and the audio
+   * engine indexes it the same way — so a twenty-third entry that is not a
+   * competitor would silently corrupt all three. It is a scene fixture like the
+   * marshal posts and the pit box marker, and it is built, updated and disposed
+   * alongside them.
+   */
+  private safetyCar: SafetyCarVisual | null = null;
   /** Bodywork lying on the circuit. One draw call, session-lifetime. */
   private wreckage: Wreckage | null = null;
   private readonly canvas: HTMLCanvasElement;
@@ -234,6 +270,8 @@ export class Renderer {
   // Hoisted scratch.
   private readonly tmpColour = new THREE.Color();
   private wheelSpin = 0;
+  /** 0..1 pulse for the rain lights, recomputed once per frame. */
+  private rainLightPhase = 1;
 
   constructor(opts: RendererOptions) {
     this.canvas = opts.canvas;
@@ -555,6 +593,8 @@ export class Renderer {
         quality: this.quality,
         withCockpit: car === cockpitCar,
         compound: car.compound,
+        // Per TEAM, not per car: a team's two cars run the same rear wing.
+        actuation: actuationForTeam(car.team.id),
       });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
@@ -579,6 +619,18 @@ export class Renderer {
       this.pitBox = buildPitBoxMarker(engine.track, player);
       this.scene.add(this.pitBox.root);
     }
+
+    // The working pit crew: twenty-one people, their equipment and the release
+    // light. Exactly ONE crew exists — it follows whichever car is being
+    // serviced and hides when none is — so a pit lane with nothing happening in
+    // it costs a visibility test. See `PitCrew.ts`.
+    this.pitCrew = buildPitCrew(this.quality);
+    this.scene.add(this.pitCrew.root);
+
+    // The safety car, parked in its garage until race control sends it out.
+    this.safetyCar = buildSafetyCar(this.quality);
+    this.safetyCar.root.visible = false;
+    this.scene.add(this.safetyCar.root);
 
     this.wreckage = new Wreckage();
     this.scene.add(this.wreckage.mesh);
@@ -863,10 +915,20 @@ export class Renderer {
       this.pitBox.dispose();
       this.pitBox = null;
     }
+    if (this.pitCrew) {
+      this.scene.remove(this.pitCrew.root);
+      this.pitCrew.dispose();
+      this.pitCrew = null;
+    }
     if (this.marshalPosts) {
       this.scene.remove(this.marshalPosts.root);
       this.marshalPosts.dispose();
       this.marshalPosts = null;
+    }
+    if (this.safetyCar) {
+      this.scene.remove(this.safetyCar.root);
+      this.safetyCar.dispose();
+      this.safetyCar = null;
     }
     for (const v of this.carVisuals) {
       this.scene.remove(v.root);
@@ -1041,12 +1103,75 @@ export class Renderer {
   }
 
   /**
+   * Places every car where it should be DRAWN this frame.
+   *
+   * THE BUG THIS FIXES. The doc comment on `render` used to say that `alpha`
+   * was "unused for now; the physics runs at 120Hz, comfortably above display
+   * rate", and that reasoning is the defect. Being above the display rate is
+   * not the property that matters — being an INTEGER MULTIPLE of it is, and it
+   * almost never is. The accumulator hands out whole steps, so a 50fps frame
+   * worth 2.4 steps is delivered as 2, 2, 3, 2, 3, 2, 2, 3... A car at 80 m/s
+   * covers 0.67m per step, so drawn at the last completed step it advances
+   * 1.33m on one frame and 2.00m on the next: the same car, on the same
+   * straight, at the same speed, apparently accelerating and decelerating by
+   * 50% every frame. That is the reported "one frame and then the next frame
+   * that car moves to another position ... its not a smooth frame transition".
+   *
+   * WHY ONLY OTHER CARS. The player's car looked fine because every following
+   * camera is anchored to it. The camera inherits the identical stagger, so in
+   * screen space the error cancels and the player's car sits still while the
+   * whole world — and every rival in it — judders around it. The report said
+   * exactly that, and it is the signature of this bug and of no other.
+   *
+   * THE FIX is the standard one for a fixed-step simulation: draw the pose at
+   * `alpha` of the way from the previous step to the current one, where `alpha`
+   * is the fraction of a step still sitting in the accumulator. That renders up
+   * to one step (8.3ms) in the past, which is invisible, and removes the
+   * stagger entirely because the drawn pose is now a continuous function of
+   * wall-clock time instead of a staircase.
+   *
+   * TELEPORTS ARE NOT INTERPOLATED. A car placed on the grid, serviced in its
+   * box or craned back onto the circuit moves further in one step than any car
+   * can drive, and lerping across that would smear it over several hundred
+   * metres of scenery for a frame. Anything beyond `TELEPORT_M` snaps.
+   *
+   * Cost: three lerps and a `wrapAngle` per car per frame — 22 cars is about a
+   * microsecond, which is why this was always the right thing to do.
+   */
+  private updateRenderPoses(engine: RaceEngine, alpha: number): void {
+    const a = clamp01(alpha);
+    for (const car of engine.cars) {
+      const p = car.physics;
+      const dx = p.position.x - car.prevX;
+      const dz = p.position.y - car.prevZ;
+      if (dx * dx + dz * dz > TELEPORT_M * TELEPORT_M) {
+        car.renderX = p.position.x;
+        car.renderZ = p.position.y;
+        car.renderHeading = p.heading;
+        continue;
+      }
+      car.renderX = car.prevX + dx * a;
+      car.renderZ = car.prevZ + dz * a;
+      // Through the short way round. A car crossing the +-pi branch would
+      // otherwise spin through a full turn in one frame, which is a far worse
+      // artefact than the one being fixed.
+      car.renderHeading = car.prevHeading + wrapAngle(p.heading - car.prevHeading) * a;
+    }
+  }
+
+  /**
    * Draws one frame.
    * @param dt real frame time in seconds
-   * @param alpha interpolation fraction between physics steps (unused for now;
-   *              the physics runs at 120Hz, comfortably above display rate)
+   * @param alpha fraction of a physics step left in the accumulator, from
+   *              `SimClock.interpolationAlpha`. Drives `updateRenderPoses`;
+   *              passing 1 draws the last completed step, which is what this
+   *              did before interpolation existed.
    */
-  render(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
+  render(dt: number, alpha: number, engine: RaceEngine, focusCar: CarEntry): void {
+    // FIRST. Every consumer below — the cars, the cameras, the effects, the
+    // shadow frustum, the motion-blur focus — reads the render pose, and they
+    // must all read the same one.
+    this.updateRenderPoses(engine, alpha);
     this.updateResolutionScale(dt);
     this.applyWeather(engine);
     this.drainImpacts(engine);
@@ -1088,9 +1213,14 @@ export class Renderer {
       this.pitBox.setVisible(!!p && (p.inPitLane || p.pitRequested));
     }
 
+    // The crew. Poses twenty-one figures from the engine's own resolved stop
+    // while a car is in its box, and returns after one branch when none is.
+    this.pitCrew?.update(engine);
+
     // The marshal panels. Cheap: the colour buffer is only touched on the frame
     // a sector's flag actually changes.
     this.marshalPosts?.update(engine.raceControl);
+    this.syncSafetyCar(dt, engine);
 
     // The radial blur converges on the point the car is heading for, not the
     // centre of the screen. In a corner the vanishing point swings wide, and
@@ -1112,12 +1242,8 @@ export class Renderer {
     // would have roughly one texel per metre.
     if (this.sun.castShadow) {
       const y = engine.track.elevationAt(focusCar.s);
-      this.sun.target.position.set(focusCar.physics.position.x, y, focusCar.physics.position.y);
-      this.sun.position.set(
-        focusCar.physics.position.x - 60,
-        y + 110,
-        focusCar.physics.position.y + 48,
-      );
+      this.sun.target.position.set(focusCar.renderX, y, focusCar.renderZ);
+      this.sun.position.set(focusCar.renderX - 60, y + 110, focusCar.renderZ + 48);
     }
 
     // Mirror feeds, immediately before the frame that samples them.
@@ -1200,11 +1326,10 @@ export class Renderer {
    * entire frame in one direction.
    */
   private projectFocus(car: CarEntry, cam: THREE.PerspectiveCamera): void {
-    const p = car.physics;
     this.tmpVec.set(
-      p.position.x + Math.sin(p.heading) * 60,
+      car.renderX + Math.sin(car.renderHeading) * 60,
       1.2,
-      p.position.y + Math.cos(p.heading) * 60,
+      car.renderZ + Math.cos(car.renderHeading) * 60,
     );
     this.tmpVec.project(cam);
     // NDC to the pass's UV space. No y flip: a render target's v axis points the
@@ -1385,6 +1510,55 @@ export class Renderer {
   }
 
   /** Copies simulation state onto the visuals. */
+  /**
+   * Puts the safety car where race control says it is.
+   *
+   * Exactly as one-way as everything else in this file: the simulation owns an
+   * `(s, lateral, speed, lamps)` state on `RaceControlManager.safetyCar` and this
+   * reads it. The one piece of arithmetic done here rather than there is the
+   * conversion to world space, because the track spline is the render layer's
+   * to interrogate and a course vehicle's position on the lap is not.
+   */
+  private syncSafetyCar(dt: number, engine: RaceEngine): void {
+    const v = this.safetyCar;
+    if (!v) return;
+    const sc = engine.raceControl.safetyCar;
+    v.root.visible = sc.visible;
+    if (!sc.visible) return;
+
+    const track = engine.track;
+    const p = track.tmpA;
+    track.toWorld(sc.s, sc.lateral, p);
+    // `bankedCarGroundY` and not the bare elevation: the road surface sits 20mm
+    // above the terrain, so a vehicle placed on the terrain has its wheels in
+    // it — and on a banked corner the asphalt under the car is higher still the
+    // further out it sits, which is worth 1.56m at Zandvoort. The safety car
+    // leads the field through those corners, so it needs the same treatment the
+    // racing cars get.
+    v.root.position.set(p.x, bankedCarGroundY(track, sc.s, sc.lateral), p.y);
+    v.root.rotation.y = track.headingAt(sc.s);
+
+    // Wheels turn at the speed the car is doing. A course car whose wheels are
+    // stationary while it circulates is the single most obvious tell there is.
+    const spin = (sc.speedMs / 0.35) * dt;
+    for (const w of v.wheelSpin) w.rotation.x += spin;
+
+    // ...and the fronts point where the road goes. The safety car has no driver
+    // model and no steering input to read, so the angle is taken from the road
+    // itself: how much the centreline turns over the next few metres is what a
+    // car following it has on lock. Not exact, and it does not need to be — a
+    // car going round a hairpin with its front wheels straight ahead is what
+    // this is for.
+    const len = track.length;
+    let turn = track.headingAt((sc.s + 8) % len) - track.headingAt(sc.s);
+    while (turn > Math.PI) turn -= Math.PI * 2;
+    while (turn < -Math.PI) turn += Math.PI * 2;
+    const steer = Math.max(-0.5, Math.min(0.5, turn * 6));
+    for (const w of v.wheelSteer) w.rotation.y = -steer;
+
+    v.setLights(dt, sc.orangeLights, sc.greenLight);
+  }
+
   private syncCars(dt: number, engine: RaceEngine, focusCar: CarEntry): void {
     const track = engine.track;
     // BOTH onboard modes, not just 'cockpit'. The T-cam is mounted on the roll
@@ -1396,6 +1570,9 @@ export class Renderer {
     // One shared wheel-spin phase: individual wheel speeds are indistinguishable
     // at speed and this avoids twenty separate integrations.
     this.wheelSpin += dt;
+    // The rain lights' pulse. Shared across the field on purpose — twenty units
+    // of one part number, all driven the same way, do not pulse out of phase.
+    this.rainLightPhase = 0.5 + 0.5 * Math.sin(this.wheelSpin * RAIN_LIGHT_HZ * Math.PI * 2);
 
     for (let i = 0; i < engine.cars.length; i++) {
       const car = engine.cars[i];
@@ -1446,9 +1623,21 @@ export class Renderer {
       // elevation every wheel on the grid ran 20mm underground and had a
       // 237mm-wide flat bitten out of the bottom of it. Measured by
       // `npm run probe:carrig`.
-      const y = carGroundY(track.elevationAt(car.s));
-      v.root.position.set(p.position.x, y, p.position.y);
-      v.root.rotation.y = p.heading;
+      // INTERPOLATED, not the solver's last step. See `updateRenderPoses` —
+      // this one line is the whole of the "the cars jitter" defect.
+      let y = bankedCarGroundY(track, car.s, car.lateral);
+      // A car in its pit box is ON JACKS, and for two and a half seconds it is
+      // the most-looked-at car in the game. Both jacks go in the instant it
+      // stops, lift it together, and drop it when the last gun reports — so the
+      // height comes straight from the same choreography the crew are animated
+      // from rather than from a timer of the renderer's own. Added ON TOP of
+      // the banked ground height rather than replacing it: a car on jacks is
+      // still standing on a road with a camber. See `PitStopChoreography.ts`.
+      if (car.inPitBox) {
+        y += engine.pitStopOf(car).progress.jack * PIT_JACK_LIFT_M;
+      }
+      v.root.position.set(car.renderX, y, car.renderZ);
+      v.root.rotation.y = car.renderHeading;
 
       // Geometry LOD, from the camera's position at the END of the previous
       // frame — the director has not moved it yet this frame. A frame of lag on
@@ -1534,26 +1723,74 @@ export class Renderer {
       // the new set is on.
       v.setCompound(car.compound);
 
-      // ACTIVE AERO, both ends, off one signal.
+      // ACTIVE AERO, BOTH ENDS, OFF ONE SIGNAL — and to this team's own travel.
       //
-      // When the system opens, the rear flap rotates up and forward to open a
-      // large slot above the main plane and the two upper front-wing elements
-      // rotate flat — X-mode against the Z-mode the wing is built in. Both shed
-      // drag, which is what `drsDragReduction` in the vehicle spec is already
-      // doing to the physics, and both cost downforce, which is
-      // `drsDownforceLoss`. Driving the two ends from `p.drsOpen` — the same
-      // flag the physics integrates and the same one the HUD's badge reads — is
-      // what guarantees the geometry, the handling and the indicator can never
-      // disagree about which state the car is in.
+      // The 2026 car has no DRS. It has active aero at both ends, with two
+      // commanded positions the regulations name Corner Mode and Straight Mode
+      // (Technical Arts. C3.10.10 for the front wing, C3.11.6 for the rear).
+      // Both ends are commanded together, which is why one flag drives both:
+      // Sporting Art. B7.1.1(c) defines the system as "fully activated" only
+      // when BOTH the front wing profiles and the rear flap are in Straight
+      // Mode. Running them off `p.drsOpen` — the same flag the physics
+      // integrates and the HUD's badge reads — is what guarantees the geometry,
+      // the handling and the indicator can never disagree.
       //
-      // DAMPED, not snapped. A real flap takes a couple of tenths to travel, and
-      // a wing that teleports between two positions reads as a rendering glitch
-      // rather than as a mechanism. The front pair move a little slower than the
-      // rear flap because they are the heavier assembly.
-      const flapTarget = p.drsOpen ? -0.85 : 0;
-      v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, 14, dt);
-      const frontTarget = p.drsOpen ? FRONT_X_MODE_RAD : 0;
-      v.frontFlaps.rotation.x = damp(v.frontFlaps.rotation.x, frontTarget, 10, dt);
+      // PER TEAM. Under the old DRS rules every car on the grid ran the same
+      // mechanism to the same 85mm limit, because Art. 3.10.10 fixed the axis
+      // and the actuator position and Appendix 5 made the actuator itself an
+      // open-source component shared across all competitors. The 2026 rules
+      // drop all of that: they still require one actuator, one fixed Y-aligned
+      // axis and two positions, but say nothing about where the axis sits along
+      // the chord or how far the flap travels — and the grid has separated
+      // accordingly. `ACTUATION` carries the four solutions and the sourcing.
+      //
+      // DAMPED, not snapped, at THIS car's rate. A wing that teleports between
+      // two positions reads as a rendering glitch rather than as a mechanism.
+      // The rate is the team's own transition time: C3.11.6(d) caps it at 400ms
+      // for everyone, and where a team lands inside that follows from where it
+      // put the axis. `damp` is exponential, so a rate of 4/travelS puts it
+      // within 2% of the new position after `travelS` seconds.
+      const a = v.actuation;
+      const rearRate = 4 / a.travelS;
+      const flapTarget = p.drsOpen ? a.openRad : 0;
+      v.drsFlap.rotation.x = damp(v.drsFlap.rotation.x, flapTarget, rearRate, dt);
+      // The front is the heavier assembly and is allowed two actuators against
+      // the rear's one (C3.10.10(p) vs C3.11.6(e)), so it travels a little
+      // slower rather than a little faster.
+      const frontTarget = p.drsOpen ? a.frontOpenRad : 0;
+      v.frontFlaps.rotation.x = damp(v.frontFlaps.rotation.x, frontTarget, rearRate * 0.72, dt);
+
+      // --- Rear lights --------------------------------------------------------
+      //
+      // "WHEN THE CAR BRAKES THE BRAKE LIGHT SHOULD GO ON RIGHT?"
+      //
+      // No — and this is worth being exact about, because the intuition is
+      // reasonable and the answer is not. A Formula 1 car has NO BRAKE LIGHT.
+      // The phrase "brake light" does not occur anywhere in the 2025 or 2026
+      // Technical or Sporting Regulations. The light on the back of the car is
+      // a RAIN LIGHT, and it has one mandatory-illumination rule:
+      //
+      //   2026 Sporting Art. B1.5.5(a), and 2025 Sporting Art. 26.11 before it:
+      //   the lights described in Art. C14.3 "must be illuminated at all times
+      //   when using intermediate or wet-weather tyres".
+      //
+      // That is the whole rule. There is no regulation requiring it in the pit
+      // lane, on an in-lap, or during recovery — those live in the Race
+      // Director's Event Notes, which are per-event documents and not part of
+      // the regulations. And contrary to a widely repeated claim, no regulation
+      // has ever tied it to electric-only running or energy recovery: the 2014
+      // regulations that introduced "electric mode" (Art. 5.19) do not mention
+      // the rear light, and no edition since has either.
+      //
+      // So the light follows the TYRE, which is exactly what a driver looking
+      // in their mirrors uses it for: three red lights ahead in the spray mean
+      // there is a car there, not that it is slowing down.
+      //
+      // What a viewer actually sees under braking on a real car is the BRAKE
+      // DISCS glowing, which is the block below and which this game already
+      // had. That is the honest version of the effect being asked for.
+      const wetTyre = car.compound === 'intermediate' || car.compound === 'wet';
+      v.setRainLight(wetTyre, this.rainLightPhase);
 
       // Brake glow from braking effort. Cheap and reads brilliantly at night.
       //

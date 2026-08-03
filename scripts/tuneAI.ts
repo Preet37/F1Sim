@@ -32,7 +32,7 @@ function trial(): Trial {
   for (const def of CIRCUITS) {
     const cfg: SessionConfig = {
       kind: 'practice', name: 'FP', durationS: 900, laps: 0,
-      playerIndex: -1, standingStart: false, seed: 11,
+      playerIndex: -1, standingStart: false, pitLaneStart: false, seed: 11,
     };
     const engine = new RaceEngine(def, cfg, [DRIVERS[0]]);
     const car = engine.cars[0];

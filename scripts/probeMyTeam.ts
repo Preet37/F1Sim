@@ -46,7 +46,7 @@ import { Career } from '../src/career/Career';
 import {
   performanceOf, UPGRADE_LIMIT, type CareerWorld,
 } from '../src/career/World';
-import { seasonComplete, simulateRound, sortedStandings } from '../src/career/Season';
+import { seasonComplete, simulateRound } from '../src/career/Season';
 import { specForTeam } from '../src/physics/VehicleSpec';
 import { getTeam } from '../src/data/teams';
 import {

@@ -1,5 +1,5 @@
 import { TrackSpline } from '../src/track/TrackSpline';
-import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
+import { CIRCUITS } from '../src/data/tracks/circuits';
 import { REAL_GEOMETRY } from '../src/data/tracks/realGeometry';
 
 /**
