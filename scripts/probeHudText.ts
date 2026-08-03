@@ -23,10 +23,11 @@ import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
-  pitCueText, radioExchange, relayed, repairableInBox, standingsCells, teamLine, towerFit,
-  weatherReadout,
+  pitCueText, radioExchange, relayed, repairableInBox, replyExchange, standingsCells,
+  teamLine, towerFit, weatherReadout,
 } from '../src/ui/Hud';
 import { COMPONENT_IDS } from '../src/race/DamageModel';
+import { AIVehicleController, type AIPerception } from '../src/ai/AIVehicleController';
 import type { RaceControlMessage, TeamNote } from '../src/race/RaceControlManager';
 
 const failures: string[] = [];
@@ -259,34 +260,45 @@ console.log('weather: 4 states, label and colour from the same number');
 
 const MOMENTS = [
   { kind: 'pit', compound: 'Hard', lapsLeft: 20, reason: 'strategy' },
-  { kind: 'safety-car' },
-  { kind: 'vsc' },
+  { kind: 'safety-car', position: 5, lostS: 3.2 },
+  { kind: 'vsc', position: 5, where: 'turn 4' },
+  { kind: 'delta', marginS: 1.2, breaches: 0 },
+  { kind: 'delta', marginS: -0.4, breaches: 1 },
+  { kind: 'neutral-ending', phase: 'vsc-ending', mustUnlap: false },
+  { kind: 'neutral-ending', phase: 'unlapping', mustUnlap: true },
+  { kind: 'neutral-ending', phase: 'unlapping', mustUnlap: false },
+  { kind: 'neutral-ending', phase: 'sc-in', mustUnlap: false },
+  { kind: 'neutral-ending', phase: 'hold-line', mustUnlap: false },
   { kind: 'chequered', position: 4 },
   { kind: 'damage', part: 'Front wing' },
 ] as const;
 
 for (const m of MOMENTS) {
   const turns = radioExchange(m);
-  check(turns.length >= 2, `radio moment ${m.kind} has ${turns.length} turn(s), not an exchange`);
+  const label = m.kind === 'neutral-ending' ? m.kind + '/' + m.phase : m.kind;
+  check(turns.length >= 2, `radio moment ${label} has ${turns.length} turn(s), not an exchange`);
   check(turns.some((t) => t.who === 'driver') && turns.some((t) => t.who === 'wall'),
-    `radio moment ${m.kind} is only one voice`);
+    `radio moment ${label} is only one voice`);
   // Alternating: the card draws the driver on one side and the wall on the
   // other, so two turns from the same speaker in a row would read as one line
   // that wrapped rather than as two people.
   for (let i = 1; i < turns.length; i++) {
     check(turns[i].who !== turns[i - 1].who,
-      `radio moment ${m.kind}: turns ${i - 1} and ${i} are both the ${turns[i].who}`);
+      `radio moment ${label}: turns ${i - 1} and ${i} are both the ${turns[i].who}`);
   }
   for (const t of turns) {
-    check(t.line.length > 6, `radio moment ${m.kind}: "${t.line}" is not a line of speech`);
+    check(t.line.length > 6, `radio moment ${label}: "${t.line}" is not a line of speech`);
     // Signage, not speech. `OFF TRACK — YELLOW FLAG` is what this card used to
     // print; a capitalised token with a dash after it is the shape of a status
     // string and never the shape of something a person said.
     check(!/^[A-Z0-9 ]{3,} — /.test(t.line),
-      `radio moment ${m.kind}: "${t.line}" reads as a status string`);
+      `radio moment ${label}: "${t.line}" reads as a status string`);
+    // Written for the EAR now as well as the eye — `Hud` speaks these aloud —
+    // so nothing may be longer than somebody says in one breath.
+    check(t.line.length < 110, `radio moment ${label}: "${t.line}" is too long to be said`);
   }
   check(new Set(turns.map((t) => t.line)).size === turns.length,
-    `radio moment ${m.kind} repeats itself`);
+    `radio moment ${label} repeats itself`);
 }
 const chequered = radioExchange({ kind: 'chequered', position: 4 });
 check(chequered.some((t) => t.line.includes('P4')),
@@ -298,7 +310,65 @@ check(boxCall.some((t) => t.line.includes('Hard')),
   'the pit card does not say which compound is going on');
 check(boxCall.some((t) => t.line.includes('20')),
   'the pit card knows how many laps are left and does not say so');
-console.log(`radio: ${MOMENTS.length} exchanges, ${MOMENTS.length * 4} turns, both voices alternating`);
+
+// THE LINE THIS WAS ALL REPORTED OVER. The virtual safety car exchange used to
+// read `"VSC? GIVE ME THE DELTA." / "HOLD THE MINIMUM IN EVERY SECTOR."` —
+// correct information formatted as a restatement of Art. 56.5 to a driver who
+// is at that moment obeying Art. 56.5.
+//
+//   "whats this bullshit of holding the minimum every sector."
+//
+// Asserted as a shape rather than as a blocklist of that one sentence, because
+// the failure is a category: a radio line whose content is the rule is a radio
+// line with nothing in it. Anything a driver could have recited from the
+// regulations before the transmission started is the same fault wearing
+// different words.
+for (const m of MOMENTS) {
+  for (const t of radioExchange(m)) {
+    check(!/\b(minimum|delta) in (every|each) sector\b/i.test(t.line),
+      `${m.kind} restates the regulation instead of giving a number: "${t.line}"`);
+    check(!/\byou must\b|\bdrivers must\b|\bis required to\b/i.test(t.line),
+      `${m.kind} reads as a rulebook: "${t.line}"`);
+  }
+}
+// And the positive form: a neutralisation exchange has to carry a FIGURE, which
+// is the half of the subject the driver does not have.
+for (const m of MOMENTS) {
+  if (m.kind !== 'vsc' && m.kind !== 'safety-car' && m.kind !== 'delta') continue;
+  const said = radioExchange(m).map((t) => t.line).join(' ');
+  check(/\d/.test(said),
+    `the ${m.kind} exchange names no number: "${said}"`);
+}
+// The delta card says which way round it is, in the driver's own terms.
+check(radioExchange({ kind: 'delta', marginS: 1.2, breaches: 0 })
+  .some((t) => /positive/i.test(t.line) && t.line.includes('1.2')),
+  'a healthy delta is not reported as a positive margin');
+check(radioExchange({ kind: 'delta', marginS: -0.4, breaches: 1 })
+  .some((t) => /negative/i.test(t.line) && /lift/i.test(t.line)),
+  'a delta breach does not tell the driver to lift');
+
+// THE TWO-WAY HALF. A declined instruction has to produce a reply, and the
+// reply the user asked for by name: "the driver could be like 'no stay out' and
+// they be like 'copy, box next lap'".
+for (const outcome of ['yes', 'no', 'lapsed'] as const) {
+  const turns = replyExchange(outcome, 'Hard');
+  check(turns.length >= 2, `the wall's reply to "${outcome}" is not an exchange`);
+  for (const t of turns) {
+    check(t.line.length > 6, `reply/${outcome}: "${t.line}" is not a line of speech`);
+  }
+}
+check(replyExchange('no', 'Hard').some((t) => /box next lap/i.test(t.line)),
+  'declining the stop does not bring the wall back with a next-lap call');
+check(replyExchange('lapsed', 'Hard').some((t) => t.who === 'wall'),
+  'an offer that lapsed under the driver leaves the wall silent');
+check(new Set([
+  ...replyExchange('yes', 'Hard').map((t) => t.line),
+  ...replyExchange('no', 'Hard').map((t) => t.line),
+  ...replyExchange('lapsed', 'Hard').map((t) => t.line),
+]).size === 6, 'the three answers do not produce three distinct replies');
+
+console.log(`radio: ${MOMENTS.length} exchanges, both voices alternating, ` +
+  '3 answered outcomes');
 
 // ---------------------------------------------------------------------------
 // 7. Two channels, and the filter is ownership
@@ -319,8 +389,55 @@ const ROUTE_CONFIG: SessionConfig = {
   playerIndex: 0, standingStart: true, pitLaneStart: false, seed: 1337,
 };
 const routeEngine = new RaceEngine(getCircuit('spa'), ROUTE_CONFIG);
-for (let i = 0; i < Math.round(1200 / PHYSICS_DT); i++) routeEngine.step();
+const routeTrack = routeEngine.track;
 const me = routeEngine.cars[0];
+
+/**
+ * THE PLAYER'S CAR HAS TO BE DRIVEN, and for twenty months it was not.
+ *
+ * This is why `no team-owned bulletin was filed in a 20-minute race` failed, and
+ * the failure was real in a way nobody had got to the bottom of. The probe set
+ * `playerIndex: 0` and then never supplied a control input, so car zero sat on
+ * its grid slot — twelve metres short of the Line — for the whole twenty
+ * minutes. The AI behind it will not pass a stationary car on the racing line,
+ * so the entire field queued up behind it and stopped: measured, twenty cars at
+ * 0.0 m/s from t≈235s to the end, leader on lap 1, zero pit stops, zero contact,
+ * zero damage. Every `feed: 'team'` bulletin in the engine hangs off a stop or a
+ * component breaking, and neither can happen in a race where nothing moves.
+ *
+ * So the assertion was correct, the engine was innocent, and the race was not a
+ * race. It is one now: the game's own AI drives the player's car, exactly as
+ * `probePitStop` and `probePitLimiter` already do, and for the same reason —
+ * anything that cannot get round the circuit fails for reasons that have
+ * nothing to do with what is being measured.
+ *
+ * THE DEADLOCK ITSELF IS A SEPARATE, REAL BUG and it is not fixed here, because
+ * it belongs to the AI rather than to the HUD. A human who spins on the pit
+ * straight and stops will freeze the whole race, and once a safety car period
+ * has ended it is unrecoverable: `holdUntilLine` (Art. 55.8) is cleared only by
+ * crossing the Line, and nobody can cross a Line that a parked car is sitting
+ * on. Reported rather than patched.
+ */
+const routeDriver = new AIVehicleController(me.driver, routeTrack, 991, 'hard');
+const routeView: AIPerception = { ...me.perception };
+for (let i = 0; i < Math.round(1200 / PHYSICS_DT); i++) {
+  Object.assign(routeView, me.perception);
+  const c = routeDriver.update(PHYSICS_DT, me.physics, me.s, me.lateral, routeView);
+  const out = routeEngine.playerControls;
+  out.throttle = c.throttle;
+  out.brake = c.brake;
+  out.steer = c.steer;
+  out.reverse = c.reverse;
+  out.gearRequest = c.gearRequest;
+  out.ersMode = c.ersMode;
+  out.drsRequested = c.drsRequested;
+  routeEngine.step();
+}
+// The premise of everything below: this has to have been a race. A silent team
+// channel in a field that never moved says nothing about the team channel.
+check(routeEngine.standings[0].lap >= 4,
+  `the routing race never ran — leader reached lap ${routeEngine.standings[0].lap}`);
+check(me.lap >= 3, `the player's car never ran — ${me.lap} laps in twenty minutes`);
 
 let toControl = 0;
 let toTeam = 0;
@@ -339,6 +456,7 @@ for (const m of routeEngine.raceControl.messages) {
     if (m.team) {
       const said = teamLine(m.team, {
         mate: about !== me, surname: about!.driver.lastName,
+        firstName: me.driver.firstName,
         position: me.position, lapsLeft: 12, rival: 'KOV', rivalGapS: 1.4,
       });
       check(said.line.length > 12, `team note ${m.team.kind} is too short to be speech`);
@@ -377,7 +495,11 @@ check(!sawForeignTeamNote,
 // Every team note, said about the player and about their team-mate. Driven off
 // the union rather than off whatever this seed happened to produce, so a note
 // that is never raised in a clean race still has to be a sentence.
-const ALL_NOTES: TeamNote[] = [
+/**
+ * Notes about a CAR, which happen to the player and to their team-mate alike.
+ * Both variants exist and both have to be a sentence.
+ */
+const SHARED_NOTES: TeamNote[] = [
   { kind: 'off', corner: 'Eau Rouge', hit: 'the barrier', heavy: true },
   { kind: 'off', corner: 'Les Combes', hit: '', heavy: false },
   { kind: 'damage', part: 'Rear suspension (R)', health: 0.35 },
@@ -392,37 +514,147 @@ const ALL_NOTES: TeamNote[] = [
   { kind: 'pit-fast' },
   { kind: 'penalty-served' },
 ];
+
+/**
+ * The pit wall's own traffic, which is only ever about the player's own race.
+ *
+ * SPLIT OUT FROM THE ABOVE ON PURPOSE. These are filed against the player's car
+ * by `RaceEngineer` and no other, so a team-mate variant of "you are two laps
+ * short on fuel" is not a line that was never written — it is a line that would
+ * be a lie. Forcing a surname into one to satisfy a loop is how a test starts
+ * shaping the product badly.
+ */
+const OWN_NOTES: TeamNote[] = [
+  { kind: 'gap', who: 'Halvorsen', gapS: 1.8, perLapS: -0.24, behind: true },
+  { kind: 'gap', who: 'Halvorsen', gapS: 2.4, perLapS: -0.31, behind: false },
+  { kind: 'penalty', seconds: 5, offence: 'Track limits at Turn 9', whenServed: 'at the stop' },
+  { kind: 'penalty', seconds: 0, offence: 'Pit lane speeding', whenServed: 'now' },
+  { kind: 'cede', who: 'Halvorsen', withinS: 22 },
+  {
+    kind: 'weather', wet: true, minutes: 4, fromLap: 12, toLap: 16,
+    confidence: 0.82, plan: 'inters',
+  },
+  {
+    kind: 'weather', wet: false, minutes: 6, fromLap: 30, toLap: 35,
+    confidence: 0.6, plan: 'slicks',
+  },
+  {
+    kind: 'call', message: 'We think Hard is the tyre for the next 18 laps.',
+    reason: '0.4s a lap on this tyre, 21.0s for the stop.',
+    compound: 'Hard', question: 'Box this lap?', callId: 3, urgent: false,
+  },
+  { kind: 'reply', outcome: 'yes', compound: 'Hard' },
+  { kind: 'reply', outcome: 'no', compound: 'Hard' },
+  { kind: 'reply', outcome: 'lapsed', compound: 'Hard' },
+  { kind: 'tyres', lapsLeft: 6, dropOffS: 0.8, axle: 'rear' },
+  { kind: 'tyres', lapsLeft: 1, dropOffS: 1.6, axle: 'front' },
+  { kind: 'position', gained: false, position: 7, who: 'Halvorsen', teammate: true },
+  { kind: 'position', gained: true, position: 6, who: 'Halvorsen', teammate: true },
+  { kind: 'position', gained: false, position: 7, who: 'Kovacs', teammate: false },
+  { kind: 'position', gained: true, position: 6, who: 'Kovacs', teammate: false },
+  { kind: 'fuel', marginLaps: -1.4 },
+];
+
+const CTX = {
+  surname: 'Halvorsen', firstName: 'Marcus',
+  position: 6, lapsLeft: 14, rival: 'KOV', rivalGapS: 2.3,
+};
+
 const spoken = new Set<string>();
-for (const note of ALL_NOTES) {
+function assertSpeech(note: TeamNote, mate: boolean): void {
+  const said = teamLine(note, { ...CTX, mate });
+  const tag = `${note.kind}/${mate ? 'mate' : 'self'}`;
+  check(said.line.length > 12, `${tag}: too short to be speech`);
+  check(/[.?!]$/.test(said.line), `${tag}: not a sentence — "${said.line}"`);
+  check(!/^[A-Z0-9 ]{3,} — /.test(said.line), `${tag}: reads as signage — "${said.line}"`);
+  check(!/\([LR]\)/i.test(said.line),
+    `${tag}: says a side marker out loud — "${said.line}"`);
+  // Written for the ear as well as the eye. `Hud` speaks these aloud.
+  check(said.line.length < 165, `${tag}: too long to be said in one breath — "${said.line}"`);
+  spoken.add(said.line);
+}
+
+for (const note of SHARED_NOTES) {
   for (const mate of [false, true]) {
-    const said = teamLine(note, {
-      mate, surname: 'Halvorsen', position: 6, lapsLeft: 14, rival: 'KOV', rivalGapS: 2.3,
-    });
-    check(said.line.length > 12, `${note.kind}/${mate ? 'mate' : 'self'}: too short to be speech`);
-    check(/[.?!]$/.test(said.line),
-      `${note.kind}/${mate ? 'mate' : 'self'}: not a sentence — "${said.line}"`);
-    check(!/^[A-Z0-9 ]{3,} — /.test(said.line),
-      `${note.kind}/${mate ? 'mate' : 'self'}: reads as signage — "${said.line}"`);
-    check(!/\([LR]\)/i.test(said.line),
-      `${note.kind}/${mate ? 'mate' : 'self'}: says a side marker out loud — "${said.line}"`);
+    assertSpeech(note, mate);
     // A line about the team-mate has to name them, or the player cannot tell
     // which of the two cars it is about.
     if (mate) {
+      const said = teamLine(note, { ...CTX, mate: true });
       check(said.line.includes('Halvorsen'),
         `${note.kind}: a line about the team-mate does not name them — "${said.line}"`);
     }
-    spoken.add(said.line);
   }
 }
-check(spoken.size === ALL_NOTES.length * 2,
-  `${ALL_NOTES.length * 2} team lines produced ${spoken.size} distinct sentences`);
-// The one line the game knows enough to be genuinely specific on.
-const stop = teamLine({ kind: 'stop', compound: 'Hard' }, {
-  mate: false, surname: 'Halvorsen', position: 6, lapsLeft: 14, rival: 'KOV', rivalGapS: 2.3,
-});
+for (const note of OWN_NOTES) assertSpeech(note, false);
+
+check(spoken.size === SHARED_NOTES.length * 2 + OWN_NOTES.length,
+  `${SHARED_NOTES.length * 2 + OWN_NOTES.length} team lines produced ` +
+  `${spoken.size} distinct sentences`);
+
+// THE RULE THE WHOLE VOICE IS WRITTEN AGAINST: say the thing the driver does
+// not already know. Enforced as "the pit wall's own traffic names a figure",
+// because the failure mode is a line that states a CATEGORY — "significant
+// wear", "a penalty has been applied", "rain is expected" — and every one of
+// those is something the driver either already knows or cannot act on.
+for (const note of OWN_NOTES) {
+  if (note.kind === 'reply' || note.kind === 'call') continue;
+  const said = teamLine(note, { ...CTX, mate: false });
+  check(/\d/.test(said.line),
+    `${note.kind} states a category instead of a number: "${said.line}"`);
+}
+
+// The three lines the game knows enough to be genuinely specific on, checked
+// against the numbers they were given rather than against a shape.
+const stop = teamLine({ kind: 'stop', compound: 'Hard' }, { ...CTX, mate: false });
 check(stop.line.includes('P6') && stop.line.includes('KOV') && stop.line.includes('14'),
   `the stop call is not specific: "${stop.line}"`);
-console.log(`team voice: ${spoken.size} distinct lines across ${ALL_NOTES.length} events`);
+
+// The user's own example, almost verbatim: "you have received a 5 second
+// penalty, Bob, for track limits — we will serve that at the next pit".
+const pen = teamLine(
+  { kind: 'penalty', seconds: 5, offence: 'Track limits at Turn 9', whenServed: 'at the stop' },
+  { ...CTX, mate: false },
+);
+check(pen.line.includes('5') && pen.line.includes('Marcus')
+  && /track limits/i.test(pen.line) && /at the stop/i.test(pen.line),
+  `the penalty call does not name the seconds, the driver, the offence and the plan: "${pen.line}"`);
+
+// And: "predicted to rain at lap 3-7, change of strategy, box for inters".
+const wx = teamLine(
+  {
+    kind: 'weather', wet: true, minutes: 4, fromLap: 12, toLap: 16,
+    confidence: 0.82, plan: 'inters',
+  },
+  { ...CTX, mate: false },
+);
+check(wx.line.includes('12') && wx.line.includes('16') && /inters/i.test(wx.line),
+  `the forecast call does not give the laps and the plan: "${wx.line}"`);
+
+// A gap line has to carry the RATE, not just the gap. The gap is in the mirror;
+// the rate is three laps of arithmetic the driver cannot do at 300km/h.
+const gap = teamLine(
+  { kind: 'gap', who: 'Halvorsen', gapS: 1.8, perLapS: -0.24, behind: true },
+  { ...CTX, mate: false },
+);
+check(gap.line.includes('1.8') && gap.line.includes('0.2') && gap.line.includes('Halvorsen'),
+  `the gap call does not carry who, how far and how fast: "${gap.line}"`);
+
+// Losing a place to your own team-mate is political and cannot be said in the
+// words used for losing one to a stranger.
+const toMate = teamLine(
+  { kind: 'position', gained: false, position: 7, who: 'Halvorsen', teammate: true },
+  { ...CTX, mate: false },
+).line;
+const toRival = teamLine(
+  { kind: 'position', gained: false, position: 7, who: 'Kovacs', teammate: false },
+  { ...CTX, mate: false },
+).line;
+check(toMate !== toRival.replace('Kovacs', 'Halvorsen'),
+  'losing a place to the team-mate is said in the same words as losing it to a stranger');
+
+console.log(`team voice: ${spoken.size} distinct lines across ` +
+  `${SHARED_NOTES.length + OWN_NOTES.length} events`);
 check(toControl > 0, 'race control never spoke in a 20-minute race');
 check(toTeam + dropped > 0, 'no team-owned bulletin was filed in a 20-minute race');
 console.log(`channels: ${toControl} to race control, ${toTeam} to the team, ` +
