@@ -676,7 +676,7 @@ unverified.
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable |
 | Radio/HUD | Square typewriter radio card, FIA banner, retirement flow, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right, per-team principals |
-| Radio content | **The writing pool, issue #40.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
+| Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Car jitter (no interpolation between physics steps), sparks/skid marks/brake lights/DRS flaps, remaining divots |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
