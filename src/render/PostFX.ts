@@ -706,28 +706,84 @@ class BloomChainPass extends Pass {
 }
 
 export class PostFX {
-  readonly enabled: boolean;
+  /**
+   * True when a chain exists and the frame goes through it.
+   *
+   * NO LONGER `readonly`, and no longer `quality === 'high'`. It was both, and
+   * that single line was a quarter of issue #29: every touch-primary device
+   * resolved to `low`, so the constructor returned before allocating anything
+   * and **the reporting device had never once seen bloom, the colour grade or
+   * the contact occlusion.** The chain is now built and torn down on demand by
+   * `setEnabled`, so the Video tab can turn it on without ending the session.
+   */
+  enabled = false;
 
   private composer: EffectComposer | null = null;
   private bloom: BloomChainPass | null = null;
   private grade: ShaderPass | null = null;
   private depth: THREE.DepthTexture | null = null;
   private readonly renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private camera: THREE.Camera;
+  /**
+   * Whether the composer's scene target is multisampled.
+   *
+   * MSAA HAS TWO HOMES AND THEY MUST AGREE. When the chain is off the frame is
+   * drawn straight to the canvas and the multisampling is the GL context's own
+   * `antialias` attribute; when the chain is on the scene lands in the
+   * composer's target instead and the context attribute does nothing at all —
+   * the samples that matter are this one. Before three tiers existed the two
+   * could not disagree, because the only configuration with a chain was also
+   * the only configuration with `antialias`. `medium` is post-with-no-MSAA and
+   * would have silently paid for four samples a pixel without it.
+   */
+  private msaa = true;
   private flash = 0;
   private flashDecay = 4;
   private time = 0;
-  /** AO strength for the current tier; 0 on low. */
+  /** AO strength for the current tier; 0 while the chain is off. */
   private aoStrength = 0;
 
   constructor(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
     camera: THREE.Camera,
-    quality: 'low' | 'high',
+    opts: { post: boolean; msaa: boolean },
   ) {
     this.renderer = renderer;
-    this.enabled = quality === 'high';
-    if (!this.enabled) return;
+    this.scene = scene;
+    this.camera = camera;
+    this.msaa = opts.msaa;
+    if (opts.post) this.build();
+  }
+
+  /**
+   * Turns the chain on or off without restarting the session.
+   *
+   * Allocating the composer costs one frame — three render targets and a
+   * bloom pyramid — and that is worth naming, because it is the reason the
+   * Video tab's note used to say a change needed a new session. It does not:
+   * a single dropped frame on the settings screen is not a frame anybody is
+   * racing on. Idempotent, so the caller can push its whole state every time
+   * rather than tracking which fields moved.
+   */
+  setEnabled(on: boolean, msaa = this.msaa): void {
+    if (on === this.enabled && msaa === this.msaa) return;
+    this.msaa = msaa;
+    this.dispose();
+    if (on) this.build();
+  }
+
+  /** The samples the scene target is actually allocated with. For probes. */
+  get sceneSamples(): number {
+    return this.composer ? this.composer.renderTarget2.samples : 0;
+  }
+
+  private build(): void {
+    const renderer = this.renderer;
+    const scene = this.scene;
+    const camera = this.camera;
+    this.enabled = true;
 
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
@@ -752,12 +808,14 @@ export class PostFX {
     // before the bloom pass ever sees it, which defeats the point of running
     // bloom on linear radiance in the first place.
     //
-    // MSAA is kept on: it resolves geometric edges properly, which no
-    // post-process filter can, and it is now the only antialiasing in the
-    // chain.
+    // MSAA resolves geometric edges properly, which no post-process filter
+    // can, and it is the only antialiasing in the chain — but it is now a
+    // separate switch, because it is also the single most expensive thing in
+    // the chain to leave on. See `msaa` above for why the context's own
+    // `antialias` attribute cannot be the one that decides here.
     const target = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
-      samples: 4,
+      samples: this.msaa ? 4 : 0,
       stencilBuffer: false,
     });
 
@@ -800,8 +858,16 @@ export class PostFX {
     this.composer = composer;
   }
 
-  /** Swaps the camera after a session change. */
+  /**
+   * Swaps the camera after a session change.
+   *
+   * Recorded on the instance as well as pushed into the pass, because the
+   * chain can now be rebuilt at any moment and a rebuild that used the camera
+   * this object was CONSTRUCTED with would draw the menu's camera over a race.
+   */
   setCamera(camera: THREE.Camera, scene: THREE.Scene): void {
+    this.camera = camera;
+    this.scene = scene;
     if (!this.composer) return;
     const pass = this.composer.passes[0] as RenderPass;
     pass.camera = camera;
@@ -902,5 +968,9 @@ export class PostFX {
     this.composer = null;
     this.depth?.dispose();
     this.depth = null;
+    this.grade?.dispose();
+    this.grade = null;
+    this.aoStrength = 0;
+    this.enabled = false;
   }
 }
