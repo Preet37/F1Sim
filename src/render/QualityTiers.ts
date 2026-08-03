@@ -336,6 +336,16 @@ export const AUTO_DEMOTE_MS = 24;
  * test is in `updateAutoTier`, which additionally requires the resolution
  * scaler to have been sitting at its ceiling — a machine that is short of
  * frames spends its time below the ceiling, not at it.
+ *
+ * A NEAR MISS WORTH KNOWING ABOUT, and it is §6's oldest trap pointed the other
+ * way. `audit:circuits` drives the renderer with a hard-coded `dt` of 1/60 —
+ * 16.667ms, which is *under* this threshold — so an adaptive audit would
+ * promote itself to `high` after eight seconds on every circuit and photograph
+ * a tier no phone runs, exactly as the fixed `dt` once froze the resolution
+ * scaler and made every audit PNG a picture no player had seen. It does not,
+ * because `audit/audit.ts` passes an explicit `quality:` and a STATED tier sets
+ * `adaptive: false`. **If anyone ever removes that argument to let the audit
+ * "detect like the game does", this is what will happen.**
  */
 export const AUTO_PROMOTE_MS = 16.9;
 /** Seconds held at the ceiling and under budget before a promotion. */
