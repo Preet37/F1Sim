@@ -124,9 +124,30 @@ Still failing, and the lap-count collapse is unchanged on all three circuits
 instead of none, so something in the last thirty commits helps there and helps
 nowhere else. That is worth knowing before anyone concludes this is fixed from a
 single-circuit check — it is the *"YOU NEED TO FIX EVERY MAP"* pattern again.
-Monaco additionally now fails the third assertion outright: a car stood on the
-racing line for four minutes and race control never retired it, never recovered
-it and never raised a flag naming it.
+
+**Third run, on `main` @ `7f1f3da`** (the newest measurement):
+
+| circuit | field laps, staged | field laps, control | moving at the end |
+|---|---|---|---|
+| monza `[null control]` | 42 | 42 (100%) | **20 / 20** |
+| monza | 14 | 42 (33%) | **0 / 16** |
+| spa | 23 | 35 (66%) | 9 / 17 |
+| monaco | 10 | 41 (24%) | **0 / 20** |
+
+The picture is stable across three runs on two different trees: Monza and Monaco
+stop dead, Spa half-recovers. The null control passes at exactly 100% and 20/20
+every time, which is what says the probe is measuring the simulation and not
+itself.
+
+**One difference to read carefully, because it is partly mine.** The third
+assertion — race control never dealt with the stationary car — now fails on all
+three circuits where it previously passed. Part of that is my own tightening: I
+removed `neutralisation !== 'none'` from the accepted outcomes, because a safety
+car deployed for somebody else's accident would satisfy it and this has to be
+about *this* car. The rest is real: the settle now produces a different blocker
+on a different part of the road, and no message names it either way. Treat the
+lap-count and still-moving rows as the load-bearing evidence; they have never
+moved.
 
 **What it costs the player:** spin to a halt on the road, stall on the grid, or
 put the controller down for a minute, and the entire twenty-car field queues up
