@@ -2199,35 +2199,50 @@ export interface PaneRect {
  * in exactly the sense the racing surface is. The non-overlap guarantee used to
  * cover only the left notice rail; these rectangles extend it to the glass.
  *
- * MEASURED, NOT DESIGNED. Every number is the envelope of `mirrorPaneCorners`
- * projected through the real `CameraDirector` on all eleven circuits, in both
- * frame shapes (2.17:1 and 16:9), with the head at rest AND turned to the stops
- * — a driver looking through a corner swings the outside pane most of the way
- * to the frame edge, and a keep-out that ignored that would be clear only on
- * the straights. `probe:framing` re-measures the geometry every run and fails
- * if a pane escapes the rectangle declared for it, so a change to the mirror
- * mount cannot silently invalidate the layout below.
+ * MEASURED, NOT DESIGNED — AND AUTHORED, NOT GENERATED. Every number is the
+ * envelope of `mirrorPaneCorners` projected through the real `CameraDirector`
+ * on all eleven circuits, in both frame shapes (2.17:1 and 16:9), with the head
+ * at rest AND turned to the stops — a driver looking through a corner swings
+ * the outside pane most of the way to the frame edge, and a keep-out that
+ * ignored that would be clear only on the straights.
+ *
+ * But the table is WRITTEN DOWN rather than computed at load. `probe:framing`
+ * re-measures the geometry every run and fails if a pane escapes the rectangle
+ * declared for it; a table derived from the thing it is checking would always
+ * agree with it and would check nothing. The rectangle is a contract the layout
+ * is built against, and it is supposed to be able to be wrong.
+ *
+ * IT HAS ALREADY CAUGHT ONE. These numbers were first written against a mirror
+ * housing that was lofted widest 30mm in FRONT of the glass and narrowest at
+ * it, which left the driver an aperture of 77x37mm. Rebuilt widest and flattest
+ * at the glass, the pane went from 74x32mm to 150x46mm — 2.9x the reflective
+ * area, and 150mm is the FIA's own minimum reflective width. The panes now read
+ * 13 to 19.5 per cent of frame width in the driver's eye against 6 to 9.7
+ * before, and the probe failed on fifteen escapes across four circuits until
+ * this table was re-measured against the mesh that exists.
  *
  * A one-point margin is added to each measured edge, for the circuits and
- * chassis attitudes that are not in the twelve-sample sweep.
+ * chassis attitudes that are not in the twelve-sample sweep. The outboard edges
+ * of the driver's panes run off the frame entirely at full lock, so they are
+ * declared at the frame edge and the probe clamps to it.
  */
 export const MIRROR_PANES: Readonly<Record<MirrorView, readonly PaneRect[]>> = {
-  // The driver's own eye: the panes are nearest and largest here, and the left
-  // one reaches the frame edge in the 16:9 shape.
+  // The driver's own eye: the panes are nearest and largest here, a fifth of
+  // the frame across, and both reach the frame edge under head turn.
   driver: [
-    { x0: 0, y0: 70.5, x1: 20.0, y1: 88.5 },
-    { x0: 71.5, y0: 69.5, x1: 100, y1: 91.0 },
+    { x0: 0, y0: 69.5, x1: 23.0, y1: 90.5 },
+    { x0: 69.0, y0: 68.5, x1: 100, y1: 93.0 },
   ],
   // The roll-hoop pod, 0.2m behind and above the eye: the panes pull inboard
   // and drop down the frame.
   cockpit: [
-    { x0: 5.0, y0: 78.5, x1: 31.0, y1: 93.0 },
-    { x0: 62.0, y0: 77.5, x1: 86.0, y1: 94.0 },
+    { x0: 2.0, y0: 77.5, x1: 33.0, y1: 94.0 },
+    { x0: 60.0, y0: 76.5, x1: 88.5, y1: 95.0 },
   ],
   // The T-cam, 0.8m further back again. Small, low and close to the centre.
   'onboard-t': [
-    { x0: 24.0, y0: 82.5, x1: 35.0, y1: 89.5 },
-    { x0: 66.0, y0: 82.5, x1: 76.5, y1: 90.5 },
+    { x0: 22.0, y0: 81.5, x1: 36.5, y1: 90.5 },
+    { x0: 64.0, y0: 81.5, x1: 78.5, y1: 91.5 },
   ],
 };
 
