@@ -231,7 +231,30 @@ export interface RaceNotice {
  * written here would be a string in the physics — and because the same event
  * is said differently about your own car and about your team-mate's.
  */
+/**
+ * THE GOVERNING RULE FOR EVERY FIELD BELOW: it carries something the driver
+ * cannot already see.
+ *
+ * The notes above the rule are events — things that happened to a car. The ones
+ * below it are the pit wall's own traffic, and they exist because of a reported
+ * fault that was really an architectural one:
+ *
+ *   "whats this bullshit of holding the minimum every sector. make the radios
+ *    legit and smart, think of it like a genuine interaction."
+ *
+ * "Hold the minimum in every sector" is correct information formatted as a rule
+ * restatement. It is what the regulation says, and it is therefore the one thing
+ * the driver definitely knows — they are obeying it. What they cannot see is
+ * their own number. Real neutralisation radio is "delta positive", "you're plus
+ * one-two, that's good", "you're negative, lift".
+ *
+ * So every note here is a MEASUREMENT or a DECISION, never a category. A field
+ * called `gapS` produces a person; a field called `severity` produces a status
+ * string. That is the whole difference, and it is enforced by the shape of the
+ * data rather than by the discipline of whoever writes the next line.
+ */
 export type TeamNote =
+  // --- Things that happened to a car -------------------------------------
   | { kind: 'off'; corner: string; hit: string; heavy: boolean }
   | { kind: 'damage'; part: string; health: number }
   | { kind: 'retired'; reason: string }
@@ -242,7 +265,69 @@ export type TeamNote =
   | { kind: 'pit-closed' }
   | { kind: 'pit-missed' }
   | { kind: 'pit-fast' }
-  | { kind: 'penalty-served' };
+  | { kind: 'penalty-served' }
+
+  // --- The pit wall's own traffic ----------------------------------------
+  /**
+   * A car the driver is racing, and the rate it is moving at.
+   *
+   * `gapS` is the fact; `perLapS` is the one the driver genuinely cannot have —
+   * a gap is visible in a mirror, a closing RATE is three laps of arithmetic.
+   * Negative `perLapS` means they are coming to you.
+   */
+  | { kind: 'gap'; who: string; gapS: number; perLapS: number; behind: boolean }
+  /**
+   * A penalty, at the moment the stewards hand it down.
+   *
+   * `whenServed` is why this note exists rather than leaving it to race control:
+   * the official bulletin says what the penalty is, and the pit wall says what
+   * the team is going to do about it, which is the half the driver is asking for.
+   */
+  | { kind: 'penalty'; seconds: number; offence: string; whenServed: string }
+  /** A place the stewards want handed back, and the deadline for doing it. */
+  | { kind: 'cede'; who: string; withinS: number }
+  /**
+   * Weather that has not arrived yet, with the laps it lands on.
+   *
+   * A forecast is the purest case of the rule: the driver is inside the car and
+   * can see the sky, but they cannot see the radar and they cannot see the lap
+   * numbers the strategist has already mapped it onto.
+   */
+  | {
+    kind: 'weather'; wet: boolean; minutes: number;
+    fromLap: number; toLap: number; confidence: number; plan: string;
+  }
+  /**
+   * The strategist's call, with its question, if it has one.
+   *
+   * `callId` is the `PitWall`'s own id, carried through so the HUD's answer
+   * buttons can be matched back to the call that was actually asked. The offer
+   * and the button are two independent clocks and they will race; see
+   * `PitWall.answer`.
+   */
+  | {
+    kind: 'call'; message: string; reason: string; compound: string;
+    question: string | null; callId: number; urgent: boolean;
+  }
+  /** What the wall said back once the driver answered — or did not. */
+  | { kind: 'reply'; outcome: 'yes' | 'no' | 'lapsed'; compound: string }
+  /**
+   * The tyre, as laps rather than as a percentage.
+   *
+   * The wear bar is on the driver's own screen. How many laps are left in it,
+   * and what each of those laps is costing, is not.
+   */
+  | { kind: 'tyres'; lapsLeft: number; dropOffS: number; axle: 'front' | 'rear' }
+  /**
+   * A place changing hands, and whether it was to the other side of the garage.
+   *
+   * `teammate` is the whole reason this is a team note. Losing a place to a
+   * stranger is racing; losing it to the car the same people built is politics,
+   * and the two cannot be said in the same words.
+   */
+  | { kind: 'position'; gained: boolean; position: number; who: string; teammate: boolean }
+  /** Fuel, as the margin in laps — the number the readout does not give. */
+  | { kind: 'fuel'; marginLaps: number };
 
 export interface RaceControlMessage {
   /** Session time the message was issued. */
@@ -716,6 +801,61 @@ export class RaceControlManager {
    */
   private stewardsBench: Stewards | null = null;
 
+  /**
+   * How a neutralisation is going to END, as a phase the HUD can announce.
+   *
+   * "when there is an end to the VSC or SC there has to be a notification up top
+   *  saying vsc ending green flag next lap etc etc. follow the rules."
+   *
+   * The rules are specific and the two procedures are different, which is why
+   * this is one accessor with named phases rather than a countdown:
+   *
+   *   `vsc-ending`   Art. 56.7 / B5.12.4. "The message 'VSC ENDING' will be sent
+   *                  to all Competitors and, at any time between 10 and 15
+   *                  seconds later, 'VSC' on the FIA light panels will change to
+   *                  green." The window is drawn at random INSIDE that range on
+   *                  purpose — a driver must not be able to time the restart —
+   *                  so the announcement may say a green is coming and must not
+   *                  say when.
+   *   `unlapping`    Art. 55.14 / B5.13.4c. "LAPPED CARS MAY NOW OVERTAKE", and
+   *                  the safety car returns to the pits at the end of the
+   *                  FOLLOWING lap — so this phase is itself an announcement
+   *                  that the restart is one lap away.
+   *   `sc-in`        Art. 55.12 / B5.13.5c. "SAFETY CAR IN THIS LAP". From the
+   *                  moment its lights go out the leader dictates the pace
+   *                  (Art. 55.15 / B5.13.6).
+   *   `hold-line`    Art. 55.8 / B5.13.2c. Green has been shown but no car may
+   *                  overtake "until they pass the Line for the first time after
+   *                  the Safety Car has entered the Pit Entry Road" — which is
+   *                  per-car, so `CarEntry.holdUntilLine` is the individual
+   *                  truth and this is the session-wide one.
+   *
+   * `none` covers both a green track and a neutralisation that is still running
+   * with no end called yet.
+   */
+  get endingPhase(): 'none' | 'vsc-ending' | 'unlapping' | 'sc-in' | 'hold-line' {
+    if (this.neutralisation === 'vsc') {
+      return this.vscGreenIn >= 0 ? 'vsc-ending' : 'none';
+    }
+    if (this.neutralisation === 'safety-car') {
+      if (this.scPhase === 'waving-lapped') return 'unlapping';
+      if (this.scPhase === 'in-this-lap') return 'sc-in';
+      return 'none';
+    }
+    // Green, but the field is still under Art. 55.8 until each car has crossed
+    // the Line. `scPhase` stays at `restart` until the next deployment resets it,
+    // so the hold has to be read off the cars rather than off the phase alone.
+    return this.scPhase === 'restart' && this.holdingLine ? 'hold-line' : 'none';
+  }
+
+  /**
+   * Whether any car is still under the Art. 55.8 no-overtaking obligation.
+   *
+   * Written by `update` rather than derived on read, because deriving it means
+   * walking the field and this is read by the HUD every frame.
+   */
+  private holdingLine = false;
+
   /** The stewards, once a session has started. */
   get stewards(): Stewards | null {
     return this.stewardsBench;
@@ -941,13 +1081,18 @@ export class RaceControlManager {
     this.updateNeutralisation(dt, cars, standings, sessionTime, isRace);
     if (isRace) this.checkNeutralisedOvertaking(cars, sessionTime);
 
+    let holding = false;
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i];
       if (car.retired) continue;
+      if (car.holdUntilLine) holding = true;
       this.checkTrackLimits(car, i, sessionTime, isRace);
       this.checkPitLaneSpeed(car, i, sessionTime);
       this.checkNeutralisationDelta(car, i, dt, sessionTime);
     }
+    // Art. 55.8 / B5.13.2c, folded once per step so `endingPhase` — which the
+    // HUD reads every frame — is a field read rather than a walk of the field.
+    this.holdingLine = holding;
 
     // LAST, and after the per-car loop on purpose: `offTrackNow` is written by
     // `checkTrackLimits` and the stewards read it as their definition of having

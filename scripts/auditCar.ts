@@ -112,6 +112,21 @@ async function main(): Promise<void> {
     { tag: 'night-high', opts: { quality: 'high', ambience: 'night', compound: 'medium' }, views: wanted.filter((v) => ['hero', 'rear34', 'side', 'rimClose', 'rearWing'].includes(v)) },
     { tag: 'dusk-high', opts: { quality: 'high', ambience: 'dusk', compound: 'hard' }, views: wanted.filter((v) => ['hero', 'rear34', 'side'].includes(v)) },
     { tag: 'drs-open', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 1 }, views: wanted.filter((v) => ['rearWing', 'rearWingSide', 'frontWing', 'rear34', 'top'].includes(v)) },
+    // The four rear-wing actuations, in Straight Mode, from the side — which is
+    // the only view that shows where the axis is. Shot separately rather than
+    // folded into `drs-open` because the whole point is the difference BETWEEN
+    // them, and that is only visible with the four side-by-side.
+    { tag: 'aero-leading', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 1, actuation: 'leading' }, views: wanted.filter((v) => ['rearWingSide', 'rearWing'].includes(v)) },
+    { tag: 'aero-forward', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 1, actuation: 'forward' }, views: wanted.filter((v) => ['rearWingSide', 'rearWing'].includes(v)) },
+    { tag: 'aero-central', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 1, actuation: 'central' }, views: wanted.filter((v) => ['rearWingSide', 'rearWing'].includes(v)) },
+    { tag: 'aero-trailing', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 1, actuation: 'trailing' }, views: wanted.filter((v) => ['rearWingSide', 'rearWing'].includes(v)) },
+    // Corner Mode, for the comparison that matters most: every car must be
+    // IDENTICAL here whatever its actuation.
+    { tag: 'aero-closed-leading', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 0, actuation: 'leading' }, views: wanted.filter((v) => ['rearWingSide'].includes(v)) },
+    { tag: 'aero-closed-trailing', opts: { quality: 'high', ambience: 'day', compound: 'soft', drs: 0, actuation: 'trailing' }, views: wanted.filter((v) => ['rearWingSide'].includes(v)) },
+    // The rain lights, lit, as intermediate or wet tyres require them to be.
+    { tag: 'rainlight', opts: { quality: 'high', ambience: 'dusk', compound: 'intermediate', rainLight: true }, views: wanted.filter((v) => ['rear34', 'rearWing'].includes(v)) },
+    { tag: 'rainlight-off', opts: { quality: 'high', ambience: 'dusk', compound: 'soft', rainLight: false }, views: wanted.filter((v) => ['rear34'].includes(v)) },
     { tag: 'steer', opts: { quality: 'high', ambience: 'day', compound: 'soft', steer: 0.32 }, views: wanted.filter((v) => ['susFront', 'wheelFront', 'front', 'top'].includes(v)) },
     { tag: 'day-low', opts: { quality: 'low', ambience: 'day', compound: 'soft' }, views: wanted.filter((v) => ['hero', 'rear34', 'rimClose', 'rearWing'].includes(v)) },
   ] as const;

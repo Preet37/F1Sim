@@ -876,6 +876,210 @@ console.log(`   worst spread in this section: ${edgeWorstSpreadPct.toFixed(1)}% 
 // Verdict
 // ===========================================================================
 
+// ===========================================================================
+// RENDER SMOOTHNESS — is a car DRAWN where it is, or where it last stepped?
+// ===========================================================================
+//
+// Everything above measures whether the car BEHAVES the same at every frame
+// rate. This section measures something different and, to a viewer, louder:
+// whether it is DRAWN smoothly. Those are independent. A perfectly frame-rate
+// independent simulation still judders on screen if the renderer draws the last
+// completed physics step, because the accumulator hands out WHOLE steps and a
+// frame is almost never worth a whole number of them.
+//
+// At 50fps against 120Hz a frame is worth 2.4 steps, delivered as 2,2,3,2,3...
+// At 80 m/s a step is 0.667m, so the car is drawn 1.33m further on one frame
+// and 2.00m further on the next — a 50% swing in apparent speed at constant
+// true speed, every frame, forever.
+//
+// THE METRIC is the per-frame positional delta of a car travelling at constant
+// speed in a straight line: if the drawing is smooth, every frame at a steady
+// rate moves the car by exactly the same distance and the spread is zero. What
+// it measures is a RENDERER property, so it runs the two placement rules
+// directly rather than instantiating WebGL:
+//
+//   stepped      what `syncCars` did: draw physics.position
+//   interpolated what it does now:    lerp(prev, current, clock.interpolationAlpha)
+//
+// This is the rival car in the report. The player's own car is excluded from
+// the complaint for a reason the numbers below cannot show: the chase camera is
+// anchored to it and inherits the identical stagger, so the error cancels in
+// screen space for that one car and for nothing else in the frame.
+
+console.log('\n' + '='.repeat(96));
+console.log('RENDER SMOOTHNESS — per-frame drawn movement of a rival car');
+console.log('='.repeat(96));
+console.log('A car held at a constant 80.0 m/s in a straight line for 4s of wall clock.');
+console.log('Perfectly smooth drawing = every frame advances it by speed x frame period,');
+console.log('so "spread" (max-min drawn step, as a % of the mean) is 0 and "worst jump" is 1.00x.');
+console.log('Anything above that is a car visibly changing speed while its speed is constant.');
+
+interface SmoothResult {
+  label: string;
+  meanM: number;
+  minM: number;
+  maxM: number;
+  spreadPct: number;
+  /** Largest ratio between two CONSECUTIVE drawn steps — the visible stutter. */
+  worstJump: number;
+  /** RMS of (drawn step - ideal step), metres. */
+  rmsErrM: number;
+}
+
+function runSmoothness(periodsMs: number[], interpolate: boolean): SmoothResult {
+  const SPEED = 80;
+  const clock = new SimClock();
+  // The car, reduced to what the placement rule reads: a position advanced one
+  // fixed step at a time, and the pose at the top of the step it is in.
+  let x = 0;
+  let prevX = 0;
+  let drawnPrev = 0;
+  let first = true;
+
+  const deltas: number[] = [];
+  const idealDeltas: number[] = [];
+  let nowMs = 0;
+  let i = 0;
+  clock.advance(0);
+
+  // NOT clamped to the window. Truncating the last frame to land exactly on 4s
+  // manufactures one short frame, and a short frame legitimately draws a short
+  // step — which showed up as a spurious 31x "jump" and made the jittery rows
+  // unreadable. The loop simply stops on the first frame past the window.
+  while (nowMs < 4000 - 1e-9) {
+    const period = periodsMs[i++ % periodsMs.length];
+    nowMs += period;
+
+    const steps = clock.advance(nowMs);
+    for (let s = 0; s < steps; s++) {
+      prevX = x;
+      x += SPEED * PHYSICS_DT;
+    }
+
+    // The two placement rules, verbatim.
+    const drawn = interpolate
+      ? prevX + (x - prevX) * clock.interpolationAlpha
+      : x;
+
+    if (!first) {
+      deltas.push(drawn - drawnPrev);
+      idealDeltas.push(SPEED * (period / 1000));
+    }
+    drawnPrev = drawn;
+    first = false;
+  }
+
+  const mean = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+  const min = Math.min(...deltas);
+  const max = Math.max(...deltas);
+  let worstJump = 1;
+  for (let k = 1; k < deltas.length; k++) {
+    const a = deltas[k - 1], b = deltas[k];
+    if (a > 1e-9 && b > 1e-9) {
+      const r = Math.max(a / b, b / a);
+      if (r > worstJump) worstJump = r;
+    }
+  }
+  let sq = 0;
+  for (let k = 0; k < deltas.length; k++) {
+    const d = deltas[k] - idealDeltas[k];
+    sq += d * d;
+  }
+  return {
+    label: '',
+    meanM: mean, minM: min, maxM: max,
+    spreadPct: mean > 1e-9 ? ((max - min) / mean) * 100 : 0,
+    worstJump,
+    rmsErrM: Math.sqrt(sq / deltas.length),
+  };
+}
+
+console.log(
+  '\n' + padr('rate', 12) +
+  '  ' + padr('STEPPED (drawn at last physics step)', 46) +
+  '  ' + padr('INTERPOLATED (drawn at alpha)', 46),
+);
+console.log(
+  padr('', 12) +
+  '  ' + pad('min m', 9) + pad('max m', 9) + pad('spread', 9) + pad('jump', 9) + pad('rmsErr', 10) +
+  '  ' + pad('min m', 9) + pad('max m', 9) + pad('spread', 9) + pad('jump', 9) + pad('rmsErr', 10),
+);
+
+// Spread is only meaningful at a STEADY rate: on a jittery stream a frame that
+// really did take three times as long really should move the car three times as
+// far, so a large spread there is correct behaviour rather than a defect.
+// `rmsErr` is the metric that holds for both, because it compares each frame
+// against speed x THAT frame's own period.
+let worstSteppedSpread = 0, worstSteppedName = '';
+let worstInterpSpread = 0, worstInterpName = '';
+let worstSteppedJump = 1, worstInterpJump = 1;
+let worstSteppedRms = 0, worstSteppedRmsName = '';
+let worstInterpRms = 0, worstInterpRmsName = '';
+
+// Every rate above, plus the rate the game actually holds. "~50fps at 72-90% of
+// native with 22 cars" is the measured operating point, and 50 is the worst
+// possible case against 120Hz: 2.4 steps a frame is the furthest a frame can
+// sit from a whole number of steps.
+const SMOOTH_RATES: RateCase[] = [
+  ...RATE_CASES,
+  { label: '50fps', fps: 50, periodsMs: [1000 / 50] },
+  { label: '75fps', fps: 75, periodsMs: [1000 / 75] },
+  { label: '100fps', fps: 100, periodsMs: [1000 / 100] },
+];
+SMOOTH_RATES.sort((a, b) => a.fps - b.fps);
+
+for (const rate of SMOOTH_RATES) {
+  const off = runSmoothness(rate.periodsMs, false);
+  const on = runSmoothness(rate.periodsMs, true);
+  const steadyRate = rate.periodsMs.length === 1;
+  if (steadyRate) {
+    if (off.spreadPct > worstSteppedSpread) { worstSteppedSpread = off.spreadPct; worstSteppedName = rate.label; }
+    if (on.spreadPct > worstInterpSpread) { worstInterpSpread = on.spreadPct; worstInterpName = rate.label; }
+    if (off.worstJump > worstSteppedJump) worstSteppedJump = off.worstJump;
+    if (on.worstJump > worstInterpJump) worstInterpJump = on.worstJump;
+  }
+  if (off.rmsErrM > worstSteppedRms) { worstSteppedRms = off.rmsErrM; worstSteppedRmsName = rate.label; }
+  if (on.rmsErrM > worstInterpRms) { worstInterpRms = on.rmsErrM; worstInterpRmsName = rate.label; }
+  const cell = (r: SmoothResult): string =>
+    pad(r.minM.toFixed(3), 9) + pad(r.maxM.toFixed(3), 9) +
+    pad(r.spreadPct.toFixed(1) + '%', 9) + pad(r.worstJump.toFixed(2) + 'x', 9) +
+    pad(r.rmsErrM.toFixed(4), 10);
+  console.log(padr(rate.label, 12) + '  ' + padr(cell(off), 46) + '  ' + padr(cell(on), 46));
+}
+
+console.log('\n  At STEADY frame rates (spread is only meaningful there — see below):');
+console.log(`    worst spread, stepped:      ${worstSteppedSpread.toFixed(1)}%  (${worstSteppedName})`);
+console.log(`    worst spread, interpolated: ${worstInterpSpread.toFixed(1)}%  (${worstInterpName})`);
+console.log(`    worst consecutive-frame jump: stepped ${worstSteppedJump.toFixed(2)}x, ` +
+  `interpolated ${worstInterpJump.toFixed(2)}x`);
+console.log('\n  Across ALL rates including jitter, against each frame\'s OWN period:');
+console.log(`    worst rmsErr, stepped:      ${worstSteppedRms.toFixed(4)} m  (${worstSteppedRmsName})`);
+console.log(`    worst rmsErr, interpolated: ${worstInterpRms.toFixed(4)} m  (${worstInterpRmsName})`);
+console.log('\n  WHY SPREAD IS THE WRONG METRIC ON A JITTERY STREAM. A frame that really did take');
+console.log('  three times as long really should move the car three times as far, so the jitter');
+console.log('  rows show a large spread when they are behaving perfectly. `rmsErr` is the metric');
+console.log('  that holds for both: it compares each frame against speed x THAT frame\'s period,');
+console.log('  so honest variation cancels and only drawing error is left. The jitter rows drop');
+console.log('  to a centimetre or two of residue, which is the accumulator\'s own rounding.');
+console.log('\n  NOTE THAT NO STEADY RATE IS CLEAN WHEN STEPPED, not even ones that divide 120.');
+console.log('  60fps is 100% spread and 120fps is 200% — the accumulator is floating point, so');
+console.log('  a period of 16.666...ms drifts and periodically yields 1 or 3 steps instead of 2.');
+console.log('  A rate that divides 120 exactly in arithmetic does not divide it exactly in a');
+console.log('  double, which is why "120Hz is comfortably above display rate" was never true');
+console.log('  even in the one case it was supposed to cover.');
+console.log('  hitchy~23 stays bad under both rules and correctly so: one frame in four is past');
+console.log('  the step ceiling, the accumulator is ZEROED, and the sim genuinely stops for');
+console.log('  100ms. Interpolation draws a stall smoothly; it cannot un-stall the simulation.');
+console.log('\n  THE TWO INTERPOLATED ROWS THAT ARE NOT ZERO were each traced to a single frame,');
+console.log('  not to a standing error, and neither is a drawing defect:');
+console.log('    144fps  1 frame of 576 — frame 2, the first frame with a step in it. The clock');
+console.log('            latches its origin on the first advance, so the very first interval has');
+console.log('            no previous state to interpolate from. 0.111m, once, at session start.');
+console.log('    15fps   1 frame of 60 — frame 18, with `saturated` set. 15fps is exactly the');
+console.log('            8-step ceiling, so rounding tips one frame to 9 steps, the accumulator');
+console.log('            is discarded and 8.3ms of simulation never happens. That is mechanism C');
+console.log('            below, measured here as the 0.667m of ground the car never covered.');
+
 console.log('\n' + '='.repeat(96));
 console.log('VERDICT');
 console.log('='.repeat(96));
