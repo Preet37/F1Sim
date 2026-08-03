@@ -196,6 +196,53 @@ re-run this sweep before drawing conclusions about the spread rows.**
 
 ---
 
+### A2c — `probe:pitstop` fails 6 of 7 on current `main`: no pit stop with an explicit request ever completes
+**Severity: high if it is the product. Confidence: certain that it fails; the
+trigger is NOT isolated. Owner: the pit-stop agent, whose area this is.**
+
+Not on the known-failing list in PROJECT.md, and failing on `main` @ `7f1f3da`:
+
+```
+choice -> stop, silverstone
+  chose soft   wing=change -> fitted null  nose=kept wing=1.00 stationary=0.0s
+  chose soft   wing=keep   -> fitted null  nose=kept wing=1.00 stationary=0.0s
+  chose medium wing=change -> fitted null  ...
+  chose medium wing=keep   -> fitted null  ...
+  chose hard   wing=change -> fitted null  ...
+  chose hard   wing=keep   -> fitted null  ...
+  chose nothing            -> fitted hard nose=new        <- the only one that works
+
+7 failure(s):
+  - soft/change: the car never completed a stop, so nothing was proved
+  ... (all six)
+  - 0 of 6 stops completed
+```
+
+The one case that completes is `want = null, repair = 'crew'` — i.e. the driver
+asks for nothing and the crew decides. Every case where the player states a
+compound **or** a wing choice fails to complete a stop at all.
+
+**What I did not establish, and why.** The passing case differs from the six
+failing ones in *both* variables at once, so this does not say whether the
+trigger is `setPitCompound`, `setPitRepair`, or the combination. I wrote a
+diagnostic to separate them and **it was invalid** — it drove the car with a
+crude full-throttle-no-steering loop, which retired it before it ever reached the
+pit lane in all six arms (`enteredLane=false, retired=true` throughout), so it
+distinguished nothing. Isolating this properly needs the probe's own
+`ProbeDriver`, which lives inside `probePitStop.ts` and is not exported. I have
+left that to the owner rather than guess, and discarded the diagnostic rather than
+report a conclusion it could not support.
+
+**Verified as not a stale-branch artefact**: re-run after merging `main` @
+`7f1f3da`, with the same result. **Verified as not my `FORCE_COLOR` problem**
+(finding B9): this probe spawns nothing and parses no banner.
+
+If it is the product rather than the harness, it means **choosing your own tyre
+is what stops your pit stop working** — which would be worth knowing before the
+pit-stop choreography work lands on top of it.
+
+---
+
 ### A3 — The recorded diagnosis of the known-failing `probe:hudtext` is wrong
 **Severity: high (it is sending work in the wrong direction). Confidence: certain.**
 
@@ -880,6 +927,7 @@ verified to leave the probe passing.
 |---|---|
 | **A1** chequered flag | race/classification owner. Two-line reorder, then `probe:finish` |
 | **A2** blockage deadlock | split: `checkBeached` → race-control owner; "AI will not pass a stopped car" → AI owner. `probe:blockage` |
+| **A2c** pit stops with an explicit request never complete | **pit-stop agent, urgently** — it is their area and their probe, it is failing on `main` now, and the trigger still needs isolating with their own `ProbeDriver` |
 | **A2b** Monaco sweep failures | AI owner. `npm run probe:racesweep` now reports it. Monaco first: 5/5 seeds, 107-123 off-track excursions per five-lap race |
 | **A3** hudtext diagnosis | correct PROJECT.md §4/§7; fix follows A2 |
 | **A4** delta breaches | safety-car / neutralisation owner |
