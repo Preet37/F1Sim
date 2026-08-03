@@ -243,6 +243,54 @@ pit-stop choreography work lands on top of it.
 
 ---
 
+### A2d — `probe:stewards` fails its liveness floor: 1 penalty in 11 races
+**Severity: high. Confidence: certain that it fails; the cause is the judgement
+threshold, not detection. Owner: stewards.**
+
+Not on the known-failing list, and failing on `main` @ `7f1f3da`:
+
+```
+FAILURES:
+  1 penalties in 11 races — the bench has stopped finding anything
+```
+
+PROJECT.md §7 records stewards under-detection as measured and deferred at
+**0.4–1.6 penalties per race** against a real 1–3. That would be 4–18 penalties
+across these 11 races. The current figure is **1 — 0.09 a race**, four to
+seventeen times below the documented-bad level.
+
+**It is not a detection failure.** The bench notes 36 incidents (3.27 a race) and
+declines 35 of them:
+
+```
+WHY THE BENCH DECLINED
+    15  not on the same line          8  side by side, no corner to own
+     5  contact without consequence   4  level at the apex
+     2  multi-car incident            1  neither car moved across
+```
+
+So the guideline geometry is running and returning "no further action" almost
+every time. That matches the documented cause ("most contact never reaches a
+guideline") but the magnitude has moved.
+
+**A hypothesis I checked and discarded, recorded so nobody re-checks it.** The
+probe prints `...on too few events to assert on` a few lines above the failure,
+which looks like a probe failing on a sample it has just declared insufficient.
+It is not. That warning is attached to the *57-lap extrapolation*; the assertion
+that fails is a separate, deliberate floor on the **raw count**
+(`probeStewards.ts:966`), whose comment states the reasoning explicitly: *"Not a
+rate — a floor on the raw count, which is the one thing a small sample can speak
+to."* The probe is well-built here and the signal is real.
+
+**One caveat that does apply.** The sweep runs 11 races of **5 laps**
+(`SWEEP_LAPS` default, `:1020`), and finding A1 removes the final lap from every
+car except the leader — about 20% of the racing distance at that length, and the
+final lap is where a race's incidents concentrate. **Re-run this after A1 is
+fixed before concluding the bench itself regressed.** `STEWARDS_LAPS=20
+STEWARDS_SEEDS=1,2,3` is the sample the probe itself recommends.
+
+---
+
 ### A3 — The recorded diagnosis of the known-failing `probe:hudtext` is wrong
 **Severity: high (it is sending work in the wrong direction). Confidence: certain.**
 
