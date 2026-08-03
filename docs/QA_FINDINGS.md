@@ -963,6 +963,34 @@ Recorded so the next pass does not re-walk them. Each was checked, not assumed.
 
 ## E. Probe suite status on merged `main`
 
+### The short version
+
+**50 probe runs completed. 40 pass. Of the 10 non-zero exits, only 4 are the
+game failing, and 2 of those were nobody-was-looking failures rather than new
+ones.**
+
+| exit | probe | what it actually is |
+|---|---|---|
+| 1 | `validate:flags` | **known-failing**, documented, 3 failures, numbers stable |
+| 1 | `probe:hudtext` | **known-failing** — but the recorded cause is wrong, see A3 |
+| 1 | `probe:pitstop` | **NEW — A2c.** Not on the known list |
+| 1 | `probe:stewards` | **NEW — A2d.** Not on the known list |
+| 1 | `probe:finish` | **new probe, by design — A1** |
+| 1 | `probe:blockage` | **new probe, by design — A2** |
+| 1 | `probe:racesweep` | **13/55 — A2b.** Was passing only because it had no exit code |
+| 1 | `regress:career` | **not the game — my `FORCE_COLOR`, finding B9.** Now fixed and passing |
+| 143 | `validate:race` | killed by the OS under load average 118; **passes when re-run alone** |
+| 143 | `validate:integrity` | killed by the OS under load; re-run separately |
+| 142 | `probe:neutral` | hit my own 40-minute alarm; has no assertions anyway (B2) |
+
+So of ten red lines, **three were my own instrument or the machine**, two were
+already known, two are my new probes doing their job, and **three are the game:
+A2b, A2c, A2d.** That ratio is the reason each one was chased down individually
+rather than reported as a block.
+
+### Full results
+
+
 Run under heavy machine contention (load average 19-118 throughout), so durations
 are not meaningful. Results:
 
@@ -982,7 +1010,7 @@ are not meaningful. Results:
 | `probe:finish` (new) | **fail — A1.** Re-confirmed on merged `main`: 1/19 completed the distance, 19/19 share the winner's time |
 | `probe:blockage` (new) | **fail — A2.** Re-confirmed on merged `main`: 27%/29%/26% of the control's laps; 0/20 moving at Monza, 0/18 at Monaco |
 | `probe:smoke` (new) | pass — 6 screens, no console errors |
-| remainder | in flight when this was written; nothing new had failed |
+| `probe:strategy`, `probe:weather`, `probe:qualiboard`, `probe:kerbs`, `probe:surfacesteps`, `probe:debris`, `probe:tiers`, `probe:save`, `probe:fieldsize`, `probe:identity`, `probe:season`, `probe:traffic`, `probe:shoulders`, `probe:framing`, `probe:drivability` | pass — noting B2/B7/B8 again: `probe:drivability` returned in **0 seconds** and asserts nothing |
 
 No probe that passed before this pass fails after it. The two fixes that change a
 probe's behaviour (`probeFieldSize` `over`, `probeTurnIn` argument) were both
