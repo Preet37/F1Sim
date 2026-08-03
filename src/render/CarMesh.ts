@@ -3981,12 +3981,23 @@ export function buildCar(
     centre.rotation.y = Math.PI;
     root.add(centre);
     rainLights.push(centre);
-    // The pair, in the endplate bodies. Z=785 is the middle of the permitted
-    // 700..870 band, and the lens normal is within 5 degrees of the X axis as
-    // C14.3.3(c) requires — here, exactly along it.
+    // The pair, on the endplates' TRAILING EDGE.
+    //
+    // Placed against the endplate loft rather than guessed: its last station is
+    // at z = -2.42 with its centreline pulled in to `xc - s*0.082`, which is
+    // 0.414, and it spans y 0.520 to 0.900 there. A first pass put these at
+    // z = -2.052 — 27cm forward of the trailing edge, which is INSIDE the
+    // plate, and the photographs showed no lights at all.
+    //
+    // The height is regulated and this is the middle of the band: C14.3.3(d)
+    // requires the light to lie "in its entirety between Z=700 and Z=870",
+    // which is y 0.735 to 0.905 in this frame. A 30mm lens centred at 0.785
+    // spans 0.770 to 0.800, comfortably inside. C14.3.3(c) additionally
+    // requires the lens normal within 5 degrees of the X axis; here it is
+    // exactly along it.
     for (const side of [-1, 1]) {
       const m = new THREE.Mesh(lens, rainLightMat);
-      m.position.set(side * 0.475, 0.785, -2.052);
+      m.position.set(side * 0.414, 0.785, -2.428);
       m.rotation.y = Math.PI;
       root.add(m);
       rainLights.push(m);
@@ -4037,10 +4048,17 @@ export function buildCar(
       // track rather than cited to an article, and it is deliberately a slow
       // pulse between bright and half rather than a hard blink.
       const level = on ? 0.55 + 0.45 * flashPhase : 0;
+      // 2.2, not 3.4. The first pass drove red to 3.7, which is far enough past
+      // the tone mapper's shoulder that the lens clipped to white and the lights
+      // photographed as pale pink bars — a blown highlight rather than a red
+      // lamp. 2.4 peak still clears the 1.55 bloom threshold comfortably, so it
+      // glows and throws a halo, while staying on the red side of the clip. The
+      // green and blue terms are deliberately tiny: any real amount of either
+      // desaturates it towards the same white.
       rainLightMat.color.setRGB(
-        RAIN_LIGHT_OFF_RGB[0] + level * 3.4,
-        RAIN_LIGHT_OFF_RGB[1] + level * 0.16,
-        RAIN_LIGHT_OFF_RGB[2] + level * 0.10,
+        RAIN_LIGHT_OFF_RGB[0] + level * 2.2,
+        RAIN_LIGHT_OFF_RGB[1] + level * 0.07,
+        RAIN_LIGHT_OFF_RGB[2] + level * 0.05,
       );
       rainLightMat.opacity = on ? 1 : 0.95;
     },
