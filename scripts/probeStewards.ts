@@ -208,6 +208,18 @@ function priorityStage(opts: {
   overtakerInside: boolean;
   alongAtApex: number;
   close: number;
+  /**
+   * Which car the contact puts off the road, 'a' being the overtaking car.
+   *
+   * A collision that costs nobody anything is a rub, and the bench says so —
+   * `Evidence.consequenceA`. Staging the contact without staging what it did
+   * tests a case that does not arise: two cars touching at the apex and both
+   * carrying on at unaltered speed, which really is no further action. So every
+   * priority case puts somebody off, which is what the contact would do, and the
+   * guard cases then have to reach no further action for their OWN reasons
+   * rather than for want of a consequence.
+   */
+  victimOff: 'a' | 'b';
 }): Stage {
   const runIn = 3.0;
   // Car A closes from 8m behind at the start of the run-in to `alongAtApex` at
@@ -216,9 +228,20 @@ function priorityStage(opts: {
   // Half a car's width apart across the road, which is where two cars fighting
   // for a corner actually are.
   const SEPARATION_M = 1.1;
+  /** How long after the contact the victim spends beyond the white line. */
+  const OFF_S = 1.2;
+  const offAt = (t: number, halfWidth: number, hand: number, mine: 'a' | 'b'): number | null => {
+    if (mine !== opts.victimOff) return null;
+    if (t <= runIn || t > runIn + OFF_S) return null;
+    // Off on the side it was already on, so the excursion is the contact
+    // pushing it wide rather than a teleport across the road.
+    const side = (mine === 'a') === opts.overtakerInside ? -hand : hand;
+    return side * (halfWidth + 1.8);
+  };
   return {
     circuit: opts.circuit,
     runIn,
+    holdAfter: 3.2,
     contactSeverity: 0.5,
     aS: (t, corner, len, v) => {
       const k = Math.min(1, t / runIn);
@@ -226,7 +249,9 @@ function priorityStage(opts: {
       return (corner.apexS - (runIn - t) * v + gap + len * 4) % len;
     },
     bS: (t, corner, len, v) => (corner.apexS - (runIn - t) * v + len * 4) % len,
-    aLat: (t, _halfWidth, hand, rI) => {
+    aLat: (t, halfWidth, hand, rI) => {
+      const off = offAt(t, halfWidth, hand, 'a');
+      if (off !== null) return off;
       // Inside is where `lateral * -hand` is greatest.
       const side = opts.overtakerInside ? -hand : hand;
       const base = side * SEPARATION_M;
@@ -234,7 +259,9 @@ function priorityStage(opts: {
       const drift = opts.close < 0 ? -opts.close * Math.min(1, Math.max(0, t - (rI - 0.7)) / 0.7) : 0;
       return base + -side * drift;
     },
-    bLat: (t, _halfWidth, hand, rI) => {
+    bLat: (t, halfWidth, hand, rI) => {
+      const off = offAt(t, halfWidth, hand, 'b');
+      if (off !== null) return off;
       const side = opts.overtakerInside ? hand : -hand;
       const base = side * SEPARATION_M;
       const drift = opts.close > 0 ? opts.close * Math.min(1, Math.max(0, t - (rI - 0.7)) / 0.7) : 0;
@@ -394,42 +421,44 @@ interface PriorityCase {
   alongAtApex: number;
   close: number;
   expect: 'defender' | 'overtaker' | 'none';
+  /** Car 'a' is always the overtaking car. */
+  victimOff: 'a' | 'b';
 }
 
 const PRIORITY_CASES: PriorityCase[] = [
   {
     // DSG A(i) satisfied: front axle past the mirror. The defender turns in.
-    name: 'inside car alongside the mirror, defender turns in',
+    name: 'inside car alongside the mirror, defender turns in', victimOff: 'a',
     overtakerInside: true, alongAtApex: 0, close: +0.8, expect: 'defender',
   },
   {
     // DSG A(i) failed by a mile — a nose stuck up the inside from a car length
     // back, which is what "dived in" means.
-    name: 'inside car nowhere near the mirror, dives in',
+    name: 'inside car nowhere near the mirror, dives in', victimOff: 'b',
     overtakerInside: true, alongAtApex: -3.2, close: -0.8, expect: 'overtaker',
   },
   {
     // DSG B(i) satisfied: the car on the outside is ahead at the apex, and is
     // entitled to room "including at the exit".
-    name: 'outside car ahead at the apex, squeezed by the inside car',
+    name: 'outside car ahead at the apex, squeezed by the inside car', victimOff: 'a',
     overtakerInside: false, alongAtApex: +1.6, close: +0.8, expect: 'defender',
   },
   {
     // DSG B(i) failed: not ahead at the apex, so no entitlement to the corner.
     // This is the player's own case, seen from the other seat.
-    name: 'outside car not ahead at the apex, takes the corner anyway',
+    name: 'outside car not ahead at the apex, takes the corner anyway', victimOff: 'b',
     overtakerInside: false, alongAtApex: -2.0, close: -0.8, expect: 'overtaker',
   },
   {
     // Inside the band. Two cars level at the apex is a racing incident and the
     // guidelines do not pretend otherwise.
-    name: 'level at the apex',
+    name: 'level at the apex', victimOff: 'a',
     overtakerInside: true, alongAtApex: -1.0, close: +0.8, expect: 'none',
   },
   {
     // The guard that matters most: priority is clear, but NOBODY moved. A car
     // that held its line is not the cause of a collision with it.
-    name: 'clear priority but neither car moved across',
+    name: 'clear priority but neither car moved across', victimOff: 'a',
     overtakerInside: true, alongAtApex: 0, close: 0, expect: 'none',
   },
 ];
@@ -441,6 +470,7 @@ function checkPriority(): void {
       overtakerInside: c.overtakerInside,
       alongAtApex: c.alongAtApex,
       close: c.close,
+      victimOff: c.victimOff,
     }));
     const v = only(result.verdicts);
     if (v === null) {

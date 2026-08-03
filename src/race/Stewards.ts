@@ -183,8 +183,28 @@ const DIVE_IN_OVERSPEED = 1.25;
  * See `Evidence.consequenceA`.
  */
 const AFTERMATH_S = 2.5;
-/** A speed loss this big, in m/s, is a spin or a trip through the gravel. */
-const CONSEQUENCE_SPEED_LOSS_MS = 8;
+/**
+ * How far a car's pace has to fall away, as a fraction of what the road is
+ * worth, before the contact is taken to have cost it something.
+ *
+ * MEASURED AS A RATIO TO THE REFERENCE SPEED, and both of the obvious
+ * alternatives are wrong in opposite directions:
+ *
+ *   Against the car's own speed at the moment of contact. A car hit at 80 m/s
+ *   on a straight and braking normally for the next corner is thirty metres a
+ *   second slower a second later, and none of that is the contact. It finds a
+ *   consequence in every hit before a braking zone.
+ *
+ *   Against the reference speed alone — "is it under 72% of what this corner is
+ *   worth". Cars in traffic, on worn tyres, or simply off the ideal line run
+ *   under that all the time, so it finds a consequence in almost everything.
+ *
+ * The ratio removes the road from the question and leaves the car. A driver who
+ * was taking the corner at 95% of the reference and is taking it at 70% two
+ * seconds later has lost something; one who is at 95% before and after has not,
+ * whatever the two absolute speeds were.
+ */
+const CONSEQUENCE_PACE_DROP = 0.18;
 
 /** Lateral movement toward the other car that counts as crowding, metres. */
 const SQUEEZE_MOVE_M = 0.35;
@@ -389,6 +409,11 @@ export interface Snapshot extends RacingCar {
   lap: number;
   position: number;
   inPitLane: boolean;
+}
+
+/** A car's speed as a fraction of what the road it is on is worth. */
+function paceOf(s: Snapshot): number {
+  return s.targetSpeedMs > 1 ? s.speedMs / s.targetSpeedMs : 1;
 }
 
 function blankSnapshot(): Snapshot {
@@ -1169,9 +1194,13 @@ export class Stewards {
     for (let t = from; t <= now + 1e-6; t += 1 / SAMPLE_HZ) {
       if (!this.recorder.read(index, t, this.scratchA)) continue;
       if (this.scratchA.t < from - 1e-6) continue;
-      if (this.scratchA.offTrack) return true;
-      if (atContact.speedMs - this.scratchA.speedMs > CONSEQUENCE_SPEED_LOSS_MS) return true;
-      if (this.scratchA.position > atContact.position) return true;
+      const s = this.scratchA;
+      // Put off the road.
+      if (s.offTrack) return true;
+      // Lost a place.
+      if (s.position > atContact.position) return true;
+      // Spun, or dragged down to a pace the road does not explain.
+      if (paceOf(atContact) - paceOf(s) > CONSEQUENCE_PACE_DROP) return true;
     }
     return false;
   }
