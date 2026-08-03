@@ -179,6 +179,14 @@ const PIT_LANE_SHIFT_MS = 3.5;
  * it does not.
  */
 const PIT_BOX_STOP_SPEED_MS = 1.6;
+/**
+ * How near the marks counts as "arrived", metres.
+ *
+ * Inside this the car is on its marks and walking pace counts as stopped;
+ * outside it, the car is still rolling in and has to be genuinely stationary
+ * before the crew take it. See the note at the service test in `updatePitLane`.
+ */
+const PIT_BOX_SETTLE_M = 2.0;
 
 /**
  * How near a car in the fast lane has to be for the release light to be held,
@@ -350,6 +358,11 @@ interface PitBoxState {
   offMarksM: number;
   /** True once this visit's box has been driven past without stopping. */
   missedBox: boolean;
+  /**
+   * The pit request standing on this car was made by the PIT WALL, not by the
+   * driver. Only a call the wall made is a call the wall may take back.
+   */
+  wallCalledIn: boolean;
   /** Stationary time of this car's most recent completed stop, or 0. */
   lastStationaryS: number;
   progress: PitStopProgress;
@@ -563,6 +576,7 @@ export class RaceEngine {
         holdS: 0,
         offMarksM: 0,
         missedBox: false,
+        wallCalledIn: false,
         lastStationaryS: 0,
         progress: makePitStopProgress(),
         view: {
@@ -954,16 +968,37 @@ export class RaceEngine {
       // A yes on the radio is the same thing as pressing the pit-request
       // button, and it goes through the same field so there is exactly one way
       // for a player's car to be called in.
+      const box = this.pitBox[car.index];
       if (wall.boxRequested && !car.pitRequested && !car.inPitLane) {
         car.pitRequested = true;
         car.pitCompoundRequest = wall.requestedCompound;
+        // Remember that this call came from the WALL. See below.
+        box.wallCalledIn = true;
       }
-      if (!wall.boxRequested && car.pitRequested && wall.requestedCompound === null
-          && car.pitCompoundRequest !== null) {
-        // The driver answered yes to "stay out" after having agreed to box.
+      // "Stay out", answered yes after having agreed to box, cancels the stop.
+      //
+      // THE TEST IS THE FALLING EDGE, and it has to be. This used to be a
+      // static conjunction — the wall is not asking, AND the driver has a pit
+      // request, AND the wall has no compound, AND the driver has picked one —
+      // and that is exactly the state of a driver who pressed PIT and then
+      // chose a tyre on the panel. Nobody had said "stay out"; the four
+      // conditions simply happened to line up.
+      //
+      // So a manual pit call plus a manual tyre choice cancelled itself on the
+      // very next step, silently, before the car had moved: press PIT, pick
+      // hard, and the request was gone 8ms later. `probe:pitstop` catches it —
+      // six of its seven cases fail on it, all six of the ones that choose a
+      // compound — and it is the same defect in kind as the stop this branch
+      // was sent to fix, arriving down a different road.
+      //
+      // A request the DRIVER made is not the wall's to withdraw. Only one it
+      // made itself is, and only when it actually takes it back.
+      if (box.wallCalledIn && !wall.boxRequested && car.pitRequested && !car.inPitLane) {
         car.pitRequested = false;
         car.pitCompoundRequest = null;
+        box.wallCalledIn = false;
       }
+      if (!car.pitRequested) box.wallCalledIn = false;
     }
   }
 
@@ -2926,13 +2961,20 @@ export class RaceEngine {
 
     // Stopped, and the crew can reach it.
     //
-    // "Stopped" is stricter when the marks are still ahead of the car than when
-    // they are behind it. A car rolling up the last few metres at walking pace
-    // is not stopped — it is still arriving, and grabbing it there would charge
-    // a driver who was about to put the car perfectly on the marks for the four
-    // metres they had not covered yet. A car that has gone PAST the marks has
-    // nowhere better to be, so walking pace is close enough.
-    const stopped = boxDelta <= 0
+    // "Stopped" is a speed test ON the marks and a stricter one well short of
+    // them. A car rolling up the last few metres at walking pace is not
+    // stopped — it is still arriving — and grabbing it there would charge a
+    // driver who was about to put the car perfectly on its marks for the four
+    // metres they had not covered yet.
+    //
+    // But the band has to be generous, because a car that HAS arrived does not
+    // sit at exactly zero: the AI's own rule is to hold the brake once the box
+    // is within 0.4m, and the car settles at a few tenths of a metre a second
+    // against it. Requiring near-zero everywhere short of the marks meant every
+    // AI stop in the field was refused — `probe:pitstop` went from six stops to
+    // none — which is the same class of fault as the 22 m/s threshold in a
+    // lane limited to 22.2 documented below, and just as invisible.
+    const stopped = boxDelta <= PIT_BOX_SETTLE_M
       ? car.physics.speedMs < PIT_BOX_STOP_SPEED_MS
       : car.physics.speedMs < 0.4;
     if (!car.inPitBox && !car.servicedThisVisit && !car.pitTransitOnly && !box.missedBox &&
