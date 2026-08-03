@@ -62,7 +62,7 @@ async function main(): Promise<void> {
 
   const page: Page = await browser.newPage();
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${(e as Error).message}`));
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
     if (/\/favicon\.ico(\?|$)/.test(m.location().url ?? '')) return;

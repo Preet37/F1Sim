@@ -8,6 +8,7 @@ import { createProjection, type TrackProjection } from '../track/TrackSpline';
 import type { TrackSpline } from '../track/TrackSpline';
 import type { Driver, Team } from '../data/teams';
 import type { CompoundId } from '../data/tires';
+import { NeutralisedAssistState } from '../physics/NeutralisedLimiter';
 import { CarDamage } from './DamageModel';
 import { RecoveryOperation } from './Recovery';
 import type { Penalty } from './RaceControlManager';
@@ -74,6 +75,30 @@ export class CarEntry {
   prevZ = 0;
   /** Heading at the top of the step, so the swept footprint rotates with it. */
   prevHeading = 0;
+
+  // --- Render pose ---------------------------------------------------------
+  /**
+   * Where the car is DRAWN, as opposed to where the solver last put it.
+   *
+   * The physics is a fixed 120Hz staircase and the display is not, so the two
+   * do not line up: at 50fps a frame is worth 2.4 steps, which the accumulator
+   * delivers as 2, 2, 3, 2, 3... At 80 m/s a step is 0.67m, so a car drawn at
+   * the last completed step's position advances 1.33m on one frame and 2.00m on
+   * the next — a 50% swing in apparent speed, every frame, forever. That is the
+   * "one frame and then the next frame that car moves to another position"
+   * report, and it is why it was every car EXCEPT the player's: the camera
+   * rides the player, so the player's car is the one thing the error cancels
+   * against. See `Renderer.updateRenderPoses` and `probe:framerate`.
+   *
+   * These are written twice. The race engine sets them to the solver's state at
+   * the end of every step, so that anything running without a renderer — every
+   * probe that drives `CameraDirector` directly — sees the physics pose and
+   * behaves exactly as it did before. The renderer then overwrites them once
+   * per frame with the interpolated pose, before anything reads them.
+   */
+  renderX = 0;
+  renderZ = 0;
+  renderHeading = 0;
 
   // --- Timing --------------------------------------------------------------
   /** Completed laps. */
@@ -451,11 +476,36 @@ export class CarEntry {
    * independently derived one that could disagree with it.
    */
   neutralLimitMs = 0;
+  /**
+   * The neutralised assist's own memory: the pedal it is holding and the ceiling
+   * it is holding, both rate-limited.
+   *
+   * One per car and allocated with the car, because the per-step path must not
+   * allocate. Only the player's is ever driven — the nineteen AI cars fold the
+   * same limit into their own target speed — but every car carries one so that
+   * whichever car is the player's needs no special case.
+   */
+  readonly neutralAssist = new NeutralisedAssistState();
   deltaSectorTime = 0;
   /** Marshalling sector being timed, or -1 when not under a neutralisation. */
   deltaSectorIndex = -1;
   /** Marshalling sectors completed below the minimum time. */
   deltaBreaches = 0;
+  /**
+   * True once this car has been penalised for the delta in the neutralisation
+   * currently in force.
+   *
+   * The whole of the cap. "the stewards may impose either a 5-Second Penalty, a
+   * 10-Second Penalty, a Drive-Through Penalty or a Stop-and-Go Penalty on any
+   * driver who fails to stay above the minimum time" (2026 Art. B5.13.2b and
+   * B5.12.2b / 2025 Art. 55.7 and 56.5) is one decision from a menu, not a
+   * charge levied per marshalling sector — and there are twenty of those a lap.
+   * Cleared when a neutralisation begins; see `RaceControlManager.penaliseDelta`
+   * for what it cost while it did not exist.
+   */
+  deltaPenalisedThisPeriod = false;
+  /** How many separate neutralisations this car has been penalised in. */
+  deltaPeriodsPenalised = 0;
   /**
    * True while the sector being timed was joined part-way through, so its time
    * is a stub and must not be judged against a whole sector's minimum.
@@ -505,6 +555,14 @@ export class CarEntry {
     const p = track.tmpA;
     track.toWorld(s, lateralOffset, p);
     this.physics.placeAt(p.x, p.y, track.headingAt(s), speedMs);
+    // Both the swept-collision origin and the render pose, so the car is drawn
+    // where it was put on the frame it is put there rather than interpolating
+    // from wherever it happened to be last — see `renderX`. A placement is a
+    // teleport, and the one thing interpolation must never smear across is a
+    // teleport.
+    this.prevX = this.renderX = p.x;
+    this.prevZ = this.renderZ = p.y;
+    this.prevHeading = this.renderHeading = this.physics.heading;
     this.s = s;
     this.lastS = s;
     this.lateral = lateralOffset;

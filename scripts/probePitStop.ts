@@ -39,13 +39,11 @@
  */
 
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
-import type { CarEntry } from '../src/race/CarEntry';
 import { getCircuit } from '../src/data/tracks/circuits';
-import { loopDelta } from '../src/core/MathUtils';
 import { PHYSICS_DT } from '../src/core/SimClock';
-import type { TrackSpline } from '../src/track/TrackSpline';
-import { AIVehicleController, type AIPerception } from '../src/ai/AIVehicleController';
-import type { VehicleControls } from '../src/physics/VehiclePhysics';
+// Shared with `diagPitChoice`, which needs the same driver to be able to
+// separate this probe's failing cases from each other. See `lib/pitDriver`.
+import { ProbeDriver } from './lib/pitDriver';
 import { DRY_COMPOUNDS, type CompoundId } from '../src/data/tires';
 import {
   cyclePitCompound, offeredCompounds, pitSheet, setPitCompound, setPitRepair,
@@ -55,51 +53,6 @@ import {
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
 function check(ok: boolean, msg: string): void { if (!ok) fail(msg); }
-
-/**
- * The stand-in for a human at the wheel — the game's own AI, driving the
- * player's car, with `pitThisLap` forced false in the perception it reads so it
- * never enters its own pit-approach state. Lifted from `probePitLimiter`, and
- * for the same reason: anything that cannot get round the circuit at racing
- * speed fails for reasons that have nothing to do with the pit lane.
- */
-class ProbeDriver {
-  private readonly ai: AIVehicleController;
-  private readonly view: AIPerception;
-  private inLane = false;
-
-  constructor(private readonly car: CarEntry, private readonly track: TrackSpline) {
-    this.ai = new AIVehicleController(car.driver, track, 991, 'hard');
-    this.view = { ...car.perception };
-  }
-
-  drive(dt: number, out: VehicleControls): void {
-    const car = this.car;
-    if (car.inPitLane && !this.inLane) { this.inLane = true; this.ai.onPitStopComplete(); }
-    Object.assign(this.view, car.perception);
-    this.view.pitThisLap = false;
-
-    const c = this.ai.update(dt, car.physics, car.s, car.lateral, this.view);
-    out.throttle = c.throttle;
-    out.brake = c.brake;
-    out.steer = c.steer;
-
-    // Move over to the pit side on the run in: a car has to be on the pit side
-    // of the road to be let in, and the AI declines to do it.
-    const pit = this.track.def.pitLane;
-    const toEntry = loopDelta(car.s, pit.entryS, this.track.length);
-    if (!this.inLane && toEntry >= 0 && toEntry < 300) {
-      const side = Math.sign(pit.lateralOffsetM) || -1;
-      const want = side * this.track.halfWidthAt(car.s) * 0.5;
-      out.steer = Math.max(-1, Math.min(1, out.steer - (want - car.lateral) * 0.05));
-    }
-    out.reverse = c.reverse;
-    out.gearRequest = c.gearRequest;
-    out.ersMode = c.ersMode;
-    out.drsRequested = c.drsRequested;
-    out.pitLimiter = false;
-  }
-}
 
 interface Stop {
   /** What the sheet said was going on, taken the instant the choice was made. */

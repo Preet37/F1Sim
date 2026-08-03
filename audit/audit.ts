@@ -6,6 +6,7 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import type { CarEntry } from '../src/race/CarEntry';
+import { buildPitHarness, type PitHarness } from './pitshots';
 
 /**
  * The browser half of `npm run audit:circuits`.
@@ -139,6 +140,11 @@ interface AuditApi {
   /** What one frame in the given mode costs. */
   costMode(mode: CameraMode, frames: number): Promise<FrameCost>;
   /**
+   * The pit lane's own sweep: drive a car into its box, walk the stop, and
+   * photograph it. See `audit/pitshots.ts`.
+   */
+  pit: PitHarness;
+  /**
    * The mirror's own feed, read straight off its render target and blown up.
    *
    * The pane is between 47 and 86 pixels across in the finished frame with the
@@ -217,7 +223,7 @@ const freeCam = new THREE.PerspectiveCamera(55, SHOT_W / SHOT_H, 0.3, 8000);
 
 function frame(): void {
   if (!engine || !focus) return;
-  renderer.render(1 / 60, engine, focus);
+  renderer.render(1 / 60, 1, engine, focus);
 }
 
 /**
@@ -1006,8 +1012,23 @@ async function mirrorFeed(mode: CameraMode, side: 1 | -1): Promise<string> {
   });
 }
 
+/**
+ * The pit-lane sweep, wired to this page's renderer and camera plumbing so its
+ * shots go through the same post chain as every other shot here.
+ */
+const pit = buildPitHarness({
+  renderer,
+  freeCam,
+  frame,
+  present,
+  drawAndShoot,
+  renderFree,
+  adopt: (e, f) => { engine = e; focus = f; },
+  current: () => ({ engine, focus }),
+});
+
 window.__audit = {
-  load, shootMode, shootPlan, shootOverview, shootEye, contact,
+  load, shootMode, shootPlan, shootOverview, shootEye, contact, pit,
   shootEyeAids, shootKerb, shootShoulder, shootAcross, shootDebris, corners, measure, crash, focusFraction, debrisFraction, shootPile, pileCount,
   label: (t: string) => { labels.push(t); },
   setFrame, placeBehind, shootZoom, shootMirror, costMode, mirrorFeed,

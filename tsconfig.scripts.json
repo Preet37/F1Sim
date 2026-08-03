@@ -1,0 +1,19 @@
+{
+  // Probes and audit harnesses. A SEPARATE project from `tsconfig.json` for one
+  // reason: these run under Node and need `@types/node`, and putting `node` on
+  // the main project's `types` would let browser code in `src/` reach for
+  // `process`, `fs` and `Buffer` and still typecheck. The split keeps that door
+  // shut while closing the hole that let committed merge-conflict markers ship
+  // inside an audit script — nothing in `scripts/` was typechecked at all.
+  //
+  // `audit` is included because the audit PAGES carry the `declare global`
+  // blocks for `window.__panels`, `window.__hudShoot` and `window.__career`,
+  // which is what the `page.evaluate` calls in `scripts/shoot*.ts` drive. With
+  // the pages out of the project those calls are untyped and a renamed method
+  // is invisible until the screenshot comes back blank.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"]
+  },
+  "include": ["scripts", "audit"]
+}

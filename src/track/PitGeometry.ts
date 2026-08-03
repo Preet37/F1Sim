@@ -280,6 +280,37 @@ export const PIT_ROW_MARGIN_M = 26;
  * This lives here, with the rest of the pit lane's plan, rather than with the
  * geometry that draws the paddock: the headless simulation needs it too, and
  * the paddock module cannot be loaded without Three.js.
+ *
+ * IT MUST BE MEASURED FROM `rowAnchorS`, NOT FROM `pitLane.boxS`.
+ *
+ * It used to use the raw `boxS` from the track data, and that is the SAME
+ * mistake the row layout above documents itself as fixing — made a second time,
+ * fifty lines further down, by a function that then disagreed with everything
+ * it was supposed to be describing. The two anchors are 106m apart at Bahrain,
+ * and 130m at Monaco, so the run of ground this function called "the paddock"
+ * was displaced from the row of garages the paddock actually builds by most of
+ * the length of the row.
+ *
+ * Everything downstream inherited that displacement, and one of the results is
+ * a bug you can drive into:
+ *
+ *   - `buildPitWallObstacles` builds the SOLID garage frontage — the far side
+ *     of the pit lane, the thing that stops a car leaving the lane through the
+ *     buildings — only where this returns true. At Bahrain that put the wall
+ *     across lane metres 10..280 while the garages, the painted boxes and the
+ *     cars being serviced in them are at 145..354. Boxes 0 to 6 — seven of the
+ *     twenty, including the ones nearest the pit exit — had a drawn garage in
+ *     front of them and no wall at all, so a car that ran wide there went
+ *     straight through the building and out the back of the paddock.
+ *
+ *   - the circuit builder and the scenery placer both suppress trackside
+ *     furniture here, so the far end of the garage row was getting armco,
+ *     debris fencing and trees planted through it, while an invisible barrier
+ *     was suppressed over 130m of empty ground before the row started.
+ *
+ * `rowAnchorS` is the fitted anchor — where the row of boxes ACTUALLY ended up
+ * once it was made to fit inside the working lane — and it is what the paint,
+ * the garages, the crews and the race engine all use.
  */
 export function isPaddockGround(
   track: { def: TrackDefinition; dist: Float32Array; length: number },
@@ -290,8 +321,27 @@ export function isPaddockGround(
   if (side !== (Math.sign(lane.lateralOffsetM) || -1)) return false;
   const L = track.length;
   const rowLen = (PIT_GARAGE_COUNT / 2 - 1) * PIT_BAY_PITCH_M;
-  const from = lane.boxS + PIT_ROW_ANCHOR_M - rowLen - PIT_BAY_PITCH_M / 2 - PIT_ROW_MARGIN_M;
+  const from = paddockAnchorS(track.def, L) - rowLen - PIT_BAY_PITCH_M / 2 - PIT_ROW_MARGIN_M;
   let d = (track.dist[node] - from) % L;
   if (d < 0) d += L;
   return d <= rowLen + PIT_BAY_PITCH_M + PIT_ROW_MARGIN_M * 2;
+}
+
+/**
+ * `pitLaneGeometry(def).rowAnchorS`, cached per track definition.
+ *
+ * `isPaddockGround` is asked once per spline node per side — several thousand
+ * times per circuit build, from three separate passes — and solving the whole
+ * lane plan on each of those calls turned a cheap predicate into a measurable
+ * share of the load time. The plan is a pure function of the definition and the
+ * lap length, so it is solved once and kept.
+ */
+const anchorCache = new WeakMap<TrackDefinition, { length: number; anchorS: number }>();
+
+function paddockAnchorS(def: TrackDefinition, lengthM: number): number {
+  const hit = anchorCache.get(def);
+  if (hit && hit.length === lengthM) return hit.anchorS;
+  const anchorS = pitLaneGeometry(def, lengthM).rowAnchorS;
+  anchorCache.set(def, { length: lengthM, anchorS });
+  return anchorS;
 }

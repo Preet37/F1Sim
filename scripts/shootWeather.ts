@@ -105,7 +105,7 @@ async function main(): Promise<void> {
       for (const cam of CAMERAS) {
         const page: Page = await browser.newPage();
         page.setDefaultTimeout(180_000);
-        page.on('pageerror', (e) => errors.push(`${circuit} wet=${wet}: pageerror: ${e.message}`));
+        page.on('pageerror', (e) => errors.push(`${circuit} wet=${wet}: pageerror: ${String(e)}`));
         page.on('console', (m) => {
           if (m.type() === 'error' && !isBrowserNoise(m.location().url ?? '')) {
             errors.push(`${circuit} wet=${wet}: console: ${m.text()}`);

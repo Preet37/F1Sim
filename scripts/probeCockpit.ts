@@ -103,7 +103,7 @@ async function main(): Promise<void> {
   page.setDefaultTimeout(240_000);
 
   const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${String(e)}`));
   page.on('console', (m) => {
     // The headless browser asks for a favicon the audit page does not have, on
     // every run, forever. A probe whose exit code is decided by that is a probe

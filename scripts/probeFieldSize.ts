@@ -128,7 +128,13 @@ for (const circuitId of CIRCUITS_UNDER_TEST) {
     // about grid size.
     const maxSteps = Math.round(2400 / PHYSICS_DT);
     let steps = 0;
-    while (!engine.finished && steps < maxSteps) {
+    // `engine.over`, not `engine.finished` — there is no such property, so this
+    // read was `undefined` forever and the loop always burned the full 2400
+    // simulated seconds whether the race had ended or not. That mattered: the
+    // `leaderLaps >= RACE_LAPS` check below was then being asked after forty
+    // minutes of simulation rather than after the chequered flag, so a
+    // simulation running at a third of the right pace still passed it.
+    while (!engine.over && steps < maxSteps) {
       engine.step();
       steps++;
     }
