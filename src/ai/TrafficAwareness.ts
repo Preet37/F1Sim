@@ -104,6 +104,25 @@ export const HAZARD_CORRIDOR_M = 2.7;
 export const RACING_ROOM_M = 0.55;
 
 /**
+ * Centre-to-centre room a driver aims for when going round a car that has
+ * stopped on the road, metres.
+ *
+ * Bigger than `RACING_ROOM_M`, and the difference is the whole distinction
+ * between racing somebody and passing an obstacle. Racing room is a minimum
+ * two moving cars negotiate between them — both drivers are looking, both can
+ * yield, and the rules say a car's width is what is owed. A stopped car is
+ * negotiating nothing: it cannot move out of the way, it may have shed bodywork
+ * that is not modelled where it stands, and whatever put it there may still be
+ * unfolding. So this is a TARGET rather than a floor, it is measured from the
+ * obstacle's own lateral position rather than from the centreline, and it is
+ * clamped by the width of the road like any other target.
+ *
+ * `CONTACT_WIDTH_M` (2.0) is where the two cars touch. Three metres is a metre
+ * of clear air on top of that, which is about what a driver leaves a marshal.
+ */
+export const BLOCKAGE_CLEARANCE_M = 3.0;
+
+/**
  * How far ahead a lateral move looks, seconds.
  *
  * A car half a car length behind and closing at 10 m/s will be alongside within

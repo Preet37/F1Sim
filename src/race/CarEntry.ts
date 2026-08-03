@@ -327,7 +327,17 @@ export class CarEntry {
    * the pits, which is what lets a car lose the same wing twice in a race.
    */
   readonly partsShed: boolean[] = [false, false, false, false];
-  /** Seconds spent stationary off the road, for the beached-car timeout. */
+  /**
+   * Seconds this car has been stationary, wherever it is standing.
+   *
+   * NOT "stationary off the road", which is what it used to be and what made a
+   * car stopped on the racing line invisible to everything that deals with a
+   * stopped car. It is one fact — this car is not moving — and the three things
+   * that read it each apply their own rule to it: `RaceEngine.checkStranded`
+   * retires it (sooner on the road than in the gravel),
+   * `RaceControlManager.updateIncidentFlags` puts the boards out, and the
+   * perception sweep tells the cars behind there is something to go round.
+   */
   stuckTimer = 0;
   /** Seconds since retiring, before marshals clear the car. */
   recoveryTimer = 0;

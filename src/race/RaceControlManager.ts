@@ -362,6 +362,20 @@ const TRACK_LIMIT_PENALTY_AT = 4;
 /** A car below this speed off-track is treated as a stopped car. */
 const STOPPED_SPEED_MS = 8;
 
+/**
+ * Seconds a car must have been stationary ON the racing surface before the
+ * marshals put the boards out for it.
+ *
+ * Not zero, because a car that has been shoved to a standstill in a first-lap
+ * concertina and drives straight out of it never was a hazard, and putting a
+ * third of the lap under double yellows for it would neutralise every start on
+ * the calendar. Short, because everything past this point — the field slowing,
+ * the VSC, somebody walking out to the car — takes time of its own, and the
+ * cars are arriving at it now. Two seconds is about how long a marshal takes to
+ * decide that a car which has stopped in front of him is not about to move.
+ */
+const STOPPED_ON_TRACK_FLAG_S = 2;
+
 /** Regulation pit lane limit tolerance, km/h. */
 const PIT_SPEED_TOLERANCE_KPH = 0.5;
 
@@ -1212,14 +1226,44 @@ export class RaceControlManager {
       // permanently neutralised, and with twenty cars there is almost always
       // somebody off.
       const halfWidth = this.track.halfWidthAt(car.s);
+      const offTrack = Math.abs(car.lateral) > halfWidth + 1.0;
       let severity: FlagState | null = null;
+      // True while this car is the one the boards are out for BECAUSE it has
+      // stopped where the others are racing — the wording of the message, below,
+      // has to say which of the two things happened.
+      let blockingTrack = false;
       if (car.retired) {
         severity = car.recovery.signal;
         if (car.recovery.warrantsNeutralisation) incidents++;
-      } else {
-        const offTrack = Math.abs(car.lateral) > halfWidth + 1.0;
-        const slow = car.physics.speedMs < STOPPED_SPEED_MS;
-        if (offTrack && slow) severity = 'yellow';
+        blockingTrack = !offTrack && severity !== null;
+      } else if (offTrack) {
+        if (car.physics.speedMs < STOPPED_SPEED_MS) severity = 'yellow';
+      } else if (car.stuckTimer > STOPPED_ON_TRACK_FLAG_S) {
+        // A CAR STANDING ON THE RACING SURFACE. The comment at the top of this
+        // method has always said a yellow is raised for a car "off the racing
+        // surface and slow, OR STATIONARY ON IT", and the second half of that
+        // sentence was never written: the branch above tested `offTrack && slow`
+        // and a car parked on the racing line produced no flag, no message and
+        // no incident at all. Twenty cars then queued up behind it — measured at
+        // Monza and Monaco, 0 of the field still moving four minutes later, see
+        // `npm run probe:blockage`.
+        //
+        // Double waved yellow, not single. That is the literal Appendix H
+        // distinction: single for "a hazard beside or partly on the track"
+        // (Art. 2.5.5b; 2025 Art. 26.1a / 2026 Art. B1.8.4a), double for one
+        // "wholly or partly blocking the track" (Art. 2.5.5b; Art. 26.1b /
+        // B1.8.4b). A car standing on the road is the second.
+        //
+        // And it counts as an incident, which is what neutralises the race.
+        // Art. 56.1a / B5.12 deploys the VSC exactly when "double waved yellow
+        // flags are needed on any section of track and Competitors or officials
+        // may be in danger" — the cars have to be slowed down before anyone can
+        // be sent to move it. The excursion case above is deliberately NOT
+        // counted and still is not: somebody is always running wide somewhere,
+        // and nobody has to walk out for it.
+        severity = 'double-yellow';
+        blockingTrack = true;
+        incidents++;
       }
 
       if (severity !== null) {
@@ -1238,15 +1282,17 @@ export class RaceControlManager {
           // yours. The player's own principal has no business narrating a
           // rival's off, and that is exactly what he was doing.
           this.log(
-            'Yellow flag — ' + car.driver.code + ' off at ' + where,
-            'warning', sessionTime, car.index,
+            blockingTrack
+              ? 'Double waved yellow — ' + car.driver.code + ' stopped on track at ' + where
+              : 'Yellow flag — ' + car.driver.code + ' off at ' + where,
+            blockingTrack ? 'critical' : 'warning', sessionTime, car.index,
             {
               feed: 'either',
               notice: {
                 parties: [car.driver.code],
                 where: where.toUpperCase(),
-                offence: 'CAR OFF TRACK',
-                status: 'YELLOW FLAG',
+                offence: blockingTrack ? 'CAR STOPPED ON TRACK' : 'CAR OFF TRACK',
+                status: blockingTrack ? 'DOUBLE WAVED YELLOW' : 'YELLOW FLAG',
               },
               team: { kind: 'off', corner: where, hit: '', heavy: severity !== 'yellow' },
             },
