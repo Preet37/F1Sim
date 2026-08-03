@@ -186,6 +186,7 @@ Run `npm run` to list. The important ones:
 | `probe:traffic` | Contacts per car-lap |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
+| `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
 | `probe:qualiboard` | Knockout qualifying: board and grid agree |
 | `probe:identity` | Player's name reaches car, standings, save |
 | `probe:season` | 100 career-years |
@@ -207,6 +208,12 @@ Run `npm run` to list. The important ones:
   and portrait; `hud-neutral-cue` clipped by 4px; `.hud-notices` over `mirror[R1]` by
   26×72px on phone/pit-choice/cockpit). Confirmed pre-existing on `main` as of 2026-08-03
   by running it with an unrelated branch's changes stashed and getting identical output.
+- `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
+  line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
+  is no faster on the dry line than off it. Confirmed identical on pristine `main`
+  (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
+  work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
+  says the grip difference driving that is currently zero.
 
 ---
 
@@ -441,6 +448,35 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - Found a pre-existing bug driving **track temperature to −178°C** (`tempTarget` defined
   relative to the value being updated).
 
+### The pit wall and the pit request — one latch, two bugs (issue #32)
+`PitWall.boxRequested` is a **latch**: it stands from the driver's "yes" on the radio until
+the stop is served, and `RaceEngine.updatePitWall` mirrors it onto `car.pitRequested` every
+physics step. Both bugs came from treating that latch as an *event*, and each one deletes
+the driver's instruction in a different direction.
+
+- **The wall cancelling a stop the driver called.** A static conjunction stood in for a
+  falling edge — the wall is not asking, AND the driver has a request, AND the wall has no
+  compound, AND the driver has picked one — which is exactly the state of a driver who
+  pressed PIT and then chose a tyre. **Press PIT, pick hard, and the request was gone 8ms
+  later, silently, before the car had moved.** `probe:pitstop` went **6 of 7 red — every
+  case that names a compound** — and the one passing case (`want=null, repair='crew'`)
+  differed in *both* variables, so the probe proved a stop was being lost and nothing about
+  why. Isolated by `diag:pitchoice`, four arms over one drive: compound-only red,
+  repair-only green, so the **wing choice was innocent**. Fixed in `84c721c`, diagnostic in
+  `f512dc8`. Re-broken deliberately on this branch: the six cases go red with the issue's
+  own wording, so the guard is load-bearing.
+- **The wall reinstating a stop the driver cancelled.** `requestPit(car, false)` — the PIT
+  button, the only way a player waves a stop off — wrote to `car.pitRequested` and to
+  nothing else, so the mirror put the request **back on the next step, together with the
+  wall's own tyre**, over the choice `clearPitOrder` had just wiped. `main.ts` logged
+  *"Stay out, stay out"* on the team channel and **the car pitted anyway, on a compound
+  nobody asked for.** `probe:pitstop` §6: request back after **0 steps → never**,
+  compound written back **`intermediate` → `null`**, **1 stop → 0**. `requestPit` now
+  releases the latch through `PitWall.withdraw()`.
+
+The rule both fixes encode: **the PIT button is the driver's, and the wall does not get to
+overrule it in either direction.**
+
 ### Career
 - **`SessionConfig.playerIndex` was hard-coded to `0`.** `Career.grid()` is the championship
   in *team order*, and a rookie starts at the weakest team, which sorts last — so the player's
@@ -551,6 +587,16 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
 - `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
   but the *diagnosis* recorded here was wrong — see the correction in §6 under "Tooling".
 - `validate:flags` — safety-car form-up.
+- **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
+  rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
+  than off it. §6 says the fast line moving off the dry groove is the headline of the
+  weather work, and the number that would make a driver move is currently **zero**.
+  Verified pre-existing on pristine `main` while working issue #32 — the pit-wall fixes do
+  not touch it. **Nobody is on this.**
+- **`diag:pitchoice` is a diagnostic, not a probe.** It prints a table and always exits 0 —
+  it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
+  *is this right*), but do not count it as cover. The cover for issue #32 is
+  `probe:pitstop` §1 and §6.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not

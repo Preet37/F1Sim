@@ -2352,6 +2352,27 @@ export class RaceEngine {
    */
   requestPit(car: CarEntry, on: boolean): void {
     car.pitRequested = on;
+    if (on) return;
+
+    // WAVING A STOP OFF HAS TO REACH THE PIT WALL, or it does not happen.
+    //
+    // `PitWall.boxRequested` is a latch that stands from the driver's yes on
+    // the radio until the stop is served, and `updatePitWall` mirrors it onto
+    // `car.pitRequested` on every physics step. Writing only to the car meant
+    // the mirror put the request straight back 8ms later — together with the
+    // wall's own tyre, over the choice the driver had just cleared. The radio
+    // said "Stay out, stay out" and the car pitted anyway, on a compound
+    // nobody had asked for. `probe:pitstop` §6 measures it: request back after
+    // 0 steps, compound `intermediate`, one stop served.
+    //
+    // This is issue #32's defect read the other way round. That one was the
+    // wall cancelling a stop the driver called; this is the wall reinstating
+    // one the driver cancelled. Both come from treating a latch as an event,
+    // and both are the same rule: the PIT button is the driver's, and the wall
+    // does not get to overrule it.
+    const box = this.pitBox[car.index];
+    if (box) box.wallCalledIn = false;
+    this.pitWalls[car.index]?.withdraw();
   }
 
   /** Does the strategy want this car in the pits on this lap? */
