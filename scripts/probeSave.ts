@@ -245,6 +245,103 @@ function roundTrips(state: CareerState, where: string): CareerState | null {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. A MY TEAM career round-trips, field for field
+// ---------------------------------------------------------------------------
+//
+// WHY IT NEEDS ITS OWN CASE. Everything above round-trips a driver career,
+// whose `state.team` is null — so the entire `MyTeamState` block was outside
+// the probe. That block is where the mode's money, factory and paint live, it
+// gained nine fields and lost two while `SaveCodec.ts` was not touched at all,
+// and every one of them is silent when it goes: a missing `ledger` is a career
+// whose cost cap resets, a missing `liveryMark` is somebody else's car in the
+// garage.
+//
+// Checked NAME BY NAME rather than by comparing the two objects, because the
+// failure mode is one field, and "the objects differ" is not a report anybody
+// can act on.
+
+{
+  const agents = Career.freeAgentsFor(31337);
+  const career = Career.createMyTeam({
+    firstName: 'Ines', lastName: 'Moreau', nationality: 'France',
+    raceNumber: 12, seed: 31337,
+    team: {
+      name: 'Moreau Racing', shortName: 'Moreau', code: 'MOR',
+      baseCountry: 'France',
+      colour: 0x0f4d35, accent: 0xe0a72c, trim: 0xe8e0d0,
+      liveryFamily: 'halo', liveryFinish: 'satin', liveryMark: 3,
+    },
+    teammate: agents[2],
+    powerUnitId: 'ferrari-pu',
+  });
+
+  // Give every field something distinguishable to lose: a project in the
+  // factory, money moved on every ledger line, a facility built, a ban served.
+  career.startProject('aero', 'concept');
+  career.startProject('chassis', 'development');
+  career.upgradeFacility('powertrain');
+  career.changeStaff('aero', 20);
+  const t0 = career.myTeam!;
+  t0.ledger.prizeUsd = 44_000_000;
+  t0.ledger.fineUsd = 3_500_000;
+  t0.developmentBanRounds = 2;
+  t0.pointsDeducted = 17;
+
+  const back = roundTrips(career.state, 'a My Team career');
+  if (back) {
+    const b = back.team;
+    check(b !== null, 'a My Team career came back with no team at all');
+    if (b) {
+      const a = t0;
+      const same = (name: string, x: unknown, y: unknown): void =>
+        check(JSON.stringify(x) === JSON.stringify(y),
+          `MyTeamState.${name} did not survive a round trip: `
+          + `${JSON.stringify(x)} -> ${JSON.stringify(y)}`);
+
+      same('teamId', a.teamId, b.teamId);
+      same('name', a.name, b.name);
+      same('shortName', a.shortName, b.shortName);
+      same('code', a.code, b.code);
+      same('baseCountry', a.baseCountry, b.baseCountry);
+      same('colour', a.colour, b.colour);
+      same('accent', a.accent, b.accent);
+      same('trim', a.trim, b.trim);
+      same('liveryFamily', a.liveryFamily, b.liveryFamily);
+      same('liveryFinish', a.liveryFinish, b.liveryFinish);
+      same('liveryMark', a.liveryMark, b.liveryMark);
+      same('cashUsd', a.cashUsd, b.cashUsd);
+      same('ledger', a.ledger, b.ledger);
+      same('departments', a.departments, b.departments);
+      same('projects', a.projects, b.projects);
+      same('nextProjectId', a.nextProjectId, b.nextProjectId);
+      same('powerUnitId', a.powerUnitId, b.powerUnitId);
+      same('powerUnitYearsLeft', a.powerUnitYearsLeft, b.powerUnitYearsLeft);
+      same('teammateDriverId', a.teammateDriverId, b.teammateDriverId);
+      same('developmentBanRounds', a.developmentBanRounds, b.developmentBanRounds);
+      same('pointsDeducted', a.pointsDeducted, b.pointsDeducted);
+
+      // Every ledger line by name, because the cost cap is summed from three of
+      // them and a lost line is a cap that silently grows.
+      for (const line of Object.keys(a.ledger) as (keyof typeof a.ledger)[]) {
+        check(b.ledger?.[line] === a.ledger[line],
+          `ledger.${line} was $${a.ledger[line]} and came back $${b.ledger?.[line]}`);
+      }
+      check(a.projects.length > 0, 'the probe founded a team with nothing in the factory');
+      console.log(`My Team career: ${a.projects.length} projects, `
+        + `${Object.keys(a.ledger).length} ledger lines, `
+        + `${(encode(career.state).length / 1024).toFixed(1)} KB, all fields survived`);
+
+      // And it must still run as a My Team career, not merely decode as one.
+      const revived = new Career(back);
+      check(revived.myTeam !== null && revived.myTeam !== undefined,
+        'a revived My Team career has no team');
+      check(revived.myTeamRecord() !== undefined,
+        "a revived My Team career's entry is not in the world");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 4. Garbage is refused, distinguishably
 // ---------------------------------------------------------------------------
 

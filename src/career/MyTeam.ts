@@ -522,6 +522,16 @@ export interface Ledger {
   /** Outside the cap. */
   salariesUsd: number;
   engineUsd: number;
+  /**
+   * The cost-cap fine, if the season ended in a breach. OUTSIDE THE CAP, since
+   * a penalty for overspending that itself counted as spending would compound.
+   *
+   * It is on the ledger at all because it was not: `settleTeamSeason` took it
+   * straight off `cashUsd` with no entry, so the largest single outgoing in the
+   * mode was invisible to `ledgerExpenditure` and therefore to `probe:myteam`
+   * invariant 2, "the books balance". A career could lose $38M and reconcile.
+   */
+  fineUsd: number;
   /** Under the cap. */
   developmentUsd: number;
   facilityUsd: number;
@@ -530,7 +540,7 @@ export interface Ledger {
 
 export function emptyLedger(): Ledger {
   return {
-    prizeUsd: 0, commercialUsd: 0, salariesUsd: 0, engineUsd: 0,
+    prizeUsd: 0, commercialUsd: 0, salariesUsd: 0, engineUsd: 0, fineUsd: 0,
     developmentUsd: 0, facilityUsd: 0, staffUsd: 0,
   };
 }
@@ -545,7 +555,7 @@ export function ledgerIncome(l: Ledger): number {
 }
 
 export function ledgerExpenditure(l: Ledger): number {
-  return l.salariesUsd + l.engineUsd + capSpent(l);
+  return l.salariesUsd + l.engineUsd + l.fineUsd + capSpent(l);
 }
 
 export type BreachSeverity = 'none' | 'minor' | 'major';

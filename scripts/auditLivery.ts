@@ -1,5 +1,6 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -21,10 +22,33 @@ import { LIVERY_FAMILIES } from '../src/render/LiveryDesign';
  *
  * Output lands in `audit-out/livery/`.
  *
- * Run: npm run audit:livery
+ * WHAT IT ASSERTS, as opposed to what it photographs. Pictures are for a human;
+ * the one thing here that a machine can and must check is that the EXISTING
+ * 2026 grid was not repainted. `control` is built with no design at all, so it
+ * is by definition the same car `audit:car` shoots as `day-high`, and the two
+ * PNGs have to be byte-identical. That claim used to be written in a comment
+ * and never checked — the script exited 0 on everything short of a page crash,
+ * which for a rewritten `Livery.ts` (+662 lines) meant the only protection the
+ * real grid had was somebody opening two files and looking at them.
+ *
+ * It now hashes both and fails on a difference, and fails on a page error, so
+ * the exit code means something.
+ *
+ * Needs `npm run audit:car` to have been run on this tree first; that is what
+ * writes the reference. `CAR_TAG` selects which run to compare against, exactly
+ * as it does in `audit:car`, so `CAR_TAG=before` compares this tree's livery
+ * work against a car shot before it.
+ *
+ * Run: npm run audit:car && npm run audit:livery
  */
 
 const OUT_DIR = resolve(process.cwd(), 'audit-out', 'livery');
+/** Where `audit:car` left the car this one must not have changed. */
+const CAR_DIR = resolve(process.cwd(), 'audit-out', 'car', process.env.CAR_TAG ?? 'now');
+/** The views `control` is shot from that `audit:car` also shoots. */
+const CONTROL_VIEWS = ['hero', 'side', 'top'] as const;
+
+const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
 
 function chromePath(): string {
   const candidates = [
@@ -106,12 +130,12 @@ async function main(): Promise<void> {
 
   // --- The control: no design at all ---------------------------------------
   //
-  // This shot must be identical to `audit:car`'s `day-high--hero`. If it is
-  // not, the family work has moved a car on the existing grid, which is the one
-  // thing it was not allowed to do.
+  // Identical build options to `audit:car`'s `day-high`, so this shot must be
+  // the same bytes. If it is not, the family work has moved a car on the
+  // existing grid, which is the one thing it was not allowed to do.
   process.stdout.write('control  ');
   await build({ quality: 'high', ambience: 'day', compound: 'soft' });
-  for (const view of ['hero', 'side', 'top']) {
+  for (const view of CONTROL_VIEWS) {
     await shoot('control', view);
     process.stdout.write('.');
   }
@@ -147,14 +171,50 @@ async function main(): Promise<void> {
     process.stdout.write('\n');
   }
 
+  await browser.close();
+  await server.close();
+
   console.log(`\n-> ${OUT_DIR}`);
+
+  // --- THE ASSERTION -------------------------------------------------------
+  const failures: string[] = [];
+
+  if (!existsSync(CAR_DIR)) {
+    failures.push(`no reference car in ${CAR_DIR} — run \`npm run audit:car\` on this `
+      + 'tree first. Without it nothing here is checked and the existing grid is '
+      + 'unprotected, which is the state this audit was in.');
+  } else {
+    for (const view of CONTROL_VIEWS) {
+      const mine = resolve(OUT_DIR, `control--${view}.png`);
+      const theirs = resolve(CAR_DIR, `day-high--${view}.png`);
+      if (!existsSync(theirs)) {
+        failures.push(`${theirs} is missing, so control--${view} was not checked`);
+        continue;
+      }
+      const a = sha256(await readFile(mine));
+      const b = sha256(await readFile(theirs));
+      if (a === b) {
+        console.log(`  control--${view} == audit:car day-high--${view}  ${a.slice(0, 8)}`);
+      } else {
+        failures.push(`control--${view} is NOT the car audit:car shoots: `
+          + `${a.slice(0, 12)} vs ${b.slice(0, 12)}. The livery work has repainted a `
+          + 'team on the existing 2026 grid.');
+      }
+    }
+  }
+
   if (errors.length) {
     console.log('console output:');
     for (const e of [...new Set(errors)].slice(0, 20)) console.log('  ' + e);
+    failures.push(`${new Set(errors).size} distinct page error(s) while shooting`);
   }
 
-  await browser.close();
-  await server.close();
+  if (failures.length > 0) {
+    console.error(`\n${failures.length} failure(s):`);
+    for (const f of failures) console.error('  - ' + f);
+    process.exit(1);
+  }
+  console.log('\naudit:livery OK');
 }
 
 main().catch((e) => {

@@ -37,6 +37,11 @@
  *      `performanceOf` and `specForTeam`.
  *   7. DEVELOPING WORKS. Over many careers, a team that develops climbs the
  *      constructors' table against one that never does.
+ *   3b. THE CAP BINDS ON THE OTHER PATHS TOO. Invariant 3 only ever spent
+ *      through `startProject`. `upgradeFacility` and `changeStaff` also commit
+ *      cap money and were never called here at all — which is how
+ *      `upgradeFacility` came to charge a facility's extra upkeep to the cap
+ *      after the gate had approved only the capital cost.
  *
  * Run: npm run probe:myteam
  */
@@ -51,7 +56,8 @@ import { specForTeam } from '../src/physics/VehicleSpec';
 import { getTeam } from '../src/data/teams';
 import {
   AMBITION, COST_CAP_USD, DEPARTMENT_IDS, STARTING_BUDGET_USD, capSpent,
-  ledgerExpenditure, ledgerIncome, projectCostUsd, qcFailureChance,
+  facilityUpgradeCostUsd, ledgerExpenditure, ledgerIncome, projectCostUsd,
+  qcFailureChance,
   type Ambition, type DepartmentId,
 } from '../src/career/MyTeam';
 import { TIER_ORDER } from '../src/data/roster';
@@ -158,6 +164,7 @@ let projectsDelivered = 0;
 let projectsFailedQc = 0;
 let capBoundSeasons = 0;
 let breaches = 0;
+let finesSeen = 0;
 
 for (let c = 0; c < CAREERS; c++) {
   const seed = 4000 + c * 7919;
@@ -232,6 +239,36 @@ for (let c = 0; c < CAREERS; c++) {
       checkOnce(report.team.constructorPosition >= 1 && report.team.constructorPosition <= 12,
         'prize-position',
         `${where}: constructors' position ${report.team.constructorPosition}`);
+
+      // --- 2b. AND THE BOOKS BALANCE ACROSS THE AUDIT TOO ----------------
+      //
+      // The window above closes at the last round, and `endSeason` is where the
+      // prize is paid and the cap fine is taken — the two biggest cash
+      // movements in the whole mode, both landing after the measurement and
+      // before `rollTeamIntoNextSeason` empties the ledger for the new year.
+      // Neither was covered. The fine was not even on the ledger: it came
+      // straight off `cashUsd`, so a career could lose $38M and reconcile.
+      //
+      // `closingLedger` is the season's books as they stood after the audit, so
+      // this reconstruction spans the entire season INCLUDING the settle.
+      const cl = report.team.closingLedger;
+      const inFull = ledgerIncome(cl) - ledgerIncome(ledgerAtStart);
+      const outFull = ledgerExpenditure(cl) - ledgerExpenditure(ledgerAtStart);
+      const expectedClosing = cashAtStart + inFull - outFull;
+      checkOnce(Math.abs(report.team.closingCashUsd - expectedClosing) < 1_000_000,
+        'settle-balance',
+        `${where}: after the audit cash is `
+        + `$${(report.team.closingCashUsd / 1e6).toFixed(2)}M, the closing ledger says `
+        + `$${(expectedClosing / 1e6).toFixed(2)}M `
+        + `(prize $${(report.team.prizeUsd / 1e6).toFixed(1)}M, `
+        + `fine $${(report.team.penalty.fineUsd / 1e6).toFixed(1)}M)`);
+      checkOnce(cl.prizeUsd === report.team.prizeUsd, 'prize-unledgered',
+        `${where}: the prize was $${report.team.prizeUsd} and the ledger recorded `
+        + `$${cl.prizeUsd}`);
+      checkOnce(cl.fineUsd === report.team.penalty.fineUsd, 'fine-unledgered',
+        `${where}: the cap fine was $${report.team.penalty.fineUsd} and the ledger `
+        + `recorded $${cl.fineUsd}`);
+      if (report.team.penalty.fineUsd > 0) finesSeen++;
     }
 
     // The new season starts with a fresh cap and a charged bill.
@@ -250,6 +287,7 @@ console.log(`${CAREERS} My Team careers x ${SEASONS} seasons`);
 console.log(`projects: ${projectsStarted} commissioned, ${projectsDelivered} delivered, `
   + `${projectsFailedQc} failed QC (${(projectsFailedQc / Math.max(1, projectsDelivered) * 100).toFixed(1)}%)`);
 console.log(`cap: ${capBoundSeasons} seasons ran within $12M of the ceiling, ${breaches} breached it`);
+console.log(`season-end audits reconciled: ${CAREERS * SEASONS}, of which ${finesSeen} carried a cap fine`);
 
 /**
  * A LOWER BOUND, NOT A TARGET.
@@ -457,6 +495,98 @@ check(breaches === 0,
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The OTHER two spending paths are gated too
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS SEPARATELY FROM 3. Invariant 3 spends through `startProject`
+// and nothing else, so the cap was proved to bind on exactly one of the four
+// things that commit cap money. `upgradeFacility` and `changeStaff` were never
+// called by this probe at all — and `upgradeFacility` was crossing the cap
+// without a confirmation, because it charged `extraUpkeep` to
+// `ledger.facilityUsd` AFTER `gate()` had approved only the capital cost.
+//
+// The assertion is the one that matters and not a proxy for it: with no
+// `allowBreach`, no sequence of facility or staff commitments may leave
+// `capSpent(ledger)` above the cap. Every refusal must be a refusal.
+
+{
+  const career = found(8080);
+  const t = career.myTeam!;
+  // Money is not the constraint here; the cap is. A refusal that is really the
+  // bank running dry would prove nothing about the gate.
+  t.cashUsd = 5_000_000_000;
+
+  let facilityBuilds = 0;
+  let staffHires = 0;
+  let confirmationsAsked = 0;
+  let guard = 0;
+  // Spend on buildings and people until everything is refused, never once
+  // passing `allowBreach`.
+  for (;;) {
+    if (guard++ > 500) break;
+    let moved = false;
+    for (const dept of DEPARTMENT_IDS) {
+      const f = career.upgradeFacility(dept as DepartmentId);
+      if (f.ok) { facilityBuilds++; moved = true; }
+      else if (f.needsConfirmation) confirmationsAsked++;
+
+      const st = career.changeStaff(dept as DepartmentId, 25);
+      if (st.ok) { staffHires++; moved = true; }
+      else if (st.needsConfirmation) confirmationsAsked++;
+
+      checkOnce(capSpent(t.ledger) <= COST_CAP_USD, 'facility-cap-breach',
+        `an ungated facility/staff commitment put $${(capSpent(t.ledger) / 1e6).toFixed(1)}M `
+        + `against a $${(COST_CAP_USD / 1e6).toFixed(1)}M cap without asking for a confirmation`);
+    }
+    if (!moved) break;
+  }
+
+  check(facilityBuilds > 0, 'no facility was ever built, so the gate was never exercised');
+  check(staffHires > 0, 'no staff were ever hired, so the gate was never exercised');
+  check(confirmationsAsked > 0,
+    'the cap never once asked for a confirmation across facilities and staff — '
+    + 'either nothing reached the ceiling or the gate is not being consulted');
+  check(capSpent(t.ledger) <= COST_CAP_USD,
+    `facilities and staff committed $${(capSpent(t.ledger) / 1e6).toFixed(1)}M against a `
+    + `$${(COST_CAP_USD / 1e6).toFixed(1)}M cap with no confirmation ever given`);
+
+  console.log(`facility/staff gate: ${facilityBuilds} builds, ${staffHires} hires, `
+    + `${confirmationsAsked} refusals needing confirmation, `
+    + `$${(capSpent(t.ledger) / 1e6).toFixed(1)}M of $${(COST_CAP_USD / 1e6).toFixed(1)}M committed`);
+
+  // And with a confirmation it must go through, or the path is simply broken
+  // rather than gated.
+  const forced = career.upgradeFacility('aero', { allowBreach: true });
+  check(forced.ok || /already at level/.test(forced.reason),
+    'a confirmed facility build was still refused: ' + forced.reason);
+}
+
+{
+  // THE EXACT CASE, deterministically. The sweep above only finds the bug if
+  // the cap happens to land in the window; this one puts it there. Leave
+  // precisely one facility's capital cost of headroom, then build. The gate
+  // approves the capital cost and the career then charges the new level's
+  // upkeep to the same cap line — so an approval for $X spends more than $X.
+  const career = found(8181);
+  const t = career.myTeam!;
+  t.cashUsd = 5_000_000_000;
+  t.ledger.developmentUsd = 0;
+  t.ledger.facilityUsd = 0;
+  t.ledger.staffUsd = 0;
+  const cost = facilityUpgradeCostUsd(t.departments.aero.level);
+  t.ledger.developmentUsd = COST_CAP_USD - cost;
+
+  const r = career.upgradeFacility('aero');
+  const after = capSpent(t.ledger);
+  check(!r.ok || after <= COST_CAP_USD,
+    `a facility build approved at exactly $${(cost / 1e6).toFixed(1)}M of headroom spent `
+    + `$${((after - (COST_CAP_USD - cost)) / 1e6).toFixed(1)}M and put the team `
+    + `$${((after - COST_CAP_USD) / 1e6).toFixed(1)}M past the cap with no confirmation asked`);
+  console.log(`facility gate, exact headroom: approved=${r.ok}, `
+    + `committed $${(after / 1e6).toFixed(1)}M of $${(COST_CAP_USD / 1e6).toFixed(1)}M`);
+}
+
+// ---------------------------------------------------------------------------
 // 8. A deliberate breach is actually punished
 // ---------------------------------------------------------------------------
 
@@ -485,15 +615,38 @@ check(breaches === 0,
   while (!seasonComplete(career.world, career.season, career.tier) && g++ < 40) {
     career.recordPlayerRound(simulateRound(career.world, career.season, career.tier, rng));
   }
+  const cashBeforeSettle = t.cashUsd;
   const report = career.endSeason();
   check(report.team!.penalty.severity !== 'none',
     'a career that spent 10% past the cap was not penalised');
+
+  // THE FINE LEAVES A TRACE. It used to come straight off `cashUsd` with no
+  // ledger entry, which made the biggest outgoing in the mode invisible to
+  // `ledgerExpenditure` — and the sweep above never breaches, so this is the
+  // only place the fine path is exercised at all. Both halves are checked: the
+  // ledger records it, and the cash actually moved by prize minus fine.
+  const fine = report.team!.penalty.fineUsd;
+  check(fine > 0, 'a major cap breach carried no fine');
+  check(report.team!.closingLedger.fineUsd === fine,
+    `the cap fine was $${fine} and the closing ledger recorded `
+    + `$${report.team!.closingLedger.fineUsd}`);
+  check(report.team!.closingLedger.prizeUsd === report.team!.prizeUsd,
+    `the prize was $${report.team!.prizeUsd} and the closing ledger recorded `
+    + `$${report.team!.closingLedger.prizeUsd}`);
+  const moved = report.team!.closingCashUsd - cashBeforeSettle;
+  check(Math.abs(moved - (report.team!.prizeUsd - fine)) < 1,
+    `the audit moved $${(moved / 1e6).toFixed(2)}M of cash but the report says a `
+    + `$${(report.team!.prizeUsd / 1e6).toFixed(1)}M prize and a `
+    + `$${(fine / 1e6).toFixed(1)}M fine`);
   check(report.team!.penalty.pointsDeducted > 0,
     'a cap breach cost no constructors’ points');
   check(career.myTeam!.developmentBanRounds > 0,
     'a major cap breach carried no development ban into the next season');
   console.log('breach: ' + report.team!.penalty.summary
     + ` (constructors' points before the audit: ${pointsBefore})`);
+  console.log(`breach books: prize $${(report.team!.prizeUsd / 1e6).toFixed(1)}M `
+    + `less fine $${(fine / 1e6).toFixed(1)}M = $${(moved / 1e6).toFixed(1)}M of cash, `
+    + 'both on the closing ledger');
 
   // And the ban actually stops a project being commissioned.
   const banned = career.startProject('aero', 'refinement');

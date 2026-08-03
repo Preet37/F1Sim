@@ -6,6 +6,7 @@ import {
 } from './LiveryEditor';
 import { money } from './TeamHQ';
 import { NATIONS } from '../career/Identity';
+import { FALLBACK_POWER_UNIT_ID } from '../data/roster';
 import { Career } from '../career/Career';
 import {
   COST_CAP_USD, STARTING_BUDGET_USD, defaultDepartments, engineOffers,
@@ -79,7 +80,10 @@ export function buildTeamCreate(
     shortName: 'Northgate',
     code: 'NGR',
     baseCountry: 'United Kingdom',
-    powerUnitId: offers.find((o) => o.available)?.unit.id ?? 'redbull-ford',
+    // The fallback id comes out of `src/data/roster/`, which is the swappable
+    // IP boundary PROJECT.md §3 asks be kept. Naming a real manufacturer here
+    // would put one outside it.
+    powerUnitId: offers.find((o) => o.available)?.unit.id ?? FALLBACK_POWER_UNIT_ID,
     teammate: agents[0],
   };
 

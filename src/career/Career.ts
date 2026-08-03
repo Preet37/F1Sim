@@ -14,7 +14,8 @@ import {
   engineOffers, facilityUpgradeCostUsd, facilityUpkeepUsd, factoryAnnualCostUsd,
   generateFreeAgents, investInPitCrew, prizeMoneyFor, projectCostUsd,
   projectGain, projectRounds, qcFailureChance,
-  type Ambition, type BreachPenalty, type DepartmentId, type UpgradeProject,
+  type Ambition, type BreachPenalty, type DepartmentId, type Ledger,
+  type UpgradeProject,
 } from './MyTeam';
 import {
   circuitFor, positionOf, recordRound, runOffSeason, seasonComplete,
@@ -56,6 +57,19 @@ export interface TeamSeasonReport {
   capSpentUsd: number;
   penalty: BreachPenalty;
   closingCashUsd: number;
+  /**
+   * The season's ledger as it stood after the audit, before it was emptied.
+   *
+   * WHY THE REPORT CARRIES IT. The prize and the cap fine are the two largest
+   * cash movements in the mode and both land inside `endSeason`, between the
+   * last round and `rollTeamIntoNextSeason` wiping the ledger for the new year.
+   * Anything reading `team.ledger` after `endSeason` returns sees the NEXT
+   * season's opening bill, so those two figures were unreconcilable by
+   * construction — `probe:myteam` invariant 2 closed its window before the
+   * prize was paid and reopened it after the fine was taken. This is the copy
+   * that makes the whole season balance.
+   */
+  closingLedger: Ledger;
 }
 
 /** The answer to "can this be paid for, and is it allowed". */
@@ -1272,7 +1286,22 @@ export class Career {
       return { ok: false, reason: 'This facility is already at level ' + MAX_FACILITY_LEVEL + '.' };
     }
     const cost = facilityUpgradeCostUsd(dept.level);
-    const check = this.gate(cost, true, opts.allowBreach ?? false);
+    // The upkeep of the new level for the rest of this season, WORKED OUT
+    // BEFORE THE GATE AND PUT THROUGH IT.
+    //
+    // This used to be charged to `ledger.facilityUsd` after `gate()` had
+    // approved the capital cost alone — and `facilityUsd` is one of the three
+    // lines `capSpent` sums, so an approval for $28.0M could spend $31.4M and
+    // carry the team $3.4M past a $135.0M cost cap with no confirmation ever
+    // shown. A gate that approves one figure and then charges another is not a
+    // gate. Art. 3 of the Financial Regulations counts committed cost, not the
+    // headline price of the building. See `probe:myteam` invariant 3b, which
+    // puts the cap in exactly that window on purpose.
+    const rounds = this.calendar.length;
+    const remaining = Math.max(0, rounds - this.round) / Math.max(1, rounds);
+    const extraUpkeep = Math.round(
+      (facilityUpkeepUsd(dept.level + 1) - facilityUpkeepUsd(dept.level)) * remaining);
+    const check = this.gate(cost + extraUpkeep, true, opts.allowBreach ?? false);
     if (!check.ok) {
       return { ok: false, reason: check.reason, needsConfirmation: check.needsConfirmation };
     }
@@ -1280,11 +1309,6 @@ export class Career {
     dept.level++;
     t.cashUsd -= cost;
     t.ledger.facilityUsd += cost;
-    // The upkeep of the new level, for the rest of this season.
-    const rounds = this.calendar.length;
-    const remaining = Math.max(0, rounds - this.round) / Math.max(1, rounds);
-    const extraUpkeep = Math.round(
-      (facilityUpkeepUsd(dept.level) - facilityUpkeepUsd(dept.level - 1)) * remaining);
     t.cashUsd -= extraUpkeep;
     t.ledger.facilityUsd += extraUpkeep;
     // A department given a new building is a department that believes you.
@@ -1536,6 +1560,7 @@ export class Career {
       ts.constructorPoints[t.teamId] = Math.max(
         0, (ts.constructorPoints[t.teamId] ?? 0) - penalty.pointsDeducted);
       t.cashUsd -= penalty.fineUsd;
+      t.ledger.fineUsd += penalty.fineUsd;
       t.developmentBanRounds = penalty.developmentBanRounds;
       t.pointsDeducted = penalty.pointsDeducted;
       // Being caught is felt across the whole factory.
@@ -1550,6 +1575,7 @@ export class Career {
       capSpentUsd: spent,
       penalty,
       closingCashUsd: t.cashUsd,
+      closingLedger: { ...t.ledger },
     };
   }
 
