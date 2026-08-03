@@ -257,6 +257,15 @@ Run `npm run` to list. The important ones:
   Chrome asks every document for one. Filtered on the URL — the same exclusion
   `probe:smoke` has carried since #62 — and any surviving console error now prints its URL.
   **Same species as `probe:fieldsize` below: a probe going red without anybody noticing.**
+  **NOT YET CONFIRMED GREEN**, and the reason is worth writing down: the confirming re-run
+  died at load average 47–72 on `TimeoutError: Waiting for selector '.mm' failed —
+  20000ms exceeded`, waiting for the main menu after `Start driving`, and it threw before
+  the error summary is printed. **That is a fixed 20-second deadline on a probe driving a
+  software rasteriser — issue #25's defect exactly, in a third harness.** `probe:smoke`
+  and `regress:career` both open that same menu happily on the same tree, so the menu is
+  fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
+  own job with its own measurement, and it is listed here rather than done badly.
+  **Nobody is on this.**
 - `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
   regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
