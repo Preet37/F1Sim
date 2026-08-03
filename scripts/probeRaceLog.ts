@@ -50,6 +50,35 @@
  * against what a Grand Prix really produces: one or two retirements, and a
  * handful of penalties across twenty cars with many races producing none.
  *
+ * ===========================================================================
+ * WHAT IT FOUND, AND WHY THE RACE LENGTH CHANGES THE ANSWER
+ * ===========================================================================
+ *
+ * The cause of a retirement is not the same at both distances, and measuring
+ * only one of them points at the wrong fix.
+ *
+ *   QUARTER (14 laps)   retirements were MECHANICAL, and they were a bug:
+ *                       `failureRate` is a per-race-distance probability that
+ *                       was being spread per second over the session's own
+ *                       theoretical lap time, so a quarter-distance race
+ *                       carried a whole Grand Prix's reliability risk. Fixed in
+ *                       `RaceEngine.checkReliability`; Silverstone went from
+ *                       1.67 retirements a race, every one of them mechanical,
+ *                       to none.
+ *
+ *   FULL (52 laps)      the picture inverts. Silverstone, F3, P18, medium:
+ *                       SIXTEEN of twenty cars retired, of which THIRTEEN were
+ *                       'Beached in the gravel' and none were mechanical. The
+ *                       driven car was one of them.
+ *
+ * The beaching is the open problem and it is not the same problem as running
+ * wide: the same race recorded only 3 sanctionable track-limit excursions, and
+ * an excursion is only sanctionable if the car GAINED time. Thirteen cars that
+ * beached while three gained time means the field is spinning off slowly rather
+ * than running wide quickly, which is a path-tracking failure and not a
+ * track-limits one. README already names the tracking controller as the single
+ * largest outstanding item; this is what it costs, per race, in the seat.
+ *
  * Run: npm run probe:racelog
  *      RACELOG_LAPS=full RACELOG_SEEDS=1,2,3 npm run probe:racelog
  *      RACELOG_DIFFICULTY=hard npm run probe:racelog   (what the harness sees)
