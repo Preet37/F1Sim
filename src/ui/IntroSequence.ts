@@ -1,5 +1,5 @@
 import './career.css';
-import { CarStage } from '../render/CarStage';
+import { CarStage, type StageLook } from '../render/CarStage';
 
 /**
  * The opening sequence.
@@ -11,18 +11,26 @@ import { CarStage } from '../render/CarStage';
  * It is IN-ENGINE, which was the requirement — "yeah render the game scenes
  * like rendered in engine yourself". Every frame is the real car: the same
  * `buildCar` geometry the race puts on the track, the same generated livery
- * canvas, the same filmic tone mapping, lit by the same car-launch key the
- * whole interface is set in. Nothing here is a video, a still, or a drawing of
- * a car.
+ * canvas, the same filmic tone mapping, the same `RainCurtain` shader the wet
+ * race draws its weather with. Nothing here is a video, a still, or a drawing
+ * of a car.
  *
- * It is NOT a fly-through of a circuit, and that is a decision rather than a
- * shortfall. Building a circuit costs a racing-line solve and several hundred
- * milliseconds of geometry, and the one thing an opening sequence must never do
- * is make somebody wait to be allowed to start. `CarStage` is up in one frame,
- * runs at thirty, and drops to a parked car on a machine that cannot afford
- * even that. The sequence therefore takes the one gesture this sport actually
- * has for "here is the thing you are about to be given": a car reveal, in a
- * dark hall, under one light.
+ * IT IS NOW WET, AND IT MOVES. The first version of this was a car parked in a
+ * dry hall with the type changing over it, and the verdict on the whole front
+ * end — "this isn't how a game UI looks like" — applied to it as much as to
+ * the menu. A title sequence is a piece of DIRECTION: a subject, weather, and
+ * a camera that cuts. So the car now stands in the rain at night, in a rig of
+ * coloured light that runs down the wet ground in front of it, and the camera
+ * cuts between five framings and eases into each one — head on, down the
+ * flank, over the rear wing, at kerb height — with a slow dolly drift laid
+ * over the top so no shot is ever dead still.
+ *
+ * IT IS STILL NOT A FLY-THROUGH OF A CIRCUIT, and that remains a decision
+ * rather than a shortfall. Building a circuit costs a racing-line solve and
+ * several hundred milliseconds of geometry, and the one thing an opening
+ * sequence must never do is make somebody wait to be allowed to start.
+ * `CarStage` is up in one frame and runs at thirty. What it gained instead is
+ * everything the rain and the camera give, for one extra draw call.
  *
  * ---------------------------------------------------------------------------
  * THE SKIP IS PART OF THE DESIGN, NOT AN ESCAPE HATCH
@@ -52,6 +60,15 @@ export interface IntroBeat {
   sub?: string;
   /** Livery to swap the car to as this beat opens. */
   livery?: { colour: number; accent: number; number?: number; code?: string };
+  /** Where the camera goes for this beat. The cut; the ease is the stage's. */
+  look?: StageLook;
+  /**
+   * The last beat, which is the title card.
+   *
+   * It gets the wordmark rather than a line of copy, because a title sequence
+   * that never says the name of the thing is a mood board.
+   */
+  card?: boolean;
 }
 
 export interface IntroOptions {
@@ -61,6 +78,12 @@ export interface IntroOptions {
   /** Total run time. The last beat holds until this. */
   durationS: number;
   quality?: 'low' | 'high';
+  /**
+   * The colours of the light rig behind the car — the player's own helmet.
+   * Empty on a genuine first run, where there is nobody to light it for yet
+   * and the rain is lit by nothing but the rim.
+   */
+  streaks?: readonly number[];
   /** Called once, whether the sequence ran out or was skipped. */
   onDone: (skipped: boolean) => void;
 }
@@ -115,7 +138,11 @@ export class IntroSequence {
         ...first,
         quality: opts.quality ?? 'high',
         still: this.reduced,
+        set: 'wet',
+        streaks: opts.streaks,
+        look: opts.beats[0]?.look ?? 'nose',
       });
+      this.stage.setDrift(true);
       this.stage.mount(stageHost);
     } catch (err) {
       // A refused GL context must not be able to lock somebody out of the game
@@ -139,12 +166,17 @@ export class IntroSequence {
     const skip = document.createElement('button');
     skip.type = 'button';
     skip.className = 'intro-skip';
-    skip.innerHTML = '<span>Skip</span>'
+    skip.innerHTML = '<span>Skip</span><kbd>ESC</kbd>'
       + '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" '
       + 'stroke-width="2.4" stroke-linecap="square">'
       + '<path d="M5 5 L13 12 L5 19"/><path d="M17 5 L17 19"/></svg>';
     skip.addEventListener('click', () => this.finish(true));
     this.root.appendChild(skip);
+    // Focused, so the very first Tab, Enter or d-pad press lands on the one
+    // control the sequence has. `preventScroll` because focusing a fixed
+    // element at the bottom of a full-bleed layer scrolls the page under it on
+    // iOS, which shifts the whole picture up by the height of the button.
+    skip.focus({ preventScroll: true });
 
     const bar = document.createElement('div');
     bar.className = 'intro-bar';
@@ -191,12 +223,27 @@ export class IntroSequence {
 
   private showBeat(beat: IntroBeat): void {
     if (beat.livery) this.stage?.setLivery(beat.livery);
+    // THE CUT. The look changes here, on the beat; the ease between looks
+    // belongs to the stage, which is the only thing that knows about frames.
+    if (beat.look) this.stage?.setLook(beat.look);
     // Retriggering the entrance means removing the class, forcing a reflow and
     // adding it back; without the reflow the browser coalesces the two and the
     // animation never restarts.
     this.root.classList.remove('shown');
     void this.root.offsetWidth;
-    this.titleEl.textContent = beat.title;
+    // The title card is set differently from the lines that lead to it: bigger,
+    // centred, and with the wordmark's own hollow qualifier. It is the only
+    // beat that is a logo rather than a sentence.
+    this.root.classList.toggle('intro-card', beat.card === true);
+    if (beat.card) {
+      this.titleEl.textContent = '';
+      this.titleEl.append(document.createTextNode('F1'));
+      const i = document.createElement('i');
+      i.textContent = 'SIM';
+      this.titleEl.appendChild(i);
+    } else {
+      this.titleEl.textContent = beat.title;
+    }
     this.subEl.textContent = beat.sub ?? '';
     this.root.classList.add('shown');
   }
@@ -265,27 +312,46 @@ export function openingBeats(
   return [
     {
       at: 0,
+      // Head on, in the rain, before anything is said. The first shot of a
+      // title sequence should be the subject and nothing else.
+      look: 'nose',
       title: 'Twenty seats',
       sub: 'Every one of them belongs to somebody else.',
       livery: { ...walk[0], number: 1 },
     },
     {
-      at: 3.4,
+      at: 3.6,
+      // Down the flank. The car changes colour on the cut, which is the point
+      // of the beat: these are different people's cars.
+      look: 'flank',
       title: 'They open one at a time',
       sub: 'A retirement, a bad season, a contract nobody renewed.',
       livery: { ...(walk[1] ?? walk[0]), number: 16 },
     },
     {
-      at: 6.8,
+      at: 7.2,
+      look: 'wing',
       title: 'And they open at the bottom',
       sub: 'Formula 3, the slowest car on the grid, and nine rounds to prove it wrong.',
       livery: { ...(walk[2] ?? walk[0]), number: 4 },
     },
     {
-      at: 10.2,
+      at: 10.6,
+      // Kerb height, and the last livery change: the car standing in the light
+      // now is the one the player is about to be handed.
+      look: 'low',
       title: 'This one is yours',
       sub: 'Take it.',
       livery: { colour: rookie.colour, accent: rookie.accent, number: 47, code: rookie.code },
+    },
+    {
+      at: 13.8,
+      // The title card, on the launch angle. The sequence has spent thirteen
+      // seconds earning the right to say its own name.
+      look: 'hero',
+      card: true,
+      title: 'F1SIM',
+      sub: 'Formula 3 to Formula 1, one seat at a time.',
     },
   ];
 }

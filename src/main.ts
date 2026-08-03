@@ -58,6 +58,11 @@ import { AI_DIFFICULTIES } from './ai/AIVehicleController';
 import { PauseMenu } from './ui/PauseMenu';
 import { PitStopPrompt } from './ui/PitStopPrompt';
 import { clearPitOrder } from './race/PitStop';
+import { ProfileStore } from './profile/ProfileStore';
+import { buildMainMenu, MENU_ICONS, type MenuTile } from './ui/MainMenu';
+import { buildDriversScreen } from './ui/DriversScreen';
+import { buildSettingsScreen, type SettingsTab, type SettingsTabId } from './ui/SettingsScreen';
+import { applyIdentityColours, rigColours } from './ui/frontendKit';
 
 /**
  * Application shell: screens, the game loop, and the wiring between the
@@ -86,7 +91,12 @@ type Screen =
   | 'event'
   | 'standings'
   | 'settings'
-  | 'controller';
+  | 'controller'
+  | 'drivers'
+  | 'driver-create';
+
+/** The build, as the front page prints it. */
+const VERSION = 'v0.1.0';
 
 class Game {
   private readonly canvas: HTMLCanvasElement;
@@ -98,6 +108,15 @@ class Game {
   private readonly input = new InputController();
   private readonly clock = new SimClock();
   private readonly saves = new SaveManager();
+  /**
+   * WHO IS PLAYING. The only thing on this shell that answers that.
+   *
+   * Every screen asks this object rather than reading storage, which is what
+   * makes an account possible later without touching a screen. It wraps
+   * `saves` for careers, so a career is never written through one path and
+   * indexed through another. See `src/profile/ProfileStore.ts`.
+   */
+  private readonly profiles = new ProfileStore({ saves: this.saves });
   private readonly audio = new AudioEngine();
   private hud!: Hud;
 
@@ -110,6 +129,16 @@ class Game {
 
   private screen: Screen = 'menu';
   private screenRoot!: HTMLElement;
+
+  /**
+   * Which settings tab is open.
+   *
+   * On the shell rather than inside the screen because the screen is rebuilt
+   * from scratch after every change — that is how a toggle repaints — and a
+   * tab held inside it would snap back to the first one every time anybody
+   * touched a switch.
+   */
+  private settingsTab: SettingsTabId = 'opposition';
 
   /**
    * The car standing on the reveal stage behind a menu, or null.
@@ -308,20 +337,8 @@ class Game {
       // A deep link is used for headless verification and to jump straight into a
       // session, so it goes past the garage briefing rather than through it.
       this.launchSession(deepLink.circuitId);
-    } else if (!this.settings.introSeen
-      && new URLSearchParams(window.location.search).get('intro') !== '0') {
-      // FIRST RUN ONLY, and never in front of a deep link — a deep link is how
-      // every headless harness in this repository reaches a session, and a
-      // title sequence in front of one would break all of them.
-      //
-      // `?intro=0` suppresses it outright, for a harness that boots the MENU
-      // rather than a session and is not testing the opening. `regress:career`
-      // deliberately does not use it: it clicks the real skip button, because
-      // a skip that stopped working would otherwise strand every new player
-      // behind fourteen seconds of titles and nothing would notice.
-      this.playIntro(() => this.showMenu());
     } else {
-      this.showMenu();
+      this.openFrontDoor();
     }
 
     this.loop(performance.now());
@@ -460,6 +477,12 @@ class Game {
     mode: 'right' | 'full' | 'panel',
     livery: { colour: number; accent: number; number?: number; code?: string },
     into?: HTMLElement,
+    /**
+     * The light rig behind the car — the player's own helmet colours. Omitted
+     * on the working screens, where a room full of coloured light would be
+     * decoration standing next to a page of figures.
+     */
+    room?: { streaks?: readonly number[] },
   ): CarStage | null {
     this.disposeStage();
     // The stage is a luxury, not a feature: if anything about it fails —
@@ -473,6 +496,7 @@ class Game {
         // motion this setting exists to switch off. Parked at the three-
         // quarter angle instead, and the render loop never starts.
         still: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        streaks: room?.streaks,
       });
       // `panel` stands the car inside a box on the page — a garage bay in the
       // flow of a dense screen. The other two hang it behind the whole screen.
@@ -745,17 +769,71 @@ class Game {
     return card;
   }
 
+  // =======================================================================
+  // The front door
+  // =======================================================================
+
   /**
-   * Plays the opening sequence, once.
+   * WHAT SOMEBODY SEES WHEN THEY OPEN THIS FOR THE FIRST TIME.
    *
-   * `introSeen` is written the moment it starts rather than when it ends, so a
+   * Three states, and every one of them was broken before:
+   *
+   *   NOBODY HAS EVER PLAYED HERE. The titles run, and then the game asks who
+   *     is driving. It does not open on a menu that greets a stranger by a
+   *     name it does not have, and it does not open on a form with a wordmark
+   *     over it. This is the path that had no code at all: the game simply
+   *     showed the menu, and the menu showed whatever name happened to be in
+   *     the most recent career.
+   *
+   *   A DRIVER EXISTS AND HAS NOT SEEN THE TITLES. They run once, for them.
+   *     The flag used to be one per browser, set in 2026 and never cleared, so
+   *     every driver made afterwards on this machine was skipped past the one
+   *     piece of cinema in the game — which is exactly what happened, and why
+   *     the person who commissioned it had never seen it.
+   *
+   *   A DRIVER EXISTS AND HAS SEEN THEM. Straight to the menu.
+   *
+   * `?intro=0` suppresses the sequence, for a harness booting the MENU rather
+   * than a session. `?fresh=1` clears the whole front end, which is how the
+   * first-run path is tested without hand-emptying storage.
+   */
+  private openFrontDoor(): void {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('fresh') === '1') this.profiles.removeAll();
+
+    const allowIntro = q.get('intro') !== '0';
+    const profile = this.profiles.active;
+
+    if (!profile) {
+      // Nobody. Titles, then the one question the game has to ask.
+      if (allowIntro) this.playIntro(() => this.showDriverCreate({ firstRun: true }));
+      else this.showDriverCreate({ firstRun: true });
+      return;
+    }
+    if (allowIntro && !profile.introSeen) {
+      this.playIntro(() => this.showMenu());
+      return;
+    }
+    this.showMenu();
+  }
+
+  /**
+   * Plays the opening sequence.
+   *
+   * The flag is written the moment it STARTS rather than when it ends, so a
    * player who skips it, closes the tab, or reloads mid-sequence is never shown
    * it a second time. Being made to sit through — or skip past — an opening
    * twice is the specific thing that makes people resent them.
+   *
+   * It is also replayable from the menu, from the drivers rack, and by URL,
+   * because an opening that can only ever be seen once is an opening most of
+   * the people it was made for will never see at all.
    */
   private playIntro(after: () => void): void {
     this.settings.introSeen = true;
     this.saves.saveSettings(this.settings);
+    const active = this.profiles.active;
+    if (active) this.profiles.noteIntroSeen(active.id);
 
     this.setScreen('intro');
     // The menu leaves a car stage of its own behind it, and two GL contexts for
@@ -780,172 +858,339 @@ class Game {
         { colour: rookie.colour, accent: rookie.accent, code: rookie.code },
         f1.map((t) => ({ colour: t.colour, accent: t.accent, code: t.code })),
       ),
-      durationS: 13.6,
+      durationS: 16.5,
       quality: this.renderer.quality,
+      // The rig behind the car in the rain is the player's own colours when
+      // there is a player, and cold sodium when there is not — which is what a
+      // first run looks like, because there is nobody to light it for yet.
+      streaks: rigColours(active?.helmet ?? null),
       onDone: done,
     });
   }
 
   /**
-   * The front page.
+   * The front page. See `src/ui/MainMenu.ts` for what it is and why.
    *
-   * It opens on the state of the world, not on a wordmark. A monitor that has
-   * just been switched on in a garage reads out where the season has got to;
-   * a logo the size of a building would say nothing the title bar does not.
-   * Every token on the status line is read from the save.
+   * What stays here is what the shell owns: the car standing behind it, the
+   * figures read out of the save, and where every button goes.
    */
   private showMenu(): void {
     this.setScreen('menu');
-    const recent = this.saves.mostRecent();
-    const { body } = this.page({
-      where: 'Main Menu',
-      rule: { parts: [1, 1, 1], at: 0 },
-    });
+    const profile = this.profiles.active;
+    const current = this.profiles.currentCareer();
+    const { body } = this.page({ where: 'Main Menu' });
 
-    // The front page opens on a car, because the front page of a racing game
-    // should. Which car is not arbitrary: with a career running it is the one
-    // in your garage, and without one it is the machine at the front of the
-    // grid — the thing you are about to go and try to beat.
+    // The player's own colours, published to the screen. Everything lit on the
+    // front end is lit in them; with no driver yet the hall stays unlit.
+    applyIdentityColours(this.screenRoot, profile?.helmet ?? null);
+
+    // WHICH CAR. With a career running it is the one in your garage; without
+    // one it is the machine at the front of the grid — the thing you are about
+    // to go and try to beat. Either way it stands in a rig of light built from
+    // the helmet the player designed.
     const showTeam = this.career ? getTeam(this.career.state.teamId) : PADDOCK_ORDER[0];
     const showDriver = DRIVERS.find((d) => d.teamId === showTeam.id);
-    this.mountStage('right', {
+    this.mountStage('full', {
       colour: showTeam.colour,
       accent: showTeam.accent,
-      number: showDriver?.raceNumber,
-      code: showDriver?.code,
-    });
+      number: profile?.raceNumber ?? showDriver?.raceNumber,
+      code: profile?.code ?? showDriver?.code,
+    }, undefined, { streaks: rigColours(profile?.helmet ?? null) });
 
-    // Everything readable is held to the left of the car rather than being
-    // spread across the picture.
-    const column = this.el('div', 'menu-column', body);
-    const hero = this.el('div', 'board-hero', column);
-    this.el('div', 'board-hero-label', hero, recent ? 'Career in progress' : 'No career loaded');
-    const line = this.el('div', 'board-hero-line', hero);
-    if (recent) {
-      line.innerHTML =
-        escapeHtml(recent.driverName) + '<span class="sep">·</span>' +
-        escapeHtml(tierLabel(recent.tier)) + '<span class="sep">·</span>' +
-        '<span class="go">Round ' + (recent.round + 1) + '</span>';
-    } else {
-      line.innerHTML =
-        '<span class="none">F3</span><span class="sep">→</span>' +
-        '<span class="none">F2</span><span class="sep">→</span>' +
-        '<span class="go">F1</span>';
-    }
-    this.el('div', 'board-hero-note', hero,
-      'A full physics simulation, eleven surveyed circuits and a career that starts in ' +
-      'Formula 3. Every number on every screen is one the car actually uses.');
+    const tiles: MenuTile[] = [];
 
-    const actions = this.el('div', 'menu-actions', column);
-
-    const entry = (name: string, desc: string, fig: string, onClick: () => void, lead = false) => {
-      const b = document.createElement('button');
-      b.className = 'menu-item' + (lead ? ' lead' : '');
-      b.type = 'button';
-      b.innerHTML =
-        '<span class="menu-name">' + escapeHtml(name) + '</span>' +
-        '<span class="menu-fig">' + escapeHtml(fig) + '</span>' +
-        '<span class="menu-desc">' + escapeHtml(desc) + '</span>';
-      b.addEventListener('click', onClick);
-      actions.appendChild(b);
-      return b;
-    };
-
-    if (recent) {
-      entry('Continue', 'Pick your career back up where you left it',
-        'R' + (recent.round + 1), () => {
-          const result = this.saves.loadResult(recent.id);
-          if (!result.ok) {
-            // The reason matters: a save from a newer build is a completely
-            // different situation from a corrupt file, and telling somebody
-            // their career is gone when it is merely from tomorrow's build is
-            // the worst possible version of this message.
-            alert(loadFailureMessage(result));
-            return;
-          }
-          if (needsWorldRebuild(result.state)) {
-            // A career from before the ladder existed. The driver survives; the
-            // three championships around them cannot be reconstructed, because
-            // the save predates their existence. See SaveCodec's migration note.
-            const rebuilt = Career.create({
-              firstName: result.state.player.firstName,
-              lastName: result.state.player.lastName,
-              nationality: result.state.player.nationality,
-              raceNumber: result.state.player.raceNumber,
-              seed: result.state.seed,
-            });
-            rebuilt.state.player = result.state.player;
-            rebuilt.state.narrative = result.state.narrative;
-            rebuilt.state.history = result.state.history;
-            rebuilt.syncPlayerIntoWorld();
-            this.career = rebuilt;
-            alert('This career was started before the Formula 3 and Formula 2 ' +
-              'championships existed. Your driver has been carried over; the ' +
-              'season around them has been rebuilt.');
-          } else {
-            this.career = new Career(result.state);
-          }
-          this.careerId = recent.id;
-          this.showCareerHub();
-        }, true);
-    }
-    entry(recent ? 'New Career' : 'Start Career',
-      'Sign for a junior team and race for a Formula 1 seat',
-      'F3 to F1',
-      () => this.showCareerCreate(), !recent);
-    entry('Quick Race', 'Any circuit, any session, straight to the grid',
-      CIRCUITS.length + ' circuits',
-      () => this.showSessionSelect(true));
-    entry('Paddock', 'Every team, every car and what it is good at',
-      TEAMS.length + ' teams',
-      () => this.showPaddock());
-    entry('Settings', 'Assists, opposition, camera and audio',
-      '', () => this.showSettings());
-    // Replayable, because an opening that can only be seen once and is skipped
-    // by half the people who see it may as well not have been made.
-    entry('Opening sequence', 'Watch the titles again', '',
-      () => this.playIntro(() => this.showMenu()));
-
-    if (this.saves.isEphemeral) {
-      this.el('div', 'notice', column,
-        'This browser is blocking storage, so a career will not survive a reload. ' +
-        'Everything else works normally.');
-    }
-
-    // The calendar. In calendar order, with the round number on each card,
-    // because these eleven circuits are a season and not a shelf.
-    const head = this.el('div', 'section-title', column, 'The calendar');
-    this.el('span', 'section-count', head, CIRCUITS.length + ' circuits');
-    const grid = this.el('div', 'grid-circuits', column);
-    for (const [i, c] of CIRCUITS.entries()) {
-      this.circuitCard(grid, c, {
-        round: i + 1,
-        index: i,
-        onClick: () => {
-          this.quickCircuitId = c.id;
-          this.showSessionSelect(true);
-        },
+    if (current) {
+      tiles.push({
+        name: 'Continue',
+        figure: tierLabel(current.tier) + ' · Round ' + (current.round + 1),
+        description: 'Pick your career back up where you left it',
+        lead: true,
+        onSelect: () => this.openCareer(current.id),
       });
     }
+    tiles.push({
+      name: current ? 'New Career' : 'Start Career',
+      figure: 'F3 → F2 → F1',
+      description: 'Sign for a junior team and race for a Formula 1 seat',
+      lead: !current,
+      onSelect: () => this.showCareerCreate(),
+    });
+    tiles.push({
+      name: 'Quick Race',
+      figure: CIRCUITS.length + ' circuits',
+      description: 'Any circuit, any session, straight to the grid',
+      onSelect: () => this.showSessionSelect(true),
+    });
+    tiles.push({
+      name: 'Paddock',
+      figure: TEAMS.length + ' teams',
+      description: 'Every team, every car and what it is good at',
+      onSelect: () => this.showPaddock(),
+    });
+
+    buildMainMenu(body, {
+      profile,
+      standing: current
+        ? tierLabel(current.tier) + ' · R' + (current.round + 1)
+        : 'No career yet',
+      onIdentity: () => this.showDrivers(),
+      onSettings: () => this.showSettings(),
+      tiles,
+      links: [
+        {
+          label: profile ? 'Drivers' : 'Create a driver',
+          icon: MENU_ICONS.drivers,
+          onSelect: () => this.showDrivers(),
+        },
+        {
+          label: 'Opening titles',
+          icon: MENU_ICONS.film,
+          onSelect: () => this.playIntro(() => this.showMenu()),
+        },
+        {
+          label: 'Settings',
+          icon: MENU_ICONS.gauge,
+          onSelect: () => this.showSettings(),
+        },
+      ],
+      version: VERSION,
+      warning: this.profiles.isEphemeral
+        ? 'This browser is blocking storage, so a driver and a career will not '
+          + 'survive a reload. Everything else works normally.'
+        : undefined,
+      blurb: current
+        ? {
+          label: 'Career in progress',
+          text: 'A full physics simulation, ' + CIRCUITS.length + ' surveyed circuits, '
+            + 'and a ladder that starts in the slowest car on the grid.',
+        }
+        : {
+          label: 'Formula 3 to Formula 1',
+          text: 'Every number on every screen is one the car actually uses. '
+            + 'Finish in the top two and you go up.',
+        },
+    });
   }
 
   /**
-   * The front door.
+   * Opens a career by its save id, with the reasons a save can refuse.
    *
-   * The screen itself is `src/ui/CareerCreate.ts`: a driver you make, standing
-   * on the left and changing as you make them, rather than three text fields
-   * and three boxes explaining the rules of the mode. What stays here is the
-   * page chassis, the car stage and the one button, because those are the
-   * things `Main` owns.
+   * One funnel, because there are now three doors into a career — Continue, a
+   * career listed under a driver on the rack, and switching to a driver who
+   * has one — and three copies of the migration and error handling would be
+   * three places for them to drift apart.
    */
+  private openCareer(careerId: string): void {
+    const result = this.profiles.loadCareer(careerId);
+    if (!result.ok) {
+      // The reason matters: a save from a newer build is a completely
+      // different situation from a corrupt file, and telling somebody their
+      // career is gone when it is merely from tomorrow's build is the worst
+      // possible version of this message.
+      alert(loadFailureMessage(result));
+      return;
+    }
+    if (needsWorldRebuild(result.state)) {
+      // A career from before the ladder existed. The driver survives; the
+      // three championships around them cannot be reconstructed, because the
+      // save predates their existence. See SaveCodec's migration note.
+      const rebuilt = Career.create({
+        firstName: result.state.player.firstName,
+        lastName: result.state.player.lastName,
+        nationality: result.state.player.nationality,
+        raceNumber: result.state.player.raceNumber,
+        seed: result.state.seed,
+      });
+      rebuilt.state.player = result.state.player;
+      rebuilt.state.narrative = result.state.narrative;
+      rebuilt.state.history = result.state.history;
+      rebuilt.syncPlayerIntoWorld();
+      this.career = rebuilt;
+      alert('This career was started before the Formula 3 and Formula 2 '
+        + 'championships existed. Your driver has been carried over; the '
+        + 'season around them has been rebuilt.');
+    } else {
+      this.career = new Career(result.state);
+    }
+    this.careerId = careerId;
+    this.profiles.touchCareer(careerId);
+    this.showCareerHub();
+  }
+
+  // =======================================================================
+  // Drivers
+  // =======================================================================
+
+  /**
+   * The rack of drivers on this device.
+   *
+   * See `src/ui/DriversScreen.ts` for why "switch" and "delete" rather than
+   * "sign out".
+   */
+  private showDrivers(): void {
+    this.setScreen('drivers');
+    const active = this.profiles.active;
+    const { body, actions } = this.page({
+      tab: 'Main Menu',
+      where: 'Drivers',
+      title: 'Drivers',
+      sub: 'Who is playing, and everyone else who plays on this device.',
+      back: () => this.showMenu(),
+    });
+    applyIdentityColours(this.screenRoot, active?.helmet ?? null);
+
+    buildDriversScreen(body, {
+      drivers: this.profiles.list().map((p) => ({
+        profile: p,
+        record: this.profiles.record(p.id),
+        active: p.id === active?.id,
+      })),
+      tierName: (t) => tierLabel(t),
+      ephemeral: this.profiles.isEphemeral,
+      onPlayAs: (id) => {
+        this.profiles.setActive(id);
+        // The career in memory belonged to the driver who is no longer
+        // playing. Leaving it loaded is how one driver's championship ends up
+        // on another driver's front page.
+        this.career = null;
+        this.forgetWeekend();
+        this.showMenu();
+      },
+      onEdit: (id) => this.showDriverCreate({ editing: id }),
+      onDelete: (id) => {
+        const p = this.profiles.get(id);
+        if (!p) return;
+        const careers = p.careers.length;
+        const ok = confirm(
+          'Delete ' + p.firstName + ' ' + p.lastName
+          + (careers > 0
+            ? ' and ' + (careers === 1 ? 'their career' : 'all ' + careers + ' of their careers')
+            : '')
+          + '? This cannot be undone.');
+        if (!ok) return;
+        if (this.profiles.active?.id === id) {
+          this.career = null;
+          this.forgetWeekend();
+        }
+        this.profiles.remove(id);
+        if (this.profiles.active) this.showDrivers();
+        else this.showDriverCreate({ firstRun: true });
+      },
+      onCreate: () => this.showDriverCreate({}),
+      onOpenCareer: (profileId, careerId) => {
+        if (profileId !== this.profiles.active?.id) {
+          this.profiles.setActive(profileId);
+          this.career = null;
+          this.forgetWeekend();
+        }
+        this.openCareer(careerId);
+      },
+    });
+
+    this.spacer(actions);
+    this.button('New driver', actions, () => this.showDriverCreate({}), 'btn primary');
+  }
+
+  /**
+   * Making a driver — the first screen of a first run, and the editor after.
+   *
+   * IT IS THE SIGNING SCREEN, not a second form that happens to ask the same
+   * questions. `CareerCreate` already builds a driver you can see, in the
+   * register the whole game sets names in, and having two screens that both
+   * make a person would guarantee they drifted apart. What changes is the
+   * frame around it: on a first run it says welcome and the button says "Start
+   * driving"; from the rack it says edit and the button says "Save driver".
+   */
+  private showDriverCreate(opts: { firstRun?: boolean; editing?: string }): void {
+    this.setScreen('driver-create');
+    const editing = opts.editing ? this.profiles.get(opts.editing) : null;
+    const first = opts.firstRun === true;
+
+    const { body, actions } = this.page({
+      tab: first ? '' : 'Drivers',
+      where: first ? 'Welcome' : 'Driver',
+      title: editing ? 'Edit driver' : first ? 'Who is driving?' : 'New driver',
+      sub: editing
+        ? 'Your name, your country, your number and your helmet. Careers you have '
+          + 'already run keep the name they were run under.'
+        : first
+          ? 'Nothing has been played on this browser yet. Make a driver and the game '
+            + 'is theirs — their name on the timing tower, their helmet in the car, '
+            + 'their record on the front page. There is no account and nothing leaves '
+            + 'this device.'
+          : 'A second driver, with their own helmet, their own record and their own '
+            + 'run at the ladder.',
+      back: first ? undefined : () => this.showDrivers(),
+    });
+    applyIdentityColours(this.screenRoot, editing?.helmet ?? null);
+
+    // The seat this driver would be offered, so the panel on the right is
+    // about something real rather than empty. Read from the roster so the
+    // screen and the career cannot disagree about which team it is.
+    const f3 = REAL_ROSTER.tiers.F3;
+    const startTeam = f3.teams[f3.teams.length - 1];
+
+    const create = buildCareerCreate(body, {
+      seat: {
+        teamName: startTeam.name,
+        tierName: TIER_CAR.F3.name,
+        rounds: f3.calendar.length,
+        colour: startTeam.colour,
+        accent: startTeam.accent,
+      },
+      takenNumbers: f3.drivers.map((d) => d.raceNumber),
+      initial: editing
+        ? {
+          firstName: editing.firstName,
+          lastName: editing.lastName,
+          nationality: editing.nationality,
+          raceNumber: editing.raceNumber,
+          helmet: editing.helmet,
+        }
+        : undefined,
+      // The room behind the interface is relit as the helmet is painted, which
+      // is the whole argument for the accent being the player's colour: you
+      // can watch the front end become yours while you are making it.
+      onChange: (id) => applyIdentityColours(this.screenRoot, id.helmet),
+      onSubmit: (id) => {
+        if (editing) {
+          this.profiles.update(editing.id, {
+            firstName: id.firstName,
+            lastName: id.lastName,
+            nationality: id.nationality,
+            raceNumber: id.raceNumber,
+            helmet: id.helmet,
+          });
+          this.showDrivers();
+          return;
+        }
+        this.profiles.create(id);
+        // A driver made on a machine that has already been shown the titles is
+        // not made to watch them again.
+        if (this.settings.introSeen) this.profiles.noteIntroSeen(this.profiles.active!.id);
+        this.career = null;
+        this.forgetWeekend();
+        this.showMenu();
+      },
+    });
+
+    this.spacer(actions);
+    this.button(editing ? 'Save driver' : first ? 'Start driving' : 'Create driver',
+      actions, () => create.submit(), 'btn primary');
+  }
   private showCareerCreate(): void {
     this.setScreen('career-create');
+    const me = this.profiles.active;
     const { body, actions } = this.page({
       tab: 'Main Menu',
       where: 'New Career',
       title: 'New Career',
-      sub: 'One seat is open in Formula 3. It is the worst one on the grid, '
-        + 'and it is yours if you want it.',
+      sub: me
+        ? 'One seat is open in Formula 3. It is the worst one on the grid, and it '
+          + 'is yours if you want it. You are signing as ' + me.firstName + ' '
+          + me.lastName + ' — change anything here and your driver changes with it.'
+        : 'One seat is open in Formula 3. It is the worst one on the grid, '
+          + 'and it is yours if you want it.',
       back: () => this.showMenu(),
       // The three tiers, as the three sectors of a career.
       rule: { parts: [9, 12, 11], at: 0 },
@@ -970,7 +1215,25 @@ class Game {
       // first session that somebody else has it is not a discovery anybody
       // enjoys.
       takenNumbers: f3.drivers.map((d) => d.raceNumber),
+      // PREFILLED FROM THE DRIVER WHO IS PLAYING. A player who made a helmet
+      // ten minutes ago and is now told to make one again has been asked the
+      // same question twice, and the second answer is the one that ends up on
+      // the timing tower — so the two used to be able to disagree.
+      initial: me
+        ? {
+          firstName: me.firstName,
+          lastName: me.lastName,
+          nationality: me.nationality,
+          raceNumber: me.raceNumber,
+          helmet: me.helmet,
+        }
+        : undefined,
+      onChange: (id) => applyIdentityColours(this.screenRoot, id.helmet),
       onSubmit: (id) => {
+        // A career always belongs to a driver. Somebody who reached this screen
+        // without one — an old deep link, a cleared profile index — gets one
+        // made from what they just typed rather than an orphaned save.
+        if (!this.profiles.active) this.profiles.create(id);
         this.career = Career.create({
           firstName: id.firstName,
           lastName: id.lastName,
@@ -979,11 +1242,12 @@ class Game {
           helmet: id.helmet,
         });
         this.careerId = 'career-' + Date.now().toString(36);
-        this.saves.save(this.careerId, this.career.state);
+        this.profiles.saveCareer(this.careerId, this.career.state);
         this.showCareerHub();
       },
     });
 
+    applyIdentityColours(this.screenRoot, me?.helmet ?? null);
     this.spacer(actions);
     this.button('Take the seat', actions, () => create.submit(), 'btn primary');
   }
@@ -1200,7 +1464,7 @@ class Game {
       this.button('End Season', actions, () => {
         const before = career.tier;
         const outcome = career.endSeason();
-        this.saves.save(this.careerId, career.state);
+        this.profiles.saveCareer(this.careerId, career.state);
         this.showOffSeason(before, outcome);
       }, 'btn primary');
       return;
@@ -1253,7 +1517,7 @@ class Game {
       const wet = Math.random() < circuit.rainChance;
       const result = career.simulatePlayerRound({ wet });
       career.recordPlayerRound(result);
-      this.saves.save(this.careerId, career.state);
+      this.profiles.saveCareer(this.careerId, career.state);
       this.afterRace(result);
     }, 'btn ghost');
     this.spacer(actions);
@@ -1660,182 +1924,381 @@ class Game {
   }
 
   /**
+   * SETTINGS — eight tabs, and everything the game holds is under one of them.
+   *
+   * See `src/ui/SettingsScreen.ts` for why a rail rather than a scroll. What
+   * lives here is the wiring: which setting each control reads and writes, and
+   * what has to happen live as well as be saved. Two rules run through all of
+   * it:
+   *
+   *   EVERY CHANGE IS SAVED AT ONCE. No Apply, no Cancel.
+   *   EVERY CHANGE THAT CAN BE APPLIED LIVE IS. A camera picked here moves the
+   *     camera now; a difficulty picked here reaches the cars in the session
+   *     that is already running. A setting that needs a restart to take effect
+   *     is a setting the player will believe is broken.
+   *
    * @param back where Back goes. Supplied when Settings was opened from the
    * pause menu, so a player changing an assist mid-session lands back in the
    * session rather than at the main menu with the race thrown away.
    */
   private showSettings(back?: () => void): void {
     this.setScreen('settings');
-    const { body } = this.page({
-      tab: 'Main Menu',
+    const { body, actions } = this.page({
+      tab: back ? 'Session' : 'Main Menu',
       where: 'Settings',
       title: 'Settings',
-      sub: 'Assists are off by default. The car is the same either way — an assist ' +
-        'limits what your input can ask for, it does not change the machine.',
-      // Supplied when Settings was opened from the pause menu, so a player
-      // changing an assist mid-session lands back in the session rather than at
-      // the main menu with the race thrown away.
+      sub: 'Every change here is saved and applied the moment you make it.',
       back: () => (back ? back() : this.career ? this.showCareerHub() : this.showMenu()),
     });
+    applyIdentityColours(this.screenRoot, this.profiles.active?.helmet ?? null);
 
-    const toggle = (label: string, meta: string, get: () => boolean, set: (v: boolean) => void) => {
-      const c = this.el('div', 'card' + (get() ? ' selected' : ''), grid);
-      this.el('div', 'card-state', c, get() ? 'On' : 'Off');
-      this.el('div', 'card-name', c, label);
-      this.el('div', 'card-meta', c, meta);
-      c.addEventListener('click', () => {
-        set(!get());
-        this.saves.saveSettings(this.settings);
-        this.showSettings(back);
-      });
-    };
+    const save = () => this.saves.saveSettings(this.settings);
+    const repaint = () => this.showSettings(back);
+    const s = this.settings;
 
-    // --- Opposition -------------------------------------------------------
-    // First, because it is the setting that changes the game most and the one
-    // a player is most likely to be looking for.
-    this.el('div', 'section-title', body, 'Opposition');
-    const dg = this.el('div', 'card-grid', body);
-    for (const id of ['easy', 'medium', 'hard'] as const) {
-      const level = AI_DIFFICULTIES[id];
-      const selected = this.settings.aiDifficulty === id;
-      const c = this.el('div', 'card' + (selected ? ' selected' : ''), dg);
-      if (selected) this.el('div', 'card-state', c, 'Racing');
-      this.el('div', 'card-name', c, level.label);
-      this.el('div', 'card-meta', c, level.blurb);
-      c.addEventListener('click', () => {
-        this.settings.aiDifficulty = id;
-        // Applied live as well as saved, so a player who changes it mid-weekend
-        // sees it immediately instead of wondering whether it took.
-        for (const car of this.engine?.cars ?? []) car.ai?.setDifficulty(id);
-        this.saves.saveSettings(this.settings);
-        this.showSettings(back);
-      });
-    }
+    const tabs: SettingsTab[] = [
+      {
+        id: 'opposition',
+        label: 'Opposition',
+        title: 'Opposition',
+        note: 'How hard the other nineteen cars are to race. It is the setting '
+          + 'that changes this game most.',
+        build: (panel, k) => {
+          k.choice(panel, {
+            name: 'Difficulty',
+            value: s.aiDifficulty,
+            options: (['easy', 'medium', 'hard'] as const).map((id) => ({
+              id, label: AI_DIFFICULTIES[id].label, note: AI_DIFFICULTIES[id].blurb,
+            })),
+            onChange: (id) => {
+              s.aiDifficulty = id;
+              // Applied live as well as saved, so a player who changes it
+              // mid-weekend sees it immediately instead of wondering whether
+              // it took.
+              for (const car of this.engine?.cars ?? []) car.ai?.setDifficulty(id);
+              save();
+              repaint();
+            },
+          });
+          k.block(panel, {
+            head: 'What it changes',
+            line: 'The pace the field runs at, how hard they defend, and how often '
+              + 'they make a mistake you can use.',
+            note: 'It does not change your car. Every tier of this ladder gives you '
+              + 'the machine your team can afford and nothing else.',
+          });
+        },
+      },
+      {
+        id: 'driving',
+        label: 'Driving',
+        title: 'Driving and assists',
+        note: 'Assists are off by default. The car is the same either way — an '
+          + 'assist limits what your input can ask for, it does not change the machine.',
+        build: (panel, k) => {
+          k.toggle(panel, {
+            name: 'Speed-sensitive steering',
+            note: 'Reduces lock as speed rises, as a real rack does.',
+            value: s.speedSensitiveSteering,
+            onChange: (v) => {
+              s.speedSensitiveSteering = v;
+              this.input.config.speedSensitiveSteering = v;
+              save(); repaint();
+            },
+          });
+          k.toggle(panel, {
+            name: 'Traction assist',
+            note: 'Caps the throttle at the rear axle grip limit.',
+            value: s.tractionAssist,
+            onChange: (v) => {
+              s.tractionAssist = v;
+              this.input.config.tractionAssist = v;
+              save(); repaint();
+            },
+          });
+          k.toggle(panel, {
+            name: 'Braking assist',
+            note: 'Prevents locking the fronts.',
+            value: s.brakingAssist,
+            onChange: (v) => {
+              s.brakingAssist = v;
+              this.input.config.brakingAssist = v;
+              save(); repaint();
+            },
+          });
+          k.toggle(panel, {
+            name: 'Racing line',
+            note: 'The optimal line on the track, coloured green to red by '
+              + 'approach speed.',
+            value: s.racingLine,
+            onChange: (v) => {
+              s.racingLine = v;
+              this.renderer.setRacingLineVisible(v);
+              save(); repaint();
+            },
+          });
+        },
+      },
+      {
+        id: 'controls',
+        label: 'Controls',
+        title: 'Controls',
+        note: 'A gamepad or a wheel needs binding and calibrating; a keyboard '
+          + 'needs neither, so it is listed rather than configured.',
+        build: (panel, k) => {
+          const pads = this.input.gamepads.list();
+          k.block(panel, {
+            head: pads.length === 0 ? 'No controller detected'
+              : pads.length === 1 ? '1 device' : pads.length + ' devices',
+            line: pads.length > 0 ? pads[0].id : 'Keyboard and touch',
+            note: pads.length > 0
+              ? 'Bind every control, calibrate the axes and pedals, shape the '
+                + 'steering curve, and set up rumble.'
+              : 'Connect a gamepad or wheel and press a button on it — browsers hide '
+                + 'a controller from a page until it has been used. Keyboard and '
+                + 'touch keep working either way.',
+          });
+          const row = k.el('div', 'drv-actions', panel);
+          const open = k.button('btn primary', row, () => this.showControllerSetup());
+          open.textContent = 'Controller setup';
 
-    this.el('div', 'section-title', body, 'Driving');
-    const grid = this.el('div', 'card-grid', body);
-    toggle('Speed-sensitive steering', 'Reduces lock at speed, as a real rack does',
-      () => this.settings.speedSensitiveSteering,
-      (v) => { this.settings.speedSensitiveSteering = v; this.input.config.speedSensitiveSteering = v; });
-    toggle('Traction assist', 'Caps throttle at the rear axle grip limit',
-      () => this.settings.tractionAssist,
-      (v) => { this.settings.tractionAssist = v; this.input.config.tractionAssist = v; });
-    toggle('Racing line', 'Optimal line, coloured green to red by approach speed',
-      () => this.settings.racingLine,
-      (v) => { this.settings.racingLine = v; this.renderer.setRacingLineVisible(v); });
-    toggle('Braking assist', 'Prevents locking the fronts',
-      () => this.settings.brakingAssist,
-      (v) => { this.settings.brakingAssist = v; this.input.config.brakingAssist = v; });
+          if (this.input.touchAvailable) {
+            k.toggle(panel, {
+              name: 'Tilt steering',
+              note: 'Steer by tilting the phone. Needs permission from the browser.',
+              value: this.input.tiltEnabled,
+              onChange: (v) => {
+                void (async () => {
+                  if (!v) {
+                    this.input.disableTilt();
+                    s.tiltSteering = false;
+                  } else {
+                    const ok = await this.input.enableTilt();
+                    s.tiltSteering = ok;
+                    if (!ok) alert('Device orientation is not available or was declined.');
+                  }
+                  save(); repaint();
+                })();
+              },
+            });
+          }
 
-    this.el('div', 'section-title', body, 'Volume');
-    const ag = this.el('div', 'card-grid', body);
-    // Four steps rather than a slider: a slider is fiddly on a phone and nobody
-    // needs finer resolution than this on a master volume.
-    for (const [label, value] of [['Off', 0], ['Quiet', 0.35], ['Normal', 0.7], ['Loud', 1]] as const) {
-      const selected = Math.abs(this.settings.masterVolume - value) < 0.03;
-      const c = this.el('div', 'card' + (selected ? ' selected' : ''), ag);
-      this.el('div', 'card-state', c, Math.round(value * 100) + '%');
-      this.el('div', 'card-name', c, label);
-      c.addEventListener('click', () => {
-        this.settings.masterVolume = value;
-        this.audio.setVolume(value);
-        this.audio.setEnabled(value > 0);
-        if (value > 0) this.audio.playUiClick();
-        this.saves.saveSettings(this.settings);
-        this.showSettings(back);
-      });
-    }
+          k.el('div', 'set-panel-note', panel, 'Keyboard');
+          const keys = k.el('div', 'opt-keys', panel);
+          const KEYS: [string, string][] = [
+            ['↑ / W', 'Accelerate'],
+            ['B / Space', 'Brake'],
+            ['↓', 'Brake, then reverse when stopped'],
+            ['← →', 'Steer'],
+            ['Shift', 'DRS, where it is available'],
+            ['E', 'Cycle ERS mode'],
+            ['C', 'Change camera'],
+            ['L', 'Call yourself into the pits'],
+            ['P', 'Pause'],
+            ['R', 'Show the racing line'],
+            ['H', 'Show the controls in a session'],
+          ];
+          for (const [key, what] of KEYS) {
+            const r = k.el('div', 'opt-key', keys);
+            k.el('kbd', '', r, key);
+            k.el('span', '', r, what);
+          }
+          if (this.input.touchAvailable) {
+            k.el('div', 'opt-block-note', panel,
+              'On a touchscreen the pedals and the steering pad appear over the '
+              + 'track once a session starts.');
+          }
+        },
+      },
+      {
+        id: 'camera',
+        label: 'Camera',
+        title: 'Camera',
+        note: 'Where you sit. Changed here or with C at any point in a session.',
+        build: (panel, k) => {
+          k.choice(panel, {
+            name: 'View',
+            value: s.cameraMode,
+            options: CAMERA_MODES.map((m) => ({ id: m as string, label: CAMERA_LABELS[m] })),
+            onChange: (mode) => {
+              s.cameraMode = mode;
+              this.renderer.director.setMode(mode as CameraMode);
+              save(); repaint();
+            },
+          });
+        },
+      },
+      {
+        id: 'audio',
+        label: 'Audio',
+        title: 'Audio',
+        note: 'One engine, one set of tyres, and the pit wall. Nothing here is a '
+          + 'recording; the engine note is synthesised from the crank speed.',
+        build: (panel, k) => {
+          k.slider(panel, {
+            name: 'Master volume',
+            note: 'Zero silences the game entirely.',
+            value: Math.round(s.masterVolume * 100),
+            min: 0, max: 100, step: 5,
+            onInput: (v) => {
+              // Live while the thumb moves, because a volume you cannot hear
+              // while you set it is a volume you cannot set.
+              this.audio.setVolume(v / 100);
+              this.audio.setEnabled(v > 0);
+            },
+            onCommit: (v) => {
+              s.masterVolume = v / 100;
+              this.audio.setVolume(s.masterVolume);
+              this.audio.setEnabled(s.masterVolume > 0);
+              if (s.masterVolume > 0) this.audio.playUiClick();
+              save();
+            },
+          });
+        },
+      },
+      {
+        id: 'video',
+        label: 'Video',
+        title: 'Video',
+        note: 'What the renderer is allowed to spend. Auto measures the device '
+          + 'and picks; the other two override it from the next session onwards.',
+        build: (panel, k) => {
+          k.choice(panel, {
+            name: 'Quality',
+            value: s.quality,
+            options: [
+              { id: 'auto' as const, label: 'Auto', note: 'Measured from the device.' },
+              {
+                id: 'low' as const, label: 'Low',
+                note: 'No shadows, no antialiasing, fewer particles. For a phone or '
+                  + 'an old laptop.',
+              },
+              {
+                id: 'high' as const, label: 'High',
+                note: 'Shadows, antialiasing, reflections and the full weather effects.',
+              },
+            ],
+            onChange: (v) => { s.quality = v; save(); repaint(); },
+          });
+          k.block(panel, {
+            head: 'Running now',
+            line: this.renderer.quality === 'high' ? 'High' : 'Low',
+            note: 'A change takes effect when the next session starts — the '
+              + 'renderer builds its shadow maps and its post-processing chain '
+              + 'once, and rebuilding them mid-lap would drop the frame the '
+              + 'change was meant to save.',
+          });
+        },
+      },
+      {
+        id: 'weekend',
+        label: 'Weekend',
+        title: 'Race weekend',
+        note: 'How long a weekend runs. A preference about your evening rather '
+          + 'than a fact about your championship, so it is kept here and not in '
+          + 'the save.',
+        build: (panel, k) => {
+          const w = s.weekend;
+          const c = getCircuit(this.career?.calendar[this.career.round] ?? this.quickCircuitId);
+          k.choice(panel, {
+            name: 'Race distance',
+            value: w.raceDistance,
+            options: RACE_DISTANCES.filter((d) => d.id !== 'custom').map((d) => ({
+              id: d.id,
+              label: d.label,
+              note: d.blurb + ' — ' + raceLapsFor(c.raceLaps, { ...w, raceDistance: d.id })
+                + ' laps at ' + c.name + '.',
+            })),
+            onChange: (v) => { w.raceDistance = v; save(); repaint(); },
+          });
+          k.choice(panel, {
+            name: 'Session length',
+            value: w.sessionLength,
+            options: SESSION_LENGTHS.map((l) => ({ id: l.id, label: l.label, note: l.blurb })),
+            onChange: (v) => { w.sessionLength = v; save(); repaint(); },
+          });
+          k.choice(panel, {
+            name: 'Practice',
+            value: String(w.practiceCount),
+            options: [0, 1, 2, 3].map((n) => ({
+              id: String(n),
+              label: n === 0 ? 'None' : String(n),
+              note: n === 0 ? 'Straight to qualifying.'
+                : PRACTICE_SEGMENTS.slice(0, n).map((p) => p.name).join(', ') + '.',
+            })),
+            onChange: (v) => { w.practiceCount = Number(v); save(); repaint(); },
+          });
+          k.toggle(panel, {
+            name: 'Run qualifying',
+            note: w.runQualifying
+              ? 'Q1, Q2 and Q3 decide the grid.'
+              : 'The race starts from the championship order.',
+            value: w.runQualifying,
+            onChange: (v) => { w.runQualifying = v; save(); repaint(); },
+          });
+          k.block(panel, {
+            head: 'A weekend at ' + c.name,
+            line: weekendSummary(w, c.raceLaps, c.referencePoleTimeS),
+          });
+        },
+      },
+      {
+        id: 'device',
+        label: 'This device',
+        title: 'This device',
+        note: 'Where the game keeps what you have done, and how to get rid of it.',
+        build: (panel, k) => {
+          const drivers = this.profiles.list();
+          const careers = drivers.reduce((n, p) => n + p.careers.length, 0);
+          k.block(panel, {
+            head: 'Storage',
+            line: this.profiles.isEphemeral
+              ? 'Blocked by this browser'
+              : drivers.length + (drivers.length === 1 ? ' driver' : ' drivers')
+                + ', ' + careers + (careers === 1 ? ' career' : ' careers'),
+            note: this.profiles.isEphemeral
+              ? 'Private browsing or a storage policy is preventing writes, so '
+                + 'nothing you do now will survive a reload. Everything else works.'
+              : 'Everything is in this browser. There is no account, no server and '
+                + 'no network call — which is also why the game works offline.',
+          });
+          const row = k.el('div', 'drv-actions', panel);
+          const manage = k.button('btn', row, () => this.showDrivers());
+          manage.textContent = 'Manage drivers';
+          const titles = k.button('btn', row, () => this.playIntro(() => this.showSettings(back)));
+          titles.textContent = 'Play the opening titles';
+          const wipe = k.button('btn danger', row, () => {
+            if (!confirm('Delete every driver and every career stored in this browser? '
+              + 'This cannot be undone.')) return;
+            this.profiles.removeAll();
+            this.career = null;
+            this.forgetWeekend();
+            this.showDriverCreate({ firstRun: true });
+          });
+          wipe.textContent = 'Erase everything';
 
-    if (this.input.touchAvailable) {
-      this.el('div', 'section-title', body, 'On a phone');
-      const mg = this.el('div', 'card-grid', body);
-      const c = this.el('div', 'card' + (this.input.tiltEnabled ? ' selected' : ''), mg);
-      this.el('div', 'card-state', c, this.input.tiltEnabled ? 'On' : 'Off');
-      this.el('div', 'card-name', c, 'Tilt steering');
-      this.el('div', 'card-meta', c, 'Steer by tilting the phone. Needs permission.');
-      c.addEventListener('click', async () => {
-        if (this.input.tiltEnabled) {
-          this.input.disableTilt();
-          this.settings.tiltSteering = false;
-        } else {
-          const ok = await this.input.enableTilt();
-          this.settings.tiltSteering = ok;
-          if (!ok) alert('Device orientation is not available or was declined.');
-        }
-        this.saves.saveSettings(this.settings);
-        this.showSettings(back);
-      });
-    }
-
-    this.el('div', 'section-title', body, 'Camera');
-    const cams = this.el('div', 'card-grid', body);
-    for (const mode of CAMERA_MODES) {
-      const selected = this.settings.cameraMode === mode;
-      const c = this.el('div', 'card' + (selected ? ' selected' : ''), cams);
-      if (selected) this.el('div', 'card-state', c, 'In use');
-      this.el('div', 'card-name', c, CAMERA_LABELS[mode]);
-      c.addEventListener('click', () => {
-        this.settings.cameraMode = mode;
-        this.renderer.director.setMode(mode as CameraMode);
-        this.saves.saveSettings(this.settings);
-        this.showSettings(back);
-      });
-    }
-
-    // --- Controls ---------------------------------------------------------
-    // One section, not two. A gamepad and a keyboard are the same question —
-    // "how do I drive this" — and splitting them into a "Controller" page and a
-    // "Controls" key map gave the player two places to look and no way to guess
-    // which held the thing they wanted. The banner is the single entry point to
-    // the real binding and calibration screen; the key map below it is the
-    // reference for the keyboard, which needs no setup and so needs no page.
-    this.el('div', 'section-title', body, 'Controls');
-
-    const pads = this.input.gamepads.list();
-    const padCard = this.el('div', 'garage-card', body);
-    const padText = this.el('div', 'garage-text', padCard);
-    const padHead = this.el('div', 'garage-head', padText);
-    this.el('span', '', padHead, 'Gamepad and wheel');
-    this.el('span', 'garage-tag' + (pads.length > 0 ? ' modified' : ''), padHead,
-      pads.length === 0 ? 'none connected'
-        : pads.length === 1 ? '1 device' : pads.length + ' devices');
-    this.el('div', 'garage-headline', padText,
-      pads.length > 0 ? pads[0].id : 'No controller detected');
-    this.el('div', 'garage-detail', padText,
-      pads.length > 0
-        ? 'Bind every control, calibrate the axes and pedals, shape the steering curve, and set up rumble.'
-        : 'Connect a gamepad or wheel and press a button on it — browsers hide a controller from a page ' +
-          'until it has been used. Keyboard and touch keep working either way.');
-    this.button('Controller Setup', this.el('div', 'garage-action', padCard),
-      () => this.showControllerSetup());
-
-    this.el('div', 'section-title', body, 'Keyboard');
-    const keys = this.el('div', 'keymap', body);
-    const KEYS: [string, string][] = [
-      ['↑ / W', 'Accelerate'],
-      ['B / Space', 'Brake'],
-      ['↓', 'Brake, then reverse when stopped'],
-      ['← →', 'Steer'],
-      ['Shift', 'DRS, where it is available'],
-      ['E', 'Cycle ERS mode'],
-      ['C', 'Change camera'],
-      ['L', 'Call yourself into the pits'],
-      ['P', 'Pause'],
-      ['R', 'Show the racing line'],
-      ['H', 'Show the controls in a session'],
+          k.block(panel, {
+            head: 'Build',
+            line: 'F1SIM ' + VERSION,
+            note: CIRCUITS.length + ' surveyed circuits, ' + TEAMS.length + ' teams, '
+              + 'a 120Hz fixed-step vehicle model and a three-tier career. '
+              + 'No team badge, sponsor artwork or driver likeness is reproduced.',
+          });
+        },
+      },
     ];
-    for (const [key, what] of KEYS) {
-      const r = this.el('div', 'keymap-row', keys);
-      this.el('kbd', 'keymap-key', r, key);
-      this.el('span', 'keymap-what', r, what);
-    }
-    if (this.input.touchAvailable) {
-      this.el('div', 'card-meta', body,
-        'On a touchscreen the pedals and the steering pad appear over the track once ' +
-        'a session starts.');
-    }
-  }
 
+    buildSettingsScreen(body, {
+      tabs,
+      active: tabs.some((t) => t.id === this.settingsTab) ? this.settingsTab : 'opposition',
+      onTab: (id) => { this.settingsTab = id; repaint(); },
+    });
+
+    this.spacer(actions);
+    this.button('Done', actions,
+      () => (back ? back() : this.career ? this.showCareerHub() : this.showMenu()),
+      'btn primary');
+  }
   /**
    * The controller setup and calibration page.
    *
@@ -2109,7 +2572,7 @@ class Game {
       qualifyingSurvivors: [...this.qualifyingSurvivors],
       qualifyingBarred: [...this.qualifyingBarred],
     };
-    this.saves.save(this.careerId, career.state);
+    this.profiles.saveCareer(this.careerId, career.state);
   }
 
   /** The weekend is over, or was abandoned. Nothing left to come back to. */
@@ -2117,7 +2580,7 @@ class Game {
     const career = this.career;
     if (!career || !career.state.weekendInProgress) return;
     delete career.state.weekendInProgress;
-    this.saves.save(this.careerId, career.state);
+    this.profiles.saveCareer(this.careerId, career.state);
   }
 
   /**
@@ -2853,7 +3316,7 @@ class Game {
       driven: false,
     };
     career.recordPlayerRound(result);
-    this.saves.save(this.careerId, career.state);
+    this.profiles.saveCareer(this.careerId, career.state);
     this.showSkipResult(circuitId, 'Grand Prix',
       { order, bestLaps: session.result().bestLaps, simSeconds: engine.time, wallMs: session.result().wallMs },
       session);
@@ -3479,7 +3942,7 @@ class Game {
         driven: true,
       };
       this.career.recordPlayerRound(result);
-      this.saves.save(this.careerId, this.career.state);
+      this.profiles.saveCareer(this.careerId, this.career.state);
       this.showResults(() => this.afterRace(result));
       return;
     }
@@ -3532,15 +3995,21 @@ class Game {
       rule: { ...this.circuitRule(engine.track.def), at: 3 },
     });
 
-    // THE PODIUM, when this was a race in a career.
+    // THE PODIUM, after every race.
     //
-    // A ladder from Formula 3 to a world championship is worth nothing if
-    // arriving anywhere on it produces the same twenty-row table as everything
-    // else. Only a career gets it: a quick race has no season for the result to
-    // mean anything in, and putting a podium on one would be ceremony without a
-    // reason. See `src/ui/Podium.ts`.
-    if (isRace && this.career && engine.standings.length > 0) {
-      const s = this.career.state;
+    // IT USED TO BE GATED ON A CAREER, and the argument for that — "a quick
+    // race has no season for the result to mean anything in" — turned out to
+    // be the reason nobody had ever seen it. The person who commissioned this
+    // screen had been driving qualifying sessions for weeks: "I have yet to
+    // see the in game renders at all about the podiums." A ceremony that
+    // almost never fires is a ceremony that was not built.
+    //
+    // A podium is what happens at the end of a motor race, in a career or not.
+    // The career still gets the part that needs one — the tier's name on it —
+    // and a quick race simply omits that. See `src/ui/Podium.ts`.
+    if (isRace && engine.standings.length > 0) {
+      const s = this.career?.state ?? null;
+      const meId = s?.playerDriverId ?? player?.driver.id ?? '';
       buildPodium(body, {
         top3: engine.standings.slice(0, 3).map((c) => ({
           driverId: c.driver.id,
@@ -3552,14 +4021,18 @@ class Game {
           gap: c.position === 1 ? ''
             : c.lapsDown > 0 ? '+' + c.lapsDown + (c.lapsDown === 1 ? ' lap' : ' laps')
             : '+' + c.gapToLeader.toFixed(3),
-          isPlayer: c.driver.id === s.playerDriverId,
-          // The player's own designed helmet; everybody else's is derived from
+          isPlayer: c.driver.id === meId,
+          // The player's own designed helmet — from the career if there is one,
+          // and otherwise from the driver on this device, so a quick race puts
+          // the right head on the rostrum too. Everybody else's is derived from
           // their driver id, so the whole grid has one and none of it is stored.
-          helmet: c.driver.id === s.playerDriverId ? playerHelmet(s) : undefined,
+          helmet: c.driver.id === meId
+            ? (s ? playerHelmet(s) : this.profiles.active?.helmet)
+            : undefined,
         })),
         playerPosition: player && !player.retired ? player.position : 0,
         circuitName: engine.track.def.name,
-        tierName: TIER_CAR[this.career.tier].shortName,
+        tierName: this.career ? TIER_CAR[this.career.tier].shortName : '',
       });
     }
 
@@ -3994,7 +4467,7 @@ class Game {
       if (choice.hint) this.el('div', 'choice-hint', c, choice.hint);
       const answer = () => {
         const messages = career.applyEventChoice(ev, i);
-        this.saves.save(this.careerId, career.state);
+        this.profiles.saveCareer(this.careerId, career.state);
         if (messages.length > 0) alert(messages.join('\n\n'));
         this.showCareerHub();
       };
