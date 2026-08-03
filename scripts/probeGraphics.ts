@@ -400,6 +400,90 @@ async function main(): Promise<void> {
   });
 
   // -------------------------------------------------------------------------
+  console.log('\n4b. `auto` actually moves the tier when the frames say so');
+  // -------------------------------------------------------------------------
+
+  {
+    // THE PART OF `auto` A WIRE TEST CANNOT SEE. Everything above proves a
+    // stated preference arrives; none of it proves the half of `auto` that is
+    // supposed to make a stated preference unnecessary. Since detection is
+    // deliberately timid — a phone starts at `medium`, not `high` — a broken
+    // promotion would leave every phone one tier short forever and every
+    // assertion above would still be green.
+    //
+    // `updateAutoTier` is driven directly with a frame cost rather than by
+    // waiting for the machine to produce one. Waiting would make this probe a
+    // measurement of the machine it happens to run on, which under swiftshader
+    // is a machine that can never promote anything.
+    await loadWith(page, url, { quality: 'auto', graphics: AUTO });
+    const drive = (tier: string, med: number, seconds: number) => `(() => {
+      const r = window.__game.renderer;
+      // Put it on a known tier, adaptive, with the resolution scaler at its
+      // ceiling — which is one of the three conditions for a promotion.
+      r.applyResolved(Object.assign({}, r.features, {
+        tier: ${JSON.stringify(tier)},
+        post: ${JSON.stringify(tier)} !== 'low',
+        shadows: ${JSON.stringify(tier)} === 'high',
+        msaa: false, adaptive: true,
+      }));
+      r.resolutionScale = 1; r.climbCeiling = 1;
+      r.sessionTime = 1000; r.lastTierMoveAt = -1e9; r.comfortableFor = 0;
+      for (let i = 0; i < ${seconds} * 60; i++) r.updateAutoTier(1 / 60, ${med});
+      return r.features.tier;
+    })()`;
+
+    const promoted = await page.evaluate(drive('low', 12, 12));
+    check(promoted === 'medium',
+      'twelve seconds of 12ms frames at the ceiling promotes low -> medium',
+      `ended on '${promoted}'`);
+
+    const notYet = await page.evaluate(drive('low', 12, 4));
+    check(notYet === 'low',
+      'four seconds is not enough — a promotion needs 8s of evidence',
+      `ended on '${notYet}'`);
+
+    const tooSlow = await page.evaluate(drive('low', 18, 30));
+    check(tooSlow === 'low',
+      'thirty seconds of 18ms frames does NOT promote',
+      `18ms is under the display's 16.7ms budget but over AUTO_PROMOTE_MS; ended on '${tooSlow}'`);
+
+    // Demotion only once the resolution scaler has given up, because giving up
+    // pixels is measurably cheaper AND cleaner than giving up the chain.
+    const heldAtCeiling = await page.evaluate(`(() => {
+      const r = window.__game.renderer;
+      r.applyResolved(Object.assign({}, r.features, {
+        tier: 'high', post: true, shadows: false, msaa: false, adaptive: true,
+      }));
+      r.resolutionScale = 1; r.climbCeiling = 1;
+      r.sessionTime = 1000; r.lastTierMoveAt = -1e9;
+      for (let i = 0; i < 1800; i++) r.updateAutoTier(1 / 60, 40);
+      return r.features.tier;
+    })()`);
+    check(heldAtCeiling === 'high',
+      '40ms frames do NOT cost a tier while the resolution scaler still has room',
+      `ended on '${heldAtCeiling}'`);
+
+    const demoted = await page.evaluate(`(() => {
+      const r = window.__game.renderer;
+      r.applyResolved(Object.assign({}, r.features, {
+        tier: 'high', post: true, shadows: false, msaa: false, adaptive: true,
+      }));
+      r.resolutionScale = 0.5; r.climbCeiling = 0.5;
+      r.sessionTime = 1000; r.lastTierMoveAt = -1e9;
+      const seen = [];
+      for (let i = 0; i < 3600; i++) {
+        r.sessionTime += 1 / 60;
+        r.updateAutoTier(1 / 60, 40);
+        if (seen[seen.length - 1] !== r.features.tier) seen.push(r.features.tier);
+      }
+      return seen.join('>');
+    })()`);
+    check(demoted === 'high>medium>low',
+      '40ms frames WITH the scaler at its floor walk the tier all the way down',
+      `saw ${demoted}`);
+  }
+
+  // -------------------------------------------------------------------------
   console.log('\n5. The Settings screen changes it, live, and it persists');
   // -------------------------------------------------------------------------
 
