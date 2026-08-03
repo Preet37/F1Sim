@@ -1438,6 +1438,19 @@ export class Renderer {
     const spin = (sc.speedMs / 0.35) * dt;
     for (const w of v.wheelSpin) w.rotation.x += spin;
 
+    // ...and the fronts point where the road goes. The safety car has no driver
+    // model and no steering input to read, so the angle is taken from the road
+    // itself: how much the centreline turns over the next few metres is what a
+    // car following it has on lock. Not exact, and it does not need to be — a
+    // car going round a hairpin with its front wheels straight ahead is what
+    // this is for.
+    const len = track.length;
+    let turn = track.headingAt((sc.s + 8) % len) - track.headingAt(sc.s);
+    while (turn > Math.PI) turn -= Math.PI * 2;
+    while (turn < -Math.PI) turn += Math.PI * 2;
+    const steer = Math.max(-0.5, Math.min(0.5, turn * 6));
+    for (const w of v.wheelSteer) w.rotation.y = -steer;
+
     v.setLights(dt, sc.orangeLights, sc.greenLight);
   }
 
