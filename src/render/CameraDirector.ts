@@ -4,7 +4,7 @@ import {
   DRIVER_EYE_PITCH, DRIVER_EYE_X, DRIVER_EYE_Y, DRIVER_EYE_Z,
   EYE_PITCH, EYE_X, EYE_Y, EYE_Z,
 } from './CockpitMesh';
-import { carGroundY } from './TrackMesh';
+import { bankedCarGroundY } from './TrackMesh';
 import { nominalBarrierOffset, OBSTACLE_HEIGHT_M } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
@@ -422,7 +422,12 @@ export class CameraDirector {
     // `probe:framing` is there to notice. This branch was cut before
     // `carGroundY` existed and read the bare elevation; taking its attitude
     // work without this line would have put every eye 20mm into the car.
-    const carY = carGroundY(track.elevationAt(car.s));
+    // BANKED, not the centreline's height. On a banked corner the asphalt under
+    // the car is tilted, so a car `lateral` metres off the centreline stands
+    // `lateral * tan(bank)` above or below it — 1.63m at Zandvoort. The eye
+    // rides the car, so the camera has to use the same surface the car does or
+    // an onboard shot at Hugenholtz looks out from under the road.
+    const carY = bankedCarGroundY(track, car.s, car.lateral);
 
     // Reversing: the useful view is the one the car is going towards.
     //

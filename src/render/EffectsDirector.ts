@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ParticleSystem } from './ParticleSystem';
 import { SkidMarks } from './SkidMarks';
 import { RainCurtain } from './Rain';
-import { carGroundY } from './TrackMesh';
+import { bankedCarGroundY } from './TrackMesh';
 import { clamp01 } from '../core/MathUtils';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -187,7 +187,7 @@ export class EffectsDirector {
       // all leave from the contact patch, and the contact patch stands on the
       // asphalt mesh. See `carGroundY` — the cars themselves had the same
       // 20mm error and it put every tyre inside the tarmac.
-      const y = carGroundY(track.elevationAt(car.s));
+      const y = bankedCarGroundY(track, car.s, car.lateral);
 
       const dist = Math.hypot(x - cameraPos.x, z - cameraPos.z);
       if (!car.isPlayer && dist > CULL_DISTANCE) continue;

@@ -1863,6 +1863,31 @@ export class TrackSpline {
     return lerp(this.elevation[i], this.elevation[j], f - Math.floor(f));
   }
 
+  /**
+   * Banking at `s`, radians, INTERPOLATED between nodes.
+   *
+   * Interpolated rather than read off the nearest node, and the difference is
+   * not academic. Anything standing on a banked road is lifted by
+   * `lateral * tan(bank)`; at Zandvoort's 18-degree banking that is 2.4m at the
+   * edge of the road, so a banking value that stepped from node to node would
+   * step the car's height with it — several centimetres every three metres of
+   * travel, which is a car visibly hopping through the corner.
+   */
+  bankingAt(s: number): number {
+    const f = (wrapDistance(s, this.length) / this.length) * this.count;
+    const i = Math.floor(f) % this.count;
+    const j = (i + 1) % this.count;
+    return lerp(this.banking[i], this.banking[j], f - Math.floor(f));
+  }
+
+  /** Road width at `s`, metres, interpolated between nodes. */
+  widthAt(s: number): number {
+    const f = (wrapDistance(s, this.length) / this.length) * this.count;
+    const i = Math.floor(f) % this.count;
+    const j = (i + 1) % this.count;
+    return lerp(this.width[i], this.width[j], f - Math.floor(f));
+  }
+
   /** Longitudinal grade (rise over run) at `s`. Positive = uphill. */
   gradeAt(s: number): number {
     const ahead = this.elevationAt(s + 12);

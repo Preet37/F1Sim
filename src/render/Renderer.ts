@@ -6,7 +6,7 @@ import {
 } from './CarMesh';
 import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
-import { buildTrackMeshes, carGroundY, type TrackMeshes } from './TrackMesh';
+import { buildTrackMeshes, bankedCarGroundY, type TrackMeshes } from './TrackMesh';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
@@ -1534,7 +1534,7 @@ export class Renderer {
       // `npm run probe:carrig`.
       // INTERPOLATED, not the solver's last step. See `updateRenderPoses` —
       // this one line is the whole of the "the cars jitter" defect.
-      const y = carGroundY(track.elevationAt(car.s));
+      const y = bankedCarGroundY(track, car.s, car.lateral);
       v.root.position.set(car.renderX, y, car.renderZ);
       v.root.rotation.y = car.renderHeading;
 
