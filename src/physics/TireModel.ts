@@ -28,6 +28,229 @@ import { getCompound } from '../data/tires';
 /** Wear level below which grip starts falling off sharply. */
 const CLIFF_START = 0.4;
 
+// ===========================================================================
+// The curves, as pure functions
+// ===========================================================================
+//
+// WHY THESE ARE OUT HERE. Every one of them used to be a method on
+// `TireState`, which meant the only way to ask "how much grip would an
+// intermediate have on a track this wet" was to construct a tyre, fit it, and
+// step it until it settled. The strategist needs exactly that question
+// answered — the wet crossover is nothing but a comparison of two compounds at
+// one water depth — and a strategist that answers it with its own private
+// arithmetic is a strategist the race can contradict.
+//
+// So the curves are functions of (compound, state) and the methods below call
+// them. Nothing about the running tyre changed; the model simply became
+// something `Strategy` can evaluate without owning a tyre.
+
+/**
+ * Grip vs temperature: flat inside the window, falling away outside it.
+ *
+ * Below the window the fall is gentler than above — a cold tire is slow but a
+ * cooked tire is genuinely dangerous, and that asymmetry is what makes
+ * overheating the thing to manage.
+ */
+export function thermalFactorOf(c: TireCompound, tempC: number): number {
+  if (tempC >= c.optimalTempMinC && tempC <= c.optimalTempMaxC) return 1;
+
+  if (tempC < c.optimalTempMinC) {
+    const deficit = c.optimalTempMinC - tempC;
+    // 30 degrees cold costs roughly 12% grip.
+    const f = 1 - (deficit / 30) * 0.12 * c.thermalSensitivity;
+    return clamp(f, 0.55, 1);
+  }
+
+  const excess = tempC - c.optimalTempMaxC;
+  // Quadratic above the window: 20 degrees hot is survivable, 60 is not.
+  const f = 1 - (excess * excess) / 5200 * c.thermalSensitivity;
+  return clamp(f, 0.42, 1);
+}
+
+/** Grip vs standing water, interpolated through the compound's wet curve. */
+export function wetFactorOf(c: TireCompound, wetness: number): number {
+  // Indexed rather than destructured: array destructuring allocates an
+  // iterator, and this runs twice per car per physics step.
+  const curve = c.wetGripCurve;
+  const w = clamp01(wetness);
+  return w < 0.5
+    ? curve[0] + (curve[1] - curve[0]) * (w * 2)
+    : curve[1] + (curve[2] - curve[1]) * ((w - 0.5) * 2);
+}
+
+/**
+ * The temperature this compound settles at, given the track and the water.
+ *
+ * Solved from the same heat balance `update` integrates, not fitted to it:
+ *
+ *     heatIn  = slipPower · heatingRate · 0.30
+ *     heatOut = (T − ambient) · coolingRate · 0.046 · airflow
+ *     ambient = trackTempC + 18 − wetness · 30
+ *
+ * setting heatIn = heatOut and solving for T. `airflow` in the running model is
+ * `1 + slipSpeed · 0.02`, and slipSpeed is recovered from slipPower by dividing
+ * out a representative load ratio — see `RACE_PACE_SLIP_POWER`.
+ *
+ * This is the term that makes a slick in the rain a genuinely bad tyre for TWO
+ * reasons rather than one. The wet curve takes most of its grip; the water then
+ * drags `ambient` down by up to 30°C and the tyre never reaches its window, so
+ * `thermalFactorOf` takes a large second bite. That compounding is real, it is
+ * why a slick on a wet track is undriveable rather than merely slow, and it
+ * falls straight out of the numbers that were already here.
+ */
+export function equilibriumTempC(
+  c: TireCompound, trackTempC: number, wetness: number, slipPower: number,
+): number {
+  const ambient = trackTempC + 18 - clamp01(wetness) * 30;
+  const slipSpeed = slipPower / RACE_PACE_LOAD_RATIO;
+  const airflow = 1 + slipSpeed * 0.02;
+  return ambient + (slipPower * c.heatingRate * 0.30) / (c.coolingRate * 0.046 * airflow);
+}
+
+/**
+ * Load ratio (vertical load ÷ static load) a car carries at race pace.
+ *
+ * Only ever used to recover a slip SPEED from a slip POWER so the airflow term
+ * can be evaluated. Airflow is `1 + slipSpeed·0.02`, so at the slip powers this
+ * model sees it lands between 1.03 and 1.10 and the answer is insensitive to
+ * this number to within a degree or so. It is a divisor, not a tuning knob.
+ */
+const RACE_PACE_LOAD_RATIO = 2.2;
+
+/**
+ * Slip power a tyre absorbs at racing pace, in the units `update` uses.
+ *
+ * MEASURED, not chosen: `probeWeather` section 1 runs a dry Grand Prix and
+ * reports the field's mean `slipPower` over the race, and asserts this constant
+ * sits inside the measured spread. If the vehicle model's grip or downforce
+ * changes, that assertion fails and this number is re-read off the probe rather
+ * than re-guessed.
+ *
+ * It is the operating point at which the strategist compares compounds. Every
+ * compound is compared at the SAME slip power, which is the honest comparison:
+ * the question is what the tyre does with the work a lap asks of it, not how
+ * much work each tyre would choose to do.
+ */
+export const RACE_PACE_SLIP_POWER = 7.7;
+
+/**
+ * Peak grip a compound settles at on a track of this temperature and wetness.
+ *
+ * Fresh rubber, no wear, no graining, warmed up — the ceiling, which is what a
+ * crossover calculation wants. `TireState.computeGrip` is this multiplied by
+ * the three degradation terms the ceiling deliberately leaves out.
+ */
+export function steadyGrip(
+  c: TireCompound, trackTempC: number, wetness: number,
+  slipPower = RACE_PACE_SLIP_POWER,
+): number {
+  return c.peakGrip
+    * thermalFactorOf(c, equilibriumTempC(c, trackTempC, wetness, slipPower))
+    * wetFactorOf(c, wetness);
+}
+
+// ===========================================================================
+// Aquaplaning
+// ===========================================================================
+
+/**
+ * Water depth, in `wetness` units, at which a tread pattern stops mattering.
+ *
+ * Below this the surface is damp rather than flooded: there is a film, the
+ * tyre's grooves are not being asked to move a measurable volume of water, and
+ * the loss is entirely the wet-grip curve's business. Dynamic aquaplaning is a
+ * flooded-surface phenomenon and starting it at zero would make every damp
+ * track a lottery.
+ */
+const AQUAPLANE_ONSET_WETNESS = 0.42;
+
+/**
+ * Aquaplaning speed for a smooth tread on a flooded surface, m/s.
+ *
+ * Horne & Dreher (NASA TN D-2056, 1963) give the total dynamic hydroplaning
+ * speed of a smooth tyre as V = 10.35·√p with V in mph and p the inflation
+ * pressure in psi. A Formula 1 slick runs around 22 psi at the rear when hot,
+ * which is 10.35·√22 = 48.5 mph = 21.7 m/s.
+ *
+ * That is the speed at which a SMOOTH tyre on a fully flooded surface is
+ * carrying no load on rubber at all. It is deliberately not the speed at which
+ * an F1 car aquaplanes in practice, because in practice the surface is never
+ * uniformly flooded and the loss is partial and progressive — which is what
+ * `aquaplaneFraction` models on top of it.
+ */
+const SMOOTH_TREAD_AQUAPLANE_MS = 21.7;
+
+/**
+ * How much faster a grooved tyre can go before it floats, as a multiplier.
+ *
+ * Pirelli publish the figure for the full wet: it clears 65 litres of water per
+ * second per tyre at 300 km/h, against the intermediate's 30. The relevant
+ * physical comparison is between the volume the tread can evacuate and the
+ * volume it meets, and both scale with speed for a given depth — so the speed
+ * at which the tread is overwhelmed scales with the clearance capacity, and the
+ * ratio of the two published numbers (65:30) is the ratio between the two wet
+ * compounds. Anchoring the intermediate at 2.6× the smooth-tread speed puts the
+ * full wet at 5.6×, i.e. 122 m/s, which is to say a full wet does not
+ * aquaplane at any speed this game reaches on any depth of water it models —
+ * which is the correct answer and the reason the tyre exists.
+ */
+const TREAD_CLEARANCE: Record<CompoundId, number> = {
+  soft: 1, medium: 1, hard: 1,
+  intermediate: 2.6,
+  wet: 2.6 * (65 / 30),
+};
+
+/**
+ * How much of the contact patch is riding on water rather than road, 0..1.
+ *
+ * THREE terms, and the third one is the one that took a measurement to find.
+ *
+ * DEPTH sets the critical speed, which falls as the square root of the water
+ * the tread has to move: twice the depth is 1.41× easier to float.
+ *
+ * SPEED opens the effect. The transition is not a cliff — partial hydroplaning
+ * starts well below the total figure and the front floats before the rear — so
+ * it is a smoothstep between 70% and 115% of the critical speed.
+ *
+ * DEPTH AGAIN, this time capping HOW MUCH of the patch can lift. Without this
+ * term the first two produce a step: `probeWeather` measured a slick holding
+ * 2.62g at wetness 0.45 and 0.39g at 0.60, because the critical speed crossed
+ * the car's speed somewhere between the two and the fraction went from 0 to 1
+ * across it. Both of those numbers are individually defensible and the
+ * transition between them is not — a driver cannot learn a cliff that steep,
+ * and the physical picture is wrong anyway. A tyre in shallow standing water at
+ * a speed past its critical one is not fully afloat; it is riding on water
+ * where the film is deep and on rubber where the aggregate pokes through, and
+ * how much of each depends on how deep the film is. So the fraction saturates
+ * with depth as well as with speed.
+ */
+export function aquaplaneFraction(
+  c: TireCompound, wetness: number, roadSpeedMs: number,
+): number {
+  const depth = clamp01(wetness) - AQUAPLANE_ONSET_WETNESS;
+  if (depth <= 0) return 0;
+  // Normalised so a fully flooded track (wetness 1) is the reference depth.
+  const relDepth = depth / (1 - AQUAPLANE_ONSET_WETNESS);
+  const critical = SMOOTH_TREAD_AQUAPLANE_MS * TREAD_CLEARANCE[c.id] / Math.sqrt(relDepth);
+  const bySpeed = smoothstep(critical * 0.70, critical * 1.15, roadSpeedMs);
+  // Full float needs genuinely deep water. The 1.4 puts total hydroplaning at
+  // about three quarters of the modelled maximum depth, which leaves the top of
+  // the range for the conditions that stop a Grand Prix.
+  const byDepth = clamp01(relDepth * 1.4);
+  return bySpeed * byDepth;
+}
+
+/**
+ * Grip left once the water is carrying part of the load.
+ *
+ * Not zero at full float. A real aquaplaning car still has some directional
+ * stability from the shoulders and from the tread that finds the high spots,
+ * and a grip multiplier of zero is a car that cannot be recovered by any input,
+ * which is a worse simulation than one that can be caught. 0.30 leaves the
+ * corner unmakeable and the recovery possible.
+ */
+const AQUAPLANE_FLOOR = 0.30;
+
 export class TireState {
   compound: TireCompound;
 
@@ -50,6 +273,25 @@ export class TireState {
   /** Cached grip multiplier, recomputed each physics step. */
   grip = 1;
 
+  /**
+   * Slip power the tyre is absorbing, in the units the heat balance uses.
+   *
+   * Stored because `RACE_PACE_SLIP_POWER` — the operating point the strategist
+   * compares compounds at — has to be measurable rather than asserted, and the
+   * only place the real figure exists is here.
+   */
+  slipPower = 0;
+
+  /**
+   * Fraction of the contact patch riding on water, 0..1.
+   *
+   * Read by the HUD and by the effects director: a car that is aquaplaning
+   * throws a different amount of spray and the driver is entitled to know it is
+   * happening, because from inside the car it is otherwise indistinguishable
+   * from having simply lost the rear.
+   */
+  aquaplaning = 0;
+
   constructor(compound: CompoundId = 'medium', startTempC = 80) {
     this.compound = getCompound(compound);
     this.tempC = startTempC;
@@ -66,6 +308,8 @@ export class TireState {
     this.slipRatio = 0;
     this.slipAngle = 0;
     this.grip = 1;
+    this.slipPower = 0;
+    this.aquaplaning = 0;
   }
 
   /**
@@ -76,8 +320,12 @@ export class TireState {
    * @param loadN         vertical load on this axle
    * @param staticLoadN   load with no downforce, for normalising wear
    * @param trackTempC    surface temperature the tire exchanges heat with
-   * @param wetness       0 dry .. 1 standing water
+   * @param wetness       0 dry .. 1 standing water, AT THIS CAR'S POSITION
    * @param abrasion      circuit surface abrasion multiplier
+   * @param roadSpeedMs   how fast the car is travelling over the ground, for
+   *                      aquaplaning. Slip speed will not do: a tyre rolling
+   *                      cleanly at 300 km/h has almost no slip and is exactly
+   *                      the tyre that floats.
    */
   update(
     dt: number,
@@ -87,6 +335,7 @@ export class TireState {
     trackTempC: number,
     wetness: number,
     abrasion: number,
+    roadSpeedMs = 0,
   ): void {
     const c = this.compound;
 
@@ -95,6 +344,7 @@ export class TireState {
     // static load so the coefficient is dimensionally stable across cars.
     const loadRatio = loadN / Math.max(staticLoadN, 1);
     const slipPower = slipSpeedMs * loadRatio;
+    this.slipPower = slipPower;
     // Coefficients chosen for the right THERMAL INERTIA, not just the right
     // equilibrium. A tyre's bulk carcass temperature moves over several seconds,
     // not within a corner: with the rates three times higher, sustained high-g
@@ -134,6 +384,17 @@ export class TireState {
     }
 
     this.distanceOnSet += slipSpeedMs * dt;
+
+    // --- Aquaplaning -------------------------------------------------------
+    // Rate-limited rather than instantaneous. The water film builds and breaks
+    // over a wheel revolution or two, and a step function here reads as the
+    // grip flickering rather than as the car floating — which is both wrong and
+    // impossible to drive, because the correction the driver makes arrives
+    // after the grip has already come back.
+    const wantAqua = aquaplaneFraction(c, wetness, roadSpeedMs);
+    const aquaRate = wantAqua > this.aquaplaning ? 6 : 3;
+    this.aquaplaning += (wantAqua - this.aquaplaning) * Math.min(1, aquaRate * dt);
+
     this.grip = this.computeGrip(wetness);
   }
 
@@ -149,33 +410,19 @@ export class TireState {
       this.wearFactor() *
       this.surface *
       this.wetFactor(wetness) *
-      this.warmupFactor()
+      this.warmupFactor() *
+      // Aquaplaning multiplies rather than replaces. A tyre that is half
+      // floating still has the other half of its problems — it is still cold,
+      // still worn, still on the wrong compound — and a car that recovers full
+      // dry grip the instant it stops floating would let a driver treat
+      // standing water as a momentary interruption rather than as a reason to
+      // slow down.
+      (1 - this.aquaplaning * (1 - AQUAPLANE_FLOOR))
     );
   }
 
-  /**
-   * Grip vs temperature: flat inside the window, falling away outside it.
-   *
-   * Below the window the fall is gentler than above — a cold tire is slow but a
-   * cooked tire is genuinely dangerous, and that asymmetry is what makes
-   * overheating the thing to manage.
-   */
   thermalFactor(): number {
-    const c = this.compound;
-    const t = this.tempC;
-    if (t >= c.optimalTempMinC && t <= c.optimalTempMaxC) return 1;
-
-    if (t < c.optimalTempMinC) {
-      const deficit = c.optimalTempMinC - t;
-      // 30 degrees cold costs roughly 12% grip.
-      const f = 1 - (deficit / 30) * 0.12 * c.thermalSensitivity;
-      return clamp(f, 0.55, 1);
-    }
-
-    const excess = t - c.optimalTempMaxC;
-    // Quadratic above the window: 20 degrees hot is survivable, 60 is not.
-    const f = 1 - (excess * excess) / 5200 * c.thermalSensitivity;
-    return clamp(f, 0.42, 1);
+    return thermalFactorOf(this.compound, this.tempC);
   }
 
   /**
@@ -199,13 +446,7 @@ export class TireState {
 
   /** Grip vs standing water, interpolated through the compound's wet curve. */
   wetFactor(wetness: number): number {
-    // Indexed rather than destructured: array destructuring allocates an
-    // iterator, and this runs twice per car per physics step.
-    const curve = this.compound.wetGripCurve;
-    const w = clamp01(wetness);
-    return w < 0.5
-      ? curve[0] + (curve[1] - curve[0]) * (w * 2)
-      : curve[1] + (curve[2] - curve[1]) * ((w - 0.5) * 2);
+    return wetFactorOf(this.compound, wetness);
   }
 
   /** Grip ramp over the first lap or so on a new set. */

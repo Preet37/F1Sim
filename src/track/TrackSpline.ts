@@ -34,6 +34,21 @@ const NODE_SPACING_M = 3;
 const LINE_RESPONSE_RADIUS = 2;
 
 /**
+ * How far off the dry line a car runs on a soaked circuit, metres.
+ *
+ * Set against the width of the rubber band rather than by taste. The groove is
+ * `rubberHalfWidthAt` wide either side of the line and pinches to about 1.4m at
+ * an apex, so a shift of 1.8m puts the car's inside wheels clear of the worst
+ * of it at the place it matters most while leaving it comfortably inside the
+ * white line — the corridor at a tight corner is only about 2.5m either side of
+ * the ideal line once the car's own width and the tracking margin are taken
+ * out. Larger shifts run out of road at exactly the corners the driver most
+ * wants to avoid the rubber at, and get clamped back to nothing, which is
+ * worse than a smaller shift that fits everywhere.
+ */
+const WET_LINE_SHIFT_M = 1.8;
+
+/**
  * Corner radius below which a kerb is laid on the inside automatically, metres.
  *
  * 250, down from 400, and the difference is not a matter of taste — it was
@@ -173,6 +188,31 @@ export class TrackSpline {
   readonly lineOffset: Float32Array;
   /** Curvature of the racing line itself. Drives the speed profile. */
   readonly lineCurvature: Float32Array;
+
+  /**
+   * The line a car takes when the dry line is the worst part of the road.
+   *
+   * WHY THERE ARE TWO LINES. Rubber laid into the asphalt over a dry weekend is
+   * slick under water, so on a soaked circuit the groove every car has been
+   * driving is the LAST place to put a tyre. The cars move off it — wider on
+   * entry, later on the apex, off the polished strip — and that sight is the
+   * most recognisable thing about wet Formula 1.
+   *
+   * It is a second baked array rather than a modification of the first because
+   * `lineOffset` is calibrated: `probeRacingLine`, `probeDrivability` and the
+   * whole solved speed profile are measured against it, and a line that moved
+   * when it rained would move all of them. This one is derived FROM it, is
+   * never the input to the speed solver, and is blended in by the AI according
+   * to how much grip the surface model says is actually to be had off the
+   * groove — so on a dry track it has no effect whatsoever.
+   *
+   * `wetLineCurvature` exists for the same reason the dry one does: the AI
+   * steers with a curvature feedforward, and a car fed the dry line's curvature
+   * while driving the wet line's geometry tracks visibly worse than one fed
+   * neither.
+   */
+  readonly wetLineOffset: Float32Array;
+  readonly wetLineCurvature: Float32Array;
   /** Solved reference speed at this node, m/s. */
   readonly targetSpeed: Float32Array;
   /**
@@ -266,6 +306,8 @@ export class TrackSpline {
     this.banking = new Float32Array(count);
     this.lineOffset = new Float32Array(count);
     this.lineCurvature = new Float32Array(count);
+    this.wetLineOffset = new Float32Array(count);
+    this.wetLineCurvature = new Float32Array(count);
     this.targetSpeed = new Float32Array(count);
     this.corneringSpeed = new Float32Array(count);
     this.lineCurvatureWorst = new Float32Array(count);
@@ -806,6 +848,105 @@ export class TrackSpline {
     }
 
     this.computeLineCurvature();
+    this.solveWetLine(limit);
+  }
+
+  /**
+   * The wet line: the dry line pushed off the rubber, and no further.
+   *
+   * A DERIVATION, NOT A SECOND OPTIMISATION. The temptation is to re-run
+   * `minimiseCurvature` with the rubber band as an obstacle, and it would be
+   * wrong: the wet line is not a different optimum, it is the same optimum
+   * given up in exchange for a surface. What a driver actually does in the wet
+   * is take a wider entry and a later apex, which is geometrically a shift away
+   * from the inside of the corner — away from exactly the strip where the
+   * rubber is heaviest, because the rubber is heaviest where the cars have been
+   * loading the tyres hardest. One signed shift, driven by the line's own
+   * curvature, produces that and nothing else.
+   *
+   * The shift is bounded by the room available and then run through the same
+   * response filter the dry line gets, because a wet line is still driven by a
+   * car with the same steering rack. Without the filter the AI's tracking error
+   * roughly doubles — the comment above `smoothWrapped(lineOffset, ...)` is
+   * about the dry line but the physics it describes is not.
+   */
+  private solveWetLine(limit: Float64Array): void {
+    const { count, lineOffset, lineCurvature, wetLineOffset } = this;
+
+    for (let i = 0; i < count; i++) {
+      const k = lineCurvature[i];
+      // Sign convention: `lineCurvature` positive is a LEFT turn, and
+      // `lineOffset` positive is to the driver's left, so the apex of a left
+      // hander sits at a large positive offset. Moving off the rubber means
+      // moving toward the outside, which is subtracting.
+      const dir = k > 0 ? 1 : k < 0 ? -1 : 0;
+      // How much shift is worth taking. On a straight the rubber band is wide
+      // and shallow and there is nothing to gain from a specific line, so the
+      // shift tapers off with curvature; through a corner the band is narrow
+      // and heavy and moving two metres puts the car cleanly beside it.
+      const tight = Math.min(1, Math.abs(k) * 90);
+      const want = lineOffset[i] - dir * WET_LINE_SHIFT_M * (0.35 + 0.65 * tight);
+      wetLineOffset[i] = clamp(want, -limit[i], limit[i]);
+    }
+
+    smoothWrapped(wetLineOffset, LINE_RESPONSE_RADIUS, 1);
+    for (let i = 0; i < count; i++) {
+      wetLineOffset[i] = clamp(wetLineOffset[i], -limit[i], limit[i]);
+    }
+
+    // Curvature of the line the car will actually be driving, computed with the
+    // same stencil and the same smoothing as the dry one.
+    const { px, pz, nx, nz, wetLineCurvature } = this;
+    for (let i = 0; i < count; i++) {
+      const a = i === 0 ? count - 1 : i - 1;
+      const b = i === count - 1 ? 0 : i + 1;
+      wetLineCurvature[i] = signedCurvature(
+        px[a] + nx[a] * wetLineOffset[a], pz[a] + nz[a] * wetLineOffset[a],
+        px[i] + nx[i] * wetLineOffset[i], pz[i] + nz[i] * wetLineOffset[i],
+        px[b] + nx[b] * wetLineOffset[b], pz[b] + nz[b] * wetLineOffset[b],
+      );
+    }
+    smoothWrapped(wetLineCurvature, 2, 1);
+  }
+
+  /**
+   * Half-width of the rubbered-in groove at a node, metres.
+   *
+   * ONE RULE, TWO CONSUMERS, and that is why it is a method on the track rather
+   * than a private constant in either of them. `SurfaceDetail` rasterises this
+   * band into the map that darkens the road, and `TrackSurface` decides from it
+   * whether a car is on the rubber or beside it. If those two disagreed, the
+   * player would be looking at a dark stripe that is not where the grip is, and
+   * there is no way to notice that from inside either file.
+   *
+   * The groove is wider where the cars are spread out and narrower where a
+   * corner funnels everyone onto one line. Curvature is the cheapest honest
+   * proxy for that, and it is what makes the band pinch at an apex and fan out
+   * down a straight — the shape it has in every aerial photograph.
+   */
+  rubberHalfWidthAt(i: number): number {
+    const tight = Math.min(1, Math.abs(this.lineCurvature[i]) * 90);
+    return Math.max(1.4, this.width[i] * (0.19 - 0.07 * tight));
+  }
+
+  /**
+   * The line to drive, blended between dry and wet by how much the surface
+   * model says there is to gain from getting off the rubber.
+   *
+   * `avoidance` is `TrackSurface.lineAvoidance` — 0 on a dry track, 1 when the
+   * groove is fully soaked. Everything that steers goes through here, so there
+   * is exactly one place where the two lines are combined and no possibility of
+   * the AI's target and its feedforward being blended differently.
+   */
+  lineOffsetAt(i: number, avoidance: number): number {
+    if (avoidance <= 0) return this.lineOffset[i];
+    return this.lineOffset[i] + (this.wetLineOffset[i] - this.lineOffset[i]) * avoidance;
+  }
+
+  /** The matching curvature. Must be blended with the same weight. */
+  lineCurvatureAt(i: number, avoidance: number): number {
+    if (avoidance <= 0) return this.lineCurvature[i];
+    return this.lineCurvature[i] + (this.wetLineCurvature[i] - this.lineCurvature[i]) * avoidance;
   }
 
   /**

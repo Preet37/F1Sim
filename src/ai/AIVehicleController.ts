@@ -201,8 +201,22 @@ export interface AIPerception {
    * limiter the length of the lane and drove out the far end.
    */
   pitBoxAheadM: number;
-  /** 0 dry .. 1 standing water. */
+  /** 0 dry .. 1 standing water, AT THIS CAR'S POSITION. */
   wetness: number;
+  /**
+   * How far off the dry line the grip has moved, 0..1.
+   *
+   * 0 says the racing line is the place to be, which is the answer on a dry
+   * track and on a track that has dried. 1 says the rubbered groove has gone
+   * slick under the water and there is meaningfully more grip beside it.
+   *
+   * It is a GRIP measurement, not a wetness threshold — `TrackSurface`
+   * computes it by asking its own grip function the same question the driver is
+   * asking — so the line the AI takes and the grip the physics gives it cannot
+   * come apart. This is the field that makes twenty cars visibly abandon the
+   * racing line when the rain arrives and drift back onto it as it dries.
+   */
+  lineAvoidance: number;
 }
 
 export function createPerception(): AIPerception {
@@ -215,7 +229,7 @@ export function createPerception(): AIPerception {
     queueGapM: 0, queueAheadM: -1, safetyCarAheadM: -1, safetyCarSpeedMs: 0,
     queueAheadSpeedMs: 0, mustUnlap: false,
     holdRacingLine: false, holdUntilLine: false,
-    pitThisLap: false, pitBoxAheadM: -1, wetness: 0,
+    pitThisLap: false, pitBoxAheadM: -1, wetness: 0, lineAvoidance: 0,
   };
 }
 
@@ -632,6 +646,28 @@ export class AIVehicleController {
   }
 
   /**
+   * How far off the dry line this driver has decided to run, 0..1.
+   *
+   * Damped toward what the surface model says is available rather than set from
+   * it, and damped SLOWLY — three seconds or so to make the move. A driver does
+   * not step sideways the instant the grip changes; they feel it over a corner
+   * or two and then commit. Setting it directly made the whole field twitch
+   * laterally as they crossed between a soaked node and a slightly less soaked
+   * one, which looks like a bug because it is one.
+   *
+   * `driver.wetSkill` scales it: a driver who is good in the wet finds the
+   * off-line grip and a driver who is not stays on the familiar line for
+   * longer. That is a real difference between drivers and it costs the ones who
+   * do not adapt real lap time, through the same grip model as everyone else.
+   */
+  private lineAvoidance = 0;
+
+  private updateLineAvoidance(dt: number, want: number): void {
+    const willing = 0.55 + this.driver.wetSkill * 0.45;
+    this.lineAvoidance = damp(this.lineAvoidance, clamp01(want) * willing, 0.35, dt);
+  }
+
+  /**
    * Produces controls for this physics step.
    *
    * The FSM transition check runs at 10Hz because racing decisions do not need
@@ -649,6 +685,7 @@ export class AIVehicleController {
   ): VehicleControls {
     this.stateTime += dt;
     this.decisionTimer -= dt;
+    this.updateLineAvoidance(dt, perception.lineAvoidance);
     if (this.shakenTimer > 0) this.shakenTimer -= dt;
 
     const closeQuarters =
@@ -729,7 +766,7 @@ export class AIVehicleController {
     if (offTrack || spun) {
       this.shakenTimer = 6;
       this.setState('RECOVER');
-      this.targetLateral = clamp(track.lineOffset[track.indexAt(s)], -halfWidth * 0.5, halfWidth * 0.5);
+      this.targetLateral = clamp(this.lineAtNode(track.indexAt(s)), -halfWidth * 0.5, halfWidth * 0.5);
       return;
     }
     if (this.state === 'RECOVER') {
@@ -799,7 +836,7 @@ export class AIVehicleController {
     // line, while the lead-lap cars hold theirs.
     if (p.mustUnlap) {
       this.setState('OVERTAKE');
-      const lineOffset = track.lineOffset[track.indexAt(s)];
+      const lineOffset = this.lineAtNode(track.indexAt(s));
       this.targetLateral = clamp(-Math.sign(lineOffset || 1) * halfWidth * 0.6, -halfWidth, halfWidth);
       return;
     }
@@ -809,7 +846,7 @@ export class AIVehicleController {
       // deviating is unavoidable" while lapped cars come past —
       // Art. 55.14 / B5.13.4c. Off the racing line is precisely where the
       // unlapping cars are, which is why the rule exists.
-      this.targetLateral = track.lineOffset[track.indexAt(s)];
+      this.targetLateral = this.lineAtNode(track.indexAt(s));
       return;
     }
 
@@ -817,7 +854,7 @@ export class AIVehicleController {
     // Line. Racing does not resume until it does — Art. 55.8 / B5.13.2c.
     if (p.holdUntilLine) {
       this.setState('FOLLOW');
-      this.targetLateral = track.lineOffset[track.indexAt(s)];
+      this.targetLateral = this.lineAtNode(track.indexAt(s));
       return;
     }
 
@@ -825,13 +862,13 @@ export class AIVehicleController {
     // means getting decisively off the racing line, not just lifting.
     if (p.blueFlag) {
       this.setState('FOLLOW');
-      const lineOffset = track.lineOffset[track.indexAt(s)];
+      const lineOffset = this.lineAtNode(track.indexAt(s));
       // Move to the opposite side of the track from the racing line.
       this.targetLateral = clamp(-Math.sign(lineOffset || 1) * halfWidth * 0.72, -halfWidth, halfWidth);
       return;
     }
 
-    const lineOffset = track.lineOffset[track.indexAt(s)];
+    const lineOffset = this.lineAtNode(track.indexAt(s));
     const inPassingZone = track.inPassingZone(s);
 
     // Reset the one-defensive-move allowance when we leave a passing zone —
@@ -1093,6 +1130,39 @@ export class AIVehicleController {
   }
 
   /**
+   * The line to drive at `s`, blended between the dry line and the wet one.
+   *
+   * EVERY read of the racing line in this controller goes through here or
+   * through `lineCurvAt`, and that is deliberate. The steering is a curvature
+   * feedforward plus a cross-track error against a target, and if those two
+   * were blended by different amounts — or one blended and one not — the car
+   * would feed forward for a corner it is not taking. That failure is silent
+   * and looks exactly like a badly tuned controller.
+   *
+   * On a dry track `lineAvoidance` is zero and both of these are byte-for-byte
+   * the old behaviour: `lineOffsetAt` returns early.
+   */
+  private lineAt(s: number): number {
+    const a = this.lineAvoidance;
+    if (a <= 0) return this.sample(this.track.lineOffset, s);
+    return this.sample(this.track.lineOffset, s)
+      + (this.sample(this.track.wetLineOffset, s) - this.sample(this.track.lineOffset, s)) * a;
+  }
+
+  /** The curvature of that same line. Blended with the same weight. */
+  private lineCurvAt(s: number): number {
+    const a = this.lineAvoidance;
+    if (a <= 0) return this.sample(this.track.lineCurvature, s);
+    return this.sample(this.track.lineCurvature, s)
+      + (this.sample(this.track.wetLineCurvature, s) - this.sample(this.track.lineCurvature, s)) * a;
+  }
+
+  /** Node-indexed form, for the decision layer which works in nodes. */
+  private lineAtNode(i: number): number {
+    return this.track.lineOffsetAt(i, this.lineAvoidance);
+  }
+
+  /**
    * A lateral target, clamped to the road that is actually free.
    *
    * The clamp is one-sided per side and measured from where the car IS, not from
@@ -1225,9 +1295,9 @@ export class AIVehicleController {
     const lead = clamp(speed * 0.28, 5, 22);
     // Averaged over a short window so a single noisy node cannot spike it.
     const ffCurvature = (
-      this.sample(track.lineCurvature, s + lead - 3) +
-      this.sample(track.lineCurvature, s + lead) +
-      this.sample(track.lineCurvature, s + lead + 3)
+      this.lineCurvAt(s + lead - 3) +
+      this.lineCurvAt(s + lead) +
+      this.lineCurvAt(s + lead + 3)
     ) / 3;
     // Curvature is positive for a left turn, steering positive for a right turn.
     const ffRad = -Math.atan(car.spec.wheelbaseM * ffCurvature);
@@ -1243,7 +1313,7 @@ export class AIVehicleController {
     // smoothed target, so the room limit has to be applied here too or the one
     // state the field spends most of its time in would ignore it entirely.
     const lineHere = this.state === 'LINE_FOLLOWER'
-      ? this.roomLimited(this.sample(track.lineOffset, s), lateral, p, inLane)
+      ? this.roomLimited(this.lineAt(s), lateral, p, inLane)
       : this.smoothedLateral;
     const latError = lineHere - lateral;
 
@@ -1252,7 +1322,7 @@ export class AIVehicleController {
     // "error", which means it is always behind the line rather than on it.
     const H = 12;
     const dOffsetDs =
-      (this.sample(track.lineOffset, s + H) - this.sample(track.lineOffset, s - H)) / (2 * H);
+      (this.lineAt(s + H) - this.lineAt(s - H)) / (2 * H);
     const lineHeadingOffset = Math.atan(dOffsetDs);
 
     // Distance over which to close the remaining lateral error. Shorter in tight

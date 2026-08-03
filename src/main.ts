@@ -2642,7 +2642,11 @@ class Game {
       // The rubbered-in racing line, rasterised from this circuit's spline into
       // the shared surface map. Done before the track mesh is built so the
       // asphalt has it the first frame it is drawn.
-      setRubberLine(this.engine.track);
+      // ...and, from the same call, where water collects on it. The drainage
+      // field is the simulation's own, derived from this circuit's elevation,
+      // so the puddle the player can see and the puddle the car aquaplanes in
+      // are the same puddle.
+      setRubberLine(this.engine.track, this.engine.weather.surface.drainage);
       this.renderer.loadSession(this.engine);
     this.renderer.setRacingLineVisible(this.settings.racingLine);
       this.audio.configureForTrack(def.scenery, this.engine.weather.wetness);

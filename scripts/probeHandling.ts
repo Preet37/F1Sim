@@ -32,7 +32,7 @@ import { BASE_F1_SPEC, applySetup, baselineSetupFor } from '../src/physics/Vehic
 import { PHYSICS_DT } from '../src/core/SimClock';
 
 const ENV: EnvironmentState = {
-  trackTempC: 38, airTempC: 25, wetness: 0, airDensityRatio: 1, abrasion: 1,
+  trackTempC: 38, airTempC: 25, wetness: 0, surfaceGrip: 1, airDensityRatio: 1, abrasion: 1,
 };
 
 function controls(over: Partial<VehicleControls> = {}): VehicleControls {

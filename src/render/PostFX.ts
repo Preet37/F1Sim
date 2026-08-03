@@ -224,6 +224,11 @@ const GRADE_SHADER = {
     uFocus: { value: new THREE.Vector2(0.5, 0.5) },
     uVignette: { value: 0.14 },
     /**
+     * How wet the world is, 0..1. Drives the desaturation and the lifted black
+     * point that are most of what "it is raining" looks like on a screen.
+     */
+    uWet: { value: 0 },
+    /**
      * Dither amplitude, as a FRACTION of the pixel. See the shader for why it
      * is relative rather than absolute, and why it is this small.
      */
@@ -266,6 +271,7 @@ const GRADE_SHADER = {
     uniform float uSpeed;
     uniform vec2 uFocus;
     uniform float uVignette;
+    uniform float uWet;
     uniform float uGrain;
     uniform float uTime;
     uniform float uFlash;
@@ -491,6 +497,30 @@ const GRADE_SHADER = {
       // the corners rather than dimming the whole frame.
       float v = 1.0 - uVignette * dist * dist * 2.2;
       colour *= clamp(v, 0.0, 1.0);
+
+      // --- Weather -----------------------------------------------------------
+      //
+      // What rain does to an image, in the two terms that actually carry it.
+      //
+      // SATURATION. Overcast light has no colour temperature to speak of and
+      // water on every surface kills the diffuse bounce that carries most of a
+      // scene's colour. A wet circuit photographs nearly monochrome, and pulling
+      // saturation is the single strongest cue that it is raining — stronger
+      // than anything drawn in the world, because it affects every pixel.
+      //
+      // CONTRAST, downward and only in the shadows. Spray and low cloud lift
+      // the black point: there is no true black in a rainstorm because the
+      // whole volume between the camera and the subject is scattering. Lifting
+      // it is what makes distance read as murk rather than as fog with a colour.
+      //
+      // Both are done here rather than as another pass because this shader is
+      // already sampling and already writing, and an extra full-screen pass for
+      // eight instructions would cost more than the effect.
+      if (uWet > 0.002) {
+        float lum = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+        colour = mix(colour, vec3(lum), uWet * 0.42);
+        colour = mix(colour, colour * 0.86 + vec3(0.045), uWet);
+      }
 
       // Dither, not grain.
       //
@@ -757,6 +787,7 @@ export class PostFX {
    * @param speedMs   car speed, for the radial blur
    * @param focus     vanishing point in normalised screen space
    * @param nightBias more bloom at night, where the lights are the subject
+   * @param wetness   0..1, how much water is on the world
    */
   update(
     dt: number,
@@ -765,11 +796,13 @@ export class PostFX {
     focusY: number,
     nightBias: number,
     camera?: THREE.PerspectiveCamera,
+    wetness = 0,
   ): void {
     this.time += dt;
     if (!this.grade) return;
 
     const u = this.grade.uniforms;
+    u.uWet.value = clamp01(wetness);
 
     // The AO's world-space radius depends on the projection, and the camera
     // director changes the field of view continuously with speed. Reading it
