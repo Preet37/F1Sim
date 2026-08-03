@@ -1229,6 +1229,20 @@ class Game {
     this.garageCard(body, circuit.id, () => this.showCareerHub());
     this.weekendLengthControls(body, circuit.id, () => this.showCareerHub());
 
+    // A weekend left part-way through. Offered before anything else, because a
+    // player who qualified on Saturday and came back on Sunday is looking for
+    // exactly one thing, and the alternative — starting the weekend again —
+    // would throw the grid they earned away.
+    const resumable = this.resumableWeekend();
+    if (resumable) {
+      const next = (this.career?.state.weekendInProgress?.sessions[resumable.index] as
+        SessionConfig | undefined)?.name ?? 'the next session';
+      this.el('div', 'notice', body,
+        'You are part-way through this weekend. ' + next + ' is next, and the '
+        + 'grid qualifying has built so far is still yours.');
+      this.button('Resume Weekend', actions, () => this.resumeWeekend(), 'btn ghost');
+    }
+
     this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
     this.button('Practice Only', actions, () => {
       this.weekend = [this.sessionConfig('practice', 'Practice', circuit.id, 600, 0)];
@@ -2060,7 +2074,81 @@ class Game {
     this.resetQualifying();
     this.weekend = this.weekendSessions(circuitId);
     this.weekendIndex = 0;
+    this.rememberWeekend(circuitId);
     this.showBriefing(circuitId);
+  }
+
+  // =======================================================================
+  // A weekend that survives the tab being closed
+  // =======================================================================
+
+  /**
+   * Writes the weekend in progress into the career, and saves.
+   *
+   * The session queue, how far through it we are, and the grid qualifying has
+   * built so far all lived only as fields on this object. So a player who
+   * qualified on Saturday and closed the tab lost the qualifying: the career
+   * reopened at the hub with the round unrun and everything the game had told
+   * them about that weekend gone. "The results, the saves, everything has to be
+   * there. It has to be saved."
+   *
+   * Called at every point the weekend moves — started, a session finished, a
+   * qualifying segment resolved — because the only save frequency that is
+   * actually correct for something a browser tab can close at any moment is
+   * "after every change".
+   */
+  private rememberWeekend(circuitId: string): void {
+    const career = this.career;
+    if (!career) return;
+    career.state.weekendInProgress = {
+      circuitId,
+      round: career.round,
+      index: this.weekendIndex,
+      sessions: this.weekend as unknown[],
+      qualifyingGrid: [...this.qualifyingGrid],
+      qualifyingSurvivors: [...this.qualifyingSurvivors],
+      qualifyingBarred: [...this.qualifyingBarred],
+    };
+    this.saves.save(this.careerId, career.state);
+  }
+
+  /** The weekend is over, or was abandoned. Nothing left to come back to. */
+  private forgetWeekend(): void {
+    const career = this.career;
+    if (!career || !career.state.weekendInProgress) return;
+    delete career.state.weekendInProgress;
+    this.saves.save(this.careerId, career.state);
+  }
+
+  /**
+   * The weekend this career can be resumed into, if there is one.
+   *
+   * Guarded on the ROUND rather than only on existence: a weekend recorded
+   * against round three is meaningless once round three has been scored and the
+   * career has moved on, and resuming into it would run a round twice.
+   */
+  private resumableWeekend(): { circuitId: string; index: number } | null {
+    const career = this.career;
+    const w = career?.state.weekendInProgress;
+    if (!career || !w) return null;
+    if (w.round !== career.round) return null;
+    if (!Array.isArray(w.sessions) || w.sessions.length === 0) return null;
+    if (w.index >= w.sessions.length) return null;
+    if (!CIRCUITS.some((c) => c.id === w.circuitId)) return null;
+    return { circuitId: w.circuitId, index: w.index };
+  }
+
+  /** Puts a saved weekend back on screen where the player left it. */
+  private resumeWeekend(): void {
+    const career = this.career;
+    const w = career?.state.weekendInProgress;
+    if (!career || !w) { this.showCareerHub(); return; }
+    this.weekend = w.sessions as SessionConfig[];
+    this.weekendIndex = w.index;
+    this.qualifyingGrid = [...w.qualifyingGrid];
+    this.qualifyingSurvivors = [...w.qualifyingSurvivors];
+    this.qualifyingBarred = [...w.qualifyingBarred];
+    this.showBriefing(w.circuitId);
   }
 
   /**
@@ -2468,6 +2556,7 @@ class Game {
 
   /** Where to go when a weekend runs out of sessions, or is abandoned. */
   private afterWeekend(): void {
+    this.forgetWeekend();
     if (this.career) this.showCareerHub();
     else this.showMenu();
   }
@@ -2773,8 +2862,12 @@ class Game {
   /** Moves to the next session of the weekend, or leaves it. */
   private advanceWeekend(circuitId: string): void {
     this.weekendIndex++;
-    if (this.weekendIndex < this.weekend.length) this.showBriefing(circuitId);
-    else this.afterWeekend();
+    if (this.weekendIndex < this.weekend.length) {
+      this.rememberWeekend(circuitId);
+      this.showBriefing(circuitId);
+    } else {
+      this.afterWeekend();
+    }
   }
 
   /** Builds the engine and loads the renderer for the queued session. */
@@ -3333,6 +3426,10 @@ class Game {
     this.weekend = [];
     this.weekendIndex = 0;
     this.resetQualifying();
+    // A weekend abandoned part-way is abandoned whole — including the copy on
+    // disk, or the hub would offer to resume something the player just walked
+    // out of.
+    this.forgetWeekend();
     if (this.career) this.showCareerHub(); else this.showMenu();
   }
 
@@ -3379,8 +3476,13 @@ class Game {
 
     this.weekendIndex++;
     if (this.weekendIndex < this.weekend.length) {
+      // The grid this segment just built, and the fact that it has been run,
+      // both belong on disk before the player is shown anything: closing the
+      // tab on a results screen is how somebody leaves a weekend.
+      this.rememberWeekend(engine.track.def.id);
       this.showResults(() => this.showBriefing(engine.track.def.id));
     } else {
+      this.forgetWeekend();
       this.showResults(() => (this.career ? this.showCareerHub() : this.showMenu()));
     }
   }

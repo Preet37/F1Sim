@@ -222,6 +222,48 @@ check(/Round\s*1/i.test(text) || text.includes('next up'), 'the hub shows the ne
 check(text.includes('promotion'), 'the hub states the promotion rule the career runs on');
 check(pageErrors.length === 0, 'creating a career threw nothing (' + pageErrors.join(' | ') + ')');
 
+/**
+ * A WEEKEND SURVIVES THE TAB BEING CLOSED.
+ *
+ * The session queue, how far through it the player was, and the grid qualifying
+ * had built all used to live only as fields on the app shell — so qualifying on
+ * the Saturday and closing the tab lost the qualifying. Started here rather
+ * than driven, because the fault is in what is written to disk when a weekend
+ * begins, and driving one under a software rasteriser costs a minute a session.
+ */
+console.log('\nA WEEKEND IN PROGRESS IS SAVED');
+
+await clickByText('.btn', 'Race Weekend');
+await page.waitForTimeout(400);
+{
+  const saved = await page.evaluate(() => {
+    const c = window.__game?.career;
+    const w = c?.state.weekendInProgress;
+    return w ? { circuitId: w.circuitId, sessions: w.sessions.length, index: w.index } : null;
+  });
+  check(saved !== null, 'starting a weekend writes it into the career');
+  check(saved !== null && saved.sessions > 0,
+    `the session queue is on disk (${saved?.sessions} sessions)`);
+}
+// And it is still there after a reload, which is the whole point.
+await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.screen .page', { timeout: 20000 });
+await clickByText('.menu-item', 'Continue');
+await page.waitForTimeout(500);
+check((await bodyText()).includes('part-way through this weekend'),
+  'the hub offers the weekend back after a reload');
+const resume = page.locator('.btn', { hasText: 'Resume Weekend' }).first();
+check(await resume.count() > 0, 'there is a way to resume it');
+await resume.click({ force: true, noWaitAfter: true });
+await page.waitForTimeout(500);
+check((await bodyText()).includes('garage') || (await bodyText()).includes('practice'),
+  'resuming puts the weekend back on screen');
+// Leave it again, so the season loop below is not standing in a garage.
+await clickByText('.navback', '');
+await page.waitForTimeout(400);
+check(pageErrors.length === 0,
+  'saving and resuming a weekend threw nothing (' + pageErrors.join(' | ') + ')');
+
 console.log('\nTHE CHAMPIONSHIP TABLE IS REAL');
 
 await clickByText('.btn', 'Standings');

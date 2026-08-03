@@ -44,6 +44,7 @@ const KNOWN_KEYS = new Set<string>([
   'player', 'playerDriverId', 'tier', 'teamId', 'contractYears',
   'seasonsInTier', 'endedReason',
   'world', 'season', 'history', 'narrative', 'team', 'prepSlotsLeft',
+  'weekendInProgress',
   'unknown',
 ]);
 
