@@ -2,7 +2,8 @@ import { getCompound } from '../data/tires';
 import type { Driver, Team } from '../data/teams';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import {
-  pitLossS, stintLife, strategyOptions, strategySummary, type StrategyOption,
+  pitLossS, plannedStrategy, startingCompound, stintLife, strategyOptions, strategySummary,
+  type StrategyOption,
 } from '../race/Strategy';
 import { principalOf, principalSvg, teamMarkSvg, weatherGlyphSvg } from './Hud';
 
@@ -38,7 +39,7 @@ export interface StrategyScreenOptions {
   playerIndex: number;
   track: TrackDefinition;
   laps: number;
-  /** Chosen option id per driver, by driver id. */
+  /** Chosen option id, by driver id. Only the player's is ever written. */
   chosen: Record<string, string>;
   onChoose: (driverId: string, optionId: string) => void;
 }
@@ -76,9 +77,23 @@ export function buildStrategyScreen(parent: HTMLElement, opts: StrategyScreenOpt
     '  |  Rain risk ' + Math.round(track.rainChance * 100) + '%');
 
   // --- One column per car -------------------------------------------------
+  //
+  // The two columns are DIFFERENT KINDS OF THING, and that is the point.
+  //
+  // The player's is a choice. The team-mate's is information: their name and
+  // the plan the strategist has given them, stated as a fact. It used to be a
+  // second set of buttons, which quietly asked the player to run a team they
+  // have never been introduced to — "since the user isn't aware of driver 2 you
+  // should just be like your teammate is going with so and so options, I
+  // shouldn't be allowed to choose what tire setup my teammate gets".
+  //
+  // Their plan is still worth a whole column, because it is the thing that
+  // decides whether they are in the way on lap thirty. Reading it is useful.
+  // Setting it is somebody else's job.
   const cols = el('div', 'strat-cols', parent);
   for (const [i, driver] of drivers.entries()) {
-    const col = el('div', 'strat-col', cols);
+    const mine = i === opts.playerIndex;
+    const col = el('div', 'strat-col' + (mine ? '' : ' is-mate'), cols);
 
     const colHead = el('div', 'strat-colhead', col);
     const mark = el('div', 'strat-mark', colHead);
@@ -87,9 +102,23 @@ export function buildStrategyScreen(parent: HTMLElement, opts: StrategyScreenOpt
     el('span', 'strat-driver-first', who, driver.firstName);
     el('span', 'strat-driver-last', who, driver.lastName.toUpperCase());
     el('div', 'strat-carno', colHead, '#' + driver.raceNumber);
-    if (i === opts.playerIndex) el('div', 'strat-you', colHead, 'You');
+    el('div', mine ? 'strat-you' : 'strat-mate-tag', colHead, mine ? 'You' : 'Team-mate');
 
     const life = stintLife(team, driver, track);
+
+    if (!mine) {
+      const plan = plannedStrategy(team, driver, track, laps);
+      el('div', 'strat-label', col, 'Their race');
+      el('div', 'strat-said', col,
+        '“' + driver.firstName + ' goes ' + planWords(plan) + '. ' +
+        mateReason(plan, driver.lastName) + '”');
+      strategyCard(col, plan, laps, false);
+      el('div', 'strat-life', col,
+        'Medium lasts ~' + Math.round(life.medium) + ' laps for ' + driver.lastName +
+        ' here · a stop costs ' + pitLossS(team, track).toFixed(1) + 's');
+      continue;
+    }
+
     el('div', 'strat-label', col, 'Tyre strategy');
     el('div', 'strat-life', col,
       'Medium lasts ~' + Math.round(life.medium) + ' laps for ' + driver.lastName +
@@ -97,26 +126,62 @@ export function buildStrategyScreen(parent: HTMLElement, opts: StrategyScreenOpt
 
     const options = strategyOptions(team, driver, track, laps);
     const cards: HTMLElement[] = [];
+    // The one line that closes the loop the briefing screen used to open. The
+    // grid tyre is the first stint of whatever is selected here, and it is
+    // stated in those words so the question is visibly asked once.
+    const grid = el('div', 'strat-grid-tyre', col);
+
+    const mark2 = (picked: string | undefined) => {
+      for (const [j, c] of cards.entries()) c.classList.toggle('selected', options[j].id === picked);
+      const chosenOption = options.find((o) => o.id === picked) ?? options[0];
+      grid.textContent = 'You start the race on ' +
+        getCompound(startingCompound(chosenOption)).name.toUpperCase() +
+        ' — this is the only place that tyre is chosen.';
+    };
+
     for (const option of options) {
-      const card = strategyCard(col, option, laps);
+      const card = strategyCard(col, option, laps, true);
       cards.push(card);
       card.addEventListener('click', () => {
         opts.onChoose(driver.id, option.id);
-        for (const [j, c] of cards.entries()) {
-          c.classList.toggle('selected', options[j].id === option.id);
-        }
+        mark2(option.id);
       });
     }
-    const picked = opts.chosen[driver.id] ?? options.find((o) => o.label === 'RECOMMENDED')?.id;
-    for (const [j, c] of cards.entries()) c.classList.toggle('selected', options[j].id === picked);
+    // Never undefined: `plannedStrategy` falls back to the recommendation, and
+    // it is the same function `applyStrategy` uses, so what is highlighted here
+    // is what the car will be given even if nothing is ever clicked.
+    mark2(plannedStrategy(team, driver, track, laps, opts.chosen[driver.id]).id);
   }
 }
 
-/** One selectable plan: label, stop count, and the stint sequence. */
-function strategyCard(parent: HTMLElement, option: StrategyOption, laps: number): HTMLElement {
-  const card = document.createElement('button');
-  card.type = 'button';
-  card.className = 'strat-card tone-' + toneOf(option);
+/** The stint sequence as a spoken phrase: "medium, then hard". */
+function planWords(option: StrategyOption): string {
+  const names = option.stints.map((s) => getCompound(s.compound).name.toLowerCase());
+  if (names.length === 1) return names[0];
+  return names.slice(0, -1).join(', ') + ' then ' + names[names.length - 1];
+}
+
+/** Why the strategist put them on it, in the strategist's own terms. */
+function mateReason(option: StrategyOption, surname: string): string {
+  if (option.stops === 1) {
+    return surname + ' can make one stop work here, so we leave them out long and cover the undercut.';
+  }
+  return 'Two stops for ' + surname + ' — they get through a rear tyre faster than you do.';
+}
+
+/**
+ * One plan. Selectable for the player, a statement for the team-mate.
+ *
+ * The same card either way, because it is the same information and a second
+ * layout for read-only would be a second thing to keep in step. What changes is
+ * whether it is a button.
+ */
+function strategyCard(
+  parent: HTMLElement, option: StrategyOption, laps: number, selectable: boolean,
+): HTMLElement {
+  const card = document.createElement(selectable ? 'button' : 'div');
+  if (card instanceof HTMLButtonElement) card.type = 'button';
+  card.className = 'strat-card tone-' + toneOf(option) + (selectable ? '' : ' is-stated selected');
   parent.appendChild(card);
 
   const top = el('div', 'strat-card-top', card);

@@ -27,7 +27,7 @@ import type { CarEntry } from '../src/race/CarEntry';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import { loopDelta } from '../src/core/MathUtils';
-import { PIT_CREW_SIZE } from '../src/race/PitStop';
+import { PIT_CREW_SIZE } from '../src/race/PitStopChoreography';
 import { AIVehicleController, type AIPerception } from '../src/ai/AIVehicleController';
 
 /** Where the pit camera stands. */

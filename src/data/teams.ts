@@ -309,20 +309,78 @@ export const DRIVERS: readonly Driver[] = [
 const TEAM_BY_ID = new Map(TEAMS.map((t) => [t.id, t]));
 const DRIVER_BY_ID = new Map(DRIVERS.map((d) => [d.id, d]));
 
+// ===========================================================================
+// The grid overlay
+// ===========================================================================
+
+/**
+ * A career's own grid, installed over the static one for the life of a session.
+ *
+ * WHY THIS EXISTS. `RaceEngine` builds every car from `getTeam(d.teamId)`, and
+ * `CarEntry` turns that team's `performance` record into the spec the physics
+ * integrates. Those two lines are the entire channel between anything above the
+ * simulation and the car on track — so a career that wants its decisions to
+ * MEAN something has to come through here.
+ *
+ * It has to be an overlay rather than a replacement of the arrays because a
+ * career's grid is not a constant. It contains teams that do not exist in this
+ * file at all (Formula 2 and Formula 3 entrants), teams whose performance has
+ * been changed by a season of development, and a hidden per-save form variance
+ * that makes one career's pecking order different from another's. None of that
+ * can be a module-level literal.
+ *
+ * WHAT IS DELIBERATELY NOT DONE HERE. The `TEAMS` and `DRIVERS` arrays are left
+ * exactly as they are. Quick Race, the paddock screen and all twenty-five
+ * existing probes read them directly and never install an overlay, so they see
+ * the same grid they have always seen and their results do not move. A career
+ * installs its world on entry and takes it down on exit; if anything ever leaks
+ * an overlaid id into a non-career session, `getTeam` throws rather than
+ * silently handing back the wrong car.
+ */
+let overlayTeams: Map<string, Team> | null = null;
+let overlayDrivers: Map<string, Driver> | null = null;
+
+/** Installs a career's grid. Replaces any previous overlay wholesale. */
+export function installGrid(teams: readonly Team[], drivers: readonly Driver[]): void {
+  overlayTeams = new Map(teams.map((t) => [t.id, t]));
+  overlayDrivers = new Map(drivers.map((d) => [d.id, d]));
+}
+
+/** Removes the overlay, returning every lookup to the static grid. */
+export function clearGrid(): void {
+  overlayTeams = null;
+  overlayDrivers = null;
+}
+
+/** True while a career's grid is installed. For assertions and for the UI. */
+export function hasGridOverlay(): boolean {
+  return overlayTeams !== null;
+}
+
+/** Every team currently in play: the overlay if there is one, else the static grid. */
+export function activeTeams(): readonly Team[] {
+  return overlayTeams ? [...overlayTeams.values()] : TEAMS;
+}
+
+/** Every driver currently in play. */
+export function activeDrivers(): readonly Driver[] {
+  return overlayDrivers ? [...overlayDrivers.values()] : DRIVERS;
+}
+
 export function getTeam(id: string): Team {
-  const t = TEAM_BY_ID.get(id);
+  const t = overlayTeams?.get(id) ?? TEAM_BY_ID.get(id);
   if (!t) throw new Error('Unknown team: ' + id);
   return t;
 }
 
 export function getDriver(id: string): Driver {
-  const d = DRIVER_BY_ID.get(id);
+  const d = overlayDrivers?.get(id) ?? DRIVER_BY_ID.get(id);
   if (!d) throw new Error('Unknown driver: ' + id);
   return d;
 }
 
 export function driversForTeam(teamId: string): Driver[] {
-  return DRIVERS.filter((d) => d.teamId === teamId);
+  return activeDrivers().filter((d) => d.teamId === teamId);
 }
 
 export function fullName(d: Driver): string {

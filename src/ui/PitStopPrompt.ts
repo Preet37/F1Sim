@@ -1,81 +1,95 @@
-import { DRY_COMPOUNDS, WET_COMPOUNDS, getCompound, type CompoundId } from '../data/tires';
+import { type CompoundId } from '../data/tires';
 import type { CarEntry } from '../race/CarEntry';
+import {
+  cyclePitCompound, pitSheet, setPitCompound, setPitRepair, togglePitRepair,
+  type PitSheet, type RepairChoice,
+} from '../race/PitStop';
 import type { RaceEngine } from '../race/RaceEngine';
+import type { PitBindingHints } from '../input/InputController';
 
 /**
  * The pit stop, made a decision instead of a surprise.
  *
  * Before this, pressing PIT meant driving down the lane and finding out
- * afterwards what had been bolted on. The compound came from
- * `chooseCompoundForStint` — the AI strategist's function, which has no concept
- * of what the player wanted — and the front wing was replaced or not by a rule
- * the player could not see, costing them nine seconds they had not agreed to.
- * Tyre choice is the biggest strategic lever in a Grand Prix and the player's
- * was the one car in the field that could not pull it.
+ * afterwards what had been bolted on. Tyre choice is the biggest strategic
+ * lever in a Grand Prix and the player's was the one car in the field that
+ * could not pull it.
  *
- * Design constraints that shaped this
+ * THREE THINGS SHAPED THIS FILE, AND ALL THREE ARE FAULTS IT USED TO HAVE.
+ *
+ * 1. IT IS A RENDER, NOT A MEMORY. Every string and every highlight comes from
+ *    one call to `pitSheet`, which reads the engine. The old version toggled a
+ *    `selected` class inside a click handler and computed its status line
+ *    separately, so the tile that looked chosen and the tyre that was going on
+ *    the car were two different facts kept in step by hand — and they came
+ *    apart. Nothing in this file decides what the stop is; it draws what the
+ *    engine says the stop is.
+ *
+ * 2. IT IS OPERABLE WITHOUT A POINTER. "How is the user supposed to choose the
+ *    tire compound when they are racing? I can't just move my cursor and click
+ *    something." Correct. The keyboard, the gamepad and a wheel all drive it
+ *    through `InputController`, the same layer the throttle arrives on, and the
+ *    bindings are printed on the panel because a control nobody can find is not
+ *    a control. The tiles remain tappable for a touchscreen.
+ *
+ * 3. IT LIVES IN THE RAIL. It used to be absolutely positioned over the left of
+ *    the screen and drew straight across the top of the radio card. It is now a
+ *    child of the notice column, so the layout engine — not a pair of hand-tuned
+ *    `bottom` values — guarantees the two stack.
  *
  * It does NOT pause the race. A pit stop happens at racing speed and the whole
  * point of calling it a lap early is that the decision is made while driving.
- * Freezing the world to show a menu would be a different game, and would make a
- * safety-car stop — the one where the timing genuinely matters — impossible to
- * get right.
- *
- * So it has to be usable at 300 km/h with one thumb: five large targets in a
- * row, no scrolling, no nested pages, and a default already selected so a driver
- * who ignores it entirely still gets a sensible stop. It sits on the left, clear
- * of the wheel display and the timing panel, and it closes itself the moment the
- * car is released.
- *
- * Every number on it is read from `RaceEngine.pitBriefing`, which runs the same
- * functions the stop itself runs. It cannot describe a stop the engine would not
- * perform.
  */
 
 export class PitStopPrompt {
   readonly root: HTMLElement;
 
-  private readonly headline: HTMLElement;
+  /** Called when the driver waves the stop off from the panel. */
+  onCancel: (() => void) | null = null;
+
   private readonly note: HTMLElement;
   private readonly tyreRow: HTMLElement;
+  private readonly noseLabel: HTMLElement;
   private readonly noseRow: HTMLElement;
+  private readonly warning: HTMLElement;
   private readonly status: HTMLElement;
+  private readonly hintRow: HTMLElement;
+  private readonly confirmBtn: HTMLElement;
+  private readonly cancelBtn: HTMLElement;
 
   private car: CarEntry | null = null;
   private shown = false;
-  /** Compound chips currently built, so the row is only rebuilt when it changes. */
+  /** The compound ids the row is currently built for, so it rebuilds rarely. */
   private builtFor = '';
+  private hintFor = '';
+
+  private readonly tiles = new Map<HTMLElement, CompoundId>();
+  private readonly noseButtons: { el: HTMLElement; value: RepairChoice; label: HTMLElement }[] = [];
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
     this.root.className = 'pitprompt hidden';
-    // The HUD is pointer-events:none so it never blocks the driving surface.
-    // This panel opts back in — but only the panel, not the space around it.
-    this.root.style.pointerEvents = 'auto';
 
-    const head = document.createElement('div');
-    head.className = 'pitprompt-head';
-    this.root.appendChild(head);
-    this.headline = document.createElement('div');
-    this.headline.className = 'pitprompt-title';
-    this.headline.textContent = 'PIT STOP';
-    head.appendChild(this.headline);
+    const head = el('pitprompt-head', this.root);
+    el('pitprompt-title', head, 'PIT STOP');
+    this.cancelBtn = el('pitprompt-wave', head, 'STAY OUT');
+    tap(this.cancelBtn, () => this.onCancel?.());
 
-    this.note = document.createElement('div');
-    this.note.className = 'pitprompt-note';
-    this.root.appendChild(this.note);
+    this.note = el('pitprompt-note', this.root);
+    this.tyreRow = el('pitprompt-tyres', this.root);
 
-    this.tyreRow = document.createElement('div');
-    this.tyreRow.className = 'pitprompt-tyres';
-    this.root.appendChild(this.tyreRow);
+    this.noseLabel = el('pitprompt-noselabel', this.root, 'FRONT WING');
+    this.noseRow = el('pitprompt-nose', this.root);
 
-    this.noseRow = document.createElement('div');
-    this.noseRow.className = 'pitprompt-nose';
-    this.root.appendChild(this.noseRow);
+    this.warning = el('pitprompt-warn', this.root);
+    this.warning.style.display = 'none';
 
-    this.status = document.createElement('div');
-    this.status.className = 'pitprompt-status';
-    this.root.appendChild(this.status);
+    this.status = el('pitprompt-status', this.root);
+
+    const foot = el('pitprompt-foot', this.root);
+    this.hintRow = el('pitprompt-hints', foot);
+    this.confirmBtn = el('pitprompt-confirm', foot, 'CONFIRM');
+    tap(this.confirmBtn, () => this.flashConfirm());
 
     parent.appendChild(this.root);
   }
@@ -85,28 +99,48 @@ export class PitStopPrompt {
   }
 
   /**
-   * Opens the sheet for a stop that is about to happen.
+   * Draws the sheet for the stop that is about to happen.
    *
-   * Safe to call repeatedly — it rebuilds only when the situation has actually
-   * changed, because rebuilding a row of buttons under a thumb that is on one of
-   * them is how a tap gets eaten.
+   * Safe on every frame: the tile row is rebuilt only when the set of compounds
+   * on offer changes, and everything else is a guarded text or class write.
+   * `Hud.update` runs at 60fps beside twenty simulated cars, so this cannot
+   * allocate or reflow per frame.
    */
-  open(engine: RaceEngine, car: CarEntry): void {
+  render(engine: RaceEngine, car: CarEntry, hints: PitBindingHints): void {
     this.car = car;
-    const b = engine.pitBriefing(car);
+    const sheet = pitSheet(engine, car);
 
-    // Wet-weather tyres are only offered when they are a real option. A dry
-    // Bahrain race that lists "WET" as one of five equal choices is inviting a
-    // mistake that costs the race, for no gain.
-    const wetsRelevant = engine.weather.wetness > 0.12 || engine.weather.hasRained;
-    const key = [
-      b.compound, wetsRelevant, b.secondCompoundRequired,
-      b.dryUsed.join('/'), b.noseChangeAdvised,
-    ].join('|');
+    const key = sheet.tiles.map((t) => t.id).join('/');
     if (key !== this.builtFor) {
       this.builtFor = key;
-      this.build(engine, car, wetsRelevant);
+      this.buildTiles(sheet);
     }
+    const hintKey = hints.tyre + '|' + hints.repair + '|' + hints.confirm + '|' + hints.cancel;
+    if (hintKey !== this.hintFor) {
+      this.hintFor = hintKey;
+      this.buildHints(hints);
+    }
+
+    setText(this.note, sheet.note);
+    setText(this.noseLabel, sheet.wingLabel);
+    setText(this.status, sheet.status);
+
+    for (const [element, id] of this.tiles) {
+      const tile = sheet.tiles.find((t) => t.id === id);
+      if (!tile) continue;
+      setClass(element, 'pitchip'
+        + (tile.selected ? ' selected' : '')
+        + (tile.used ? ' is-used' : '')
+        + (tile.recommended ? ' is-crew' : ''));
+    }
+    for (const b of this.noseButtons) {
+      const opt = sheet.repairs.find((r) => r.value === b.value);
+      setClass(b.el, 'pitnose' + (opt?.selected ? ' selected' : ''));
+      if (opt) setText(b.label, opt.label);
+    }
+
+    setStyle(this.warning, 'display', sheet.warning ? 'block' : 'none');
+    if (sheet.warning) setText(this.warning, sheet.warning);
 
     this.root.classList.remove('hidden');
     this.shown = true;
@@ -115,134 +149,123 @@ export class PitStopPrompt {
   close(): void {
     this.root.classList.add('hidden');
     this.shown = false;
-    this.builtFor = '';
     this.car = null;
   }
 
-  private build(engine: RaceEngine, car: CarEntry, wetsRelevant: boolean): void {
-    const b = engine.pitBriefing(car);
-
-    this.note.textContent = b.secondCompoundRequired
-      ? 'You still owe a second dry compound — reach the flag without one and it is a disqualification.'
-      : b.lapsRemaining > 0
-        ? b.lapsRemaining + ' laps left · the engineers would fit ' + getCompound(b.compound).name.toLowerCase()
-        : 'The engineers would fit ' + getCompound(b.compound).name.toLowerCase();
-
-    // --- Tyres ------------------------------------------------------------
-    this.tyreRow.textContent = '';
-    const offered: CompoundId[] = wetsRelevant
-      ? [...DRY_COMPOUNDS, ...WET_COMPOUNDS]
-      : [...DRY_COMPOUNDS];
-
-    for (const id of offered) {
-      const c = getCompound(id);
-      const chip = document.createElement('button');
-      chip.className = 'pitchip';
-      chip.style.setProperty('--chip', '#' + c.colour.toString(16).padStart(6, '0'));
-
-      const code = document.createElement('span');
-      code.className = 'pitchip-code';
-      code.textContent = c.code;
-      chip.appendChild(code);
-
-      const name = document.createElement('span');
-      name.className = 'pitchip-name';
-      name.textContent = c.name;
-      chip.appendChild(name);
-
-      // A used dry compound is marked, because the two-compound rule is about
-      // which ones you have ALREADY had — the single most common way to be
-      // disqualified is fitting the same tyre twice without noticing.
-      if (b.dryUsed.includes(id)) {
-        const used = document.createElement('span');
-        used.className = 'pitchip-used';
-        used.textContent = 'used';
-        chip.appendChild(used);
-      }
-
-      chip.addEventListener('click', (e) => {
-        e.stopPropagation();
-        car.pitCompoundRequest = id;
-        this.refreshSelection();
-      });
-      this.tyreRow.appendChild(chip);
-      chipsById.set(chip, id);
-    }
-
-    // --- Nose -------------------------------------------------------------
-    this.noseRow.textContent = '';
-    const wingPct = Math.round(b.frontWing * 100);
-    const label = document.createElement('div');
-    label.className = 'pitprompt-noselabel';
-    label.textContent = 'FRONT WING ' + wingPct + '%';
-    this.noseRow.appendChild(label);
-
-    const mk = (text: string, value: boolean | null) => {
-      const btn = document.createElement('button');
-      btn.className = 'pitnose';
-      btn.textContent = text;
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        car.pitNoseChangeRequest = value;
-        this.refreshSelection();
-      });
-      this.noseRow.appendChild(btn);
-      noseById.set(btn, value);
-    };
-    mk('CREW', null);
-    // "+0s" is worse than no figure: it reads as a cost the player is being
-    // asked to accept, when what it actually means is that the change is free
-    // — the nose is already off, or the stop is long enough to hide it. Only
-    // print the delta when there is one.
-    const noseCost = Math.round(b.noseChangeCostS);
-    mk(noseCost > 0 ? 'CHANGE +' + noseCost + 's' : 'CHANGE', true);
-    mk('KEEP', false);
-
-    this.refreshSelection();
+  /**
+   * The three controls, from whichever device the player is holding.
+   *
+   * Routed through here rather than read off the panel so a gamepad, a wheel, a
+   * keyboard and a tap all mutate the choice by the same three functions.
+   */
+  cycleTyre(engine: RaceEngine, dir = 1): void {
+    if (!this.shown || !this.car) return;
+    cyclePitCompound(engine, this.car, dir);
   }
 
-  /** Marks the selected chips. Cheap — it only writes class names. */
-  private refreshSelection(): void {
-    const car = this.car;
-    if (!car) return;
-    for (const chip of this.tyreRow.children) {
-      const id = chipsById.get(chip as HTMLElement);
-      const on = id !== undefined && car.pitCompoundRequest === id;
-      (chip as HTMLElement).classList.toggle('selected', on);
-    }
-    for (const btn of this.noseRow.children) {
-      if (!noseById.has(btn as HTMLElement)) continue;
-      const v = noseById.get(btn as HTMLElement)!;
-      (btn as HTMLElement).classList.toggle('selected', car.pitNoseChangeRequest === v);
-    }
+  toggleRepair(engine: RaceEngine): void {
+    if (!this.shown || !this.car) return;
+    togglePitRepair(engine, this.car);
   }
 
-  /** Live line at the bottom: where the stop has got to. */
-  update(engine: RaceEngine, car: CarEntry): void {
+  /**
+   * Confirm.
+   *
+   * The stop is already latched — the driver pressed PIT to open this — so
+   * confirming does not change the car. What it does is end the interaction:
+   * the panel acknowledges, and the driver can stop thinking about it. Making
+   * it change state as well would mean a driver who never pressed it got no
+   * stop, which is the opposite of the point.
+   */
+  confirm(): void {
     if (!this.shown) return;
-    const chosen = car.pitCompoundRequest;
-    const b = engine.pitBriefing(car);
-    const fitting = chosen ?? b.compound;
+    this.flashConfirm();
+  }
 
-    let text: string;
-    if (car.inPitBox) {
-      text = 'STATIONARY — ' + car.pitBoxTimer.toFixed(1) + 's · fitting ' +
-        getCompound(car.compound).name.toLowerCase();
-    } else if (car.inPitLane) {
-      const d = car.perception.pitBoxAheadM;
-      text = (d >= 0 ? 'BOX IN ' + Math.round(d) + 'm' : 'BOX AHEAD') +
-        ' · ' + getCompound(fitting).name.toLowerCase() +
-        (car.pitNoseChangeRequest ?? b.noseChangeAdvised ? ' + new nose' : '');
-    } else {
-      text = 'BOX THIS LAP · ' + getCompound(fitting).name.toLowerCase() +
-        (chosen ? ' (your call)' : ' (engineers)');
+  private flashConfirm(): void {
+    this.root.classList.remove('confirmed');
+    // Reflow between the two writes, or the class never leaves and comes back
+    // and the animation does not run a second time.
+    void this.root.offsetWidth;
+    this.root.classList.add('confirmed');
+  }
+
+  private buildTiles(sheet: PitSheet): void {
+    this.tyreRow.textContent = '';
+    this.tiles.clear();
+    for (const tile of sheet.tiles) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'pitchip';
+      chip.style.setProperty('--chip', tile.colour);
+      el('pitchip-code', chip, tile.code);
+      el('pitchip-name', chip, tile.name);
+      // A used dry compound is marked because the two-compound rule is about
+      // which ones you have ALREADY had, and fitting the same tyre twice
+      // without noticing is the commonest way to be disqualified.
+      el('pitchip-used', chip, 'used');
+      tap(chip, () => { if (this.car) setPitCompound(this.car, tile.id); });
+      this.tyreRow.appendChild(chip);
+      this.tiles.set(chip, tile.id);
     }
-    if (this.status.textContent !== text) this.status.textContent = text;
+
+    if (this.noseButtons.length === 0) {
+      for (const opt of sheet.repairs) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'pitnose';
+        const label = el('pitnose-label', b, opt.label);
+        tap(b, () => { if (this.car) setPitRepair(this.car, opt.value); });
+        this.noseRow.appendChild(b);
+        this.noseButtons.push({ el: b, value: opt.value, label });
+      }
+    }
+  }
+
+  private buildHints(hints: PitBindingHints): void {
+    this.hintRow.textContent = '';
+    const pairs: [string, string][] = [
+      [hints.tyre, 'tyre'],
+      [hints.repair, 'wing'],
+      [hints.cancel, 'stay out'],
+    ];
+    for (const [key, what] of pairs) {
+      const h = el('pithint', this.hintRow);
+      el('pithint-key', h, key);
+      el('pithint-what', h, what);
+    }
   }
 }
 
-// Selection maps live outside the class so a rebuilt row does not strand the
-// old entries: the elements are discarded with the row, and a WeakMap lets the
-// garbage collector take them with it.
-const chipsById = new WeakMap<Element, CompoundId>();
-const noseById = new WeakMap<Element, boolean | null>();
+function el(cls: string, parent: HTMLElement, text = ''): HTMLElement {
+  const d = document.createElement('div');
+  d.className = cls;
+  if (text) d.textContent = text;
+  parent.appendChild(d);
+  return d;
+}
+
+/**
+ * A control inside a `pointer-events: none` HUD.
+ *
+ * Both events are bound, and `touchstart` calls `preventDefault` so the browser
+ * does not follow it with a synthesised click — a tyre choice that fires twice
+ * cycles straight past the tyre the driver wanted.
+ */
+function tap(element: HTMLElement, handler: () => void): void {
+  element.style.pointerEvents = 'auto';
+  const fire = (e: Event) => { e.preventDefault(); e.stopPropagation(); handler(); };
+  element.addEventListener('click', fire);
+  element.addEventListener('touchstart', fire, { passive: false });
+}
+
+function setText(element: HTMLElement, value: string): void {
+  if (element.textContent !== value) element.textContent = value;
+}
+function setClass(element: HTMLElement, value: string): void {
+  if (element.className !== value) element.className = value;
+}
+function setStyle(element: HTMLElement, prop: string, value: string): void {
+  const style = element.style as unknown as Record<string, string>;
+  if (style[prop] !== value) style[prop] = value;
+}

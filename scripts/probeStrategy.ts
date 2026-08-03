@@ -25,9 +25,11 @@ import { DRIVERS, getTeam } from '../src/data/teams';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import {
-  pitLossS, planFor, startingCompound, stintLife, strategyOptions, strategySummary,
+  applyPlanToCar, pitLossS, planFor, plannedStrategy, startingCompound, stintLife,
+  strategyOptions, strategySummary,
 } from '../src/race/Strategy';
 import { plannedStopCue } from '../src/ui/Hud';
+import { getCompound } from '../src/data/tires';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
@@ -172,8 +174,37 @@ check(car.compound === option.stints[0].compound, 'the car is not on the compoun
 // What distinguishes a plan being followed from a car merely running out of
 // tyre is WHEN the stop happens. So record the lap each car first pits on and
 // compare it against the lap its own plan named.
+// A car is judged on its plan only when it was FREE TO FOLLOW IT.
+//
+// The engine keeps four paths that override the strategist and must: a genuinely
+// dead tyre, a wet-weather crossover, a compound the rule requires, and a
+// penalty that has to be served. A driver switching to wets in the rain has not
+// disobeyed their plan, they have done the only sensible thing with it, and a
+// measurement that scores them as disobedient cannot tell the difference between
+// a strategist being ignored and a strategist being overruled by the weather.
+//
+// So the override is recorded AT THE MOMENT THE CALL IS MADE — not at the stop,
+// which is several corners later and by then the rain may have stopped — and the
+// two populations are reported separately. Both numbers are printed on every run
+// so neither can hide behind the other.
 const plannedLap = engine.cars.map((c) => c.targetPitLap);
 const firstStopLap = engine.cars.map(() => -1);
+const overruled = engine.cars.map(() => false);
+const seenCall = engine.cars.map(() => false);
+const totalRaceLaps = config.laps;
+
+function emergencyInForce(c: (typeof engine.cars)[number]): string | null {
+  if (c.pendingServePenalty() !== null) return 'penalty';
+  const onSlicks = !getCompound(c.compound).isWetWeather;
+  if (engine.weather.wetness > 0.4 && onSlicks) return 'rain';
+  if (engine.weather.wetness < 0.12 && !onSlicks && c.physics.rearTires.lapsOnSet > 2) return 'drying';
+  if (c.physics.rearTires.wear < 0.24) return 'tyres gone';
+  if (!engine.weather.hasRained && totalRaceLaps - c.lap <= 4) {
+    const dryUsed = new Set(c.usedCompounds.filter((x) => !getCompound(x).isWetWeather));
+    if (dryUsed.size < 2) return 'second compound';
+  }
+  return null;
+}
 
 let sawCue = false;
 let cueText = '';
@@ -186,7 +217,12 @@ for (let i = 0; i < Math.round(2400 / PHYSICS_DT) && !engine.over; i++) {
     if (cue && !sawCue) { sawCue = true; cueText = cue; }
   }
   for (let c = 0; c < engine.cars.length; c++) {
-    if (firstStopLap[c] < 0 && engine.cars[c].pitStops >= 1) firstStopLap[c] = engine.cars[c].lap;
+    const entry = engine.cars[c];
+    if (!seenCall[c] && !entry.isPlayer && entry.perception.pitThisLap) {
+      seenCall[c] = true;
+      overruled[c] = emergencyInForce(entry) !== null;
+    }
+    if (firstStopLap[c] < 0 && entry.pitStops >= 1) firstStopLap[c] = entry.lap;
   }
   if (car.pitStops > stops) stops = car.pitStops;
 }
@@ -205,38 +241,165 @@ drift.sort((a, b) => a - b);
 const medianDrift = drift.length ? drift[drift.length >> 1] : NaN;
 const onPlan = drift.filter((d) => Math.abs(d) <= 1).length;
 
+const free = judged.filter((c) => !overruled[c.index]);
+const freeDrift = free.map((c) => firstStopLap[c.index] - plannedLap[c.index]);
+freeDrift.sort((a, b) => a - b);
+const freeMedian = freeDrift.length ? freeDrift[freeDrift.length >> 1] : NaN;
+const freeWorst = freeDrift.reduce((a, b) => (Math.abs(a) >= Math.abs(b) ? a : b), 0);
+
 console.log(`plan ${option.id}: ${strategySummary(option)}`);
 console.log(`target stop lap ${target}, cue seen: ${sawCue ? cueText : 'never'}, ` +
   `car ${car.driver.code} ${car.retired ? 'retired: ' + car.retirementReason : 'stops ' + stops}`);
 console.log(`field: ${running.length} running, ${stopped} pitted, ${judged.length} judged; ` +
   `first stop vs planned lap: median ${medianDrift >= 0 ? '+' : ''}${medianDrift} laps, ` +
   `${onPlan} of ${judged.length} within one lap`);
+console.log(`  of those, ${free.length} were free to follow the plan ` +
+  `(${judged.length - free.length} overruled by rain, a dead tyre, the compound rule or a penalty): ` +
+  `median ${freeMedian >= 0 ? '+' : ''}${freeMedian}, worst ${freeWorst >= 0 ? '+' : ''}${freeWorst}`);
 
 check(sawCue, 'the driver was never told about the stop the plan asks for');
 check(cueText.includes(String(target)) || cueText.includes('THIS LAP'),
   `the cue "${cueText}" does not name the planned lap ${target}`);
-check(stopped >= Math.ceil(running.length * 0.75),
-  `only ${stopped} of ${running.length} running cars pitted at all`);
+// Asked of the cars that got far enough to be DUE a stop, not of everyone still
+// running — those are different questions and only the first one is about the
+// strategist.
+//
+// This assertion used to read `stopped >= 75% of running` and it passed for the
+// wrong reason. At seed 7 the old weather model made this Silverstone race wet
+// (measured: wetness 0.56 at the flag), so 16 of 18 cars pitted — 8 following
+// their plan and 8 more driven in by rain. The rewritten model draws this seed
+// dry, those 8 emergency stops correctly stop happening, and a floor calibrated
+// against them fails while the strategist is doing better than before.
+//
+// Measured across that change: laps completed are unchanged (median 16 -> 17,
+// max 18 -> 19), so there is no pace regression underneath it; and of the cars
+// that reached their own planned lap, 8 of 8 pitted on both sides.
+// `>` and not `>=`: a car whose planned lap is the lap it is on when the window
+// closes has not yet had a lap in which to serve the stop. Measured — the three
+// cars this excludes were all at exactly `lap === plannedLap` with the stop
+// still ahead of them, which is a boundary artefact of the 2400s window and not
+// a strategist that ignored its plan.
+const due = running.filter((c) => plannedLap[c.index] > 0 && c.lap > plannedLap[c.index]);
+const dueStopped = due.filter((c) => c.pitStops >= 1).length;
+console.log(`  ${due.length} cars reached their planned lap; ${dueStopped} of them stopped ` +
+  `(${stopped} of ${running.length} running cars stopped for any reason)`);
 
-// KNOWN DEFECT, measured here and deliberately not asserted at its true value.
+check(due.length >= 6,
+  `only ${due.length} cars reached their planned lap in the window — too few to judge the strategist by`);
+check(dueStopped >= Math.ceil(due.length * 0.9),
+  `only ${dueStopped} of ${due.length} cars that reached their planned lap actually stopped`);
+
+// The AI follows its plan, and the assertion now says so.
 //
-// The AI does not follow its plan. At seed 7 the field's planned first stops
-// are laps 16-22; the cars actually pit on laps 11-13, because `shouldPit`
-// fires first on worn tyres and on the mandatory-second-compound rule, both of
-// which force a stop before the strategist's lap arrives. So the plan is
-// currently decorative for an AI car — the RECOMMENDATION the race-setup screen
-// shows is honest arithmetic, but the race does not execute it.
+// It used to be a floor of ten laps with a KNOWN DEFECT note attached, because
+// the field's first stops landed a median of six laps early against plans naming
+// laps 16-22 and asserting the truth would have failed. That is fixed. What was
+// throwing the plan away turned out to be neither of the two things the note
+// blamed: on measurement the tyres were reading 0.96 of full life and the
+// mandatory-compound rule does not bite until four laps from the flag. It was
+// the CHEAP STOP under a neutralisation — a safety car on lap nine, a test that
+// asked only for six laps on the set, and sixteen of twenty cars diving in on
+// tyres that were barely scrubbed. See `RaceEngine.shouldPit`.
 //
-// This is not new and this probe is not where it should be fixed. On the commit
-// before the debris/kerb work the same cars pitted on lap 7-8 against the same
-// 16-22 plans, so adherence was worse; it is drift, not a regression. Asserting
-// the correct bound (a median within a lap) would fail on a defect that predates
-// every branch in flight, so the assertion below is a floor that only catches a
-// TOTAL breakdown, and the real number is printed above on every run so it
-// cannot hide. Tighten this the moment the AI is made to honour its plan.
-check(Number.isFinite(medianDrift) && Math.abs(medianDrift) <= 10,
+// Two bounds now, because there are two questions.
+//
+// The tight one is on the cars that were FREE to follow the plan, and it is the
+// bound the note said should eventually be asserted: within a lap. Anything
+// looser and the cheap-stop branch could quietly widen again without failing.
+//
+// The loose one is on the whole field including the overruled, and it stays
+// loose on purpose rather than by concession. At this seed it rains at
+// Silverstone from about lap fourteen and most of the field crosses over to wets
+// — correctly, and against plans naming laps as late as 22. Weather is a real
+// input to a real race and the number moves with it: measured over the same race
+// at a dry seed the whole-field median is 0, and at a seed that rains on lap
+// nine it is -7. A bound on this number is therefore a bound on how much rain a
+// seed is allowed to have, which is not a property of the strategist. It is kept
+// because a TOTAL breakdown would still blow through it.
+check(Number.isFinite(freeMedian) && Math.abs(freeMedian) <= 1,
+  `of the cars free to follow their plan, the median first stop lands ${freeMedian} ` +
+  'laps from the lap the plan named — the strategist is being ignored');
+check(Math.abs(freeWorst) <= 3,
+  `a car free to follow its plan pitted ${freeWorst} laps from the lap it named — ` +
+  'more than a strategist would ever pull a stop forward for a safety car');
+check(free.length >= 5,
+  `only ${free.length} cars were free to follow their plan — the sample is too small ` +
+  'to say anything, so the overrides are firing on almost everybody');
+check(Number.isFinite(medianDrift) && Math.abs(medianDrift) <= 8,
   `the field's first stop lands ${medianDrift} laps from the lap its plan named — ` +
   'the strategy is not reaching the race at all');
+
+// ---------------------------------------------------------------------------
+// 4. The starting tyre is asked for ONCE, and the answer is what is on the grid
+// ---------------------------------------------------------------------------
+//
+// "at the start screen I get this which is the tire options? so lets say I
+//  choose mediums, then i get a tire strategy? why do I need to do it twice?"
+//
+// It was asked three times — the briefing chips, the setup sheet, and the first
+// stint of a strategy card — and they were not wired together. `applyStrategy`
+// wrote the plan's tyre and `applyPlayerSetup` ran afterwards and wrote the
+// chips' tyre over it, so a player who picked the soft-start strategy and never
+// touched the chips went to the grid on mediums with nothing saying so.
+//
+// The chips are gone for a race. `plannedStrategy` is the one answer, and this
+// asserts that following it to the car really does put that tyre on it — for
+// both of the team's cars, on every circuit.
+
+for (const def of CIRCUITS.slice(0, 5)) {
+  const laps = def.raceLaps;
+  const cfg: SessionConfig = {
+    kind: 'race', name: 'grid tyre', durationS: 0, laps,
+    playerIndex: 0, standingStart: true, pitLaneStart: false, seed: 909,
+  };
+  const eng = new RaceEngine(def, cfg);
+  const player = eng.cars[0];
+  const mates = eng.cars.filter((c) => c.team.id === player.team.id);
+  check(mates.length === 2, `${def.id}: the player's team has ${mates.length} cars`);
+
+  // Nothing chosen: the strategist's own call, on both cars, and the tyre on
+  // the grid is that plan's first stint.
+  for (const entry of mates) {
+    const option = plannedStrategy(entry.team, entry.driver, def, laps);
+    check(option.label === 'RECOMMENDED',
+      `${def.id}/${entry.driver.code}: with no choice made the plan is ${option.label}, not the recommendation`);
+    applyPlanToCar(entry, option, 90);
+    check(entry.compound === startingCompound(option),
+      `${def.id}/${entry.driver.code}: plan starts on ${startingCompound(option)}, car is on ${entry.compound}`);
+    check(entry.usedCompounds.length === 1 && entry.usedCompounds[0] === entry.compound,
+      `${def.id}/${entry.driver.code}: the tyre log does not match the tyre`);
+    check(entry.physics.frontTires.compound.id === entry.compound &&
+      entry.physics.rearTires.compound.id === entry.compound,
+      `${def.id}/${entry.driver.code}: the compound was recorded but not fitted`);
+  }
+
+  // And every option the player can actually pick reaches the grid. This is the
+  // assertion the old code would have failed: the aggressive plan starts on the
+  // soft, and the briefing chips defaulted to medium.
+  for (const option of strategyOptions(player.team, player.driver, def, laps)) {
+    const picked = plannedStrategy(player.team, player.driver, def, laps, option.id);
+    check(picked.id === option.id,
+      `${def.id}: choosing ${option.id} returned ${picked.id}`);
+    applyPlanToCar(player, picked, 90);
+    check(player.compound === startingCompound(option),
+      `${def.id}: chose ${option.id} (starts ${startingCompound(option)}) and went to the grid on ${player.compound}`);
+    check(player.plan.length === option.stints.length,
+      `${def.id}: chose a ${option.stints.length}-stint plan and the car got ${player.plan.length}`);
+    check(player.targetPitLap === option.stints[0].pitOnLap,
+      `${def.id}: the car's first stop is lap ${player.targetPitLap}, the plan says ${option.stints[0].pitOnLap}`);
+  }
+}
+console.log('grid tyre: one source, followed to the car on 5 circuits x 3 options x 2 drivers');
+
+// An unknown id — a save from an older build, or a plan that no longer exists
+// on this circuit — falls back to the recommendation rather than to nothing.
+{
+  const def = getCircuit('spa');
+  const team = getTeam(DRIVERS[0].teamId);
+  const fallback = plannedStrategy(team, DRIVERS[0], def, def.raceLaps, 'no-such-plan');
+  check(fallback.label === 'RECOMMENDED',
+    `an unknown plan id fell back to ${fallback.label}, not the recommendation`);
+}
 
 // ---------------------------------------------------------------------------
 

@@ -56,10 +56,12 @@ export const AXIS_ROLES: readonly AxisRole[] = ['steer', 'throttle', 'brake', 'c
 
 /** Everything that can be put on a button. */
 export type ButtonAction =
-  | 'shiftUp' | 'shiftDown' | 'drs' | 'ers' | 'pit' | 'camera' | 'pause' | 'reverse';
+  | 'shiftUp' | 'shiftDown' | 'drs' | 'ers' | 'pit' | 'camera' | 'pause' | 'reverse'
+  | 'pitTyre' | 'pitRepair' | 'pitConfirm';
 
 export const BUTTON_ACTIONS: readonly ButtonAction[] = [
   'shiftUp', 'shiftDown', 'drs', 'ers', 'pit', 'camera', 'pause', 'reverse',
+  'pitTyre', 'pitRepair', 'pitConfirm',
 ];
 
 export const BUTTON_LABELS: Record<ButtonAction, string> = {
@@ -71,7 +73,32 @@ export const BUTTON_LABELS: Record<ButtonAction, string> = {
   camera: 'Camera',
   pause: 'Pause',
   reverse: 'Reverse',
+  // The three that operate the pit sheet without taking a hand off the wheel.
+  // They do nothing at all unless the sheet is up, which is why they can sit on
+  // the D-pad next to controls a driver uses every lap.
+  pitTyre: 'Pit: next tyre',
+  pitRepair: 'Pit: front wing',
+  pitConfirm: 'Pit: confirm',
 };
+
+/**
+ * Where the pit-sheet actions land on a device nobody has configured.
+ *
+ * The D-pad, on a pad, because it is the only cluster on a standard controller
+ * that this game had not already spent — every face button is a control the
+ * driver uses at speed, and a tyre choice must not share one with DRS.
+ * `nButtons` is checked because a device that reports twelve buttons has no
+ * D-pad and the binding would silently point at nothing.
+ */
+function padPitButtons(nButtons: number): Pick<
+  Record<ButtonAction, ButtonRef>, 'pitTyre' | 'pitRepair' | 'pitConfirm'
+> {
+  return {
+    pitTyre: nButtons > 15 ? btn(15) : unboundButton(),
+    pitRepair: nButtons > 14 ? btn(14) : unboundButton(),
+    pitConfirm: nButtons > 12 ? btn(12) : unboundButton(),
+  };
+}
 
 export const AXIS_LABELS: Record<AxisRole, string> = {
   steer: 'Steering',
@@ -285,6 +312,12 @@ export function autoProfileFor(pad: GamepadLike): GamepadProfile {
         camera: nButtons > 3 ? btn(3) : unboundButton(),
         pause: nButtons > 9 ? btn(9) : unboundButton(),
         reverse: nButtons > 1 ? btn(1) : unboundButton(),
+        // A wheel rim has a bank of small buttons and no agreed layout at all,
+        // so these are the same kind of guess as the paddles above and are
+        // corrected in two presses on the controller screen.
+        pitTyre: nButtons > 10 ? btn(10) : unboundButton(),
+        pitRepair: nButtons > 11 ? btn(11) : unboundButton(),
+        pitConfirm: nButtons > 6 ? btn(6) : unboundButton(),
       },
       // A wheel has real travel and real self-centring, so it wants none of the
       // softening a thumbstick needs.
@@ -313,6 +346,7 @@ export function autoProfileFor(pad: GamepadLike): GamepadProfile {
       camera: nButtons > 3 ? btn(3) : unboundButton(),
       pause: nButtons > 9 ? btn(9) : unboundButton(),
       reverse: nButtons > 1 ? btn(1) : unboundButton(),
+      ...padPitButtons(nButtons),
     },
     // Linear and uncapped, which is exactly what the hard-coded gamepad path
     // did before this profile existed. A thumbstick usually wants a curve above

@@ -221,6 +221,24 @@ export class CarEntry {
   offTrackNow = false;
   disqualified = false;
 
+  /**
+   * Index of the car this driver has been told to let back past, or -1.
+   *
+   * The remedy in Art. B1.8.6 — "At the absolute discretion of the Race Director
+   * a driver may be given the opportunity to give back the whole of any
+   * advantage he gained by leaving the track" — and the only outcome of a
+   * stewards' investigation that is neither a penalty nor nothing at all.
+   *
+   * Held on the car rather than inside `Stewards` because three separate things
+   * have to read it: the stewards, to notice it being obeyed; `RaceEngine`, to
+   * make an AI car actually obey it; and the HUD, to tell the player. It is
+   * cleared the moment the place is handed back, the moment the deadline passes
+   * — which converts it to a penalty — or the moment either car's race ends.
+   */
+  cedePositionTo = -1;
+  /** Session time by which `cedePositionTo` must have been satisfied. */
+  cedeDeadline = 0;
+
   // --- Race state ----------------------------------------------------------
   retired = false;
   retirementReason = '';
@@ -305,6 +323,49 @@ export class CarEntry {
   /** The qualifying segment this car was eliminated in, or 0 if it survived. */
   eliminatedInPhase = 0;
   /**
+   * True when this car is ENTERED in the session but may take no part in it.
+   *
+   * Art. B4.3.2: "Any driver whose F1 Car stops in any area other than the Pit
+   * Lane during Sprint Qualifying or Qualifying and receives physical
+   * assistance will not be permitted to take any further part in that session."
+   * Q1, Q2 and Q3 are three periods of ONE session (Art. B2.4.2 — "the session
+   * will resume"), so a car the marshals lifted out of the barrier in Q1 is
+   * done for the whole of qualifying however quickly the crew could rebuild it.
+   *
+   * NOT the same thing as `eliminated`, and the difference is the point. An
+   * eliminated car has been knocked out and holds a grid slot already decided.
+   * A withdrawn car is still in the segment and still gets classified in it —
+   * it simply sets no time, so Art. B2.4.3a.v(C) ranks it among the cars that
+   * "failed to leave the pits during the period". It sits at the bottom of the
+   * segment it could not run, not at the bottom of the field.
+   */
+  withdrawn = false;
+  /** Why the car is sitting in its garage, for the board and the modal. */
+  withdrawnReason = '';
+  /**
+   * True when this car takes no part in the period now running.
+   *
+   * ONE CONCEPT, ONE NAME. `eliminated` and `withdrawn` arrive by different
+   * routes — knocked out of an earlier segment (Art. B2.4.2a-b) versus barred
+   * from running by Art. B4.3.2 — and they differ in exactly one respect, which
+   * grid slot the car is holding while it sits there. They do NOT differ in
+   * anything the simulation does with the car: it is not stepped, it cannot be
+   * hit, the AI cannot see it, and it is parked in its garage rather than
+   * standing on the circuit.
+   *
+   * That agreement is the whole reason this getter exists. The step loop used
+   * to skip both by testing them separately and `resolveContacts` tested
+   * neither, so the five cars knocked out of Q1 stayed solid all through Q2 —
+   * frozen where they were never placed, which at Bahrain is five metres from
+   * the centreline on the exit of Turn 4 and four metres under the road
+   * surface. The player was knocked out of Q2 by a car that could not be seen,
+   * twice, at the same corner. See `RaceEngine.resolveContacts` and
+   * `npm run probe:qualiboard`.
+   */
+  get sittingOut(): boolean {
+    return this.eliminated || this.withdrawn;
+  }
+  /**
    * True while the car is on an out-lap and its time must not count.
    *
    * A lap that begins in the garage or in the pit lane includes the stationary
@@ -314,6 +375,22 @@ export class CarEntry {
    * leaving the pits, cleared the first time the car crosses the line.
    */
   onOutLap = false;
+  /**
+   * True once this car has left the pit lane under its own power this session.
+   *
+   * The evidence for Art. B2.4.3a.v's third category — "any driver who failed
+   * to leave the pits during the period" — which is the bottom of the three
+   * groups a no-time driver can be sorted into.
+   */
+  leftThePits = false;
+  /**
+   * True once this car has begun a flying lap this session.
+   *
+   * Art. B2.4.3a.v's first category, "any driver who attempted to set a lap
+   * time by starting a flying lap". Set when the out-lap is completed, which is
+   * the crossing that starts the timed one.
+   */
+  startedFlyingLap = false;
   /**
    * Metres of pit-exit blend zone still to run.
    *
@@ -497,6 +574,9 @@ export class CarEntry {
     // time and let the flying lap that starts here be the one that counts.
     if (this.onOutLap) {
       this.onOutLap = false;
+      // This crossing ends the out-lap and starts the flying one. Whether the
+      // car ever finishes it, the attempt has been made — Art. B2.4.3a.v(A).
+      this.startedFlyingLap = true;
       this.lap++;
       this.lapStartTime = sessionTime;
       this.sectorStartTime = sessionTime;
@@ -629,6 +709,59 @@ export class CarEntry {
       if (!p.served && (p.kind === 'drive-through' || p.kind === 'stop-go-10s')) return p;
     }
     return null;
+  }
+
+  /**
+   * Unserved 5- or 10-second time penalty, if any.
+   *
+   * Deliberately NOT part of `pendingServePenalty`. That one answers "does this
+   * car have to come to the pit lane", and a time penalty does not force a stop:
+   * Art. B1.9.5a lets the driver "elect not to stop, provided he carries out no
+   * further pit stop before the end of the TTCS", in which case the five seconds
+   * are added to the elapsed time instead. This one answers a different
+   * question — "if the car is stopping anyway, what does the crew owe" — and the
+   * answer is that they may not touch it for the duration.
+   */
+  pendingTimePenalty(): Penalty | null {
+    for (const p of this.penalties) {
+      if (!p.served && (p.kind === 'time-5s' || p.kind === 'time-10s')) return p;
+    }
+    return null;
+  }
+
+  /**
+   * Seconds the crew must stand back for at this stop, before any work.
+   *
+   * Art. B1.9.5c: "Whilst a Car is stationary in the Pit Lane as a result of
+   * incurring a 5-Second Penalty ... or a 10-Second Penalty ..., it may not be
+   * worked on until the Car has been stationary for the duration of the penalty.
+   * In this context, touching the Car or driver by hand or tools or equipment
+   * will all constitute working."
+   *
+   * This is why a five-second penalty costs a driver much more than five
+   * seconds: the stop itself happens afterwards, on top. Zero when there is
+   * nothing to serve, so a caller can add it unconditionally.
+   */
+  penaltyHoldS(): number {
+    const p = this.pendingTimePenalty();
+    return p === null ? 0 : p.timeS;
+  }
+
+  /**
+   * Marks a time penalty served in the pit box and takes it back off the clock.
+   *
+   * The seconds were added to `penaltySeconds` when the penalty was issued, so
+   * the tower could show the driver carrying it. Serving it in the box is the
+   * alternative to paying it at the flag, not an addition to it, so it comes
+   * back off here — otherwise a driver who did the right thing would be charged
+   * twice for it.
+   */
+  servePenaltyInBox(): number {
+    const p = this.pendingTimePenalty();
+    if (p === null) return 0;
+    p.served = true;
+    this.penaltySeconds = Math.max(0, this.penaltySeconds - p.timeS);
+    return p.timeS;
   }
 
   /** Estimated tyre wear per lap, from the last few laps. For the strategy UI. */

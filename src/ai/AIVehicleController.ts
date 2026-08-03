@@ -9,6 +9,10 @@ import {
   PIT_ENTRY_DECEL_MS2, PIT_ENTRY_SCAN_M, PIT_ENTRY_SETTLE_M, PIT_ENTRY_TARGET_SHARE,
   PIT_LIMITER_ARM_M, brakeFor, pitEntryTargetMs, pitLimiterSetpointMs,
 } from '../physics/PitLimiter';
+import {
+  PIT_DECEL_MS2, PIT_STANDOFF_M, RACING_ROOM_M, TRAFFIC_STANDOFF_M,
+  requiredDecelMs2, safeFollowSpeedMs,
+} from './TrafficAwareness';
 
 /**
  * Speed taper on this controller's FEEDBACK gains (not its feedforward).
@@ -89,6 +93,33 @@ export interface AIPerception {
   /** Cars alongside, within a car length longitudinally. */
   alongsideLeft: Neighbour | null;
   alongsideRight: Neighbour | null;
+  /**
+   * The car in front that this one has to avoid HITTING, as opposed to the car
+   * in front on the timing screen.
+   *
+   * Different from `ahead` in the two ways that decide whether a collision
+   * happens. It is filtered to the corridor this car is actually driving down,
+   * so a car being cleanly passed two metres across the road is not something to
+   * brake for; and it is chosen by which car imposes the lowest safe speed
+   * rather than by which is nearest, so a stopped car sixty metres away outranks
+   * a fast one at twenty.
+   *
+   * `ahead` is deliberately left exactly as it was — the racing logic that reads
+   * it (overtake range, follow distance, defending) is about position, and
+   * position is a longitudinal idea.
+   */
+  hazard: Neighbour | null;
+  /**
+   * Metres this car may move to its LEFT before its bodywork reaches another
+   * car's. `Infinity` when the road on that side is clear.
+   *
+   * Measured to bodywork rather than to centres, so zero means touching, and it
+   * accounts for cars that are not beside us yet but will be by the time the
+   * move completes — see `lateralOverlap`.
+   */
+  roomLeftM: number;
+  /** The same, to the right. */
+  roomRightM: number;
   /** True when overtaking is forbidden here — any yellow, or a neutralisation. */
   localYellow: boolean;
   /**
@@ -170,20 +201,35 @@ export interface AIPerception {
    * limiter the length of the lane and drove out the far end.
    */
   pitBoxAheadM: number;
-  /** 0 dry .. 1 standing water. */
+  /** 0 dry .. 1 standing water, AT THIS CAR'S POSITION. */
   wetness: number;
+  /**
+   * How far off the dry line the grip has moved, 0..1.
+   *
+   * 0 says the racing line is the place to be, which is the answer on a dry
+   * track and on a track that has dried. 1 says the rubbered groove has gone
+   * slick under the water and there is meaningfully more grip beside it.
+   *
+   * It is a GRIP measurement, not a wetness threshold — `TrackSurface`
+   * computes it by asking its own grip function the same question the driver is
+   * asking — so the line the AI takes and the grip the physics gives it cannot
+   * come apart. This is the field that makes twenty cars visibly abandon the
+   * racing line when the rain arrives and drift back onto it as it dries.
+   */
+  lineAvoidance: number;
 }
 
 export function createPerception(): AIPerception {
   return {
     blendRemainingM: 0,
     ahead: null, behind: null, alongsideLeft: null, alongsideRight: null,
+    hazard: null, roomLeftM: Infinity, roomRightM: Infinity,
     localYellow: false, yellowLevel: 0, blueFlag: false, neutralised: false,
     neutralisedTargetMs: 0, neutralisedScale: 0, neutralisedCatchUpMult: 1,
     queueGapM: 0, queueAheadM: -1, safetyCarAheadM: -1, safetyCarSpeedMs: 0,
     queueAheadSpeedMs: 0, mustUnlap: false,
     holdRacingLine: false, holdUntilLine: false,
-    pitThisLap: false, pitBoxAheadM: -1, wetness: 0,
+    pitThisLap: false, pitBoxAheadM: -1, wetness: 0, lineAvoidance: 0,
   };
 }
 
@@ -490,6 +536,15 @@ const SC_HOLD_M = 40;
  */
 const NO_PASS_MIN_AHEAD_MS = 14;
 
+/**
+ * Below this target speed the driver is stopping rather than going slowly, m/s.
+ *
+ * About 9 km/h — under any speed a racing car is ever asked to hold, including
+ * the slowest hairpin on the calendar and the pit lane limit, so nothing that is
+ * merely slow can be mistaken for a stop.
+ */
+const CRAWL_MS = 2.5;
+
 /** How often the FSM re-evaluates its state, in seconds. */
 const DECISION_INTERVAL = 0.1;
 /** How often the proximity scan runs while committed to a move. */
@@ -591,6 +646,28 @@ export class AIVehicleController {
   }
 
   /**
+   * How far off the dry line this driver has decided to run, 0..1.
+   *
+   * Damped toward what the surface model says is available rather than set from
+   * it, and damped SLOWLY — three seconds or so to make the move. A driver does
+   * not step sideways the instant the grip changes; they feel it over a corner
+   * or two and then commit. Setting it directly made the whole field twitch
+   * laterally as they crossed between a soaked node and a slightly less soaked
+   * one, which looks like a bug because it is one.
+   *
+   * `driver.wetSkill` scales it: a driver who is good in the wet finds the
+   * off-line grip and a driver who is not stays on the familiar line for
+   * longer. That is a real difference between drivers and it costs the ones who
+   * do not adapt real lap time, through the same grip model as everyone else.
+   */
+  private lineAvoidance = 0;
+
+  private updateLineAvoidance(dt: number, want: number): void {
+    const willing = 0.55 + this.driver.wetSkill * 0.45;
+    this.lineAvoidance = damp(this.lineAvoidance, clamp01(want) * willing, 0.35, dt);
+  }
+
+  /**
    * Produces controls for this physics step.
    *
    * The FSM transition check runs at 10Hz because racing decisions do not need
@@ -608,6 +685,7 @@ export class AIVehicleController {
   ): VehicleControls {
     this.stateTime += dt;
     this.decisionTimer -= dt;
+    this.updateLineAvoidance(dt, perception.lineAvoidance);
     if (this.shakenTimer > 0) this.shakenTimer -= dt;
 
     const closeQuarters =
@@ -688,7 +766,7 @@ export class AIVehicleController {
     if (offTrack || spun) {
       this.shakenTimer = 6;
       this.setState('RECOVER');
-      this.targetLateral = clamp(track.lineOffset[track.indexAt(s)], -halfWidth * 0.5, halfWidth * 0.5);
+      this.targetLateral = clamp(this.lineAtNode(track.indexAt(s)), -halfWidth * 0.5, halfWidth * 0.5);
       return;
     }
     if (this.state === 'RECOVER') {
@@ -758,7 +836,7 @@ export class AIVehicleController {
     // line, while the lead-lap cars hold theirs.
     if (p.mustUnlap) {
       this.setState('OVERTAKE');
-      const lineOffset = track.lineOffset[track.indexAt(s)];
+      const lineOffset = this.lineAtNode(track.indexAt(s));
       this.targetLateral = clamp(-Math.sign(lineOffset || 1) * halfWidth * 0.6, -halfWidth, halfWidth);
       return;
     }
@@ -768,7 +846,7 @@ export class AIVehicleController {
       // deviating is unavoidable" while lapped cars come past —
       // Art. 55.14 / B5.13.4c. Off the racing line is precisely where the
       // unlapping cars are, which is why the rule exists.
-      this.targetLateral = track.lineOffset[track.indexAt(s)];
+      this.targetLateral = this.lineAtNode(track.indexAt(s));
       return;
     }
 
@@ -776,7 +854,7 @@ export class AIVehicleController {
     // Line. Racing does not resume until it does — Art. 55.8 / B5.13.2c.
     if (p.holdUntilLine) {
       this.setState('FOLLOW');
-      this.targetLateral = track.lineOffset[track.indexAt(s)];
+      this.targetLateral = this.lineAtNode(track.indexAt(s));
       return;
     }
 
@@ -784,13 +862,13 @@ export class AIVehicleController {
     // means getting decisively off the racing line, not just lifting.
     if (p.blueFlag) {
       this.setState('FOLLOW');
-      const lineOffset = track.lineOffset[track.indexAt(s)];
+      const lineOffset = this.lineAtNode(track.indexAt(s));
       // Move to the opposite side of the track from the racing line.
       this.targetLateral = clamp(-Math.sign(lineOffset || 1) * halfWidth * 0.72, -halfWidth, halfWidth);
       return;
     }
 
-    const lineOffset = track.lineOffset[track.indexAt(s)];
+    const lineOffset = this.lineAtNode(track.indexAt(s));
     const inPassingZone = track.inPassingZone(s);
 
     // Reset the one-defensive-move allowance when we leave a passing zone —
@@ -846,7 +924,15 @@ export class AIVehicleController {
       const catching = ahead.closingMs > 0.4;
       const canPass = inPassingZone || track.inDrsZone(s);
 
-      if (withinRange && catching && canPass && !p.localYellow) {
+      // A pass needs somewhere to put the car. Both tests below are about the
+      // TARMAC — how much road is left on each side of the car being passed —
+      // and neither of them ever asked whether a third car was standing in it,
+      // which is how a driver ends up committing to a move into an occupied
+      // gap and then having to complete it or crash.
+      const freeLeft = p.roomLeftM > RACING_ROOM_M + 1.0;
+      const freeRight = p.roomRightM > RACING_ROOM_M + 1.0;
+
+      if (withinRange && catching && canPass && !p.localYellow && (freeLeft || freeRight)) {
         this.setState('OVERTAKE');
         if (this.overtakeTargetIndex !== ahead.index) {
           this.overtakeTargetIndex = ahead.index;
@@ -860,6 +946,11 @@ export class AIVehicleController {
             this.overtakeSide = -theirSide;
           }
         }
+        // ...and never the side somebody else is already using. Choosing by
+        // available tarmac alone put two cars into the same piece of road on
+        // lap one at every circuit with a wide run to turn one.
+        if (this.overtakeSide > 0 && !freeLeft) this.overtakeSide = -1;
+        else if (this.overtakeSide < 0 && !freeRight) this.overtakeSide = 1;
 
         // Offset far enough to be clearly alongside, not just nudging.
         const offset = this.overtakeSide * Math.min(halfWidth * 0.68, Math.abs(lineOffset) + 3.4);
@@ -1038,6 +1129,82 @@ export class AIVehicleController {
     return arr[i0] * (1 - f) + arr[i1] * f;
   }
 
+  /**
+   * The line to drive at `s`, blended between the dry line and the wet one.
+   *
+   * EVERY read of the racing line in this controller goes through here or
+   * through `lineCurvAt`, and that is deliberate. The steering is a curvature
+   * feedforward plus a cross-track error against a target, and if those two
+   * were blended by different amounts — or one blended and one not — the car
+   * would feed forward for a corner it is not taking. That failure is silent
+   * and looks exactly like a badly tuned controller.
+   *
+   * On a dry track `lineAvoidance` is zero and both of these are byte-for-byte
+   * the old behaviour: `lineOffsetAt` returns early.
+   */
+  private lineAt(s: number): number {
+    const a = this.lineAvoidance;
+    if (a <= 0) return this.sample(this.track.lineOffset, s);
+    return this.sample(this.track.lineOffset, s)
+      + (this.sample(this.track.wetLineOffset, s) - this.sample(this.track.lineOffset, s)) * a;
+  }
+
+  /** The curvature of that same line. Blended with the same weight. */
+  private lineCurvAt(s: number): number {
+    const a = this.lineAvoidance;
+    if (a <= 0) return this.sample(this.track.lineCurvature, s);
+    return this.sample(this.track.lineCurvature, s)
+      + (this.sample(this.track.wetLineCurvature, s) - this.sample(this.track.lineCurvature, s)) * a;
+  }
+
+  /** Node-indexed form, for the decision layer which works in nodes. */
+  private lineAtNode(i: number): number {
+    return this.track.lineOffsetAt(i, this.lineAvoidance);
+  }
+
+  /**
+   * A lateral target, clamped to the road that is actually free.
+   *
+   * The clamp is one-sided per side and measured from where the car IS, not from
+   * where the line is, which is what makes it behave like a driver rather than
+   * like a rule. A car with four metres of room to its left may move up to four
+   * metres left and no further, so a move across the circuit proceeds as far as
+   * it can, stops at the other car, and continues the moment the space opens.
+   * The alternative — refusing the move outright while anything is there — is
+   * how an AI ends up parked on the wrong line for half a lap.
+   *
+   * Negative room means the cars are already inside racing room of each other,
+   * in which case the clamp pushes the target AWAY. That is the "do not
+   * converge" half of the obligation: two cars side by side through a corner may
+   * touch and that is racing, but neither of them may be the one steering into
+   * the other.
+   */
+  private roomLimited(
+    want: number, lateral: number, p: AIPerception, inLane: boolean,
+  ): number {
+    // Not in the pit lane. Down there the driver does not choose a line at all:
+    // the lane is single file between a wall and the garages, and `updatePitLane`
+    // owns the car's lateral placement outright — it drags the car onto the lane
+    // offset, or across to the working lane and its box, at a rate of its own.
+    // An AI steering for a room-limited target while the engine drags it
+    // somewhere else is two hands on the same wheel, and the car loses. Measured
+    // at Austin, where the boxes sit off the fast lane so a serviced car really
+    // is three metres to one side of the queue: the cars behind steered away
+    // from it, fought the drag, burned their grip budget sideways, and a third
+    // of the field spent the race stationary in the pit lane. Twenty-four
+    // car-laps of a hundred simply never happened.
+    if (inLane) return want;
+    const left = p.roomLeftM - RACING_ROOM_M;
+    const right = p.roomRightM - RACING_ROOM_M;
+    if (left === Infinity && right === Infinity) return want;
+    const capLeft = lateral + left;
+    const capRight = lateral - right;
+    // Squeezed from both sides — a three-wide moment. There is no legal target,
+    // so split the difference and stay where the least contact is.
+    if (capRight > capLeft) return (capRight + capLeft) * 0.5;
+    return clamp(want, capRight, capLeft);
+  }
+
   /** Largest curvature within `distance` metres ahead. Signs the corner. */
   private upcomingCurvature(s: number, distance: number): number {
     const track = this.track;
@@ -1072,11 +1239,43 @@ export class AIVehicleController {
     const speed = Math.max(car.speedMs, 0.5);
     c.reverse = false;
 
+    // In the pit lane, and here on the driver's own terms rather than the
+    // engine's: the state machine is what decides whether this car is using the
+    // lane, and a car that merely happens to be passing the pits at racing speed
+    // is not in it.
+    const inLane = (this.state === 'PIT_APPROACH' || this.state === 'PIT_EXIT') &&
+      this.isInPitLane(s);
+
+    // What the brakes can do, right now. Computed here rather than down in the
+    // braking section because the traffic rules below are expressed in the same
+    // currency — a car's safe following speed is a fact about its brakes — and
+    // the braking section reads them a second time unchanged.
+    const mass = car.totalMassKg;
+    const tireGrip = Math.min(car.frontTires.grip, car.rearTires.grip);
+    const dragForceN = spec.cdBase * speed * speed;
+    const gripLimitN =
+      spec.baseMu * tireGrip *
+      (mass * 9.81 + spec.clBase * car.dirtyAirDownforceMult * speed * speed);
+    // Not the whole circle: a braking zone is never perfectly straight and the
+    // pedal is modulated rather than stamped.
+    const brakeForceAvailN = Math.min(spec.maxBrakeForceN, gripLimitN * BRAKING_GRIP_SHARE);
+    const decelAvail = (brakeForceAvailN + dragForceN) / mass;
+
     // Move toward the target offset at a rate the car can actually achieve.
     // Snapping the target would produce a steering step change the tires cannot
     // follow, and the car would simply slide.
+    //
+    // The target is filtered through the road that is actually free first. A
+    // driver moving across the circuit looks before they go; this controller
+    // used to move to wherever the state machine wanted regardless of what was
+    // there, which is the whole of the race-start complaint — a car on the right
+    // of the grid heading for a racing line on the left drove through anything
+    // in between, because nothing in the path from `targetLateral` to the
+    // steering command ever mentioned another car.
     const lateralRate = this.state === 'OVERTAKE' || this.state === 'DEFEND' ? 3.2 : 2.0;
-    this.smoothedLateral = damp(this.smoothedLateral, this.targetLateral, lateralRate, dt);
+    this.smoothedLateral =
+      damp(this.smoothedLateral,
+        this.roomLimited(this.targetLateral, lateral, p, inLane), lateralRate, dt);
 
     // --- Steering ----------------------------------------------------------
     // Feedforward plus cross-track correction, NOT pure pursuit.
@@ -1096,9 +1295,9 @@ export class AIVehicleController {
     const lead = clamp(speed * 0.28, 5, 22);
     // Averaged over a short window so a single noisy node cannot spike it.
     const ffCurvature = (
-      this.sample(track.lineCurvature, s + lead - 3) +
-      this.sample(track.lineCurvature, s + lead) +
-      this.sample(track.lineCurvature, s + lead + 3)
+      this.lineCurvAt(s + lead - 3) +
+      this.lineCurvAt(s + lead) +
+      this.lineCurvAt(s + lead + 3)
     ) / 3;
     // Curvature is positive for a left turn, steering positive for a right turn.
     const ffRad = -Math.atan(car.spec.wheelbaseM * ffCurvature);
@@ -1110,8 +1309,11 @@ export class AIVehicleController {
     // road is a lead/lag error: the car chases a target that has already moved
     // toward the apex, so it turns in early and sits permanently inside the line.
     // Through Lesmo it ran 2.5m inside and off the inner edge on every lap.
+    // LINE_FOLLOWER steers at the solved line directly rather than at the
+    // smoothed target, so the room limit has to be applied here too or the one
+    // state the field spends most of its time in would ignore it entirely.
     const lineHere = this.state === 'LINE_FOLLOWER'
-      ? this.sample(track.lineOffset, s)
+      ? this.roomLimited(this.lineAt(s), lateral, p, inLane)
       : this.smoothedLateral;
     const latError = lineHere - lateral;
 
@@ -1120,7 +1322,7 @@ export class AIVehicleController {
     // "error", which means it is always behind the line rather than on it.
     const H = 12;
     const dOffsetDs =
-      (this.sample(track.lineOffset, s + H) - this.sample(track.lineOffset, s - H)) / (2 * H);
+      (this.lineAt(s + H) - this.lineAt(s - H)) / (2 * H);
     const lineHeadingOffset = Math.atan(dOffsetDs);
 
     // Distance over which to close the remaining lateral error. Shorter in tight
@@ -1417,8 +1619,9 @@ export class AIVehicleController {
       c.pitLimiter = false;
     }
 
-    // Following: hold a gap rather than driving into the car ahead. Without an
-    // explicit term here, AI cars simply rear-end each other in traffic.
+    // Following: hold a comfortable gap rather than sitting in dirty air. This
+    // is the driver's PREFERENCE — how close they like to run — and it is a
+    // per-driver number in seconds because that is how a driver thinks about it.
     if (p.ahead !== null && this.state !== 'OVERTAKE') {
       const desiredGapM = Math.max(6, prof.followDistanceS * speed);
       if (p.ahead.gapM < desiredGapM) {
@@ -1426,9 +1629,40 @@ export class AIVehicleController {
         targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * (1 - deficit * 0.22));
       }
     }
-    // Even while overtaking, do not drive through the car being passed.
-    if (p.ahead !== null && p.ahead.gapM < 5 && Math.abs(p.ahead.lateral - lateral) < 2.0) {
-      targetSpeed = Math.min(targetSpeed, p.ahead.speedMs * 0.96);
+
+    // --- The floor underneath all of that -----------------------------------
+    //
+    // A preference is not a guarantee, and the gap above is only a preference:
+    // it is a fraction of a second of travel, it is scaled by how brave the
+    // driver is, and — the part that made it useless — it says nothing about
+    // whether the gap can still be SHED. At 80 m/s a 0.6s preference is 48
+    // metres and the car needs 107 to stop. The preference was satisfied the
+    // whole way into the accident.
+    //
+    // So underneath it sits a hard bound with no opinion in it: the fastest this
+    // car can be going and still wash the difference off before it reaches the
+    // one in front. It applies in EVERY state including OVERTAKE, because a
+    // driver committed to a pass is still responsible for not driving into the
+    // car being passed, and it applies to the corridor-filtered `hazard` rather
+    // than to `ahead`, so a car already alongside and clear of us is not
+    // something we brake for.
+    //
+    // In clean air the bound is hundreds of metres per second and binds nothing.
+    // That is the design: this is not a caution term, it is a floor.
+    const hz = p.hazard;
+    if (hz !== null) {
+      const standoff = inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M;
+      // The pit lane gets a measured deceleration rather than the computed one.
+      // Down there the tyres have been cooling since the entry and the friction
+      // circle scales the pedal to about a tenth of a braking zone's, so the
+      // grip model's own answer is an order of magnitude too optimistic and the
+      // car plans a stop it cannot make. See `PIT_BOX_DECEL_MS2`.
+      const decel = inLane ? PIT_DECEL_MS2 : decelAvail;
+      // Planned at slightly less than everything the car has, so the demand
+      // shows up as a lift before it has to show up as a stamp on the pedal.
+      targetSpeed = Math.min(
+        targetSpeed, safeFollowSpeedMs(hz.gapM, hz.speedMs, decel * 0.72, standoff),
+      );
     }
 
     // --- Braking -----------------------------------------------------------
@@ -1449,17 +1683,8 @@ export class AIVehicleController {
     // of the grip circle, a 1/confidence threshold, and a further 0.86 factor —
     // which compounded to braking roughly 55% earlier than necessary. That was
     // the single largest component of the AI's missing lap time.
-    const mass = car.totalMassKg;
-    const tireGrip = Math.min(car.frontTires.grip, car.rearTires.grip);
-    const dragForceN = spec.cdBase * speed * speed;
-
-    const gripLimitN =
-      spec.baseMu * tireGrip *
-      (mass * 9.81 + spec.clBase * car.dirtyAirDownforceMult * speed * speed);
-    // Not the whole circle: a braking zone is never perfectly straight and the
-    // pedal is modulated rather than stamped.
-    const brakeForceAvailN = Math.min(spec.maxBrakeForceN, gripLimitN * BRAKING_GRIP_SHARE);
-    const decelAvail = (brakeForceAvailN + dragForceN) / mass;
+    // `mass`, `dragForceN` and `decelAvail` were computed at the top of this
+    // method, because the traffic rules above are the same arithmetic.
 
     // Scan far enough to cover the car's whole stopping distance. Deriving the
     // window from the current corner gives zero on a straight, which is how the
@@ -1489,6 +1714,24 @@ export class AIVehicleController {
       if (a > aReq) aReq = a;
     }
 
+    // The car in front is a braking point like any other, and it enters the
+    // model at exactly the same place a corner does.
+    //
+    // Feeding traffic in only as a target speed was not enough on its own: the
+    // overspeed term above sheds a target-speed excess over a FIXED thirty
+    // metres, which is the right horizon for a corner the car is already in and
+    // far too long for something solid twelve metres away. Asking the same
+    // question about the actual gap is what makes a stationary car stop this one
+    // rather than merely slow it. `reach` is deliberately not applied — a
+    // driver's confidence is about how late they dare brake for a corner, and
+    // nobody is confident about the back of another car.
+    if (hz !== null) {
+      const a = requiredDecelMs2(
+        speed, hz.gapM, hz.speedMs, inLane ? PIT_STANDOFF_M : TRAFFIC_STANDOFF_M,
+      );
+      if (a > aReq) aReq = a;
+    }
+
     // --- Pedals ------------------------------------------------------------
     // Brake force needed once drag has done its share. Negative means coasting
     // alone is enough, so the pedal stays shut.
@@ -1510,6 +1753,37 @@ export class AIVehicleController {
       const over = speed / Math.max(targetSpeed, 1) - 1;
       const want = clamp01(1 - over * 12);
       c.throttle = Math.min(want, car.tractionLimitFraction * AI_TUNING.throttleShare);
+    }
+
+    // A target speed of zero means STOP, and neither of the two laws above can
+    // say so.
+    //
+    // `over` is a RELATIVE overspeed with a floor of 1 m/s under the divisor, so
+    // at half a metre a second against a target of nought it reads as "well
+    // under the target" and asks for full throttle. The brake side is no better:
+    // the required deceleration to arrive at a stationary car a metre away is
+    // small in absolute terms, so `pedal` comes out under its own deadband and
+    // the brake stays shut.
+    //
+    // Between them that is how a car which had correctly worked out that it must
+    // stop still crept the last two metres into the back of a parked one under
+    // power and sat there resting against it — measured in the pit lane at every
+    // circuit, bodywork overlapping by six centimetres, for the rest of the
+    // session. The queue behind it did the same thing to it in turn.
+    //
+    // Only while the car is actually going FASTER than it should be. The first
+    // version of this clause left that out and shut the throttle whenever the
+    // target was low, which pinned every car in a pit-lane queue at nought:
+    // asked for 1.6 m/s and given no throttle to reach it, each car became the
+    // stationary obstacle that set the car behind it the same impossible target.
+    // A whole pit lane of cars, none of them touching, none of them moving.
+    if (targetSpeed < CRAWL_MS && speed > targetSpeed) {
+      c.throttle = 0;
+      // Proportional to how much speed there is still to lose, so a car already
+      // stopped is not pinned — see the note on the pit box for why holding the
+      // brake on a stationary car unconditionally is a race-ending idea.
+      const shed = clamp01((speed - targetSpeed) / CRAWL_MS);
+      if (shed > 0.02) c.brake = Math.max(c.brake, shed * 0.9);
     }
 
     // --- Braking for the pit entry and for the box -------------------------

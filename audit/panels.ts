@@ -5,7 +5,8 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { formatLapTime } from '../src/core/MathUtils';
 import { cutLine, qualifyingStrip, timingBoard, timingRow } from '../src/ui/TimingRow';
 import { PHYSICS_DT } from '../src/core/SimClock';
-import { Hud } from '../src/ui/Hud';
+import { Hud, mirrorPaneBoxes } from '../src/ui/Hud';
+import { PitStopPrompt } from '../src/ui/PitStopPrompt';
 
 /**
  * The full-screen panels, without the game around them.
@@ -28,6 +29,9 @@ declare global {
       board(kind: string): Promise<void>;
       hud(scene: string): Promise<void>;
       hudReport(): Record<string, unknown>;
+      railReport(): Record<string, unknown>;
+      camera(mode: string): void;
+      mirrorReport(mode: string): Record<string, unknown>;
     };
   }
 }
@@ -94,6 +98,7 @@ function div(cls: string, parent: HTMLElement): HTMLElement {
  */
 let hudEngine: RaceEngine | null = null;
 let hud: Hud | null = null;
+let hudPrompt: PitStopPrompt | null = null;
 let hudCar: ReturnType<RaceEngine['cars']['at']> | null = null;
 
 const hudInput = {
@@ -110,7 +115,10 @@ function hudScene(scene: string): void {
   hudEngine.weather.wetness = 0.02;
   hudCar.inPitLane = false;
   hudCar.inPitBox = false;
+  hudCar.pitRequested = false;
   hudCar.damage.health.frontWingL = 1;
+  hudPrompt?.close();
+  hud.setPitSheetOpen(false);
 
   if (scene === 'pit-advice') hudCar.damage.health.frontWingL = 0.44;
   if (scene === 'safety-car') rc.neutralisation = 'safety-car';
@@ -121,7 +129,190 @@ function hudScene(scene: string): void {
   if (scene === 'in-box') {
     hudCar.inPitLane = true; hudCar.inPitBox = true; hudCar.pitBoxTimer = 2.4;
   }
+  if (scene === 'pit-choice' || scene === 'rail-max') {
+    hudCar.pitRequested = true;
+    hudCar.damage.health.frontWingL = 0.44;
+    hudCar.damage.health.frontWingR = 0.44;
+    hudPrompt?.render(hudEngine, hudCar, {
+      tyre: 'T', repair: 'F', confirm: 'ENTER', cancel: 'L',
+    });
+    hud.setPitSheetOpen(true);
+  }
+
+  // EVERYTHING AT ONCE. This is the case the rail has to be designed for, not
+  // the quiet frame: a stop being chosen, race control filing a bulletin, the
+  // pit wall reacting to damage, a neutralisation, and the radio card on top of
+  // all of it. The reported fault — "also from ur tests i think its being
+  // covered?" — is what this frame catches, and it catches it by MEASUREMENT in
+  // `railReport`, not by anyone looking at the picture.
+  if (scene === 'rail-max') {
+    rc.neutralisation = 'safety-car';
+    hudEngine.weather.wetness = 0.35;
+    rc.log(
+      'Contact between HAL and OKO', 'warning', hudEngine.time, -1,
+      { notice: {
+        parties: ['HAL', 'OKO'], where: 'TURN 1', offence: 'CONTACT', status: 'NOTED',
+      } },
+    );
+    rc.log(
+      hudCar.driver.code + ': front wing damage', 'warning', hudEngine.time, hudCar.index,
+      { feed: 'team', team: { kind: 'damage', part: 'Front wing', health: 0.44 } },
+    );
+  }
+
   hud.update(hudEngine, hudCar, hudInput, 60, 240);
+  if (hudCar.pitRequested && hudPrompt) {
+    hudPrompt.render(hudEngine, hudCar, {
+      tyre: 'T', repair: 'F', confirm: 'ENTER', cancel: 'L',
+    });
+    hud.setPitSheetOpen(true);
+  }
+}
+
+/**
+ * Every box on the left rail, and whether any two of them collide.
+ *
+ * WHY THIS IS A MEASUREMENT AND NOT A SCREENSHOT. The reported fault was the
+ * pit sheet drawn across the radio card, and then the radio card drawn under
+ * two notification cards. Both are invisible in a still if you are looking at
+ * the wrong corner, and both are trivially decidable from four numbers. So the
+ * sweep computes the intersections and `shootPanels` fails on any of them.
+ *
+ * `intersects` uses a one-pixel tolerance because a shared border between two
+ * stacked cards is not an overlap, and sub-pixel layout puts adjacent boxes a
+ * few hundredths of a pixel into each other on a fractional device ratio.
+ */
+function railReport(): Record<string, unknown> {
+  const root = hud?.root;
+  if (!root) return {};
+
+  const SELECTORS = [
+    '.hud-tower', '.hud-radiocard', '.pitprompt', '.hud-neutral-cue', '.hud-pit-cue',
+    '.hud-weather', '.hud-carstate', '.hud-damage', '.hud-gaps',
+  ];
+  interface Box { name: string; x: number; y: number; w: number; h: number }
+  const boxes: Box[] = [];
+  const add = (name: string, e: HTMLElement) => {
+    const cs = getComputedStyle(e);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) < 0.05) return;
+    const r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    boxes.push({ name, x: r.x, y: r.y, w: r.width, h: r.height });
+  };
+  for (const sel of SELECTORS) {
+    const e = root.querySelector<HTMLElement>(sel);
+    if (e) add(sel, e);
+  }
+  // Every card in the notice stack individually: two pop-ups that overlap each
+  // other are the same fault as a pop-up over the radio card.
+  const cards = root.querySelectorAll<HTMLElement>('.hud-alert, .hud-control');
+  for (const [i, c] of [...cards].entries()) add('.card[' + i + ']', c);
+
+  const overlaps: string[] = [];
+  const T = 1;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ox > T && oy > T) {
+        overlaps.push(a.name + ' x ' + b.name +
+          ' by ' + Math.round(ox) + 'x' + Math.round(oy) + 'px');
+      }
+    }
+  }
+
+  // Clipping. A rail child whose box escapes the rail's band is a card the
+  // driver reads half of, which is what "being covered" looked like.
+  const rail = root.querySelector<HTMLElement>('.hud-notices');
+  const clipped: string[] = [];
+  if (rail) {
+    const band = rail.getBoundingClientRect();
+    for (const child of rail.children) {
+      const e = child as HTMLElement;
+      if (getComputedStyle(e).display === 'none') continue;
+      const r = e.getBoundingClientRect();
+      if (r.height < 1) continue;
+      if (r.top < band.top - T || r.bottom > band.bottom + T) {
+        clipped.push(e.className.split(' ')[0] +
+          ' out of the band by ' +
+          Math.round(Math.max(band.top - r.top, r.bottom - band.bottom)) + 'px');
+      }
+    }
+  }
+
+  return {
+    boxes: boxes.map((b) => b.name + ' [' +
+      [b.x, b.y, b.w, b.h].map((v) => Math.round(v)).join(',') + ']'),
+    overlaps,
+    clipped,
+  };
+}
+
+/**
+ * Every HUD box against the mirror panes, and whether any of them collides.
+ *
+ * THE SAME TREATMENT THE RAIL GETS, and for the same reason. The mirrors had
+ * been mounted sideways since they were written; on the frame they were fixed,
+ * the weather bug was lying across the left pane in the driver's eye and the
+ * tyre panel across it in the cockpit. That is a fix that does not land, and it
+ * is four numbers to decide — so it is decided here rather than by looking at a
+ * screenshot of the wrong corner.
+ *
+ * The pane boxes come from `mirrorPaneBoxes`, which is the same table the
+ * stylesheet lays the bottom band out against, so the picture and the assertion
+ * cannot disagree.
+ */
+function mirrorReport(mode: string): Record<string, unknown> {
+  const root = hud?.root;
+  if (!root) return {};
+  const panes = mirrorPaneBoxes(mode, window.innerWidth, window.innerHeight);
+  if (panes.length === 0) return { panes: [], overlaps: [] };
+
+  interface Box { name: string; x: number; y: number; w: number; h: number }
+  const boxes: Box[] = [];
+  const add = (name: string, e: HTMLElement) => {
+    const cs = getComputedStyle(e);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) < 0.05) return;
+    const r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    boxes.push({ name, x: r.x, y: r.y, w: r.width, h: r.height });
+  };
+  for (const child of root.children) {
+    const e = child as HTMLElement;
+    const cls = e.className.split(' ').filter((c) => c !== 'hud-panel')[0] ?? '';
+    // The touch overlay and the help sheet are full-screen by construction —
+    // the first is a hit region with nothing drawn in it, and the second is a
+    // modal the player has asked for and is not driving under.
+    if (cls === 'hud-touch' || cls === 'hud-help') continue;
+    add('.' + cls, e);
+  }
+  // The rail's children individually as well as the rail's own band: a card
+  // may slide out of the band's foot even when the band itself is clear.
+  for (const c of root.querySelectorAll<HTMLElement>('.hud-alert, .hud-control, .hud-radiocard, .hud-pit-cue, .hud-neutral-cue')) {
+    add('.' + c.className.split(' ')[0], c);
+  }
+
+  const overlaps: string[] = [];
+  const T = 1;
+  for (const p of panes) {
+    for (const b of boxes) {
+      const ox = Math.min(p.x + p.w, b.x + b.w) - Math.max(p.x, b.x);
+      const oy = Math.min(p.y + p.h, b.y + b.h) - Math.max(p.y, b.y);
+      if (ox > T && oy > T) {
+        overlaps.push(b.name + ' over ' + p.name +
+          ' by ' + Math.round(ox) + 'x' + Math.round(oy) + 'px');
+      }
+    }
+  }
+  return {
+    panes: panes.map((p) => p.name + ' [' +
+      [p.x, p.y, p.w, p.h].map((v) => Math.round(v)).join(',') + ']'),
+    boxes: boxes.map((b) => b.name + ' [' +
+      [b.x, b.y, b.w, b.h].map((v) => Math.round(v)).join(',') + ']'),
+    overlaps,
+  };
 }
 
 /**
@@ -249,6 +440,7 @@ window.__panels = {
       hudEngine = new RaceEngine(getCircuit('monza'), config);
       hudCar = hudEngine.cars[6];
       hud = new Hud(app);
+      hudPrompt = new PitStopPrompt(hud.pitSlot);
       hud.setVisible(true);
       hud.setHelpVisible(false);
       for (let i = 0; i < Math.round(150 / PHYSICS_DT); i++) hudEngine.step();
@@ -275,9 +467,26 @@ window.__panels = {
         text: (e.textContent ?? '').slice(0, 90),
       };
     }
-    out.alertCount = root.querySelectorAll('.hud-alert').length;
+    out.alertCount = root.querySelectorAll('.hud-alert, .hud-control').length;
     return out;
   },
+
+  railReport,
+
+  /**
+   * Points the HUD at a camera, exactly as `Main.cycleCamera` does.
+   *
+   * Then repaints, because the running order's ROW COUNT depends on the camera
+   * — `towerFit` takes the mirror band as a parameter and drops to four rows
+   * under it — and a report taken before the next frame would measure a
+   * fourteen-row tower in a layout that has been sized for four.
+   */
+  camera(mode: string): void {
+    hud?.setCameraMode(mode);
+    if (hud && hudEngine && hudCar) hud.update(hudEngine, hudCar, hudInput, 60, 240);
+  },
+
+  mirrorReport,
 
   show(name: string, teamId: string, circuitId: string): void {
     const team = getTeam(teamId);

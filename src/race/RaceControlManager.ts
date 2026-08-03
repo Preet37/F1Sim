@@ -3,6 +3,8 @@ import type { TrackSpline } from '../track/TrackSpline';
 import type { CarEntry } from './CarEntry';
 import { RECOVERY_FAST_SECTION_MS, RECOVERY_TRACKSIDE_M } from './Recovery';
 import type { DebrisField } from './DebrisField';
+import { Stewards, type StewardsNotice } from './Stewards';
+import type { Offence } from './DrivingStandards';
 
 /**
  * Race Control: flags, track limits, and penalties.
@@ -131,6 +133,83 @@ export interface Penalty {
   served: boolean;
 }
 
+/**
+ * Which feed a bulletin belongs on.
+ *
+ * THE SPORT HAS TWO VOICES AND THIS GAME WAS USING ONE. Every message in this
+ * log was being read out by the player's own team principal, so a driver on
+ * another team going off at sector 2 arrived as `MARCO VIDAL · TEAM PRINCIPAL
+ * — "Yellow flag — HAL off at sector 2"`, and so did a stranger's track-limits
+ * warning. Neither is a team matter and neither driver is on the player's team.
+ *
+ *   "the FIA will say stuff like racing incident noted, and then if someone got
+ *    a penalty ... nobody will ever say this person's suspension broke or this
+ *    broke, that is a team only conversation so if they are not part of the
+ *    users team then they shouldn't be getting those notifs."
+ *
+ * So a message declares who owns it:
+ *
+ *   `race-control`  Official and impersonal. Sessions, flags, the safety car,
+ *                   incidents noted and investigated, penalties, track limits,
+ *                   the chequered flag. Everyone sees it, about anyone.
+ *   `team`          The player's own car and their own team-mate. Damage,
+ *                   tyres, fuel, pit calls, the gap to the car being raced.
+ *                   Shown only when the car it names is on the player's team,
+ *                   and DROPPED otherwise. A third party's suspension failure
+ *                   never reaches this feed.
+ *   `either`        An event both would remark on, from opposite sides: an
+ *                   accident, a retirement, a car stranded. Race control notes
+ *                   it when it is somebody else's car; the pit wall reacts to
+ *                   it when it is one of yours. One event, one card, the right
+ *                   voice — never both at once, because the rail is 60 pixels
+ *                   tall on a landscape phone and the second card evicts the
+ *                   first.
+ *
+ * The filter is OWNERSHIP, and it is applied by the HUD, which is the only
+ * layer that knows which car the player is in.
+ */
+export type MessageFeed = 'race-control' | 'team' | 'either';
+
+/**
+ * An incident as race control words it.
+ *
+ * Four fields because that is what an official bulletin is: who, where, what,
+ * and what is being done about it. A broadcast draws them as a banner reading
+ * `RACE CONTROL: <DRIVER>, <DRIVER> INCIDENT` over `TURN 1 · IMPEDING · NOTED`,
+ * and keeping them apart rather than pre-baking a sentence is what lets the HUD
+ * draw that shape instead of a paragraph.
+ */
+export interface RaceNotice {
+  /** Driver codes named, in the order race control names them. */
+  parties: string[];
+  /** `TURN 4`, `SECTOR 2`, `PIT LANE`, or '' for a session-wide notice. */
+  where: string;
+  /** `CONTACT`, `TRACK LIMITS`, `CAR STOPPED`, `PIT LANE SPEEDING`. */
+  offence: string;
+  /** `NOTED`, `UNDER INVESTIGATION`, `5 SECOND TIME PENALTY`, `LAP DELETED`. */
+  status: string;
+}
+
+/**
+ * A team event, as facts rather than as a sentence.
+ *
+ * The principal's line is written at the display, from these, because a line
+ * written here would be a string in the physics — and because the same event
+ * is said differently about your own car and about your team-mate's.
+ */
+export type TeamNote =
+  | { kind: 'off'; corner: string; hit: string; heavy: boolean }
+  | { kind: 'damage'; part: string; health: number }
+  | { kind: 'retired'; reason: string }
+  | { kind: 'failure'; cause: string }
+  | { kind: 'stranded' }
+  | { kind: 'recovered' }
+  | { kind: 'stop'; compound: string }
+  | { kind: 'pit-closed' }
+  | { kind: 'pit-missed' }
+  | { kind: 'pit-fast' }
+  | { kind: 'penalty-served' };
+
 export interface RaceControlMessage {
   /** Session time the message was issued. */
   time: number;
@@ -138,6 +217,19 @@ export interface RaceControlMessage {
   severity: 'info' | 'warning' | 'critical';
   /** Car this concerns, or -1 for a session-wide message. */
   carIndex: number;
+  /** Which voice owns it. */
+  feed: MessageFeed;
+  /** Structured incident detail, when race control has any. */
+  notice?: RaceNotice;
+  /** Structured team detail, when the pit wall has any. */
+  team?: TeamNote;
+}
+
+/** The optional half of `log`, so thirty existing call sites stay as they are. */
+export interface MessageDetail {
+  feed?: MessageFeed;
+  notice?: RaceNotice;
+  team?: TeamNote;
 }
 
 /** Number of marshalling sectors the track is divided into. */
@@ -415,6 +507,24 @@ export class RaceControlManager {
   /** True once the leader has taken the chequered flag. */
   raceFinished = false;
 
+  /**
+   * The bench.
+   *
+   * Race control notes an incident; the stewards decide what it was. Kept as a
+   * separate object with a two-method interface between them because the
+   * decision has to be testable on its own — see `npm run probe:stewards`, which
+   * stages a squeeze and a corner-priority dispute and asserts the verdict.
+   *
+   * Created on the first `update` because the field size is not known until the
+   * cars arrive.
+   */
+  private stewardsBench: Stewards | null = null;
+
+  /** The stewards, once a session has started. */
+  get stewards(): Stewards | null {
+    return this.stewardsBench;
+  }
+
   constructor(track: TrackSpline, rng?: () => number) {
     this.track = track;
     // Deterministic by default: a replayed race must neutralise identically.
@@ -422,7 +532,19 @@ export class RaceControlManager {
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags.push('green');
   }
 
+  /**
+   * Reports a car-to-car contact to the stewards.
+   *
+   * The engine's contact solver calls this at the moment of the hit. It is a
+   * report and not a decision: nothing is judged until the bench has had the
+   * better part of a lap to look at it.
+   */
+  reportContact(a: CarEntry, b: CarEntry, severity: number, sessionTime: number): void {
+    this.stewardsBench?.reportContact(a, b, severity, sessionTime);
+  }
+
   reset(): void {
+    this.stewardsBench?.reset();
     for (let i = 0; i < MARSHAL_SECTORS; i++) this.sectorFlags[i] = 'green';
     this.sessionFlag = 'green';
     this.neutralisation = 'none';
@@ -570,8 +692,24 @@ export class RaceControlManager {
     return true;
   }
 
-  log(text: string, severity: RaceControlMessage['severity'], time: number, carIndex = -1): void {
-    this.messages.push({ time, text, severity, carIndex });
+  /**
+   * Files a bulletin.
+   *
+   * `detail` is optional and defaults to the official feed, which is what every
+   * session-wide flag and neutralisation message is. Anything the pit wall owns
+   * has to say so, and anything race control would word as an incident carries
+   * the four fields it words it with.
+   */
+  log(
+    text: string, severity: RaceControlMessage['severity'], time: number, carIndex = -1,
+    detail: MessageDetail = {},
+  ): void {
+    this.messages.push({
+      time, text, severity, carIndex,
+      feed: detail.feed ?? 'race-control',
+      notice: detail.notice,
+      team: detail.team,
+    });
     if (this.messages.length > RaceControlManager.MAX_MESSAGES) this.messages.shift();
   }
 
@@ -606,6 +744,76 @@ export class RaceControlManager {
       this.checkPitLaneSpeed(car, i, sessionTime);
       this.checkNeutralisationDelta(car, i, dt, sessionTime);
     }
+
+    // LAST, and after the per-car loop on purpose: `offTrackNow` is written by
+    // `checkTrackLimits` and the stewards read it as their definition of having
+    // left the track, so the two must be looking at the same step.
+    if (this.stewardsBench === null) {
+      this.stewardsBench = new Stewards(this.track, cars.length, this.stewardsWire);
+    }
+    this.stewardsBench.update(cars, sessionTime, isRace, this.neutralisation !== 'none');
+  }
+
+  // =========================================================================
+  // The stewards' end of the wire
+  // =========================================================================
+
+  /**
+   * How the bench speaks to the outside world.
+   *
+   * Two methods, and both of them end in machinery that already existed: a
+   * bulletin on the race-control feed, and a penalty on a car. There is
+   * deliberately no new channel to the HUD — a verdict is a `RaceNotice` with a
+   * `status` the alert renderer already recognises as a decision, so it reaches
+   * the segmented penalty banner without a line of presentation code being
+   * touched.
+   *
+   * The one requirement that is easy to get wrong: `carIndex` must be the car
+   * the decision is ABOUT. The old contact bulletin passed -1, which is why it
+   * could never render as anything but a note.
+   */
+  private readonly stewardsWire = {
+    file: (
+      text: string, severity: RaceControlMessage['severity'], time: number,
+      carIndex: number, notice: StewardsNotice,
+    ): void => {
+      this.log(text, severity, time, carIndex, { notice });
+    },
+    penalise: (
+      car: CarEntry, seconds: 5 | 10, offence: Offence, where: string, time: number,
+    ): void => {
+      this.issueTimePenalty(car, seconds, offence, where, time);
+    },
+  };
+
+  /**
+   * Imposes a time penalty and announces it.
+   *
+   * Art. B1.9.5a and B1.9.5b. The seconds go onto `penaltySeconds` here, at the
+   * moment of the decision, rather than at the flag — because that is when the
+   * driver starts carrying them, and because the timing tower has to be able to
+   * show a held penalty against a car that is still on the road. Serving the
+   * penalty in the pit lane takes them off again (`CarEntry.servePenaltyInBox`);
+   * not serving it leaves them on, and `classifiedTime` charges them at the end.
+   */
+  issueTimePenalty(
+    car: CarEntry, seconds: 5 | 10, offence: Offence, where: string, sessionTime: number,
+  ): void {
+    const kind: PenaltyKind = seconds === 10 ? 'time-10s' : 'time-5s';
+    car.penalties.push({
+      kind,
+      reason: offence + (where ? ' at ' + where : ''),
+      lap: car.lap, timeS: seconds, served: false,
+    });
+    car.penaltySeconds += seconds;
+    this.log(
+      car.driver.code + ' — ' + seconds + ' second time penalty, ' + offence.toLowerCase(),
+      'critical', sessionTime, car.index,
+      { notice: {
+        parties: [car.driver.code], where,
+        offence, status: seconds + ' SECOND TIME PENALTY',
+      } },
+    );
   }
 
   /**
@@ -675,10 +883,24 @@ export class RaceControlManager {
 
         if (!car.yellowRaised) {
           car.yellowRaised = true;
+          const where = (this.track.cornerNameAt(car.s) || 'sector ' + (sec + 1));
+          // `either`: race control notes a stranger's excursion and raises the
+          // flag; the pit wall reacts when the car in the gravel is one of
+          // yours. The player's own principal has no business narrating a
+          // rival's off, and that is exactly what he was doing.
           this.log(
-            'Yellow flag — ' + car.driver.code + ' off at ' +
-            (this.track.cornerNameAt(car.s) || 'sector ' + (sec + 1)),
+            'Yellow flag — ' + car.driver.code + ' off at ' + where,
             'warning', sessionTime, car.index,
+            {
+              feed: 'either',
+              notice: {
+                parties: [car.driver.code],
+                where: where.toUpperCase(),
+                offence: 'CAR OFF TRACK',
+                status: 'YELLOW FLAG',
+              },
+              team: { kind: 'off', corner: where, hit: '', heavy: severity !== 'yellow' },
+            },
           );
         }
       } else if (car.yellowRaised) {
@@ -1236,9 +1458,19 @@ export class RaceControlManager {
           this.log(
             car.driver.code + ' — 5 second penalty, below the delta',
             'critical', sessionTime, index,
+            { notice: {
+              parties: [car.driver.code], where: 'SECTOR ' + (sector + 1),
+              offence: 'BELOW THE DELTA', status: '5 SECOND TIME PENALTY',
+            } },
           );
         } else {
-          this.log(car.driver.code + ' — warning, below the delta', 'warning', sessionTime, index);
+          this.log(
+            car.driver.code + ' — warning, below the delta', 'warning', sessionTime, index,
+            { notice: {
+              parties: [car.driver.code], where: 'SECTOR ' + (sector + 1),
+              offence: 'BELOW THE DELTA', status: 'WARNING',
+            } },
+          );
         }
       }
       // Only a sector entered cleanly at its boundary is judged in full.
@@ -1336,7 +1568,9 @@ export class RaceControlManager {
         // control at a corner exit counts, spinning off into a gravel trap and
         // losing four seconds does not, and stewards apply the same logic.
         const lostTime = car.physics.speedMs < this.track.targetSpeed[this.track.indexAt(car.s)] * 0.72;
-        if (!lostTime) {
+        // ...and, outside a race, only if there is a lap time to lose. See
+        // `sanctionableLap`.
+        if (!lostTime && this.sanctionableLap(car, isRace)) {
           car.trackLimitStrikes++;
           this.onTrackLimitInfraction(car, index, sessionTime, isRace);
         }
@@ -1346,15 +1580,72 @@ export class RaceControlManager {
     }
   }
 
+  /**
+   * Is there anything the stewards could actually do about an excursion here?
+   *
+   * The driver has still left the track — Art. B1.8.6 defines that by where the
+   * car is and says nothing about which lap it is on, so the excursion is real
+   * and the physics of running through the gravel are unchanged. The question
+   * this answers is narrower: whether the offence carries a sanction.
+   *
+   * In a Lap Time Classified Session it does not, on a lap that will not be
+   * timed. Art. B1.9.4 is the whole of what the stewards may do about an
+   * incident in an LTCS — "the Stewards may delete a driver's lap time (or lap
+   * times) or drop the driver such number of grid positions as they consider
+   * appropriate" — and on an out-lap the first of those has no object. There is
+   * no lap time to delete. The game was deleting one anyway and announcing it:
+   * "lap time deleted — track limits at Turn 4", on the lap out of the garage,
+   * about a time that was never going to be classified. Reported by a player,
+   * who was right about it: "idt there should be penalties or limits for the
+   * first lap of qualifying."
+   *
+   * It also stopped the strike counter running away. The 3-strike black-and-
+   * white flag and the 5-second penalty above it are race machinery — Art.
+   * B1.9.5's penalties are all TTCS penalties, and an LTCS has no accumulating
+   * ladder at all — so a strike recorded in practice or qualifying exists only
+   * to be printed beside the driver's name on the timesheet. Counting one for
+   * an offence that carried no sanction made that column say something untrue.
+   *
+   * WHAT THIS DELIBERATELY DOES NOT SUPPRESS. Art. B1.9.4's second remedy, the
+   * grid drop, applies perfectly well to an out-lap, and the offence it is most
+   * often used for — impeding a driver who is on a flying lap while you crawl
+   * on the racing line — is an out-lap offence almost by definition. This game
+   * does not model impeding at all today. That is a gap in it, not something
+   * this function is closing: when impeding arrives it belongs on the out-lap
+   * and must not be gated on this.
+   *
+   * A race has no untimed laps, so `isRace` short-circuits the whole question.
+   */
+  private sanctionableLap(car: CarEntry, isRace: boolean): boolean {
+    if (isRace) return true;
+    // The lap out of the garage or out of the pit box. `RaceEngine` already
+    // throws its time away at the line, so there is nothing here to delete.
+    if (car.onOutLap) return false;
+    // The lap in. Its time is never classified either — the car turns off
+    // before the line and `completeLap` never runs — so a deletion notice for
+    // it is noise about a time that does not exist.
+    if (car.pitRequested) return false;
+    return true;
+  }
+
   private onTrackLimitInfraction(car: CarEntry, index: number, sessionTime: number, isRace: boolean): void {
     const n = car.trackLimitStrikes;
     const corner = this.track.cornerNameAt(car.s) || 'turn';
 
     // In qualifying and practice, an off-track lap is simply deleted — there is
-    // no strike system, because the penalty is losing the lap time.
+    // no strike system, because the penalty is losing the lap time (Art.
+    // B1.9.4). `sanctionableLap` has already established that there IS a lap
+    // time here to lose.
     if (!isRace) {
       car.currentLapInvalidated = true;
-      this.log(car.driver.code + ' lap time deleted — track limits at ' + corner, 'warning', sessionTime, index);
+      this.log(
+        car.driver.code + ' lap time deleted — track limits at ' + corner,
+        'warning', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS', status: 'LAP TIME DELETED',
+        } },
+      );
       return;
     }
 
@@ -1367,6 +1658,10 @@ export class RaceControlManager {
       this.log(
         car.driver.code + ' — black and white flag, track limits',
         'warning', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS x3', status: 'BLACK AND WHITE FLAG',
+        } },
       );
     } else if (n >= TRACK_LIMIT_PENALTY_AT) {
       car.penalties.push({
@@ -1378,11 +1673,19 @@ export class RaceControlManager {
       this.log(
         car.driver.code + ' — 5 second time penalty, track limits',
         'critical', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS x' + n, status: '5 SECOND TIME PENALTY',
+        } },
       );
     } else {
       this.log(
         car.driver.code + ' — track limits warning ' + n + '/3 at ' + corner,
         'info', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: corner.toUpperCase(),
+          offence: 'TRACK LIMITS', status: 'WARNING ' + n + ' OF 3',
+        } },
       );
     }
   }
@@ -1410,6 +1713,10 @@ export class RaceControlManager {
       this.log(
         car.driver.code + ' — DRIVE THROUGH PENALTY, pit lane speeding',
         'critical', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where: 'PIT LANE',
+          offence: 'SPEEDING IN THE PIT LANE', status: 'DRIVE-THROUGH PENALTY',
+        } },
       );
     }
   }
@@ -1452,6 +1759,65 @@ export class RaceControlManager {
         this.log(
           car.driver.code + ' DISQUALIFIED — mandatory tyre rule not satisfied',
           'critical', sessionTime, car.index,
+          { notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'MANDATORY TYRE RULE', status: 'DISQUALIFIED',
+          } },
+        );
+      }
+    }
+  }
+
+  /**
+   * Converts penalties nobody ever came in to serve.
+   *
+   * A penalty is not waived by the flag falling. Art. B1.9.5 closes off both
+   * escapes:
+   *
+   *   - A five or ten second penalty may be taken in the pit lane OR paid at the
+   *     end — "The relevant driver may however elect not to stop, provided he
+   *     carries out no further pit stop before the end of the TTCS. In such
+   *     cases five (5) seconds will be added to the elapsed TTCS time of the
+   *     driver concerned." Nothing is needed here for those: the seconds went
+   *     onto `penaltySeconds` when the penalty was imposed and stayed there
+   *     unless a pit stop took them off.
+   *
+   *   - A drive-through or a stop-and-go has no such election, so the regulation
+   *     supplies a conversion for the case where there was no time to serve it:
+   *     "If any of the four (4) penalties above are imposed during the last
+   *     three (3) laps, or after the end of a TTCS ... twenty seconds will be
+   *     added ... in the case of (c) and thirty seconds in the case of (d)."
+   *     Twenty and thirty rather than the nominal cost of the penalty, because a
+   *     penalty that cannot be served is worth more than one that can.
+   *
+   * A car that retired never had the opportunity either, and for that case the
+   * regulation reaches for a grid penalty at the next race instead — which this
+   * game has no machinery for. It is left alone rather than converted, because
+   * adding thirty seconds to a DNF changes nothing and would put a number on the
+   * results screen that means nothing.
+   */
+  convertUnservedPenalties(cars: readonly CarEntry[], sessionTime: number): void {
+    // The bench first. An incident on the last lap has to be decided before its
+    // penalty can be converted, and a decision after the flag is a real thing —
+    // Art. B1.9.5 has a clause for exactly it.
+    this.stewardsBench?.closeOutstanding(cars, sessionTime);
+
+    for (const car of cars) {
+      if (car.retired) continue;
+      for (const p of car.penalties) {
+        if (p.served) continue;
+        const add = p.kind === 'drive-through' ? 20 : p.kind === 'stop-go-10s' ? 30 : 0;
+        if (add === 0) continue;
+        p.served = true;
+        p.timeS = add;
+        car.penaltySeconds += add;
+        this.log(
+          car.driver.code + ' — ' + add + ' seconds added, penalty not served',
+          'critical', sessionTime, car.index,
+          { notice: {
+            parties: [car.driver.code], where: '',
+            offence: 'PENALTY NOT SERVED', status: add + ' SECOND TIME PENALTY',
+          } },
         );
       }
     }

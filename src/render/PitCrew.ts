@@ -8,7 +8,7 @@ import {
 import {
   PIT_CREW, WHEEL_CORNERS,
   type CornerResult, type CrewStation, type PitStopProgress,
-} from '../race/PitStop';
+} from '../race/PitStopChoreography';
 import { PIT_APRON_DEPTH_M, PIT_APRON_HEIGHT_M } from '../track/PitGeometry';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -302,6 +302,21 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
       const done: readonly CornerResult[] | null = view.result ? view.result.corners : null;
       const t = view.elapsedS;
 
+      // SERVING A TIME PENALTY.
+      //
+      // The car is stationary and the crew may not touch it: "it may not be
+      // worked on until the Car has been stationary for the duration of the
+      // penalty. In this context, touching the Car or driver by hand or tools
+      // or equipment will all constitute working" (Art. B1.9.5c).
+      //
+      // So for those five or ten seconds everybody stands up and steps back off
+      // the car, and nothing else happens — no jacks, no guns, no wheels. It is
+      // the one part of a pit stop that is entirely about people NOT doing
+      // something, and drawing it is the only way a player ever sees what a
+      // five-second penalty actually costs: they watch their own crew stand
+      // there, and then the stop still has to happen.
+      const standOff = prog !== null && prog.phase === 'penalty-hold' ? 1 : 0;
+
       for (let i = 0; i < n; i++) {
         const m = members[i];
         const st = m.station;
@@ -378,6 +393,15 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
             break;
         }
 
+        // ...and then, if the car is serving a penalty, none of the above is
+        // happening. Everyone straightens up and takes a pace back off the car,
+        // whatever their job would otherwise have been.
+        if (standOff) {
+          a = POSTURES.stand; b = POSTURES.stand; k = 0;
+          dx = st.x > 0 ? 0.55 : -0.55;
+          dz = 0;
+        }
+
         // A breath of idle motion, so nobody is a statue between tasks. Two
         // centimetres of hip height and a degree of lean — small, and the
         // difference between a crew and a display of mannequins.
@@ -415,7 +439,13 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
         }
 
         // --- Equipment ----------------------------------------------------
-        if (ci >= 0) {
+        if (standOff && ci >= 0) {
+          // Tools down. A gun still on the nut during the hold would be the
+          // exact thing the regulation forbids, drawn.
+          guns.setMatrixAt(ci, ZERO);
+          wheels.setMatrixAt(ci, ZERO);
+          wheels.setMatrixAt(4 + ci, ZERO);
+        } else if (ci >= 0) {
           const hub = hubOf(ci, outward);
           if (st.role === 'gun') {
             // In the hands, angled down at the nut. The hand joint is in the
@@ -459,6 +489,8 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
               wheels.setMatrixAt(4 + ci, _tool.premultiply(_box));
             }
           }
+        } else if (standOff && (st.role === 'front-jack' || st.role === 'rear-jack')) {
+          jacks.setMatrixAt(st.role === 'front-jack' ? 0 : 1, ZERO);
         } else if (st.role === 'front-jack' || st.role === 'rear-jack') {
           // The jack lies on the ground with its handle running back to the
           // operator's hands; the geometry is modelled that way round, so it

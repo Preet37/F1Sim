@@ -19,7 +19,10 @@ import {
   PIT_GARAGE_SPACING_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
-import { KeepOutField } from '../track/WorldObstacles';
+import {
+  TerrainField, buildTerrainMesh, GROUND_SAMPLE_STRIDE, GROUND_MESH_NAME,
+  type GroundSamples,
+} from './Terrain';
 import type { SceneryItem, WorldModel } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
 
@@ -44,16 +47,43 @@ export interface TrackMeshes {
   dispose(): void;
 }
 
-/** Vertical offsets, in metres, to avoid z-fighting between coplanar surfaces. */
-const Y_GROUND = -0.02;
 /**
- * Height of the flat ground plane that fills the world beyond the circuit.
+ * How far beyond the edge of the road the banking's cross-slope runs out.
  *
- * Named, because the circuit's outer edge now drops a skirt down to exactly
- * this. Two numbers that had to agree and did not is how the void under an
- * elevated circuit went unnoticed for as long as it did.
+ * BANKING IS A PROPERTY OF THE ROAD, not of the county it is in. The surface
+ * height beside the centreline was `-lat * tan(bank)` with no limit on `lat`,
+ * and `lat` reaches the barrier: at Zandvoort's two 18-degree corners the
+ * ground beside the road is nearly seventeen metres wide, so the outer edge of
+ * the run-off was drawn 7.4m ABOVE the racing surface on one side and 7.4m
+ * below it on the other. What that looks like is a corner cut into a hillside
+ * with a wall around it — and the skirt under the raised side then dropped from
+ * 7.4m up all the way to the ground, which is the "flat wall" the Zandvoort
+ * note in the project's open items describes.
+ *
+ * A real banked corner runs its camber out over a few metres of shoulder and is
+ * then flat. Five metres, blended exponentially so there is no crease at the
+ * white line and no crease where it finishes: at 18 degrees the ground beside
+ * the road now rises at most 1.6m, which is a berm rather than a cliff.
  */
-const GROUND_Y = Y_GROUND - 0.6;
+const BANK_RUNOUT_M = 5;
+
+/**
+ * Height of the surface at a signed lateral offset, relative to the centreline,
+ * for a given banking angle and road half width.
+ *
+ * The ONE place the cross-slope is computed. It was inlined in five, which is
+ * how the barrier line, the kerb section and the run-off came to be built on
+ * three copies of the same unbounded formula — and why fixing one of them would
+ * have torn the surfaces apart at their joins instead of fixing anything.
+ */
+export function bankHeight(bank: number, lat: number, halfWidth: number): number {
+  if (bank === 0) return 0;
+  const a = Math.abs(lat);
+  const eff = a <= halfWidth
+    ? a
+    : halfWidth + BANK_RUNOUT_M * (1 - Math.exp(-(a - halfWidth) / BANK_RUNOUT_M));
+  return (lat < 0 ? eff : -eff) * Math.tan(bank);
+}
 /**
  * Verge width used where the barrier is suppressed, metres.
  *
@@ -76,6 +106,15 @@ const SHOULDER_CLEARANCE_M = 0.4;
 /** How far the kerb section reaches outboard of the white line, metres. */
 const KERB_OUTER_M = 1.185;
 /**
+ * How much room beside the road a kerb needs before one is drawn.
+ *
+ * Exported because `probe:shoulders` reports how much of the kerbing the
+ * SIMULATION flags is never drawn — the places where a car's grip changes and
+ * the driver has nothing to see — and it has to gate on the same number the
+ * mesh builder gates on rather than a second copy of it.
+ */
+export const KERB_ROOM_M = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
+/**
  * Width of the astroturf mat laid outboard of a kerb, metres.
  *
  * Measured off the reference footage against the kerb beside it: the mat runs
@@ -93,7 +132,7 @@ const ASTROTURF_W_M = 1.9;
 export const RUNOFF_W = 9;
 /** The same, on a street circuit, where the wall is a metre off the paint. */
 export const STREET_RUNOFF_W = 2.2;
-const Y_RUNOFF = 0.0;
+export const Y_RUNOFF = 0.0;
 /**
  * Height of the astroturf mat, metres above the run-off plane.
  *
@@ -102,7 +141,43 @@ const Y_RUNOFF = 0.0;
  * fight.
  */
 const Y_ASTRO = 0.006;
-const Y_ROAD = 0.02;
+/**
+ * Height of the ASPHALT above the elevation the simulation uses, metres.
+ *
+ * Exported as `ROAD_SURFACE_Y`, and the export is the point. The physics knows
+ * about a road at `track.elevationAt(s)`; the road you can SEE is a mesh two
+ * centimetres above it, lifted so the run-off it sits inside does not fight it
+ * in the depth buffer. Anything that stands on the road therefore has to stand
+ * on the mesh, not on the number.
+ *
+ * The cars did not. Their origins were placed at the bare elevation with their
+ * contact patches at the origin, so all twenty ran with 20mm of tyre inside the
+ * tarmac — a 237mm-wide bite out of the bottom of every wheel, which is what
+ * "the wheels sink into the track" is and why it showed most from a low camera.
+ * See `carGroundY`.
+ */
+// Exported under both names, and that is not tidiness left undone. The two
+// merged branches each needed it: the terrain work reads `Y_ROAD` from
+// `probe:shoulders` to check the ground meets the asphalt, and the car work
+// reads `ROAD_SURFACE_Y` from `probe:carrig` to check the tyres stand on it.
+// Renaming either would break the other's probe for no gain — they are one
+// number and one source of truth, which is the whole point.
+export const Y_ROAD = 0.02;
+export const ROAD_SURFACE_Y = Y_ROAD;
+
+/**
+ * The y a car's ORIGIN must sit at for its tyres to stand on the drawn asphalt.
+ *
+ * A function rather than a constant the caller adds, so that `probe:carrig` can
+ * measure the same arithmetic the renderer performs instead of a second copy of
+ * it. `CarMesh` builds every wheel with its contact patch at car-local y = 0,
+ * which is the only sane frame for a car — a body that knows how far off the
+ * ground it rides cannot be dropped onto a kerb — so the whole correction lives
+ * here, in the one place that knows how thick the road is.
+ */
+export function carGroundY(elevationY: number): number {
+  return elevationY + ROAD_SURFACE_Y;
+}
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 
@@ -434,10 +509,41 @@ class StripBuilder {
  * across Suzuka's road, which is a worse artefact than the black line it was
  * added to fix.
  *
- * Same test as the barrier's: the outer edge must not be inside any node's road
- * disc, with no lap-distance exclusion, which is sound because the shoulder is
- * always at least half a metre outboard of its own road edge and therefore
- * never inside its own disc.
+ * THE ROAD IS A RIBBON, NOT A STRING OF DISCS, and that distinction is the
+ * whole of the "divots in the corners" defect.
+ *
+ * This used to test the probe against a disc of radius `width/2` at every node,
+ * with no lap-distance exclusion, on the reasoning that "the shoulder is always
+ * at least half a metre outboard of its own road edge and therefore never
+ * inside its own disc". That reasoning holds for a node's OWN disc and for
+ * nothing else. A disc is as long as the road is wide — seven and a half metres
+ * at Bahrain, two and a half node spacings — so on the inside of a corner the
+ * discs belonging to nodes further round the arc swing inboard and cover the
+ * ground beside THIS node. The scan then reports that a corner's own asphalt,
+ * two nodes along, is a foreign obstruction, and returns zero.
+ *
+ * It is not a rare case. On the calendar as it stands, 162 node-sides scan to
+ * zero and 134 of them are blocked by a node within twelve metres along the
+ * lap: every one of the eleven circuits except Suzuka has no genuine crossover
+ * at all, and Suzuka's real figure-of-eight accounts for 28 of its 41. Each
+ * false zero then propagates: the slope limiter below may only take the
+ * shoulder down `SHOULDER_SLOPE_M` per node, so a single spurious zero drags
+ * twenty-eight nodes — eighty-four metres — of neighbouring shoulder down with
+ * it on each side. Four false zeros at Bahrain's turn one are what leave the
+ * entire corner with no run-off, no verge, no astroturf, no kerb and no skirt:
+ * just asphalt, and then a one-metre drop straight to the desert floor.
+ *
+ * So the road is tested as what it is: an oriented slab per node, `halfSlab`
+ * long and `width/2` across, exactly the model `narrowWhereTheLapOverlapsItself`
+ * already uses to decide the same question about the same geometry. Separation
+ * is the largest gap over the four separating axes of the two boxes, which is a
+ * lower bound on the true distance and therefore errs toward blocking.
+ *
+ * Suzuka is the test that this has not simply been loosened into uselessness.
+ * Its two legs genuinely cross, their centrelines pass within a quarter of a
+ * metre vertically, and the slab test blocks them exactly as the disc test did:
+ * a real crossover has the other road under the probe, not two nodes up its own
+ * arc, and no amount of correct longitudinal extent makes that go away.
  */
 export function computeShoulders(
   track: TrackSpline, world: WorldModel, runoffW: number,
@@ -445,10 +551,129 @@ export function computeShoulders(
   const count = track.count;
   const barrierAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? world.barrierOffsets.left : world.barrierOffsets.right)[node];
-    const road = new KeepOutField();
-    for (let i = 0; i < count; i++) {
-      road.add(track.px[i], track.pz[i], track.width[i] * 0.5);
+    const nodeM = track.length / count;
+
+    /**
+     * The road, as the quadrilaterals it is actually drawn as.
+     *
+     * One per span, corners in order: near-left, far-left, far-right,
+     * near-right. Deliberately not a slab of chosen length per node — there is
+     * no length to choose. The quads tile the ribbon exactly, meeting edge to
+     * edge at every node, so their union IS the racing surface: no wedge of
+     * real asphalt left untested on the outside of a curve, and no invented
+     * asphalt reaching up the arc on the inside of one. Both of those are
+     * tuning failures the disc model and a fixed-length slab both have, and
+     * this has neither.
+     */
+    const quad = new Float64Array(count * 8);
+    for (let j = 0; j < count; j++) {
+      const k = (j + 1) % count;
+      const hj = track.width[j] * 0.5, hk = track.width[k] * 0.5;
+      const o = j * 8;
+      quad[o] = track.px[j] + track.nx[j] * hj; quad[o + 1] = track.pz[j] + track.nz[j] * hj;
+      quad[o + 2] = track.px[k] + track.nx[k] * hk; quad[o + 3] = track.pz[k] + track.nz[k] * hk;
+      quad[o + 4] = track.px[k] - track.nx[k] * hk; quad[o + 5] = track.pz[k] - track.nz[k] * hk;
+      quad[o + 6] = track.px[j] - track.nx[j] * hj; quad[o + 7] = track.pz[j] - track.nz[j] * hj;
     }
+
+    // A coarse grid over the spans, so the scan stays linear in the node count.
+    // `buildTrackMeshes` runs once per session but `probe:shoulders` builds
+    // every circuit on the calendar, and a brute-force pass is felt there.
+    const CELL = 24;
+    const bins = new Map<number, number[]>();
+    const binKey = (gx: number, gz: number): number => (gx * 73856093) ^ (gz * 19349663);
+    for (let j = 0; j < count; j++) {
+      const o = j * 8;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let c = 0; c < 4; c++) {
+        const qx = quad[o + c * 2], qz = quad[o + c * 2 + 1];
+        if (qx < x0) x0 = qx; if (qx > x1) x1 = qx;
+        if (qz < z0) z0 = qz; if (qz > z1) z1 = qz;
+      }
+      for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++) {
+        for (let gz = Math.floor(z0 / CELL); gz <= Math.floor(z1 / CELL); gz++) {
+          const k = binKey(gx, gz);
+          const bin = bins.get(k);
+          if (bin) bin.push(j);
+          else bins.set(k, [j]);
+        }
+      }
+    }
+    /** Largest span a road quad spans, for the grid query's reach. */
+    let quadReach = 0;
+    for (let j = 0; j < count; j++) {
+      const o = j * 8;
+      for (let c = 0; c < 4; c++) {
+        quadReach = Math.max(quadReach, Math.hypot(
+          quad[o + c * 2] - track.px[j], quad[o + c * 2 + 1] - track.pz[j],
+        ) + nodeM);
+      }
+    }
+
+    /**
+     * True when a probe box stands at least `margin` clear of every road quad.
+     *
+     * `(pnx, pnz)` is the probe's across axis and `(ptx, ptz)` its along axis;
+     * `halfX`/`halfZ` are its half extents on those. Separating-axis test over
+     * the probe's two axes and the quad's four edge normals, taking the largest
+     * gap: exact when the closest features are a face and a vertex, and
+     * understating the distance by at most a factor of root two corner to
+     * corner — so it can refuse a shoulder that would just have fitted and can
+     * never grant one that would not.
+     */
+    const clearOfRoad = (
+      x: number, z: number,
+      pnx: number, pnz: number, ptx: number, ptz: number,
+      halfX: number, halfZ: number, margin: number,
+    ): boolean => {
+      const probeReach = Math.hypot(halfX, halfZ) + margin + quadReach;
+      const g0x = Math.floor((x - probeReach) / CELL);
+      const g1x = Math.floor((x + probeReach) / CELL);
+      const g0z = Math.floor((z - probeReach) / CELL);
+      const g1z = Math.floor((z + probeReach) / CELL);
+      const seen = new Set<number>();
+      // Corner offsets from the probe, reused per candidate.
+      const rx = [0, 0, 0, 0], rz = [0, 0, 0, 0];
+      for (let gx = g0x; gx <= g1x; gx++) {
+        for (let gz = g0z; gz <= g1z; gz++) {
+          const bin = bins.get(binKey(gx, gz));
+          if (!bin) continue;
+          for (const j of bin) {
+            if (seen.has(j)) continue;
+            seen.add(j);
+            const o = j * 8;
+            for (let c = 0; c < 4; c++) {
+              rx[c] = quad[o + c * 2] - x;
+              rz[c] = quad[o + c * 2 + 1] - z;
+            }
+            /** Gap between the two shapes' shadows on one unit axis. */
+            const gapOn = (ax: number, az: number): number => {
+              const r = halfX * Math.abs(pnx * ax + pnz * az)
+                + halfZ * Math.abs(ptx * ax + ptz * az);
+              let lo = Infinity, hi = -Infinity;
+              for (let c = 0; c < 4; c++) {
+                const p = rx[c] * ax + rz[c] * az;
+                if (p < lo) lo = p;
+                if (p > hi) hi = p;
+              }
+              return Math.max(lo - r, -r - hi);
+            };
+            let sep = Math.max(gapOn(pnx, pnz), gapOn(ptx, ptz));
+            for (let c = 0; c < 4 && sep < margin; c++) {
+              const d = (c + 1) & 3;
+              let ex = rz[c] - rz[d], ez = rx[d] - rx[c];
+              const len = Math.hypot(ex, ez);
+              if (len < 1e-9) continue;
+              ex /= len; ez /= len;
+              const g = gapOn(ex, ez);
+              if (g > sep) sep = g;
+            }
+            if (sep < margin) return false;
+          }
+        }
+      }
+      return true;
+    };
     // The narrowest shoulder the scan can report — and it has to be wide
     // enough to pass its own first test, which it was not.
     //
@@ -496,10 +721,26 @@ export function computeShoulders(
         let w = 0;
         for (let d = MIN_M; d <= want; d += 0.5) {
           const lat = side * (hw + d);
-          if (!road.clearOfBox(
+          // Probed ACROSS the road only, with no extent along it.
+          //
+          // The old box was half a node long, and on a curve that length is not
+          // free: a straight three-metre box sitting beside a bending road has
+          // its ends nearer the asphalt than its middle, so the clearance it
+          // demands grows with curvature. Between MIN_M and the 0.4m margin
+          // there is only 0.35m of slack, and a curvature of 1/17m — an
+          // ordinary second-gear corner — eats all of it. That is a second way
+          // of failing at exactly the same corners as the discs did.
+          //
+          // Nothing is lost by dropping it, because the longitudinal guarantee
+          // is not this box's job. The erosion pass below takes each node's
+          // width down to the smallest its immediate neighbours can also stand
+          // behind, which is the same statement and is applied where the sweep
+          // actually needs it. The two mechanisms were doing one job twice, and
+          // the one that also coupled to curvature is the one to lose.
+          if (!clearOfRoad(
             track.px[i] + track.nx[i] * lat, track.pz[i] + track.nz[i] * lat,
-            track.tz[i], track.tx[i], 0.25, (track.length / count) * 0.5,
-            SHOULDER_CLEARANCE_M,
+            track.nx[i], track.nz[i], track.tx[i], track.tz[i],
+            0.25, 0, SHOULDER_CLEARANCE_M,
           )) break;
           w = d;
         }
@@ -508,11 +749,13 @@ export function computeShoulders(
 
       // --- Erode by one node --------------------------------------------
       //
-      // Each width above was tested against a probe box half a node long, so it
-      // vouches for the ground within about a metre and a half of its own node
-      // and no further. The strips are swept between stations, and a station's
-      // quad reaches into its neighbours' territory — so a node may only claim
-      // a width its neighbours can also stand behind.
+      // Each width above was tested at its own station and nowhere else, so it
+      // vouches for the ground at that station and no further. The strips are
+      // swept between stations, and a station's quad reaches into its
+      // neighbours' territory — so a node may only claim a width its
+      // neighbours can also stand behind. This pass is now the ONLY thing
+      // providing that guarantee; see the probe call above for why the box it
+      // used to be shared with had to give the job up.
       //
       // The old sweep got this for free and by accident, by taking the smaller
       // of a span's two ends; that is also what made the outer edge a staircase
@@ -549,6 +792,62 @@ export function computeShoulders(
   return out;
 }
 
+/**
+ * The heights the ground is known at: the circuit's own cross-section.
+ *
+ * Five points per sampled node — the centreline, the two edges of the racing
+ * surface, and the two outer edges of the ground beside it — at the height
+ * those points are actually drawn at, banking and all.
+ *
+ * THE ROAD EDGES ARE IN HERE BECAUSE OF BANKING. Without them the field knew
+ * the surface only at the centreline and out at the barrier, and across the
+ * width of a banked corner it interpolated between the two — while the road
+ * itself tilts. At Zandvoort's 18-degree corners the road's lower edge is 2.4m
+ * below its centreline, so the terrain, which was following the centreline,
+ * came out HALF A METRE ABOVE THE RACING SURFACE and stood there as patches of
+ * sand on the road. `validate:world` found it; five points fix it, because now
+ * the nearest thing the ground knows about under the road is the road.
+ *
+ * Exported so `probe:shoulders` measures the ground the renderer builds rather
+ * than a second implementation of it. The last two defects in this file were
+ * both two copies of one formula drifting apart.
+ */
+export function groundSamples(
+  track: TrackSpline, shoulders: { left: Float64Array; right: Float64Array },
+): GroundSamples {
+  const count = track.count;
+  const n = Math.max(1, Math.floor(count / GROUND_SAMPLE_STRIDE));
+  const per = 5;
+  const x = new Float64Array(n * per);
+  const z = new Float64Array(n * per);
+  const y = new Float64Array(n * per);
+  const r = new Float64Array(n * per);
+  const lats = new Array<number>(per);
+
+  for (let k = 0; k < n; k++) {
+    const i = (k * GROUND_SAMPLE_STRIDE) % count;
+    const hw = track.width[i] * 0.5;
+    const bank = track.banking[i];
+    const foot = hw + Math.max(shoulders.left[i], shoulders.right[i]) + 2;
+
+    // A shoulder of zero puts its outer edge on the road edge, which is still
+    // the right height for it.
+    lats[0] = 0;
+    lats[1] = hw;
+    lats[2] = -hw;
+    lats[3] = hw + Math.max(0, shoulders.left[i]);
+    lats[4] = -(hw + Math.max(0, shoulders.right[i]));
+    for (let q = 0; q < per; q++) {
+      const lat = lats[q];
+      const o = k * per + q;
+      x[o] = track.px[i] + track.nx[i] * lat;
+      z[o] = track.pz[i] + track.nz[i] * lat;
+      y[o] = track.elevation[i] + bankHeight(bank, lat, hw);
+      r[o] = foot;
+    }
+  }
+  return { x, z, y, r };
+}
 
 export function buildTrackMeshes(
   track: TrackSpline,
@@ -644,14 +943,19 @@ export function buildTrackMeshes(
   const shoulderAt = (node: number, side: -1 | 1): number =>
     (side > 0 ? shoulders.left : shoulders.right)[node];
 
+  // The ground the whole circuit stands on, derived from the circuit's own
+  // elevation profile. Everything that used to reference a constant ground
+  // height — the skirt below the verge, the plane beyond it — asks this
+  // instead. See `Terrain.ts` for why there is no constant any more.
+  const terrain = new TerrainField(track, groundSamples(track, shoulders));
+
   /** World position at (node, lateral, height). */
   const px = (i: number, lat: number) => track.px[i] + track.nx[i] * lat;
   const pz = (i: number, lat: number) => track.pz[i] + track.nz[i] * lat;
-  const py = (i: number, lat: number) => {
-    // Banking tilts the surface about the track's centreline.
-    const bank = track.banking[i];
-    return track.elevation[i] + (bank !== 0 ? -lat * Math.tan(bank) : 0);
-  };
+  const py = (i: number, lat: number) =>
+    // Banking tilts the surface about the track's centreline, and runs out a
+    // few metres beyond its edge — see `bankHeight`.
+    track.elevation[i] + bankHeight(track.banking[i], lat, track.width[i] * 0.5);
 
   // =========================================================================
   // Kerbs
@@ -787,7 +1091,7 @@ export function buildTrackMeshes(
     s: ReturnType<typeof frameLerp>, lat: number, dy: number,
   ): readonly [number, number, number] => [
     s.x + s.nx * lat,
-    s.elev + (s.bank !== 0 ? -lat * Math.tan(s.bank) : 0) + dy,
+    s.elev + bankHeight(s.bank, lat, s.hw) + dy,
     s.z + s.nz * lat,
   ];
 
@@ -834,7 +1138,7 @@ export function buildTrackMeshes(
         const lat = sign * (s.hw + off);
         return [
           s.x + s.nx * lat,
-          s.elev + (s.bank !== 0 ? -lat * Math.tan(s.bank) : 0) + y,
+          s.elev + bankHeight(s.bank, lat, s.hw) + y,
           s.z + s.nz * lat,
         ] as const;
       };
@@ -1002,7 +1306,7 @@ export function buildTrackMeshes(
     // back on itself that is far enough to lay red-and-white kerbing across the
     // other section's racing surface — which is exactly what it was doing at
     // Monaco's climb out of Sainte Dévote.
-    const kerbRoom = KERB_OUTER_M + SHOULDER_CLEARANCE_M;
+    const kerbRoom = KERB_ROOM_M;
     if (track.isCurbLeft[a] && track.isCurbLeft[b]
       && shoulderAt(a, 1) >= kerbRoom && shoulderAt(b, 1) >= kerbRoom) sweepKerb(a, b, 1);
     if (track.isCurbRight[a] && track.isCurbRight[b]
@@ -1101,18 +1405,36 @@ export function buildTrackMeshes(
         strip(runoff, 0, 0, in0, in1, runoffColour);
         if (w0 > in0 || w1 > in1) strip(verge, in0, in1, w0, w1, vergeColour);
 
-        // The skirt down to the ground plane. Into `verge`, which is drawn
-        // double-sided: this is a vertical face, `quadFlat`'s upward-winding
-        // rule says nothing useful about one, and a skirt that is culled from
-        // the side you happen to be looking at is the hole it exists to fill.
+        // The skirt down to the terrain. Into `verge`, which is drawn
+        // double-sided: this is a near-vertical face, `quadFlat`'s
+        // upward-winding rule says nothing useful about one, and a skirt that is
+        // culled from the side you happen to be looking at is the hole it exists
+        // to fill.
+        //
+        // THE CLIFF AT THE CORNER. This used to drop to a constant y of -0.62 —
+        // the height of the single flat quad that was the whole world beyond the
+        // circuit. The road is not at -0.62; it is wherever the elevation
+        // profile puts it, which is up to 6m at Bahrain, 40m at COTA and 58m at
+        // Spa. So this face was as tall as the circuit was high: 4.1m on average
+        // at Bahrain, 27.2m at Spa, and it ran continuously around the outside
+        // of every corner where the barrier stands far enough back to see past
+        // it. That is the "hugee hole" in the second batch of screenshots — a
+        // corner on a walled sand plateau with the desert floor far below, which
+        // reads as the corner having been excavated.
+        //
+        // It now drops to `terrain.heightAt` at its own foot, and the ground
+        // mesh is built by sampling the same function at its own vertices, so
+        // the two meet. What is left is a lip of about a metre.
         const e0 = framePt(s0, side * (s0.hw + w0), Y_RUNOFF);
         const e1 = framePt(s1, side * (s1.hw + w1), Y_RUNOFF);
-        if (e0[1] > GROUND_Y + 0.05 || e1[1] > GROUND_Y + 0.05) {
+        const g0 = terrain.heightAt(e0[0], e0[2]);
+        const g1 = terrain.heightAt(e1[0], e1[2]);
+        if (e0[1] > g0 + 0.02 || e1[1] > g1 + 0.02) {
           verge.quad(
             e0[0], e0[1], e0[2],
             e1[0], e1[1], e1[2],
-            e1[0], GROUND_Y, e1[2],
-            e0[0], GROUND_Y, e0[2],
+            e1[0], Math.min(g1, e1[1]), e1[2],
+            e0[0], Math.min(g0, e0[1]), e0[2],
             vergeColour,
           );
         }
@@ -1240,8 +1562,7 @@ export function buildTrackMeshes(
       const nx = track.nx[i] + (track.nx[j] - track.nx[i]) * t;
       const nz = track.nz[i] + (track.nz[j] - track.nz[i]) * t;
       const ey = track.elevation[i] + (track.elevation[j] - track.elevation[i]) * t;
-      const bank = track.banking[i];
-      const y = ey + (bank !== 0 ? -lat * Math.tan(bank) : 0) + dy;
+      const y = ey + bankHeight(track.banking[i], lat, track.width[i] * 0.5) + dy;
       return [cx + nx * lat, y, cz + nz * lat];
     };
     const quadP = (
@@ -1865,17 +2186,18 @@ export function buildTrackMeshes(
     textures.push(markerTex);
   }
 
-  // --- Ground plane --------------------------------------------------------
+  // --- Ground --------------------------------------------------------------
+  //
+  // Was one flat quad at a constant height, which is what made the circuit a
+  // mesa: the road climbs 58m at Spa and the world it stands in did not, so the
+  // join between them was a vertical wall as tall as the climb. It is now a
+  // height field driven by the circuit's own elevation, sampled at exactly the
+  // points the skirt's foot is sampled at. Padding is unchanged and generous:
+  // looking down a 1km straight, ground that stops 400m past the circuit shows
+  // its own edge as a hard horizon line, so it reaches beyond the fog's far
+  // distance rather than beyond the track.
   {
-    const b = track.bounds();
-    // Generous padding: looking down a 1km straight, a plane that stops 400m past
-    // the circuit shows its own edge as a hard horizon line. This has to extend
-    // beyond the fog's far distance, not beyond the track.
-    const pad = 6000;
-    const w = b.maxX - b.minX + pad * 2;
-    const d = b.maxZ - b.minZ + pad * 2;
-    const geo = new THREE.PlaneGeometry(w, d, 1, 1);
-    geo.rotateX(-Math.PI / 2);
+    const geo = buildTerrainMesh(track, terrain).geometry;
     const mat = new THREE.MeshStandardMaterial({
       color: groundColour(track.def.scenery), roughness: 0.95, metalness: 0,
     });
@@ -1883,8 +2205,17 @@ export function buildTrackMeshes(
     // one where a flat colour is most obvious.
     detail.apply(mat, track.def.scenery === 'desert' ? SURFACES.runoff : SURFACES.grass);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set((b.minX + b.maxX) * 0.5, GROUND_Y, (b.minZ + b.maxZ) * 0.5);
     mesh.receiveShadow = false;
+    // Named, because `probe:world` used to identify the ground as "the only
+    // mesh in the circuit with four vertices" — which was true of a quad and is
+    // not true of a height field. Unnamed, it was classified as braking boards
+    // and every terrain vertex under the road was reported as signage standing
+    // on the racing surface.
+    mesh.name = GROUND_MESH_NAME;
+    // The far cells are kilometres across and their bounding sphere is centred
+    // on the circuit, so a camera at a corner would cull the ground it is
+    // standing on if this were left alone.
+    mesh.frustumCulled = false;
     root.add(mesh);
     geometries.push(geo);
     materials.push(mat);

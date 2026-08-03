@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { ParticleSystem } from './ParticleSystem';
 import { SkidMarks } from './SkidMarks';
+import { RainCurtain } from './Rain';
+import { carGroundY } from './TrackMesh';
 import { clamp01 } from '../core/MathUtils';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -63,19 +65,58 @@ export class EffectsDirector {
   private readonly fx: CarFx[] = [];
   private readonly quality: 'low' | 'high';
 
-  /** Set from the session's weather each load. */
-  private wetness = 0;
+  /**
+   * What is falling, and what is lying, refreshed EVERY FRAME.
+   *
+   * They used to be one latched field, set once in `loadSession`, and that
+   * single line is why a race that started dry and rained on lap ten never
+   * threw up a drop of spray for its whole duration. The spray code below was
+   * written, correct and unreachable.
+   *
+   * The spray itself reads the water at each CAR's own position rather than
+   * either of these — see `update` — because a car that has moved off the
+   * rubbered line onto the wetter part of the road throws more of it.
+   */
+  /** What is falling, as opposed to what is lying. Drives the rain, not the spray. */
+  private rainRate = 0;
+
+  private rain: RainCurtain;
+
+  /**
+   * Spray particles the whole field may emit in one frame.
+   *
+   * A HARD CAP, and the reason it exists is on the record in this file's own
+   * history: an effect whose per-car rate looked right for one car was set
+   * without measuring what twenty-two of them did, and it filled the pool in
+   * under a second and whited out the screen. Spray is the worst case for that
+   * failure by a distance — every car emits it, continuously, for the entire
+   * wet part of a race, rather than in the bursts smoke and sparks come in.
+   *
+   * 64 is measured against the pool rather than chosen: the soft pool holds
+   * 2400 particles and spray lives 0.8–1.7s, so a steady 64 a frame at 60fps
+   * is 3840 a second against a pool that can retire about 2000 a second. That
+   * is deliberately oversubscribed by about two to one — the ring buffer
+   * overwrites its oldest, so the practical effect is that spray's own lifetime
+   * is clipped to roughly half a second under a full field at full rate, which
+   * looks right and leaves smoke and dust their share. Raising it to 128
+   * measured at 0.9ms of extra GPU time and starved tyre smoke at a standing
+   * start in the wet; there is nothing to be gained above it.
+   */
+  private static readonly SPRAY_BUDGET_PER_FRAME = 64;
+  private sprayThisFrame = 0;
 
   constructor(quality: 'low' | 'high') {
     this.quality = quality;
     this.particles = new ParticleSystem(quality);
     this.root.add(this.particles.root);
+    this.rain = new RainCurtain(quality);
+    this.root.add(this.rain.mesh);
     this.root.matrixAutoUpdate = false;
   }
 
   loadSession(engine: RaceEngine): void {
     this.unload();
-    this.wetness = engine.weather.wetness;
+    this.rainRate = engine.weather.rainRate;
 
     this.skids = new SkidMarks(engine.cars.length * 4, this.quality);
     this.root.add(this.skids.mesh);
@@ -116,7 +157,13 @@ export class EffectsDirector {
   update(dt: number, engine: RaceEngine, cameraPos: THREE.Vector3): void {
     this.particles.advance(dt);
 
+    // Live, not latched. See the field's own comment.
+    this.rainRate = engine.weather.rainRate;
+    this.rain.update(dt, this.rainRate, cameraPos);
+    this.sprayThisFrame = 0;
+
     const track = engine.track;
+    const surface = engine.weather.surface;
     for (let i = 0; i < engine.cars.length; i++) {
       const car = engine.cars[i];
       const fx = this.fx[i];
@@ -126,7 +173,11 @@ export class EffectsDirector {
       const p = car.physics;
       const x = p.position.x;
       const z = p.position.y;
-      const y = track.elevationAt(car.s);
+      // The DRAWN road, not the bare elevation: smoke, spray and plank sparks
+      // all leave from the contact patch, and the contact patch stands on the
+      // asphalt mesh. See `carGroundY` — the cars themselves had the same
+      // 20mm error and it put every tyre inside the tarmac.
+      const y = carGroundY(track.elevationAt(car.s));
 
       const dist = Math.hypot(x - cameraPos.x, z - cameraPos.z);
       if (!car.isPlayer && dist > CULL_DISTANCE) continue;
@@ -134,7 +185,12 @@ export class EffectsDirector {
       const lod = car.isPlayer ? 1 : clamp01((CULL_DISTANCE - dist) / (CULL_DISTANCE - FULL_RATE_DISTANCE));
       if (lod <= 0.001) continue;
 
-      this.updateCar(dt, car, fx, x, y, z, lod);
+      // The water THIS car is driving through, not the circuit's average. A
+      // car that has moved off the rubbered line onto the wetter part of the
+      // road throws more spray, which is both true and a useful signal to the
+      // driver behind about where the water is.
+      const localWet = surface.waterAt(track.indexAt(car.s), car.lateral);
+      this.updateCar(dt, car, fx, x, y, z, lod, localWet);
     }
 
     this.particles.flush();
@@ -143,7 +199,7 @@ export class EffectsDirector {
 
   private updateCar(
     dt: number, car: CarEntry, fx: CarFx,
-    x: number, y: number, z: number, lod: number,
+    x: number, y: number, z: number, lod: number, localWet: number,
   ): void {
     const p = car.physics;
     const spec = p.spec;
@@ -199,7 +255,7 @@ export class EffectsDirector {
         // does not transfer through a film of water.
         const id = car.index * 4 + (axle.isRear ? 2 : 0) + (side > 0 ? 1 : 0);
         const markOpacity = onTrack && p.surface !== 'pitlane'
-          ? markAmount * (1 - this.wetness * 0.85) * clamp01(speed / 6)
+          ? markAmount * (1 - localWet * 0.85) * clamp01(speed / 6)
           : 0;
         this.skids?.report(id, wx, wz, rightX, rightZ, spec.tireRadiusM * 0.62, markOpacity, y);
 
@@ -239,18 +295,49 @@ export class EffectsDirector {
     }
 
     // --- Rain spray ---------------------------------------------------------
-    // The rooster tail. Scales with both water depth and speed, because it is
-    // water being displaced by the contact patch and both terms feed that.
-    if (this.wetness > 0.08 && onTrack && speed > 8) {
-      const intensity = this.wetness * clamp01(speed / 55);
+    //
+    // The rooster tail: water displaced by the contact patch, so it scales with
+    // both depth and speed because both feed the volume being moved.
+    //
+    // FROM THE TWO REAR WHEELS, not from a point on the centreline. That is the
+    // one change here that costs nothing and buys everything: a real car throws
+    // two distinct plumes that merge a few metres back, and emitting the SAME
+    // total number of particles from two places instead of one gives the plume
+    // its width and its shape for no extra particles at all. Widening the
+    // emitter was the tempting alternative and it would have cost per-particle
+    // size, which is fill rate, which is the budget that matters.
+    if (localWet > 0.08 && onTrack && speed > 8) {
+      // A floating tyre is not gripping the road, it is displacing a wedge of
+      // water in front of itself, and the wall of spray that comes off a car
+      // aquaplaning is far bigger than the one off a car that is merely wet.
+      // Reading it off the tyre model means the visual and the grip loss are
+      // the same event.
+      const float = Math.max(p.frontTires.aquaplaning, p.rearTires.aquaplaning);
+      const intensity = localWet * clamp01(speed / 55) * (1 + float * 0.9);
       fx.sprayBudget += intensity * 42 * lod * dt;
       if (fx.sprayBudget >= 1) {
-        const n = Math.min(5, Math.floor(fx.sprayBudget));
-        fx.sprayBudget -= n;
-        this.particles.emitSpray(
-          x - fwdX * rear, y, z - fwdZ * rear,
-          vx, vz, speed, this.wetness, n,
-        );
+        const want = Math.min(6, Math.floor(fx.sprayBudget));
+        // The global cap. Twenty-two cars in the wet is the case that has to be
+        // right, and the per-car rate above is set for one car.
+        const room = EffectsDirector.SPRAY_BUDGET_PER_FRAME - this.sprayThisFrame;
+        const n = Math.max(0, Math.min(want, room));
+        fx.sprayBudget -= want;
+        if (n > 0) {
+          this.sprayThisFrame += n;
+          // Split across the two rear wheels, remainder to the left. An odd
+          // count arriving all on one side reads as a car with a puncture.
+          const perSide = n >> 1;
+          const extra = n - perSide * 2;
+          for (const side of [-1, 1]) {
+            const count = perSide + (side < 0 ? extra : 0);
+            if (count <= 0) continue;
+            this.particles.emitSpray(
+              x - fwdX * rear + rightX * halfTrack * side, y,
+              z - fwdZ * rear + rightZ * halfTrack * side,
+              vx, vz, speed, localWet, count,
+            );
+          }
+        }
       }
     }
 
@@ -295,8 +382,15 @@ export class EffectsDirector {
     fx.lastGear = p.gear;
   }
 
+  /** Rain drops currently drawn, for the perf probe. */
+  get rainDrops(): number {
+    return this.rain.activeDrops;
+  }
+
   dispose(): void {
     this.unload();
     this.particles.dispose();
+    this.root.remove(this.rain.mesh);
+    this.rain.dispose();
   }
 }

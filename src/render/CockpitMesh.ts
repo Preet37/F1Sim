@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildCarbonTexture } from './Livery';
-import { creased, loft, section, setPanelUV, tube } from './Loft';
+import { creased, limb, loft, section, setPanelUV, tube } from './Loft';
 import { gloveNomexMap } from './DetailMaps';
 
 /**
@@ -98,6 +98,72 @@ export const EYE_Z = -0.58;
 export const EYE_PITCH = 0.053;
 
 /**
+ * The DRIVER'S OWN EYE, car-local. A different camera from `EYE_*` above.
+ *
+ * "We need another view which is the driver view, imagine from the perception
+ * of the driver's lenses."
+ *
+ * `EYE_*` is a POD ON THE ROLL HOOP: it is behind and above the helmet, it has
+ * the crown of the driver's own head in the bottom of the frame, and that is
+ * correct — it is what the reference onboards are and what they were matched
+ * against. It is not what was asked for. What was asked for is the view from
+ * behind the visor, which is 0.58m further forward and 0.21m lower, and which
+ * frames the car completely differently: the halo stops being an arc in front
+ * of you and becomes a ring around you, its rails leaving through the SIDES of
+ * the picture rather than the bottom; the wheel rim and your own gloves sit
+ * along the bottom; and the mirrors come from 1.52m away to 0.83m, which is the
+ * single largest thing that can be done to make them readable.
+ *
+ * WHERE IT IS, AND WHY IT IS NOT WHERE A HUMAN EYE WOULD BE.
+ *
+ * Anatomically the eye sits inside this helmet at about y 0.645, z 0.095 —
+ * 30mm under the shell's centre and 75mm forward of it. Placed there it does
+ * not work, and the reason is a proportion of the car rather than a mistake in
+ * the camera. The top of the steering wheel rim is at y 0.703 (WHEEL_Y plus the
+ * rim's half height, raked back), which is 58mm ABOVE that eye: the wheel's top
+ * bar would lie across the horizon and the road would be behind it. The model's
+ * halo crown is at 0.812 and its helmet crown at 0.828, so the whole cockpit is
+ * compressed vertically against a real car, where the crown of the halo stands
+ * roughly 200mm over the driver's eyeline.
+ *
+ * So the eye is raised until the geometry frames like the reference does, and
+ * it is placed just OUTSIDE the visor rather than behind it, at the top of the
+ * aperture. Both facts are load-bearing:
+ *
+ *  - the helmet is merged into the shared car shell (see CarMesh, where the
+ *    head goes into `parts.core`), so unlike the coarse wheel it CANNOT be
+ *    hidden for one car in one view without editing the car mesh. An eye inside
+ *    the shell renders the inside of a helmet, which is a black screen. From
+ *    0.165 the entire helmet — shell, jaw, visor at its frontmost 0.187, chin
+ *    bar and crown fin — lies within 25mm of the eye plane and is therefore
+ *    behind the near plane in every attitude the head model can reach, so it is
+ *    never drawn and nothing has to be hidden;
+ *  - at 0.770 the eye clears the wheel's top bar by 10.4 degrees and sits 4.1
+ *    degrees under the crown of the halo, which is the arrangement a driver's
+ *    eye actually has: hoop overhead, rim below, road between them.
+ *
+ * WHAT IT MEASURES, on all eleven circuits (`npm run probe:framing`, mode
+ * `driver`): horizon 47 per cent of frame height, halo crown 41, wheel rim top
+ * 63, mirrors at 83 per cent of frame width on a 2.17:1 phone and 90 on 16:9 —
+ * in frame on both, which no wider mounting point would be.
+ */
+export const DRIVER_EYE_X = 0;
+export const DRIVER_EYE_Y = 0.770;
+export const DRIVER_EYE_Z = 0.165;
+
+/**
+ * Downward tilt of the driver's-eye camera, radians. 1.83 degrees.
+ *
+ * Nearly level, and that is the difference between a driver and a camera
+ * operator: a driver's head is held level and their eyes do the looking down,
+ * so the horizon sits just above the middle of what they see. `probe:framing`
+ * puts it at 47 per cent of frame height with this value. The roll-hoop camera
+ * above needs nearly twice as much (see EYE_PITCH) because it is looking over
+ * the driver's head from behind and has to get the nose of the car into shot.
+ */
+export const DRIVER_EYE_PITCH = 0.0346;
+
+/**
  * Centre of the steering wheel, car-local, and its rake.
  *
  * Exported because DriverMesh puts the coarse wheel and the driver's hands in
@@ -193,9 +259,110 @@ export const MIRROR_GLASS_Z = 0.769;
  * back and three metres out is the piece of road a car appears from when it is
  * setting up a move, which is the question the mirrors exist to answer.
  */
-const MIRROR_TARGET_X = 3.0;
-const MIRROR_TARGET_Y = 0.85;
-const MIRROR_TARGET_Z = -25;
+/**
+ * The driver's arm skeleton, car-local, for the side on +x.
+ *
+ * Here rather than in DriverMesh because BOTH of them need it and DriverMesh
+ * already imports from this module: the shell builds a static pair from these
+ * points for the other twenty-one cars, and `buildCockpit` builds an articulated
+ * pair from the same points for the one car the onboard camera is inside. Two
+ * sets of arms in the same place that disagree about where the shoulder is would
+ * pop the moment the camera changed.
+ *
+ * The wrist is the point the glove's cuff sits on, so the forearm ends inside
+ * the hand rather than beside it.
+ */
+export const ARM_SHOULDER = [0.150, 0.522, -0.045] as const;
+export const ARM_ELBOW = [0.163, 0.465, 0.180] as const;
+export const ARM_WRIST = [GRIP_X, WHEEL_Y - 0.012, WHEEL_Z - 0.062] as const;
+/** Upper-arm radii, shoulder end then elbow end. */
+export const UPPER_ARM_R = [0.056, 0.046] as const;
+/** Forearm radii, elbow end then wrist end. */
+export const FOREARM_R = [0.049, 0.034] as const;
+
+export const MIRROR_TARGET_X = 3.0;
+export const MIRROR_TARGET_Y = 0.85;
+export const MIRROR_TARGET_Z = -25;
+
+/**
+ * The eye a mirror is AIMED for, car-local.
+ *
+ * A pane has one angle and this game now looks into it from three places, and
+ * the three do not agree. Solving the bisector against the roll-hoop eye — which
+ * is what this did, because that was the only eye there was — leaves the pane
+ * looking 24 degrees OUTBOARD from the driver's own eye 0.58m further forward
+ * and 0.21m lower, which spends half the glass on the barrier. Solving it
+ * against the driver instead swings it 13 degrees INBOARD from the roll-hoop
+ * camera, where it looks at the car's own gearbox. Neither is a mirror that
+ * works in all three views.
+ *
+ * So it is aimed at the point midway between them, which is the honest answer
+ * to a pane that genuinely has to serve both: the roll-hoop cameras come out
+ * within about a degree of straight back and the driver's eye within 18 degrees
+ * of the piece of road the mirror is for, against 24. `probe:framing` reports
+ * that angle per mode, per side, on every circuit, so this cannot drift.
+ *
+ * NOT weighted further toward the driver, and the arithmetic is why: at 70 per
+ * cent driver the driver's error falls to 11 degrees and the roll-hoop camera's
+ * rises to 15, which is worse in total and worse for the mode most people play.
+ */
+const AIM_EYE_X = (EYE_X + DRIVER_EYE_X) * 0.5;
+const AIM_EYE_Y = (EYE_Y + DRIVER_EYE_Y) * 0.5;
+const AIM_EYE_Z = (EYE_Z + DRIVER_EYE_Z) * 0.5;
+
+/**
+ * Where one pane sits and which way it faces, car-local.
+ *
+ * Pulled out of `buildCockpit` so that `probe:framing` can project the pane's
+ * actual corners rather than a point at its centre — the same discipline
+ * `HALO_PATH` is exported under, and for the same reason. A mirror's problem
+ * has never been where its centre is; it is how big it reads and whether the
+ * halo is across it, and neither of those is a question about a point. Anything
+ * that measures the panes and anything that builds them now runs the same six
+ * lines, so the measurement and the geometry cannot drift apart.
+ *
+ * @param side +1 for the pane on the car's local +x, which is its LEFT.
+ */
+export function mirrorPaneBasis(side: 1 | -1): {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  normal: THREE.Vector3;
+} {
+  const position = new THREE.Vector3(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
+  const toEye = new THREE.Vector3(
+    AIM_EYE_X - side * MIRROR_X,
+    AIM_EYE_Y - MIRROR_Y,
+    AIM_EYE_Z - MIRROR_GLASS_Z,
+  ).normalize();
+  const toRoad = new THREE.Vector3(
+    side * MIRROR_TARGET_X - side * MIRROR_X,
+    MIRROR_TARGET_Y - MIRROR_Y,
+    MIRROR_TARGET_Z - MIRROR_GLASS_Z,
+  ).normalize();
+  const normal = toEye.add(toRoad).normalize();
+  // See the long note at the call site in `buildCockpit`: the roll about the
+  // normal has to be STATED, because the shortest rotation onto a normal that
+  // points back at the driver stands the pane on end.
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().lookAt(
+      position, position.clone().sub(normal), new THREE.Vector3(0, 1, 0),
+    ),
+  );
+  return { position, quaternion, normal };
+}
+
+/** The four corners of one pane, car-local, anticlockwise from bottom left. */
+export function mirrorPaneCorners(side: 1 | -1): THREE.Vector3[] {
+  const { position, quaternion } = mirrorPaneBasis(side);
+  const out: THREE.Vector3[] = [];
+  for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+    out.push(
+      new THREE.Vector3(u * PANE_W * 0.5, v * PANE_H * 0.5, 0)
+        .applyQuaternion(quaternion).add(position),
+    );
+  }
+  return out;
+}
 
 export interface CockpitState {
   /** Road-wheel angle in radians. The rim turns by RACK_RATIO times this. */
@@ -255,14 +422,54 @@ export interface CockpitVisual {
 /**
  * Mirror feed resolution.
  *
- * The panes are 100mm by 38mm and sit 1.5m from the eye, which is about
- * twenty-five pixels across on a 1280-wide frame. 256 by 96 is already four
- * times more than that resolves; the point of the extra is that the mirror is
- * minified rather than magnified, so a car in it is filtered instead of
- * blocky. Two of them in half-float come to 384KB.
+ * The panes sit between 0.83m and 1.52m from the eye depending on which onboard
+ * is selected, which is fifty to a hundred pixels across on a 1280-wide frame.
+ * 256 across is already more than that resolves; the point of the extra is that
+ * the mirror is minified rather than magnified, so a car in it is filtered
+ * instead of blocky.
+ *
+ * THE ASPECT RATIO IS NOT FREE. It has to be the PANE's aspect, or the feed is
+ * stretched on its way onto the glass and everything in the mirror is the wrong
+ * shape. The pane is now 150 by 46, so 300 by 92 — 75:23 on both, exactly. The
+ * pane doubled in width and the target went up by a sixth, because what the
+ * extra width buys is magnification on the glass rather than more pixels: see
+ * `MIRROR_FOV`, which came DOWN to hold the same lens. Two of them in half-float
+ * come to 441KB, seven kilobytes less than the pair they replace.
  */
-const MIRROR_W = 256;
-const MIRROR_H = 96;
+const MIRROR_W = 300;
+const MIRROR_H = 92;
+
+/**
+ * Reflective area of one pane, metres.
+ *
+ * SIZED TO THE HOUSING, and that is a constraint rather than a preference.
+ *
+ * IT USED TO BE SIZED TO THE WRONG END OF IT. CarMesh lofted the pod so that it
+ * tapered REARWARD — 117mm across at z = 0.794 down to 72mm at its back face,
+ * z = 0.764 — which put the wide end of the fairing at the end nobody looks at
+ * and the narrow end facing the driver. The aperture at the glass station was
+ * about 77 by 37, so the glass was capped at 74 by 32 against a regulation
+ * MINIMUM of 150 by 50 (Article 14.3), and even that stood 5mm a side proud of
+ * the housing it was in. That is "the mirrors are into the car and there is
+ * some black piece sticking out"; the other half of it was the roll, below.
+ *
+ * The housing is now built the way a real one is: its widest, flattest station
+ * IS the face the glass sits in, and it tapers forward from there into a nose.
+ * It is also built in the PANE'S OWN FRAME rather than square to the car, so
+ * the fairing points where the mirror points and a 150mm pane yawed 10.6
+ * degrees no longer has a corner hanging 14mm out through the side of its pod.
+ *
+ * 150mm across is the regulation figure exactly. 46 rather than 50 tall is the
+ * one dimension still short, and the reason is measured rather than guessed:
+ * the sidepod's crown under the housing is at y = 0.540, `MIRROR_Y` is pinned
+ * at 0.578 by halo occlusion (above), and a 50mm pane centred there needs the
+ * housing's underside at 0.549 — nine millimetres off the bodywork, which from
+ * any shallow angle closes up and puts the mirror back to reading as a lump
+ * moulded into the pod. 46mm leaves 12.5mm of daylight. Reflective area goes
+ * from 2400mm2 to 6900mm2, which is 2.9x, and the aspect ratio is unchanged.
+ */
+export const PANE_W = 0.150;
+export const PANE_H = 0.046;
 
 /**
  * How many frames apart two consecutive mirror renders are.
@@ -297,13 +504,27 @@ export { MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW };
  * Vertical field of view of a mirror, degrees.
  *
  * A real F1 mirror is narrow and a driver aims it at the piece of road a
- * passing car appears from. This is deliberately wider than the real article —
- * 42 vertical is about 78 across — because the pane on screen is small and a
- * narrow lens would show a passing car for a fraction of a second. The
- * question being answered is "is anybody there", and a wide answer is more
- * useful than a precise one.
+ * passing car appears from. This is deliberately wider than the real article,
+ * because the pane on screen is small and a narrow lens would show a passing
+ * car for a fraction of a second. The question being answered is "is anybody
+ * there", and a wide answer is more useful than a precise one.
+ *
+ * 39, NOT 42, AND THE COMMENT USED TO BE WRONG. It claimed "42 vertical is
+ * about 78 across"; at the old 256x96 target that is an aspect of 2.667 and 42
+ * vertical is 91 degrees across, not 78. A 91-degree lens squeezed into a pane
+ * fifty pixels wide puts a car twenty-five metres back at under four pixels,
+ * which is the difference between a mirror you can read and a mirror you cannot.
+ * 39 vertical on the 2.286 target was 78.4 across — what the comment always
+ * claimed — and magnified everything in the pane by 1.16.
+ *
+ * 28 NOW, AND IT IS THE SAME LENS. The pane went from 74x32 to 150x46, so its
+ * aspect went from 2.284 to 3.261; holding 39 vertical on that would have opened
+ * the lens to 98 degrees across and thrown away the whole point of the bigger
+ * glass. 28 vertical on 3.261 is 78.2 across — the same horizontal angle, on a
+ * pane twice as wide, which is what magnification means. A car twenty-five
+ * metres back is now about 2.1 times the on-glass size it was.
  */
-const MIRROR_FOV = 42;
+const MIRROR_FOV = 28;
 
 /**
  * How far a mirror can see, metres.
@@ -829,7 +1050,7 @@ function clamp01(v: number): number {
  * @param accentColour the team's accent, used for the glove cuffs and the wheel
  *                     grip flashes so the view is liveried like the car is.
  */
-export function buildCockpit(accentColour: number): CockpitVisual {
+export function buildCockpit(accentColour: number, suitColour: number): CockpitVisual {
   const root = new THREE.Group();
   root.name = 'cockpit';
   root.visible = false;
@@ -888,6 +1109,18 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   }));
   const accent = mat(new THREE.MeshStandardMaterial({
     color: accentColour, metalness: 0.2, roughness: 0.5, envMapIntensity: 0.9,
+  }));
+  // The race suit, for the arms. Nomex like the gloves, so it takes the same
+  // relief map — at 0.3m from the lens a flat surface at roughness 0.8 is
+  // moulded rubber whatever colour it is, and this is the closest thing to the
+  // camera in the driver's-eye view after the wheel itself. The colour matches
+  // the `suit` swatch on the shared shell (Livery.ts: the body colour darkened
+  // by 0.4), because the shell's arms and these are the same arms and the
+  // camera swaps between them.
+  const suit = mat(new THREE.MeshStandardMaterial({
+    color: suitColour, metalness: 0.0, roughness: 0.80, envMapIntensity: 0.55,
+    normalMap: gloveNormal,
+    normalScale: new THREE.Vector2(0.6, 0.6),
   }));
   // The cuff is the same cloth in the team's colour, so it takes the same map.
   const cuffAccent = mat(new THREE.MeshStandardMaterial({
@@ -967,29 +1200,45 @@ export function buildCockpit(accentColour: number): CockpitVisual {
     // for one up on the roll hoop 0.42m higher and 0.65m further back, and
     // pointing the pane at the eye instead — the obvious repair — makes it a
     // retroreflector. Bisecting keeps working wherever the eye goes next.
-    // 112 by 42, up from 100 by 38 and still inside the housing the shell
-    // builds around it (116 by 46). A real F1 mirror's reflective area is
-    // nearer 150 by 50; ours was small even for the small one, and the pane is
-    // between 47 and 86 pixels across in a 1280-wide frame with the halo over
-    // part of it, so every millimetre of it is a millimetre of the only thing
-    // in the shot that answers "is anybody behind me".
-    const glass = new THREE.PlaneGeometry(0.112, 0.042);
+    const glass = new THREE.PlaneGeometry(PANE_W, PANE_H);
     const g = add(glass, mirrorGlass);
-    g.position.set(side * MIRROR_X, MIRROR_Y, MIRROR_GLASS_Z - 0.003);
-    const toEye = new THREE.Vector3(
-      EYE_X - side * MIRROR_X,
-      EYE_Y - MIRROR_Y,
-      EYE_Z - MIRROR_GLASS_Z,
-    ).normalize();
-    const toRoad = new THREE.Vector3(
-      side * MIRROR_TARGET_X - side * MIRROR_X,
-      MIRROR_TARGET_Y - MIRROR_Y,
-      MIRROR_TARGET_Z - MIRROR_GLASS_Z,
-    ).normalize();
-    g.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 0, 1),
-      toEye.add(toRoad).normalize(),
-    );
+
+    // "THE MIRRORS DON'T WORK."
+    //
+    // They did not, and the reason was three lines above this one and had
+    // nothing to do with the feed. The pane was oriented with
+    //
+    //     quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal)
+    //
+    // which gives the SHORTEST rotation carrying the plane's +z onto the
+    // normal — and the shortest rotation says nothing at all about the roll
+    // ABOUT that normal, which is the one degree of freedom that decides which
+    // way up the picture is. A mirror's normal points back at the driver, so it
+    // is very nearly antiparallel to a plane's default +z, and the shortest
+    // rotation onto it is very nearly a half turn about a horizontal axis. Half
+    // turns about horizontal axes stand things on end. Measured on the real
+    // constants, both panes came out 78.6 degrees out of roll: the 112mm axis
+    // ran within eleven degrees of VERTICAL and the 42mm axis ran across.
+    //
+    // So the pane was a 42mm-wide, 112mm-tall portrait sliver, displaying a
+    // 2.67:1 landscape feed turned on its side and stretched to fit, standing
+    // 37mm out of the top and bottom of a housing 37mm tall. Photographed on
+    // the low tier at Bahrain with a car ten metres behind, what reaches the
+    // player is a ten-pixel-wide vertical smear of colour beside a black lump.
+    // That is indistinguishable from a mirror that is not running, which is why
+    // the previous pass — which correctly fixed the feed's schedule and tier,
+    // and proved the feed with photographs of the RENDER TARGET — closed the
+    // report without the player seeing any difference.
+    //
+    // The fix is to stop asking for "a" rotation and state the whole basis. The
+    // pane's own +x is laid along the horizontal perpendicular to the normal,
+    // its +y follows, and its +z is the normal — so the picture is level, the
+    // 74mm axis is the wide one, and the roll cannot drift when the eye or the
+    // aim point moves. See `mirrorPaneBasis`, which is where that now lives so
+    // the probe can measure exactly the pane the mesh is built from.
+    const basis = mirrorPaneBasis(side);
+    g.position.copy(basis.position);
+    g.quaternion.copy(basis.quaternion);
     mirrorPanes.push(g);
   }
 
@@ -1085,15 +1334,83 @@ export function buildCockpit(accentColour: number): CockpitVisual {
   // the ninety degrees of lock an F1 car has, so they turn with it.
   //
   // Built once for the right and MIRRORED for the left. See `handParts`.
+  const forearms: THREE.Object3D[] = [];
   {
     const right = buildHandParts(COCKPIT_HAND);
     for (const side of [-1, 1] as const) {
       const hand = new THREE.Group();
       hand.position.set(side * HAND_X, HAND_Y, 0);
       wheelSpin.add(hand);
+      forearms.push(hand);
       for (const part of right) {
         add(side > 0 ? part.geo : mirroredX(part.geo), part.accent ? cuffAccent : glove, hand);
       }
+    }
+  }
+
+  // --- Arms ---------------------------------------------------------------
+  //
+  // "It looks like the hands are turning from the steering wheel but there is
+  // blue lego hands on the cockpit makes it seems like the hands are detached."
+  //
+  // The arms were merged into the shared shell, which is geometry that cannot
+  // move, so the gloves turned with the rim and the arms stayed where they
+  // were. From outside the car that never showed. The driver's-eye camera puts
+  // the player's own arms 0.3m from the lens across the bottom of the frame,
+  // and there the mismatch is the loudest thing in the shot: at the fourteen
+  // degrees of road-wheel lock a corner actually uses, a 3:1 rack swings each
+  // grip through 42 degrees and 90mm, and the arm attached to nothing follows
+  // none of it.
+  //
+  // So the shell's pair is hidden for this one car (`DriverParts.arms`) and
+  // these two chains take their place:
+  //
+  //  - the FOREARM is a child of the hand group, so it turns with the rim
+  //    exactly as the glove does. This is not a cheat: a driver's forearm
+  //    genuinely does rotate with the grip it is holding;
+  //  - the UPPER ARM is a bone. Its shoulder end is fixed in the car and its
+  //    elbow end is wherever the forearm has just put it, so it is re-aimed and
+  //    re-stretched every frame. That is the one piece of articulation on the
+  //    whole car and it is four triangles' worth of state.
+  //
+  // Cost: two meshes per side on ONE car — the same car that already pays for a
+  // live dash and two mirror feeds. Nothing changes for the other twenty-one.
+  const upperArms: { bone: THREE.Object3D; elbow: THREE.Object3D }[] = [];
+  const armElbow = new THREE.Vector3();
+  const armShoulder = new THREE.Vector3();
+  {
+    // Elbow, in the hand group's frame. The wrist is the hand group's own
+    // origin, so the forearm runs from there back and inboard to the elbow;
+    // taking the vector in CAR space and rotating it into wheel space by the
+    // rake is what keeps the arm pointing at the driver rather than at the sky.
+    const rake = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -WHEEL_TILT);
+    const seg = Math.max(8, COCKPIT_HAND.radial);
+    for (let i = 0; i < forearms.length; i++) {
+      const side = i === 0 ? -1 : 1;
+      const hand = forearms[i];
+      const elbowCar = new THREE.Vector3(side * ARM_ELBOW[0], ARM_ELBOW[1], ARM_ELBOW[2]);
+      const wristCar = new THREE.Vector3(side * ARM_WRIST[0], ARM_WRIST[1], ARM_WRIST[2]);
+      const localElbow = elbowCar.sub(wristCar).applyQuaternion(rake);
+
+      const elbow = new THREE.Object3D();
+      elbow.position.copy(localElbow);
+      hand.add(elbow);
+
+      add(limb([0, 0, 0], localElbow.toArray(), FOREARM_R[1], FOREARM_R[0], seg), suit, hand);
+
+      // The upper arm: a unit-length taper along +z, so aiming it is a lookAt
+      // and lengthening it is one scale.
+      const bone = new THREE.Object3D();
+      bone.position.set(side * ARM_SHOULDER[0], ARM_SHOULDER[1], ARM_SHOULDER[2]);
+      root.add(bone);
+      add(limb([0, 0, 0], [0, 0, 1], UPPER_ARM_R[0], UPPER_ARM_R[1], seg), suit, bone);
+      // Shoulder and elbow, so the two segments do not meet in a visible mitre.
+      const cap = new THREE.SphereGeometry(UPPER_ARM_R[0], seg, 8);
+      cap.translate(side * ARM_SHOULDER[0], ARM_SHOULDER[1], ARM_SHOULDER[2]);
+      add(cap, suit);
+      add(new THREE.SphereGeometry(FOREARM_R[0] * 0.96, seg, 8), suit, elbow);
+
+      upperArms.push({ bone, elbow });
     }
   }
 
@@ -1232,6 +1549,20 @@ export function buildCockpit(accentColour: number): CockpitVisual {
       // twelve o'clock to the driver's right. Same sign, therefore, as the
       // steer input itself.
       wheelSpin.rotation.z = state.steerRad * RACK_RATIO;
+      // The upper arms follow the elbows the rim has just moved. The matrices
+      // are refreshed here rather than left to the renderer's own pass, because
+      // the elbows hang off `wheelSpin` and would otherwise be one frame stale —
+      // which shows on screen as the arms lagging the hands while turning.
+      root.updateMatrixWorld(true);
+      for (const { bone, elbow } of upperArms) {
+        elbow.getWorldPosition(armElbow);
+        bone.getWorldPosition(armShoulder);
+        // `Object3D.lookAt` points +z at the target for anything that is not a
+        // camera, and the segment is built along +z from 0 to 1, so aiming it is
+        // the lookAt and lengthening it is the one scale.
+        bone.lookAt(armElbow);
+        bone.scale.set(1, 1, Math.max(1e-3, armShoulder.distanceTo(armElbow)));
+      }
       dashRef.update(state);
     },
     dispose(): void {

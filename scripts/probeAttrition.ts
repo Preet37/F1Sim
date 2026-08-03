@@ -157,7 +157,7 @@ console.log('\nCOMBINED LOAD — braking INTO a corner');
 // is the same car with the brake pedal down.
 {
   const ENV: EnvironmentState = {
-    trackTempC: 38, airTempC: 25, wetness: 0, airDensityRatio: 1, abrasion: 1,
+    trackTempC: 38, airTempC: 25, wetness: 0, surfaceGrip: 1, airDensityRatio: 1, abrasion: 1,
   };
   const controls = (over: Partial<VehicleControls> = {}): VehicleControls => ({
     throttle: 0, brake: 0, steer: 0, drsRequested: false,

@@ -392,33 +392,54 @@ export function crewPartGeometries(detail: CrewDetail): Record<CrewPartId, THREE
     torso: mk((bin) => {
       // Built in the SPINE's frame: +Y from hip to chest, origin at the middle
       // of the spine. Everything above the chest is rigid with it.
+      // NO BOXES. A torso is the largest single piece of a figure and it is
+      // what the eye reads first, so a chamfered slab there is the whole of
+      // "obv forget about the lego people" no matter how good the limbs are:
+      // capsule arms hanging off a rectangle still make a rectangle with arms.
+      //
+      // So the trunk is three OVAL sections — pelvis, waist, chest — each a
+      // capsule squashed across and stretched wide, which is what a human trunk
+      // actually is in section: wider than it is deep, rounded everywhere, and
+      // tapered at the waist. The taper IS the silhouette. Costs about ninety
+      // triangles more than the boxes did, on nine figures' worth of instances.
       const half = BONE.spine * 0.5;
-      const pelvis = chamferBox(0.33, 0.21, 0.235, 0.04);
-      bin.add(pelvis, wt(W_KIT), 0, -half + 0.06, 0);
-      pelvis.dispose();
-      const waist = bone(BONE.spine * 0.72, 0.135, 0.098, detail);
-      bin.addRaw(waist, wt(W_KIT));
-      const chest = chamferBox(0.42, 0.31, 0.245, 0.05);
-      bin.add(chest, wt(W_KIT), 0, half - 0.06, 0);
-      chest.dispose();
-      // The bib panel across the chest of every set of racing overalls.
-      const bib = chamferBox(0.29, 0.17, 0.02, 0);
-      bin.add(bib, wt(W_PANEL), 0, half - 0.05, 0.135);
-      bib.dispose();
-      // Shoulder caps, so the arms do not appear to start inside the chest.
-      const cap = chamferBox(0.135, 0.15, 0.2, 0.04);
+      const oval = (
+        len: number, wide: number, deep: number, y: number, z = 0,
+      ): void => {
+        const g = limbGeometry(wide * 0.5, Math.max(0.01, len - wide), detail.limb, 3);
+        scaleWithNormals(g, 1, 1, deep / wide);
+        g.translate(0, y, z);
+        bin.addRaw(g, wt(W_KIT));
+      };
+      // Hips: short and wide. Chest: taller, wider still, and deeper.
+      oval(0.24, 0.33, 0.235, -half + 0.07);
+      oval(BONE.spine * 0.70, 0.245, 0.185, 0);
+      oval(0.30, 0.40, 0.255, half - 0.05);
+      // The bib panel across the chest of every set of racing overalls, curved
+      // onto it rather than laid flat, so it reads as fabric and not a badge.
+      const bib = limbGeometry(0.145, 0.02, detail.limb, 2);
+      scaleWithNormals(bib, 1, 1, 0.16);
+      bib.rotateX(Math.PI / 2);
+      bib.translate(0, half - 0.05, 0.10);
+      bin.addRaw(bib, wt(W_PANEL));
+      // Shoulder caps: balls, so the arm comes out of a joint rather than out
+      // of the corner of a block.
+      const cap = ball(0.088, detail.head);
       for (const s of [-1, 1]) bin.add(cap, wt(W_KIT), s * SHOULDER_HALF, half - 0.02, 0);
       cap.dispose();
       // Neck, then the helmet. There is no head: it is inside the helmet and
       // nobody over the wall takes theirs off.
-      const neck = chamferBox(0.115, 0.10, 0.115, 0.02);
-      bin.add(neck, wt(W_DARK), 0, half + 0.05, 0.005);
-      neck.dispose();
+      const neck = limbGeometry(0.058, 0.06, detail.limb, 2);
+      neck.translate(0, half + 0.06, 0.005);
+      bin.addRaw(neck, wt(W_DARK));
       const shell = scaleWithNormals(ball(0.133, detail.head), 1.0, 1.07, 1.03);
       shell.translate(0, half + 0.20, 0.01);
       bin.addRaw(shell, wt(W_HELMET));
-      const visor = chamferBox(0.205, 0.08, 0.115, 0.02);
-      bin.add(visor, wt(W_VISOR), 0, half + 0.195, 0.105);
+      // The visor: a band wrapped round the front of the shell rather than a
+      // slab stuck on it. Same reason as the bib.
+      const visor = scaleWithNormals(ball(0.136, detail.head), 1.0, 0.30, 1.03);
+      visor.translate(0, half + 0.205, 0.012);
+      bin.addRaw(visor, wt(W_VISOR));
       visor.dispose();
     }),
     upperArm: mk((bin) => {

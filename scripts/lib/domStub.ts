@@ -22,6 +22,19 @@ export interface StubElement {
   setAttribute(name: string, value: string): void;
   getAttribute(name: string): string | null;
   appendChild(child: StubElement): StubElement;
+  /**
+   * No-op event plumbing.
+   *
+   * three.js's `ImageLoader` asks `document` for an `<img>` and then subscribes
+   * to its `load` and `error` events. Without these two methods any probe that
+   * builds a mesh carrying a texture map — which is every probe that builds the
+   * CAR, because the bodywork samples a carbon normal map — dies inside
+   * `TextureLoader.load` before it ever gets a vertex. The image never arrives,
+   * which is exactly right: a probe measures geometry, and the texture that
+   * would have been decoded here has no bearing on where a vertex is.
+   */
+  addEventListener(type: string, fn: unknown): void;
+  removeEventListener(type: string, fn: unknown): void;
 }
 
 function createElement(tag: string): StubElement {
@@ -34,6 +47,8 @@ function createElement(tag: string): StubElement {
     setAttribute(name: string, value: string): void { el.attrs[name] = String(value); },
     getAttribute(name: string): string | null { return el.attrs[name] ?? null; },
     appendChild(child: StubElement): StubElement { el.children.push(child); return child; },
+    addEventListener(): void {},
+    removeEventListener(): void {},
   };
   return el;
 }
@@ -62,7 +77,7 @@ export function installCanvasStub(): void {
       if (prop === 'createLinearGradient' || prop === 'createRadialGradient') {
         return () => ({ addColorStop: () => {} });
       }
-      if (prop === 'getImageData') {
+      if (prop === 'getImageData' || prop === 'createImageData') {
         return (_x: number, _y: number, w: number, h: number) =>
           ({ data: new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h });
       }
