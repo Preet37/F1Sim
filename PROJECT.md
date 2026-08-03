@@ -74,15 +74,22 @@ These have all been decided. Do not re-litigate them without the user.
   only permissively licensed ones — CC0, public domain, or explicitly licensed for this
   use. Record the licence and source of anything added.
 
-  **How this is implemented in practice.** Every branded slot — team badge, sponsor decal,
-  driver portrait — is an *asset slot* backed by a generated placeholder, loaded from
-  `public/brand/<team-id>/` if a file is present and falling back to the generated mark if
-  not. That means the user can drop real artwork in themselves at any time and it appears
-  immediately, with no code change, and removing the directory returns the game to a
-  shippable state. The assistant populates the generated marks and the slots; it does not
-  commit reproductions of third-party trademarks into the repository. This is also simply
-  the right architecture — it is the same swappable boundary that `src/data/roster/` gives
-  the names.
+  **How this is MEANT to be implemented — and is NOT. See issue #36.** The agreed design is
+  that every branded slot — team badge, sponsor decal, driver portrait — is an *asset slot*
+  backed by a generated placeholder, loaded from `public/brand/<team-id>/` if a file is
+  present and falling back to the generated mark if not. The user could then drop real
+  artwork in themselves and it would appear immediately with no code change, and removing
+  the directory would return the game to a shippable state.
+
+  **None of that exists.** Verified 2026-08-03: `grep -rn "public/brand" src scripts audit`
+  returns nothing and `public/` contains only `textures/`. There is no loader and no
+  fallback path. This paragraph asserted the mechanism as fact for long enough that a code
+  review had to discover otherwise, so it is corrected here rather than quietly fixed.
+  What is genuinely true today is the *generated* geometric marks (`MARK_DEVICES` in
+  `src/render/LiveryDesign.ts`, carrying an explicit non-infringement comment) and the
+  fictional `SPONSORS` set in `src/render/Livery.ts`. Those are real; the swap boundary is
+  not. Until #36 lands, the only working IP boundary in this project is
+  `src/data/roster/` — which does hold, and which is why §3 keeps insisting on it.
 - The user asked for archive clips of past champions in the intro. The agreed substitute is in-engine cinematography, which is
   what the real F1 games mostly use anyway. They confirmed: *"yeah render the game scenes
   like rendered in engine yourself."*
@@ -187,8 +194,10 @@ Run `npm run` to list. The important ones:
 | `shoot:panels` | Measures HUD boxes; fails on overlap |
 
 **Known-failing, all pre-existing and documented:**
-- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". Traced to an
-  engine call site that never fires (`RaceEngine.ts` ~2525). **Real bug, unfixed.**
+- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". **Do not go to
+  `RaceEngine.ts` ~2525** — the earlier "call site that never fires" diagnosis is wrong and
+  that code works. See §6 "Tooling" and issue #28: the probe never writes
+  `engine.playerControls`, so its own car parks and the stopped-car bug freezes the field.
 - `validate:flags` — safety-car form-up, three failures, stable numbers.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
@@ -452,6 +461,23 @@ overrule it in either direction.**
   first-run-only via a flag set on their very first load, and the podium only fires after
   finishing a career *race*.
 
+### Tooling
+- **`scripts/` is now typechecked.** `tsconfig.scripts.json` covers `scripts` and `audit`
+  as a *separate* project — separate so `@types/node` cannot leak into `src/` and let
+  browser code reach for `process`, `fs` and `Buffer` and still compile. Wired into both
+  `npm run typecheck` and `npm run build`. **Proved it can fail** rather than assumed: a
+  planted `const x: number = "string"` in `scripts/probeGamepad.ts` produced
+  `TS2322 … Found 1 error` and a non-zero exit. The gap that let committed merge-conflict
+  markers ship inside an audit script is closed; `check:conflicts` is no longer the only
+  guard. (Issue #7, closed 2026-08-03.)
+- **The `probe:hudtext` diagnosis in this document was wrong.** It was recorded here and in
+  issue #5 as "an engine call site that never fires (`RaceEngine.ts` ~2525)". Issue #28
+  establishes that the call site is working code: the probe builds a race with
+  `playerIndex: 0` and never writes `engine.playerControls`, so its player car parks on the
+  grid, the stopped-car bug freezes the whole field, and nothing happens that would file a
+  bulletin. **An agent sent to that call site will find nothing wrong.** Confirmation that
+  fixing #28 turns the probe green is pending on the #28 branch.
+
 ---
 
 ## 7. What is still wrong — the honest list
@@ -481,7 +507,8 @@ overrule it in either direction.**
   narrowing the road, which moves the speed solver, `validate:limits` and `probe:racingline`.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug.**
+- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug**,
+  but the *diagnosis* recorded here was wrong — see the correction in §6 under "Tooling".
 - `validate:flags` — safety-car form-up.
 - **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
   rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
@@ -489,11 +516,6 @@ overrule it in either direction.**
   weather work, and the number that would make a driver move is currently **zero**.
   Verified pre-existing on pristine `main` while working issue #32 — the pit-wall fixes do
   not touch it. **Nobody is on this.**
-- **`tsconfig` includes only `src`.** *Partly closed:* `npm run typecheck` and `npm run
-  build` now also run `tsc --noEmit -p tsconfig.scripts.json`, so `scripts/` **is**
-  typechecked. The residual gap is that the two projects are configured separately, and
-  `check:conflicts` remains the only guard against the specific failure (committed merge
-  markers) that started this.
 - **`diag:pitchoice` is a diagnostic, not a probe.** It prints a table and always exits 0 —
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
@@ -525,6 +547,16 @@ overrule it in either direction.**
 - Deleting a branch one commit before its tip.
 - Completion notifications not always arriving — an agent finished and sat idle while
   counted as in-flight. **Check branch state directly rather than waiting.**
+- **Killed agents leave their work on anonymous branches and nobody ever looks.** On
+  2026-08-03 a sweep of `git worktree list` found `worktree-agent-aea9aeb446049f08b`
+  holding ~4,000 lines of finished people-graphics work (issues #22 and #18) that had
+  never been merged, **plus 299 lines of uncommitted probe** in its working tree — the
+  single hardest artefact to reconstruct, one `git worktree remove` from being gone.
+  A second branch held the full-distance retirement finding that issue #26 is built on.
+  Neither branch was named for its work, so `git branch -a` gave no clue either carried
+  anything. **Two rules out of this:** name the branch for the work, never
+  `worktree-agent-<hash>`; and before removing any worktree, run
+  `git status --porcelain` in it and read what comes back.
 
 ---
 
