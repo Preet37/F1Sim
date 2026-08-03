@@ -468,6 +468,21 @@ export class CarEntry {
   /** Marshalling sectors completed below the minimum time. */
   deltaBreaches = 0;
   /**
+   * True once this car has been penalised for the delta in the neutralisation
+   * currently in force.
+   *
+   * The whole of the cap. "the stewards may impose either a 5-Second Penalty, a
+   * 10-Second Penalty, a Drive-Through Penalty or a Stop-and-Go Penalty on any
+   * driver who fails to stay above the minimum time" (2026 Art. B5.13.2b and
+   * B5.12.2b / 2025 Art. 55.7 and 56.5) is one decision from a menu, not a
+   * charge levied per marshalling sector — and there are twenty of those a lap.
+   * Cleared when a neutralisation begins; see `RaceControlManager.penaliseDelta`
+   * for what it cost while it did not exist.
+   */
+  deltaPenalisedThisPeriod = false;
+  /** How many separate neutralisations this car has been penalised in. */
+  deltaPeriodsPenalised = 0;
+  /**
    * True while the sector being timed was joined part-way through, so its time
    * is a stub and must not be judged against a whole sector's minimum.
    */

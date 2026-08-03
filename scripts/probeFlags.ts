@@ -66,6 +66,9 @@
 
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import type { CarEntry } from '../src/race/CarEntry';
+import {
+  CATCHUP_HEADROOM, DELTA_REFERENCE_MARGIN, MEASURED_CONTROLLER_OVERSHOOT,
+} from '../src/race/RaceControlManager';
 import { getCircuit } from '../src/data/tracks/circuits';
 import { loopDelta } from '../src/core/MathUtils';
 import { PHYSICS_DT } from '../src/core/SimClock';
@@ -119,6 +122,17 @@ const PASS_PROXIMITY_M = 15;
 
 /** Seconds after a flag changes during which a pass counts as transitional. */
 const TRANSITION_S = 8;
+
+/**
+ * The most delta penalties one race may hand out.
+ *
+ * Deliberately absolute rather than a rate. A race with three neutralisations in
+ * it and twenty cars can legitimately produce a handful; it cannot legitimately
+ * produce dozens, and any implementation that starts scaling with the count of
+ * marshalling sectors — there are twenty of those per lap — sails past this
+ * immediately, which is exactly what happened.
+ */
+const MAX_DELTA_PENALTIES = 12;
 
 interface Cell { sum: number; n: number; }
 
@@ -687,6 +701,44 @@ function reportLapRatio(m: Measurement, bucket: Bucket, label: string): number |
 // ===========================================================================
 // 1. Yellow flags, in qualifying — where no neutralisation can mask the lift
 // ===========================================================================
+// ===========================================================================
+// 0. The two constants that must not cross.
+//
+// A car closing on the safety car queue is told to run at `SC_CATCHUP_MULT`
+// times the queue pace, and a car that crosses a marshalling sector faster than
+// `DELTA_REFERENCE_MARGIN` times it is penalised. If the first is not provably
+// under the second — INCLUDING the error of the controller doing the aiming —
+// then the game issues penalties for compliance, and it did: measured over two
+// races at Monza, 262 penalties, 256 of them from the delta check, fifteen of
+// twenty cars carrying one. The player's report is "it seems like every driver
+// there had a penalty".
+//
+// `RaceControlManager` derives one from the other and throws at load if they
+// cross. This asserts the same relation from the outside, so that the invariant
+// is checked by the thing that would notice it being broken as well as by the
+// thing that would break it.
+// ===========================================================================
+console.log('\nTHE DELTA CONSTANTS');
+{
+  // Derived here the same way `RaceControlManager` derives it, from the exported
+  // inputs, so the probe cannot silently drift onto a stale copy of the answer.
+  const catchUp = DELTA_REFERENCE_MARGIN / CATCHUP_HEADROOM;
+  const fastest = catchUp * MEASURED_CONTROLLER_OVERSHOOT;
+  console.log('  ' + 'catch-up allowance'.padEnd(32) + 'x' + catchUp.toFixed(3) +
+    ' the queue pace');
+  console.log('  ' + 'reached with controller error'.padEnd(32) + 'x' + fastest.toFixed(3));
+  console.log('  ' + 'penalty threshold'.padEnd(32) + 'x' + DELTA_REFERENCE_MARGIN.toFixed(3));
+  console.log('  ' + 'headroom'.padEnd(32) +
+    pct(DELTA_REFERENCE_MARGIN / fastest - 1) + ' inside the threshold');
+  if (fastest >= DELTA_REFERENCE_MARGIN) {
+    fail(
+      `a car obeying the catch-up instruction reaches x${fastest.toFixed(3)} the queue ` +
+      `pace against a penalty threshold of x${DELTA_REFERENCE_MARGIN.toFixed(3)} — ` +
+      `every car closing a gap is penalised for closing it`,
+    );
+  }
+}
+
 console.log('\nYELLOW FLAGS (qualifying at Silverstone — no SC or VSC exists in a non-race)');
 {
   const m = runScenario('Q1', 'silverstone', 'qualifying', 0, 480, 77001 + SEED_OFFSET, {
@@ -765,6 +817,13 @@ console.log('\nVIRTUAL SAFETY CAR (Bahrain, 10 laps — benign incident, Art. 56
   console.log('  ' + 'passes of a car that had gone off'.padEnd(32) + m.passesOfDisabledCars);
   console.log('  ' + 'passes under green'.padEnd(32) + m.greenPasses);
   console.log('  ' + 'delta penalties issued'.padEnd(32) + m.deltaPenalties);
+  if (m.deltaPenalties > MAX_DELTA_PENALTIES) {
+    fail(
+      `${m.deltaPenalties} delta penalties issued in one race under the VSC — ` +
+      `Art. 56.5 / B5.12.2b is one decision from a four-item menu, not a charge per ` +
+      `marshalling sector`,
+    );
+  }
   for (const d of m.passDetail) console.log('      ' + d);
   console.log('  race control:');
   for (const msg of m.messages.slice(0, 8)) console.log('    ' + msg);
@@ -892,6 +951,25 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
   }
   if (m.illegalIn('SC') > 0) {
     fail(`${m.illegalIn('SC')} passes completed under the safety car — Art. 55.8 forbids it`);
+  }
+
+  // HOW MANY PENALTIES A NEUTRALISATION HANDS OUT.
+  //
+  // "the stewards may impose either a 5-Second Penalty, a 10-Second Penalty, a
+  // Drive-Through Penalty or a Stop-and-Go Penalty on any driver who fails to
+  // stay above the minimum time" (Art. 55.7 and 56.5 / B5.13.2b and B5.12.2b) is
+  // one decision from a menu. It was implemented as a charge per marshalling
+  // sector, and there are twenty of those a lap: measured over two races at
+  // Monza, 262 penalties, 256 of them from the delta check, none at all from the
+  // stewards or track limits, and fifteen of twenty cars carrying one. One car
+  // held twelve.
+  console.log('  ' + 'delta penalties issued'.padEnd(32) + m.deltaPenalties);
+  if (m.deltaPenalties > MAX_DELTA_PENALTIES) {
+    fail(
+      `${m.deltaPenalties} delta penalties issued in one race under the safety car — ` +
+      `Art. 55.7 / B5.13.2b is one decision from a four-item menu, not a charge per ` +
+      `marshalling sector`,
+    );
   }
 }
 

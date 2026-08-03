@@ -449,17 +449,6 @@ const NEUTRAL_PASS_CLEAR_M = CAR_LENGTH_M * 0.5;
 const NEUTRAL_PASS_PROXIMITY_M = 60;
 
 /**
- * How much quicker than the neutralised pace a car catching the queue may run.
- *
- * Deliberately just under `DELTA_REFERENCE_MARGIN`: a car closing a gap must be
- * able to close it without earning a penalty for doing so, and the regulation
- * requires it to close (ten car lengths, Art. 55.7 / B5.13.2b) while also
- * requiring it to stay above the minimum time. The only value that satisfies
- * both is one just inside the threshold.
- */
-const SC_CATCHUP_MULT = 1.4;
-
-/**
  * How long the safety car may keep bunching before it gives up and comes in.
  *
  * Art. 55.10 / B5.13.5a says the car "shall be used at least until the leader is
@@ -519,8 +508,89 @@ const SC_QUEUE_TAIL_M = 1200;
  * Setting the threshold at the cruising pace instead made the safety car's own
  * ten-car-length rule illegal to obey: a car told to close up to the queue was
  * penalised five seconds for doing so, repeatedly, every lap.
+ *
+ * THIS IS THE ONE NUMBER. `SC_CATCHUP_MULT` — what a car closing the queue is
+ * told to run at — is derived from it rather than chosen beside it, because two
+ * numbers that must not cross will eventually cross.
  */
-const DELTA_REFERENCE_MARGIN = 1.45;
+export const DELTA_REFERENCE_MARGIN = 1.45;
+
+/**
+ * How far inside the penalty threshold the catch-up allowance must sit.
+ *
+ * A SPEED TARGET IS NOT A SPEED. The AI folds the catch-up cap into a target
+ * speed and then drives to it with a controller that overshoots — measured, by
+ * about 4% on the straights where the cap binds — and the player's limiter is
+ * bounded to a g and cannot hold a setpoint that is falling faster than that.
+ * So the gap between "what a car closing a gap is aimed at" and "what earns it a
+ * penalty" has to be bigger than the error of the thing doing the aiming, or the
+ * penalty is not for speeding, it is for having a controller.
+ *
+ * Fifteen per cent is roughly three times the measured overshoot. It costs some
+ * closing rate — a catching car now runs at x1.26 the queue pace rather than
+ * x1.4 — and the safety car's own crawl is what closes the queue now anyway (see
+ * `safetyCarPaceMs`), so that is a cost worth paying to make the rule obeyable.
+ */
+export const CATCHUP_HEADROOM = 1.15;
+
+/**
+ * The margin the AI's own controller is measured to overshoot a speed cap by.
+ *
+ * Not a tuning knob — an observation, recorded here so the invariant below can
+ * be stated in terms of it. Cars aimed at a 56 m/s cap were measured at 58.3.
+ */
+export const MEASURED_CONTROLLER_OVERSHOOT = 1.05;
+
+/**
+ * How much quicker than the neutralised pace a car catching the queue may run.
+ *
+ * DERIVED, NOT CHOSEN, and the reason is that choosing it independently is what
+ * produced two hundred and fifty-six penalties in two races at Monza. This was
+ * 1.4 and `DELTA_REFERENCE_MARGIN` was 1.45: the controller aimed every catching
+ * car at 3.5% under the threshold that penalises it. Measured, the cars sat at
+ * 57.8-58.3 m/s against a limit of 58 — the target was inside the penalty band
+ * once the car's own overshoot was added, so the field spent every safety car
+ * period collecting five-second penalties for tracking the speed it had been
+ * told to track. Fifteen of twenty cars carried one. The player's report is
+ * "it seems like every driver there had a penalty", and it was not an
+ * exaggeration.
+ *
+ * Two constants that must not cross cannot be maintained by hand. So there is
+ * one number — the threshold — and this is what is left of it after the headroom
+ * below, which `assertDeltaConstants` checks at load and `validate:flags`
+ * asserts against.
+ */
+const SC_CATCHUP_MULT = DELTA_REFERENCE_MARGIN / CATCHUP_HEADROOM;
+
+/**
+ * The invariant, checked rather than described.
+ *
+ * A comment saying "keep this under that" is not a constraint; it is a wish, and
+ * this pair of numbers is what happens when the wish is not granted. The rule is
+ * simple and it has to hold for the simulation to be self-consistent: the
+ * fastest a car obeying the catch-up instruction can actually end up going,
+ * INCLUDING the error of the controller doing the obeying, must still be under
+ * the speed that earns it a penalty. If it is not, the game is issuing penalties
+ * for compliance.
+ *
+ * Thrown rather than logged, and at module load rather than in a session,
+ * because these are compile-time constants: it can only ever fire for whoever is
+ * editing them, and it fires the first time they run anything at all.
+ * `validate:flags` asserts the same relation from the outside.
+ */
+function assertDeltaConstants(): void {
+  const fastest = SC_CATCHUP_MULT * MEASURED_CONTROLLER_OVERSHOOT;
+  if (fastest >= DELTA_REFERENCE_MARGIN) {
+    throw new Error(
+      'Neutralisation constants are set against each other: a car obeying the ' +
+      `catch-up instruction reaches x${fastest.toFixed(3)} the queue pace, and the ` +
+      `delta penalty threshold is x${DELTA_REFERENCE_MARGIN.toFixed(3)}. Every car ` +
+      'closing a gap would be penalised for closing it. Raise CATCHUP_HEADROOM.',
+    );
+  }
+}
+assertDeltaConstants();
+
 
 export class RaceControlManager {
   private readonly track: TrackSpline;
@@ -1153,9 +1223,9 @@ export class RaceControlManager {
     // often spent a third of the race behind a safety car that the regulations
     // would never have deployed.
     if (dangerous || this.activeIncidents >= 3) {
-      this.deploySafetyCar(sessionTime);
+      this.deploySafetyCar(cars, sessionTime);
     } else {
-      this.deployVirtualSafetyCar(sessionTime);
+      this.deployVirtualSafetyCar(cars, sessionTime);
     }
   }
 
@@ -1163,7 +1233,8 @@ export class RaceControlManager {
   // Virtual safety car — Art. 56 / B5.12
   // -------------------------------------------------------------------------
 
-  private deployVirtualSafetyCar(sessionTime: number): void {
+  private deployVirtualSafetyCar(cars: CarEntry[], sessionTime: number): void {
+    this.beginNeutralisationPeriod(cars);
     this.neutralisation = 'vsc';
     this.vscTargetMs = VSC_PACE_MS;
     this.neutralisedScale = VSC_PACE_SCALE;
@@ -1205,7 +1276,26 @@ export class RaceControlManager {
   // Safety car — Art. 55 / B5.13
   // -------------------------------------------------------------------------
 
-  private deploySafetyCar(sessionTime: number): void {
+  /**
+   * A new neutralisation. Everything that is counted per period starts again.
+   *
+   * A driver's delta record does NOT start again — `deltaBreaches` and
+   * `deltaPeriodsPenalised` are the history the escalation is chosen from, and a
+   * driver who was under the delta in the last safety car period and is under it
+   * again in this one is precisely the case the article's four-item menu is for.
+   * What starts again is the once-per-period cap.
+   */
+  private beginNeutralisationPeriod(cars: CarEntry[]): void {
+    for (const car of cars) {
+      car.deltaPenalisedThisPeriod = false;
+      car.deltaSectorTime = 0;
+      car.deltaSectorIndex = -1;
+      car.deltaSectorPartial = true;
+    }
+  }
+
+  private deploySafetyCar(cars: CarEntry[], sessionTime: number): void {
+    this.beginNeutralisationPeriod(cars);
     this.neutralisation = 'safety-car';
     this.scPhase = 'deploying';
     this.vscTargetMs = SC_PACE_MS;
@@ -1809,6 +1899,82 @@ export class RaceControlManager {
   }
 
   /**
+   * What a driver gets for being under the delta.
+   *
+   * ONE DECISION PER NEUTRALISATION, ESCALATING. The regulation's own remedy is
+   * a menu, not a tariff: "the stewards may impose either a 5-Second Penalty, a
+   * 10-Second Penalty, a Drive-Through Penalty or a Stop-and-Go Penalty on any
+   * driver who fails to stay above the minimum time" (2026 Section B
+   * Art. B5.13.2b and B5.12.2b / 2025 Sporting Regs Art. 55.7 and 56.5, both
+   * cross-referring to Art. 54.3a-d). Four options in ascending severity, and
+   * the stewards pick ONE — that is what "either ... or" means, and it is what
+   * happens in practice: a driver who is under the delta is told, and if they go
+   * on doing it they are penalised once, harder.
+   *
+   * WHAT IT USED TO DO. It issued a fresh five-second penalty for every
+   * marshalling sector, of which there are twenty a lap, with no cap of any kind.
+   * Measured over two races at Monza: 262 penalties, 256 of them from here, none
+   * at all from the stewards or from track limits, and fifteen of twenty cars
+   * carrying one. The player's car collected twelve in a single race. The
+   * player's report is "it seems like every driver there had a penalty", and a
+   * rule that fines a car a hundred seconds for one lap of misjudged pace is not
+   * a rule anybody wrote down.
+   *
+   * So: the first breach in a neutralisation is a warning, the second is the
+   * penalty, and that is the end of it for that neutralisation. The severity is
+   * chosen from the article's own list by how many neutralisations the driver
+   * has now offended in — a driver who does it in three separate safety car
+   * periods is a different case from a driver who did it once, and the list
+   * exists to say so.
+   */
+  private penaliseDelta(
+    car: CarEntry, index: number, sector: number, sessionTime: number,
+  ): void {
+    const where = 'SECTOR ' + (sector + 1);
+    const under = this.neutralisation === 'vsc' ? 'VSC' : 'the safety car';
+
+    // The first one is a warning, always. It is also the only thing that
+    // happens if the driver corrects it, which is what a warning is for.
+    if (car.deltaBreaches < 2) {
+      this.log(
+        car.driver.code + ' — warning, below the delta', 'warning', sessionTime, index,
+        { notice: {
+          parties: [car.driver.code], where, offence: 'BELOW THE DELTA', status: 'WARNING',
+        } },
+      );
+      return;
+    }
+    // Already dealt with in this neutralisation. Race control has said its
+    // piece; saying it again nineteen more times before the lap is out is not
+    // an escalation, it is a bug.
+    if (car.deltaPenalisedThisPeriod) return;
+    car.deltaPenalisedThisPeriod = true;
+    car.deltaPeriodsPenalised++;
+
+    // The article's own menu, in the article's own order.
+    const step = Math.min(car.deltaPeriodsPenalised, 4);
+    const kind: PenaltyKind =
+      step === 1 ? 'time-5s' : step === 2 ? 'time-10s'
+        : step === 3 ? 'drive-through' : 'stop-go-10s';
+    const timeS = kind === 'time-5s' ? 5 : kind === 'time-10s' ? 10 : 0;
+    const label =
+      kind === 'time-5s' ? '5 SECOND TIME PENALTY'
+        : kind === 'time-10s' ? '10 SECOND TIME PENALTY'
+          : kind === 'drive-through' ? 'DRIVE-THROUGH PENALTY' : 'STOP AND GO PENALTY';
+
+    car.penalties.push({
+      kind, reason: 'Below the delta under ' + under,
+      lap: car.lap, timeS, served: false,
+    });
+    car.penaltySeconds += timeS;
+    this.log(
+      car.driver.code + ' — ' + label.toLowerCase() + ', below the delta',
+      'critical', sessionTime, index,
+      { notice: { parties: [car.driver.code], where, offence: 'BELOW THE DELTA', status: label } },
+    );
+  }
+
+  /**
    * The confirmed running order, by car index, with a deadband.
    *
    * Held here rather than derived from `standings` because `standings` is
@@ -1910,33 +2076,7 @@ export class RaceControlManager {
       if (!car.deltaSectorPartial && car.deltaSectorTime > 0.5 &&
           car.deltaSectorTime < minimum) {
         car.deltaBreaches++;
-        // First one is a warning; a driver who keeps ignoring the delta is
-        // gaining a real advantage and takes the time penalty.
-        if (car.deltaBreaches >= 2) {
-          car.penalties.push({
-            kind: 'time-5s',
-            reason: 'Below the delta under ' +
-              (this.neutralisation === 'vsc' ? 'VSC' : 'the safety car'),
-            lap: car.lap, timeS: 5, served: false,
-          });
-          car.penaltySeconds += 5;
-          this.log(
-            car.driver.code + ' — 5 second penalty, below the delta',
-            'critical', sessionTime, index,
-            { notice: {
-              parties: [car.driver.code], where: 'SECTOR ' + (sector + 1),
-              offence: 'BELOW THE DELTA', status: '5 SECOND TIME PENALTY',
-            } },
-          );
-        } else {
-          this.log(
-            car.driver.code + ' — warning, below the delta', 'warning', sessionTime, index,
-            { notice: {
-              parties: [car.driver.code], where: 'SECTOR ' + (sector + 1),
-              offence: 'BELOW THE DELTA', status: 'WARNING',
-            } },
-          );
-        }
+        this.penaliseDelta(car, index, sector, sessionTime);
       }
       // Only a sector entered cleanly at its boundary is judged in full.
       car.deltaSectorPartial = car.deltaSectorIndex < 0;
