@@ -1203,4 +1203,64 @@ console.log('  smallest UNCATCHABLE rear slip    ' +
             (Number.isFinite(catchWorstLost) ? catchWorstLost.toFixed(2) + ' deg' : 'nothing was lost') +
             ' (want > ' + REAR_PEAK_DEG.toFixed(1) + ', the tyre peak)');
 console.log('  load cases with any loss          ' + catchLostCases);
+
+// ===========================================================================
+// The assertions — added for issue #46
+// ===========================================================================
+//
+// Every bar below is the number this file has printed beside its own summary
+// line since it was written. NOTHING has been loosened; the only change is that
+// the file now exits non-zero when it says the car is undrivable instead of
+// printing it and exiting 0. Before this, `probe:drivability` was one of the
+// four handling probes that passed while the player could see the car swerving,
+// and two of the four — this one and `probe:handling` — had no assertions at
+// all. PROJECT.md §3.2 makes that worse than having no probe, and it is what
+// issue #46 turned out to be about.
+//
+// Some of these are RED on `main` today. That is the finding, not a reason to
+// move the bar: see PROJECT.md §7 for what each of them is.
+
 console.log('');
+console.log('='.repeat(64));
+console.log('ASSERTIONS');
+console.log('='.repeat(64));
+
+let checks = 0;
+let failed = 0;
+function assertThat(pass: boolean, label: string, detail: string): void {
+  checks++;
+  if (!pass) failed++;
+  console.log(`  [${pass ? 'PASS' : 'FAIL'}] ${label}`);
+  console.log(`         ${detail}`);
+}
+
+assertThat(turnInWorst.t90 < 0.35, 'turn-in reaches 90% of the settled corner inside 0.35s',
+  `worst ${turnInWorst.t90.toFixed(3)}s — above 0.35s the car is on ice for the first part ` +
+  'of every corner, which is the "gliding" complaint stated precisely');
+assertThat(turnInWorst.over < 40, 'yaw overshoot on turn-in stays under 40%',
+  `worst ${turnInWorst.over.toFixed(1)}% — above 40 the car is darty, which is the first half of a snap`);
+assertThat(turnInWorst.zeta > 0.35, 'the yaw response is damped rather than ringing',
+  `worst damping ratio ${turnInWorst.zeta.toFixed(2)}`);
+assertThat(stabWorst > 0.40, 'a bump taken hands-still dies away on its own',
+  `worst free-yaw decay ${stabWorst.toFixed(2)} 1/s — below 0.40 the driver has to catch every bump, ` +
+  'which is what "it randomly starts oversteering" is');
+assertThat(stabDiverged === 0, 'no hands-still case diverges',
+  `${stabDiverged} of the yaw-impulse cases grew instead of decaying`);
+assertThat(Number.isFinite(worstBrakeMargin) && worstBrakeMargin > 0.5,
+  'the car accepts more than half the brake pedal from a settled corner',
+  `worst ${Number.isFinite(worstBrakeMargin) ? worstBrakeMargin.toFixed(2) : 'n/a'} of pedal before the rear went`);
+assertThat(!Number.isFinite(worstWarning) || worstWarning > 0.30,
+  'a departure gives the driver more than 300ms of warning',
+  Number.isFinite(worstWarning)
+    ? `shortest ${worstWarning.toFixed(2)}s between the car saying so and being gone — under 0.30s no human can act on it`
+    : 'nothing departed');
+assertThat(!Number.isFinite(catchWorstLost) || catchWorstLost > REAR_PEAK_DEG,
+  'the car is still catchable past the tyre\'s own peak slip angle',
+  Number.isFinite(catchWorstLost)
+    ? `smallest uncatchable rear slip ${catchWorstLost.toFixed(2)}° against a ${REAR_PEAK_DEG.toFixed(1)}° tyre peak`
+    : 'nothing was lost');
+
+console.log('');
+console.log(`  ${checks - failed} ok, ${failed} failed`);
+console.log('');
+if (failed > 0) process.exitCode = 1;
