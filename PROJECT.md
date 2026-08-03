@@ -177,6 +177,7 @@ Run `npm run` to list. The important ones:
 | `probe:carrig` | Every car part attached; wheels at y=0; nothing floating |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
+| `probe:blockage` | A car stopped ON the racing line does not stop the race |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:qualiboard` | Knockout qualifying: board and grid agree |
@@ -187,9 +188,16 @@ Run `npm run` to list. The important ones:
 | `shoot:panels` | Measures HUD boxes; fails on overlap |
 
 **Known-failing, all pre-existing and documented:**
-- `probe:hudtext` — "no team-owned bulletin was filed in a 20-minute race". Traced to an
-  engine call site that never fires (`RaceEngine.ts` ~2525). **Real bug, unfixed.**
 - `validate:flags` — safety-car form-up, three failures, stable numbers.
+
+**Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
+engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
+an agent sent to that call site would have found working code.** The probe builds a race
+with `playerIndex: 0` and never writes `engine.playerControls`, so its player car sat on
+its grid box at zero throttle; the stopped-car bug (#28) then froze the entire field behind
+it, and a frozen race files no bulletins because nothing happens in it. Fixing #28 made the
+probe pass with no change to the call site or to the probe: **44 distinct team lines across
+31 events, 17 messages on the team channel.** Trust the mechanism, not the note.
 
 ---
 
@@ -386,6 +394,71 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   causing a collision. Give-the-position-back as a remedy. Penalties served in the box with
   the crew standing off, or added at the flag and re-sorting the classification.
 
+### A car stopped on the racing line — the worst bug in the simulation (#28)
+`RaceEngine.checkBeached` was the **only** thing in the engine that ever cleared a
+stationary car, and it was gated on `Math.abs(lateral) > halfWidth + 2` — the car had to
+be **off** the road. A car stopped **on** the road was never retired, never recovered, and
+raised no flag naming it. It stood there for the rest of the race, and the AI queued behind
+it rather than passing it. `probe:blockage`, one car pinned to the racing line 90s into a
+race, watched for 240s against a same-seed control:
+
+| | field laps vs control | still moving at the end |
+|---|---|---|
+| Monza before | 14 / 42 (33%) | 0 of 16 |
+| Monza after | 39 / 42 (**93%**) | **19 of 19** |
+| Spa before | 23 / 35 (66%) | 9 of 17 |
+| Spa after | 30 / 38 (**79%**) | **19 of 19** |
+| Monaco before | 10 / 41 (24%) | 0 of 20 |
+| Monaco after | 39 / 41 (**95%**) | **19 of 19** |
+
+**Spa is why this needed three circuits.** Before the fix Spa recovered about half the
+field where Monza and Monaco recovered nobody, so a single-circuit check at Spa would have
+read as "mostly fine".
+
+The fix is three things, all in the engine:
+- `checkStranded` runs one stationary timer wherever the car is standing and applies the
+  deadline the site earns — 12s on the racing surface, where the car is "wholly or partly
+  blocking the track" (ISC Appendix H Art. 2.5.5b; Art. 26.1b / B1.8.4b), and the existing
+  9s in the run-off. `RecoveryOperation` then plans the job from where the car is, which
+  for a car on the road neutralises the race until the marshals are done.
+- `updateIncidentFlags` finally does what its own comment always claimed — a yellow for a
+  car "off the racing surface and slow, **or stationary on it**". The second half had never
+  been written. A car on the road now gets **double** waved yellows, a message naming it,
+  and counts toward `activeIncidents`, which is what deploys the VSC (Art. 56.1a / B5.12).
+- The AI gets a third spatial picture (`AIPerception.blockage`) and an `AVOID` state. A
+  stopped car is dropped from `ahead`/`behind` for exactly the reason `sittingOut` is:
+  three separate mechanisms were holding station on it, including the neutralisation
+  queue-gap rule, so **a field slowed down because somebody stopped then formed up behind
+  the car that stopped, at zero.**
+
+**The probe has a second mode because the first one could not tell.** With the AI's
+avoidance deleted entirely and only the retirement left, the staged runs still read 93% /
+91% / 95% — race control took the car away after twelve seconds and the field never had to
+deal with it. The `[held]` mode holds the stationary clock between the "cars behind can see
+it" and "race control acts" thresholds, which takes race control out and leaves the drivers
+alone with the obstacle, and measures cars a minute past it: **Monza 3.3 with the avoidance
+against 2.0 without, Monaco 3.3 against 0.0.** Spa does not discriminate — a car standing
+in the braking zone for La Source is collected within seconds — and the probe says so
+rather than quoting a rate off a four-second sample.
+
+Side effects, all measured and all in the right direction. `probe:traffic` census over
+eleven circuits, five laps, twenty cars: contacts **0.185 → 0.113 per car-lap** (COTA
+1.21 → 0.24, Spa 0.62 → 0.53), at a cost of 8% of the overtakes (3040 → 2800).
+`probe:attrition` five-lap survivors: **Spa 16.0 → 18.3**, Suzuka 18.7 → 19.3, the rest
+20.0/20 unchanged — and the new `STOPPED` column reads **0.0 on all five circuits**, so the
+twelve-second timeout retires nobody in ordinary racing. And `probe:hudtext`, failing since
+#5, now passes — see the corrected record in §4.
+
+**What this did NOT fix, and it is #26.** At full distance (`probe:racelog`, 52 laps,
+Silverstone, F3, P18, medium, 2 seeds) beaching fell **8.50 → 5.50 retirements a race** and
+contacts **29.0 → 26.5**, but total retirements went **12.50 → 20.00**, because 10.50 a race
+are now classified `Stopped on track`. Every one of them was measured happening **under a
+VSC, late in the race, with clear road ahead** — they are the pre-existing neutralised-
+limiter stall in §7, which this work found and localised but did not cause and did not fix.
+**#26 stays open**, and its stated mechanism ("spinning off slowly and getting stuck") is
+now disproved: at full distance the dominant mode is cars stopping dead behind a
+neutralisation on an empty track.
+
 ### AI
 - `alongsideLeft`/`alongsideRight` were computed every step and **read by nothing.**
   Following distance was in *seconds* — at 80m/s a 0.6s preference is 48m and the car needs
@@ -446,8 +519,25 @@ It also reacted to the startup transient (shader compilation, 3–15fps for ~5s)
   narrowing the road, which moves the speed solver, `validate:limits` and `probe:racingline`.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `probe:hudtext` — the team channel never files a bulletin in a real race. **Real bug.**
 - `validate:flags` — safety-car form-up.
+- **Cars come to a standstill under a VSC on completely clear track.** Found while fixing
+  #28 and *not* caused by it. At the #26 configuration (52 laps, Silverstone, F3, medium)
+  on pre-#28 `main`, cars spent **3458 car-seconds stationary with nothing within 60m in
+  front of them while the race was neutralised**, in a race that was 38% neutralised and
+  took 14457 simulated seconds — four hours for a ninety-minute Grand Prix. The simulation
+  counted every one of those cars as still running. #28's retirement drops that to **144
+  car-seconds, 26% neutralised, 8438s**, because the stalled cars are now recovered — but
+  it recovers them by *retiring* them, so what used to be an invisible stall is now 10.5
+  retirements a race. **The cause is in the neutralised limiter, not in the recovery**, and
+  it belongs with the safety-car work already in flight. Until it is fixed, full-distance
+  retirement counts are measuring this and not attrition.
+- **`validate:race` Spa spread is a one-seed sample of a high-variance quantity.** The
+  assertion is `slowestCarBest - fastestLap < 70s` on seed 20260729, and at Spa that is
+  dominated by how much of a five-lap race happens to be neutralised. Measured over five
+  seeds: **74.4s mean and 2 of 5 seeds over the bar on pre-#28 `main`, 52.8s and 1 of 5
+  after.** An intermediate build of #28 failed it at +118s on the sampled seed while being
+  better on the mean; the landed build reads +25.4s. **If it ever goes red, do not raise
+  the bar** — make it a distribution.
 - **`tsconfig` includes only `src`**, so nothing in `scripts/` is typechecked. This let
   committed merge-conflict markers through once. `check:conflicts` now guards that specific
   failure but the general gap remains.
