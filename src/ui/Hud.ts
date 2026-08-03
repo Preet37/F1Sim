@@ -1886,14 +1886,24 @@ export class Hud {
     const band = this.notices.getBoundingClientRect().height;
     if (band <= 0) return;
     const gap = parseFloat(getComputedStyle(this.notices).rowGap) || 0;
+    // THE CARD IS COUNTED WHETHER OR NOT IT IS CURRENTLY SHOWING, and that is
+    // load-bearing rather than tidy. `room` has to be INVARIANT to the card's
+    // own parked state or this function oscillates: a parked card is one fewer
+    // flex child, so it is one fewer `gap`, so `room` is a few pixels larger
+    // while parked than while shown. With the band sitting between the two
+    // values the card unparks, is re-measured, no longer fits, parks, changes
+    // the `enforceRailBudget` key, and comes straight back — for ever, one flip
+    // per frame. Excluding only its HEIGHT and never its slot removes the loop
+    // by construction.
     let others = 0;
     let n = 0;
     for (const child of this.notices.children) {
       const e = child as HTMLElement;
+      if (e === this.radioCard) { n++; continue; }
       const h = e.getBoundingClientRect().height;
       if (h < 1) continue;
       n++;
-      if (e !== this.radioCard) others += h;
+      others += h;
     }
     // THE MASK COMES OFF THE TOP. `.hud-notices` fades its first 28 pixels to
     // transparent so a clipped stack reads as "there is more above this"
