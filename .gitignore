@@ -35,3 +35,7 @@ cockpit-out-low/
 # Symlinks an agent worktree makes to the main checkout.
 /reference
 /node_modules
+
+# Fetched CC0/OFL assets — regenerate with `npx tsx scripts/fetchAssets.ts`
+public/assets/
+public/brand/
