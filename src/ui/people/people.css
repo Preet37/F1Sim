@@ -319,6 +319,22 @@
 
 .garage-svg { display: block; width: 100%; height: auto; }
 
+/* THE CAR-SHAPED HOLE, as a box.
+
+   `GarageScene` draws the bay around an empty middle on purpose (see its own
+   header): the canonical car is `CarStage.ts`, on its own canvas, and a second
+   flat drawing of it here would drift from the real one inside a week. This is
+   where the real one stands. The numbers are read off the drawing — the floor
+   line is at y=452 of a 1200x675 stage and the bay's side walls close in at
+   about 18% either side — so the car sits ON the floor rather than in front of
+   it, and the crew at the bench behind it are not covered up.
+
+   `inset` is restated rather than inherited because `.stage-panel`'s own box
+   hangs 24% below its container, which is right for the career hub's bay and
+   would put this car through the garage floor. */
+.garage-car { position: absolute; inset: 30% 17% 8% 17%; z-index: 1; }
+.garage-car .stage.stage-panel { inset: 0; }
+
 .gar-name {
   font-family: var(--font-display);
   font-weight: 800;

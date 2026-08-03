@@ -69,9 +69,14 @@
  *     `probe:qualiretire` own that side and drive a real engine to do it.
  *   - The retirement flow, for the same reason: it needs an accident, and
  *     `probe:qualiretire` stages one in a browser and asserts every string.
- *   - The press conference and the garage scene, which have no route into them
- *     at all. That is issue #38, and the coverage block below re-measures it
- *     rather than taking it on trust.
+ *
+ * WHAT IS NEW SINCE — issues #13 and #38. This list used to carry a third
+ * entry: "the press conference and the garage scene, which have no route into
+ * them at all", with a block at the bottom that re-measured their absence and
+ * printed it. Both are routed now, along with the opening titles and the
+ * podium, and all four are in `REQUIRED` — so the thing that was a printed
+ * observation is an assertion, and the four screens that had been built and
+ * abandoned cannot go quietly unreachable a second time.
  *
  * Run: npm run probe:smoke                        ~11 min on a quiet machine
  *   SMOKE_FREE_S=0  required set only, no free walk — and it is the whole of
@@ -337,6 +342,42 @@ const REQUIRED: Route[] = [
     screen: 'team-hq', expect: 'The second car',
   },
   { name: 'Race weekend briefing', path: ['Continue', 'Race Weekend'], screen: 'briefing' },
+
+  // ---------------------------------------------------------------------
+  // THE FOUR SET-PIECES — issues #13 and #38, and the reason they are here
+  // ---------------------------------------------------------------------
+  //
+  // Every one of these was BUILT, was CORRECT, and could not be got to. The
+  // intro was first-run-only behind a flag set on the player's very first
+  // load; the podium fired only at the foot of a classification you had to
+  // drive a whole race to see; `PressConference.ts` and `GarageScene.ts` had
+  // no import, no screen id and no button anywhere in `src/main.ts` and their
+  // only executor in the entire repository was `npm run shoot:people`.
+  //
+  // Routing them is a morning's work. Keeping them routed is the actual bug,
+  // and it is what these four lines are for: unreachable is now RED, by name,
+  // in the probe that walks the front end the way a player does. The version
+  // of this file that shipped with issue #62 listed the press conference and
+  // the garage under "what this does not cover" and re-measured their absence
+  // as a printed note. That note is now an assertion.
+  //
+  // `Opening titles` and `Simulate Race` are both in `NO_FOLLOW` so the free
+  // walk does not spend sixteen seconds of titles or a whole simulated race on
+  // every pass. `walkTo` does not consult `NO_FOLLOW` — a required route is a
+  // deliberate route — so these still open them.
+  // No `expect` on three of the four: `expect` exists for routes that share a
+  // screen id with a fallback they could silently land on instead (the four
+  // rooms of `team-hq`, the eight settings tabs). These four ids are their own
+  // and nothing else in the shell reports them, so the id IS the assertion —
+  // and the podium and the garage title themselves after the circuit and the
+  // team, which vary by career and by where the paddock carousel was left.
+  { name: 'Opening titles', path: ['Opening titles'], screen: 'intro' },
+  { name: 'Podium', path: ['Continue', 'Simulate Race'], screen: 'podium' },
+  {
+    name: 'Press conference', path: ['Continue', 'Simulate Race', 'Press conference'],
+    screen: 'presser', expect: 'Press conference',
+  },
+  { name: 'Garage', path: ['Paddock', 'Into the garage'], screen: 'garage' },
 ];
 
 async function main(): Promise<void> {
@@ -828,17 +869,24 @@ async function main(): Promise<void> {
     if (!reachedRoutes.has(route.name)) console.log(`  NOT REACHED  ${route.name}`);
   }
 
-  // Issue #38, re-measured rather than believed. `PressConference` and
-  // `GarageScene` are ~800 lines that only a screenshot harness has ever
-  // executed. If a route into either ever lands, this stops printing and the
-  // note in PROJECT.md §7 should go with it.
-  const unrouted = ['PressConference', 'GarageScene']
-    .filter((m) => !new RegExp(`ui/${m}'`).test(src));
-  console.log('\nCorroborating issue #38 — front-end modules with no route in src/main.ts');
-  if (unrouted.length === 0) console.log('  none: both are routed now, #38 has moved');
-  for (const m of unrouted) {
-    console.log(`  unrouted  src/ui/${m}.ts — no import, no screen id, no button`);
+  // ISSUE #38, NOW AN ASSERTION RATHER THAN A NOTE.
+  //
+  // This block used to print which of the set-piece modules `src/main.ts` did
+  // not import, and printing is all it did. The import is the cheapest half of
+  // being reachable and it is not the half that was broken — the routes above
+  // are what prove a player can get there — but it is a real precondition and
+  // it costs one `grep` of the shell, so it is checked rather than reported.
+  // A module the shell has stopped importing is a route that is about to go.
+  const setPieces = ['PressConference', 'GarageScene', 'Podium', 'IntroSequence'];
+  const unrouted = setPieces.filter((m) => !new RegExp(`ui/${m}'`).test(src));
+  console.log('\nIssue #38 — the set-piece modules, and whether the shell imports them');
+  for (const m of setPieces) {
+    console.log(`  ${unrouted.includes(m) ? 'UNROUTED' : 'imported'}  src/ui/${m}.ts`);
   }
+  check(unrouted.length === 0,
+    `src/main.ts imports none of [${unrouted.join(', ')}] — ${unrouted.length === 1
+      ? 'that module is' : 'those modules are'} back to being code only a `
+    + 'screenshot harness executes (issue #38)');
 
   await writeFile(resolve(OUT_DIR, 'walk.txt'),
     order.join('\n')

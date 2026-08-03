@@ -47,6 +47,8 @@ import { clearLiveryDesigns, registerLiveryDesign } from './render/Livery';
 import { coerceDesign } from './render/LiveryDesign';
 import { playerHelmet } from './career/CareerState';
 import { buildPodium } from './ui/Podium';
+import { buildPressConference, type PressQuestion } from './ui/PressConference';
+import { buildGarage } from './ui/GarageScene';
 import { IntroSequence, openingBeats } from './ui/IntroSequence';
 import { driverCard } from './ui/DriverPortrait';
 import { SaveManager, type GameSettings } from './career/SaveManager';
@@ -102,6 +104,13 @@ type Screen =
   | 'paddock'
   | 'racing'
   | 'results'
+  // The three set-piece scenes. Every one of them was built, was correct, and
+  // had no import, no screen id and no button anywhere in this file — issues
+  // #13 and #38. A screen id is what lets `probe:smoke` name them in its
+  // required set, which is what stops them going quietly unreachable again.
+  | 'podium'
+  | 'presser'
+  | 'garage'
   | 'event'
   | 'standings'
   | 'settings'
@@ -2012,7 +2021,11 @@ class Game {
       const result = career.simulatePlayerRound({ wet });
       career.recordPlayerRound(result);
       this.profiles.saveCareer(this.careerId, career.state);
-      this.afterRace(result);
+      // The rostrum, then the press room, then whatever the paddock had to
+      // say. Simulating a round used to jump from this button straight to a
+      // narrative event, which is why a career player could run a whole
+      // season without the podium screen ever being built once.
+      this.showPodium(result, () => this.afterRace(result));
     }, 'btn ghost');
     this.spacer(actions);
     this.button('Race Weekend', actions, () => this.startWeekend(circuit.id), 'btn primary');
@@ -2413,8 +2426,67 @@ class Game {
       if (e.key === 'ArrowRight') { e.preventDefault(); handle.step(1); }
     });
 
+    // INTO THE BAY. `GarageScene` is drawn with a car-shaped hole in the
+    // middle of it precisely so a real `CarStage` can stand in front of it,
+    // and the paddock is the one screen in the game that already has a team
+    // selected and a car built for it. Whichever team is on the stage is the
+    // team whose garage this opens.
+    this.button('Into the garage', actions,
+      () => this.showGarage(handle.current().id), 'btn ghost');
     this.spacer(actions);
     this.button('Quick Race', actions, () => this.showSessionSelect(true), 'btn primary');
+  }
+
+  /**
+   * THE GARAGE BAY — issue #38.
+   *
+   * `src/ui/GarageScene.ts` was 236 lines that only `npm run shoot:people` had
+   * ever executed: no import, no screen id and no button anywhere in this file.
+   * It is the bay under the grandstand — shutter up, the team's colour across
+   * the back wall, the principal standing where a principal stands and the
+   * crew working behind him — and it was built with a deliberate CAR-SHAPED
+   * HOLE so that the canonical `CarStage` could stand in it rather than a
+   * second, flat, drifting drawing of the same car. That is what happens here.
+   *
+   * Reached from the paddock, for the team standing on the paddock's stage.
+   * `probe:smoke` walks that route as a required screen.
+   */
+  private showGarage(teamId: string): void {
+    this.setScreen('garage');
+    const team = getTeam(teamId);
+    const drivers = DRIVERS.filter((d) => d.teamId === team.id)
+      .sort((a, b) => a.raceNumber - b.raceNumber);
+    const { body, actions } = this.page({
+      tab: 'Paddock',
+      where: 'Garage',
+      title: team.name,
+      sub: 'The bay, the crew and the car that comes out of it.',
+      back: () => this.showPaddock(),
+    });
+
+    const bay = buildGarage(body, {
+      teamId: team.id,
+      teamName: team.name,
+      colour: team.colour,
+      accent: team.accent,
+      crew: 3,
+      principal: true,
+      // Stable, so a team's bay is the same bay every time it is opened.
+      seed: team.id.length * 31 + team.colour,
+    });
+    // The hole in the middle of the drawing, as a positioned box. `.garage` is
+    // already `position: relative`, so the stage's own `inset` rule lands
+    // inside the bay rather than behind the page.
+    const hole = this.el('div', 'garage-car', bay);
+    this.mountStage('panel', {
+      colour: team.colour,
+      accent: team.accent,
+      number: drivers[0]?.raceNumber,
+      code: drivers[0]?.code,
+    }, hole);
+
+    this.spacer(actions);
+    this.button('Back to the paddock', actions, () => this.showPaddock(), 'btn primary');
   }
 
   /**
@@ -4859,7 +4931,14 @@ class Game {
       };
       this.career.recordPlayerRound(result);
       this.profiles.saveCareer(this.careerId, this.career.state);
-      this.showResults(() => this.afterRace(result));
+      // The press room is OFFERED rather than imposed. A driven race already
+      // ends on the classification with the rostrum at the head of it, and a
+      // mandatory screen between the flag and the paddock every single round
+      // is the kind of thing players learn to click through without reading.
+      this.showResults(
+        () => this.afterRace(result),
+        () => this.showPresser(result, () => this.afterRace(result)),
+      );
       return;
     }
 
@@ -4882,7 +4961,12 @@ class Game {
     }
   }
 
-  private showResults(onContinue: () => void): void {
+  /**
+   * @param presser opens the post-race press conference, when there is a
+   * career round for the room to be about. Omitted for practice, qualifying
+   * and every quick race, none of which the press turn up to.
+   */
+  private showResults(onContinue: () => void, presser?: () => void): void {
     const engine = this.engine;
     if (!engine) { onContinue(); return; }
 
@@ -5156,6 +5240,13 @@ class Game {
       }
     }
 
+    if (presser) {
+      this.button('Press conference', actions, () => {
+        this.renderer.unloadSession();
+        this.engine = null;
+        presser();
+      }, 'btn ghost');
+    }
     this.spacer(actions);
     this.button('Continue', actions, () => {
       this.renderer.unloadSession();
@@ -5328,6 +5419,253 @@ class Game {
 
     this.spacer(actions);
     this.button('New career', actions, () => this.showCareerCreate(), 'btn primary');
+  }
+
+  // =======================================================================
+  // The rostrum and the press room — issues #13 and #38
+  // =======================================================================
+  //
+  // WHAT WAS WRONG. `src/ui/Podium.ts` fired only at the foot of a
+  // classification the player had to drive a whole race to reach;
+  // `src/ui/PressConference.ts` fired nowhere at all — 540 lines whose only
+  // executor was `npm run shoot:people`. The person who commissioned both said
+  // so himself: *"I have yet to see the in game renders at all about the
+  // podiums, the career starts."*
+  //
+  // WHAT A PLAYER PRESSES NOW. The order of the real Sunday: chequered flag,
+  // rostrum, press room, paddock. `Simulate Race` on the career hub used to
+  // jump straight from the button to a narrative event; it now goes through
+  // the ceremony it just earned. Both screens carry `onContinue` rather than
+  // deciding where to go, so the one place that knows what comes after a race
+  // is still `afterRace`.
+  //
+  // Both are reachable in two clicks from the front page — `Continue` >
+  // `Simulate Race` — which is what lets `probe:smoke` hold them in its
+  // required set. A driven race reaches the same two screens from the
+  // classification's action bar.
+
+  /**
+   * The rostrum for a round the career has just recorded.
+   *
+   * The classification screen keeps its own inline podium and is untouched:
+   * this is the ceremony BEFORE the timing sheet, not a second copy of it.
+   */
+  private showPodium(result: RoundResult, onContinue: () => void): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('podium');
+
+    const s = career.state;
+    const circuit = getCircuit(result.circuitId);
+    const grid = career.grid();
+    const me = s.playerDriverId;
+    const myIndex = result.order.indexOf(me);
+    const retired = result.retired.includes(me);
+
+    const { body, actions } = this.page({
+      tab: TIER_CAR[s.tier].shortName + ' · Round ' + (result.round + 1),
+      where: 'Podium',
+      title: circuit.name,
+      sub: circuit.officialName + ' · the rostrum',
+      // No `back`: a ceremony you can reverse out of into the round it was for
+      // is a ceremony that has not happened. The way on is the action bar.
+      meta: [['Round', result.round + 1 + ' / ' + career.calendar.length]],
+    });
+
+    buildPodium(body, {
+      top3: result.order.slice(0, 3).map((id, i) => {
+        const d = grid.find((g) => g.id === id);
+        const team = d ? getTeam(d.teamId) : getTeam(s.teamId);
+        const name = splitName(career.displayName(id));
+        return {
+          driverId: id,
+          firstName: name.first,
+          lastName: name.last,
+          teamName: team.shortName,
+          colour: team.colour,
+          accent: team.accent,
+          // A simulated round records an order and not a gap, so the rostrum
+          // prints the position rather than inventing a time to three decimal
+          // places that no part of the simulation produced.
+          gap: i === 0 ? '' : 'P' + (i + 1),
+          isPlayer: id === me,
+          helmet: id === me ? playerHelmet(s) : undefined,
+        };
+      }),
+      playerPosition: retired || myIndex < 0 ? 0 : myIndex + 1,
+      circuitName: circuit.name,
+      tierName: TIER_CAR[s.tier].shortName,
+    });
+
+    this.button('Press conference', actions,
+      () => this.showPresser(result, onContinue), 'btn ghost');
+    this.spacer(actions);
+    this.button('Continue', actions, onContinue, 'btn primary');
+  }
+
+  /**
+   * The post-race press conference for a round the career has recorded.
+   *
+   * The panel is who the regulations put on it — the top three — with the
+   * player added when they are not among them, because a press conference the
+   * protagonist is not in is a cutscene. The questions are generated from what
+   * actually happened in the round rather than being a fixed script, so the
+   * room is asking about the race that was just run.
+   *
+   * WHAT THIS DELIBERATELY DOES NOT DO: apply consequences. `PressAnswer`
+   * carries an `effects` list and `PressConferenceSpec` an `onAnswer` hook, and
+   * a reputation model behind them is career-system work that belongs with the
+   * publicist and the agencies §7 records as not built. The effects shown here
+   * are the ones the scene was authored to display; nothing reads them back.
+   * Routing the room is this change; furnishing it is not.
+   */
+  private showPresser(result: RoundResult, onContinue: () => void): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('presser');
+
+    const s = career.state;
+    const circuit = getCircuit(result.circuitId);
+    const grid = career.grid();
+    const me = s.playerDriverId;
+    const myIndex = result.order.indexOf(me);
+    const myPos = result.retired.includes(me) || myIndex < 0 ? 0 : myIndex + 1;
+    const winner = result.order[0];
+    const winnerName = winner ? career.displayName(winner) : 'the winner';
+
+    const { body, actions } = this.page({
+      tab: circuit.name + ' · Round ' + (result.round + 1),
+      where: 'Press conference',
+      title: 'Press conference',
+      sub: 'Post-race · ' + TIER_CAR[s.tier].name,
+    });
+
+    // Two to four, says the scene's own contract — more than four and nobody's
+    // face is bigger than a stamp. The top three, and the player in place of
+    // third when they finished off the rostrum.
+    const panelIds = result.order.slice(0, 3);
+    if (myPos === 0 || myPos > 3) panelIds[2] = me;
+
+    const questions: PressQuestion[] = [];
+    if (myPos === 1) {
+      questions.push({
+        id: 'won',
+        text: 'You led that from the front. Was it as comfortable as it looked?',
+        answers: [
+          {
+            id: 'won-warm', tone: 'warm',
+            text: 'The car was in a window all weekend. That is the factory, not me.',
+            effects: [{ label: 'Chassis morale', value: 9 }],
+          },
+          {
+            id: 'won-cool', tone: 'cool',
+            text: 'It is never comfortable. You just do not show it on the radio.',
+          },
+          {
+            id: 'won-hot', tone: 'hot',
+            text: 'Nobody had anything for us. I would not read too much into the gap.',
+            effects: [{ label: 'Fan rating', value: -4 }],
+          },
+        ],
+      });
+    } else if (myPos > 0) {
+      questions.push({
+        id: 'placed',
+        text: 'P' + myPos + ', and ' + winnerName + ' took it. What was missing?',
+        answers: [
+          {
+            id: 'placed-warm', tone: 'warm',
+            text: 'They were quicker today. We take the points and go again.',
+            effects: [{ label: 'Team trust', value: 6 }],
+          },
+          {
+            id: 'placed-sharp', tone: 'sharp',
+            text: 'Pace was there. We lost it in the window we chose to stop in.',
+            effects: [{ label: 'Strategy morale', value: -7 }],
+          },
+          {
+            id: 'placed-cool', tone: 'cool',
+            text: 'A tenth here and a tenth there. That is the whole of it.',
+          },
+        ],
+      });
+    } else {
+      questions.push({
+        id: 'out',
+        text: 'You did not see the flag. Talk us through it.',
+        answers: [
+          {
+            id: 'out-warm', tone: 'warm',
+            text: 'My mistake, and the crew had built me a good car. That hurts more.',
+            effects: [{ label: 'Chassis morale', value: 7 }, { label: 'Pressure', value: 5 }],
+          },
+          {
+            id: 'out-cool', tone: 'cool',
+            text: 'We will look at the data before I say anything I cannot support.',
+          },
+          {
+            id: 'out-hot', tone: 'hot',
+            text: 'Ask the car. I was a passenger from the moment it let go.',
+            effects: [{ label: 'Team trust', value: -9 }, { label: 'Fan rating', value: 5 }],
+          },
+        ],
+      });
+    }
+    questions.push({
+      id: 'season',
+      text: result.wetRace
+        ? 'That is the second wet race the championship has had. Does it suit this car?'
+        : 'Where does that leave you with ' + Math.max(
+          0, career.calendar.length - result.round - 1) + ' rounds still to run?',
+      answers: [
+        {
+          id: 'season-cool', tone: 'cool',
+          text: 'We are racing the calendar, not the weekend. Nothing changes.',
+        },
+        {
+          id: 'season-warm', tone: 'warm',
+          text: 'The people upstairs have given me a car that is getting better. '
+            + 'That is all I need.',
+          effects: [{ label: 'Factory morale', value: 8 }],
+        },
+        {
+          id: 'season-sharp', tone: 'sharp',
+          text: 'If we bring what we have been promised, we are in this.',
+          effects: [{ label: 'Pressure', value: 6 }],
+        },
+      ],
+    });
+
+    buildPressConference(body, {
+      circuitName: circuit.name,
+      tierName: TIER_CAR[s.tier].name,
+      seriesName: TIER_CAR[s.tier].shortName,
+      round: 'Round ' + (result.round + 1) + ' · Post-race',
+      // Stable, so the room, the journalists and their faces are the same room
+      // every time this round is opened.
+      seed: s.season.year * 100 + result.round,
+      panel: panelIds.filter((id): id is string => !!id).map((id) => {
+        const d = grid.find((g) => g.id === id);
+        const team = d ? getTeam(d.teamId) : getTeam(s.teamId);
+        const name = splitName(career.displayName(id));
+        return {
+          id,
+          firstName: name.first,
+          lastName: name.last,
+          code: career.displayCode(id),
+          teamName: team.shortName,
+          colour: team.colour,
+          accent: team.accent,
+          isPlayer: id === me,
+          raceNumber: d?.raceNumber,
+          helmet: id === me ? playerHelmet(s) : undefined,
+        };
+      }),
+      questions,
+    });
+
+    this.spacer(actions);
+    this.button('Continue', actions, onContinue, 'btn primary');
   }
 
   /** After a race, offer a narrative event if one is eligible. */
