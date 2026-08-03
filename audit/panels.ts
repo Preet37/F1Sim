@@ -138,7 +138,11 @@ function stepHud(steps: number): void {
 }
 
 const hudInput = {
-  ersMode: 'balanced', showTouchOverlay: false, joystickActive: false,
+  // `gearMode` is what the HUD prints under the gear disc (issue #45). Stated
+  // rather than left off: an absent field reads as AUTO by accident, and a
+  // panel shoot that only ever photographs the default cannot show that MANUAL
+  // fits in the box.
+  ersMode: 'balanced', gearMode: 'auto', showTouchOverlay: false, joystickActive: false,
   joystickCentreX: 0, joystickCentreY: 0, joystickOffset: { x: 0, y: 0, radius: 60 },
   throttleHeld: false, brakeHeld: false, reverseTouchHeld: false,
 } as never;
