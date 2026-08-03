@@ -146,6 +146,56 @@ in files other agents own. **Not applied.**
 
 ---
 
+### A2b — Monaco fails the race sweep in **every** seed, and has been reporting it into a void
+**Severity: high — ranks third on this list. Confidence: certain (measured, 55 races).**
+
+Found by fixing B1. The moment `raceSweep` was given the exit code it never had,
+it went red on **13 of 55 races**. It has been printing these same lines and
+returning success on every run anyone has ever done.
+
+```
+FAIL monaco/20260729: fastest 157% of reference (too slow); 86.1s spread; 113 off-track excursions
+FAIL monaco/4242:     fastest 175% of reference (too slow); 112 off-track excursions
+FAIL monaco/1000:     fastest 156% of reference (too slow); 116 off-track excursions
+FAIL monaco/1137:     fastest 156% of reference (too slow); 123 off-track excursions
+FAIL monaco/1274:     fastest 151% of reference (too slow); 107 off-track excursions
+FAIL silverstone/20260729: fastest 152% of reference (too slow)
+FAIL silverstone/4242:     fastest 171% of reference (too slow)
+FAIL zandvoort/4242:  fastest 145% of reference (too slow)
+FAIL suzuka/4242:     fastest 159% of reference (too slow)
+FAIL cota/4242:       fastest 146% of reference (too slow); 89.7s spread
+FAIL spa/4242:        111.0s spread
+FAIL cota/1000:       76.8s spread
+FAIL spa/1274:        74.2s spread
+
+  races failing      13 / 55        mean lap/reference  1.3662
+  mean off-track     41.75          mean spread         27.90
+```
+
+**Monaco fails all five seeds.** The thresholds are `ratio > 1.45` and
+`offTrack > 90` (`raceSweep.ts:84, 87`), so these are not marginal: the *fastest
+lap in the field* is 51–75% slower than the reference, and the field goes off
+track **107–123 times in a five-lap race** — roughly once per car per lap.
+Silverstone fails two of five on pace alone.
+
+This is a **circuit-specific** defect, not the known global AI-pace gap. The mean
+across all 55 races is 1.3662, comfortably inside the 1.45 threshold; Monaco and
+Silverstone are the outliers dragging it up. It is exactly the *"YOU NEED TO FIX
+EVERY MAP"* pattern, and it has been invisible for the plainest possible reason —
+nobody's terminal ever showed a non-zero exit.
+
+**One caveat, stated as a hypothesis rather than a claim:** finding A1 truncates
+every race at the instant the leader crosses, so slower cars get fewer flying
+laps in which to set a best lap. That inflates the `spread` metric
+(`slowestCarBest - fastestLap`, `:74`) and could account for some of the Spa and
+COTA spread failures. It should **not** materially affect the `fastest % of
+reference` figure, because that is the field's fastest lap and is normally the
+leader's, and the leader does complete the distance. So the Monaco and
+Silverstone pace failures look real independent of A1. **Whoever fixes A1 should
+re-run this sweep before drawing conclusions about the spread rows.**
+
+---
+
 ### A3 — The recorded diagnosis of the known-failing `probe:hudtext` is wrong
 **Severity: high (it is sending work in the wrong direction). Confidence: certain.**
 
@@ -486,7 +536,7 @@ front-of-house screens most likely to be shown to someone are the two that do no
 The brief's second bug class. For each probe the question asked was: *what would
 have to break for this to fail, and can it actually observe that?*
 
-### B1 — `probe:racesweep` prints `FAIL` and exits 0 — **fixed, see C8**
+### B1 — `probe:racesweep` prints `FAIL` and exits 0 — **fixed, see C8; it went red immediately, see A2b**
 **Confidence: certain.** `scripts/raceSweep.ts:108-111` computes
 `const failed = rows.filter((r) => r.failures.length > 0)`, prints each one, and
 never uses it again. There is no `process.exit` or `exitCode` anywhere in the
@@ -750,6 +800,7 @@ are not meaningful. Results:
 | `probe:curvature`, `probe:handling`, `probe:framerate`, `probe:racingline`, `probe:turnin`, `probe:brakebalance`, `probe:attrition` | pass — **but see B2/B7**: several of these cannot fail |
 | `validate:race` | pass (killed twice by the OS under load before completing; passed when re-run alone) |
 | `validate:integrity` | killed under load, not re-run to completion |
+| `probe:racesweep` | **fail — 13 of 55 races, see A2b.** Newly visible: it had no exit code until this pass |
 | `probe:neutral` | **did not finish in 40 minutes** and was killed by the sweep's own timeout, having reached 5 of 9 rows. Not a defect in it — its races are bounded by `MAX_STEPS` — but see B2: it has no assertions, so finishing would not have produced a verdict either |
 | `validate:flags` | **fail — 3 failures, pre-existing and documented.** Numbers stable: double-yellow lift 21.6% vs single-yellow 85.3%; median safety-car gap 219m against the ten-car-length limit; safety-car lap ×1.36 a green lap against a real ×1.6-2.0 |
 | `probe:hudtext` | **fail — pre-existing, but the recorded cause is wrong. See A3** |
@@ -770,6 +821,7 @@ verified to leave the probe passing.
 |---|---|
 | **A1** chequered flag | race/classification owner. Two-line reorder, then `probe:finish` |
 | **A2** blockage deadlock | split: `checkBeached` → race-control owner; "AI will not pass a stopped car" → AI owner. `probe:blockage` |
+| **A2b** Monaco sweep failures | AI owner. `npm run probe:racesweep` now reports it. Monaco first: 5/5 seeds, 107-123 off-track excursions per five-lap race |
 | **A3** hudtext diagnosis | correct PROJECT.md §4/§7; fix follows A2 |
 | **A4** delta breaches | safety-car / neutralisation owner |
 | **A5** quality setting | front-end owner (needs a graphics section) **and** render owner |
