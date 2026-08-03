@@ -116,7 +116,7 @@ import { BASE_F1_SPEC } from '../src/physics/VehicleSpec';
 const MAX_STEPS_PER_FRAME = 8;
 
 const ENV: EnvironmentState = {
-  trackTempC: 40, airTempC: 25, wetness: 0, airDensityRatio: 1, abrasion: 1,
+  trackTempC: 40, airTempC: 25, wetness: 0, surfaceGrip: 1, airDensityRatio: 1, abrasion: 1,
 };
 
 function freshControls(): VehicleControls {
