@@ -3,7 +3,7 @@ import {
   DEFAULT_LIVERY_DESIGN, drawMark,
   type LiveryDesign, type LiveryFamilyId, type LiveryFinish,
 } from './LiveryDesign';
-import { brandImage, onBrandChange } from './BrandAssets';
+import { brandImage, onBrandChange, type BrandImage } from './BrandAssets';
 
 /**
  * Procedural team liveries.
@@ -201,23 +201,25 @@ function css(hex: number): string {
 /**
  * Intrinsic size of a dropped-in asset.
  *
- * `naturalWidth` and not `width`: an `HTMLImageElement` that has never been in
- * the document reports `width` as 0 whatever it decoded, and every image this
- * file draws comes from `BrandAssets` and has never been in the document.
+ * `naturalWidth` FIRST, and `width` only as a fallback: an `HTMLImageElement`
+ * that has never been in the document reports `width` as 0 whatever it decoded,
+ * and every image this file draws comes from `BrandAssets` and has never been
+ * in the document. An `ImageBitmap` has no `naturalWidth` at all and carries
+ * `width`, which is the other half of why both are read.
  *
  * The 1:1 fallback covers an SVG with no intrinsic size — `<svg>` with a
  * viewBox and no width/height attribute, which is what most icon exporters
  * produce. Chrome reports naturalWidth 0 for it, and a square is the least
  * wrong guess for a badge.
  */
-function imageWidth(img: CanvasImageSource): number {
+function imageWidth(img: BrandImage): number {
   const el = img as HTMLImageElement;
-  return el.naturalWidth || (el.width as number) || 1;
+  return el.naturalWidth || (img.width as number) || 1;
 }
 
-function imageHeight(img: CanvasImageSource): number {
+function imageHeight(img: BrandImage): number {
   const el = img as HTMLImageElement;
-  return el.naturalHeight || (el.height as number) || 1;
+  return el.naturalHeight || (img.height as number) || 1;
 }
 
 function rgb(hex: number): [number, number, number] {
@@ -419,11 +421,11 @@ function sponsorSet(d: LiveryDesign): readonly string[] {
  */
 interface BrandOverrides {
   /** Replaces the generated `MARK_DEVICES` badge on the deck and the flanks. */
-  badge: HTMLImageElement | null;
+  badge: BrandImage | null;
   /** Replaces the title sponsor's wordmark on the sidepod. */
-  sponsor: HTMLImageElement | null;
+  sponsor: BrandImage | null;
   /** A whole replacement atlas — a community livery, drawn over the panels. */
-  livery: HTMLImageElement | null;
+  livery: BrandImage | null;
 }
 
 const NO_BRAND: BrandOverrides = { badge: null, sponsor: null, livery: null };
@@ -611,8 +613,7 @@ class Panel {
    * wide badge therefore comes out the full width and short; a tall one comes
    * out the full height and narrow. Nothing is cropped.
    */
-  badge(l: number, g: number, img: CanvasImageSource,
-    diameterM: number): void {
+  badge(l: number, g: number, img: BrandImage, diameterM: number): void {
     const w = imageWidth(img);
     const h = imageHeight(img);
     if (w <= 0 || h <= 0) return;
@@ -633,7 +634,7 @@ class Panel {
    * height, with the width following the image's own aspect. Rotated by the
    * same rule `text` resolves — see that method for why the three faces differ.
    */
-  decalImage(l: number, g: number, img: CanvasImageSource,
+  decalImage(l: number, g: number, img: BrandImage,
     opts: { face: 'left' | 'right' | 'deck'; heightM: number }): void {
     const w = imageWidth(img);
     const h = imageHeight(img);

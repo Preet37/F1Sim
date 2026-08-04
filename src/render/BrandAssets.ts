@@ -66,6 +66,16 @@
 // The slots
 // ===========================================================================
 
+/**
+ * What a resolved slot hands the painter.
+ *
+ * Either shape draws with `CanvasRenderingContext2D.drawImage` and carries its
+ * own size, which is all any caller here needs. Two shapes rather than one
+ * because a PNG comes back from `createImageBitmap` and an SVG has to come back
+ * from an `<img>` — see `decode` for why.
+ */
+export type BrandImage = ImageBitmap | HTMLImageElement;
+
 /** Slots that belong to one team. */
 export type TeamSlot = 'badge' | 'sponsor' | 'portrait' | 'livery';
 
@@ -210,7 +220,7 @@ function ensureManifest(): Promise<void> {
 
 interface Resolved {
   /** The image, decoded and ready to draw. Null when the slot has no file. */
-  image: HTMLImageElement | null;
+  image: BrandImage | null;
   /** The path that won, relative to the root. Null when nothing did. */
   path: string | null;
 }
@@ -270,48 +280,80 @@ function key(scope: BrandScope, slot: string): string {
  * intrinsic size is what most icon exporters produce, `createImageBitmap`
  * rejects it, and `<img>` renders it.
  */
-async function decode(url: string): Promise<HTMLImageElement | null> {
-  if (typeof fetch !== 'function' || typeof Image !== 'function') return null;
-  let objectUrl: string | null = null;
+async function decode(url: string): Promise<BrandImage | null> {
+  if (typeof fetch !== 'function') return null;
+  let blob: Blob;
   try {
     // NO `crossOrigin`, and no CORS mode: everything here is same-origin, it
     // comes out of the app's own `public/`, so there is no canvas to taint and
     // nothing to ask permission for.
     const res = await fetch(url, { cache: 'no-cache' });
-    if (!res.ok) { undecodable.push(`${res.status} ${url}`); return null; }
-    const blob = await res.blob();
-    if (blob.size === 0) { undecodable.push(`empty ${url}`); return null; }
-    objectUrl = URL.createObjectURL(blob);
-    const src = objectUrl;
-    const img = await new Promise<HTMLImageElement | null>((done) => {
-      const el = new Image();
-      el.onload = () => done(el);
-      // The bytes arrived and the decoder refused them. Silent by policy —
-      // but RECORDED, because "the file is right there and it is not showing"
-      // is otherwise unanswerable, and `probe:assets` reads this list rather
-      // than the console.
-      el.onerror = () => done(null);
-      el.src = src;
-    });
-    if (!img) { undecodable.push(`undecodable ${url}`); return null; }
-    // THE OBJECT URL IS NEVER REVOKED, deliberately. A raster image holds its
-    // decoded bitmap after load and would survive it — but an SVG does not: it
-    // is rasterised lazily at whatever size it is drawn, and this atlas is
-    // repainted every time another slot arrives, so revoking would work
-    // perfectly until somebody dropped in a `.svg` and then produce a badge
-    // that renders once and disappears. The cost of not revoking is bounded by
-    // slots x teams and is a rounding error beside the decoded images
-    // themselves.
-    if (typeof img.decode === 'function') { try { await img.decode(); } catch { /* already loaded */ } }
-    objectUrl = null;
-    return img;
+    if (!res.ok) { undecodable.push(`http ${res.status} ${url}`); return null; }
+    blob = await res.blob();
   } catch (e) {
-    undecodable.push(`${String(e)} ${url}`);
+    undecodable.push(`fetch ${String(e)} ${url}`);
     return null;
-  } finally {
-    // Only on a path that produced no usable image.
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
+  if (blob.size === 0) { undecodable.push(`empty ${url}`); return null; }
+
+  // --- Raster: straight to an ImageBitmap ---------------------------------
+  //
+  // `createImageBitmap` is tried FIRST and it is the path a PNG or a WebP will
+  // take. It decodes the bytes in hand, needs no element, no object URL and no
+  // document, cannot be affected by anything happening to the DOM while it
+  // runs, and REJECTS WITH A MESSAGE rather than firing a bare `error` event.
+  //
+  // THAT LAST PROPERTY IS THE REASON IT IS FIRST, and the reason is a story
+  // worth keeping. This loader's first two implementations both routed a PNG
+  // through `<img>`, and both were defeated by an `onerror` on a **200
+  // response carrying a valid PNG signature**, with a manual load of the same
+  // URL succeeding seconds later. PROJECT.md §8 now records that symptom as one
+  // of four collected on the same day at load average 209 — under that much
+  // contention probes do not fail, they time out, and a starved decode reads
+  // exactly like a corrupt file. **So the `<img>` path may never have been
+  // wrong.** This one is still the right implementation: an `<img>` pointed at
+  // a URL returns one bit for "no such file", "not an image", "the connection
+  // dropped" and "the decoder was starved", and one bit is not a diagnosis.
+  if (typeof createImageBitmap === 'function' && !isSvg(blob, url)) {
+    try {
+      return await createImageBitmap(blob);
+    } catch (e) {
+      undecodable.push(`bitmap ${String(e)} ${url}`);
+      // Falls through to the element path rather than giving up: a format
+      // `createImageBitmap` will not take may still be one `<img>` renders.
+    }
+  }
+
+  // --- Vector, or a raster the bitmap decoder refused ----------------------
+  //
+  // An SVG with a viewBox and no width/height — which is what most icon
+  // exporters produce — has no intrinsic size, and `createImageBitmap` rejects
+  // it outright while `<img>` renders it happily.
+  if (typeof Image !== 'function' || typeof URL?.createObjectURL !== 'function') return null;
+  const objectUrl = URL.createObjectURL(blob);
+  const img = await new Promise<HTMLImageElement | null>((done) => {
+    const el = new Image();
+    el.onload = () => done(el);
+    el.onerror = () => done(null);
+    el.src = objectUrl;
+  });
+  if (!img) {
+    URL.revokeObjectURL(objectUrl);
+    undecodable.push(`element ${blob.type || 'no type'} ${blob.size}B ${url}`);
+    return null;
+  }
+  // THE OBJECT URL IS NOT REVOKED ON THE SUCCESS PATH, deliberately. A raster
+  // image holds its decoded bitmap and would survive it; an SVG does not — it
+  // is rasterised lazily at whatever size it is drawn, and this atlas is
+  // repainted every time another slot arrives. Revoking would work perfectly
+  // until somebody dropped in a `.svg`, and then produce a badge that renders
+  // once and vanishes. The cost is bounded by slots x teams.
+  return img;
+}
+
+/** Whether these bytes want the element path. See `decode`. */
+function isSvg(blob: Blob, url: string): boolean {
+  return blob.type.includes('svg') || url.toLowerCase().endsWith('.svg');
 }
 
 function start(scope: BrandScope, slot: string): Promise<void> {
@@ -348,7 +390,7 @@ function start(scope: BrandScope, slot: string): Promise<void> {
  * the only shape that fits a canvas painter which allocates a texture at the end
  * of a straight-line function.
  */
-export function brandImage(scope: BrandScope, slot: TeamSlot | SharedSlot | string): HTMLImageElement | null {
+export function brandImage(scope: BrandScope, slot: TeamSlot | SharedSlot | string): BrandImage | null {
   const k = key(scope, slot);
   const hit = resolved.get(k);
   if (hit) return hit.image;
@@ -366,7 +408,7 @@ export function brandUrl(scope: BrandScope, slot: TeamSlot | SharedSlot | string
 }
 
 /** A shared asset — a material set, a LUT, an environment map. */
-export function sharedImage(slot: SharedSlot | string): HTMLImageElement | null {
+export function sharedImage(slot: SharedSlot | string): BrandImage | null {
   return brandImage(SHARED_DIR, slot);
 }
 

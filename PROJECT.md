@@ -648,11 +648,18 @@ both been written against a boundary that was not there.
   drawn with it — two builds of the identical car are not identical, and a byte-identity
   assertion anchored on the first build would have been measuring texture arrival. The
   probe warms up. (b) An `<img>` pointed straight at the network hands you exactly one bit
-  on failure. The first run sat on a **200 response, `image/png`, 6508 bytes, a valid PNG
+  on failure. Two runs sat on a **200 response, `image/png`, 6508 bytes, a valid PNG
   signature — and an `onerror`**, with a manual `new Image()` on the identical URL a moment
-  later succeeding. `decode()` now fetches first and decodes from a blob URL, so the HTTP
-  status is observable and a decode failure is unambiguously a decode failure; the list of
-  URLs that got that far and were refused is reported by `brandState()` rather than logged.
+  later succeeding. **§8 now records that same symptom as one of four collected that day at
+  load average 209, so the `<img>` path may never have been wrong at all** — under that much
+  contention a starved decode reads exactly like a corrupt file, and this is the clearest
+  case in the project of a code change made against a machine artefact. `decode()` fetches
+  first and hands the bytes to `createImageBitmap`, falling back to an `<img>` over an
+  object URL for SVG, which has no intrinsic size and which `createImageBitmap` rejects
+  outright. That is the right shape whatever the machine was doing — the HTTP status is
+  observable, the decoder rejects with a message rather than a bare event, and
+  `brandState().undecodable` reports what got that far and was refused instead of logging
+  it — but the fault it was written against is not established.
 
 ### Materials: the wheel corner's table contradicted its own comment (issue #36)
 
