@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  apertureEdge, loft, section, setFlatUV, setFlatUVSplit, setPanelUV, strut, aeroStrut, tube,
+  apertureEdge, loft, section, setFlatUV, setFlatUVSplit, setFlatUVSplitX,
+  setPanelUV, strut, aeroStrut, tube,
   wingElement, riseSpanwise, type OpenTop, type Section,
 } from './Loft';
 import {
@@ -669,6 +670,62 @@ export const HALO_SQUASH = 0.78;
  */
 export const HALO_PAINT_MIN_NY = 0.40;
 
+/**
+ * Where the front wing endplate's livery stops — issue #8.
+ *
+ * The halo's sibling, about the other axis. A vertex whose outward unit normal
+ * points away from the car's centreline by at least this much takes the
+ * `wingplate` swatch; everything else stays `carbon`. `setFlatUVSplitX` does
+ * the assignment and its note explains why the side has to be named.
+ *
+ * 0.50 IS 60 DEGREES OFF OUTBOARD, and it is a paint line rather than a
+ * derived quantity, because unlike the halo's the reference cannot supply one:
+ * `reference/target/90.png` shows the endplate's INNER face, which settles that
+ * the inner face is bare carbon and says nothing about how far round the
+ * wrapped edge the outer face's paint comes. So this is set where a decal on a
+ * flat panel physically stops — at the point the surface has turned away from
+ * the plane it is applied to — and `probe:frontwing` PRINTS the fraction of the
+ * plate's vertices it actually paints rather than anybody predicting it.
+ *
+ * A PURE SIGN TEST WOULD BE WRONG, and this is the reason for a floor rather
+ * than `nx * side > 0`. The plate is 20-28mm thick and up to 410mm tall, so its
+ * section is a very flat superellipse: a sign test paints right up to a
+ * zero-width line at the top and bottom edges and puts a hard colour seam on
+ * the plate's own silhouette, which is the one part of it a chase camera sees
+ * against the sky.
+ *
+ * IT IS A PAINT LINE AND NOT A TOLERANCE. Nothing passes or fails on it.
+ */
+export const WING_PAINT_MIN_NX = 0.50;
+
+/**
+ * Where the paint stops on a front wing ELEMENT — issue #8.
+ *
+ * The other half of the same fix, and the half that a player can actually see:
+ * `probe:frontwing` measured the endplate's outer face at 0 pixels from `chase`
+ * and 0 from `tv`, so painting it alone answers the issue on paper and not on
+ * screen. What a chase camera looks down on is the elements.
+ *
+ * READ OFF `reference/target/90.png`, the same frame the endplate's rule came
+ * from. Enlarged 3x around the Aston's front wing, every element's UPPER
+ * surface is the car's own green and the undersides and slot gaps are black. So
+ * the split is up-facing paint over a dark underside — the halo's rule, about
+ * the same axis, on a part that is nearly flat instead of nearly round.
+ *
+ * 0.25 RATHER THAN THE HALO'S 0.40, and the difference is the section. The halo
+ * is a squashed ellipse whose normal sweeps the whole 360 degrees, so 0.40
+ * selects a 142-degree arc of it. A front wing element is an aerofoil 13-15mm
+ * thick on a 145-261mm chord: its upper and lower surfaces are both within
+ * about 15 degrees of horizontal over most of the chord and the normal only
+ * leaves that near the leading edge, where it turns through the whole 180. A
+ * floor of 0.25 is 76 degrees off vertical — it takes the upper surface and
+ * stops on the leading-edge radius, which is where a decal on a real element
+ * stops.
+ *
+ * IT IS A PAINT LINE AND NOT A TOLERANCE. Nothing passes or fails on it.
+ */
+export const WING_ELEMENT_MIN_NY = 0.25;
+
 /** The forward pillar, bottom to top. */
 export const HALO_PILLAR: readonly [number, number, number][] = [
   [0, 0.520, 0.778],
@@ -1329,6 +1386,23 @@ class Parts {
     );
   }
 
+  /**
+   * The same, split about the CENTRELINE rather than about the horizon.
+   *
+   * For a part whose two faces look outboard and inboard rather than up and
+   * down — the front wing endplate, issue #8. See `setFlatUVSplitX` for why
+   * the caller has to name the side and why the wrapped edge stays unpainted.
+   */
+  flatSplitX(
+    geo: THREE.BufferGeometry, outer: SwatchName, inner: SwatchName,
+    side: number, minOutward: number,
+  ): void {
+    geo.userData.tag = this.tagName;
+    this.target.push(
+      setFlatUVSplitX(geo, swatchUV(outer), swatchUV(inner), side, minOutward),
+    );
+  }
+
   /** Adds a lofted part that carries painted livery graphics. */
   painted(geo: THREE.BufferGeometry, panel: PanelName): void {
     const r = PANEL[panel];
@@ -1819,29 +1893,51 @@ function buildFrontWing(p: Parts, t: Tiers): void {
     // The W is applied AFTER the incidence, in car-local Y. See `riseSpanwise`.
     riseSpanwise(g, e.span * 0.5, wingW(e.rise));
     const index = FRONT_WING_ELEMENTS.indexOf(e) + 1;
-    // THE TOP FLAP IS PAINTED, and it is the only thing on this assembly that
-    // is. "The front wing and the front is so big versus the back wing is super
+    // EVERY ELEMENT'S UPPER SURFACE IS PAINTED NOW — issue #8, and the top flap
+    // was the half of it that had already landed.
+    //
+    // "The front wing and the front is so big versus the back wing is super
     // tiny." Measured against Appendix 1 the wing is right — 1950mm of span and
     // 689mm of chord, from XF -1331 to -642, which is the regulation volume
     // almost exactly — so what is wrong is not its size but its MASS: 1.35
     // square metres of near-black carbon at the front of a blue car, with the
     // slots between the four elements invisible from above because each element
-    // is directly over the one behind it. Every real front wing on the grid
-    // carries the team's colour on its upper elements for exactly this reason.
-    // Painting the top one turns a black slab into a wing with a wing under it,
-    // for no triangles and no draw call.
-    const swatch: SwatchName = index === 4 ? 'body' : 'carbon';
+    // is directly over the one behind it.
+    //
+    // THE ISSUE'S OWN SUGGESTED FIX WAS THE ENDPLATE, AND IT IS MEASURABLY NOT
+    // ENOUGH ON ITS OWN. *"The honest fix is livery on the endplate outer
+    // face"* — that is done below, it is what `reference/target/90.png` shows,
+    // and `probe:frontwing` then measured how much of that face a player ever
+    // sees: **0 pixels from `chase`, 0 from `tv`, 37-45 from `trackside`** on a
+    // 1280x720 frame. The outer face points sideways at the front axle and
+    // almost every lens in this game is behind or beside the car. A fix nobody
+    // can see is not a fix, and the measurement is in §6 rather than being
+    // quietly rounded up to one.
+    //
+    // WHAT A PLAYER ACTUALLY LOOKS DOWN ON IS THE ELEMENTS, which is exactly
+    // what the issue says — *"from above it is the largest dark object on the
+    // car"*. And the reference agrees: enlarge `reference/target/90.png` 3x
+    // around the Aston's front wing and every element's UPPER surface is the
+    // car's own green, with the undersides and the slot gaps black. So the
+    // split is the same shape as the halo's — up-facing takes the paint, the
+    // rest stays carbon — and it moves no vertex.
+    //
+    // ELEMENT 4 STAYS ON `body` RATHER THAN JOINING THEM. It is the topmost
+    // surface of the assembly, the reference has it painted top and bottom, and
+    // it has been painted since the pass this comment used to describe. Moving
+    // it would change a frame that is already right in order to tidy a name.
     if (e.movable) {
       // Authored about the hinge, so the pivot group can simply be placed at it.
       g.translate(0, (e.leY + e.teY) * 0.5 - FRONT_FLAP_PIVOT_Y, (e.leZ + e.teZ) * 0.5 - FRONT_FLAP_PIVOT_Z);
       p.tag(`front wing element ${index}`);
       p.intoFrontFlap();
-      p.flat(g, swatch);
+      if (index === 4) p.flat(g, 'body');
+      else p.flatSplit(g, 'wingpaint', 'carbon', WING_ELEMENT_MIN_NY);
       p.into('frontWing');
     } else {
       p.tag(`front wing element ${index}`);
       g.translate(0, (e.leY + e.teY) * 0.5, (e.leZ + e.teZ) * 0.5);
-      p.flat(g, swatch);
+      p.flatSplit(g, 'wingpaint', 'carbon', WING_ELEMENT_MIN_NY);
     }
   }
 
@@ -1885,8 +1981,22 @@ function buildFrontWing(p: Parts, t: Tiers): void {
       section(2.540, 0.013, 0.030, 0.436, 0.24, { xc: s * 0.963 }),
       section(2.440, 0.010, 0.042, 0.404, 0.34, { xc: s * 0.962 }),
     ], t.body - 8);
+    //
+    // ITS OUTER FACE CARRIES THE TEAM'S LIVERY — issue #8, and this is the
+    // only change that issue makes to this file. *"Dimensions are
+    // regulation-correct… the problem is mass, not size: three of four
+    // elements plus a 660x410mm endplate each side are near-black… The honest
+    // fix is livery on the endplate outer face."* So no vertex moves and no
+    // section number changes: the same shell, with the outward-facing half of
+    // its vertices moved one cell across the atlas. The inner face stays
+    // `carbon` because `reference/target/90.png` shows it as carbon — the
+    // Aston in that frame is photographed from above and inboard, so what it
+    // shows of the left plate is precisely the face that is NOT painted.
     p.tag(`front wing endplate ${s < 0 ? 'L' : 'R'}`);
-    p.flat(checkWidth(ep, 'front wing endplate'), 'carbon');
+    p.flatSplitX(
+      checkWidth(ep, 'front wing endplate'), 'wingpaint', 'carbon',
+      s, WING_PAINT_MIN_NX,
+    );
 
     // FOOTPLATE: the outward curl along the bottom of the endplate. It sits at
     // ground level, it is the last thing to clear a kerb, and it is in every

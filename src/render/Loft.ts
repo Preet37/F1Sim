@@ -801,6 +801,59 @@ export function setFlatUVSplit(
 }
 
 /**
+ * `setFlatUVSplit`'s sibling, split about the car's CENTRELINE — issue #8.
+ *
+ * WHY A SECOND FUNCTION RATHER THAN A PARAMETER. The halo's paint line is a
+ * horizontal band round a tube and the axis that decides it is y; a front wing
+ * endplate is a vertical panel and the axis that decides ITS paint line is x —
+ * and, unlike y, x has no absolute meaning here. "Outward" on the left plate is
+ * −x and on the right plate is +x, so the caller has to say which side the part
+ * is on. A single function taking an axis index and a sign would be the same
+ * code with two more arguments and one more thing to get backwards.
+ *
+ * `side` is +1 for the right-hand part and −1 for the left, matching the `for
+ * (const side of [-1, 1])` loop `CarMesh` already builds both plates in. A
+ * vertex whose outward normal points away from the centreline by at least
+ * `minOutward` takes `outer`; everything else — the inner face, and the thin
+ * leading and trailing edges where the normal is nearly fore-and-aft — takes
+ * `inner`.
+ *
+ * THE EDGES DELIBERATELY STAY CARBON. `minOutward` is a floor on |n·x̂|, not a
+ * sign test, so the wrapped edge of the plate is not painted: on the reference
+ * the livery is a decal on the flat of the outer face and the edge reads as the
+ * laminate it is. A pure sign test would paint the whole plate up to a
+ * zero-width line and put a hard colour seam on the silhouette, which is the
+ * one place on this part it would be seen.
+ *
+ * @param outer texel for vertices facing away from the centreline
+ * @param inner texel for everything else
+ * @param side +1 for the right-hand part, −1 for the left
+ * @param minOutward |x| of the unit outward normal at the paint line
+ */
+export function setFlatUVSplitX(
+  geo: THREE.BufferGeometry,
+  outer: readonly [number, number],
+  inner: readonly [number, number],
+  side: number,
+  minOutward: number,
+): THREE.BufferGeometry {
+  const nrm = geo.attributes.normal as THREE.BufferAttribute | undefined;
+  const count = geo.attributes.position.count;
+  const uvs = new Float32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    // Same fallback as the y split and for the same reason: a part with no
+    // normals comes out entirely in the colour it had before, never entirely
+    // in the new one.
+    const out = nrm ? nrm.getX(i) * Math.sign(side) >= minOutward : false;
+    const [u, v] = out ? outer : inner;
+    uvs[i * 2] = u;
+    uvs[i * 2 + 1] = v;
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  return geo;
+}
+
+/**
  * Builds a wing element: a cambered aerofoil extruded across the car.
  *
  * Boxes are the single most obvious tell of a procedural car, and wings are the
