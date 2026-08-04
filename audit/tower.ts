@@ -75,6 +75,41 @@ interface RowReading {
   gapItalic: boolean;
   /** The badge column's class suffix — fastest lap, `P`, penalty, chequer. */
   badges: string;
+
+  // --- The copy, as fractions of the panel's own width — issue #76 --------
+  //
+  // Everything below is scale-free ON PURPOSE. The reference board is a
+  // 379-pixel panel in a portrait phone recording and ours is a 212-pixel
+  // panel on a desktop; comparing pixel positions between the two says
+  // nothing. Comparing where each column sits ACROSS the panel says
+  // everything, and those fractions are what `reference/target/68.png` fixes.
+  /** Centre of the position number, as a fraction of the panel's width. */
+  posMid: number;
+  /** Centre of the team mark. */
+  markMid: number;
+  /** LEFT edge of the driver code — the reference left-aligns it. */
+  codeLeft: number;
+  /** RIGHT edge of the gap figure — the reference right-aligns it. */
+  gapRight: number;
+  /** Centre of the compound letter. */
+  tyreMid: number;
+  /** Row height, so the row-pitch-to-panel-width ratio can be formed. */
+  rowRatio: number;
+  /** The face the code is set in, first family only. */
+  codeFont: string;
+  /** Type sizes, in px, for the reference's own size relationships. */
+  codeSizePx: number;
+  gapSizePx: number;
+  posSizePx: number;
+  tyreSizePx: number;
+  /** The compound letter's own colour, which the reference colours by compound. */
+  tyreColour: string;
+  /** The team mark's drawn box, as a fraction of the row's height. */
+  markRatio: number;
+  /** The livery bar's colour, so "the bar is the team's colour" is checkable. */
+  barColour: string;
+  /** The fastest-lap badge, when this row holds it: shown, and its radius. */
+  fastBadge: { shown: boolean; radius: string } | null;
 }
 
 export interface TowerReading {
@@ -99,6 +134,30 @@ export interface TowerReading {
   timed: boolean;
   fastest: string;
   pitSheetOpen: boolean;
+
+  // --- The header the reference draws — issue #76 ------------------------
+  head: {
+    /** The wordmark, e.g. `F1SIM`. */
+    series: string;
+    /** The session word beside it — `RACE`, `Q1`, `PRACTICE`. */
+    session: string;
+    /** `LAP`, the current lap, and the total. */
+    lapWord: string;
+    lapNow: string;
+    lapTotal: string;
+    /** Is the lap line centred in the panel, as the reference centres it? */
+    lapMid: number;
+    /** Is the mark line on a lighter ground than the rows, as in 68.png? */
+    markGround: string;
+    rowGround: string;
+    /** Weight of the current lap against the total — the reference bolds one. */
+    lapNowWeight: string;
+    lapTotalWeight: string;
+    lapNowSizePx: number;
+    lapTotalSizePx: number;
+  };
+  /** The elastic row height in force, in CSS pixels. */
+  rowPx: number;
 }
 
 interface TowerApi {
@@ -109,6 +168,78 @@ interface TowerApi {
   advance(seconds: number): Promise<void>;
   paint(): Promise<void>;
   read(): TowerReading;
+}
+
+// ===========================================================================
+// WHERE A COLUMN SITS ACROSS THE BOARD — issue #76
+// ===========================================================================
+//
+// THE INK, NOT THE BOX, and the difference is the whole measurement. The gap
+// cell is a 62-pixel box with `+1.230` right-aligned inside it; the reference
+// fixes where the FIGURE ends, not where its container does. A `Range` over
+// the element's own text nodes gives the drawn extent of the glyphs, which is
+// exactly what was measured off `reference/target/68.png` with a luma
+// threshold. Falls back to the element's box when there is no text — an SVG
+// team mark has none.
+
+function styleOf(row: HTMLElement, sel: string): CSSStyleDeclaration | null {
+  const el = row.querySelector<HTMLElement>(sel);
+  return el ? getComputedStyle(el) : null;
+}
+
+function sizePx(row: HTMLElement, sel: string): number {
+  const cs = styleOf(row, sel);
+  return cs ? Math.round(parseFloat(cs.fontSize) * 100) / 100 : 0;
+}
+
+function firstFamily(row: HTMLElement, sel: string): string {
+  const cs = styleOf(row, sel);
+  if (!cs) return '';
+  return (cs.fontFamily.split(',')[0] ?? '').trim().replace(/^['"]|['"]$/g, '');
+}
+
+/** The drawn extent of an element's text, or its box when it has none. */
+function inkBox(row: HTMLElement, sel: string): DOMRect | null {
+  const el = row.querySelector<HTMLElement>(sel);
+  if (!el) return null;
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+  if ((el.textContent ?? '').trim() !== '') {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const b = range.getBoundingClientRect();
+    range.detach();
+    if (b.width > 0) return b;
+  }
+  const b = el.getBoundingClientRect();
+  return b.width > 0 ? b : null;
+}
+
+function frac(x: number, panel: DOMRect): number {
+  return panel.width > 0 ? Math.round(((x - panel.left) / panel.width) * 1000) / 1000 : 0;
+}
+
+function inkLeft(row: HTMLElement, sel: string, panel: DOMRect): number {
+  const b = inkBox(row, sel);
+  return b ? frac(b.left, panel) : -1;
+}
+
+function inkRight(row: HTMLElement, sel: string, panel: DOMRect): number {
+  const b = inkBox(row, sel);
+  return b ? frac(b.right, panel) : -1;
+}
+
+function inkMid(row: HTMLElement, sel: string, panel: DOMRect): number {
+  const b = inkBox(row, sel);
+  return b ? frac(b.left + b.width / 2, panel) : -1;
+}
+
+/** The centre of a cell's BOX — right for an SVG mark, which has no ink run. */
+function cellMid(row: HTMLElement, sel: string, panel: DOMRect): number {
+  const el = row.querySelector<HTMLElement>(sel);
+  if (!el) return -1;
+  const b = el.getBoundingClientRect();
+  return b.width > 0 ? frac(b.left + b.width / 2, panel) : -1;
 }
 
 const app = document.getElementById('app') as HTMLElement;
@@ -291,6 +422,32 @@ const api: TowerApi = {
           const c = el.querySelector<HTMLElement>('.tower-code');
           return c ? Math.max(0, c.scrollWidth - c.clientWidth) : 0;
         })(),
+        // The copy, as fractions of the panel. `frac` turns a page-space x
+        // into "how far across the board is this", which is the only form in
+        // which our 212px panel and the reference's 379px one can be compared.
+        posMid: inkMid(el, '.tower-pos', tr),
+        markMid: cellMid(el, '.tower-mark', tr),
+        codeLeft: inkLeft(el, '.tower-code', tr),
+        gapRight: inkRight(el, '.tower-gap', tr),
+        tyreMid: inkMid(el, '.tower-tyre', tr),
+        rowRatio: tr.width > 0 ? r.height / tr.width : 0,
+        codeFont: firstFamily(el, '.tower-code'),
+        codeSizePx: sizePx(el, '.tower-code'),
+        gapSizePx: sizePx(el, '.tower-gap'),
+        posSizePx: sizePx(el, '.tower-pos'),
+        tyreSizePx: sizePx(el, '.tower-tyre'),
+        tyreColour: styleOf(el, '.tower-tyre')?.color ?? '',
+        markRatio: (() => {
+          const m = el.querySelector<HTMLElement>('.tower-mark');
+          return m && r.height > 0 ? m.getBoundingClientRect().height / r.height : 0;
+        })(),
+        barColour: styleOf(el, '.tower-bar')?.backgroundColor ?? '',
+        fastBadge: (() => {
+          const b = el.querySelector<HTMLElement>('.tb-fast');
+          if (!b) return null;
+          const cs = getComputedStyle(b);
+          return { shown: cs.display !== 'none', radius: cs.borderRadius };
+        })(),
       });
     }
 
@@ -344,6 +501,44 @@ const api: TowerApi = {
       timed: tower.classList.contains('is-timed'),
       fastest: hud.root.querySelector<HTMLElement>('.tower-fastest')?.textContent ?? '',
       pitSheetOpen: engine.pitDecisionPending(player),
+      head: (() => {
+        const q = (s: string) => tower.querySelector<HTMLElement>(s);
+        const lapBlock = q('.tower-lapblock');
+        const lapNow = q('.tower-lapnow');
+        const lapTotal = q('.tower-laptotal');
+        const markLine = q('.tower-markline');
+        const firstRow = tower.querySelector<HTMLElement>('.tower-row');
+        const lb = lapBlock ? lapBlock.getBoundingClientRect() : null;
+        // The lap line's own ink, centred against the panel — the reference
+        // centres `LAP 3/57` and this board used to push it to the right-hand
+        // end of the mark line with `margin-left: auto`.
+        const lapInk = lapBlock ? (() => {
+          const r = document.createRange();
+          r.selectNodeContents(lapBlock);
+          const b = r.getBoundingClientRect();
+          r.detach();
+          return b;
+        })() : null;
+        return {
+          series: q('.tower-series')?.textContent ?? '',
+          session: q('.tower-session')?.textContent ?? '',
+          lapWord: q('.tower-lapword')?.textContent ?? '',
+          lapNow: lapNow?.textContent ?? '',
+          lapTotal: lapTotal?.textContent ?? '',
+          lapMid: lapInk && lapInk.width > 0
+            ? frac(lapInk.left + lapInk.width / 2, tr) : (lb ? frac(lb.left + lb.width / 2, tr) : -1),
+          markGround: markLine ? getComputedStyle(markLine).backgroundColor : '',
+          rowGround: firstRow ? getComputedStyle(tower).backgroundColor : '',
+          lapNowWeight: lapNow ? getComputedStyle(lapNow).fontWeight : '',
+          lapTotalWeight: lapTotal ? getComputedStyle(lapTotal).fontWeight : '',
+          lapNowSizePx: lapNow ? parseFloat(getComputedStyle(lapNow).fontSize) : 0,
+          lapTotalSizePx: lapTotal ? parseFloat(getComputedStyle(lapTotal).fontSize) : 0,
+        };
+      })(),
+      rowPx: (() => {
+        const v = getComputedStyle(tower).getPropertyValue('--tower-row').trim();
+        return Math.round(parseFloat(v) * 10) / 10 || 0;
+      })(),
     };
   },
 };

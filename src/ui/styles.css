@@ -129,6 +129,57 @@
     U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* --- The timing board's face -------------------------------------------
+   Titillium Web, regular and bold, self-hosted from `public/assets/fonts/`.
+
+   WHY A FOURTH FACE, WHEN THE PROJECT'S RULE IS THREE. Because #76 is a copy
+   job and the type is half of what makes the reference board look like the
+   reference board. Formula One's own typeface — `Formula1 Display` and
+   `Formula1 Torque` — is proprietary, is licensed to the rights holder, and
+   is **deliberately not fetched**: `scripts/fetchAssets.ts` says so in a
+   comment beside these two entries. Titillium Web is the closest OFL relative
+   there is (Accademia di Belle Arti di Urbino, SIL OFL 1.1), it is a humanist
+   sans with the same flat-sided round forms and the same slightly condensed
+   caps, and it is what everybody who cannot license the real face uses.
+
+   IT IS NOT THE REAL FACE AND THIS FILE WILL NOT PRETEND IT IS. The `S`, the
+   `R` leg and the figures are visibly different at the size the board draws
+   them. See the PR's "could not reproduce" section; this is the first entry
+   in it.
+
+   NOT SUBSET, and not converted to woff2, because the file is not in git:
+   `public/assets/` is gitignored and regenerated with
+   `npx tsx scripts/fetchAssets.ts fonts`. A build without it falls straight
+   through to Archivo — `font-display: swap` and a real fallback stack — so a
+   fresh clone draws a board that is merely not quite right rather than a
+   board of squares. `probe:tower` §5 asserts the face actually in use, so the
+   fallback cannot pass silently as the copy.
+
+   THE URL IS ABSOLUTE, which is Vite's own rule for `public/` and which is
+   what `EnvProbe` does for the HDRIs. It is also the one thing here that a
+   subpath deploy would break, because `vite.config.ts` sets `base: './'` and
+   Vite does not rewrite absolute URLs inside CSS. Verified with a real
+   `vite build`: the fonts land at `dist/assets/fonts/titillium*/` and the
+   built stylesheet asks for `/assets/fonts/titillium/titillium.ttf`, which
+   resolves from the site root. A relative URL is NOT the fix — in dev the
+   stylesheet is served from `/src/ui/`, so it would look for
+   `src/ui/fonts/titillium/`, and the build would fail to resolve it at all.
+   Licence and provenance: `public/assets/LICENSES.md`. */
+@font-face {
+  font-family: 'Titillium Web';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/assets/fonts/titillium/titillium.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Titillium Web';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/assets/fonts/titillium-bold/titillium-bold.ttf') format('truetype');
+}
+
 :root {
   /* --- Surfaces ---------------------------------------------------------
      The hall, and the panels standing in it. Panel FACES are still flat —
@@ -185,6 +236,13 @@
     'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-ui: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, sans-serif;
+  /* The timing board, and ONLY the timing board. Issue #76: the reference is
+     set in Formula One's own face, which is proprietary; Titillium Web is its
+     closest OFL relative and is what the board is set in here. Kept out of
+     `--font-display` on purpose — every other screen in this game stays in
+     Archivo, and one panel reading as a broadcast graphic is the point. */
+  --font-board: 'Titillium Web', 'Archivo', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   /* The shear. One value, so every leaning thing leans by the same amount. */
   --lean: -8deg;
 
@@ -355,115 +413,193 @@ canvas#view {
 
 /* --- Top left: the running order --------------------------------------
 
-   THE PANEL THIS REPLACES fitted twenty three-letter codes into 224 pixels:
-   `MBE  +0.235`, nineteen more like it, nineteen pixels apart. Dense, true,
-   and unreadable — nobody parses twenty rows at 300km/h, and an abbreviation
-   only says something to a viewer who has already memorised the field.
+   ISSUE #76. THIS PANEL IS A COPY OF `reference/target/68.png` AND THE
+   NUMBERS BELOW ARE MEASURED OFF IT, not chosen. The user's instruction about
+   that image, recorded in `PROJECT.md` §2 and in the issue:
 
-   THE ROW that replaces it is the one a broadcast timing graphic uses, and
-   every element of it is doing a job: a bar in the team's livery colour, the
-   position, the team's own generated mark, the driver's surname in heavy caps
-   with their first name small beside it, their team and their compound on a
-   second line, then the gap and the best lap in right-aligned figures. Six
-   columns, one grid template shared with the header row through a custom
-   property, so a column can never drift away from its own label.
+     "literally copy this." ... "copy this!!! don't change shit from it.
+      literally copy it jesus its not hard."
+
+   HOW THE REFERENCE WAS MEASURED. The panel's own edges are the luma step in
+   the header band at x = 102 and x = 481, so W = 379px. The row pitch is the
+   spacing of the text bands of rows 1, 2 and 3 (y = 243, 306, 373), so
+   pitch = 65px. Every column below is quoted as a fraction of W, taken from
+   the horizontal extents of the drawn glyphs in rows 1, 3 and 14:
+
+     livery bar      the panel's left edge          (68 has none; 73/74/75 do)
+     position        centre 0.095                   (0.045-0.129 for "14")
+     team mark       0.193 - 0.288, centre 0.241
+     driver code     LEFT edge 0.327
+     gap             RIGHT edge 0.885
+     compound        0.926 - 0.982, centre 0.954
+     row pitch       0.171 of W
+
+   The template below reproduces those fractions exactly, which is why it is
+   written in per cent of the panel and not in pixels: the same row is drawn
+   at five panel widths in this stylesheet and the reference's proportions
+   have to survive all five. `probe:tower` §5 asserts each fraction against
+   the number in this comment.
+
+   WHAT IS OURS AND NOT THE REFERENCE'S, so nobody has to guess later:
+    - the livery bar, which 68 has no room for but 73/74/75 all carry;
+    - the badge column (fastest lap, `P`, penalty, chequer). The reference
+      puts the fastest-lap badge and the `P` in the compound's own slot; we
+      have four states to say and one slot will not carry them, so the badges
+      take an `auto` column that is zero pixels wide on the nineteen rows out
+      of twenty that have nothing to say.
 
    Fourteen legible rows beat twenty illegible ones — and the ceiling is not
    only about legibility. Everything else the team says now lives in the same
    left rail, and a tower sized to "as many as fit" grows straight down
    through the pit instruction. See `towerFit`. */
 .hud-tower {
-  --tower-cols: 3px 22px 20px minmax(0, 1fr) 0 52px 12px 32px;
+  /* The reference's own column fractions. The 1.8% right inset is what puts
+     the gap's right edge on 0.885 and the compound's on 0.982.
+     bar | pos | mark | code | (best) | gap | compound | badges */
+  --tower-cols: 2.2% 14.3% 16.2% minmax(0, 1fr) 0% 30% 9.7% auto;
+  /* The row height, elastic between 20 and 30 px — `towerRowPx` writes it and
+     every size inside the row is a fraction of it. See `TOWER_ROW_MIN_PX`. */
+  --tower-row: 20px;
   top: calc(10px + var(--safe-t));
   left: calc(10px + var(--safe-l));
-  width: 300px;
-  padding: 8px 9px 8px;
+  /* 212px on a 1400px desktop is 15.1% of the frame, which is where the
+     reference board sits in situ: 95/680 = 14.0% in `73.png`, 165/980 =
+     16.8% in `74.png`. It was 300px (21.4%) — wider than any broadcast board
+     in the set, and the width is half of why the rows read as too tight.
+     Narrow AND short is a spreadsheet; narrow and tall is a timing tower. */
+  width: 212px;
+  padding: 0 0 6px;
+  overflow: hidden;
   border-radius: var(--card-r);
-  /* Dark navy and translucent, not the neutral carbon the instrument panels
-     are drawn on. This is the one graphic on screen that is ABOUT the race
-     rather than about the car, and it is the one a broadcast leaves up
-     permanently; giving it its own ground is what separates the two systems
-     at a glance. */
-  background: linear-gradient(180deg, rgba(9, 17, 33, 0.9), rgba(6, 11, 22, 0.86));
-  border: 1px solid rgba(120, 160, 214, 0.16);
+  /* NEUTRAL, NOT NAVY. Measured off the reference's row area — rgb(38, 37, 44)
+     composited over a bright pit-straight background, i.e. very nearly black
+     with the faintest cool cast. The panel used to be `rgba(9, 17, 33, 0.9)`,
+     a distinctly blue plate, which is a defensible piece of design and is not
+     what the reference does. */
+  background: rgba(17, 17, 21, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   box-shadow: var(--plate-lift);
 }
-.hud-tower .hud-stripe { top: 12px; bottom: 12px; border-radius: 0 2px 2px 0; }
+/* THE PANEL'S OWN PLAYER STRIPE IS GONE, and it had to be: the rows now run
+   to the panel's left edge and every one of them carries its own livery bar
+   there, so a full-height stripe in the player's colour stood on all twenty of
+   them and only the player's happened to match. Whose car you are in is said
+   by `.tower-row.is-player`, which is where the reference says it. The
+   element stays — `Hud.teamStripe` is written every frame and other panels
+   use the same class — and is simply not drawn here. */
+.hud-tower .hud-stripe { display: none; }
 /* --- The header -------------------------------------------------------
-   The series mark, the circuit, and the lap. A broadcast tower header says
-   which championship you are watching and how far through the race it is,
-   and little else — so those are the only things here, with the lap number
-   set at the size it is read at from across a room and the total set small
-   beside it. The mark is this game's own and is the only wordmark in the
-   HUD; no real series mark is reproduced. */
+   TWO LINES, MEASURED OFF `reference/target/68.png`:
+
+     y  60 - 134   the mark line, on a LIGHTER ground — rgb(55,54,61) against
+                   the rows' rgb(38,37,44), 1.45x — carrying `F1  RACE`
+     y 135 - 204   `LAP 3/57`, CENTRED, on the rows' own ground, the current
+                   lap heavy and white and the total small and grey
+
+   Both of those were wrong here. The second slot carried the CIRCUIT NAME and
+   the lap was pushed to the right-hand end of the same line by `margin-left:
+   auto` — `probe:tower` measured its centre at 0.846 of the panel against the
+   reference's 0.500. The reference gives the lap a centred line of its own on
+   every board in the set — 68, 73, 80 — and prints the SESSION where the
+   circuit was.
+
+   The mark is this game's own (`F1SIM`). Formula One's is a registered
+   trademark and is not reproduced; see the PR. */
 .tower-head {
   display: flex;
-  align-items: baseline;
-  gap: 7px;
-  padding: 0 4px 7px;
+  flex-direction: column;
+  padding: 0;
+  margin-bottom: 4px;
+}
+.tower-markline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  /* The lighter ground the reference's mark line stands on. */
+  background: rgba(52, 52, 60, 0.75);
+  padding: 6px 8px;
 }
 .tower-series {
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 500;
-  font-stretch: 118%;
-  letter-spacing: 0.06em;
+  font-family: var(--font-board);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
   color: var(--ink-2);
   flex: 0 0 auto;
   line-height: 1;
 }
-.tower-series b { font-weight: 900; color: var(--ink); }
+.tower-series b { font-weight: 700; color: var(--ink); }
+/* The session word — `RACE`, `Q1`, `Q2`, `Q3`, `PRACTICE`. Heavy white caps
+   at the mark's own size, which is what `F1 RACE` is in the reference: the
+   two words read as one lockup rather than as a title and a subtitle. */
 .tower-session {
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  color: var(--ink-3);
-  flex: 1 1 auto;
+  font-family: var(--font-board);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-transform: uppercase;
+  flex: 0 1 auto;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1;
 }
 .tower-lapblock {
   display: flex;
   align-items: baseline;
-  gap: 3px;
-  flex: 0 0 auto;
-  margin-left: auto;
+  justify-content: center;
+  gap: 2px;
+  padding: 5px 8px 6px;
 }
 .tower-lapword {
-  font-family: var(--font-display);
-  font-size: 8px;
-  font-weight: 850;
-  font-stretch: 116%;
-  letter-spacing: 0.15em;
-  color: var(--ink-3);
-}
-.tower-lapnow {
-  font-family: var(--font-display);
-  font-size: 20px;
-  font-weight: 900;
-  font-stretch: 120%;
-  letter-spacing: 0.01em;
-  line-height: 0.9;
-  color: var(--ink);
-}
-.tower-lapbar { font-size: 11px; color: var(--ink-3); }
-.tower-laptotal {
-  font-family: var(--font-data);
+  font-family: var(--font-board);
   font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  color: var(--ink-2);
+  margin-right: 3px;
+}
+/* THE CURRENT LAP IS THE BOLD ONE, and the total is not. `LAP 3/57` in the
+   reference sets the 3 heavy and white at about 1.4x the height of `/57`,
+   which stays grey. It is the one number on this panel read from across a
+   room. Before this it was weight 900 against a weight 700 total, i.e. both
+   bold, which is the reference's contrast very nearly thrown away. */
+.tower-lapnow {
+  font-family: var(--font-board);
+  font-size: 15px;
   font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+.tower-lapbar {
+  font-family: var(--font-board);
+  font-size: 11px;
   color: var(--ink-2);
 }
-/* A practice or qualifying session is a clock, not a lap count. Same slot,
-   figure face — the big number is always the one that matters. */
+.tower-laptotal {
+  font-family: var(--font-board);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+/* A practice or qualifying session is a clock, not a lap count — the 2024 and
+   2025 boards in `reference/target/69.png` read `2:39:11` and `2:33:20` in
+   exactly this slot. Same slot, same centring, no `/total`. */
+.tower-lapblock.is-clock .tower-lapword,
 .tower-lapblock.is-clock .tower-lapbar,
 .tower-lapblock.is-clock .tower-laptotal { display: none; }
 .tower-lapblock.is-clock .tower-lapnow {
-  font-family: var(--font-data);
-  font-size: 15px;
-  font-weight: 800;
+  font-family: var(--font-board);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 /* --- The flag band ----------------------------------------------------
@@ -486,9 +622,8 @@ canvas#view {
   align-items: center;
   justify-content: center;
   gap: 1px;
-  margin: 0 0 7px;
+  margin: 0 0 4px;
   padding: 4px 8px 5px;
-  border-radius: 3px;
   text-align: center;
 }
 .flagband-label {
@@ -531,39 +666,31 @@ canvas#view {
   background: repeating-conic-gradient(#06080b 0% 25%, #eef2f8 0% 50%) 0 0 / 10px 10px;
 }
 
-/* --- The order --------------------------------------------------------- */
-.tower-cols,
+/* --- The order ---------------------------------------------------------
+   NO COLUMN GAP AND NO SIDE PADDING, because the columns are per cent of the
+   panel and a `gap` would push every one of them off the fraction it is
+   measured to sit on. Each cell aligns its own text instead. The 1.8% right
+   inset is the reference's own right margin — it is what puts the compound's
+   right edge on 0.982 of the panel and the gap's on 0.885.
+
+   NO ROUNDED CORNERS ON A ROW. The reference's rows are square and touching:
+   a continuous column of type with the ground showing between the lines,
+   which is what makes twenty of them read as one list. A 5px radius on each
+   row makes twenty pills. */
 .tower-row {
   display: grid;
   grid-template-columns: var(--tower-cols);
   align-items: center;
-  gap: 0 7px;
-  padding: 0 5px;
-}
-.tower-cols {
-  padding-bottom: 5px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
-}
-.tower-col {
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  overflow: hidden;
-}
-/* Each header cell carries the name of its column rather than a position in
-   the row, so hiding a column at a breakpoint hides its label with it and the
-   two cannot come apart. */
-.c-gap { text-align: right; }
-.c-time { text-align: right; }
-
-.tower-row {
-  height: 20px;
-  border-radius: 5px;
-  margin-bottom: 1px;
+  gap: 0;
+  padding: 0 1.8% 0 0;
+  height: var(--tower-row);
+  margin-bottom: 0;
+  /* The type scales with the row, in the reference's own ratios — the code's
+     cap height is 0.338 of the row pitch there (22px of 65), which for
+     Titillium's cap height of ~0.70em is 0.48em of the row. Everything else
+     in the row is a fraction of THIS, so one number moves the whole row and
+     the proportions cannot drift apart. */
+  font-size: calc(var(--tower-row) * 0.48);
 }
 
 /* --- The lap time column ----------------------------------------------
@@ -605,18 +732,32 @@ canvas#view {
    because at 56/46 the driver-code column measured 36px and `probe:tower`
    found two codes cut off in it. */
 .tower-time {
-  font-family: var(--font-data);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-family: var(--font-board);
+  font-size: 0.92em;
+  font-weight: 400;
   letter-spacing: -0.01em;
   text-align: right;
   color: var(--ink);
   overflow: hidden;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 /* The quickest lap of the session is purple, here and everywhere else in this
    game, because that is the sport's own rule and it means the column needs no
-   legend. */
-.hud-tower.is-timed { --tower-cols: 3px 20px 18px minmax(0, 1fr) 52px 44px 12px 30px; }
+   legend.
+
+   A LAP TIME CLASSIFIED SESSION GETS A SIXTH COLUMN AND THEREFORE A WIDER
+   PANEL. The reference's race board has five columns and 212px is the width
+   that puts them on their measured fractions; a `1:41.108` alongside a
+   `+1.158` needs 60 more pixels and squeezing them out of the code column is
+   how `probe:tower` found two driver codes cut off last time. So the
+   qualifying board is 272px, the column fractions shift to make room, and the
+   row-to-width ratio pays for it. */
+.hud-tower.is-timed {
+  width: 272px;
+  --tower-cols: 1.7% 11.2% 12.6% minmax(0, 1fr) 23% 19% 7.6% auto;
+}
 .tower-row.is-best .tower-time { color: var(--violet); }
 /* HIDDEN, NOT REMOVED, and the difference is a column. `display: none` takes
    an element out of the grid's flow entirely, so the seven cells that were
@@ -625,24 +766,31 @@ canvas#view {
    a race board whose gap cell was in the zero-width slot — twenty rows of
    `Leader` and `+1.230` drawn at 0px — with the compound letter sitting where
    the gap belonged. `visibility: hidden` keeps the slot and the alignment. */
-.hud-tower:not(.is-timed) .tower-time,
-.hud-tower:not(.is-timed) .c-time { visibility: hidden; }
-/* THE LEADER'S NUMBER IN A FILLED RED CELL. This is the one place in this
-   game red does not mean "stopped", and it is deliberate: it is what a
-   broadcast tower does, and it is the fastest way to find the front of the
-   order in peripheral vision. The clash is real and it is paid for elsewhere
-   — a retired car says so in words (`Out`) and by being dimmed to two fifths,
-   not by being red. */
+.hud-tower:not(.is-timed) .tower-time { visibility: hidden; }
+/* THE LEADER'S NUMBER IN A FILLED RED CELL. Not a design flourish — it is
+   what `reference/target/69.png` (2025, row 1: a red box round the `1` beside
+   LAW) and `74.png`/`75.png` (a filled cell round P1's number) both do, and
+   it is the fastest way to find the front of the order in peripheral vision.
+   The clash with red-means-stopped is real and is paid for elsewhere: a
+   retired car says so in words (`Out`) and by being dimmed to two fifths.
+
+   The fill takes the WHOLE cell, top to bottom, as it does in the reference —
+   it used to be a 3px-radius chip floating inside a taller row. */
 .tower-row.is-leader .tower-pos {
   background: var(--sig-red);
   color: #fff;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 /* White means "the thing happening now", and the driver's own row is exactly
-   that. It is an outline rather than a fill so the team colour beside it is
-   not tinted by the highlight. */
+   that. The reference outlines the row it is following — `74.png` and
+   `75.png` both put a pale rule round the `DRIVER AT RISK` row. Outline
+   rather than fill so the team colour beside it is not tinted. */
 .tower-row.is-player {
-  background: rgba(242, 246, 251, 0.11);
-  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.26);
+  background: rgba(242, 246, 251, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(242, 246, 251, 0.3);
 }
 /* The leader is pinned above a window that has scrolled past them, so the row
    under it is not the car behind it. The break says so. */
@@ -667,45 +815,74 @@ canvas#view {
    phone that band is only wide enough for the sheet if the panel above it is
    down to its header and its flag. The column rule and the fastest lap are
    both reference; neither is being read in the two seconds this lasts. */
-.hud.pit-open .tower-cols,
 .hud.pit-open .tower-fastest { display: none; }
 
-.tower-bar { width: 3px; height: 18px; border-radius: 2px; background: var(--ink-3); }
+/* The livery bar, from `73/74/75.png` — a hairline of the team's own colour
+   down the very left edge of the row. `68.png` has no room for one and every
+   in-situ frame in the set carries it. */
+.tower-bar {
+  width: 2.5px;
+  height: 62%;
+  background: var(--ink-3);
+}
+/* The position: grey, tabular, a shade smaller than the code. Measured off
+   the reference at 19px of cap against the code's 22px, so 0.86 of it. */
 .tower-pos {
   text-align: center;
-  font-family: var(--font-data);
-  font-size: 11px;
-  font-weight: 800;
+  font-family: var(--font-board);
+  font-size: 0.86em;
+  font-weight: 400;
   color: var(--ink-2);
-  border-radius: 3px;
-  padding: 2px 0;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
-.tower-mark { width: 20px; height: 20px; }
+/* The team mark at HALF the row, which is the reference's proportion — 33px
+   of a 65px pitch — and not the whole of it. Ours measured 1.00 of the row:
+   20px of mark in a 20px row, the loudest thing on the board, where the
+   reference makes the driver code the loudest thing. */
+.tower-mark {
+  width: 1.06em;
+  height: 1.06em;
+  justify-self: center;
+}
 .tower-mark svg { display: block; width: 100%; height: 100%; }
 
-/* The code, in heavy white caps: the identification a timing tower uses, with
+/* The code, in bold white caps: the identification a timing tower uses, with
    the team's own mark beside it in the team's own colour carrying the second
-   axis. Between them they say which car this is without a word of prose. */
+   axis. Between them they say which car this is without a word of prose.
+
+   Titillium Web bold, because the reference is set in Formula One's own face
+   and Titillium is its closest OFL relative — see the `@font-face` block at
+   the top of this file for why the real one is not fetched. It is NOT the
+   same face and the `S`, the `R` and the figures give it away at this size. */
 .tower-code {
-  font-family: var(--font-display);
-  font-size: 12.5px;
-  font-weight: 850;
-  font-stretch: 112%;
-  letter-spacing: 0.06em;
+  font-family: var(--font-board);
+  font-size: 1em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   color: var(--ink);
   text-transform: uppercase;
   overflow: hidden;
   white-space: nowrap;
+  line-height: 1;
 }
+/* THE GAP IS THE SAME SIZE AS THE CODE. Measured: in `68.png` the code's cap
+   and the `+1.230`'s figures are both 22px tall. Ours had the figures at 10px
+   against a 12.5px code, which is why the right-hand half of the board read
+   as a footnote. Tabular figures so the decimal points line up down the
+   column — which is the whole reason a timing board is legible at a glance. */
 .tower-gap {
   text-align: right;
-  font-family: var(--font-data);
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--ink-2);
+  font-family: var(--font-board);
+  font-size: 1em;
+  font-weight: 400;
+  color: var(--ink);
   overflow: hidden;
   white-space: nowrap;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 /* `Leader`, ITALIC, in mixed case — `reference/target/68.png`, row one:
    `1  LEC  Leader  M`. It used to read `INTERVAL` in small display capitals on
@@ -713,17 +890,26 @@ canvas#view {
    reference disagrees, and the reference is the specification: "copy this!!!
    don't change shit from it". Same size and colour as the figures it sits
    among, so the column still reads as one column. */
+/* The 0.1em inset is not decoration: an italic's rightmost ink overhangs its
+   own advance width, and in a right-aligned `overflow: hidden` cell that
+   sliced the leg off the `r` in `Leader`. Measured on the first shot of the
+   restyled board. */
 .tower-row.is-leader .tower-gap {
   font-style: italic;
-  color: var(--ink-2);
+  color: var(--ink);
+  padding-right: 0.1em;
 }
 /* The compound, in its own colour — soft red, medium yellow, hard white. One
-   character, because that is what the sport calls them. */
+   character, because that is what the sport calls them. Right-aligned rather
+   than centred: that is what puts its right edge on the reference's 0.982 and
+   its centre on 0.954, and a centred letter in a variable-width cell does
+   neither. 0.73 of the code, measured — 16px of cap against 22. */
 .tower-tyre {
-  font-family: var(--font-data);
-  font-size: 9.5px;
-  font-weight: 800;
-  text-align: center;
+  font-family: var(--font-board);
+  font-size: 0.73em;
+  font-weight: 700;
+  text-align: right;
+  line-height: 1;
 }
 
 /* --- The status column -------------------------------------------------
@@ -739,23 +925,37 @@ canvas#view {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 3px;
+  gap: 0.16em;
 }
+/* ZERO PIXELS WHEN THERE IS NOTHING TO SAY, and that is what lets the
+   compound sit on the reference's 0.954 on nineteen rows out of twenty: the
+   column is `auto` in the grid template, an empty flex box measures nothing,
+   and the badge only takes width on the row that has a badge. */
 .tbadge {
   display: none;
   flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
+  width: 0.82em;
+  height: 0.82em;
+  /* 0.34em, not 0.16: at a 12px row font that is 4 pixels, and at 2 the badge
+     sat on the compound letter's shoulder. Seen on the qualifying board's P1
+     and P20 rows in the first side-by-side. */
+  margin-left: 0.34em;
   border-radius: 2px;
   align-items: center;
   justify-content: center;
   line-height: 1;
 }
-.tbadge svg { display: block; width: 9px; height: 9px; }
+.tbadge svg { display: block; width: 0.58em; height: 0.58em; }
+/* THE FASTEST LAP IS A PURPLE CIRCLE. The user's own annotation on
+   `reference/target/67.png` points at it and writes: "Fastest lap- this driver
+   drove the fastest lap. Is the driver with the fastest lap under the first
+   10. Then this driver gets an extra point." It is a circle in the reference
+   and it was a 2px-radius square here. */
 .tower-badges.has-fast .tb-fast {
   display: flex;
   background: var(--sig-purple);
   color: #fff;
+  border-radius: 50%;
 }
 /* `P`, for a car in the pit lane. A pale outlined box at the right-hand edge,
    which is how `reference/target/69.png` marks the eleven cars sitting in
@@ -766,17 +966,17 @@ canvas#view {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.42);
   color: #dfe6f2;
-  font-family: var(--font-display);
-  font-size: 9px;
-  font-weight: 800;
+  font-family: var(--font-board);
+  font-size: 0.62em;
+  font-weight: 700;
 }
 .tower-badges.has-pen .tb-pen {
   display: flex;
   background: var(--sig-red);
   color: #fff;
-  font-family: var(--font-display);
-  font-size: 10px;
-  font-weight: 900;
+  font-family: var(--font-board);
+  font-size: 0.7em;
+  font-weight: 700;
 }
 .tower-badges.has-fin .tb-fin {
   display: flex;
@@ -794,8 +994,10 @@ canvas#view {
   align-items: baseline;
   overflow: hidden;
   gap: 6px;
-  margin: 6px 1px 0;
-  padding: 5px 4px 0;
+  margin: 5px 0 0;
+  /* The panel's own horizontal padding is 0 now — the rows run edge to edge,
+     as the reference's do — so everything that is NOT a row carries its own. */
+  padding: 5px 7px 0;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   min-width: 0;
 }
@@ -2800,9 +3002,11 @@ canvas#view {
 @media (max-width: 900px), (max-height: 470px) {
   .hud-tower,
   .hud-tower.is-timed {
-    --tower-cols: 3px 17px 15px minmax(0, 1fr) 40px 10px 26px;
+    /* The same six reference fractions as the desktop board, minus the lap
+       time: bar | pos | mark | code | gap | compound | badges. */
+    --tower-cols: 2.4% 15.2% 16.2% minmax(0, 1fr) 31% 10.6% auto;
     width: 232px;
-    padding: 6px 6px 5px;
+    padding: 0 0 5px;
   }
   /* REMOVED here rather than hidden, and that is the opposite of the desktop
      rule twelve hundred lines up on purpose. The compact template has seven
@@ -2811,51 +3015,56 @@ canvas#view {
      its slot and push the badge column into an implicit ninth one, off the
      side of the panel. `probe:tower` measured exactly that: twenty cells laid
      out outside the panel on a portrait phone. */
-  .hud-tower .tower-time, .hud-tower .c-time { display: none; }
-  .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 4px; }
-  .tower-cols { gap: 0 4px; padding: 0 3px 4px; margin-bottom: 3px; }
-  /* The column rule goes, and so does the circuit name. Six columns, three of
-     them a colour bar, a badge and a single letter, do not need labelling —
-     and fifteen pixels of header is most of a row on a screen 390 pixels
-     tall. The circuit is on the timing panel and in the driver's windscreen. */
-  .tower-session, .tower-cols { display: none; }
-  .tower-head { padding: 0 3px 5px; gap: 5px; }
-  .tower-series { font-size: 10px; }
-  .tower-lapnow { font-size: 16px; }
-  .tower-lapword { font-size: 7px; letter-spacing: 0.12em; }
+  .hud-tower .tower-time { display: none; }
+  /* THE TYPE IS PROPORTIONALLY LARGER THAN THE REFERENCE HERE, and that is a
+     deliberate departure rather than an oversight. The reference's cap height
+     is 0.338 of its row pitch — on a 17px compact row that is a 5.7px capital,
+     which is not a thing anybody reads on a phone at 300km/h. The compact
+     board takes 0.60 of the row instead of 0.48, which lands the code back on
+     the 10.5px it has always been. Recorded in the PR under what could not be
+     copied. */
+  .tower-row {
+    padding: 0 1.8% 0 0;
+    font-size: calc(var(--tower-row) * 0.6);
+  }
+  /* The session word goes on a phone: `F1SIM` and the lap are the two facts
+     with a claim on 232 pixels, and the session is on the timing panel and in
+     the pause menu.
+
+     AND SO DOES THE SECOND LINE, WHICH IS A ROW OF THE FIELD. Measured, and
+     this is why it is not simply the reference's arrangement shrunk: the
+     desktop's two-line header is 16 pixels taller than the one it replaced,
+     and on a portrait phone 16 pixels is a car. `probe:tower` on the first
+     build of this: portrait/chase 17 rows -> 16, portrait/driver 8 -> 7,
+     landscape/chase 8 -> 7. A board that copies the reference's header by
+     dropping a driver off the bottom has not copied the reference. So on a
+     compact viewport the mark and the lap share one line, as they did before,
+     and the desktop keeps the reference's two. Recorded in the PR. */
+  .tower-session { display: none; }
+  .tower-head {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 3px;
+    background: rgba(52, 52, 60, 0.75);
+    padding: 3px 6px 4px;
+  }
+  .tower-markline { padding: 0; gap: 0.4em; background: none; }
+  .tower-series { font-size: 11px; }
+  .tower-lapblock { padding: 0; }
+  .tower-lapnow { font-size: 13px; }
+  .tower-lapword { font-size: 9px; letter-spacing: 0.04em; margin-right: 2px; }
   .tower-laptotal, .tower-lapbar { font-size: 9.5px; }
-  .tower-lapblock.is-clock .tower-lapnow { font-size: 12.5px; }
+  .tower-lapblock.is-clock .tower-lapnow { font-size: 12px; }
   .tower-flagband { margin-bottom: 5px; padding: 3px 6px 4px; }
   .flagband-label { font-size: 10.5px; letter-spacing: 0.07em; }
   .flagband-cause { font-size: 6.5px; letter-spacing: 0.1em; }
   .fb-chequered { padding-top: 6px; }
   .fb-chequered::before { height: 4px; background-size: 8px 8px; }
-  .tower-bar { height: 12px; }
-  .tower-pos { font-size: 9.5px; padding: 1px 0; }
-  .tower-mark { width: 15px; height: 15px; }
-  .tower-code { font-size: 10.5px; letter-spacing: 0.04em; }
-  .tower-time { font-size: 9.5px; }
-  .tower-gap { font-size: 9.5px; }
-  .tower-row.is-leader .tower-gap { font-size: 6.5px; letter-spacing: 0.06em; }
-  .tower-tyre { font-size: 8px; }
-  .tbadge { width: 11px; height: 11px; border-radius: 2px; }
-  .tbadge svg { width: 7.5px; height: 7.5px; }
-  .tower-badges { gap: 2px; }
-  /* `P`, for a car in the pit lane. A pale outlined box at the right-hand edge,
-   which is how `reference/target/69.png` marks the eleven cars sitting in
-   their garages on both the 2024 and the 2025 board. Outlined rather than
-   filled: it is a statement about where a car is, not an alarm. */
-.tower-badges.has-pit .tb-pit {
-  display: flex;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  color: #dfe6f2;
-  font-family: var(--font-display);
-  font-size: 9px;
-  font-weight: 800;
-}
-.tower-badges.has-pen .tb-pen { font-size: 8.5px; }
-  .tower-fastest { padding: 4px 3px 0; gap: 5px; margin-top: 4px; }
+  .tower-bar { width: 2px; }
+  .tower-code { letter-spacing: 0.01em; }
+  .tbadge { width: 0.78em; height: 0.78em; }
+  .tower-fastest { padding: 4px 6px 0; gap: 5px; margin-top: 4px; }
   .fastest-label { font-size: 7px; }
   .fastest-first { display: none; }
   .fastest-who { font-size: 8.5px; flex: 0 1 auto; min-width: 0; }
@@ -2868,13 +3077,9 @@ canvas#view {
    has the room: the classification the reference shows is a full-screen
    graphic with three times this width to spend. */
 @media (min-width: 1500px) {
-  .hud-tower {
-    --tower-cols: 3px 24px 22px minmax(0, 1fr) 62px 52px 14px 36px;
-    width: 340px;
-  }
-  .hud-notices { --rail-w: 340px; }
-  .tower-code { font-size: 13.5px; }
-  .tower-row { height: 28px; }
+  .hud-tower { width: 244px; }
+  .hud-tower.is-timed { width: 312px; }
+  .hud-notices { --rail-w: 312px; }
 }
 
 /* ==========================================================================
@@ -2987,7 +3192,7 @@ canvas#view {
      deadline measured in corners, there is no running order. The pit cue at
      the foot of the rail carries the lap. */
   .hud.pit-open[data-mirrors] .tower-head { display: none; }
-  .hud.pit-open[data-mirrors] .hud-tower { padding: 3px 6px; }
+  .hud.pit-open[data-mirrors] .hud-tower { padding: 3px 0; }
 
   /* AND THE RAIL GOES INTO THE CORRIDOR. Even with the running order down to a
      sliver, a pit sheet does not fit in the 181 pixels left between the tower
@@ -5290,10 +5495,6 @@ table.standings tr.me td.who { font-weight: 700; }
 .hud-notices.has-pit .hud-pit-cue { display: none !important; }
 @media (max-height: 470px) {
   .hud-notices.has-pit .hud-neutral-cue { display: none !important; }
-  /* THE TOWER GIVES WAY — see `Hud.updateTower`, which drops the ROWS while a
-     stop is being chosen. Only the column header is hidden here, because that
-     one has no inline style fighting it. */
-  .hud.pit-open .tower-cols { display: none; }
   .hud-notices.has-pit { top: calc(96px + var(--safe-t)); }
   /* The recommendation line is the first thing to go: the selected tile and
      the status line under it both already say what is being fitted. */

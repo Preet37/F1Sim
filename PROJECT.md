@@ -246,6 +246,7 @@ Run `npm run` to list. The important ones:
 | `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
+| `probe:tower` | **The running order, after layout, in a real browser** — real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`. §1 every rival's lap time in a cell with pixels in it (#35); §2 the row count against the room the panel has, and that positions increment by exactly one (#17, #76); §3 fields of 18/20/22/24; §4 the five things the reference's row is, per row, drawn; **§5 the COPY — where each column sits as a fraction of the panel, against numbers measured off `reference/target/68.png` itself, plus the face, the size relationships, the compound's own colour, the header's wording, centring and weights, and the badge's shape (#76).** Writes `hud-out/tower/*.png` |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
 | `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
@@ -277,12 +278,17 @@ Run `npm run` to list. The important ones:
   car lap **x1.65** a green lap (bar 1.45–2.20), green shown **100m from the Line**, 3 of 3
   lapped cars unlapped, 0 illegal passes, 0 delta penalties. Proved it can still fail — see
   §6. **Check a known-failing entry by running it before quoting it.**
-- `shoot:panels` — **2 rail + 2 mirror layout failures**, down from 5 + 2. The two radio-card
-  failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
-  hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
-  .hud-notices over mirror[R1] by 26×72px`. Both pre-existing and untouched by that work.
-  **Re-confirmed byte-for-byte on 2026-08-03** by the #13/#38 routing branch, which touches
-  no HUD code: still 2 + 2, same two sentences.
+- `shoot:panels` — **9 rail + 2 mirror layout failures. THIS ENTRY USED TO SAY 2 + 2 AND
+  THE RAIL NUMBER WAS FOUR AND A HALF TIMES WRONG.** Measured on 2026-08-03 on this branch's
+  own base, with the branch stashed, while working #76: **9 rail failures, deduplicated to
+  two sentences** — `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px` and
+  `phone/pit-choice: overlap .pitprompt x .hud-carstate by 138x12px`, each recurring across
+  the landscape-phone scenes. The harness prints a count and then a de-duplicated list, and
+  reading the list as the count is how "2" got written down. The mirror figure is right:
+  **2**, `phone/pit-choice/cockpit: .hud-notices over mirror[R1] by 26×72px`. §6's claim
+  that the rail reached zero was true of the tree it was measured on and is not true of
+  this one; nobody re-measured it, which is the exact failure mode this file keeps warning
+  about. **Run it before quoting it.** The #76 branch is byte-identical at 9 + 2.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
@@ -1911,6 +1917,87 @@ board with 182px of unused rail beneath it"* and *"field of 22 produced 20 rows"
 (b) Restoring the session-kind gate on the lap-time column: **8 failures**, *"17 of 17
 drawn rows withhold a time that was set — OKO set 154.567, cell "2:34.567" at 0px wide"*.
 
+### The same tower, copied rather than described (issue #76, the styling half)
+
+> *"literally copy this."* … *"copy this!!! don't change shit from it. literally copy it
+> jesus its not hard."*
+
+The structure above was right and the picture was not, and the reason is that nothing had
+ever been **measured off the reference**. `reference/target/68.png` is 676×1576. Its panel
+edges are the luma step at x = 102 and x = 481, so W = 379px; its row pitch is the spacing
+of the text bands of rows 1, 2 and 3 (y = 243, 306, 373), so 65px. Every column is the
+horizontal extent of its own glyphs, thresholded at 90/255. **Those numbers are now in
+`styles.css` beside the rules they produced, and `probe:tower` §5 asserts each of them
+against the laid-out board as a fraction of the panel** — scale-free, because the
+reference is a 379px board in a phone recording and ours is 212px on a desktop, and
+pixels do not compare between the two.
+
+| | reference | before | after |
+|---|---|---|---|
+| position, centre | 0.095 | 0.120 | **0.096** |
+| team mark, centre | 0.241 | 0.213 | **0.244** |
+| driver code, LEFT edge | 0.327 | 0.270 | **0.323** |
+| gap, RIGHT edge | 0.885 | 0.757 | **0.883** |
+| compound, centre | 0.954 | 0.800 | **0.960** |
+| row pitch / panel width | 0.171 | 0.067 | **0.104** |
+| panel width / frame width | 0.140–0.168 (in situ) | 0.214 | **0.151** |
+| team mark / row height | 0.51 | **1.00** | **0.51** |
+| gap figures vs code | same size | 10px vs 12.5px | **12px vs 12px** |
+| lap line, centre | 0.500 | 0.846 | **0.500** |
+| current lap vs total, weight | bold vs light | 900 vs 700 | **700 vs 400** |
+| header word | the SESSION | the CIRCUIT | **the session** |
+| header ground | lighter than the rows | none | **lighter** |
+| fastest-lap badge | a circle | a 2px square | **50%** |
+| face | F1's own (proprietary) | Archivo | **Titillium Web** |
+
+What else changed and why: the **column header** (`P · DRIVER · BEST · GAP`) is gone
+because no board in `reference/target/` has one and it cost 24 pixels, which is a car;
+the **panel ground** is neutral `rgba(17,17,21,0.9)` rather than the navy plate, because
+the reference's row area measures rgb(38,37,44); the **rows run edge to edge with square
+corners**, because twenty rounded rows are twenty pills and the reference is one list;
+the **panel's own player stripe** is not drawn, because every row now carries its own
+livery bar in the same 3 pixels and the stripe stood on all twenty of them.
+
+**THE ROW HEIGHT IS ELASTIC NOW, and that is the whole of the scale work.** `towerFit`
+still counts rows at the row's FLOOR — anything else is #17 again — and `towerRowPx`
+then spends the leftover budget on height. Every viewport keeps at least the rows it had;
+four gained one, because deleting the column header took the desktop's modelled chrome
+from 148 to a measured 125:
+
+| viewport / camera | before | after | row height |
+|---|---|---|---|
+| desktop 1400×900, chase | 20 | 20 | 20 → **22px** |
+| desktop 1400×900, cockpit | 15 | **16** | 20px |
+| desktop 1400×900, driver's eye | 11 | **12** | 20px |
+| laptop 1280×800, chase | 20 | 20 | 20px |
+| laptop 1280×800, cockpit | 11 | **12** | 20px |
+| laptop 1280×800, driver's eye | 8 | **9** | 20px |
+| portrait 390×844, chase / cockpit / driver | 17 / 12 / 8 | 17 / 12 / 8 | 17px |
+| landscape 844×390, chase / cockpit / driver | 8 / 7 / 5 | 8 / 7 / 5 | 17px |
+
+**The elastic row found a real under-reservation, and the finding is worth more than the
+pixel.** The first build grew the desktop row to 25px and `shoot:panels` reported one new
+rail failure: *"desktop/radio: the radio card is not on screen in a 171px band"*. The
+safety-car rail is a neutralisation cue (45), a pit cue (30), the gaps (16) and the card
+at its minimum (104) — **223px against a floor that reserves 140** — and the old fixed
+20px row had simply never spent the 251px of slack that hid it. So the COUNT reserves the
+floor (a car beats a pixel of leading) and the SCALE reserves the rail's worst case (a
+pixel of leading does not beat the radio): `TOWER_GROWTH_RESERVE_PX`. `shoot:panels` is
+back to **9 rail + 2 mirror, byte-identical to the same tree before this branch.**
+
+**The compact header is NOT the reference's two lines, deliberately.** Measured: the
+two-line header is 16px taller, and on a portrait phone 16px is a car —
+portrait/chase 17 → 16, portrait/driver 8 → 7, landscape/chase 8 → 7. A board that copies
+the reference's header by dropping a driver off the bottom has not copied the reference,
+so a compact viewport puts the mark and the lap on one line and the desktop keeps the two.
+
+**Proved red on the pre-#76 board**: §5 reports **13 failures** on it, including *"the row
+is 0.067 of the panel's width against the reference's 0.171"*, *"the code is set in
+Archivo and not Titillium Web"*, *"the header's session word reads MONZA and the reference
+says RACE"*, *"the lap line is centred at 0.846 and the reference centres it"*, *"the team
+mark is 1.00 of the row and the reference has it at 0.51"* and *"the fastest-lap badge has
+radius 2px and the reference draws a circle"*.
+
 ### The team radio — one radio, one switch, one voice (issue #21)
 
 The audio chain was already the best-measured work on the project; it was
@@ -2771,15 +2858,26 @@ measurement passes every version of it that is wrong.
   don't change shit from it"* about, has no lap-time column in it at all. A column was
   built, measured and taken back out. **The user has to arbitrate**; `probe:tower` §1
   prints the number every run under `REPORTED (#35, open)`.
-- **The visual copy of the reference board is NOT done — issue #76.** What landed is the
-  structure: every row, contiguous, with the reference's five elements and its wording
-  (§6). What has not: the two-line header (`F1 RACE` over `LAP 3/57` centred — ours is
-  one line reading `F1SIM MONZA … LAP 1/57`), the type (the reference is F1's own
-  proprietary face; `public/assets/fonts/titillium/` is on disk and unused by this
-  panel), the row scale and spacing, the livery bar down the left of each row that the
-  reference does not have, and the filled red cell behind the leader's position number.
-  Side-by-side pictures are in the PR; the board's own portraits are written to
-  `hud-out/tower/` by `probe:tower` every run.
+- **The visual copy of the reference board — issue #76. Landed, and here is exactly what
+  did NOT come with it.** The header, the type, the column positions, the row scale, the
+  colour of the ground, the size relationships and the fastest-lap badge are all measured
+  against `reference/target/68.png` now and asserted by `probe:tower` §5 — see §6. Three
+  things are still not the reference and will not become the reference without a decision
+  the user has to make:
+  - **The row is 0.104 of the panel's width against the reference's 0.171** — 61% of it,
+    up from 0.067 (39%). It cannot go further while the board carries twenty cars: twenty
+    rows at the reference's own ratio on a 212px panel is **725 pixels of running order,
+    and a 900px viewport that also has to carry a notice rail has about 580.** The
+    reference board has nothing under it. Growing the row past this costs either a car
+    (issue #17, reported) or the radio card (measured — see `TOWER_GROWTH_RESERVE_PX`).
+  - **The typeface is Titillium Web, not F1's own.** `Formula1 Display` is proprietary and
+    `scripts/fetchAssets.ts` deliberately does not fetch it. Titillium is the closest OFL
+    relative and it is visibly not the same face.
+  - **The mark is `F1SIM`, not the F1 logo**, which is a registered trademark. The header
+    reads `F1SIM RACE` where the reference reads `F1 RACE`.
+  Side-by-side pictures of our own board, before and after, at one scale, are in
+  `docs/board/`; the board's own portraits are written to `hud-out/tower/` by
+  `probe:tower` every run.
 - **A stationary player in the first garage stops the entire field leaving the pit lane.**
   Found while building `probe:tower`'s scenario and measured on its own: an idle player at
   index 0 in practice or qualifying at Monza leaves **0 of 20 cars out of the pit lane
