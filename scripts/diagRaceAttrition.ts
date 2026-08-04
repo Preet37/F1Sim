@@ -99,6 +99,15 @@ interface Sample {
   worstHealth: number;
   worstPart: string;
   slipF: number;
+  /**
+   * Health lost so far, by cause. The column that decides which way the
+   * correlation runs — see `DamageSource` in `src/race/DamageModel.ts`.
+   */
+  lostContact: number;
+  lostSolid: number;
+  lostWear: number;
+  hitsContact: number;
+  hitsSolid: number;
 }
 
 function sampleOf(engine: RaceEngine, car: CarEntry): Sample {
@@ -123,6 +132,11 @@ function sampleOf(engine: RaceEngine, car: CarEntry): Sample {
     worstHealth: worst,
     worstPart,
     slipF: p.frontTires.slipAngle,
+    lostContact: car.damage.lostBy.contact,
+    lostSolid: car.damage.lostBy.solid,
+    lostWear: car.damage.lostBy.wear,
+    hitsContact: car.damage.hitsBy.contact,
+    hitsSolid: car.damage.hitsBy.solid,
   };
 }
 
@@ -195,6 +209,95 @@ const gripAtFlag: number[] = [];
 const healthByDecile: number[][] = Array.from({ length: 10 }, () => []);
 let racesRun = 0;
 let totalContacts = 0;
+/**
+ * ...of which happened while the race was neutralised.
+ *
+ * The other half of the loop nobody had counted. A full-distance race here is
+ * interrupted seven times and 35% of it runs behind a safety car or a VSC, and
+ * a neutralisation is exactly the condition that takes a field spread over a
+ * lap and folds it into one queue. If most of the contacts are in the queue,
+ * the contact bar is downstream of the retirement bar as well as upstream of
+ * it, and the two bars are one loop rather than one chain.
+ */
+let contactsNeutralised = 0;
+/** Seconds of race, and of neutralisation, so the rate can be compared. */
+let raceSeconds = 0;
+let neutralSeconds = 0;
+let deployments = 0;
+/** The whole field's damage ledger at the flag or at retirement. */
+const fieldLost = { contact: 0, solid: 0, wear: 0 };
+const fieldHits = { contact: 0, solid: 0 };
+/**
+ * EXCURSIONS, and what happened to them.
+ *
+ * The quantity nothing in this repository counts. A retirement reading
+ * `Beached in the gravel` is the END of an excursion; how many excursions the
+ * field has and what fraction of them end in a retirement are two different
+ * numbers, and the fix is in a different place depending on which one is large.
+ * A field that leaves the road twice a race and never gets back is a recovery
+ * problem; a field that leaves it forty times and rejoins from most of them is
+ * a driving problem.
+ *
+ * "Off" here is the same test `RaceEngine.checkStranded` uses to decide that a
+ * stopped car is beached rather than stopped on track — the half-width plus
+ * `STRANDED_OFFROAD_M` — so an excursion counted here is one the engine would
+ * also call off the road.
+ */
+let excursions = 0;
+let excursionsRejoined = 0;
+let excursionSeconds = 0;
+const excursionsByDecile = new Array(10).fill(0);
+/**
+ * THE CAUSAL TEST, and the reason this file exists at all.
+ *
+ * "20 of 26 retiring cars were already carrying a component below 0.70" is a
+ * correlation with two readings. Either a broken car cannot hold the road — in
+ * which case cutting the contact rate cuts the retirements — or the cars that
+ * leave the road are the same cars that were going to leave it anyway and the
+ * damage came along for the ride, in which case it does not.
+ *
+ * The two are told apart by an exposure-weighted rate rather than by a count:
+ * car-seconds on the road split by whether the car's worst component is above
+ * or below 0.70, and excursions counted in the same two buckets. A damaged car
+ * that leaves the road at the same rate per second as a healthy one is not
+ * being put off by its damage, however many of the retirements it accounts for.
+ */
+const exposureS = { healthy: 0, damaged: 0 };
+const excursionsBy = { healthy: 0, damaged: 0 };
+/** The health band the car was in when this excursion started. */
+const offDamaged = new Set<number>();
+/**
+ * The same rate, per tenth of the race, in both bands.
+ *
+ * The count alone cannot separate "a broken car goes off more" from "everybody
+ * goes off more after half distance": the field gets more broken as the race
+ * runs, so the two are confounded in the raw by-tenth row. A rate per
+ * car-second within each band, per tenth, is not — if the HEALTHY band's rate
+ * is flat across the race then the by-tenth shape is entirely a population
+ * shift and the damage is the cause. If the healthy rate climbs too, something
+ * that is not damage is also going on and this says so.
+ */
+const excDecHealthy = new Array(10).fill(0);
+const excDecDamaged = new Array(10).fill(0);
+const expDecHealthy = new Array(10).fill(0);
+const expDecDamaged = new Array(10).fill(0);
+/**
+ * THE DOSE-RESPONSE, which is the version of the causal test worth trusting.
+ *
+ * A two-band split at 0.70 is confounded twice over: the field gets more
+ * broken as the race runs, and a car at 0.72 sits in the "healthy" band while
+ * being substantially damaged. A monotone rise across five bands is neither —
+ * a threshold cannot produce one by accident, and "everybody goes off after
+ * half distance" predicts a flat curve.
+ */
+const HEALTH_BANDS = [0.95, 0.85, 0.70, 0.50, 0] as const;
+const HEALTH_LABEL = ['>= 0.95', '0.85-0.95', '0.70-0.85', '0.50-0.70', '< 0.50'];
+const excByBand = new Array(HEALTH_BANDS.length).fill(0);
+const expByBand = new Array(HEALTH_BANDS.length).fill(0);
+function bandIndex(h: number): number {
+  for (let i = 0; i < HEALTH_BANDS.length; i++) if (h >= HEALTH_BANDS[i]) return i;
+  return HEALTH_BANDS.length - 1;
+}
 
 for (const circuitId of CIRCUITS) {
   const def = getCircuit(circuitId);
@@ -218,10 +321,52 @@ for (const circuitId of CIRCUITS) {
     const seenRetired = new Set<number>();
 
     let nextDecile = 0;
+    let wasNeutral = false;
+    /** Which cars are currently off the road, so a crossing can be counted. */
+    const off = new Set<number>();
     const t0 = Date.now();
     const maxSteps = Math.round((laps * def.referencePoleTimeS * 3.2 + 400) / PHYSICS_DT);
     for (let i = 0; i < maxSteps && !engine.over; i++) {
       engine.step();
+
+      const neutral = engine.raceControl.neutralisation !== 'none';
+      raceSeconds += PHYSICS_DT;
+      if (neutral) neutralSeconds += PHYSICS_DT;
+      if (neutral && !wasNeutral) deployments++;
+      wasNeutral = neutral;
+
+      // Excursions, on the same cadence as the contact test.
+      if (i % 4 === 0) {
+        for (const car of engine.cars) {
+          if (car.retired || car.inPitLane) { off.delete(car.index); continue; }
+          const isOff = Math.abs(car.lateral) > engine.track.halfWidthAt(car.s) + 2;
+          const worstNow = car.damage.worst().health;
+          const broken = worstNow < 0.7;
+          const band = bandIndex(worstNow);
+          const dec = Math.floor(Math.min(0.999, car.lap / laps) * 10);
+          if (isOff) {
+            excursionSeconds += PHYSICS_DT * 4;
+            if (!off.has(car.index)) {
+              off.add(car.index);
+              excursions++;
+              if (broken) { excursionsBy.damaged++; offDamaged.add(car.index); excDecDamaged[dec]++; }
+              else { excursionsBy.healthy++; excDecHealthy[dec]++; }
+              excursionsByDecile[dec]++;
+              excByBand[band]++;
+            }
+          } else {
+            if (broken) expDecDamaged[dec] += PHYSICS_DT * 4;
+            else expDecHealthy[dec] += PHYSICS_DT * 4;
+            expByBand[band] += PHYSICS_DT * 4;
+            // Exposure only counts time ON the road: the denominator is the
+            // opportunity to leave it, and a car already in the gravel has
+            // taken that opportunity.
+            if (broken) exposureS.damaged += PHYSICS_DT * 4;
+            else exposureS.healthy += PHYSICS_DT * 4;
+            if (off.delete(car.index)) { excursionsRejoined++; offDamaged.delete(car.index); }
+          }
+        }
+      }
 
       // Sample every 0.5s. Enough resolution for a three-second run-up and
       // cheap enough not to change what this costs.
@@ -260,6 +405,7 @@ for (const circuitId of CIRCUITS) {
               if (!touching.has(key)) {
                 touching.add(key);
                 totalContacts++;
+                if (neutral) contactsNeutralised++;
                 lastTouch.set(a, engine.time);
                 lastTouch.set(b, engine.time);
                 const frac = Math.min(0.999, Math.max(ca.lap, cb.lap) / laps);
@@ -304,6 +450,14 @@ for (const circuitId of CIRCUITS) {
     }
 
     for (const car of engine.cars) {
+      // The ledger is over EVERY car, retired or not: the question is what
+      // takes health off the field, and a car that retired took its share of it
+      // with it.
+      fieldLost.contact += car.damage.lostBy.contact;
+      fieldLost.solid += car.damage.lostBy.solid;
+      fieldLost.wear += car.damage.lostBy.wear;
+      fieldHits.contact += car.damage.hitsBy.contact;
+      fieldHits.solid += car.damage.hitsBy.solid;
       if (car.retired) continue;
       lapsOnSetAtFlag.push(car.physics.rearTires.lapsOnSet);
       stopsAtFlag.push(car.pitStops);
@@ -351,6 +505,33 @@ for (const r of allRetirements) {
     ('  ' + (r.neutralised ? 'yes' : ' no')));
 }
 
+// --- WHICH WAY DOES THE CORRELATION RUN -----------------------------------
+//
+// The table above says the retiring cars were broken. It cannot say what broke
+// them, and the two answers need different fixes. `DamageSource` books every
+// loss against its cause, so this is the direction of the arrow rather than an
+// inference about it.
+console.log('');
+console.log('  WHAT TOOK THE HEALTH OFF, per retiring car, at `lastRacing`');
+console.log('  ' + 'CAR'.padEnd(5) + 'REASON'.padEnd(22) +
+  'LOST/CONTACT'.padStart(13) + 'LOST/BARRIER'.padStart(14) + 'LOST/WEAR'.padStart(11) +
+  '   HITS c/b' + '  SPD@out');
+for (const r of allRetirements) {
+  const b = r.lastRacing ?? r.before ?? r.at;
+  console.log('  ' +
+    r.code.padEnd(5) + r.reason.slice(0, 21).padEnd(22) +
+    b.lostContact.toFixed(2).padStart(13) +
+    b.lostSolid.toFixed(2).padStart(14) +
+    b.lostWear.toFixed(2).padStart(11) +
+    ('     ' + b.hitsContact + '/' + b.hitsSolid).padEnd(11) +
+    // The speed the car had on the step it was retired. `checkStranded` calls a
+    // car stranded when it is under STRANDED_SPEED_MS = 2.5 m/s for nine
+    // seconds; a car crawling out of a gravel trap at 2 m/s is under that bar
+    // and is not stranded, so this column says whether the rule is retiring
+    // cars that were still moving.
+    r.at.speedMs.toFixed(2).padStart(9));
+}
+
 // --- The distributions ----------------------------------------------------
 console.log('');
 console.log('  BY TENTH OF THE RACE      ' +
@@ -377,6 +558,68 @@ console.log(`    rear tyre grip         mean ${mean(gripAtFlag).toFixed(3)}, ` +
   `min ${Math.min(...gripAtFlag).toFixed(3)}`);
 console.log(`    contacts a race        ${(totalContacts / racesRun).toFixed(2)}`);
 console.log(`    retirements a race     ${(allRetirements.length / racesRun).toFixed(2)}`);
+
+console.log('');
+console.log('  THE FIELD\'S DAMAGE LEDGER — total health lost over every car, by cause');
+{
+  const total = fieldLost.contact + fieldLost.solid + fieldLost.wear;
+  const pct = (x: number) => total > 0 ? (100 * x / total).toFixed(0) + '%' : '-';
+  console.log(`    car-to-car contact     ${(fieldLost.contact / racesRun).toFixed(1)} a race ` +
+    `(${pct(fieldLost.contact)})  over ${(fieldHits.contact / racesRun).toFixed(1)} impacts`);
+  console.log(`    the barrier and world  ${(fieldLost.solid / racesRun).toFixed(1)} a race ` +
+    `(${pct(fieldLost.solid)})  over ${(fieldHits.solid / racesRun).toFixed(1)} impacts`);
+  console.log(`    kerbs, gravel, revs    ${(fieldLost.wear / racesRun).toFixed(1)} a race ` +
+    `(${pct(fieldLost.wear)})`);
+}
+
+console.log('');
+console.log('  EXCURSIONS — how often the field leaves the road, and whether it gets back');
+console.log(`    excursions a race      ${(excursions / racesRun).toFixed(1)}`);
+console.log(`    rejoined               ${(excursionsRejoined / racesRun).toFixed(1)} a race ` +
+  `(${excursions > 0 ? (100 * excursionsRejoined / excursions).toFixed(0) : '-'}%)`);
+console.log(`    car-seconds off road   ${(excursionSeconds / racesRun).toFixed(0)} a race`);
+console.log('    by tenth of the race  ' +
+  excursionsByDecile.map((n) => (n / racesRun).toFixed(1).padStart(6)).join(''));
+{
+  // Per thousand car-seconds ON the road, which is the only comparison that
+  // means anything: a damaged car has less exposure because it has already
+  // retired half the time.
+  const rate = (n: number, s: number) => s > 0 ? (1000 * n / s).toFixed(2) : '-';
+  console.log(`    rate, worst part >=0.70  ${rate(excursionsBy.healthy, exposureS.healthy)}` +
+    ` per 1000 car-seconds on the road (${excursionsBy.healthy} over ` +
+    `${(exposureS.healthy / racesRun).toFixed(0)}s a race)`);
+  console.log(`    rate, worst part < 0.70  ${rate(excursionsBy.damaged, exposureS.damaged)}` +
+    ` per 1000 car-seconds on the road (${excursionsBy.damaged} over ` +
+    `${(exposureS.damaged / racesRun).toFixed(0)}s a race)`);
+  const rh = exposureS.healthy > 0 ? excursionsBy.healthy / exposureS.healthy : 0;
+  const rd = exposureS.damaged > 0 ? excursionsBy.damaged / exposureS.damaged : 0;
+  console.log(`    a broken car leaves the road ${rh > 0 ? (rd / rh).toFixed(2) : '-'}x as often ` +
+    'per second as a healthy one');
+  const row = (exc: number[], exp: number[]) => exc.map((n, i) =>
+    (exp[i] > 30 ? (1000 * n / exp[i]).toFixed(2) : '   -').padStart(7)).join('');
+  console.log('    ...per tenth of the race' +
+    Array.from({ length: 10 }, (_, i) => String(i * 10 + 10).padStart(7)).join(''));
+  console.log('    healthy, per 1000 c-s   ' + row(excDecHealthy, expDecHealthy));
+  console.log('    broken,  per 1000 c-s   ' + row(excDecDamaged, expDecDamaged));
+  console.log('');
+  console.log('    DOSE-RESPONSE — excursions per 1000 car-seconds ON the road, by worst part');
+  const base = expByBand[0] > 0 ? excByBand[0] / expByBand[0] : 0;
+  for (let i = 0; i < HEALTH_BANDS.length; i++) {
+    const r = expByBand[i] > 0 ? 1000 * excByBand[i] / expByBand[i] : 0;
+    console.log(`      ${HEALTH_LABEL[i].padEnd(11)}${r.toFixed(2).padStart(7)}` +
+      `   (${String(excByBand[i]).padStart(4)} over ${(expByBand[i] / racesRun).toFixed(0).padStart(6)}` +
+      `s a race)   x${base > 0 ? (r / 1000 / base).toFixed(1) : '-'}`);
+  }
+}
+
+console.log('');
+console.log('  THE NEUTRALISATION LOOP — nothing had ever counted this');
+console.log(`    deployments a race     ${(deployments / racesRun).toFixed(2)}`);
+console.log(`    race neutralised       ${(100 * neutralSeconds / Math.max(raceSeconds, 1)).toFixed(1)}%` +
+  ` of ${(raceSeconds / racesRun).toFixed(0)}s`);
+console.log(`    contacts under one     ${(contactsNeutralised / racesRun).toFixed(2)} of ` +
+  `${(totalContacts / racesRun).toFixed(2)} a race ` +
+  `(${totalContacts > 0 ? (100 * contactsNeutralised / totalContacts).toFixed(0) : '-'}%)`);
 
 // --- The summaries that answer the question -------------------------------
 const byReason = new Map<string, number>();

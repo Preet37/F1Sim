@@ -189,7 +189,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | **The drawn road is up to 113mm away from the surface cars are placed on, between node rows.** A corner's road quad fans and is not planar, so its diagonal split lifts or drops the drawn triangles in between. Worst at Suzuka, Monaco, Zandvoort and COTA. This is what is left of #71 and it is a road-mesh job, not a car one | filed under **#71** |
 | **IT NEVER RAINS.** Not on any seed, at any circuit, in any session — measured 0 of 440 circuit×seed sessions reaching even "Damp". A rate limiter in the weather model snaps the rainfall back to zero faster than it can build at the rate the game steps at, so the sky is permanently dry. Every weather probe passes because they all force the rain on directly, which is the one thing the game itself never does. **Do not spend time trying to get a wet race** — you cannot, and the fix needs the how-often-does-it-rain schedule calibrated at the same time, or three races in four would be wet | **#97** |
 | The rain that *is* there works, and you can see all of it: **`?wet=0.9`** on the dev-server URL forces standing water before the lights go out, and everything downstream — spray, the wet line, the crossover, the pit wall's call — is live from there | |
-| **A full-distance race is interrupted seven times.** Measured at 52 laps, Silverstone, F3, P18, medium: **7 safety-car or VSC periods and 35% of the race neutralised.** Real F1 averages well under one a race. It is downstream of the cars retiring, so it closes when that does | **#26** |
+| **A full-distance race is interrupted five or six times and about a third of it runs behind a safety car.** Measured at 52 laps, Silverstone, F3, P18, medium: **5.38 SC/VSC periods and 31.3% of the race neutralised.** Real F1 averages well under one a race. **This was said to be downstream of the cars retiring and it is NOT** — the damage-cascade work halved the retirements and the neutralised share went *up*, 23.9% → 31.3%, on a flat deployment count. The beachings that vanished were push-recoveries; what is left is accidents, which need a crane and a debris sweep, so the race is stopped less often and for longer. It needs its own work | **#26** |
+| **Cars still leave the road about ten times each per race** — 205 excursions over a 52-lap Silverstone race, up slightly from 183 before the damage work, though **98% of them now rejoin** (was 94%) instead of ending in the gravel. More than half of what still retires is a healthy car on good tyres that simply left the road, which is AI path-tracking rather than damage | **#1**, **#30** |
 | ~~The drawn road is up to 113mm away from the surface cars are placed on, between node rows~~ — **fixed**. Was 85.7mm at Spa, 82.7 at COTA, 78.7 at Monaco, 56.8 at Zandvoort; now 1.5 / 1.4 / 1.6 / 0.7mm on all eleven circuits, and `probe:banking` can see between the node rows at all, which it could not before | filed under **#71** |
 | ~~Suzuka's crossover draws two roads 0.159m apart and neither leg is a bridge~~ — **fixed**. The two legs are 7.92m apart now, which is what the real overpass has. It did not move the lap-time solver at all | **#37** |
 | **A white line carries almost no surface relief** — 0.66° of facet slope against the asphalt's 1.86°, because #48's band limit is shared by every surface and paint's own strength is a quarter of the road's. Whether a white line should look like a smooth film or like painted aggregate is **your call**, and it needs looking at rather than measuring | **#86** |
@@ -248,6 +249,7 @@ Useful individual probes:
 | command | proves |
 |---|---|
 | `probe:blockage` | a stopped car does not freeze the race |
+| `probe:cascade` | **racing contact wears the car; it does not destroy it.** Repeated ordinary contact must not walk a component to its structural floor, and a written-off car must still be written off; what a race's worth of contact costs `baseMu`; a car crawling out of the run-off under its own power is not retired for being slow, one that has stopped still is, and one that potters about off the road for ever still gets ended. `CASCADE_BREAK=ratchet` puts the pre-fix damage model back (12 failures); `CASCADE_RACE=0` skips the two full-distance races and runs in seconds |
 | `probe:gearbox` | a number key does not trap the gearbox |
 | `probe:handling` | the keyboard can hold a lane |
 | `probe:graphics` | the quality setting reaches the GL context |
@@ -271,10 +273,34 @@ climbing Beau Rivage — band questions, neither loosened) ·
 `probe:crashrest` **1** (Monaco s=336, a 9.2m centreline radius on a 10m road) ·
 `probe:racingline` **4** (#46 — green still asks 103–107% of the car's grip; it was **28.7%**
 before #1's work, and what remains is the *colouring* rule) ·
-`probe:racesweep` **11 of 55** and `validate:race` **1**, both `monaco: fastest lap 150% of
-reference` (#1) · `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
-run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (identical on clean
-`main`, never previously recorded) · `probe:grade` **4 of 16**.
+`probe:racesweep` **11 of 55** (#1) · `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 —
+the quarter-distance run passes) · `probe:blockage` **1** (`monaco [held]`: 2 cars past a
+stopped car in 90s against a floor of 2.5 — identical on clean `main`, never previously
+recorded) · `probe:grade` **4 of 16**.
+
+**Two entries above were wrong and were corrected on 2026-08-04 by running them:**
+
+- `validate:race` is **2, not 1**. On a pristine `main` it fails `monaco: fastest lap 150%
+  of reference` AND `cota: fastest lap 145% of reference` — both #1. This file had recorded
+  only the Monaco one for as long as the entry existed. **On the `damage-cascade` branch it
+  is still 2, but COTA's has changed character**: the pace bar passes there now
+  (2:18.625 → 2:07.992) and what fails instead is `cota: 187.9s spread between fastest and
+  slowest car`. That is attributable to the damage-model change and not to the stranded one
+  — measured by disabling the latter and re-running, which reproduces it byte for byte —
+  and `slowestCarBest` counts retired cars as well as finishers. Not isolated further.
+- ~~`probe:stewards` **1** at 9.7 penalties against a bar of 8~~ — **now PASSES**, on the
+  `damage-cascade` branch, without its threshold being touched. Confirmed failing on a
+  pristine `main` first (`even the optimistic end of the full-distance estimate is 9.7
+  penalties`, 6.5 implied over a 3.4–9.7 range); after, **2.7 implied over 0.5–4.9**. Fewer
+  car-to-car contacts is fewer incidents on the bench. See PROJECT.md §6, "The damage
+  cascade".
+
+**New, and red on purpose:** `probe:cascade` **1 of 4 sections** — §4 reads **5.5 of 20 cars
+a race ground under 0.50 on a component while still racing, against a bar of 4**. The bar is
+derived from the sport and was NOT moved to make the branch that introduced the probe pass;
+the first version read 5 on one seed, which is one car either side of a decision, so the
+*measurement* was improved to two seeds and a mean and it read 5.5. Sections 1–3 pass.
+See PROJECT.md §6/§7 under #26.
 
 **Green as of 2026-08-04, and worth knowing because several were red for a long time:**
 `shoot:panels` **0 rail + 0 mirror** · `probe:banking` PASS *including between the mesh rows* ·

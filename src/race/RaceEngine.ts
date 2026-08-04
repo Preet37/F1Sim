@@ -12,7 +12,7 @@ import { RaceControlManager } from './RaceControlManager';
 import { RaceEngineer } from './RaceEngineer';
 import {
   bandOf, COMPONENT_NAMES, BODY_PART_IDS, PART_DETACH_HEALTH, PART_REPAIR_HEALTH,
-  PART_SIZE_M, type BodyPartId, type ImpactZone,
+  PART_SIZE_M, type BodyPartId, type ImpactZone, type DamageSource,
 } from './DamageModel';
 import { DebrisField } from './DebrisField';
 import { classificationTier } from './Classification';
@@ -22,8 +22,9 @@ import type { EnvironmentState, SurfaceType, VehicleControls } from '../physics/
 import type { Neighbour, AIDifficultyId } from '../ai/AIVehicleController';
 import { corneringSpeedLimitMs, createNeighbour } from '../ai/AIVehicleController';
 import {
-  CONTACT_WIDTH_M, HAZARD_CORRIDOR_M, lateralOverlap, safeFollowSpeedMs,
+  CONTACT_GAP_M, CONTACT_WIDTH_M, HAZARD_CORRIDOR_M, lateralOverlap, safeFollowSpeedMs,
 } from '../ai/TrafficAwareness';
+import { RECOVERY_CRANE_OFFROAD_M } from './Recovery';
 import {
   pitLaneGeometry, PIT_GARAGE_PARK_INSET_M, type PitLaneGeometry,
 } from '../track/PitGeometry';
@@ -324,6 +325,38 @@ const STOPPED_ON_TRACK_RETIRE_S = 12;
 
 /** Seconds a car may stand still off the road before it is retired. */
 const BEACHED_RETIRE_S = 9;
+
+/**
+ * Seconds a car may spend off the road WITHOUT ever getting back on it,
+ * however much it is moving.
+ *
+ * The backstop on `checkStranded`'s progress test — see the long note there.
+ * The test resets the stranded timer whenever the car has covered its own
+ * length, which is what stops a driver crawling out of a gravel trap being
+ * written off for being slow; this is what stops the same test being a licence
+ * to potter around the run-off for the rest of the afternoon.
+ *
+ * Derived from the two numbers the test itself is built out of. The slowest a
+ * car can go and still keep resetting the timer is `CONTACT_GAP_M` over
+ * `BEACHED_RETIRE_S` — 5.7m in nine seconds, 0.63 m/s. The furthest out a car
+ * can be and still be a car that DRIVES back rather than one that is lifted is
+ * `RECOVERY_CRANE_OFFROAD_M`, which is where `Recovery` stops sending marshals
+ * to push and sends a tractor. So the longest a genuine recovery can honestly
+ * take is the second divided by the first, and anything past it is not a
+ * recovery in progress. Twelve metres at 0.63 m/s is nineteen seconds — about
+ * twice what a car that has actually stopped gets, which is the right shape.
+ *
+ * THE FIRST VERSION OF THIS USED `RECOVERY_BACKSTOP_S` (210s) AND THAT WAS
+ * WRONG, for a reason worth keeping: it is an existing constant of roughly the
+ * right kind, but it answers a different question — how long before the
+ * MARSHALS have finished, not how long a DRIVER may take. Using it let a car
+ * shuffle about in the COTA run-off for three minutes and finish the race,
+ * which `validate:race` caught immediately as `cota: 187.9s spread between
+ * fastest and slowest car`. 187.9 is 210 minus a lap. An existing constant is
+ * not automatically the derived one.
+ */
+const BEACHED_ABANDON_S =
+  RECOVERY_CRANE_OFFROAD_M / (CONTACT_GAP_M / BEACHED_RETIRE_S);
 
 /**
  * Metres beyond the white line at which a stopped car stops being a blockage
@@ -1688,7 +1721,9 @@ export class RaceEngine {
     // one that does not merely wears it. See `CarDamage.applyImpact`.
     const writeOff = severity > 0.72;
     if (severity > 0.25) {
-      this.applyContactDamage(car, severity, zoneFor(car.physics.heading, nx, nz), writeOff);
+      this.applyContactDamage(
+        car, severity, zoneFor(car.physics.heading, nx, nz), writeOff, 'solid',
+      );
       const where = this.track.cornerNameAt(car.s) || 'the exit';
       this.raceControl.log(
         car.driver.code + ' into ' + what + ' at ' + where,
@@ -4085,11 +4120,15 @@ export class RaceEngine {
    * @param zone     which face of the car took the hit, so the damage lands on
    *                 the components that would actually have been in the way
    * @param writeOff true when this impact has already been judged terminal
+   * @param source   `contact` for another car, `solid` for the barrier and the
+   *                 static world. Booked so the diagnostic can say which of the
+   *                 two actually breaks the field — see `DamageSource`.
    */
   private applyContactDamage(
     car: CarEntry, severity: number, zone: ImpactZone = 'front', writeOff = false,
+    source: DamageSource = 'contact',
   ): void {
-    const broken = car.damage.applyImpact(zone, severity, writeOff);
+    const broken = car.damage.applyImpact(zone, severity, writeOff, source);
 
     // Rebuild the spec from the PRISTINE baseline every time. Deriving it from
     // the current spec instead compounds the multiplier on every hit, and the
@@ -4122,7 +4161,7 @@ export class RaceEngine {
       // call above because whether this contact was terminal is decided by a
       // dice roll, and the destruction has to follow the roll rather than
       // precede it — otherwise every hard racing contact would strip the car.
-      car.damage.applyImpact(zone, severity, true);
+      car.damage.applyImpact(zone, severity, true, source);
       car.physics.spec = car.damage.applyTo(car.physics.baseSpec);
       this.raceControl.log(
         car.driver.code + ' is out of the race', 'critical', this.time, car.index,
@@ -4245,8 +4284,14 @@ export class RaceEngine {
     // has finished; where it comes to rest on the slowing-down lap is between
     // the driver and the marshals, and `retire` after the flag would rewrite a
     // result that has already been earned.
+    const offRoadNow =
+      Math.abs(car.lateral) > this.track.halfWidthAt(car.s) + STRANDED_OFFROAD_M;
     if (car.physics.speedMs >= STRANDED_SPEED_MS || car.inPitLane || car.finished) {
       car.stuckTimer = 0;
+      car.stuckAnchorSet = false;
+      // The episode ends only when the car is RACING again, not merely when it
+      // is rolling: a car doing 4 m/s in the gravel is still in the incident.
+      if (!offRoadNow || car.inPitLane || car.finished) car.strandedTotalS = 0;
       return;
     }
     // One timer for one condition — this car is not moving — with only the
@@ -4254,10 +4299,75 @@ export class RaceEngine {
     // only in the gravel is also what lets race control read it
     // (`updateIncidentFlags`) to get the boards out, which has to happen long
     // before anybody is retired.
+    if (!car.stuckAnchorSet) {
+      car.stuckAnchorX = car.physics.position.x;
+      car.stuckAnchorZ = car.physics.position.y;
+      car.stuckAnchorSet = true;
+    }
     car.stuckTimer += dt;
+    car.strandedTotalS += dt;
 
-    const offRoad = Math.abs(car.lateral) > this.track.halfWidthAt(car.s) + STRANDED_OFFROAD_M;
-    if (car.stuckTimer <= (offRoad ? BEACHED_RETIRE_S : STOPPED_ON_TRACK_RETIRE_S)) return;
+    const offRoad = offRoadNow;
+
+    // A CAR THAT IS GOING SOMEWHERE HAS NOT STOPPED — issue #26, the third link.
+    //
+    // `stuckTimer` accumulates on every step under `STRANDED_SPEED_MS`, which
+    // is 2.5 m/s, and nothing asked whether the car was making progress. So a
+    // driver picking his way out of a gravel trap at 1.5 m/s — under power,
+    // pointing at the circuit, covering thirteen metres over the nine seconds —
+    // ran the timer out and was retired as "beached". Measured on merged `main`
+    // at this issue's own configuration: of nineteen `Beached in the gravel`
+    // retirements in two races, THIRTEEN were still doing between 0.7 and
+    // 1.9 m/s on the step they were retired, and only three were within a
+    // whisker of a standstill. Nine of them had a component under 0.40 and none
+    // had been touched by another car in the previous ten seconds, so this is
+    // the last link of the damage cascade: contact breaks the car, a broken car
+    // leaves the road at three times the rate, and then a car that was crawling
+    // back onto it was written off for being slow.
+    //
+    // The regulation concept is a car that has STOPPED and cannot resume (ISC
+    // Appendix H Art. 2.5.5b; 2026 Art. B1.8.4b), and progress is the direct
+    // test of it. The distance is the car's own length — `CONTACT_GAP_M` is the
+    // nose-to-tail separation at which two of these cars touch, so a car that
+    // has moved that far has moved clear of where it stopped by its own size.
+    // Derived from the body the simulation already models, not chosen.
+    //
+    // OFF THE ROAD ONLY, and deliberately. On the racing surface the hazard is
+    // not "this driver's race is over", it is that the field is arriving at
+    // something at racing speed, and a car crawling along the racing line is
+    // still that. `STOPPED_ON_TRACK_RETIRE_S` keeps its exact previous meaning
+    // and `probe:blockage` keeps its exact previous ground; nothing here makes
+    // the on-track rule weaker. Every one of the nineteen measured retirements
+    // this is about was off the road.
+    if (offRoad) {
+      const movedM = Math.hypot(
+        car.physics.position.x - car.stuckAnchorX,
+        car.physics.position.y - car.stuckAnchorZ,
+      );
+      if (movedM > CONTACT_GAP_M) {
+        car.stuckTimer = 0;
+        car.stuckAnchorSet = false;
+        return;
+      }
+    }
+
+    // The backstop, and it is what keeps the progress test from being a licence
+    // to shuffle around the run-off for the rest of the afternoon.
+    // `BEACHED_ABANDON_S` derives it; see the note there, including what the
+    // first version of it got wrong and how `validate:race` caught that.
+    //
+    // OFF THE ROAD ONLY, for the same reason the progress test is. A backstop
+    // exists to bound the rule it sits under, and on the racing surface there
+    // is no new rule to bound: `STOPPED_ON_TRACK_RETIRE_S` still fires on
+    // twelve consecutive seconds exactly as it always did. Applying it there
+    // too would add a retirement path nothing has measured — a car could
+    // accumulate the abandon time in sub-2.5 m/s crawling ON the road across a
+    // whole race without ever once having stopped for twelve seconds, and be
+    // retired for it. `Stopped on track` is the cause this issue has already
+    // been closed wrongly on once (#10), and it is not being reintroduced
+    // through the side door.
+    if (car.stuckTimer <= (offRoad ? BEACHED_RETIRE_S : STOPPED_ON_TRACK_RETIRE_S) &&
+        (!offRoad || car.strandedTotalS <= BEACHED_ABANDON_S)) return;
 
     // AN EMPTY TANK IS NOT "STOPPED ON TRACK", AND CALLING IT THAT COST THE
     // PROJECT AN ISSUE. `Stopped on track` is a driver's car that has come to
