@@ -109,7 +109,6 @@ Do not spend time reporting these; they are on the list with measurements.
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | Every car sits level on a road that is not level — up to 434mm of tyre under the asphalt at Monaco | **#71** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
-| Safety car has no vehicle; cars stop dead under a VSC on clear track | **#10** |
 | AI pace ~1.43× reference | **#1** |
 | Career screens (ratings, market, accolades) not built | **#77** |
 | Podium/press bodies below the neck are unfinished | **#22** |
@@ -145,8 +144,7 @@ Useful individual probes:
 | `probe:qualiretire` | a crash in qualifying does not take the screen |
 | `audit:circuits` | photographs 11 circuits × 7 camera modes |
 
-**Known-failing, expected:** `validate:flags` (safety-car form-up, #6) ·
-`probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
+**Known-failing, expected:** `probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
 `probe:fieldsize` 23 (#44) · `probe:weather` 2 (#42) · `shoot:panels` 2 rail + 2 mirror ·
 `probe:grade` 4 of 16 (see below).
 
