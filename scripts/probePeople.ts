@@ -6,6 +6,13 @@ import {
   type PersonLook, type PersonRole,
 } from '../src/ui/people/Look';
 import { headGeometry, skullPath } from '../src/ui/people/Face';
+import { figureArt } from '../src/ui/people/Figure';
+import { buildRig, polyPath, type Pose } from '../src/ui/people/Body';
+import {
+  area, inside, overlap, parsePolygon, parts, pt, widthAcross,
+  type Pt, type Shape,
+} from './lib/figureGeom';
+import { legacyBodyArt, legacyTorsoPolygon, type LegacyPose } from './lib/legacyFigure';
 import { principalFor, principalNameOf, personFor, journalistsFor, fullName } from '../src/ui/people/Cast';
 import { F1_2026 } from '../src/data/roster/f1-2026';
 import { F2_2026, F3_2026 } from '../src/data/roster/junior';
@@ -25,8 +32,39 @@ import { F2_2026, F3_2026 } from '../src/data/roster/junior';
  * threshold of each other in the look model, and nobody anywhere is called "Pit
  * wall".
  *
+ * ---------------------------------------------------------------------------
+ * AND SINCE #22, THE BODY — WHICH IS NOT ARITHMETIC
+ * ---------------------------------------------------------------------------
+ *
+ * Everything above is distance between records. None of it could say anything
+ * at all about the thing the user rejected below the neck, and the proof of
+ * that is that all 537 of those checks passed on a build whose podium arm was
+ * one constant-width stroke with no hand on it and whose garage crew were
+ * armless torsos.
+ *
+ * A body needs different assertions, and they are about SHAPES SHARING AREA
+ * rather than about numbers being far apart:
+ *
+ *   - a hand exists, and it overlaps the forearm it is on
+ *   - a forearm overlaps its upper arm at the elbow
+ *   - an upper arm overlaps the torso at the shoulder, but is not BURIED in
+ *     it, which is the whole of "the garage crew are armless torsos"
+ *   - a held object's grip is inside the hand holding it
+ *   - nothing is a bare rectangle: every limb is a filled shape that measurably
+ *     narrows from one end to the other, and a `fill="none"` stroke is not a
+ *     limb
+ *
+ * All of it is measured off the MARKUP - the string the browser is handed -
+ * rather than off the rig that generated it, because a probe that asks the rig
+ * whether it agrees with itself is the probe this project keeps writing by
+ * accident. See `scripts/lib/figureGeom.ts`.
+ *
  *   npm run probe:people
+ *   PEOPLE_LEGACY=1 npm run probe:people   # the body as it shipped, measured
+ *   PEOPLE_BREAK=hands|detach|stick|bury|grip npm run probe:people
  */
+
+const SRC_DIR = join(process.cwd(), 'src');
 
 let failures = 0;
 let checks = 0;
@@ -307,7 +345,7 @@ section('The cast is WIRED IN, not merely present');
  * a text check: the thing being guarded against is somebody quietly changing an
  * import back, and an import is text.
  */
-const SRC = join(process.cwd(), 'src');
+const SRC = SRC_DIR;
 
 function sourcesUnder(dir: string, out: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -346,6 +384,403 @@ for (const f of ALL_SRC) {
   ok(!/\?\?\s*'Pit wall'/.test(s) && !/\?\?\s*"Pit wall"/.test(s),
     `${f.slice(SRC.length + 1)} has no "Pit wall" fallback`);
 }
+
+
+// ===========================================================================
+// The body
+// ===========================================================================
+
+section('Anatomy - every limb, measured off the drawing');
+
+/**
+ * How a figure is damaged, for the "prove it goes red" runs.
+ *
+ * These are applied to the MARKUP, after it is generated and before it is
+ * measured, so each one simulates a drawing defect rather than a rig defect —
+ * which is the only kind of proof worth having when the thing under test is
+ * what ends up on the screen. `PEOPLE_BREAK=` picks one.
+ */
+type Break = '' | 'hands' | 'detach' | 'stick' | 'bury' | 'grip';
+const BREAK = (process.env.PEOPLE_BREAK ?? '') as Break;
+const LEGACY = process.env.PEOPLE_LEGACY === '1';
+
+function mapPolys(markup: string, ids: RegExp, f: (p: Pt[]) => Pt[]): string {
+  return markup.replace(/<path\b[^>]*?\/>/g, (el) => {
+    const id = /data-part="([^"]+)"/.exec(el);
+    if (!id || !ids.test(id[1])) return el;
+    const d = /\sd="([^"]*)"/.exec(el);
+    if (!d) return el;
+    const poly = parsePolygon(d[1]);
+    if (!poly) return el;
+    return el.replace(d[0], ' d="' + polyPath(f(poly)) + '"');
+  });
+}
+
+function damage(markup: string, H: number, cx: number): string {
+  switch (BREAK) {
+    case 'hands':
+      // The garage's own defect: an arm that stops.
+      return markup.replace(/<(path|ellipse)\b[^>]*?data-part="hand-[lr]"[^>]*?\/>/g, '');
+    case 'detach':
+      // The forearm and the hand drift off the elbow, which is what happens
+      // the moment a hand is placed by a formula instead of by a joint.
+      return mapPolys(markup, /^(arm-[lr]-fore|hand-[lr])$/,
+        (poly) => poly.map((p) => ({ x: p.x + H * 0.55, y: p.y + H * 0.30 })));
+    case 'stick':
+      // Every arm re-drawn at ONE width: the podium's stroke, as a polygon.
+      return mapPolys(markup, /^arm-[lr]-(upper|fore)$/, (poly) => {
+        let sx = 0;
+        let sy = 0;
+        for (const p of poly) { sx += p.x; sy += p.y; }
+        const c = { x: sx / poly.length, y: sy / poly.length };
+        let ax = 0;
+        let ay = 0;
+        for (const p of poly) {
+          const dx = p.x - c.x;
+          const dy = p.y - c.y;
+          if (Math.hypot(dx, dy) > Math.hypot(ax, ay)) { ax = dx; ay = dy; }
+        }
+        const L = Math.hypot(ax, ay) || 1;
+        const ux = ax / L;
+        const uy = ay / L;
+        const w = H * 0.16;
+        return poly.map((p) => {
+          const t = (p.x - c.x) * ux + (p.y - c.y) * uy;
+          const sgn = (p.x - c.x) * -uy + (p.y - c.y) * ux >= 0 ? 1 : -1;
+          return { x: c.x + ux * t - uy * w * sgn, y: c.y + uy * t + ux * w * sgn };
+        });
+      });
+    case 'bury': {
+      // The shipped defect, exactly: the arms are pulled inside the torso AND
+      // moved into the layer painted BEFORE it. Nothing is missing; nothing is
+      // visible either.
+      const shrunk = mapPolys(markup, /^arm-[lr]-(upper|fore)$/,
+        (poly) => poly.map((p) => ({ x: cx + (p.x - cx) * 0.22, y: p.y })));
+      const arms: string[] = [];
+      const rest = shrunk.replace(/<path\b[^>]*?data-part="arm-[lr]-(?:upper|fore)"[^>]*?\/>/g,
+        (el) => { arms.push(el); return ''; });
+      return rest.replace('<path data-part="torso"', arms.join('') + '<path data-part="torso"');
+    }
+    case 'grip':
+      // The trophy floats off the hand.
+      return markup.replace(/(data-part="held-[a-z]+"[^>]*data-at=")([-\d.]+),([-\d.]+)"/g,
+        (_m, head: string, x: string, y: string) => head + x + ',' + (Number(y) - H * 2.4) + '"');
+    default:
+      return markup;
+  }
+}
+
+/**
+ * Eight people, and they are chosen rather than sampled.
+ *
+ * The extremes of `build` and `height` are in because those two are the only
+ * `PersonLook` fields the body reads, and a joint that meets on the average
+ * body and misses on a heavy one is a bug nobody would find by looking at the
+ * average.
+ */
+const BODIES: { id: string; look: PersonLook }[] = [
+  { id: 'slight-short', look: { ...lookFromSeed(11, 'driver'), build: 0, height: 0 } },
+  { id: 'slight-tall', look: { ...lookFromSeed(23, 'driver'), build: 0, height: 1 } },
+  { id: 'heavy-short', look: { ...lookFromSeed(37, 'principal'), build: 1, height: 0 } },
+  { id: 'heavy-tall', look: { ...lookFromSeed(53, 'principal'), build: 1, height: 1 } },
+  { id: 'median', look: { ...lookFromSeed(71, 'driver'), build: 0.5, height: 0.5 } },
+  { id: 'norris', look: lookFor('norris', 'driver') },
+  { id: 'crew', look: lookFor('williams:crew:0', 'crew') },
+  { id: 'principal', look: principalFor('ferrari').look },
+];
+
+const ALL_POSES: Pose[] = ['seated', 'standing', 'raised', 'applaud', 'walking'];
+const LEGACY_POSES: LegacyPose[] = ['seated', 'standing', 'raised'];
+
+interface BodyUnderTest {
+  shapes: Map<string, Shape>;
+  torso?: Pt[];
+  H: number;
+  legs: boolean;
+}
+
+function bodyFor(look: PersonLook, pose: Pose): BodyUnderTest | undefined {
+  const geo = headGeometry(look);
+  const H = geo.h;
+  const cx = geo.cx;
+  if (LEGACY) {
+    if (!LEGACY_POSES.includes(pose as LegacyPose)) return undefined;
+    const markup = legacyBodyArt(look, {
+      uid: 'lg', suit: '#1868db', accent: '#f2f3f5',
+      pose: pose as LegacyPose, trophy: pose === 'raised' ? 'gold' : undefined,
+    });
+    return {
+      shapes: parts(damage(markup, H, cx)),
+      torso: legacyTorsoPolygon(look),
+      H,
+      // The shipped body had no legs in any pose. That is not a break; it is
+      // the state of the art on `main`.
+      legs: false,
+    };
+  }
+  const art = figureArt(look, {
+    uid: 'an', suit: '#1868db', accent: '#f2f3f5', team: '#1868db',
+    pose, number: 27,
+    trophy: pose === 'raised' ? 'gold' : undefined,
+    champagne: pose === 'raised',
+  });
+  const shapes = parts(damage(art.markup + art.overlay, H, cx));
+  return {
+    shapes,
+    torso: shapes.get('torso')?.poly,
+    H,
+    legs: pose !== 'seated',
+  };
+}
+
+/** Names every pose must draw, plus the leg chain when it has legs. */
+function required(legs: boolean): string[] {
+  const base = ['torso', 'neck',
+    'arm-l-upper', 'arm-l-fore', 'arm-r-upper', 'arm-r-fore', 'hand-l', 'hand-r'];
+  return legs
+    ? [...base, 'leg-l-thigh', 'leg-l-shin', 'leg-r-thigh', 'leg-r-shin', 'foot-l', 'foot-r']
+    : base;
+}
+
+/**
+ * The bars.
+ *
+ * Every one of them is a fraction of the part's OWN area, so none of them
+ * moves when a person gets bigger. They are deliberately loose: the question is
+ * not whether the elbow is beautifully placed, it is whether the two halves of
+ * an arm are the same arm.
+ */
+const JOINED = 0.02;      // a joint shares at least 2% of the smaller part
+const NOT_BURIED = 0.30;  // at least 30% of a limb is OUTSIDE the torso
+const TAPER = 0.92;       // the narrow end is at most 92% of the wide end
+
+let poseRows = 0;
+const beforeBody = checks;
+
+for (const pose of ALL_POSES) {
+  for (const b of BODIES) {
+    const body = bodyFor(b.look, pose);
+    if (!body) continue;
+    poseRows += 1;
+    const where = `${pose}/${b.id}`;
+    const S = body.shapes;
+    const H = body.H;
+
+    // 1. EVERY PART IS DRAWN. The shipped garage crew fail here on four names.
+    for (const name of required(body.legs)) {
+      const sh = S.get(name);
+      ok(sh !== undefined, `${where}: draws ${name}`, 'no element carries that data-part');
+      if (sh) {
+        ok(!/NaN/.test(sh.raw), `${where}: ${name} has no NaN in it`);
+        ok((sh.poly?.length ?? 0) >= 3 && area(sh.poly ?? []) > 0,
+          `${where}: ${name} is a shape with area`,
+          sh.attrs.fill === 'none'
+            ? 'fill="none" - it is a STROKE, and a stroke has one width for its whole length'
+            : 'no fillable outline');
+      }
+    }
+
+    const torso = body.torso;
+    if (!torso) continue;
+    const torsoArea = area(torso);
+
+    // 2. THE CHAINS. Shoulder to elbow to wrist, and hip to knee to ankle.
+    //    Each link is two DRAWN shapes sharing area, which is the only
+    //    definition of "attached" a drawing can be held to.
+    const chains: [string, string][] = [
+      ['arm-l-upper', 'arm-l-fore'], ['arm-l-fore', 'hand-l'],
+      ['arm-r-upper', 'arm-r-fore'], ['arm-r-fore', 'hand-r'],
+    ];
+    if (body.legs) {
+      chains.push(['leg-l-thigh', 'leg-l-shin'], ['leg-l-shin', 'foot-l'],
+        ['leg-r-thigh', 'leg-r-shin'], ['leg-r-shin', 'foot-r']);
+    }
+    for (const [aName, bName] of chains) {
+      const A = S.get(aName)?.poly;
+      const B = S.get(bName)?.poly;
+      if (!A || !B) {
+        ok(false, `${where}: ${bName} is joined to ${aName}`, 'one of them is not drawn');
+        continue;
+      }
+      const share = overlap(A, B);
+      const small = Math.min(area(A), area(B));
+      ok(share >= small * JOINED, `${where}: ${bName} is joined to ${aName}`,
+        `they share ${(share / Math.max(1e-6, small) * 100).toFixed(1)}% of the smaller part`
+        + ` (bar ${(JOINED * 100).toFixed(0)}%)`);
+    }
+
+    // 3. THE SHOULDER AND THE HIP, against the torso.
+    const roots: [string, string][] = [
+      ['arm-l-upper', 'shoulder'], ['arm-r-upper', 'shoulder'],
+    ];
+    if (body.legs) roots.push(['leg-l-thigh', 'hip'], ['leg-r-thigh', 'hip']);
+    for (const [name, joint] of roots) {
+      const sh = S.get(name);
+      const A = sh?.poly;
+      if (!A) {
+        ok(false, `${where}: ${name} is attached at the ${joint}`, 'not drawn');
+        continue;
+      }
+      const share = overlap(A, torso);
+      ok(share >= area(A) * JOINED, `${where}: ${name} is attached at the ${joint}`,
+        `${(share / Math.max(1e-6, area(A)) * 100).toFixed(1)}% shared with the torso`);
+      const a = pt(sh?.attrs['data-a']);
+      if (a) {
+        ok(inside(a, torso), `${where}: ${name}'s ${joint} joint is inside the torso`,
+          `${a.x.toFixed(1)},${a.y.toFixed(1)} is outside it`);
+      }
+    }
+
+    // 4. NOT BURIED — the measurement that catches an armless torso.
+    //
+    //    An arm can be drawn, be correctly attached, and still be invisible.
+    //    That is not a hypothetical: `standing` on the shipped body returned
+    //    `{ behind: upper(-1) + upper(1), front: '' }`, so both upper arms
+    //    were painted and then the torso was painted over them in the same
+    //    suit colour. `desktop-garage.png` is four torsos with no arms.
+    //
+    //    So visibility is TWO things and it takes either. A limb painted AFTER
+    //    the torso occludes it and is visible whatever it overlaps — folded
+    //    arms genuinely lie across the chest. A limb painted BEFORE the torso
+    //    is only visible in the part of it that sticks out.
+    const torsoAt = S.get('torso')?.at ?? 0;
+    for (const name of ['arm-l-upper', 'arm-l-fore', 'arm-r-upper', 'arm-r-fore']) {
+      const sh = S.get(name);
+      if (!sh?.poly) continue;
+      const out = 1 - overlap(sh.poly, torso) / Math.max(1e-6, area(sh.poly));
+      const inFront = sh.at > torsoAt;
+      ok(inFront || out >= NOT_BURIED, `${where}: ${name} can be seen`,
+        `painted BEFORE the torso and only ${(out * 100).toFixed(1)}% of it is outside it `
+        + `(bar ${(NOT_BURIED * 100).toFixed(0)}%)`);
+    }
+
+    // 5. NOT A BARE RECTANGLE. A limb tapers; a stick does not. Measured
+    //    ACROSS the drawn polygon at two stations on its own declared axis.
+    const limbs = ['arm-l-upper', 'arm-l-fore', 'arm-r-upper', 'arm-r-fore',
+      ...(body.legs ? ['leg-l-thigh', 'leg-l-shin', 'leg-r-thigh', 'leg-r-shin'] : [])];
+    for (const name of limbs) {
+      const sh = S.get(name);
+      if (!sh) continue;
+      ok(sh.attrs.fill !== undefined && sh.attrs.fill !== 'none',
+        `${where}: ${name} is a filled shape, not a stroke`,
+        `fill="${sh.attrs.fill ?? '(none set)'}" stroke-width="${sh.attrs['stroke-width'] ?? '-'}"`);
+      const A = sh.poly;
+      const a = pt(sh.attrs['data-a']);
+      const bb = pt(sh.attrs['data-b']);
+      if (!A || !a || !bb) continue;
+      const w0 = widthAcross(A, a, bb, 0.15);
+      const w1 = widthAcross(A, a, bb, 0.85);
+      const ratio = Math.min(w0, w1) / Math.max(1e-6, Math.max(w0, w1));
+      ok(ratio <= TAPER, `${where}: ${name} tapers`,
+        `${w0.toFixed(1)} wide at the top, ${w1.toFixed(1)} at the bottom `
+        + `(ratio ${ratio.toFixed(3)}, bar ${TAPER})`);
+    }
+
+    // 6. HANDS ARE HAND-SIZED. Against the head, which is the one thing on a
+    //    figure a viewer has an absolute sense of the scale of.
+    for (const name of ['hand-l', 'hand-r']) {
+      const A = S.get(name)?.poly;
+      if (!A) continue;
+      const rel = area(A) / (H * H);
+      ok(rel >= 0.03 && rel <= 0.40, `${where}: ${name} is hand-sized`,
+        `${rel.toFixed(3)} of a head squared`);
+    }
+
+    // 7. WHAT THEY ARE HOLDING IS IN THE HAND.
+    if (pose === 'raised') {
+      const held: [string, string][] = LEGACY
+        ? [['held-trophy', 'hand-l']]
+        : [['held-trophy', 'hand-l'], ['held-bottle', 'hand-r']];
+      for (const [obj, hand] of held) {
+        const g = S.get(obj);
+        const A = S.get(hand)?.poly;
+        ok(g !== undefined && A !== undefined, `${where}: ${obj} is drawn in ${hand}`,
+          g ? 'the hand is not drawn' : 'the object is not drawn');
+        if (!g || !A) continue;
+        const at = pt(g.attrs['data-at']);
+        ok(at !== undefined && inside(at, A), `${where}: ${obj} is gripped BY ${hand}`,
+          at ? `its grip is at ${at.x.toFixed(1)},${at.y.toFixed(1)}, outside the hand`
+            : 'no grip declared');
+        if (at && g.bbox) {
+          // The object's own drawn body has to reach the grip, or it is a
+          // picture of a trophy hovering above a fist.
+          const box = g.bbox;
+          const local = g.attrs.transform === undefined
+            ? { x: at.x, y: at.y }
+            : { x: 0, y: 0 };
+          ok(box.x0 <= local.x + 2 && box.x1 >= local.x - 2
+            && box.y0 <= local.y + 2 && box.y1 >= local.y - 2,
+          `${where}: ${obj} is drawn AROUND the grip, not above it`,
+          `its own extent is x ${box.x0.toFixed(1)}..${box.x1.toFixed(1)}, `
+            + `y ${box.y0.toFixed(1)}..${box.y1.toFixed(1)} against a grip at `
+            + `${local.x.toFixed(1)},${local.y.toFixed(1)}`);
+        }
+      }
+    }
+
+    // 8. THE FIGURE IS A FIGURE. Limbs have to be a real share of it, or a
+    //    torso with two twigs on it passes everything above.
+    let limbArea = 0;
+    for (const name of limbs) limbArea += area(S.get(name)?.poly ?? []);
+    ok(limbArea >= torsoArea * (body.legs ? 0.45 : 0.10),
+      `${where}: the limbs are a real part of the body`,
+      `limbs ${limbArea.toFixed(0)} against a torso of ${torsoArea.toFixed(0)}`);
+  }
+}
+console.log(`  ${poseRows} figures, ${checks - beforeBody} checks`
+  + (LEGACY ? '  --  PEOPLE_LEGACY: the body as it shipped at 5ac0a09' : '')
+  + (BREAK ? `  --  PEOPLE_BREAK=${BREAK}` : ''));
+
+section('The desk layer, and the poses the scenes ask for');
+
+/**
+ * A seated figure's hands go IN FRONT of the furniture.
+ *
+ * `figureArt` returns them separately for that reason, and the press room
+ * paints them after the desk. If `overlay` ever comes back empty for a seated
+ * figure, the hands are inside the desk again and the screen is back to what
+ * `hud-out/people/desktop-presser.png` showed before #22: a panel of people
+ * with no hands.
+ */
+for (const b of BODIES.slice(0, 4)) {
+  const art = figureArt(b.look, {
+    uid: 'ov', suit: '#1868db', accent: '#f2f3f5', team: '#1868db', pose: 'seated',
+  });
+  const over = parts(art.overlay);
+  ok(over.has('hand-l') && over.has('hand-r'),
+    `${b.id}: a seated figure's hands are in the layer drawn OVER the desk`);
+  ok(over.has('arm-l-fore') && over.has('arm-r-fore'),
+    `${b.id}: so are the forearms they are on`);
+  const rig = buildRig(b.look, { pose: 'seated' });
+  const hand = rig.hands[0];
+  ok(hand.c.y < rig.deskY, `${b.id}: the hands rest ON the desk, not under it`,
+    `hand at y=${hand.c.y.toFixed(1)}, desk at ${rig.deskY.toFixed(1)}`);
+  ok(rig.deskY - hand.c.y < headGeometry(b.look).h * 0.30,
+    `${b.id}: and they are ON it rather than floating above it`,
+    `${(rig.deskY - hand.c.y).toFixed(1)} above the desk`);
+}
+
+// The scenes have to ask for a pose that has arms in it, and they have to draw
+// the layer the figure hands back. Both are text checks for the same reason the
+// 'cast is WIRED IN' section is: what is guarded against is somebody quietly
+// putting an import or an argument back.
+const pressSrc = readFileSync(join(SRC_DIR, 'ui', 'PressConference.ts'), 'utf8');
+ok(/art\.overlay/.test(pressSrc),
+  'the press room paints the figure layer that goes over the desk');
+ok(pressSrc.indexOf('+ onDesk') > pressSrc.indexOf('url(#pc-desk)'),
+  'and it paints it AFTER the desk, not before');
+ok(/art\.rig\.deskY/.test(pressSrc),
+  'the press room puts the desk where each figure says its desk is');
+
+const podSrc = readFileSync(join(SRC_DIR, 'ui', 'Podium.ts'), 'utf8');
+ok(/pose:\s*'raised'/.test(podSrc), 'the podium draws the raised pose');
+ok(/trophy:/.test(podSrc), 'and puts a trophy in the hand');
+
+const garSrc = readFileSync(join(SRC_DIR, 'ui', 'GarageScene.ts'), 'utf8');
+ok(/art\.rig\.floorY/.test(garSrc),
+  'the garage stands its people on the floor by their own rig, not by a constant');
+ok(!/FIGURE_SPAN/.test(garSrc),
+  'and the fixed 560-unit figure box it used to place them by is gone');
 
 // ===========================================================================
 

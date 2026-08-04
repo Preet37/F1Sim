@@ -1,9 +1,11 @@
 import '../src/ui/career.css';
 import '../src/ui/people/people.css';
 import { faceSvg, type FaceOptions } from '../src/ui/people/Face';
+import { figureSvg } from '../src/ui/people/Figure';
+import type { Pose } from '../src/ui/people/Body';
 import {
   COMPLEXIONS, HAIR_PIGMENTS, HAIR_STYLES, FACIAL_HAIR, EYEWEAR, HEADWEAR,
-  look, lookFromSeed, type PersonLook,
+  look, lookFor, lookFromSeed, type PersonLook,
 } from '../src/ui/people/Look';
 import { principalFor, fullName } from '../src/ui/people/Cast';
 import { buildPressConference } from '../src/ui/PressConference';
@@ -365,7 +367,72 @@ function garage(): void {
   }
 }
 
-const SCENES: Record<string, () => void> = { sheet, principals, presser, podium, garage };
+// ===========================================================================
+// The bodies
+// ===========================================================================
+
+/**
+ * Every pose, every build, at the size it is actually seen.
+ *
+ * The wall the #22 complaint is settled on, and the direct analogue of the
+ * eleven-principals sheet: an arm looks fine on its own and the thing that is
+ * wrong with it — no elbow, no hand, buried behind the torso — is only visible
+ * when five poses are side by side at one scale. `probe:people` §Anatomy
+ * asserts the same thing numerically; this is what says whether it reads as a
+ * person.
+ */
+function bodies(): void {
+  app.innerHTML = '';
+  app.className = 'audit-sheet';
+  const head = el('div', 'audit-head', app);
+  el('div', 'audit-title', head, 'Bodies');
+  el('div', 'audit-sub', head,
+    'Five poses off one rig. Every shape below the neck comes from a bone, a hand, '
+    + 'a foot or the torso outline — nothing is drawn at a hard-coded offset.');
+
+  const POSES: Pose[] = ['seated', 'standing', 'raised', 'applaud', 'walking'];
+  const kit = { suit: '#1868db', accent: '#f2f3f5' };
+
+  el('div', 'audit-label', app, 'The five poses');
+  const row = el('div', 'audit-row', app);
+  for (const [i, pose] of POSES.entries()) {
+    cell(row, figureSvg(lookFor('pose-' + pose, 'driver'), {
+      uid: 'bp' + i, suit: kit.suit, accent: kit.accent, team: kit.suit,
+      pose, size: 150, number: 27,
+      trophy: pose === 'raised' ? 'gold' : undefined,
+      champagne: pose === 'raised',
+    }), pose);
+  }
+
+  el('div', 'audit-label', app, 'Build and height');
+  el('div', 'audit-sub', app,
+    'Same pose, the two body parameters at their extremes. A slight driver and a '
+    + 'heavy principal have to be the same body plan at different sizes.');
+  const row2 = el('div', 'audit-row', app);
+  for (const [i, [b, h]] of ([[0, 0], [0, 1], [0.5, 0.5], [1, 0], [1, 1]] as [number, number][]).entries()) {
+    cell(row2, figureSvg({ ...lookFromSeed(31 + i * 71, 'driver'), build: b, height: h }, {
+      uid: 'bb' + i, suit: '#e11d2e', accent: '#ffc61a', team: '#e11d2e',
+      pose: 'standing', size: 140,
+    }), 'build ' + b + ' · height ' + h);
+  }
+
+  el('div', 'audit-label', app, 'At the size the garage draws them');
+  el('div', 'audit-sub', app,
+    'The crew are about 52 pixels of head in a 675-tall bay. An arm that only '
+    + 'works at 300 pixels is not an arm.');
+  const row3 = el('div', 'audit-row tight', app);
+  for (let i = 0; i < 10; i++) {
+    cell(row3, figureSvg(lookFromSeed(500 + i * 313, 'crew'), {
+      uid: 'bs' + i, suit: '#00a19c', accent: '#0d1218', team: '#00a19c',
+      pose: (['standing', 'walking', 'applaud'] as const)[i % 3], size: 62,
+      sponsors: false,
+    }), '');
+  }
+}
+
+const SCENES: Record<string, () => void> = {
+  sheet, principals, presser, podium, garage, bodies,
+};
 
 window.__people = {
   show(name: string): boolean {
