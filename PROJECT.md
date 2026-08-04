@@ -210,6 +210,7 @@ Run `npm run` to list. The important ones:
 |---|---|
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
 | `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
+| `probe:autotier` | **Does the picture come back?** Drives the real `AutoTierPolicy` off synthetic frame costs — a load spike at minimum resolution, then the load removed — and asserts the tier *returns*, in node and again through the real `Renderer` in a browser reading `shadowMap.enabled` and the composer. Also: a transient is absorbed, repeated failure still latches, and a tier chosen in Settings survives five minutes of trouble untouched. **Not load sensitive** — every frame cost is stated, not measured. Issue #73 |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
@@ -488,6 +489,79 @@ What landed:
   red:** deleting the arguments to `new Renderer` in `main.ts`, which is the exact bug the
   issue describes, takes it from **67 ok / 0 failed to 48 ok / 19 failed**, and the three
   tiers collapse to one GL configuration.
+
+### Auto quality latched DOWN permanently on transient load (issue #73)
+
+> *"everything is very grainy again and like you can't really see anything in front of you
+> to a high quality its pixelated and idk why its like that"*
+
+**A regression introduced by #29 the same day, and the mechanism was exactly as filed.**
+`Renderer.updateAutoTier` demoted a tier the instant `frameCostMs` read above
+`AUTO_DEMOTE_MS` while the scaler happened to be at `MIN_SCALE`, and set
+`autoLatchedCeiling` to the tier it was **leaving** — which the promotion path then refused
+forever (`if (!up || up === this.autoLatchedCeiling) return`). Six headless Chromes were
+running on the user's machine at load average 17–148. The scaler gave up pixels first
+(correct); then `high` → `medium`, latching `high` out; then `medium` → `low`, latching
+`medium` out. They finished on `low` — **20.3 horizon / 63.6 mid-distance grain against
+`high`'s 1.2 / 14.8, i.e. 16× and 4.3× more speckle by #29's own table above** — and it
+never came back, with nothing on screen saying it had happened.
+
+**Two faults, not one, and both had to be fixed.** The evidence was one trimmed mean over
+45 frames — about three quarters of a second — and the consequence was permanent.
+
+- **Duration.** A demotion now needs `AUTO_VERDICT_S` (6s) of **unbroken** trouble at
+  minimum resolution. Any comfortable frame resets the clock. That is eight times the
+  evidence, and the resolution scaler continues to absorb everything shorter, which is what
+  it is for. Measured: 20 five-second bursts of 40ms frames at `MIN_SCALE`, each broken by
+  0.2s of calm, move the tier **not at all**.
+- **Repetition.** The latch survives — deleting it is not the fix, because promoting into
+  `high` turns the shadow map on and `applyResolved` then marks **every material in the
+  scene** `needsUpdate`, a stall of a few hundred milliseconds — but it now counts. A tier
+  is retried **once**; a **second** failure is a verdict about the device and latches
+  (`AUTO_LATCH_AFTER_DEMOTIONS = 2`). The worst case for a genuinely weak machine is one
+  extra stall per tier per page load, which is bounded and stated.
+- **Escalating proof.** A retry of a tier that has already failed costs **twice** the
+  comfortable time the first attempt did (`promoteAfterS`), so a machine hovering on the
+  boundary walks away from it instead of flapping. Measured: twelve alternating
+  trouble/calm cycles produce **6 tier changes and exactly 1 promotion into `high`**, then
+  it stops.
+- **The player is told.** A one-line renderer-owned banner — *"Graphics reduced to Low to
+  keep the frame rate"* / *"It will go back up on its own — or set it in Menu ▸ Settings ▸
+  Video"* — and *"Graphics back to High"* when it returns. A routine first promotion is
+  **not** announced; auto doing its job quietly is the design. It is deliberately its own
+  element with inline styles and is **not** inside `.hud-notices`, whose band `shoot:panels`
+  measures.
+- **The decision moved out of `Renderer` into `AutoTierPolicy` in `QualityTiers.ts`** — no
+  THREE, no DOM — for the same reason `RenderPose.ts` exists: so a probe can drive **the
+  real rule**. `Renderer.updateAutoTier` is now glue that derives the scaler's two facts and
+  applies whatever comes back, and `probe:autotier` §6 asserts by source inspection that no
+  threshold or latch is compared against anywhere in `Renderer.ts`.
+
+**A tier chosen in Settings was already safe, and that is now measured rather than
+asserted.** `resolveGraphics` sets `adaptive` from `tier === 'auto'`, and `updateAutoTier`
+reads it first. Five minutes of 40ms frames at `MIN_SCALE` against a stored `quality:'high'`
+move nothing — tier, `shadowMap.enabled` and the composer all unchanged, and no notice is
+shown. The same holds for a stored `medium`, checked separately so *"it had nowhere to go
+anyway"* cannot be what passes it. **No second bug.**
+
+**`probe:autotier` — 55 checks, 40 of them with no browser at all.** §1–§4 drive the real
+policy off synthetic frame costs; §5 loads the real game in headless Chrome and drives
+`Renderer.feedFrameCost` — the real policy, the real `moveTier`, the real `applyResolved` —
+then reads the **GL context**, because a tier that "came back" without `shadowMap.enabled`
+and the composer coming back with it has not come back. **It is not load sensitive**: every
+frame cost is stated, never measured, so unlike `probe:renderperf` it says the same thing on
+a busy machine.
+
+**Proved it goes red.** Restoring the old rule verbatim inside `AutoTierPolicy.update` —
+demote on one window, latch on the first failure — takes it from **55 ok / 0 failed to 33 ok
+/ 22 failed**, and the two headline lines are the user's session:
+
+    FAIL  THE TIER COMES BACK WHEN THE LOAD GOES AWAY  — low -> low
+    FAIL  THE REAL RENDERER GETS BACK TO HIGH          — on 'low'
+
+Under that same re-break the four manual-tier assertions stayed **green**, which is the
+independent confirmation that requirement 4 was never broken. `probe:graphics` **72 ok / 0
+failed** unchanged.
 
 ### The world
 - **Corner "cliffs":** the ground beyond every circuit was one flat quad at y = −0.62
@@ -1601,7 +1675,7 @@ against every threshold and so stops binding silently rather than throwing.
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
-| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
+| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
@@ -1679,6 +1753,20 @@ stated rather than silently crossed. **The retirement flow is on the same list**
 accident, and `probe:qualiretire` stages one.
 
 ### Measured, deferred, and still true
+- **The tier-demotion notice tells the player the route to the Video tab; it does not offer
+  a button.** The renderer owns a self-contained banner (issue #73, §6) that reads *"Set it
+  in Menu ▸ Settings ▸ Video"*. That route works today with no wiring, and it was chosen
+  over a button because a button has to reach the app shell's screen router, which lives in
+  `main.ts` — a file three other issues (#25/#13/#38) were open in at the time. Wiring
+  `Renderer.onTierNotice` into the HUD's own notice column, or adding a real button, is a
+  small follow-up for whoever owns that file next; the hook exists and assigning to it
+  replaces the default presenter entirely.
+- **`auto` still cannot get back a tier it has latched without the player asking.** By
+  design (a second failure is a verdict, and retrying costs a full-scene shader recompile),
+  but it means a device that was *genuinely* throttled twice — a phone that got hot and then
+  cooled down — stays reduced for the rest of the page load. A thermal-recovery relax, on
+  the model of the resolution scaler's `CEILING_RELAX_S`, is the obvious extension and is
+  **not built**. Nobody has measured how often that case actually occurs.
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
   established the first half by measurement (§6). The second half is the reason `medium`
   exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple

@@ -67,6 +67,7 @@
     "probe:qualiboard": "tsx scripts/probeQualiBoard.ts",
     "probe:renderperf": "tsx scripts/probeRenderPerf.ts",
     "probe:graphics": "tsx scripts/probeGraphics.ts",
+    "probe:autotier": "tsx scripts/probeAutoTier.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
     "probe:kerbs": "tsx scripts/probeKerbs.ts",
     "probe:rideheight": "tsx scripts/probeRideHeight.ts",
