@@ -925,8 +925,9 @@ async function main(): Promise<void> {
 
   console.log('');
   if (failures.length === 0 && !paintFail) {
-    console.log(`PASS — the front wing endplate's outer face carries the team's own paint, ` +
-      'measured as a paired difference against the carbon it replaces, in luma and in chroma.');
+    console.log('PASS — the front wing carries the team\'s own paint on the surfaces ' +
+      '`reference/target/90.png` shows painted, measured as a paired difference in CHROMA ' +
+      'against the carbon it replaces, with the luma lift reported beside it.');
   } else {
     console.log(`${failures.length} failed:`);
     for (const x of failures) console.log('  - ' + x);

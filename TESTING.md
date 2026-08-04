@@ -269,7 +269,7 @@ Useful individual probes:
 | `probe:graphics` | the quality setting reaches the GL context |
 | `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
 | `probe:halo` | the halo is painted in the car's own colour rather than the shared near-black — the same frame drawn twice, one texel of the livery apart, on 11 circuits × day/night × two onboard cameras and behind ten teams' cars |
-| `probe:frontwing` | the front wing is painted rather than near-black — the same idea as `probe:halo`, one texel apart, but measuring **luma and colour** rather than luma alone, and measuring the **whole wing** rather than only the bits it painted. It also prints what each camera can see, which is how the endplate-only version of this fix was caught being invisible |
+| `probe:frontwing` | the front wing is painted rather than near-black — the same idea as `probe:halo`, one texel apart, but judged on **colour** rather than brightness, because the wing sits in the car's own shadow and brightness there says more about the light than about the paint. It also prints what each camera can see, which is how the endplate-only version of this fix was caught being invisible |
 | `probe:hudstrip` | the race-control banner matches `reference/target/77.png` block by block — and a red flag, a yellow flag and a note are three different graphics |
 | `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |

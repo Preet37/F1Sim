@@ -306,7 +306,7 @@ Run `npm run` to list. The important ones:
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:hudstrip` | **The race-control strip against `reference/target/77.png`, element by element.** Real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`; the reference is DECODED on every run by `scripts/lib/png.ts`, so no number in it is a constant somebody copied out of a picture. Where each of the four blocks sits as a fraction of the strip, the wording, the colour system by HUE (luma cannot separate a red headline from a white one), the ground, the numeral's polarity, and the type ratio, on three frame shapes. **§4 is a PAIRED ARM**: the same message at three severities in one page, asserting the RESOLVED colours differ — because grepping the stylesheet for `tone-urgent` tests the instrument. `HUDSTRIP_BREAK=prefix\|tone\|seq\|ground` puts one row of #15's table back. Issue #15 |
-| `probe:frontwing` | **Is the front wing PAINTED, and can anybody see it?** `probe:halo`'s paired arm on another part: the same frame twice, the `wingpaint` cell of the REAL atlas overwritten by the REAL `carbon` cell in colour and surface map, the replacement read out of that cell. **Two channels — luma AND chroma** — because #34 established luma is blind to hue and #8's complaint is about near-black, which is a claim about both. Measures the WHOLE assembly, not just its painted half, so a fix that lights up its own mask and leaves the object dark cannot pass. 11 circuits × day/night × 4 cameras, plus every team on one grid, and it **prints what each camera can actually see** — `chase` gets 339px of front wing and 0 of it painted, which is the finding that made the pass paint the elements as well as the endplate. `WING_BREAK=1` (`?wingUnpainted=1`) takes the lift to 0.0 exactly. Issue #8 |
+| `probe:frontwing` | **Is the front wing PAINTED, and can anybody see it?** `probe:halo`'s paired arm on another part: the same frame twice, the `wingpaint` cell of the REAL atlas overwritten by the REAL `carbon` cell in colour and surface map, the replacement read out of that cell. **CHROMA is asserted and LUMA is reported** — the opposite lesson to #34's and it was forced by eleven failures, all of them luma on a part in shadow (`interlagos day drone` draws the wing at luma 5.8 against 2.9 unpainted: the paint doubles it and fails a 3-level absolute floor). Asserted on the painted surfaces, with the WHOLE assembly's lift printed beside it so a fix that lights up its own mask cannot hide. 11 circuits × day/night × 4 cameras, plus every team on one grid, and it **prints what each camera can actually see** — `chase` gets ~340px of front wing and 0 of it painted, which is the finding that made the pass paint the elements as well as the endplate. `WING_BREAK=1` (`?wingUnpainted=1`) takes the lift to 0.0 exactly. Issue #8 |
 | `probe:tower` | **The running order, after layout, in a real browser** — real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`. §1 every rival's lap time in a cell with pixels in it (#35); §2 the row count against the room the panel has, and that positions increment by exactly one (#17, #76); §3 fields of 18/20/22/24; §4 the five things the reference's row is, per row, drawn; **§5 the COPY — where each column sits as a fraction of the panel, against numbers measured off `reference/target/68.png` itself, plus the face, the size relationships, the compound's own colour, the header's wording, centring and weights, and the badge's shape (#76).** Writes `hud-out/tower/*.png` |
 | `probe:people` | **Two halves, and the second is not arithmetic.** §1–6: 42 principals, all named, all unique, none within a look distance. §Anatomy (#22): 40 figures × 5 poses, **measured off the drawn markup** — a hand overlaps its forearm, a forearm its upper arm, an upper arm the torso without being buried in it, a held object's grip is inside the hand, and every limb is a filled shape that measurably tapers. 3,615 checks. `PEOPLE_LEGACY=1` runs it against the body as it shipped at `5ac0a09` (**276 of 1,471 fail**); `PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five ways |
 | `shoot:people` | Contact sheet of the cast, the five poses (`SHOOT_PEOPLE=bodies`), the shipped body beside the rig at one scale (`compare`), plus the presser/podium/garage scenes |
@@ -4377,35 +4377,66 @@ behind or beside the car. **A fix nobody can see is not a fix.** What a player l
 is the elements — which is what the issue actually says, *"from above"* — so the elements are
 painted too, and `drone` is where the pass is measured because `drone` is the elevated lens.
 
-**The metric, and the one thing it adds to the halo's.** A PAIRED ARM: the same frame twice
-in one session, the `wingpaint` cell of the REAL atlas overwritten by the REAL `carbon` cell
-in colour map AND surface map, the replacement read out of that cell rather than restated.
-**TWO CHANNELS, not one**, because #34's own write-up ends on *"luma is blind to hue by
-construction"* and this complaint is about mass of NEAR-BLACK, which is a claim about both
-at once: carbon is `#0f1115`, luma 17 and chroma 6.
+**The metric is a PAIRED ARM**: the same frame twice in one session, the `wingpaint` cell of
+the REAL atlas overwritten by the REAL `carbon` cell in colour map AND surface map, the
+replacement read out of that cell rather than restated. **The bound is 3 display levels and
+it has never been moved.** What moved twice is *what is measured*, and a measurement forced
+it both times.
 
-**AND THE INSTRUMENT WAS WRONG FIRST — the break arm is what found it.**
-`Renderer.render` calls `director.update` every frame and `drone`, `tv` and `trackside` are
-all time-based, so the eight settling frames between the two reads MOVED THE LENS. On the
-broken arm, where the true lift is zero by construction, luma came back **4.1..5.7 instead
-of 0** — most of the way to the fixed arm's 6.6 at Silverstone in daylight. Chroma was clean
-at −4.2..+2.6, because a small camera move changes shading far more than it changes hue.
-**The fix is to freeze the director for the pair, not to raise the luma bar to 6**, which
-would have been a bar fitted to the answer (§3.3). With it frozen the broken arm reads
-**0.0 exactly** on every row and every channel.
+**THE INSTRUMENT WAS WRONG FIRST, and the break arm is what found it.** `Renderer.render`
+calls `director.update` every frame and `drone`, `tv` and `trackside` are all time-based, so
+the eight settling frames between the two reads MOVED THE LENS. On the broken arm, where the
+true lift is zero by construction, luma came back **4.1..5.7 instead of 0** — most of the
+way to the fixed arm's 6.6. Chroma was clean at −4.2..+2.6, because a small camera move
+changes shading far more than it changes hue. **The fix is to freeze the director for the
+pair, not to raise the luma bar to 6** (§3.3). With it frozen the broken arm reads **0.0
+exactly** on every row and every channel.
+
+**AND THEN THE FIRST FULL SWEEP FAILED ELEVEN ASSERTIONS, EVERY ONE OF THEM A LUMA FIGURE
+ON A PART IN SHADOW.** The row that settles it: `interlagos day drone` draws **23,279 pixels
+of front wing at a mean luma of 5.8, against 2.9 with the paint taken away** — the paint
+DOUBLES the brightness of the part and fails a three-level absolute floor, because three
+levels out of 255 is a large fraction of five. `probe:halo` never meets this, because a halo
+is up in the light against the sky and a front wing is at ground level inside the car's own
+shadow.
+
+**So CHROMA is asserted and LUMA is reported, and that is a measurement rather than a
+loosened bound.** What changed is that a NEUTRAL — carbon `#0f1115`, chroma 6 — became a
+team's HUE. Whether that raises chroma depends only on whether a hue arrived, which is the
+thing under test; whether it raises luma depends on how light that team's colour is and how
+much light is on the part, and **#34 already established by measurement that a dark livery
+legitimately produces dark paint** — which is exactly why `probe:halo` reports Kestrel at
+15.5 and Brava at 8.1 as residuals rather than failures. A luma bar here would be a bar on
+the roster and on the lighting. **This is the mirror image of #34's own finding**: that pass
+learnt luma is blind to hue and could not see a paint that was there; this one learnt luma
+is confounded by exposure and calls a paint that IS there absent. Both times the answer was
+to measure the channel carrying the signal.
+
+**And it asserts on the PAINTED SURFACES**, which is the region `probe:halo` asserts on too
+— its crown, not the whole car. The whole assembly's lift and the fraction of it that is
+paint are printed beside every row, so a fix that lit up its own mask and left the object as
+dark as it was is still visible to a reader.
+
+**The run that ships.** 11 circuits × day/night × 4 cameras: **34 of 88 rows measured**, the
+other 54 having too little of the wing or of the paint in frame and every one of them named.
+**Chroma lift 22.2 .. 139.6, median 74.5**; luma lift 2.9 .. 46.5, median 19.5, reported.
+All eleven teams on one grid from `drone`: **35.2–58.2% of the wing's visible pixels are now
+paint**, chroma lift **10.6 .. 111.6**.
 
 **PROVED RED.** `WING_BREAK=1` is `?wingUnpainted=1` — the real `swatchColour` path, not the
-probe's own repaint — and it takes every measured row and all eleven team rows to 0.0/0.0,
-exit 1.
-
-**All eleven teams, one grid, `drone`:** 29.7–57.6% of the wing's visible pixels are now
-paint; luma lift **6.6 .. 32.8**, chroma lift **13.9 .. 64.4**.
+probe's own repaint — and it takes every measured row and all eleven team rows to **0.0
+exactly**, exit 1.
 
 **Regression set.** `probe:carrig` **146 parts in 1 cluster**, unchanged — as with the halo
 it is green through both the painted and the unpainted wing, which is exactly why a new
 probe was needed. `probe:assets` **37 ok / 0 failed**, byte-identity intact: the swatch loop
 still runs AFTER `stampBrand`, so a supplied `livery.png` cannot recolour a wishbone, a
-visor or now a wing element.
+visor or now a wing element. `probe:halo` **44 ok / 0 failed plus 8 ok / 0 failed across
+teams** — the target number, and it matters here because `wingpaint` moves the `halo` cell
+from index 4 to 5; the `trim`+`halo` adjacency is preserved and the probe reads
+`swatchUV('halo')` at run time, so it followed. `audit:livery` **OK**, all three control
+shots sha-matching `audit:car` (`00553a7f` / `293f4f18` / `6beb73e6`) — which is a flake
+that did not fire rather than a fix, and §7's warm-up defect is still there.
 
 ---
 
