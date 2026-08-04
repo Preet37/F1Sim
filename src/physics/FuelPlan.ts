@@ -30,21 +30,34 @@ import { clamp } from '../core/MathUtils';
  * an empty tank reproduces exactly that trace on the bench: 20% throttle from
  * 3 m/s in first gear decays to 0.76 m/s in eight seconds and keeps going.
  *
- * THE DEFECT IS A UNIT MISMATCH. The tank was filled per KILOMETRE —
- * `raceLaps x lengthKm x 0.33 + 4` — and it is emptied per SECOND, because
- * `peakFuelBurnLps` is litres per second. Those two agree only at one lap
- * time, and the field does not run it. Measured at Silverstone, F3, medium:
+ * THE DEFECT IS TWO THINGS, AND EITHER ALONE WOULD HAVE BEEN SURVIVABLE.
  *
- *   loaded                       105.1 L
- *   burnt                        2.980 L per lap
- *   mean lap                     143.0 s against a solved reference of 88.3 s
- *   dry at                       lap 35 of 52
- *   a full distance needs        155.0 L, and the tank holds 145
+ * (a) `peakFuelBurnLps` was 0.048 L/s, which is 129.6 kg/h against the 100 kg/h
+ *     of FIA Technical Regulations Art. 5.1.4. See the constant's own note in
+ *     `VehicleSpec.ts`: it is 30% over a regulation and it implies a 37%
+ *     efficient hybrid.
+ *
+ * (b) The tank was filled per KILOMETRE — `raceLaps x lengthKm x 0.33 + 4` —
+ *     and it is emptied per SECOND. Those two agree at exactly one lap time and
+ *     the field does not run it: the AI is 1.4 to 1.6 times the solved
+ *     reference lap (PROJECT.md's oldest open item) and a neutralisation adds
+ *     seconds without adding metres.
+ *
+ * Measured by `probe:neutral`, full distance, F3, medium, on `main`:
+ *
+ *                          Silverstone 52     Monza 53
+ *   loaded                       105.1 L       105.3 L
+ *   burnt                       2.85 L/lap    2.63 L/lap
+ *   tanks emptied                  14            9
+ *   retired                     20 of 20      20 of 20
+ *   of those, stalled under a
+ *   neutralisation on clear road   12            8
  *
  * So the field runs out of fuel three quarters of the way through every full
  * distance race, coasts to a halt wherever it happens to be, and — since #28 —
- * is retired for stopping on track. **That is the 10.5 retirements a race, and
- * it is why full-distance retirement counts have not been measuring attrition.**
+ * is retired for stopping on track. **That is issue #26's 10.5 retirements a
+ * race, and it is why full-distance retirement counts have not been measuring
+ * attrition.**
  *
  * WHY IT PRESENTS AS A NEUTRALISATION BUG, WHICH IS THE INTERESTING PART. A
  * neutralisation is the one thing in a race that adds SECONDS without adding
@@ -79,21 +92,23 @@ import { clamp } from '../core/MathUtils';
 /**
  * Litres per lap the fill is planned against, per second of racing.
  *
- * NOT a litres-per-kilometre constant, which is the bug. It is the burn model's
- * own rate at a representative racing duty cycle: `peakFuelBurnLps` is
- * 0.048 L/s at full throttle and full revs, and the model charges
- * `throttle x (0.35 + 0.65 x rpmFraction)` of it. A lap is roughly 60% of its
- * time with the throttle open at an rpm fraction around three quarters, which
- * gives 0.048 x 0.60 x (0.35 + 0.65 x 0.75) = 0.0242 L/s.
+ * NOT a litres-per-kilometre constant, which is the bug.
  *
- * MEASURED AGAINST THE SIMULATION, which is the only reason to believe it: a
- * Silverstone F3 race burns 2.980 L in a 143.0s lap, which is 0.0208 L/s. The
- * derivation above is 16% conservative against the measurement, and being
- * conservative is the right direction for a fuel load — a car that finishes
- * with fuel in the tank has carried some weight it did not need, and a car that
- * finishes without it has stopped on the circuit.
+ * MEASURED, and cross-checked against the burn model rather than derived from
+ * it. A Silverstone F3 race burns 2.13 L in a 143.0s lap once
+ * `peakFuelBurnLps` is at the flow limit Art. 5.1.4 actually sets, which is
+ * 0.0149 L/s. The model's own arithmetic agrees: `peakFuelBurnLps` is 0.0370
+ * L/s and the model charges `throttle x (0.35 + 0.65 x rpmFraction)` of it, so
+ * a lap spent roughly 60% of its time with the throttle open at an rpm fraction
+ * near three quarters gives 0.0370 x 0.60 x (0.35 + 0.65 x 0.75) = 0.0186 L/s.
+ *
+ * 0.0175 sits between them, 17% above the measurement. Being conservative is
+ * the right direction and not a symmetric choice: a car that finishes with fuel
+ * left has carried weight it did not need and lost a fraction of a second a
+ * lap, and a car that finishes without it has stopped on the circuit and been
+ * retired.
  */
-export const RACE_BURN_L_PER_S = 0.0242;
+export const RACE_BURN_L_PER_S = 0.0175;
 
 /**
  * How much longer than the reference lap a race lap actually is.
@@ -105,14 +120,14 @@ export const RACE_BURN_L_PER_S = 0.0242;
  * a solved reference lap of 88.3s is 1.39x, and the 12-lap measurement above
  * reads 1.62x with a larger neutralised share.
  *
- * 1.55 sits between them and above the pace item's own figure. It is a
+ * 1.50 sits between them and above the pace item's own figure. It is a
  * PLANNING number and it is deliberately generous: over-fuelling costs a
  * fraction of a second a lap in weight, and under-fuelling parks the car.
  *
  * IF THE AI PACE ITEM IS EVER CLOSED, THIS SHOULD COME DOWN WITH IT. It is
  * written here as one named constant, in one place, so that it can be.
  */
-export const RACE_PACE_VS_REFERENCE = 1.55;
+export const RACE_PACE_VS_REFERENCE = 1.50;
 
 /**
  * Reserve on top of the plan, as a fraction.

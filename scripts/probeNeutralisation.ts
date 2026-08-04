@@ -101,7 +101,7 @@
  * kink on the calendar.
  *
  * Run: npm run probe:neutral
- *      NEUTRAL_FULL=1 npm run probe:neutral    (the full length sweep)
+ *      NEUTRAL_STALL_TRACKS=spa NEUTRAL_STALL_SEEDS=1,2,3 npm run probe:neutral
  */
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
@@ -292,28 +292,33 @@ function runStall(
 }
 
 /**
- * The configuration issue #26 is written at, minus the distance.
+ * FULL DISTANCE, AND IT HAS TO BE FULL DISTANCE.
  *
- * FULL DISTANCE IS AVAILABLE AND IS NOT THE DEFAULT, and that is a measured
- * choice rather than a convenience. A 52-lap Silverstone race is about a
- * million physics steps for twenty cars, and on a loaded machine that is the
- * better part of an hour for one seed — which is exactly the cost that made
- * the old version of this probe unrunnable. The stall does not need the
- * distance: it needs a neutralisation and a car whose own pace has fallen far
- * enough that half of it is under `STRANDED_SPEED_MS`, and both are present
- * from the first deployment. The default therefore runs the same circuit, tier
- * and difficulty at a third distance across three seeds, and `NEUTRAL_FULL=1`
- * reproduces the issue's own configuration exactly.
+ * This is expensive — a fifty-two lap race is about a million physics steps for
+ * twenty cars — and the temptation to run a third of it and multiply is exactly
+ * the mistake that let the defect survive. The old fuel load was
+ * `def.raceLaps x lengthKm x 0.33 + 4` and it used the CHAMPIONSHIP distance
+ * whatever the session was, so a short race started with a full Grand Prix of
+ * fuel on board and could not run dry however badly the arithmetic was wrong.
+ * Every probe in this repository that runs five or fourteen laps was therefore
+ * structurally incapable of seeing it, and `probe:racelog` at full distance —
+ * the one that could — read it as thirteen beachings and a path-tracking
+ * failure (issue #26).
+ *
+ * So the distance is the circuit's own, the tier and difficulty are the ones
+ * issue #26 is written at, and the cost is the price of a probe that can fail.
+ * One seed a circuit; two circuits, because a single one has been wrong in this
+ * project's history every time it was tried.
  */
-const FULL = process.env.NEUTRAL_FULL === '1';
 const STALL_TIER = (process.env.NEUTRAL_TIER as TierId) ?? 'F3';
 const STALL_DIFFICULTY = (process.env.NEUTRAL_DIFFICULTY as AIDifficultyId) ?? 'medium';
-const STALL_LAPS = Number(process.env.NEUTRAL_STALL_LAPS ?? (FULL ? 52 : 18));
+/** 0 means "this circuit's own championship distance", which is the default. */
+const STALL_LAPS = Number(process.env.NEUTRAL_STALL_LAPS ?? 0);
 const STALL_CIRCUITS = (process.env.NEUTRAL_STALL_TRACKS ?? 'silverstone,monza').split(',');
-const STALL_SEEDS = (process.env.NEUTRAL_STALL_SEEDS ?? '1,2').split(',').map(Number);
+const STALL_SEEDS = (process.env.NEUTRAL_STALL_SEEDS ?? '1').split(',').map(Number);
 
 console.log('THE STANDSTILL — a neutralisation is a speed limit, not a stop signal');
-console.log(`  ${STALL_LAPS} laps, ${STALL_TIER}, ${STALL_DIFFICULTY}, clear road = ` +
+console.log(`  full distance, ${STALL_TIER}, ${STALL_DIFFICULTY}, clear road = ` +
   `${CLEAR_ROAD_M}m, crawl = under ${STRANDED_SPEED_MS} m/s`);
 console.log('  ' + 'CIRCUIT'.padEnd(13) + 'SEED'.padStart(5) + 'SIM s'.padStart(9) +
   'NEUTRAL%'.padStart(10) + 'CRAWL cs'.padStart(10) + 'STOPPED cs'.padStart(12) +
@@ -323,8 +328,9 @@ console.log('  ' + '-'.repeat(98));
 
 const stallRows: StallRow[] = [];
 for (const circuit of STALL_CIRCUITS) {
+  const laps = STALL_LAPS > 0 ? STALL_LAPS : getCircuit(circuit).raceLaps;
   for (const seed of STALL_SEEDS) {
-    const r = runStall(circuit, STALL_TIER, STALL_LAPS, seed, STALL_DIFFICULTY);
+    const r = runStall(circuit, STALL_TIER, laps, seed, STALL_DIFFICULTY);
     stallRows.push(r);
     console.log('  ' + r.circuit.padEnd(13) + String(r.seed).padStart(5) +
       r.simS.toFixed(0).padStart(9) +
@@ -483,14 +489,14 @@ function run(trackId: string, laps: number, seed: number): Row {
   };
 }
 
-const tracks = (process.env.NEUTRAL_TRACKS ?? 'zandvoort,silverstone,monaco').split(',');
-const lengths = (process.env.NEUTRAL_LAPS ?? (FULL ? '5,15,30' : '5,15')).split(',').map(Number);
+const tracks = (process.env.NEUTRAL_TRACKS ?? 'zandvoort,monaco').split(',');
+const lengths = (process.env.NEUTRAL_LAPS ?? '5,15').split(',').map(Number);
 /**
  * Seeds per cell. One race says nothing: a deployment is a discrete event whose
  * cost is a large fraction of a short race, so the per-race figure is bimodal
  * and only the mean over several seeds is worth comparing.
  */
-const seedCount = Number(process.env.NEUTRAL_SEEDS ?? (FULL ? 3 : 2));
+const seedCount = Number(process.env.NEUTRAL_SEEDS ?? 2);
 const seeds = Array.from({ length: seedCount }, (_, i) => 20260729 + i * 7919);
 
 console.log('\nNEUTRALISED FRACTION vs RACE LENGTH');
