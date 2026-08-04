@@ -161,10 +161,10 @@ const DESK_Y = 368;
  * frame with the panel, whatever the panel is.
  */
 function panelScale(n: number): number {
-  if (n <= 1) return 1.30;
-  if (n === 2) return 1.12;
-  if (n === 3) return 0.96;
-  return 0.82;
+  if (n <= 1) return 1.05;
+  if (n === 2) return 0.94;
+  if (n === 3) return 0.82;
+  return 0.70;
 }
 
 /**
@@ -243,6 +243,10 @@ function microphone(x: number, lean: number): string {
 export function pressRoomSvg(spec: PressConferenceSpec): SVGSVGElement {
   const svg = document.createElementNS(NS, 'svg') as SVGSVGElement;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  // SLICE, not meet. The room's box is 21:9 on a desktop and something else on
+  // a phone held sideways, and letterboxing a photograph inside a panel that
+  // already has a border reads as a bug.
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid slice');
   svg.setAttribute('class', 'pc-room');
   svg.setAttribute('role', 'img');
   const panel = spec.panel.slice(0, 4);
@@ -252,13 +256,24 @@ export function pressRoomSvg(spec: PressConferenceSpec): SVGSVGElement {
 
   const seed = spec.seed ?? 1;
   const s = panelScale(panel.length);
-  // Everyone's hands land on the desk, whatever their scale, because the desk
-  // is a real object and they are all sitting at it.
-  const deskContact = 205 + 124 * 0.62;
-  const ty = DESK_Y - deskContact * s;
 
   let defs = '';
   let people = '';
+  /**
+   * The forearms and hands, which lie ON the desk rather than inside it.
+   *
+   * THIS IS THE BUG #22 WAS FILED FOR, and it had two halves. The desk was
+   * painted after the people, so anything at desk height was behind a slab —
+   * and the figure was told the desk was at a hard-coded 281.9 in figure space
+   * while it placed its own hands off its own head height, so the two agreed
+   * for exactly one build and disagreed for every other. `desktop-presser.png`
+   * on the old build has six hands in it and none of them is visible.
+   *
+   * Now each person is translated so THEIR OWN `rig.deskY` lands on this
+   * scene's `DESK_Y`, and the layer that has to be in front of the furniture
+   * comes back from `figureArt` separately.
+   */
+  let onDesk = '';
   const slots: number[] = [];
 
   for (const [i, p] of panel.entries()) {
@@ -276,8 +291,12 @@ export function pressRoomSvg(spec: PressConferenceSpec): SVGSVGElement {
     });
     defs += art.defs;
     // Each person is one transform. The 100 is the centre of the figure box.
-    people += `<g transform="translate(${(cx - 100 * s).toFixed(1)} ${ty.toFixed(1)}) `
-      + `scale(${s.toFixed(3)})">${art.markup}</g>`;
+    // The y puts this person's desk line on the room's desk line, which is why
+    // a tall panellist sits visibly higher than a short one.
+    const t = `translate(${(cx - 100 * s).toFixed(1)} `
+      + `${(DESK_Y - art.rig.deskY * s).toFixed(1)}) scale(${s.toFixed(3)})`;
+    people += `<g transform="${t}">${art.markup}</g>`;
+    onDesk += `<g transform="${t}">${art.overlay}</g>`;
   }
 
   svg.innerHTML = `
@@ -306,13 +325,20 @@ export function pressRoomSvg(spec: PressConferenceSpec): SVGSVGElement {
 
   backdrop(svg, spec.seriesName || spec.tierName, spec.round ?? '');
 
-  // The panel, then the desk over the front of it, then the foreground.
+  // The panel, then the desk over the front of it, then the hands ON the desk,
+  // then the microphones standing in front of the hands.
   const rest = document.createElementNS(NS, 'g');
   rest.innerHTML = people
     // The desk. A slab with a lit top edge and a dark face, which is the whole
     // recipe every panel in `styles.css` already uses.
     + `<rect x="-20" y="${DESK_Y}" width="${W + 40}" height="${H - DESK_Y}" fill="url(#pc-desk)"/>`
     + `<rect x="-20" y="${DESK_Y}" width="${W + 40}" height="2.5" fill="#5d6b7d" opacity="0.55"/>`
+    // The contact shadow each pair of hands throws on the desk top. Under the
+    // hands, or they read as stuck to the front of the slab rather than lying
+    // on it.
+    + slots.map((x) => `<ellipse cx="${x}" cy="${DESK_Y + 6}" rx="${(74 * s).toFixed(1)}" `
+      + `ry="${(9 * s).toFixed(1)}" fill="#05070a" opacity="0.34"/>`).join('')
+    + onDesk
     + slots.map((x, i) => microphone(x - 14, i % 2 === 0 ? 1 : -1)).join('');
   svg.appendChild(rest);
 

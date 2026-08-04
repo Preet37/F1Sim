@@ -75,6 +75,7 @@
     "probe:autotier": "tsx scripts/probeAutoTier.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
     "probe:grain": "tsx scripts/probeGrain.ts",
+    "probe:halo": "tsx scripts/probeHalo.ts",
     "probe:kerbs": "tsx scripts/probeKerbs.ts",
     "probe:rideheight": "tsx scripts/probeRideHeight.ts",
     "probe:activeaero": "tsx scripts/probeActiveAero.ts",

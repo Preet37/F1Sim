@@ -226,6 +226,33 @@ docs/CAREER_MODE.md       Career design document
 reference/                GITIGNORED. Extracted reference frames (see §9)
 ```
 
+### Which probes to run — scope the set, never the standard
+
+Settled 2026-08-03 after six concurrent agents put 24 probes on one machine and took
+the load average to 209. The user's position, in their own words: *"i will not compromise
+on the rendering or the quality or the concept or anything at all."*
+
+**The standard is absolute and is what actually protects quality:**
+1. A probe must be able to **fail** — break the feature and watch it go red, every time.
+2. Verify on **merged `main`**, not on the branch.
+3. **No tolerance ever moves** to make something pass.
+
+Those three caught everything real today. What did *not* protect quality was running the
+whole suite on every branch: a 55-race sweep on a CSS change finds nothing and queues
+ahead of the probe that would have found something. Nearly every probe here drives
+headless Chrome under software rendering — `probe:racesweep` is 20+ minutes and an hour
+on a busy box, `probe:framing` is 11 circuits × 2 aspects × 3 modes.
+
+**So: run the probes your change can plausibly break, plus any probe that has ever caught
+this class of bug before, plus the one you wrote for the fix itself.** Then say in the PR
+which you ran and which you deliberately did not — an unrun probe named is fine, an unrun
+probe implied is not.
+
+**And re-run before quoting.** Several "known-failing" numbers in this file have been
+stale by a factor of four (`shoot:panels` said 2 rail, was 9 — a de-duplicated list read
+as a count) or entirely wrong (`validate:flags` had been passing for days). A number
+nobody has re-measured is a rumour.
+
 ### The probes — this is the project's immune system
 
 Run `npm run` to list. The important ones:
@@ -237,6 +264,7 @@ Run `npm run` to list. The important ones:
 | `probe:autotier` | **Does the picture come back?** Drives the real `AutoTierPolicy` off synthetic frame costs — a load spike at minimum resolution, then the load removed — and asserts the tier *returns*, in node and again through the real `Renderer` in a browser reading `shadowMap.enabled` and the composer. Also: a transient is absorbed, repeated failure still latches, and a tier chosen in Settings survives five minutes of trouble untouched. **Not load sensitive** — every frame cost is stated, not measured. Issue #73 |
 | `probe:grain` | **High-frequency energy ON THE ROAD, by depth.** Mean absolute Laplacian of luma — #29's metric — but masked to the mesh named `ROAD_MESH_NAME` by a second, occlusion-correct render of the same frame, banded over the road's own extent so band 0 is always the most distant asphalt and band 5 the nearest, and shot at the scale the resolution scaler settled on. 11 circuits × day/night × 3 tiers × 2 cameras, and it **asserts**. `GRAIN_VIEWPORT=390x844x2` measures at a phone's pixel count |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
+| `probe:halo` | **Is the halo PAINTED, and does it have an outline?** Not a geometry probe — `probe:carrig` already answers that and stays green either way. The crown of the hoop is found in a finished frame by its own swatch UV, drawn as an unlit mask over a black scene so it is occlusion correct, and its rendered luma and the world behind it are measured: 11 circuits × day/night × driver/cockpit, plus the same shot behind nine other teams' cars, plus the paint rule for all eleven teams in node. `HALO_BREAK=1` (`?haloUnpainted=1`) puts issue #34 back — one texel of the atlas — and takes it red on every row. Issue #34 |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
@@ -275,8 +303,8 @@ Run `npm run` to list. The important ones:
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:tower` | **The running order, after layout, in a real browser** — real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`. §1 every rival's lap time in a cell with pixels in it (#35); §2 the row count against the room the panel has, and that positions increment by exactly one (#17, #76); §3 fields of 18/20/22/24; §4 the five things the reference's row is, per row, drawn; **§5 the COPY — where each column sits as a fraction of the panel, against numbers measured off `reference/target/68.png` itself, plus the face, the size relationships, the compound's own colour, the header's wording, centring and weights, and the badge's shape (#76).** Writes `hud-out/tower/*.png` |
-| `probe:people` | 42 principals: all named, all unique, none within a look distance |
-| `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
+| `probe:people` | **Two halves, and the second is not arithmetic.** §1–6: 42 principals, all named, all unique, none within a look distance. §Anatomy (#22): 40 figures × 5 poses, **measured off the drawn markup** — a hand overlaps its forearm, a forearm its upper arm, an upper arm the torso without being buried in it, a held object's grip is inside the hand, and every limb is a filled shape that measurably tapers. 3,615 checks. `PEOPLE_LEGACY=1` runs it against the body as it shipped at `5ac0a09` (**276 of 1,471 fail**); `PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five ways |
+| `shoot:people` | Contact sheet of the cast, the five poses (`SHOOT_PEOPLE=bodies`), the shipped body beside the rig at one scale (`compare`), plus the presser/podium/garage scenes |
 | `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
@@ -3163,6 +3191,127 @@ set of routes, so "you cannot get there" is a named failure rather than a note.
   journalists are invented people from invented name pools, deliberately so, because the
   press-conference system puts sentences in their mouths.
 
+### The body below the neck — issue #22, the half #18 did not do
+
+**What #18 shipped, photographed before anything was changed.** `npm run shoot:people` on
+`5ac0a09`:
+
+| shot | what the figure was made of |
+|---|---|
+| `desktop-podium.png` | a torso, and ONE round-capped stroke of constant width starting inside the chest. A hand ellipse and a trophy at two independent hard-coded offsets near its end. The other arm an upper arm with nothing below the elbow, painted BEHIND the torso. No legs — the drawing stopped at y=560 |
+| `desktop-garage.png` | four torsos with no arms. `standing` returned `{ behind: upper(-1) + upper(1), front: '' }`: two upper arms painted, then the torso painted over them in the same suit colour |
+| `desktop-presser.png` | no hands anywhere, on the screen whose specification (`reference/target/81.png`) has six of them on a desk in the middle of the frame |
+| `phone-presser.png` | 844×390, and the 21:9 room alone is 362 of the 390. The question and all three answers were below the fold |
+
+**The body is a RIG now.** `src/ui/people/Body.ts`: joints, bones with a width at each
+end, hands, feet, and a **grip frame per hand** that a held object is placed by. Pure
+geometry — no markup, no DOM, so a probe can build ten thousand of them in node.
+Proportion is the seven-and-a-half-head canon in multiples of *that person's own head
+height*, so a slight driver and a heavy principal are one body plan at two sizes. A pose
+is joint ANGLES; `seated` is **solved** against the desk height the scene is going to
+draw, which is the whole fix for the six hidden hands. `Figure.ts` paints the rig and
+paints nothing else: every shape below the neck is a bone, a hand, a foot or the torso
+outline, emitted as an explicit polygon. Five poses — seated, standing, raised, folded,
+walking — cover the press room, the podium, the garage and the paddock, and `figureArt`
+returns a separate `overlay` layer for the parts that must be painted AFTER a scene's
+furniture.
+
+**`probe:people` is 576 → 3,615 checks — and the 537 this file has carried since #18 was
+stale.** Measured rather than quoted: `git show main:scripts/probePeople.ts` run on this
+tree reports **576 checks passed**, so the count had grown by 39 with some roster merge
+and nobody re-ran it. The same species of stale entry this file records for
+`validate:flags`, `probe:fieldsize` and `shoot:panels`. The pre-existing section is
+**unchanged at 576** on the branch (3,615 − 3,016 anatomy − 23 desk/wiring = 576).
+
+The 3,016 new checks are a different kind of assertion from the 576. Those were distance
+between records, which is arithmetic, and every one of them passed on the build described
+in the table above. A body is about
+**shapes sharing area**: a hand overlaps the forearm it is on, a forearm overlaps its
+upper arm, an upper arm overlaps the torso but is not buried in it, a held object's grip
+is inside the hand, and every limb is a filled shape that measurably narrows from one end
+to the other. All of it measured off the **markup** — `scripts/lib/figureGeom.ts` parses
+the drawn polygons back out — because a probe that asks a rig whether it agrees with
+itself is the probe this project keeps writing by accident.
+
+**Proved red on the shipped body, not on a hypothetical.** `scripts/lib/legacyFigure.ts`
+is `main`'s body verbatim at `5ac0a09`, tagged so the same instrument measures it.
+`PEOPLE_LEGACY=1 npm run probe:people`: **276 of 1,471 checks FAILED** — 112 `standing`,
+104 `raised`, 60 `seated`. The sentences are the §7 prose, as numbers:
+
+```
+arm-l-upper is a filled shape, not a stroke — fill="none" stroke-width="35.6"
+held-trophy is drawn AROUND the grip, not above it — its own extent is
+  y 44.4..102.7 against a grip at 111.4
+draws arm-l-fore — no element carries that data-part                    ×32
+draws hand-l / hand-r — no element carries that data-part               ×24
+arm-l-upper can be seen — painted BEFORE the torso and only 24.8% of it
+  is outside it (bar 30%)                                              ×40
+```
+
+`PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five separate ways and
+each goes red on the assertion it targets.
+
+**And it caught one of its author's.** The first `walking` pose swung the near arm across
+the body: `arm-l-fore can be seen — only 1.1% of it is outside the torso`, on all eight
+builds. **The pose was fixed, not the bar** (§3.3).
+
+**The three scene fixes, each with its mechanism.**
+- *Press room.* The desk is painted between `markup` and `overlay`, and each panellist is
+  translated so **their own** `rig.deskY` lands on the room's `DESK_Y`. It used to be a
+  hard-coded `205 + 124 * 0.62` in the scene against a figure placing its hands off its
+  own head height: the two agreed for exactly one build.
+- *Podium.* Both arms up, legs, cut below the knee. `reference/target/82.png` is a
+  full-body shot and cutting at the waist made a skittle of them.
+- *Garage.* The crew and the principal stand on the floor by `rig.floorY` rather than by a
+  fixed 560-unit box, in three poses, cropped by the bench at the thigh.
+- *Landscape phone.* `people.css` puts the room and the conversation side by side under
+  `(orientation: landscape) and (max-height: 520px)`. The room takes 42% of the width;
+  the question and three answers fit in the other 58%.
+
+**What it costs, measured rather than assumed.** The body markup per figure went from
+**~1.2KB to ~36KB** (`seated` 1,183 → 24,467; `standing` 590 → 35,649; `raised` 1,222 →
+36,067 bytes), and a whole figure including its head defs is ~37KB, built in **2.5–3.5ms**
+in node. So a three-person press room is about 78KB of inline SVG and the garage about
+150KB, painted **once**, with no filter, no animation, no timer and no second GL context —
+`probe:menucost`'s subject is untouched. That is a thirty-fold increase and it is
+deliberate: a limb is a sampled polygon rather than a stroke precisely so that what the
+probe measures is what the renderer fills. **The single biggest line item is that every
+limb's `clipPath` carries a second copy of its own polygon**; `<clipPath><use href="#id"/>`
+would roughly halve the whole figure, and it is **recorded rather than done** because
+`<use>` inside `<clipPath>` has a history of misbehaving in iOS Safari, which this game
+ships to.
+
+**Two things the new sheet is for.** `SHOOT_PEOPLE=bodies` is five poses, the extremes of
+build and height, and ten crew at the 62px the garage actually draws them at.
+`SHOOT_PEOPLE=compare` is the shipped body beside the rig at one scale, drawn from the
+same fixture the probe measures — so the picture and the 276 failures cannot drift apart.
+Both in `docs/people/`.
+
+**`probe:smoke` was NOT measurable while this was built, and no number from it is quoted
+anywhere in this entry.** The load average on this machine went 9 → 42 → 141 → 362 → 448
+during the attempt as other agents worked, and the run died on
+`TimeoutError: Navigation timeout of 120000 ms exceeded` after four screens, having spent
+**305 seconds on the first-run flow alone**. That is §8's documented failure mode
+verbatim: *under load, probes do not fail, they TIME OUT.* Its required set holds the
+presser, the podium and the garage since #13/#38, so **it has to be run on a quiet machine
+before this merges.** What can be said honestly is narrower: this branch changes the SVG
+each of those three screens draws and touches none of their routes, screen ids or
+headings, and `typecheck`, `probe:frontdoor`, `probe:people` and `shoot:people` all
+exercise the same modules without an exception.
+
+**IP boundary, re-confirmed for the body.** Sponsor blocks on the suits are **blank
+rectangles**: the rhythm of light blocks on a coloured suit is what reads at these sizes,
+not the words in them, and `reference/target/81.png` is covered in real wordmarks that §3
+permits none of. `src/ui/people/` is **seven files, all `.ts` and `.css`, zero assets** —
+no image, no photograph, no traced outline. Grepping the twenty real 2026 surnames across
+`src/ui/people/`, `Podium.ts`, `PressConference.ts` and `GarageScene.ts` returns **exactly
+one hit and it is a doc comment**: `PressConference.ts:88`, `/** "Chassis morale", "Fan
+rating", "Rivalry with Norris". */`, three example labels for a `PressEffect`. There is no
+per-driver look override anywhere. Every face and every body comes out of a hash of an id,
+which is what lets a real driver's **name** sit beside a generated face without the face
+becoming an approximation of that person — and that separation is deliberate, because the
+press-conference system puts sentences in these people's mouths.
+
 ### My Team (issue #23, landed on merged `main` 2026-08-03)
 
 The mode the user asked for in their own words: *"You act as both the team owner and the
@@ -3383,6 +3532,174 @@ added to**; `probe:grain` **132 ok / 0 failed**; `probe:graphics` **72 ok / 0 fa
 PROJECT.md's own rule puts three times over the threshold at which its numbers mean
 anything.
 
+### #9 re-measured on merged `main`, three years after the last time anybody did
+
+*"Cars judder: no interpolation between physics steps."* Three separate pieces of work
+claim to have answered it — #9 built `updateRenderPoses`, #54 found the height was still
+stepped, #10 found the safety car was still stepped in all three axes — and **nobody had
+re-run the original measurement on the merged tree.** An issue that three fixes have been
+aimed at is exactly the kind that stays open because everybody assumes somebody else
+closed it. Run on this branch's base, which is `main`:
+
+| what juddered | probe | stepped | interpolated | bound |
+|---|---|---|---|---|
+| a car in PLAN — #9's own complaint | `probe:framerate` RENDER SMOOTHNESS | **200.0%** drawn-step spread at 120fps, **2.00× consecutive-frame jump** | **0.0%** at every steady rate 19–120fps, `rmsErr` **0.0000** | — |
+| the world's HEIGHT — #54 | `probe:framerate` WORLD SMOOTHNESS | **125.1mm** worst per-frame second difference (spa chase 85fps) | **12.0mm** worst (zandvoort driver 50fps) | 20mm, derived from the 3.00m polyline the road is stored as |
+| the SAFETY CAR — #10 | `probe:neutral` | **55.7mm** worst (spa 50fps) | **3.8mm** worst | 20mm, 22 rows, all clear |
+
+`probe:framerate` exits 0 with *"PASS — the drawn world is a continuous function of time
+vertically as well as in plan"*; `probe:neutral` exits 0 with *"Neutralisation
+validated"*. Every circuit, both frame rates, all three axes. **#9 is closed on the
+numbers.**
+
+Two residues are printed rather than swallowed and neither is #9. The two non-zero
+interpolated rows in the plan table are each **one frame of hundreds** and are traced:
+144fps loses frame 2, because the clock latches its origin on the first advance and the
+first interval has no previous state to interpolate from; 15fps loses frame 18, where the
+rate is exactly the eight-step ceiling and the accumulator is discarded — that is
+mechanism C, the simulation genuinely stopping, and interpolation can draw a stall
+smoothly but cannot un-stall it. Bahrain measures 4.2mm stepped and 4.2mm interpolated in
+the height table and that is correct: it is flat, and there is no gradient for a staircase
+to be a staircase OF. **Do not verify #9 at Bahrain or Monza.**
+
+### The halo is PAINTED now, and the metric that was obviously right was wrong (issue #34)
+
+> *"the halo is also floating atp?"*
+
+**It is not floating and it never was, and §7 said so in advance.** `probe:carrig`'s
+bolted-joint section is volumetric with no tolerance in it — a genuine joint measures
+zero, not "within 10mm" — and the hoop, the pillar, the pillar root and both mounts are
+inside it at **146 parts in one cluster**, unchanged before and after this work. What the
+eye reads as a detached part is a **missing edge**: the whole assembly took the `trim`
+swatch at `0x1e222a`, and against a night sky, a dark grandstand or a shaded pit straight
+a near-black tube has nothing to be attached BY.
+
+**Both reference frames disagree with the black arc, and they settle three questions
+rather than one.** `76.png` — the Zandvoort onboard the user called *"the best image"* —
+enlarged around the crown shows (a) the band is the **team's own colour**, (b) it covers
+the **upper part of the section only**, with the underside black, and (c) **the forward
+pillar is not painted**. `90.png` has an Aston's halo in the car's own green. In this
+project's data model both are the same rule: Mercedes' `colour` is the teal and Aston's
+is the green, so **the halo takes `spec.colour`**.
+
+- **A thirteenth swatch, and the atlas grew a row for it.** `Livery.ts` repaints twelve
+  flat swatches AFTER `stampBrand` lays down a supplied `livery.png`, deliberately, so an
+  author's atlas cannot recolour a wishbone or a visor. `halo` is the thirteenth and goes
+  in the same loop, so that ordering is untouched — and `probe:assets` still measures
+  **37 ok / 0 failed**, byte-identity intact. Twelve names fitted a 6×2 grid exactly, so
+  the grid went to 6×3 rather than the region growing downward into the airbox panel at
+  v = 0.20. **`halo` sits immediately after `trim` and that adjacency is load-bearing**:
+  the hoop is ONE tube carrying TWO swatches, so the triangles across the paint line have
+  a vertex in each cell and the rasteriser interpolates between the two cell centres.
+  Neighbouring cells make that a hard edge between two flat fills; anywhere else on the
+  sheet and the paint line acquires a band of tyre black and rim silver in the middle.
+- **The split is read off the NORMAL, not off the section parameter.** `TubeGeometry`
+  lays its rings on a Frenet frame whose phase follows the curve, so "a quarter of the way
+  round the section" is not reliably the top of anything on a hoop that climbs 200mm.
+  `setFlatUVSplit` takes the y of the outward unit normal. `HALO_PAINT_MIN_NY = 0.40`,
+  and it is measured off `76.png` rather than chosen: the section is an ellipse
+  `HALO_SQUASH` (0.78) as deep as it is wide, whose normal at t degrees off horizontal has
+  `n_y = sin t / sqrt(0.78² cos² t + sin² t)`, so 0.40 is t = 19° and the painted arc is
+  **142° of the section's 360 — 39 per cent of its perimeter**, which is the reference's
+  band. **No geometry moved**: `HALO_PATH`, `HALO_R`, `HALO_SQUASH` and `HALO_PILLAR` are
+  what `probe:framing` projects and none of them is touched.
+- **One team of eleven does not get its body colour, and the floor it fails is derived.**
+  The hardware black being replaced is `0x1e222a`, relative luminance **0.132**; a paint
+  darker than the bare part it goes over is not a paint. Cadillac's `0x1c1c28` is
+  **0.113** and takes its own gold accent. Every other body colour is above the floor,
+  Ferrari's `0xe8002d` at 0.206 and Audi's `0xbb0a30` at 0.198 included, and keeps it.
+- **`probe:halo`, and the reason it is a new probe rather than a line in an old one.**
+  Eight harnesses already photograph this object and not one could have caught this.
+  `probe:carrig` asks whether parts touch. `probe:framing` asks where the hoop lands.
+  `probe:grade` measures four statistics over a whole region and a 1.4m arc is about 1%
+  of the frame. `audit:car` writes a PNG for a human to look at, which is §3.1's
+  definition of not measuring. The crown is found in a finished frame **by its own swatch
+  UV** — an unlit mask over a black scene, so it is occlusion correct and there is no
+  second copy of where the halo is — and the world behind it is what is left near it and
+  outside the car's own silhouette.
+
+**THE METRIC THAT WAS OBVIOUSLY RIGHT WAS WRONG, and this is the part worth keeping.**
+The complaint is *"segments of it disappear"*, which is a statement about the EDGE, so the
+first version of the probe walked the crown's outline and bounded the fraction of it with
+no luma step across it. Both arms, 44 configurations each:
+
+| | fixed | with #34 put back |
+|---|---|---|
+| fraction of outline with no visible step, mean | **2.3%** | **6.6%** |
+| worst configuration | 26.3% (monaco day driver) | 33.8% (interlagos day cockpit) |
+| configurations over a 20% bar | **1 of 44** | **4 of 44** |
+| halo's own luma, lowest of 44 | **81.2** | 1.6 |
+| halo's own luma, highest of 44 | 183.0 | **70.3** |
+
+The means separate by 2.9× and **no row-wise bar separates them at all.** The row that
+settles it is `monaco day driver`: painted, it measures 26.3% with the halo at luma 82.6
+against a background of 72.4; unpainted, **7.7%** with the halo at 13.8 against 83.8.
+Monaco in daylight is a mid-grey city, an orange halo lands on the same luma as the
+buildings behind it, and **a black halo has a stronger luma edge there than a painted
+one**. That is a true measurement and it is not a defect — what makes a painted halo read
+on that frame is hue, and luma is blind to hue by construction. **A bar set to make that
+table pass would have been a bar fitted to the answer.**
+
+**THE SECOND METRIC WAS ALSO WRONG, AND SECTION 3 IS WHAT FOUND OUT.** The obvious repair
+is to assert the defect as §7 stated it — *"painted `trim` `0x1e222a`, luma 34/255"* — as
+an absolute floor on the halo's rendered luma. It separates the two arms perfectly: broken
+1.6..70.3, fixed 81.2..183.0, and 75 sits in the 10.9-level gap. It is still wrong,
+because **all 44 of those rows are the same car.** Moving the camera to nine other cars on
+the same grid found three painted exactly as the reference says that draw at **57.6, 51.5
+and 44.0** — a purple, a navy and a dark red. A dark car has a dark halo; `90.png`'s Aston
+is one. A floor set off the brightest livery on the grid is not a stricter probe, it is a
+probe demanding that three liveries be bleached to satisfy an instrument.
+
+**WHAT SHIPS IS THE PAIRED DIFFERENCE.** The frame is drawn twice in one session — once as
+it ships, once with the halo cell of the REAL atlas overwritten by the REAL trim cell,
+colour and surface map both — and the halo's luma is read from each. Livery, circuit,
+ambience, exposure, tone curve and camera are identical between the arms by construction,
+so what is left is the paint, and on a build carrying #34 the two texels are the same texel
+and the lift is **0.0 exactly**. The bound is **3 display levels and is a NOISE FLOOR
+rather than a quality bar**, and the probe says so at length: 20 was tried and the three
+dark liveries fail it while being correct, so they are counted and printed as a residual
+instead of being buried under a bar fitted to the answer (§3.3). The replacement colour is
+read out of the trim cell rather than restated, so a probe that outlives a change to
+`0x1e222a` cannot keep passing against a stale constant.
+
+**PROVED IT GOES RED.** `HALO_BREAK=1` — which is `?haloUnpainted=1`, so it drives the real
+`swatchColour` rather than the probe's own repaint — over the same 52 measurements:
+**lift −0.1 .. 0.1**, `52 of 52` red, exit 1, with the halo's absolute luma back down to
+**2.3 .. 70.4**. The ±0.1 is the whole numerical noise budget of the paired arm, measured
+rather than assumed, and it is what the 3-level bound has under it.
+
+**The run that ships**: `44 ok / 0 failed, plus 8 ok / 0 failed across teams`, exit 0.
+Lift over 52 measurements **7.9 .. 140.9**; absolute halo luma **81.1 .. 183.0** over the
+44 in-frame rows; the reported edge fraction mean **3.2%**, worst 18.7% at
+`jeddah night driver`; **2 of 52 lift by under 20** and are named in §7. Taken at a load
+average of 300+ on a ten-core box, which §8 puts far past the point where a number means
+anything — but every quantity here is a deterministic render read back in the same frame,
+not a stopwatch, so the only load-sensitive input is the resolution scaler and the run
+prints what it settled on per circuit (1.00 on eight, 0.95 on two, 0.89 at Interlagos).
+
+**Two holes found and closed while measuring, both of the kind that do not announce
+themselves.**
+
+- **The first mask was measuring the paddock.** Built out of the shell's own material
+  class with the colour set to black — which is what `probe:grain` does for the road — it
+  was not black: a physically-based material still carries the dielectric Fresnel term, so
+  under Bahrain's night rig it reflected about four per cent of a bright environment back
+  over the mask's 110-level threshold on every up-facing surface in frame. It reported a
+  "crown" of **368,725 px where the same camera in daylight saw 89,396**. The mask is now
+  built from the one unlit material class in the scene, found by duck-typing
+  `isMeshBasicMaterial` because a production bundle has no class names left, and the
+  render is bracketed by a save/restore of `scene.background`, `autoClear` and the render
+  target — all three of which the real frame leaves in a state that would ruin a mask
+  silently.
+- **The camera sat behind ONE car for all 44 rows.** A bound met by the brightest livery
+  on the grid says nothing about the darkest, so section 3 moves the camera to nine other
+  teams' cars in the same session and asserts the same bound, and section 1 checks the
+  paint rule for all eleven teams in node.
+
+**Regression set on this branch.** `typecheck` both projects clean; `probe:carrig`
+**146 parts in 1 cluster**, all bolted, unchanged — as predicted, it is green through both
+the broken and the fixed halo, which is exactly why `probe:halo` had to exist.
+
 ---
 
 ---
@@ -3396,12 +3713,12 @@ anything.
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
-| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6. So has the mirror keep-out (#49/#50/#31): `MIRROR_PANES` re-derived against a camera that rides the car, `probe:framing` 113 → 5, `shoot:panels` 9+2 → 0+0.** |
+| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6. So has the mirror keep-out (#49/#50/#31): `MIRROR_PANES` re-derived against a camera that rides the car, `probe:framing` 113 → 5, `shoot:panels` 9+2 → 0+0.** The FIA banner (#15) is **measured against `77.png` and listed, not fixed** — see §7, "The race-control strip against `77.png`". It needed `Hud.ts`, which #49/#50/#31 held; that hold is released |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
-| Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
+| Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) is CLOSED — re-measured on merged `main` in all three axes, see §6. The world juddering vertically (#54) landed with it.** The halo's paint, the other half of #34, has landed too |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
-| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
+| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**. **Bodies below the neck have landed too — issue #22, see §6**: a rig, five poses, hands, legs, held objects, and 3,016 new checks in `probe:people` that read the drawn polygons back. What is still missing is the press room's **consequences** — `onAnswer` and the `effects` lists are display-only and nothing in the career reads an answer back. That is the publicist/agencies layer and it is not built |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### `probe:smoke` had never opened the front end it claimed to cover — issue #62
@@ -3573,12 +3890,30 @@ way through the run and the shot is **black**. An audit harness was writing blac
 `audit-out/` and reporting them as a livery difference.
 
 With the clamp: **3 failures → 1 or 2**, `control--top` stable at `bd0a466e`, and no black
-frame. What is left is the `hero` flake and one more thing the flake was covering:
-**`control--side` is stably mismatched at `6e0b172a50bd` against `audit:car`'s
-`47f6bbf0a014`** — the same pair on the fixed and the unfixed tree, four runs, so it is
-neither the flake nor the clamp. **A stable mismatch on one view is a real difference
-between the two harnesses and nobody has diagnosed it.** It is not a repaint: `top` is
-byte-identical. **Nobody is on this.**
+frame.
+
+**RE-MEASURED 2026-08-03 AND THIS ENTRY WAS WRONG ABOUT WHICH VIEW.** It said
+*"`control--side` is stably mismatched at `6e0b172a50bd` against `audit:car`'s
+`47f6bbf0a014`"*. On merged `main` today, with `src/` checked out at `8cde5ae` into a
+worktree and both harnesses re-run: **`control--side` MATCHES** at `6deaddd7`, `top`
+matches at `7ba58340`, and the **one** failure is **`control--hero`**, `b27ff0d1798b`
+against `c4ba2fb1a3b9`. Same shape on the `halo-paint-and-banner` branch, three consecutive
+runs, all identical: side matches at `1332b92e`, top at `cad1ea19`, hero mismatched at
+`05d1a4e88b58` against `98183f99a09a`. So:
+
+- **The stable mismatch is `hero`, not `side`.** Whatever fixed `side` is somewhere in the
+  merges since this was written and nobody re-ran the harness — the same species of stale
+  entry this file records for `validate:flags`, `probe:fieldsize` and `shoot:panels`.
+- **`hero` is now STABLE rather than flaky**, which contradicts the entry below it as well:
+  three consecutive runs on one tree give one hash, not three. Either the flake is gone or
+  it needs load to appear, and these runs were taken at load 55–330, so it is not simply
+  "under load".
+- **1 failure on both trees, and the paint work moved every hash without moving the
+  pattern**, which is what a change to the swatch grid should do: both harnesses read the
+  same `Livery.ts`, so a layout change moves them together.
+
+**Still nobody's, and still undiagnosed — but it is one view and the name of that view has
+changed.** Check it by running it, and if it says `side` again, that is new information.
 
 ### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
 
@@ -3959,7 +4294,28 @@ Two candidates were eliminated by measurement; the third is now located and **un
   better on the mean; the landed build reads +25.4s. **If it ever goes red, do not raise
   the bar** — make it a distribution.
 
-### The halo IS attached, and what is wrong with it is paint (issue #34)
+### ~~The halo IS attached, and what is wrong with it is paint~~ — PAINTED (issue #34)
+
+**Done. See §6, "The halo is PAINTED now".** The crown of the hoop takes a thirteenth
+swatch in the team's own colour, the pillar and the mounts stay black as `76.png` shows,
+`probe:halo` measures it on 11 circuits × day/night × two onboard cameras and behind ten
+different teams' cars, and `?haloUnpainted=1` puts the defect back and takes it red. The
+entry below is left as it was written because its prediction was exactly right — *"whoever
+takes it should note that `probe:carrig` will stay green through both the broken and the
+fixed version"* — and that is the whole reason a new probe was needed.
+
+**What did NOT come with it**, and neither is a defect of this work:
+- **Luma is blind to hue, and one frame proves it.** `monaco day driver` measures 26.3% of
+  the halo's outline with no luma step across it PAINTED against 7.7% unpainted, because
+  an orange halo lands on the same luma as a mid-grey city. A metric that can see the
+  difference needs a colour-difference measure (CIEDE2000 over the same boundary walk),
+  and `probe:halo` measures luma. Reported in full in §6 rather than tuned away.
+- **The mirror stalks are still `trim`.** `76.png` enlarged has team colour on the stalk
+  and the housing edge too. Out of scope for a pass about the halo, and nobody is on it.
+
+---
+
+### The original entry, kept for the prediction it got right (issue #34)
 
 *"The halo seems to be partially off."* Established rather than guessed, which is what the
 issue asked for. **It is geometrically attached and there is no gap to close**:
@@ -3989,6 +4345,58 @@ this was in flight. Touching them would have been a merge conflict on the file t
 project's whole livery system lives in. **Nobody is on this**, and whoever takes it should
 note that `probe:carrig` will stay green through both the broken and the fixed version,
 because it is not a geometry question.
+
+### The race-control strip against `77.png`, listed rather than fixed (issue #15)
+
+**Not done, and `src/ui/Hud.ts` is why**: it is held for #49/#50/#31 (the mirror keep-outs)
+and this is a markup change, not a stylesheet one. Read against `reference/target/77.png`,
+which is a red-flag frame, so that the next person does not have to derive the list again.
+`probe:hudtext` prints what ours currently says:
+`race control banner: "FER INCIDENT" / "SECTOR 2 · CAR OFF TRACK · YELLOW FLAG"`.
+
+| | `77.png` | ours (`pushControlCard`, `.hud-control`) |
+|---|---|---|
+| left mark block | **red**, carrying TWO devices — crossed flags and the roundel | `#061029` near-black navy, 38px, one 22×22 device |
+| body ground | near-black | navy `#0a1738` |
+| headline | the flag state, **red**, heavy, uppercase, wrapping to two lines | `RACE CONTROL: ` in bold then the text, **white**, one line |
+| the prefix | **there is none** — the reference opens on the message | every bulletin opens `RACE CONTROL:` |
+| instructions | white, lighter, uppercase, **one per line** (`DO NOT EXCEED DELTA PACE` / `- NO OVERTAKING`) | one `.control-detail` line, fields joined with ` · ` |
+| right block | **red**, a large white numeral — the message's number in the sequence | **absent** |
+| severity | a red flag is red | **nothing.** `grep 'hud-control.tone'` over `styles.css` returns NOTHING: `tone-urgent`, `tone-warn` and `tone-info` are set on the element by `pushControlCard` and styled only for `.hud-alert`, `.hud-radiocard` and `.strat-card`. A critical bulletin is drawn exactly like an informational one |
+
+The strip's SHAPE is already right — squared corners, horizontal, mark block then message,
+which a previous pass did against the same reference. What is left is the colour system,
+the wording and the right-hand block. **The work also needs a measurement, and the model
+for it exists**: `probe:tower` §5 measures where each column of the running order sits as a
+fraction of the panel against numbers taken off `68.png` itself. A `probe:hudstrip` doing
+the same against `77.png` is what would stop this being settled by eye for a fourth time.
+**Nobody is on this**, and it should not be started until `Hud.ts` is free.
+
+### The halo is painted, but a dark livery still gets a dark halo (issue #34)
+
+Measured, reported, and left as a decision for the user rather than tuned. `probe:halo`
+draws the same frame twice — once as it ships and once with the halo cell of the atlas
+overwritten by the trim cell — and the difference is the paint. Over 52 measurements the
+lift runs **7.9 to 140.9 display levels**, and **2 of the 52 are under 20**: `#0e3b5c` at
+15.5 and `#7a1020` at 7.9, a navy and a dark red. In a daylight frame `#6b2d8f` joins them
+at 12.7 and the other two fall to 4.7 and 8.1. Their halos are nearly as dark as the black
+they replaced **because their bodies are**.
+
+That is not obviously wrong — `90.png` is a dark green halo on a dark green car — and the
+probe's bound is deliberately a noise floor rather than a bar set above those three,
+because a bar set above them is a bar demanding that three liveries be bleached. The real
+question is a look decision: **a black-liveried car in the reference takes its ACCENT, not
+its body** — `76.png` is a black Mercedes with a teal hoop — and `haloColour`'s floor
+(relative luminance 0.15, from the hardware black's own 0.132) currently moves only
+Cadillac. Raising it to catch Ferrari's 0.206 and Audi's 0.198 would give them cream and
+silver halos, which is a bigger change than it sounds. **The user should look at a dark
+car and say.** Nobody is on this.
+
+Also measured and not fixed: **`monaco day driver` has LESS luma contrast painted than
+unpainted** — 26.3% of the outline with no step against 7.7% — because an orange halo lands
+on the same luma as a mid-grey city. Luma is blind to hue by construction. Seeing that
+difference needs a colour-difference metric (CIEDE2000 over the same boundary walk) and
+`probe:halo` measures luma. Full table in §6.
 
 ### Sparks at Suzuka and Zandvoort are still a 3.4-second shower
 
@@ -4353,12 +4761,29 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   them. See §6. **What #38 asked for and did NOT get: consequences.** The press room's
   `onAnswer` hook and its `effects` lists are display-only — nothing in the career reads an
   answer back. That is the publicist/agencies layer below, and it is still not built.
-- **The figures are flat-vector illustrated people, not blocky — but the bodies are
-  unfinished.** Heads read well and the eleven principals are plainly eleven people
-  (`hud-out/people/desktop-principals.png`), and they survive down to 40px on hair colour,
-  skin tone, glasses and beard. Below the neck: podium arms are stick rectangles with no
-  elbow and no hand, with the trophy attached to the end; the garage crew are **armless**
-  torsos. `phone-presser` (844×390) cuts the question and answer text off below the fold.
+- ~~**The figures are flat-vector illustrated people, not blocky — but the bodies are
+  unfinished.**~~ **Done — issue #22, see §6.** The three defects this entry named are
+  measured gone: the podium's stick arm is a two-bone chain with a hand on it and both
+  arms are up, the garage crew have arms, and the press desk has six hands on it. The
+  landscape phone lays the room and the conversation out side by side instead of pushing
+  the answers below the fold. `PEOPLE_LEGACY=1 npm run probe:people` still measures the
+  old body and still fails 276 of 1,471, which is what stops this coming back.
+  **What is honestly NOT done below the neck:**
+  - **The head does not turn with the body.** `PersonLook.turn` slides the features and
+    the body is drawn dead front-on in every pose, so a row of people all face the camera
+    from the neck down. On a three-person panel that reads as a line-up. The rig would
+    take a shoulder-line rotation to fix and it was not attempted.
+  - **There is no applause pose.** `reference/target/82.png` has second and third
+    clapping with their hands apart; the pose written for it draws the hands meeting and
+    overlapping, so it was **renamed `folded`** rather than left carrying a name for what
+    it was meant to do — a name that describes an intention is how this project acquires
+    load-bearing fiction (§3). It earns its place as the crossed-arm press-shot stance
+    `reference/target/70.png` wants. Real applause is a sixth pose and is not built.
+  - **Nothing is animated.** These are static SVGs. A podium that does not move is a
+    photograph of a podium.
+  - **The 3D pit crew (`src/render/CrewFigure.ts`, `PitCrew.ts`) is untouched by all of
+    this and is a different rendering path** — see the entry above. #22's work is 2D SVG
+    for UI screens and it does not reach the pit lane.
 
 ---
 
@@ -4408,6 +4833,18 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   this, and it presents as a corrupt asset. Fixed for `public/brand/` by serving it from the
   plugin (see §6, issue #36). **A symptom that matches the load excuse is not evidence for
   it — make the failing component say WHY before accepting the environment as the cause.**
+- **Nothing in this project ever ran `npm run build`, and it had been failing on `main`.**
+  Found on 2026-08-03 by a probe that builds the site before driving it. A comment in
+  `src/ui/styles.css` contained `dist/assets/fonts/titillium*/`, and `*` followed by `/`
+  CLOSES a CSS comment: six lines of prose then parsed as CSS and `lightningcss` rejected
+  the file with `Invalid empty selector`. Confirmed pre-existing by stashing the branch and
+  building a clean `main`. **`vite dev` does not minify and a browser error-recovers over
+  the garbage silently**, so the game looked perfect and the only thing that was broken was
+  shipping it — on a project whose stated end goal is to be publishable. It also took
+  `probe:grain`, `probe:sharpness`, `probe:graphics`, `probe:autotier` and every other
+  build-then-drive probe offline, and none of them said why, because the useful line is at
+  the TOP of a thirty-line bundler stack. **`npm run build` is not covered by
+  `npm run typecheck` and never was. Run it.**
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).

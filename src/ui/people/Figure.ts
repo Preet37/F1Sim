@@ -1,46 +1,70 @@
-import { headArt, headGeometry, type HeadOptions } from './Face';
+import { headArt, type HeadOptions } from './Face';
 import { complexionOf, type PersonLook } from './Look';
+import {
+  buildRig, capsule, footPolygon, handPolygon, inset, polyPath,
+  smoothClosed, thumbPolygon,
+  type Bone, type Foot, type Hand, type Pose, type Rig,
+} from './Body';
 
 /**
  * Bodies.
  *
- * `Face.ts` draws a head in a 200-wide box with the chin pinned at y=168. This
- * hangs a body underneath it in the same box, running down to y=560, and the
- * whole thing is one `<g>` a scene can place with a single transform. So a press
- * conference is four transforms, a podium is three, and none of them has to know
- * anything about how a person is drawn.
+ * `Face.ts` draws a head in a 200-wide box with the chin pinned at y=168.
+ * `Body.ts` hangs a SKELETON underneath it. This file paints that skeleton and
+ * paints nothing else: every shape below the neck comes out of a bone, a hand,
+ * a foot or the torso outline, and the whole figure is one `<g>` a scene places
+ * with a single transform.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT CHANGED, AND WHY THE OLD COMMENT HERE WAS WRONG
+ * ---------------------------------------------------------------------------
+ *
+ * This file used to open with an argument for spending nothing below the neck:
+ *
+ *   > "Anatomy beyond that is spent money. There are no hands with fingers on
+ *   >  them anywhere in this file, because a five-fingered hand at forty pixels
+ *   >  is five pixels of noise."
+ *
+ * The premise is right and the conclusion was wrong, and three photographs
+ * settle it. `hud-out/people/desktop-podium.png` on the build that comment
+ * shipped with: a torso, and one constant-width stroke going up to a trophy.
+ * `desktop-garage.png`: four torsos with no arms at all — the upper arms were
+ * drawn in the suit colour BEHIND the torso and were therefore invisible.
+ * `desktop-presser.png`: no hands anywhere, on a screen whose specification
+ * (`reference/target/81.png`) has six of them on a desk in the middle of the
+ * frame.
+ *
+ * Five separated fingers really are noise at forty pixels. A hand-shaped MASS
+ * is not: it is what makes an arm terminate rather than stop. So there are
+ * hands, they are four fingers as one mass with a thumb, and they are attached
+ * to forearms which are attached to upper arms which are attached at the
+ * shoulder — asserted, in `probe:people`, by reading the drawn polygons back.
  *
  * ---------------------------------------------------------------------------
  * WHAT A BODY IS FOR
  * ---------------------------------------------------------------------------
  *
- * Not detail. At the size any of these appear, a body is doing exactly three
- * jobs and it is worth being disciplined about which:
- *
  *   · SCALE. It says how big the person is, which is the only way a viewer can
  *     tell a slight driver from a heavy principal once the heads are matched.
  *   · TEAM. It is the only large area of team colour on a screen full of faces.
- *     Twenty-two drivers in eleven liveries are sorted by their torsos.
- *   · POSE. Hands on a desk, arms at the sides, an arm raised — three poses, and
- *     between them they cover a press conference, a podium and a garage.
- *
- * Anatomy beyond that is spent money. There are no hands with fingers on them
- * anywhere in this file, because a five-fingered hand at forty pixels is five
- * pixels of noise and at two hundred it is the one thing that will look wrong.
+ *   · POSE. Hands on a desk, arms at the sides, both arms up, arms folded,
+ *     walking — five poses, and between them they cover a press conference, a
+ *     podium, a garage and a paddock.
+ *   · KIT. A race suit is not a coloured rectangle. It has a collar, a yoke
+ *     across the shoulders, a seam down the flank, cuffs, a belt and blocks
+ *     where sponsors go — and the blocks are ABSTRACT, because `PROJECT.md` §3
+ *     permits real names as data and permits no reproduced artwork.
  */
 
 const f1 = (n: number): string => n.toFixed(1);
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
-/** The floor of the figure box. Everything below the frame is cropped by it. */
-export const FIGURE_BOTTOM = 560;
-
-export type Pose = 'seated' | 'standing' | 'raised';
+export type { Pose } from './Body';
 
 export interface FigureOptions extends HeadOptions {
   /** The shirt or race suit. The team's. */
   suit: string;
-  /** Collar, cuffs and the flash down the placket. */
+  /** Collar, cuffs, the yoke and the flash down the flank. */
   accent: string;
   pose?: Pose;
   /** A race number on the chest. Drivers only. */
@@ -53,6 +77,21 @@ export interface FigureOptions extends HeadOptions {
    * a podium is not a signal.
    */
   trophy?: 'gold' | 'silver' | 'bronze';
+  /** A bottle of champagne in the other hand. `raised` only. */
+  champagne?: boolean;
+  /**
+   * Where the desk crosses a seated figure, in figure space. The scene passes
+   * the number it is going to draw the desk at; omit it and the figure picks
+   * its own, and the scene reads it back off `art.rig.deskY` — which is what
+   * `PressConference.ts` does, because it is the only way the desk it draws and
+   * the hands resting on it can be the same number for every build.
+   */
+  deskY?: number;
+  /**
+   * Sponsor blocks on the chest. Abstract rectangles, never artwork. Off for
+   * team staff, who wear a polo shirt rather than a race suit.
+   */
+  sponsors?: boolean;
 }
 
 const TROPHY_METAL: Readonly<Record<string, [string, string, string]>> = {
@@ -66,32 +105,265 @@ export interface FigureArt {
   defs: string;
   /** One `<g>`, ready to be placed by a transform. */
   markup: string;
+  /**
+   * The part of the figure that must be painted AFTER the scene's furniture:
+   * the hands and forearms of a seated person, which lie on top of the desk.
+   * Empty for every other pose. A scene that ignores it gets a person sitting
+   * behind a desk with their arms inside it, which is what shipped.
+   */
+  overlay: string;
+  /** The skeleton this was drawn from. Scenes use it to place props. */
+  rig: Rig;
 }
+
+// ===========================================================================
+// Painting a bone
+// ===========================================================================
+
+/**
+ * One limb.
+ *
+ * A filled tapered polygon, a shadow down its far side and a highlight up its
+ * near one, both clipped to the limb itself so nothing leaks. `data-part`,
+ * `data-a` and `data-b` are what `probe:people` reads: the part's identity and
+ * the two joints it claims to run between. It then measures the polygon and
+ * checks the claim.
+ */
+function boneArt(b: Bone, uid: string, fill: string, opts: {
+  cuff?: string;
+  yoke?: string;
+}): string {
+  const poly = capsule(b.a, b.b, b.wa, b.wb);
+  const clip = `${uid}-c-${b.id}`;
+  const w = (b.wa + b.wb) / 2;
+  let out = `<clipPath id="${clip}"><path d="${polyPath(poly)}"/></clipPath>`;
+  out += `<path data-part="${b.id}" data-a="${f1(b.a.x)},${f1(b.a.y)}"`
+    + ` data-b="${f1(b.b.x)},${f1(b.b.y)}" fill="${fill}" d="${polyPath(poly)}"/>`;
+  out += `<g clip-path="url(#${clip})">`
+    + `<path fill="rgba(0,0,0,0.24)" d="${polyPath(inset(poly, 1, w * 0.58, w * 0.16))}"/>`
+    + `<path fill="rgba(255,255,255,0.10)" d="${polyPath(inset(poly, 1, -w * 0.66, -w * 0.12))}"/>`;
+  if (opts.yoke) {
+    // The shoulder seam, as a SEAM: a thin band ACROSS the sleeve, not a cap
+    // over the top of it. Two versions of this shipped as a shoulder pad —
+    // a filled cap at 42% of the upper arm, then one at 20% — and at build 1
+    // with an orange accent they were pauldrons. A garment seam is a line.
+    // ACROSS the sleeve, not along it. A capsule at 6% of the limb's length is
+    // shorter than its own end caps, so it comes out as a DISC — which is
+    // exactly what shipped twice: a pale pauldron on every shoulder, orange at
+    // build 1. This is a quad perpendicular to the bone, clipped to it.
+    const t = 0.22;
+    const dx = b.b.x - b.a.x;
+    const dy = b.b.y - b.a.y;
+    const L = Math.hypot(dx, dy) || 1;
+    const ux = dx / L;
+    const uy = dy / L;
+    const c = { x: b.a.x + ux * L * t, y: b.a.y + uy * L * t };
+    const half = b.wa * 0.80;
+    const th = Math.max(1.2, L * 0.045);
+    out += `<path fill="${opts.yoke}" opacity="0.60" d="${polyPath([
+      { x: c.x - uy * half - ux * th, y: c.y + ux * half - uy * th },
+      { x: c.x + uy * half - ux * th, y: c.y - ux * half - uy * th },
+      { x: c.x + uy * half + ux * th, y: c.y - ux * half + uy * th },
+      { x: c.x - uy * half + ux * th, y: c.y + ux * half + uy * th },
+    ])}"/>`;
+  }
+  if (opts.cuff) {
+    const c = capsule(
+      { x: lerp(b.a.x, b.b.x, 0.86), y: lerp(b.a.y, b.b.y, 0.86) },
+      { x: lerp(b.a.x, b.b.x, 1.04), y: lerp(b.a.y, b.b.y, 1.04) },
+      b.wb * 1.10, b.wb * 1.10);
+    out += `<path fill="${opts.cuff}" opacity="0.95" d="${polyPath(c)}"/>`;
+  }
+  out += '</g>';
+  return out;
+}
+
+/** A hand: the thumb lobe first, the palm mass over it, then one crease. */
+function handArt(h: Hand, uid: string, skin: { base: string; shade: string; lift: string }): string {
+  const palm = handPolygon(h);
+  const thumb = thumbPolygon(h);
+  const clip = `${uid}-c-${h.id}`;
+  return `<clipPath id="${clip}"><path d="${polyPath(palm)}"/></clipPath>`
+    + `<path data-part="${h.id}-thumb" fill="${skin.base}" d="${polyPath(thumb)}"/>`
+    + `<path data-part="${h.id}" data-c="${f1(h.c.x)},${f1(h.c.y)}"`
+    + ` data-grip="${f1(h.grip.x)},${f1(h.grip.y)}"`
+    + ` fill="${skin.base}" d="${polyPath(palm)}"/>`
+    + `<g clip-path="url(#${clip})">`
+    + `<path fill="${skin.shade}" opacity="0.34" d="${polyPath(inset(palm, 1, h.wid * 0.40, h.wid * 0.14))}"/>`
+    + `<path fill="${skin.lift}" opacity="0.32" d="${polyPath(inset(palm, 0.74, -h.wid * 0.16, -h.wid * 0.12))}"/>`
+    + '</g>';
+}
+
+/** A boot. Dark, with the team's flash across the instep. */
+function footArt(f: Foot, uid: string, accent: string): string {
+  const poly = footPolygon(f);
+  const clip = `${uid}-c-${f.id}`;
+  return `<clipPath id="${clip}"><path d="${polyPath(poly)}"/></clipPath>`
+    + `<path data-part="${f.id}" data-c="${f1(f.c.x)},${f1(f.c.y)}"`
+    + ` fill="#12161d" d="${polyPath(poly)}"/>`
+    + `<g clip-path="url(#${clip})">`
+    + `<path fill="${accent}" opacity="0.85" d="${polyPath(
+      inset(poly, 0.46, -f.len * 0.06, -f.hgt * 0.30))}"/>`
+    + `<path fill="rgba(255,255,255,0.10)" d="${polyPath(inset(poly, 1, 0, -f.hgt * 0.62))}"/>`
+    + '</g>';
+}
+
+// ===========================================================================
+// The suit
+// ===========================================================================
+
+/**
+ * The race suit, on the torso.
+ *
+ * Everything here is clipped to the torso outline, so no panel, seam or block
+ * can end up floating beside the body — which is the failure mode of drawing
+ * decals at fractions of a bounding box, and it is how the old chest number
+ * ended up half off the shoulder on a narrow build.
+ *
+ * The sponsor blocks are deliberately BLANK rectangles. `reference/target/81.png`
+ * is covered in real wordmarks and `PROJECT.md` §3 permits none of them; what
+ * reads at these sizes is the rhythm of light blocks on a coloured suit, not
+ * the words in them.
+ */
+function suitArt(rig: Rig, uid: string, opts: FigureOptions): string {
+  const { cx, H, sh, hipHalf, shoulderY, waistY, hipY } = rig;
+  const clip = `${uid}-c-torso`;
+  const acc = opts.accent;
+  let out = `<clipPath id="${clip}"><path d="${polyPath(rig.torso)}"/></clipPath>`;
+  out += `<path data-part="torso" fill="${opts.suit}" d="${polyPath(rig.torso)}"/>`;
+  out += `<g clip-path="url(#${clip})">`;
+  // Form: the cloth gradient, then the shadow under the far arm.
+  out += `<path fill="url(#${uid}-cloth)" d="${polyPath(rig.torso)}"/>`;
+
+  // The yoke: a panel across the shoulders in the second colour, the single
+  // most recognisable feature of a race suit after its colour.
+  const yokeY = shoulderY + H * 0.20;
+  out += `<path fill="${acc}" opacity="0.92" d="${polyPath(smoothClosed([
+    { x: cx - sh * 1.10, y: shoulderY - H * 0.30 },
+    { x: cx + sh * 1.10, y: shoulderY - H * 0.30 },
+    { x: cx + sh * 1.02, y: yokeY },
+    { x: cx + sh * 0.34, y: yokeY - H * 0.16 },
+    { x: cx - sh * 0.34, y: yokeY - H * 0.16 },
+    { x: cx - sh * 1.02, y: yokeY },
+  ], 4, 0.22))}"/>`;
+
+  // The collar: the suit's zip band round the neck, over the yoke.
+  const nh = rig.g.neckHalf;
+  out += `<path fill="#12161d" opacity="0.9" d="${polyPath(smoothClosed([
+    { x: cx - nh * 1.5, y: shoulderY - H * 0.20 },
+    { x: cx + nh * 1.5, y: shoulderY - H * 0.20 },
+    { x: cx + nh * 1.9, y: shoulderY + H * 0.14 },
+    { x: cx, y: shoulderY + H * 0.30 },
+    { x: cx - nh * 1.9, y: shoulderY + H * 0.14 },
+  ], 4, 0.3))}"/>`;
+  out += `<path fill="none" stroke="${acc}" stroke-width="${f1(H * 0.026)}"`
+    + ` d="M ${f1(cx)} ${f1(shoulderY + H * 0.26)} L ${f1(cx)} ${f1(waistY + H * 0.30)}"/>`;
+
+  // The seam down each flank, and the belt.
+  for (const s of [-1, 1]) {
+    out += `<path fill="${acc}" opacity="0.80" d="${polyPath([
+      { x: cx + s * sh * 0.93, y: shoulderY + H * 0.50 },
+      { x: cx + s * sh * 0.79, y: shoulderY + H * 0.50 },
+      { x: cx + s * hipHalf * 0.80, y: hipY + H * 0.14 },
+      { x: cx + s * hipHalf * 0.98, y: hipY + H * 0.14 },
+    ])}"/>`;
+  }
+  out += `<rect x="${f1(cx - sh * 1.2)}" y="${f1(waistY + H * 0.34)}"`
+    + ` width="${f1(sh * 2.4)}" height="${f1(H * 0.20)}" fill="#12161d" opacity="0.66"/>`;
+
+  if (opts.sponsors !== false) {
+    // Three blocks: one across the chest and two smaller under it. The chest
+    // block is where every team in the sport puts its title partner, and the
+    // rhythm is what says "race suit" rather than "jumper".
+    const by = shoulderY + H * 0.62;
+    out += `<rect x="${f1(cx - sh * 0.48)}" y="${f1(by)}" width="${f1(sh * 0.96)}"`
+      + ` height="${f1(H * 0.20)}" rx="${f1(H * 0.025)}" fill="#eef2f7" opacity="0.88"/>`;
+    out += `<rect x="${f1(cx - sh * 0.44)}" y="${f1(by + H * 0.055)}" width="${f1(sh * 0.88)}"`
+      + ` height="${f1(H * 0.09)}" rx="${f1(H * 0.015)}" fill="#1a222c" opacity="0.30"/>`;
+    for (const s of [-1, 1]) {
+      out += `<rect x="${f1(cx + s * sh * 0.36 - sh * 0.16)}" y="${f1(by + H * 0.34)}"`
+        + ` width="${f1(sh * 0.32)}" height="${f1(H * 0.12)}" rx="${f1(H * 0.015)}"`
+        + ` fill="${acc}" opacity="0.80"/>`;
+    }
+    out += `<rect x="${f1(cx - sh * 0.24)}" y="${f1(waistY - H * 0.22)}"`
+      + ` width="${f1(sh * 0.48)}" height="${f1(H * 0.11)}" rx="${f1(H * 0.015)}"`
+      + ` fill="#eef2f7" opacity="0.50"/>`;
+  }
+
+  if (opts.number !== undefined) {
+    const y = waistY + H * 0.60;
+    out += `<rect x="${f1(cx - sh * 0.34)}" y="${f1(y)}" width="${f1(sh * 0.68)}"`
+      + ` height="${f1(H * 0.30)}" rx="${f1(H * 0.03)}" fill="rgba(6,8,11,0.46)"/>`
+      + `<text x="${f1(cx)}" y="${f1(y + H * 0.235)}" text-anchor="middle"`
+      + ` class="fig-number" fill="${opts.accent}">${String(opts.number)}</text>`;
+  }
+
+  // The turned side of the body, last, over everything.
+  out += `<path fill="rgba(0,0,0,0.26)" d="${polyPath(
+    inset(rig.torso, 1, sh * 0.72, 0))}"/>`;
+  out += '</g>';
+  return out;
+}
+
+/** The legs, in the same suit, with a stripe down the outside of each. */
+function legArt(rig: Rig, uid: string, opts: FigureOptions, behind: boolean): string {
+  let out = '';
+  for (const b of rig.bones) {
+    if (!b.id.startsWith('leg-') || b.behind !== behind) continue;
+    out += boneArt(b, uid, opts.suit, b.id.endsWith('shin') ? { cuff: opts.accent } : {});
+  }
+  for (const f of rig.feet) {
+    if (f.behind !== behind) continue;
+    out += footArt(f, uid, opts.accent);
+  }
+  return out;
+}
+
+/** The arms, and the hands on the ends of them. */
+function armArt(
+  rig: Rig, uid: string, opts: FigureOptions,
+  skin: { base: string; shade: string; lift: string }, behind: boolean,
+): string {
+  let out = '';
+  for (const b of rig.bones) {
+    if (!b.id.startsWith('arm-') || b.behind !== behind) continue;
+    out += boneArt(b, uid, opts.suit, b.id.endsWith('upper')
+      ? { yoke: opts.accent }
+      : { cuff: opts.accent });
+  }
+  for (const h of rig.hands) {
+    if (h.behind !== behind) continue;
+    out += handArt(h, uid, skin);
+  }
+  return out;
+}
+
+// ===========================================================================
+// The figure
+// ===========================================================================
 
 /**
  * A person with a body, as markup.
  *
  * The draw order is the order a painter would use and it is not negotiable:
- * anything behind the body (long hair), then the arms that are behind the
- * torso, then the torso, then the near arm, then the head. Get it wrong and the
- * shoulders sit on top of the jaw.
+ * anything behind the body (long hair, the far arm, the far leg), then the
+ * torso, then the near limbs, then whatever is being held, then the head. Get
+ * it wrong and the shoulders sit on top of the jaw — or, as this file managed
+ * before, the arms sit behind the chest and vanish.
  */
 export function figureArt(look: PersonLook, opts: FigureOptions): FigureArt {
-  const g = headGeometry(look);
+  const pose = opts.pose ?? 'seated';
+  const rig = buildRig(look, { pose, deskY: opts.deskY });
+  const g = rig.g;
   const head = headArt(look, opts);
   const skin = complexionOf(look.complexion);
-  const pose = opts.pose ?? 'seated';
+  const uid = opts.uid;
 
   const cx = g.cx;
-  const shoulderY = g.chinY + g.h * 0.30;
-  // Shoulders are about twice as wide as the skull on anybody, and the whole
-  // range from slight to heavy is the last quarter of that.
-  const sh = g.hw * lerp(1.85, 2.75, look.build);
-  const hip = sh * lerp(0.80, 0.96, look.build);
-  const armW = g.hw * lerp(0.50, 0.72, look.build);
+  const shoulderY = rig.shoulderY;
 
   // --- Neck and its shadow -------------------------------------------------
-  const neck = `<path fill="${skin.base}" d="`
+  const neck = `<path data-part="neck" fill="${skin.base}" d="`
     + `M ${f1(cx - g.neckHalf)} ${f1(g.chinY - g.h * 0.10)} L ${f1(cx + g.neckHalf)} ${f1(g.chinY - g.h * 0.10)}`
     + ` C ${f1(cx + g.neckHalf * 1.1)} ${f1(g.neckY)} ${f1(cx + g.neckHalf * 1.3)} ${f1(g.neckY + g.h * 0.06)} ${f1(cx + g.neckHalf * 1.45)} ${f1(shoulderY + 6)}`
     + ` L ${f1(cx - g.neckHalf * 1.45)} ${f1(shoulderY + 6)}`
@@ -101,219 +373,164 @@ export function figureArt(look: PersonLook, opts: FigureOptions): FigureArt {
     + ` C ${f1(cx - g.jw * 0.55)} ${f1(g.chinY + g.h * 0.07)} ${f1(cx + g.jw * 0.55)} ${f1(g.chinY + g.h * 0.07)} ${f1(cx + g.neckHalf * 1.02)} ${f1(g.chinY - g.h * 0.10)}`
     + ` L ${f1(cx + g.neckHalf * 1.1)} ${f1(g.neckY)} L ${f1(cx - g.neckHalf * 1.1)} ${f1(g.neckY)} Z"/>`;
 
-  // --- Torso ---------------------------------------------------------------
-  // The trapezius, then a nearly vertical side. A torso drawn as a trapezium
-  // from shoulder to hip is a shopping bag; the line has to leave the neck at a
-  // slope and turn over at the point of the shoulder.
-  const torso = `<path fill="${opts.suit}" d="`
-    + `M ${f1(cx - g.neckHalf * 1.5)} ${f1(shoulderY - g.h * 0.055)}`
-    + ` C ${f1(cx - sh * 0.55)} ${f1(shoulderY - g.h * 0.045)} ${f1(cx - sh * 0.94)} ${f1(shoulderY + g.h * 0.02)} ${f1(cx - sh)} ${f1(shoulderY + g.h * 0.14)}`
-    + ` L ${f1(cx - hip)} ${f1(FIGURE_BOTTOM)} L ${f1(cx + hip)} ${f1(FIGURE_BOTTOM)}`
-    + ` L ${f1(cx + sh)} ${f1(shoulderY + g.h * 0.14)}`
-    + ` C ${f1(cx + sh * 0.94)} ${f1(shoulderY + g.h * 0.02)} ${f1(cx + sh * 0.55)} ${f1(shoulderY - g.h * 0.045)} ${f1(cx + g.neckHalf * 1.5)} ${f1(shoulderY - g.h * 0.055)}`
-    + ` C ${f1(cx + g.neckHalf * 0.9)} ${f1(shoulderY + g.h * 0.035)} ${f1(cx - g.neckHalf * 0.9)} ${f1(shoulderY + g.h * 0.035)} ${f1(cx - g.neckHalf * 1.5)} ${f1(shoulderY - g.h * 0.055)} Z"/>`
-    // The same key across the shirt as across the face.
-    + `<path fill="url(#${opts.uid}-cloth)" d="`
-    + `M ${f1(cx - sh)} ${f1(shoulderY + g.h * 0.14)} L ${f1(cx - hip)} ${f1(FIGURE_BOTTOM)}`
-    + ` L ${f1(cx + hip)} ${f1(FIGURE_BOTTOM)} L ${f1(cx + sh)} ${f1(shoulderY + g.h * 0.14)}`
-    + ` C ${f1(cx + sh * 0.94)} ${f1(shoulderY + g.h * 0.02)} ${f1(cx + sh * 0.55)} ${f1(shoulderY - g.h * 0.045)} ${f1(cx + g.neckHalf * 1.5)} ${f1(shoulderY - g.h * 0.055)}`
-    + ` C ${f1(cx + g.neckHalf * 0.9)} ${f1(shoulderY + g.h * 0.035)} ${f1(cx - g.neckHalf * 0.9)} ${f1(shoulderY + g.h * 0.035)} ${f1(cx - g.neckHalf * 1.5)} ${f1(shoulderY - g.h * 0.055)}`
-    + ` C ${f1(cx - sh * 0.55)} ${f1(shoulderY - g.h * 0.045)} ${f1(cx - sh * 0.94)} ${f1(shoulderY + g.h * 0.02)} ${f1(cx - sh)} ${f1(shoulderY + g.h * 0.14)} Z"/>`
-    // The collar, and a flash down the placket. Two strokes of the team's
-    // second colour, and they are what stop a shirt being a rectangle.
-    + `<path fill="none" stroke="${opts.accent}" stroke-width="${f1(g.h * 0.038)}" stroke-linecap="round" d="`
-    + `M ${f1(cx - g.neckHalf * 1.6)} ${f1(shoulderY - g.h * 0.05)}`
-    + ` C ${f1(cx - g.neckHalf * 0.9)} ${f1(shoulderY + g.h * 0.055)} ${f1(cx + g.neckHalf * 0.9)} ${f1(shoulderY + g.h * 0.055)} ${f1(cx + g.neckHalf * 1.6)} ${f1(shoulderY - g.h * 0.05)}"/>`
-    + `<path fill="${opts.accent}" opacity="0.85" d="`
-    + `M ${f1(cx - sh * 0.98)} ${f1(shoulderY + g.h * 0.16)} L ${f1(cx - sh * 0.80)} ${f1(shoulderY + g.h * 0.15)}`
-    + ` L ${f1(cx - hip * 0.80)} ${f1(FIGURE_BOTTOM)} L ${f1(cx - hip * 0.99)} ${f1(FIGURE_BOTTOM)} Z"/>`;
-
-  // --- Arms ----------------------------------------------------------------
-  const arms = armsFor(pose, cx, sh, hip, armW, shoulderY, g.h, opts, skin);
-
-  const number = opts.number === undefined ? '' : chestNumber(cx, sh, shoulderY, g.h, opts);
+  const torso = suitArt(rig, uid, opts);
 
   const defs = head.defs
-    + `<linearGradient id="${opts.uid}-cloth" gradientUnits="userSpaceOnUse"`
-    + ` x1="${f1(cx - sh)}" y1="${f1(shoulderY)}" x2="${f1(cx + sh)}" y2="${f1(FIGURE_BOTTOM)}">`
-    + `<stop offset="0%" stop-color="#fff" stop-opacity="0.12"/>`
+    + `<linearGradient id="${uid}-cloth" gradientUnits="userSpaceOnUse"`
+    + ` x1="${f1(cx - rig.sh)}" y1="${f1(shoulderY)}" x2="${f1(cx + rig.sh)}" y2="${f1(rig.hipY)}">`
+    + `<stop offset="0%" stop-color="#fff" stop-opacity="0.14"/>`
     + `<stop offset="42%" stop-color="#fff" stop-opacity="0"/>`
-    + `<stop offset="100%" stop-color="#000" stop-opacity="0.34"/></linearGradient>`;
+    + `<stop offset="100%" stop-color="#000" stop-opacity="0.30"/></linearGradient>`;
 
-  return {
-    defs,
-    markup: `<g>${head.back}${arms.behind}${neck}${torso}${number}${arms.front}${head.front}</g>`,
-  };
-}
-
-/**
- * Arms, in three poses.
- *
- * `seated` puts the forearms forward onto a desk, which is where every hand at
- * every press conference in the sport's history has been. `standing` hangs them.
- * `raised` lifts the near one, for a podium.
- *
- * The upper arm goes BEHIND the torso and the forearm in front of it, which is
- * one line of ordering and the entire difference between an arm attached at the
- * shoulder and an arm stuck onto the ribs.
- */
-function armsFor(
-  pose: Pose, cx: number, sh: number, hip: number, armW: number,
-  shoulderY: number, H: number, opts: FigureOptions,
-  skin: { base: string; shade: string; lift: string },
-): { behind: string; front: string } {
-  const top = shoulderY + H * 0.04;
-  const elbow = shoulderY + H * 0.46;
-  const upper = (s: number): string =>
-    `<path fill="${opts.suit}" d="`
-    + `M ${f1(cx + s * (sh - armW * 0.2))} ${f1(top)}`
-    + ` C ${f1(cx + s * (sh + armW * 0.30))} ${f1(top + H * 0.10)} ${f1(cx + s * (sh + armW * 0.22))} ${f1(elbow - H * 0.06)} ${f1(cx + s * (sh + armW * 0.02))} ${f1(elbow)}`
-    + ` L ${f1(cx + s * (sh - armW * 1.05))} ${f1(elbow)}`
-    + ` C ${f1(cx + s * (sh - armW * 1.02))} ${f1(elbow - H * 0.12)} ${f1(cx + s * (sh - armW * 0.9))} ${f1(top + H * 0.08)} ${f1(cx + s * (sh - armW * 0.9))} ${f1(top)} Z"/>`
-    + `<path fill="rgba(0,0,0,0.22)" d="`
-    + `M ${f1(cx + s * (sh - armW * 1.05))} ${f1(top + H * 0.02)} L ${f1(cx + s * (sh - armW * 0.75))} ${f1(top + H * 0.02)}`
-    + ` L ${f1(cx + s * (sh - armW * 0.72))} ${f1(elbow)} L ${f1(cx + s * (sh - armW * 1.05))} ${f1(elbow)} Z"/>`;
-
-  if (pose === 'standing') {
-    return { behind: upper(-1) + upper(1), front: '' };
-  }
-
-  if (pose === 'raised') {
-    // One arm up. Not a wave: the elbow stays low and the forearm goes up and
-    // slightly out, which is what somebody acknowledging a grandstand does.
-    const h = handOf(cx, sh, armW, shoulderY, H);
-    // AS A STROKE, NOT AS AN OUTLINE. The first version traced the arm as a
-    // closed path and it came out as a flag on a pole beside the shoulder,
-    // because a narrow closed shape that starts at the edge of the torso never
-    // looks attached to it. A round-capped stroke that STARTS INSIDE THE CHEST
-    // and runs through the elbow to the hand is one path, is always the right
-    // thickness, and is joined to the body by construction.
-    const sx = cx - sh * 0.62;
-    const sy = top + H * 0.10;
-    const ex = cx - sh * 1.06;
-    const ey = top - H * 0.16;
-    const arm = `M ${f1(sx)} ${f1(sy)} C ${f1(ex + armW * 0.4)} ${f1(sy - H * 0.06)} `
-      + `${f1(ex)} ${f1(ey + H * 0.10)} ${f1(ex)} ${f1(ey)} `
-      + `C ${f1(ex)} ${f1(ey - H * 0.22)} ${f1(h.x - armW * 0.2)} ${f1(h.y + armW * 2.4)} ${f1(h.x)} ${f1(h.y + armW * 0.9)}`;
+  // A seated person's forearms and hands lie ON the desk. The scene draws the
+  // desk between `markup` and `overlay`.
+  if (pose === 'seated') {
+    let over = '';
+    let body = '';
+    for (const b of rig.bones) {
+      if (b.id.endsWith('-fore')) over += boneArt(b, uid, opts.suit, { cuff: opts.accent });
+      else if (b.id.startsWith('arm-')) body += boneArt(b, uid, opts.suit, { yoke: opts.accent });
+    }
+    for (const h of rig.hands) over += handArt(h, uid, skin);
     return {
-      behind: upper(1),
-      front: `<path fill="none" stroke="${opts.suit}" stroke-linecap="round" `
-        + `stroke-linejoin="round" stroke-width="${f1(armW * 1.45)}" d="${arm}"/>`
-        // The turned side of the arm, thinner and offset right, so it is a limb
-        // rather than a tube of flat colour.
-        + `<path fill="none" stroke="rgba(0,0,0,0.24)" stroke-linecap="round" `
-        + `stroke-width="${f1(armW * 0.42)}" transform="translate(${f1(armW * 0.42)} 0)" d="${arm}"/>`
-        // The cuff.
-        + `<path fill="none" stroke="${opts.accent}" stroke-linecap="butt" `
-        + `stroke-width="${f1(armW * 1.45)}" d="`
-        + `M ${f1(h.x - armW * 0.06)} ${f1(h.y + armW * 1.5)} L ${f1(h.x)} ${f1(h.y + armW * 1.05)}"/>`
-        + (opts.trophy ? trophy(h.x, h.y, armW, opts.trophy) : '')
-        + `<ellipse cx="${f1(h.x)}" cy="${f1(h.y)}" rx="${f1(armW * 0.62)}" `
-        + `ry="${f1(armW * 0.74)}" fill="${skin.base}"/>`
-        + `<ellipse cx="${f1(h.x - armW * 0.18)}" cy="${f1(h.y - armW * 0.16)}" rx="${f1(armW * 0.30)}" `
-        + `ry="${f1(armW * 0.36)}" fill="${skin.lift}" opacity="0.4"/>`,
+      defs,
+      markup: `<g>${head.back}${body}${neck}${torso}${head.front}</g>`,
+      overlay: `<g>${over}</g>`,
+      rig,
     };
   }
 
-  // Seated: forearms forward, hands loosely together on the desk.
-  const deskY = shoulderY + H * 0.62;
-  const fore = (s: number): string =>
-    `<path fill="${opts.suit}" d="`
-    + `M ${f1(cx + s * (sh + armW * 0.06))} ${f1(elbow - armW * 0.55)}`
-    + ` C ${f1(cx + s * (sh * 0.72))} ${f1(deskY - armW * 1.0)} ${f1(cx + s * (sh * 0.34))} ${f1(deskY - armW * 0.9)} ${f1(cx + s * hip * 0.20)} ${f1(deskY - armW * 0.62)}`
-    + ` L ${f1(cx + s * hip * 0.20)} ${f1(deskY + armW * 0.30)}`
-    + ` C ${f1(cx + s * (sh * 0.40))} ${f1(deskY + armW * 0.30)} ${f1(cx + s * (sh * 0.86))} ${f1(deskY - armW * 0.10)} ${f1(cx + s * (sh + armW * 0.06))} ${f1(elbow + armW * 0.62)} Z"/>`
-    // The cuff, and the hand beyond it.
-    + `<path fill="${opts.accent}" opacity="0.9" d="`
-    + `M ${f1(cx + s * hip * 0.34)} ${f1(deskY - armW * 0.68)} L ${f1(cx + s * hip * 0.20)} ${f1(deskY - armW * 0.62)}`
-    + ` L ${f1(cx + s * hip * 0.20)} ${f1(deskY + armW * 0.30)} L ${f1(cx + s * hip * 0.34)} ${f1(deskY + armW * 0.26)} Z"/>`
-    + `<ellipse cx="${f1(cx + s * hip * 0.10)}" cy="${f1(deskY - armW * 0.16)}" rx="${f1(armW * 0.66)}" `
-    + `ry="${f1(armW * 0.46)}" fill="${skin.base}"/>`;
+  const behind = legArt(rig, uid, opts, true) + armArt(rig, uid, opts, skin, true);
+  const frontLegs = legArt(rig, uid, opts, false);
+  const frontArms = armArt(rig, uid, opts, skin, false);
+  const props = propArt(rig, opts);
 
-  return { behind: upper(-1) + upper(1), front: fore(-1) + fore(1) };
+  return {
+    defs,
+    markup: `<g>${head.back}${behind}${neck}${torso}${frontLegs}${frontArms}`
+      + `${props}${head.front}</g>`,
+    overlay: '',
+    rig,
+  };
 }
 
-/** Where the raised hand ends up. Shared so the trophy lands IN it. */
-function handOf(
-  cx: number, sh: number, armW: number, shoulderY: number, H: number,
-): { x: number; y: number } {
-  return { x: cx - sh * 0.78 - armW * 0.85, y: shoulderY + H * 0.04 - H * 0.80 };
+// ===========================================================================
+// Things people hold
+// ===========================================================================
+
+/**
+ * Whatever is in the hands.
+ *
+ * Placed at the GRIP, which is a point on the hand's own axis, and rotated to
+ * the hand's own angle. The trophy used to be positioned by a formula that
+ * happened to land near where a formula in a different function had put a hand;
+ * moving the shoulder moved one and not the other, and `probe:people` now
+ * asserts the overlap rather than trusting either.
+ */
+function propArt(rig: Rig, opts: FigureOptions): string {
+  if (rig.pose !== 'raised') return '';
+  let out = '';
+  const left = rig.hands.find((h) => h.side === 'l');
+  const right = rig.hands.find((h) => h.side === 'r');
+  if (opts.trophy && left) {
+    out += `<g transform="translate(${f1(left.grip.x)} ${f1(left.grip.y)}) `
+      + `rotate(${f1(-left.grip.angle * 0.16)})" data-part="held-trophy" `
+      + `data-at="${f1(left.grip.x)},${f1(left.grip.y)}">`
+      + trophy(rig.H * 0.30, opts.trophy) + '</g>';
+  }
+  if (opts.champagne && right) {
+    out += `<g transform="translate(${f1(right.grip.x)} ${f1(right.grip.y)}) `
+      + `rotate(${f1(-right.grip.angle * 0.16)})" data-part="held-bottle" `
+      + `data-at="${f1(right.grip.x)},${f1(right.grip.y)}">`
+      + bottle(rig.H * 0.22, opts.accent) + '</g>';
+  }
+  return out;
 }
 
 /**
- * A cup.
+ * A cup, drawn about the origin with the STEM IN THE FIST.
  *
- * Bowl, stem, base, two handles. Four shapes, and it is unmistakable at
- * thirty pixels because a trophy is one of about six silhouettes every person
- * alive can name instantly. The catch light is on the upper left, as everything
- * else in this game is.
+ * Bowl, stem, base, two handles. Four shapes, and it is unmistakable at thirty
+ * pixels because a trophy is one of about six silhouettes every person alive
+ * can name instantly. The catch light is on the upper left, as everything else
+ * in this game is.
  */
-function trophy(
-  x: number, y: number, armW: number, metal: 'gold' | 'silver' | 'bronze',
-): string {
+function trophy(r: number, metal: 'gold' | 'silver' | 'bronze'): string {
   const [body, lift, shade] = TROPHY_METAL[metal];
-  const r = armW * 1.05;
-  const top = y - r * 2.6;
+  // The fist is at 0,0 and holds the stem; the bowl is above it.
+  const base = r * 0.55;
+  const top = -r * 2.9;
   return `<g>`
-    // Handles, behind the bowl.
     + `<path fill="none" stroke="${body}" stroke-width="${f1(r * 0.20)}" d="`
-    + `M ${f1(x - r * 0.78)} ${f1(top + r * 0.30)} C ${f1(x - r * 1.55)} ${f1(top + r * 0.45)} ${f1(x - r * 1.45)} ${f1(top + r * 1.25)} ${f1(x - r * 0.66)} ${f1(top + r * 1.20)}`
-    + `M ${f1(x + r * 0.78)} ${f1(top + r * 0.30)} C ${f1(x + r * 1.55)} ${f1(top + r * 0.45)} ${f1(x + r * 1.45)} ${f1(top + r * 1.25)} ${f1(x + r * 0.66)} ${f1(top + r * 1.20)}"/>`
-    // The bowl.
+    + `M ${f1(-r * 0.78)} ${f1(top + r * 0.30)} C ${f1(-r * 1.55)} ${f1(top + r * 0.45)} ${f1(-r * 1.45)} ${f1(top + r * 1.25)} ${f1(-r * 0.66)} ${f1(top + r * 1.20)}`
+    + `M ${f1(r * 0.78)} ${f1(top + r * 0.30)} C ${f1(r * 1.55)} ${f1(top + r * 0.45)} ${f1(r * 1.45)} ${f1(top + r * 1.25)} ${f1(r * 0.66)} ${f1(top + r * 1.20)}"/>`
     + `<path fill="${body}" d="`
-    + `M ${f1(x - r * 0.86)} ${f1(top)} L ${f1(x + r * 0.86)} ${f1(top)}`
-    + ` C ${f1(x + r * 0.80)} ${f1(top + r * 1.35)} ${f1(x + r * 0.36)} ${f1(top + r * 1.62)} ${f1(x)} ${f1(top + r * 1.66)}`
-    + ` C ${f1(x - r * 0.36)} ${f1(top + r * 1.62)} ${f1(x - r * 0.80)} ${f1(top + r * 1.35)} ${f1(x - r * 0.86)} ${f1(top)} Z"/>`
+    + `M ${f1(-r * 0.86)} ${f1(top)} L ${f1(r * 0.86)} ${f1(top)}`
+    + ` C ${f1(r * 0.80)} ${f1(top + r * 1.35)} ${f1(r * 0.36)} ${f1(top + r * 1.62)} 0 ${f1(top + r * 1.66)}`
+    + ` C ${f1(-r * 0.36)} ${f1(top + r * 1.62)} ${f1(-r * 0.80)} ${f1(top + r * 1.35)} ${f1(-r * 0.86)} ${f1(top)} Z"/>`
     + `<path fill="${lift}" opacity="0.55" d="`
-    + `M ${f1(x - r * 0.80)} ${f1(top + r * 0.06)} C ${f1(x - r * 0.72)} ${f1(top + r * 1.05)} ${f1(x - r * 0.48)} ${f1(top + r * 1.38)} ${f1(x - r * 0.30)} ${f1(top + r * 1.50)}`
-    + ` C ${f1(x - r * 0.58)} ${f1(top + r * 1.22)} ${f1(x - r * 0.62)} ${f1(top + r * 0.60)} ${f1(x - r * 0.58)} ${f1(top + r * 0.06)} Z"/>`
-    // Lip, stem and base.
-    + `<rect x="${f1(x - r * 0.94)}" y="${f1(top - r * 0.14)}" width="${f1(r * 1.88)}" `
+    + `M ${f1(-r * 0.80)} ${f1(top + r * 0.06)} C ${f1(-r * 0.72)} ${f1(top + r * 1.05)} ${f1(-r * 0.48)} ${f1(top + r * 1.38)} ${f1(-r * 0.30)} ${f1(top + r * 1.50)}`
+    + ` C ${f1(-r * 0.58)} ${f1(top + r * 1.22)} ${f1(-r * 0.62)} ${f1(top + r * 0.60)} ${f1(-r * 0.58)} ${f1(top + r * 0.06)} Z"/>`
+    + `<rect x="${f1(-r * 0.94)}" y="${f1(top - r * 0.14)}" width="${f1(r * 1.88)}" `
     + `height="${f1(r * 0.20)}" rx="${f1(r * 0.06)}" fill="${lift}"/>`
-    + `<rect x="${f1(x - r * 0.15)}" y="${f1(top + r * 1.60)}" width="${f1(r * 0.30)}" `
-    + `height="${f1(r * 0.45)}" fill="${shade}"/>`
-    + `<rect x="${f1(x - r * 0.55)}" y="${f1(top + r * 2.02)}" width="${f1(r * 1.10)}" `
-    + `height="${f1(r * 0.24)}" rx="${f1(r * 0.05)}" fill="${body}"/>`
+    + `<rect x="${f1(-r * 0.17)}" y="${f1(top + r * 1.62)}" width="${f1(r * 0.34)}" `
+    + `height="${f1(base - top - r * 1.62)}" fill="${shade}"/>`
+    + `<rect x="${f1(-r * 0.60)}" y="${f1(base)}" width="${f1(r * 1.20)}" `
+    + `height="${f1(r * 0.26)}" rx="${f1(r * 0.05)}" fill="${body}"/>`
     + `</g>`;
 }
 
-/** The race number, on the chest of a suit. */
-function chestNumber(
-  cx: number, sh: number, shoulderY: number, H: number, opts: FigureOptions,
-): string {
-  const y = shoulderY + H * 0.30;
-  return `<rect x="${f1(cx - sh * 0.30)}" y="${f1(y)}" width="${f1(sh * 0.60)}" `
-    + `height="${f1(H * 0.24)}" rx="${f1(H * 0.02)}" fill="rgba(6,8,11,0.42)"/>`
-    + `<text x="${f1(cx)}" y="${f1(y + H * 0.185)}" text-anchor="middle" `
-    + `class="fig-number" fill="${opts.accent}">${String(opts.number)}</text>`;
+/** A magnum, held by the neck. Green glass, a foil top, a plain label. */
+function bottle(r: number, accent: string): string {
+  const h = r * 6.2;
+  return `<g>`
+    + `<path fill="#173b21" d="`
+    + `M ${f1(-r * 0.34)} ${f1(-r * 0.9)} L ${f1(r * 0.34)} ${f1(-r * 0.9)}`
+    + ` L ${f1(r * 0.34)} ${f1(r * 0.6)} C ${f1(r * 0.36)} ${f1(r * 1.5)} ${f1(r)} ${f1(r * 1.9)} ${f1(r)} ${f1(r * 2.8)}`
+    + ` L ${f1(r)} ${f1(h)} C ${f1(r)} ${f1(h + r * 0.4)} ${f1(-r)} ${f1(h + r * 0.4)} ${f1(-r)} ${f1(h)}`
+    + ` L ${f1(-r)} ${f1(r * 2.8)} C ${f1(-r)} ${f1(r * 1.9)} ${f1(-r * 0.36)} ${f1(r * 1.5)} ${f1(-r * 0.34)} ${f1(r * 0.6)} Z"/>`
+    + `<path fill="rgba(255,255,255,0.16)" d="`
+    + `M ${f1(-r * 0.72)} ${f1(r * 3.0)} L ${f1(-r * 0.42)} ${f1(r * 3.0)}`
+    + ` L ${f1(-r * 0.42)} ${f1(h - r * 0.3)} L ${f1(-r * 0.72)} ${f1(h - r * 0.3)} Z"/>`
+    + `<rect x="${f1(-r * 0.40)}" y="${f1(-r * 1.5)}" width="${f1(r * 0.80)}"`
+    + ` height="${f1(r * 0.75)}" fill="${accent}"/>`
+    + `<rect x="${f1(-r * 0.94)}" y="${f1(r * 3.5)}" width="${f1(r * 1.88)}"`
+    + ` height="${f1(r * 1.9)}" rx="${f1(r * 0.1)}" fill="#e9e2cd"/>`
+    + `<rect x="${f1(-r * 0.68)}" y="${f1(r * 4.0)}" width="${f1(r * 1.36)}"`
+    + ` height="${f1(r * 0.34)}" fill="${accent}" opacity="0.8"/>`
+    + `</g>`;
 }
+
+// ===========================================================================
+// As an element
+// ===========================================================================
 
 /**
  * A figure, as an element, framed to whatever it is doing.
  *
- * The frame is computed from the pose rather than fixed, because a raised arm
- * goes a hundred units above the crown and a seated figure does not: one
- * viewBox for both would either crop the trophy or float the panel in white
- * space. Everything else about the drawing is identical.
+ * The frame comes from the rig rather than from a constant, because a raised
+ * arm goes a head above the crown and a seated figure does not: one viewBox for
+ * both would either crop the trophy or float the panel in white space.
  */
 export function figureSvg(
   look: PersonLook, opts: FigureOptions & { size?: number },
 ): SVGSVGElement {
   const art = figureArt(look, opts);
-  const g = headGeometry(look);
-  const pose = opts.pose ?? 'seated';
-  const shoulderY = g.chinY + g.h * 0.30;
-  const top = pose === 'raised'
-    // Room for the arm and whatever is in the hand.
-    ? shoulderY + g.h * 0.04 - g.h * 0.80 - g.hw * 3.4
-    : g.crownY - g.hw * 0.62;
-  // The torso is drawn all the way to `FIGURE_BOTTOM` so it can be cropped
-  // anywhere; where it is actually CUT is a framing decision. Cropping at the
-  // floor gives a figure four head-heights tall inside a step 130 pixels wide,
-  // which is a skittle. A podium shot is head to waist.
-  const bottom = pose === 'raised' ? shoulderY + g.h * 1.30 : FIGURE_BOTTOM;
-  const left = pose === 'raised' ? -18 : 0;
-  const width = 200 - left * 2;
+  const rig = art.rig;
+  const top = rig.frameTop;
+  const bottom = rig.frameBottom;
+  // Wide enough for a raised arm and a trophy, whichever side they are on.
+  let left = 0;
+  let right = 200;
+  for (const h of rig.hands) {
+    left = Math.min(left, h.c.x - h.len * 1.4);
+    right = Math.max(right, h.c.x + h.len * 1.4);
+  }
+  for (const f of rig.feet) {
+    left = Math.min(left, f.c.x - f.len * 1.2);
+    right = Math.max(right, f.c.x + f.len * 1.2);
+  }
+  const width = right - left;
   const height = bottom - top;
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg') as SVGSVGElement;
@@ -325,7 +542,7 @@ export function figureSvg(
     svg.setAttribute('width', String(opts.size));
     svg.setAttribute('height', String(Math.round(opts.size * (height / width))));
   }
-  svg.innerHTML = `<defs>${art.defs}</defs>${art.markup}`;
+  svg.innerHTML = `<defs>${art.defs}</defs>${art.markup}${art.overlay}`;
   return svg;
 }
 

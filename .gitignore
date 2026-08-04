@@ -26,6 +26,7 @@ reference/
 # scripts/probeRenderPerf.ts. Evidence about a build, not part of one.
 sharp-out/
 grain-out/
+halo-out/
 perf-out/
 weather-out/
 .probe/

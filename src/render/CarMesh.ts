@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  apertureEdge, loft, section, setFlatUV, setPanelUV, strut, aeroStrut, tube,
+  apertureEdge, loft, section, setFlatUV, setFlatUVSplit, setPanelUV, strut, aeroStrut, tube,
   wingElement, riseSpanwise, type OpenTop, type Section,
 } from './Loft';
 import {
@@ -643,6 +643,32 @@ export function haloRadiusAt(u: number): number {
  */
 export const HALO_SQUASH = 0.78;
 
+/**
+ * Where the paint stops on the hoop's section — issue #34.
+ *
+ * The y of the outward unit normal at the edge of the team-coloured band. Above
+ * it the surface faces the sky and takes the `halo` swatch; below it, the
+ * fairing stays the hardware black it has always been. Exported for the same
+ * reason `HALO_PATH` is: `probe:halo` has to know how much of the tube is
+ * SUPPOSED to be painted before it can say whether the paint is doing its job.
+ *
+ * 0.40, and it is measured off the reference rather than chosen. Enlarge
+ * `reference/target/76.png` around the crown and the teal band covers a little
+ * over a third of the tube's apparent depth, with black under it. Our section
+ * is an ellipse `HALO_SQUASH` (0.78) as deep as it is wide, whose outward
+ * normal at a section angle t off horizontal has
+ *
+ *     n_y = sin t / sqrt(0.78^2 cos^2 t + sin^2 t)
+ *
+ * so n_y = 0.40 is t = 19 degrees, and the painted arc runs from 19 degrees up
+ * one side, over the top, and 19 degrees down the other: 142 of the section's
+ * 360, or 39 per cent of its perimeter. That is the reference's band.
+ *
+ * IT IS A PAINT LINE AND NOT A TOLERANCE. Nothing passes or fails on it and no
+ * assertion is written against it; `probe:halo` measures the finished frame.
+ */
+export const HALO_PAINT_MIN_NY = 0.40;
+
 /** The forward pillar, bottom to top. */
 export const HALO_PILLAR: readonly [number, number, number][] = [
   [0, 0.520, 0.778],
@@ -1281,6 +1307,26 @@ class Parts {
     const [u, v] = swatchUV(swatch);
     geo.userData.tag = this.tagName;
     this.target.push(setFlatUV(geo, u, v));
+  }
+
+  /**
+   * Adds a part carrying two flat colours, split by which way its surface faces.
+   *
+   * ONE PART, not two. The halo hoop is a single tube and it stays a single
+   * tube: the alternative — a second capping tube laid over the crown — is a
+   * new part for `probe:carrig` to hold to its bolted-joint rule, two coincident
+   * surfaces to z-fight, and 44 extra rings of geometry within 600mm of the
+   * onboard camera. See `setFlatUVSplit` for why the split is read off the
+   * normal, and `Livery`'s `SWATCH_ORDER` for why the two cells are neighbours.
+   */
+  flatSplit(
+    geo: THREE.BufferGeometry, upper: SwatchName, lower: SwatchName,
+    minNormalY: number,
+  ): void {
+    geo.userData.tag = this.tagName;
+    this.target.push(
+      setFlatUVSplit(geo, swatchUV(upper), swatchUV(lower), minNormalY),
+    );
   }
 
   /** Adds a lofted part that carries painted livery graphics. */
@@ -2597,13 +2643,37 @@ function buildShellParts(
   // middle, and crown at 0.812 — a touch below the helmet's 0.828 — and the
   // section is squashed to 0.58 of its height, so the 42mm at the mounts is
   // 42 wide by 24 tall and the crown is 26 by 15.
+  //
+  // AND IT IS PAINTED, which is the whole of issue #34 and the last thing about
+  // this object that was still wrong. Nothing below moves a vertex.
+  //
+  // *"the halo is also floating atp?"* — and it is not. `probe:carrig`'s
+  // bolted-joint section has no tolerance in it, a genuine joint measures zero
+  // rather than "within 10mm", and the hoop, the pillar, the pillar root and
+  // both mounts are all inside it at 146 parts in one cluster. What the eye was
+  // reading as a detached part was a MISSING EDGE: the whole assembly took the
+  // `trim` swatch at `0x1e222a`, luma 34 of 255, and against a night sky, a
+  // shaded pit straight or a dark grandstand a near-black tube has no
+  // silhouette to be attached BY. The fifth "fix" to this object judged from a
+  // screenshot would have moved it again.
+  //
+  // Both reference frames disagree with the black arc and they are the
+  // specification, not inspiration (PROJECT.md §2). `76.png` — the Zandvoort
+  // onboard the user called *"the best image"* — has a bright teal band running
+  // the whole way round the crown of a Mercedes hoop, with the underside black.
+  // `90.png` has an Aston's halo in the car's own green. Enlarged, `76.png`
+  // also settles the two questions this call site has to answer: the band
+  // covers the UPPER part of the section only, and the forward pillar is NOT
+  // painted. So the crown takes the new `halo` swatch, everything else in this
+  // block stays on `trim`, and `probe:halo` measures what that is worth against
+  // the background in a finished frame.
   {
     p.tag('halo hoop');
-    p.flat(tube(
+    p.flatSplit(tube(
       HALO_PATH, HALO_R, t.halo, t.haloRadial, haloRadiusAt,
       // Wider than tall, which is the whole difference between a blade and a pipe.
       HALO_SQUASH,
-    ), 'trim');
+    ), 'halo', 'trim', HALO_PAINT_MIN_NY);
 
     // The forward strut: the only part of the halo a driver looks straight down.
     //

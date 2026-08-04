@@ -155,12 +155,24 @@
    board of squares. `probe:tower` §5 asserts the face actually in use, so the
    fallback cannot pass silently as the copy.
 
+   NEVER WRITE A GLOB IN A CSS COMMENT. The paragraph below used to end a
+   directory name with an asterisk and then a slash, and an asterisk followed
+   by a slash CLOSES A CSS COMMENT — six lines early, in the middle of a
+   sentence. (Writing the warning out with the two characters adjacent closes
+   this one too, which is how this rewrite found itself.) What follows then
+   parses as CSS, and `lightningcss` rejects it with `Invalid empty selector`,
+   so `vite build` FAILED ON `main` and every probe that builds the site before
+   driving it (`probe:grain`, `probe:halo`, `probe:sharpness`, `probe:graphics`
+   and the rest) could not run at all. `vite dev` does not minify and a browser
+   error-recovers over the garbage silently, which is why nobody saw it: the
+   game looked fine and the only thing that was broken was shipping it.
+
    THE URL IS ABSOLUTE, which is Vite's own rule for `public/` and which is
    what `EnvProbe` does for the HDRIs. It is also the one thing here that a
    subpath deploy would break, because `vite.config.ts` sets `base: './'` and
    Vite does not rewrite absolute URLs inside CSS. Verified with a real
-   `vite build`: the fonts land at `dist/assets/fonts/titillium*/` and the
-   built stylesheet asks for `/assets/fonts/titillium/titillium.ttf`, which
+   `vite build`: the fonts land under `dist/assets/fonts/`, one directory per
+   weight, and the built stylesheet asks for the absolute path, which
    resolves from the site root. A relative URL is NOT the fix — in dev the
    stylesheet is served from `/src/ui/`, so it would look for
    `src/ui/fonts/titillium/`, and the build would fail to resolve it at all.
