@@ -299,11 +299,13 @@ Run `npm run` to list. The important ones:
   fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
   own job with its own measurement, and it is listed here rather than done badly.
   **Nobody is on this.**
-- `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
+- `probe:fieldsize` — **14 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
-  regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
-  **byte-identical** failure lists. Everything structural in the probe still passes at 20,
-  22 and 24 cars. Issue #44.
+  regression: on 2026-08-03 clean `main` extracted to a scratch tree and the
+  `timing-tower-truth` branch produced **the same 14 lines in the same order**. This
+  entry used to say 23; the count came down with some other merge and nobody re-measured
+  it, so **check it rather than quoting it**. Everything structural in the probe still
+  passes at 20, 22 and 24 cars. Issue #44.
 
 **Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
 engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
@@ -804,7 +806,17 @@ viewpoint instead of cancelling in screen space the way it does for the car bein
   Rouge, also the steepest road at **18.7%**), worth 9.2mm in a 50fps frame at 80 m/s;
   Zandvoort's 18° banking against the projection's own per-node lateral kink measures
   12.3mm. The bound is **20mm**, and the artefact it is there to catch is 124mm.
-- **Proved it can go red, twice.** Pointing the camera's `carY` back at `car.s`/`car.lateral`:
+- **Two of those numbers went DOWN and both are the rail being paid what it is owed.**
+Portrait chase is 17 rather than 20 because the radio card in portrait has no fixed
+plate and cannot be squeezed — it is as tall as its content, 214px measured — so the
+floor there is the card rather than the squeeze. A landscape phone is 8 rather than 9
+because the cue a short rail has to carry under a safety car is the neutralisation cue at
+45px, not the pit cue at 30. Both were found by `shoot:panels`, which on the first version
+of this work went from **2 rail failures to 107**, then 30, then 8, and finally to
+**`rail: nothing overlaps anything, all viewports, all scenes` — zero, which is two
+better than `main`.** The mirror failures stay at the pre-existing 2.
+
+**Proved it can go red, twice.** Pointing the camera's `carY` back at `car.s`/`car.lateral`:
   **24 of 44 rows red**, the interpolated column collapsing exactly onto the stepped one —
   *"spa driver 50fps: the camera's height moves 123.8mm of second difference at s=866m,
   bound 20mm"*. Restoring the old camera floor: **3 rows red at Zandvoort**, 52.4mm.
@@ -1306,7 +1318,17 @@ unable to upshift or downshift. Two independent latches, either of which alone w
   "top speed ≥ 300 km/h" bar would have **passed the bug** — the rpm clamp means a car held
   in 4th still crawls to 300.1 km/h in thirty seconds — so the bar is a reference run driven
   in the same process, not a number.
-- **Proved it can go red, twice.** Restoring the original early-return latch in
+- **Two of those numbers went DOWN and both are the rail being paid what it is owed.**
+Portrait chase is 17 rather than 20 because the radio card in portrait has no fixed
+plate and cannot be squeezed — it is as tall as its content, 214px measured — so the
+floor there is the card rather than the squeeze. A landscape phone is 8 rather than 9
+because the cue a short rail has to carry under a safety car is the neutralisation cue at
+45px, not the pit cue at 30. Both were found by `shoot:panels`, which on the first version
+of this work went from **2 rail failures to 107**, then 30, then 8, and finally to
+**`rail: nothing overlaps anything, all viewports, all scenes` — zero, which is two
+better than `main`.** The mirror failures stay at the pre-existing 2.
+
+**Proved it can go red, twice.** Restoring the original early-return latch in
   `VehiclePhysics`: 6 of 25 red, §1 back to *"finished in gear 4, expected 8"* and
   *"26.42s stranded"*. Deleting `input.enabled = inSession` from `main.ts`: 1 red on the
   wiring check — added precisely because everything else in §7 tests the gate and nothing
@@ -1532,6 +1554,90 @@ controls (found: [])"* and *"every car that was still running set a time (0 of
   the routes are now held by `probe:smoke`'s required set.** See "Built, correct, and
   nobody could get to it" below. This entry stood in this file for months as a note; the
   thing that changed is that it is an assertion.
+
+### The timing tower: four cars of twenty, and a board that skipped (issues #17, #76)
+
+> *"why can I only see like 4 cars on the leaderboard, where is everyone and all the cars?"*
+> *"also the leader board has 1st place and then 7-20th why not how the whole fucking
+> leaderboard bro"*
+
+Two mechanisms, both measured after LAYOUT, which is why nothing in this project had
+caught either. Every existing check of this panel is a check of a pure function:
+`probe:hudtext` asserts what `standingsCells` returns and `towerFit` can answer "twenty
+rows" while the panel draws four, because the row count a player sees is decided after
+the mirror band, the pit sheet and the media queries have had their say. **`probe:tower`
+is a browser probe** — the real `Hud` over a real `RaceEngine` with the game's own
+stylesheet, read with `getBoundingClientRect`.
+
+**THE ROW COUNT WAS A RESERVATION, NOT A CAP.** `towerFit` subtracted the rail's WORST
+case — a full-size radio plate and two live cues, 366px — on every frame of every
+session, whether or not anybody was transmitting, and the mirror band came off on top of
+that. Measured on the build the report came from, twenty cars in the field:
+
+| viewport / camera | before | after |
+|---|---|---|
+| desktop 1400×900, chase | 20 | 20 |
+| desktop 1400×900, cockpit | 9 | 15 |
+| desktop 1920×1080, chase | 20 | 20 |
+| desktop 1400×900, driver's eye | **5** | 11 |
+| laptop 1280×800, chase | 15 | **20** |
+| laptop 1280×800, cockpit | 5 | 11 |
+| laptop 1280×800, driver's eye | **4** | 8 |
+| portrait phone 390×844, chase | 12 | **17** |
+| portrait phone 390×844, driver's eye | 12 | 8 (and the rail is intact) |
+| landscape phone 844×390, chase | 7 | 8 |
+| field of 22 / 24 cars, desktop | 20 / 20 | **22 / 24** |
+
+The reservation is the rail's FLOOR now (`TOWER_RAIL_FLOOR_PX` — the smallest radio card
+`sizeRadioCard` will draw before `fitRail` throws it away instead, plus the mask, plus the
+gap), the panel's own chrome is MEASURED rather than modelled (the constant was wrong by up
+to 9px, which is a car), and the rail's foot is derived per breakpoint from the same
+conditions the media queries use. **That last one is a correction rather than a
+preference**: reading the rail off the document gives the same numbers a frame late,
+because the tower is laid out before the rail it is budgeted against, and one stale frame
+sized a twenty-row tower against the chase camera's rail and drew it under a mirror band —
+**19 new `shoot:panels` failures, every one in portrait with the glass in shot.**
+
+**AND THE BOARD SKIPPED.** `towerWindow` dropped retired cars out of the middle of the
+order and then pinned the leader above a window that had scrolled off them, so a board
+could read P1, a rule, and P7–P20 with five cars gone from between two rows drawn
+touching. Both halves were defensible alone. Both are gone: the rows are contiguous, and
+`probe:tower` asserts the positions increment by exactly one.
+
+**The row is the reference's row** (`reference/target/68.png`, annotated by the user in
+`67.png`): position, team mark, three-letter code, gap, compound letter. `Leader` in
+italic where the panel used to print `Interval` — a column heading standing in a row of
+figures. `NO TIME` where it printed an em dash, which is the typography of an empty cell
+rather than a statement about a car; `Out Lap`; and a `P` marker at the right-hand edge
+for a car in the pit lane, which is how `69.png` marks eleven cars sitting in their
+garages. **The figure is the gap to the LEADER**, not the interval to the car ahead —
+the user's own annotation says *"the time between each driver from the leader"*, and the
+column had been the other one, which is why it read +0.070, +1.704, +0.526 down the page
+instead of increasing.
+
+**A phone was laying the desktop template into a 176px panel.** `.hud-tower.is-timed`
+outranks a media query on `.hud-tower`, so a portrait phone in qualifying put 220px of
+fixed columns into a 164px row: **the row overran the panel by 61px and the driver-code
+column measured ZERO** — every code on the board cut off entirely. In a race, on the
+compact template, the code column was 11px and 20px of every code was cut. The panel is
+200px in portrait now (the timing panel beside it gives up 24 and the pair spans the same
+352 it did) and the code column measures 37.
+
+**Two of those numbers went DOWN and both are the rail being paid what it is owed.**
+Portrait chase is 17 rather than 20 because the radio card in portrait has no fixed
+plate and cannot be squeezed — it is as tall as its content, 214px measured — so the
+floor there is the card rather than the squeeze. A landscape phone is 8 rather than 9
+because the cue a short rail has to carry under a safety car is the neutralisation cue at
+45px, not the pit cue at 30. Both were found by `shoot:panels`, which on the first version
+of this work went from **2 rail failures to 107**, then 30, then 8, and finally to
+**`rail: nothing overlaps anything, all viewports, all scenes` — zero, which is two
+better than `main`.** The mirror failures stay at the pre-existing 2.
+
+**Proved it can go red, twice.** (a) Restoring `reserved = compact ? 260 : 500` and the
+12/20 row ceilings: **11 failures**, naming *"laptop 1280x800/driver: 4 of 20 cars on the
+board with 182px of unused rail beneath it"* and *"field of 22 produced 20 rows"*.
+(b) Restoring the session-kind gate on the lap-time column: **8 failures**, *"17 of 17
+drawn rows withhold a time that was set — OKO set 154.567, cell "2:34.567" at 0px wide"*.
 
 ### The team radio — one radio, one switch, one voice (issue #21)
 
@@ -2147,9 +2253,12 @@ accident, and `probe:qualiretire` stages one.
   of wall clock and the whole probe is minutes. **It is a `.mjs` of the same lineage as
   `regress:exit` was, so assume it has the same two defects — a watching dev server and
   fixed sleeps — until somebody looks.** Same for `regress:career`. **Nobody is on this.**
-- **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
+- **`probe:fieldsize`: cars finish 8 laps of a 6-lap race — 14 of them.** Pre-existing on `main`,
   measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
-  previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
+  previously recorded as known-failing, so it went red without anybody noticing.
+  **The count is 14, not 23** — re-measured the same way on 2026-08-03 from the
+  `timing-tower-truth` branch and from a clean `main` export, same 14 lines in the same
+  order. Issue #44.
 
 ### Landed with My Team but deliberately not built
 - **Sponsors are not a system.** `commercialIncomePerRound` is the team's baseline revenue
@@ -2336,8 +2445,35 @@ measurement passes every version of it that is wrong.
   is merged. Same species as the `regress:exit` and `probe:qualiretire` entries below.
 
 ### Reported by the user and not yet addressed
-- Lap times of cars that have completed a lap should show even when the player has not
-  completed theirs. *"why are you waiting on me to display their times?"*
+- **Lap times of cars that have completed a lap, in a RACE. Issue #35, still open, and
+  now with a number on it.** *"why are you waiting on me to display their times?"* The
+  LTCS half is answered and measured: `probe:tower` puts the player in their garage with
+  zero laps while nineteen rivals run, and **19 of 19 rivals' times are drawn** on a
+  practice and a qualifying board on a desktop. The RACE half is not, and it is a
+  conflict between two of the user's own instructions rather than a bug nobody has
+  found: measured at Monza with the player retired on the grid, **17 rivals had set a
+  time and 17 of 17 race rows drew a cell 0px wide with the right string inside it** —
+  and the race board in `reference/target/68.png`, which the user said *"copy this!!!
+  don't change shit from it"* about, has no lap-time column in it at all. A column was
+  built, measured and taken back out. **The user has to arbitrate**; `probe:tower` §1
+  prints the number every run under `REPORTED (#35, open)`.
+- **The visual copy of the reference board is NOT done — issue #76.** What landed is the
+  structure: every row, contiguous, with the reference's five elements and its wording
+  (§6). What has not: the two-line header (`F1 RACE` over `LAP 3/57` centred — ours is
+  one line reading `F1SIM MONZA … LAP 1/57`), the type (the reference is F1's own
+  proprietary face; `public/assets/fonts/titillium/` is on disk and unused by this
+  panel), the row scale and spacing, the livery bar down the left of each row that the
+  reference does not have, and the filled red cell behind the leader's position number.
+  Side-by-side pictures are in the PR; the board's own portraits are written to
+  `hud-out/tower/` by `probe:tower` every run.
+- **A stationary player in the first garage stops the entire field leaving the pit lane.**
+  Found while building `probe:tower`'s scenario and measured on its own: an idle player at
+  index 0 in practice or qualifying at Monza leaves **0 of 20 cars out of the pit lane
+  after fifteen minutes**, in both session kinds; moving the player to the last box lets
+  the other nineteen out and 19 of them set times inside five minutes. This is the same
+  "the AI will not pass a stationary car" family as #28, in the pit lane, and
+  `probe:hudtext` has a comment about it that predates this measurement. **Nobody is on
+  this**, and it belongs to the AI rather than to the HUD.
 - The pit crew currently reads as blocky figures — the exact thing the user rejected
   ("forget about the lego people"). **Still here, and deliberately not removed.** The
   `people-graphics` work is 2D SVG for UI screens; the pit crew is 3D, in

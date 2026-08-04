@@ -134,8 +134,12 @@ export interface RunningCar {
   bestLapTime: number;
   /** Seconds behind the car directly ahead on the road. Races only. */
   interval: number;
+  /** Seconds behind the LEADER. Races only, and what the board prints. */
+  gapToLeader: number;
   /** Whole laps behind the leader. Races only. */
   lapsDown: number;
+  /** On an out-lap: circulating, not being timed. */
+  onOutLap?: boolean;
 }
 
 /**
@@ -175,12 +179,26 @@ export function liveGapCell(
   // before anything else in both halves.
   if (car.disqualified) return 'DSQ';
 
+  // `Out Lap`, from the 2025 qualifying board in `reference/target/69.png`:
+  // P1 reads `LAW  Out Lap  H` because the car is circulating and not being
+  // timed, which is a fact about the next thirty seconds that a deficit does
+  // not carry. A car IN the pit lane is NOT written here — the reference puts
+  // that at the right-hand edge as a `P` marker beside the compound, which is
+  // `statusBadges`' job, and leaves this column showing the figure.
+  if (car.onOutLap && !(isRace && car.bestLapTime > 0)) return 'Out Lap';
+
   if (!isRace) {
     // Art. B2.4.3a: the lap has been set and the accident does not un-set it.
     // The car is out of the session; the driver is still in the classification,
     // and the column exists to say how far off the pace they were.
-    if (!(car.bestLapTime > 0)) return car.retired ? 'OUT' : '—';
-    if (!(fastest.bestLapTime > 0)) return '—';
+    //
+    // NO TIME, in the reference board's own words, for a driver who has not
+    // set one. This used to be an em dash, which is the typography of a cell
+    // with nothing to put in it rather than a statement about the car — and
+    // "has not set a lap yet" is a real, common and interesting state, not an
+    // absence. It is most of a qualifying board in the first three minutes.
+    if (!(car.bestLapTime > 0)) return car.retired ? 'OUT' : 'NO TIME';
+    if (!(fastest.bestLapTime > 0)) return 'NO TIME';
     // `<= 0` rather than `=== 0` so that a car whose lap is the reference lap
     // reads FASTEST even if the caller passed a fastest car chosen a step
     // earlier — a tower that flickers between FASTEST and -0.001 is worse than
@@ -190,10 +208,22 @@ export function liveGapCell(
   }
 
   if (car.retired) return 'DNF';
-  if (car.position === 1) return 'LEADER';
-  const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
+  // `Leader`, which is what the reference board prints in the leader's own
+  // row, in italic. It used to be relabelled `Interval` by the tower — a
+  // column heading standing in a row of figures — and #76 says copy the
+  // reference.
+  if (car.position === 1) return 'Leader';
+  const lapsBehind = car.lapsDown - (ahead?.lapsDown ?? 0);
   if (lapsBehind > 0) return '+' + lapsBehind + (lapsBehind === 1 ? ' LAP' : ' LAPS');
-  return formatGap(car.interval);
+  // TO THE LEADER, NOT TO THE CAR AHEAD, and the user settled it themselves.
+  // Their annotation over the reference board (`reference/target/67.png`)
+  // reads: "The distance- the time between each driver from the leader! (some
+  // leaderboards show how far the driver is from the driver in front of
+  // them)". The board they annotated is the first kind — +1.230, +2.557,
+  // +3.658, a column that only ever increases down the page — and the column
+  // here was the second, which is why the numbers ran +0.070, +1.704, +0.526
+  // and read as noise.
+  return formatGap(car.gapToLeader);
 }
 
 /** The subset of a car the qualifying board reads. */

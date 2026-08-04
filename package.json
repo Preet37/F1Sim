@@ -55,6 +55,7 @@
     "probe:carrig": "tsx scripts/probeCarRig.ts",
     "probe:crashrest": "tsx scripts/probeCrashRest.ts",
     "probe:hudtext": "tsx scripts/probeHudText.ts",
+    "probe:tower": "tsx scripts/probeTower.ts",
     "probe:radio": "tsx scripts/probeRadio.ts",
     "probe:strategy": "tsx scripts/probeStrategy.ts",
     "probe:weather": "tsx scripts/probeWeather.ts",

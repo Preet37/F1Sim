@@ -101,7 +101,7 @@ eq(resultGapCell(car({ position: 4, bestLapTime: NaN, gapToLeader: 1 }), false),
 console.log('\nTHE LIVE TOWER IN AN LTCS (a fastest lap, and deficits to it)');
 const run = (o: Partial<RunningCar>): RunningCar => ({
   position: 5, retired: false, disqualified: false,
-  bestLapTime: 0, interval: 0, lapsDown: 0, ...o,
+  bestLapTime: 0, interval: 0, gapToLeader: 0, lapsDown: 0, ...o,
 });
 const quickest = { bestLapTime: 89.762 };
 
@@ -109,10 +109,16 @@ eq(liveGapCell(run({ position: 1, bestLapTime: 89.762 }), null, quickest, false)
   'the car at the top of a qualifying segment set the fastest lap; it is not leading anything');
 eq(liveGapCell(run({ position: 2, bestLapTime: 90.104 }), run({}), quickest, false), '+0.342',
   'everyone else is shown their deficit to it');
-eq(liveGapCell(run({ position: 12, bestLapTime: 0 }), run({}), quickest, false), '—',
-  'a car that has not set a lap yet has no deficit to show');
-eq(liveGapCell(run({ position: 1, bestLapTime: 0 }), null, { bestLapTime: 0 }, false), '—',
+// NO TIME, in the reference board's own words — `reference/target/69.png` is
+// eleven rows of it. This used to be an em dash, which is the typography of an
+// empty cell rather than a statement about a car (#76).
+eq(liveGapCell(run({ position: 12, bestLapTime: 0 }), run({}), quickest, false), 'NO TIME',
+  'a car that has not set a lap yet says so');
+eq(liveGapCell(run({ position: 1, bestLapTime: 0 }), null, { bestLapTime: 0 }, false), 'NO TIME',
   'early in a segment nobody has set a lap and nobody is fastest');
+eq(liveGapCell(run({ position: 6, bestLapTime: 0, onOutLap: true }), run({}), quickest, false),
+  'Out Lap',
+  'a car circulating on an out-lap is not being timed, and the board says which');
 eq(liveGapCell(run({ position: 4, bestLapTime: 90.9, retired: true }), run({}), quickest, false),
   '+1.138',
   'a car in the barrier keeps its lap and its deficit — there is no DNF in qualifying');
@@ -127,20 +133,24 @@ eq(liveGapCell(run({ position: 9, bestLapTime: 91.2, disqualified: true }), run(
   'disqualification shows in an LTCS (Art. B2.4.3b.iii)');
 
 console.log('\nTHE LIVE TOWER IN A RACE (every word of the race language is true)');
-eq(liveGapCell(run({ position: 1 }), null, quickest, true), 'LEADER',
-  'a race has a leader');
-eq(liveGapCell(run({ position: 3, interval: 1.204 }), run({}), quickest, true), '+1.204',
-  'and intervals to the car ahead');
+eq(liveGapCell(run({ position: 1 }), null, quickest, true), 'Leader',
+  'a race has a leader, in the reference board\'s own word and case');
+// TO THE LEADER, which is the column the user annotated in
+// `reference/target/67.png`: "the time between each driver from the leader".
+eq(liveGapCell(run({ position: 3, interval: 0.4, gapToLeader: 1.204 }), run({}), quickest, true),
+  '+1.204',
+  'and everyone else their gap to the leader, not to the car in front');
 eq(liveGapCell(run({ position: 16, lapsDown: 1 }), run({ lapsDown: 0 }), quickest, true), '+1 LAP',
   'a lapped car is reported as lapped');
 eq(liveGapCell(run({ position: 19, lapsDown: 3 }), run({ lapsDown: 0 }), quickest, true), '+3 LAPS',
   'three laps down reads as three laps');
-eq(liveGapCell(run({ position: 16, lapsDown: 2 }), run({ lapsDown: 2 }), quickest, true), '+0.000',
-  'two cars equally lapped are racing each other on an interval');
+eq(liveGapCell(run({ position: 16, lapsDown: 2, gapToLeader: 92.4 }), run({ lapsDown: 2 }),
+  quickest, true), '+92.400',
+  'two cars equally lapped are both shown against the leader');
 eq(liveGapCell(run({ position: 20, retired: true }), run({}), quickest, true), 'DNF',
   'and a car that stopped did not cover the distance');
-eq(liveGapCell(run({ position: 4, interval: NaN }), run({}), quickest, true), '--.---',
-  'an interval that never resolved does not print NaN');
+eq(liveGapCell(run({ position: 4, gapToLeader: NaN }), run({}), quickest, true), '--.---',
+  'a gap that never resolved does not print NaN');
 
 console.log('');
 if (failures.length > 0) {

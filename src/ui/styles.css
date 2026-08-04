@@ -574,7 +574,7 @@ canvas#view {
    THE DATA WAS NEVER THE PROBLEM AND IT IS WORTH SAYING SO, because the
    obvious diagnosis is wrong. `standingsCells` has always returned a `best`
    for every car that has set a lap, computed from that car's own
-   `bestLapTime` and owing nothing to the player's; a probe now drives a
+   `bestLapTime` and owing nothing to the player's; `probe:hudtext` drives a
    qualifying session in which the player never moves and asserts all
    nineteen rivals' times are produced. They always were.
 
@@ -585,11 +585,25 @@ canvas#view {
 
    A column, then, in the sessions that are ABOUT lap times: practice and
    qualifying, where a broadcast tower shows the time and the deficit side by
-   side. In a race it collapses to zero width — a race's tower is intervals,
-   and a column of best laps down the side of one is a different graphic
-   about a different question. `is-timed` is written by `updateTower` from
-   the session kind, so the header and the cells cannot come apart. */
-.hud-tower.is-timed { --tower-cols: 3px 20px 18px minmax(0, 1fr) 56px 46px 12px 30px; }
+   side. In a race it collapses to zero width, and that is now a SPEC rather
+   than a judgement: issue #76 is the reference board the user supplied with
+   *"copy this!!! don't change shit from it"*, and its race row is position,
+   team mark, three-letter code, gap, compound and nothing else.
+
+   WHAT `probe:tower` MEASURED, and it is left standing here because it is the
+   open half of #35: at Monza, with the player retired on the grid and no lap
+   of their own, 17 rivals had set a time and 17 of 17 race rows drew a cell
+   0px wide with the right string inside it. Adding the column to the race
+   board fixes that and contradicts the reference, so it was built, measured
+   and REMOVED. The user has to arbitrate; the issue stays open with the
+   number attached.
+
+   The column carries each car's own BEST — not its last — so the purple that
+   marks the quickest lap of the session sits on the number that earned it,
+   and `is-timed` is written by `updateTower` from the session kind so the
+   header and the cells cannot come apart. It is 52/44 rather than 56/46
+   because at 56/46 the driver-code column measured 36px and `probe:tower`
+   found two codes cut off in it. */
 .tower-time {
   font-family: var(--font-data);
   font-size: 10.5px;
@@ -602,9 +616,17 @@ canvas#view {
 /* The quickest lap of the session is purple, here and everywhere else in this
    game, because that is the sport's own rule and it means the column needs no
    legend. */
+.hud-tower.is-timed { --tower-cols: 3px 20px 18px minmax(0, 1fr) 52px 44px 12px 30px; }
 .tower-row.is-best .tower-time { color: var(--violet); }
+/* HIDDEN, NOT REMOVED, and the difference is a column. `display: none` takes
+   an element out of the grid's flow entirely, so the seven cells that were
+   left auto-placed into columns one to seven of an eight-column template and
+   every cell after the lap time moved one column LEFT: `probe:tower` measured
+   a race board whose gap cell was in the zero-width slot — twenty rows of
+   `Leader` and `+1.230` drawn at 0px — with the compound letter sitting where
+   the gap belonged. `visibility: hidden` keeps the slot and the alignment. */
 .hud-tower:not(.is-timed) .tower-time,
-.hud-tower:not(.is-timed) .c-time { display: none; }
+.hud-tower:not(.is-timed) .c-time { visibility: hidden; }
 /* THE LEADER'S NUMBER IN A FILLED RED CELL. This is the one place in this
    game red does not mean "stopped", and it is deliberate: it is what a
    broadcast tower does, and it is the fastest way to find the front of the
@@ -685,17 +707,15 @@ canvas#view {
   overflow: hidden;
   white-space: nowrap;
 }
-/* The leader's cell names the column instead of restating the position the
-   number beside it already gives. A word among figures reads as the heading
-   it is. */
+/* `Leader`, ITALIC, in mixed case — `reference/target/68.png`, row one:
+   `1  LEC  Leader  M`. It used to read `INTERVAL` in small display capitals on
+   the reasoning that a word among figures reads as a column heading. The
+   reference disagrees, and the reference is the specification: "copy this!!!
+   don't change shit from it". Same size and colour as the figures it sits
+   among, so the column still reads as one column. */
 .tower-row.is-leader .tower-gap {
-  font-family: var(--font-display);
-  font-size: 7.5px;
-  font-weight: 850;
-  font-stretch: 114%;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-  color: var(--ink-3);
+  font-style: italic;
+  color: var(--ink-2);
 }
 /* The compound, in its own colour — soft red, medium yellow, hard white. One
    character, because that is what the sport calls them. */
@@ -736,6 +756,19 @@ canvas#view {
   display: flex;
   background: var(--sig-purple);
   color: #fff;
+}
+/* `P`, for a car in the pit lane. A pale outlined box at the right-hand edge,
+   which is how `reference/target/69.png` marks the eleven cars sitting in
+   their garages on both the 2024 and the 2025 board. Outlined rather than
+   filled: it is a statement about where a car is, not an alarm. */
+.tower-badges.has-pit .tb-pit {
+  display: flex;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  color: #dfe6f2;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 800;
 }
 .tower-badges.has-pen .tb-pen {
   display: flex;
@@ -2306,11 +2339,18 @@ canvas#view {
 @media (max-width: 620px) and (orientation: portrait) {
   .hud { font-size: 11px; }
 
-  .hud-tower { width: calc(50% - 14px); max-width: 176px; }
+  /* THE TWO PANELS DO NOT SPLIT THE EDGE EVENLY ANY MORE, and the reason is
+     measurable rather than aesthetic. At 176px the running order had 158px of
+     row to lay seven columns into and the driver-code column came out at 11px
+     — `probe:tower` measured 20px of every three-letter code cut off in a
+     race and the whole code cut off in qualifying. The timing panel beside it
+     carries four figures and three sector tiles and gives up 24 pixels
+     without losing anything. The pair still spans the same 352px it did. */
+  .hud-tower { width: 192px; max-width: 192px; }
 
   .hud-timing {
-    width: calc(50% - 14px);
-    max-width: 176px;
+    width: 160px;
+    max-width: 160px;
     padding: 5px 6px 6px;
   }
   .timing-lap { font-size: 19px; }
@@ -2326,7 +2366,15 @@ canvas#view {
   .hud-notices {
     left: calc(10px + var(--safe-l) - var(--slide));
     right: calc(62px + var(--safe-r));
-    top: calc(300px + var(--safe-t));
+    /* THE RAIL FOLLOWS THE RUNNING ORDER HERE TOO. This was a hard-coded
+       300px, which is a guess about where the tower ends — and the desktop
+       rule above stopped guessing long ago (`--rail-top` is written by
+       `updateTower` from the panel's own measured bottom). The moment the
+       tower was allowed to show the whole field the guess was 105 pixels out
+       and `shoot:panels` reported the running order lying across the radio
+       card by 200x214px. The fallback is the old number, for the frames
+       before the first measurement. */
+    top: var(--rail-top, calc(300px + var(--safe-t)));
     bottom: calc(196px + var(--safe-b));
     width: auto;
     gap: 6px;
@@ -2499,7 +2547,8 @@ canvas#view {
   .hud-notices {
     --rail-w: 262px;
     left: calc(8px + var(--safe-l) - var(--slide));
-    top: calc(216px + var(--safe-t));
+    /* Measured, not guessed — see the portrait rule. */
+    top: var(--rail-top, calc(216px + var(--safe-t)));
     /* Down to the top of the tyre panel, which is the first thing under it
        once the weather bug has moved out of the column. That takes the band
        from 48 pixels to 94, which is what a principal's card needs. */
@@ -2731,19 +2780,40 @@ canvas#view {
    ends up hanging off the bottom of a 390px screen. The condition here and
    the condition in `towerFit` are deliberately written the same way round.
 
-   What is dropped, and why in this order: the best lap first (the gap is the
-   live number, the best lap is reference), then the driver's first name and
-   the team line. That is the order a broadcast lower-third sheds detail when
-   it gets narrow, and it leaves the two things that identify a car — its
-   colour and its surname — standing until the end. */
+   WHAT IS DROPPED IS THE LAP TIME, AND THE TEAM MARK STAYS. Issue #76's
+   reference board names the mark as one of the five things a row is, so it is
+   not available to be traded; the lap time is the desktop's extra column and
+   is the one that goes. Seven columns, and the SAME seven whether or not the
+   session is classified on lap times — which is why `.hud-tower.is-timed` is
+   named here as well.
+
+   IT HAD TO BE NAMED, and that is a measurement rather than tidiness. A class
+   selector outranks a media query on a bare element class, so before this rule
+   existed the desktop's timed template won on a phone too: a portrait phone in
+   qualifying laid out 220 pixels of fixed columns in a 164-pixel row, and
+   `probe:tower` measured the row OVERRUNNING THE PANEL BY 61px with the
+   driver-code column squeezed to ZERO — every code on the board cut off
+   entirely. In a race, on the seven-column template, the code column was 11px
+   and 20px of every code was cut off. Both are gone: with the panel at 200px
+   in portrait the code column measures 37px, which is a three-letter code with
+   room to spare. */
 @media (max-width: 900px), (max-height: 470px) {
-  .hud-tower {
-    --tower-cols: 3px 17px 15px minmax(0, 1fr) 44px 10px 26px;
+  .hud-tower,
+  .hud-tower.is-timed {
+    --tower-cols: 3px 17px 15px minmax(0, 1fr) 40px 10px 26px;
     width: 232px;
     padding: 6px 6px 5px;
   }
-  .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 5px; }
-  .tower-cols { gap: 0 5px; padding: 0 3px 4px; margin-bottom: 3px; }
+  /* REMOVED here rather than hidden, and that is the opposite of the desktop
+     rule twelve hundred lines up on purpose. The compact template has seven
+     columns and the row has eight cells, so the lap time has to leave the grid
+     entirely for the other seven to line up — `visibility: hidden` would keep
+     its slot and push the badge column into an implicit ninth one, off the
+     side of the panel. `probe:tower` measured exactly that: twenty cells laid
+     out outside the panel on a portrait phone. */
+  .hud-tower .tower-time, .hud-tower .c-time { display: none; }
+  .tower-row { height: 17px; margin-bottom: 0; padding: 0 3px; gap: 0 4px; }
+  .tower-cols { gap: 0 4px; padding: 0 3px 4px; margin-bottom: 3px; }
   /* The column rule goes, and so does the circuit name. Six columns, three of
      them a colour bar, a badge and a single letter, do not need labelling —
      and fifteen pixels of header is most of a row on a screen 390 pixels
@@ -2764,13 +2834,27 @@ canvas#view {
   .tower-pos { font-size: 9.5px; padding: 1px 0; }
   .tower-mark { width: 15px; height: 15px; }
   .tower-code { font-size: 10.5px; letter-spacing: 0.04em; }
+  .tower-time { font-size: 9.5px; }
   .tower-gap { font-size: 9.5px; }
   .tower-row.is-leader .tower-gap { font-size: 6.5px; letter-spacing: 0.06em; }
   .tower-tyre { font-size: 8px; }
   .tbadge { width: 11px; height: 11px; border-radius: 2px; }
   .tbadge svg { width: 7.5px; height: 7.5px; }
   .tower-badges { gap: 2px; }
-  .tower-badges.has-pen .tb-pen { font-size: 8.5px; }
+  /* `P`, for a car in the pit lane. A pale outlined box at the right-hand edge,
+   which is how `reference/target/69.png` marks the eleven cars sitting in
+   their garages on both the 2024 and the 2025 board. Outlined rather than
+   filled: it is a statement about where a car is, not an alarm. */
+.tower-badges.has-pit .tb-pit {
+  display: flex;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  color: #dfe6f2;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 800;
+}
+.tower-badges.has-pen .tb-pen { font-size: 8.5px; }
   .tower-fastest { padding: 4px 3px 0; gap: 5px; margin-top: 4px; }
   .fastest-label { font-size: 7px; }
   .fastest-first { display: none; }
@@ -2785,7 +2869,7 @@ canvas#view {
    graphic with three times this width to spend. */
 @media (min-width: 1500px) {
   .hud-tower {
-    --tower-cols: 3px 24px 22px minmax(0, 1fr) 58px 14px 36px;
+    --tower-cols: 3px 24px 22px minmax(0, 1fr) 62px 52px 14px 36px;
     width: 340px;
   }
   .hud-notices { --rail-w: 340px; }
