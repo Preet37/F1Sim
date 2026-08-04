@@ -1,7 +1,7 @@
 import { headArt, type HeadOptions } from './Face';
 import { complexionOf, type PersonLook } from './Look';
 import {
-  buildRig, capsule, footPolygon, handPolygon, inset, polyPath, seatedDeskY,
+  buildRig, capsule, footPolygon, handPolygon, inset, polyPath,
   smoothClosed, thumbPolygon,
   type Bone, type Foot, type Hand, type Pose, type Rig,
 } from './Body';
@@ -59,15 +59,6 @@ import {
 const f1 = (n: number): string => n.toFixed(1);
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
-/**
- * The floor of the old fixed figure box.
- *
- * Kept only because it is the number the crowd band and the garage bench were
- * calibrated against. A real figure now runs to `rig.floorY`, which is about
- * 980 for an average head and varies with height — ask the rig, not this.
- */
-export const FIGURE_BOTTOM = 560;
-
 export type { Pose } from './Body';
 
 export interface FigureOptions extends HeadOptions {
@@ -91,7 +82,9 @@ export interface FigureOptions extends HeadOptions {
   /**
    * Where the desk crosses a seated figure, in figure space. The scene passes
    * the number it is going to draw the desk at; omit it and the figure picks
-   * its own and the scene must read `seatedDeskY`.
+   * its own, and the scene reads it back off `art.rig.deskY` — which is what
+   * `PressConference.ts` does, because it is the only way the desk it draws and
+   * the hands resting on it can be the same number for every build.
    */
   deskY?: number;
   /**
@@ -123,8 +116,6 @@ export interface FigureArt {
   rig: Rig;
 }
 
-export { seatedDeskY };
-
 // ===========================================================================
 // Painting a bone
 // ===========================================================================
@@ -140,7 +131,6 @@ export { seatedDeskY };
  */
 function boneArt(b: Bone, uid: string, fill: string, opts: {
   cuff?: string;
-  cuffAt?: 'b';
   yoke?: string;
 }): string {
   const poly = capsule(b.a, b.b, b.wa, b.wb);

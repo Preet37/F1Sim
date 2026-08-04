@@ -406,11 +406,6 @@ export function seatedDeskY(look: PersonLook): number {
   return g.chinY + g.h * 0.30 + g.h * lerp(1.02, 1.26, look.height);
 }
 
-/** The sole of a standing figure, for that person. */
-export function figureFloorY(look: PersonLook): number {
-  return buildRig(look, { pose: 'standing' }).floorY;
-}
-
 /**
  * The rig, for one person in one pose.
  *
