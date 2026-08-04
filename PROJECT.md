@@ -74,22 +74,44 @@ These have all been decided. Do not re-litigate them without the user.
   only permissively licensed ones — CC0, public domain, or explicitly licensed for this
   use. Record the licence and source of anything added.
 
-  **How this is MEANT to be implemented — and is NOT. See issue #36.** The agreed design is
-  that every branded slot — team badge, sponsor decal, driver portrait — is an *asset slot*
-  backed by a generated placeholder, loaded from `public/brand/<team-id>/` if a file is
-  present and falling back to the generated mark if not. The user could then drop real
-  artwork in themselves and it would appear immediately with no code change, and removing
-  the directory would return the game to a shippable state.
+  **How this is implemented, as of issue #36 — and this paragraph was a LIE until then, so
+  read the history under it before trusting it again.** Every branded slot is an *asset
+  slot* backed by a generated placeholder:
 
-  **None of that exists.** Verified 2026-08-03: `grep -rn "public/brand" src scripts audit`
-  returns nothing and `public/` contains only `textures/`. There is no loader and no
-  fallback path. This paragraph asserted the mechanism as fact for long enough that a code
-  review had to discover otherwise, so it is corrected here rather than quietly fixed.
-  What is genuinely true today is the *generated* geometric marks (`MARK_DEVICES` in
-  `src/render/LiveryDesign.ts`, carrying an explicit non-infringement comment) and the
-  fictional `SPONSORS` set in `src/render/Livery.ts`. Those are real; the swap boundary is
-  not. Until #36 lands, the only working IP boundary in this project is
-  `src/data/roster/` — which does hold, and which is why §3 keeps insisting on it.
+  | | |
+  |---|---|
+  | Loader | `src/render/BrandAssets.ts` |
+  | Team-scoped | `public/brand/<team-id>/<slot>.png` → `.webp` → `.svg`, first hit wins |
+  | Slots | `badge`, `sponsor`, `portrait`, `livery` |
+  | Shared | `public/brand/shared/<slot>.…` for `material`, `lut`, `envmap` — not team-scoped |
+  | Team id | the id from `src/data/roster/`, so artwork swaps on the same boundary names do |
+  | Fallback | `MARK_DEVICES` (`LiveryDesign.ts`) and `SPONSORS` (`Livery.ts`) |
+  | Ignored | `public/brand/` is in `.gitignore`, so third-party artwork cannot be committed |
+  | Probe | `npm run probe:assets` |
+
+  **The guarantee, and it is measured rather than asserted: deleting `public/brand/`
+  returns the game to BYTE-IDENTICAL rendering.** `probe:assets` renders one team three
+  times in one GL context — no file, file present, file removed — and sha256s all three:
+  the middle arm differs, the third is identical to the first on every view. Every override
+  is a branch that is not taken, never a different code path, which is why that holds by
+  construction.
+
+  **One request, ever, and it cannot 404.** A slot with no file costs ZERO network requests
+  and produces ZERO console output. The loader makes exactly one request that could miss —
+  `/brand/manifest.json` — and the Vite plugin in `vite.config.ts` answers it with 200 and
+  `{"files":[]}` when the directory does not exist. The rejected alternative was probing
+  `badge.png`/`.webp`/`.svg` directly, which is 264 guaranteed 404s on a build carrying no
+  artwork, all of them written to the console, which five harnesses in `scripts/` read as a
+  failure signal.
+
+  **What this paragraph used to say, and why that is worth keeping.** Until 2026-08-03 it
+  described all of the above as *"How this is implemented in practice"* and none of it
+  existed: `grep -rn "public/brand" src scripts audit` returned nothing and `public/`
+  contained only `textures/`. It had asserted the mechanism as fact for long enough that a
+  code review had to discover otherwise, and #8 and the livery editor were both written
+  against it. **A design document that describes an intention in the present tense is how a
+  project acquires load-bearing fiction.** The generated marks and the fictional sponsor
+  set were always real; only the override half was missing, and now it is not.
 - The user asked for archive clips of past champions in the intro. The agreed substitute is in-engine cinematography, which is
   what the real F1 games mostly use anyway. They confirmed: *"yeah render the game scenes
   like rendered in engine yourself."*

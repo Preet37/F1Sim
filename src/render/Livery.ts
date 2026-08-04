@@ -3,6 +3,7 @@ import {
   DEFAULT_LIVERY_DESIGN, drawMark,
   type LiveryDesign, type LiveryFamilyId, type LiveryFinish,
 } from './LiveryDesign';
+import { brandImage, onBrandChange } from './BrandAssets';
 
 /**
  * Procedural team liveries.
@@ -58,6 +59,15 @@ export interface LiverySpec {
    * paints exactly what this file painted before families existed.
    */
   design?: LiveryDesign;
+  /**
+   * The team's id, and the ONLY thing that reaches `public/brand/<team-id>/`.
+   *
+   * Optional, and absent it behaves exactly as this file did before asset slots
+   * existed: no team id, no slot lookup, no override, generated marks. It is
+   * the id from `src/data/roster/` — `ferrari`, `mclaren`, `red-bull` — which
+   * makes the artwork boundary the same boundary the names already use.
+   */
+  team?: string;
 }
 
 // ===========================================================================
@@ -186,6 +196,28 @@ export function swatchUV(name: SwatchName): [number, number] {
 
 function css(hex: number): string {
   return '#' + hex.toString(16).padStart(6, '0');
+}
+
+/**
+ * Intrinsic size of a dropped-in asset.
+ *
+ * `naturalWidth` and not `width`: an `HTMLImageElement` that has never been in
+ * the document reports `width` as 0 whatever it decoded, and every image this
+ * file draws comes from `BrandAssets` and has never been in the document.
+ *
+ * The 1:1 fallback covers an SVG with no intrinsic size — `<svg>` with a
+ * viewBox and no width/height attribute, which is what most icon exporters
+ * produce. Chrome reports naturalWidth 0 for it, and a square is the least
+ * wrong guess for a badge.
+ */
+function imageWidth(img: CanvasImageSource): number {
+  const el = img as HTMLImageElement;
+  return el.naturalWidth || (el.width as number) || 1;
+}
+
+function imageHeight(img: CanvasImageSource): number {
+  const el = img as HTMLImageElement;
+  return el.naturalHeight || (el.height as number) || 1;
 }
 
 function rgb(hex: number): [number, number, number] {
@@ -322,9 +354,13 @@ export function buildCarbonTexture(): { map: THREE.CanvasTexture; surface: THREE
   const s = document.createElement('canvas');
   s.width = s.height = size;
   const sctx = s.getContext('2d')!;
-  sctx.fillStyle = 'rgb(0,84,13)'; // roughness 0.33, metalness 0.05
+  // roughness 0.33, metalness 0.02 — the same Fresnel floor `buildSurfaceMap`
+  // uses for lacquered carbon. It was 5, which is not a material: dry laminate
+  // and the resin over it are both dielectrics, and the difference between them
+  // is gloss, which is the green channel's job and not the blue one's.
+  sctx.fillStyle = 'rgb(0,84,5)';
   sctx.fillRect(0, 0, size, size);
-  carbonFill(sctx, 0, 0, size, size, 'rgb(0,84,13)', size / 8);
+  carbonFill(sctx, 0, 0, size, size, 'rgb(0,84,5)', size / 8);
   const surface = new THREE.CanvasTexture(s);
   surface.colorSpace = THREE.NoColorSpace;
   surface.wrapS = surface.wrapT = THREE.RepeatWrapping;
@@ -361,6 +397,44 @@ const SPONSORS = [
  */
 function sponsorSet(d: LiveryDesign): readonly string[] {
   return d.sponsors && d.sponsors.length > 0 ? d.sponsors : SPONSORS;
+}
+
+// ===========================================================================
+// Asset slot overrides
+// ===========================================================================
+
+/**
+ * What `public/brand/<team-id>/` has for this car, if anything.
+ *
+ * ALL THREE FIELDS ARE NULL ON EVERY BUILD THAT SHIPS, which is the property
+ * the whole exercise turns on. `brandImage` returns null for a slot with no
+ * file, and every use of these below is a branch that is then not taken — never
+ * a different code path, never a different constant, never a reordered draw. So
+ * a car with no artwork on disk is painted by exactly the instruction sequence
+ * that painted it before this existed, and `probe:assets` §3 sha256s that claim
+ * rather than restating it.
+ *
+ * `spec.team` absent short-circuits the lookup entirely, so the six probes and
+ * two audit harnesses that build a car without a team id do not even ask.
+ */
+interface BrandOverrides {
+  /** Replaces the generated `MARK_DEVICES` badge on the deck and the flanks. */
+  badge: HTMLImageElement | null;
+  /** Replaces the title sponsor's wordmark on the sidepod. */
+  sponsor: HTMLImageElement | null;
+  /** A whole replacement atlas — a community livery, drawn over the panels. */
+  livery: HTMLImageElement | null;
+}
+
+const NO_BRAND: BrandOverrides = { badge: null, sponsor: null, livery: null };
+
+function brandFor(spec: LiverySpec): BrandOverrides {
+  if (!spec.team) return NO_BRAND;
+  const badge = brandImage(spec.team, 'badge');
+  const sponsor = brandImage(spec.team, 'sponsor');
+  const livery = brandImage(spec.team, 'livery');
+  if (!badge && !sponsor && !livery) return NO_BRAND;
+  return { badge, sponsor, livery };
 }
 
 // ===========================================================================
@@ -524,6 +598,63 @@ class Panel {
     c.translate(this.px(l), this.py(g));
     c.scale(this.pxL / this.pxG, 1);
     drawMark(c, 0, 0, size, device, ground, accent);
+    c.restore();
+  }
+
+  /**
+   * Stamps a supplied badge where `mark` would have drawn a generated one.
+   *
+   * Same framing rule as `mark` — sized on the girth axis, squashed back on the
+   * other so the atlas's anisotropy does not oval it — and the image is fitted
+   * INSIDE the diameter rather than stretched to it, because a badge that is
+   * not square is the normal case and a stretched one is instantly wrong. A
+   * wide badge therefore comes out the full width and short; a tall one comes
+   * out the full height and narrow. Nothing is cropped.
+   */
+  badge(l: number, g: number, img: CanvasImageSource,
+    diameterM: number): void {
+    const w = imageWidth(img);
+    const h = imageHeight(img);
+    if (w <= 0 || h <= 0) return;
+    const size = diameterM * this.pxG;
+    const scale = Math.min(size / w, size / h);
+    const c = this.ctx;
+    c.save();
+    c.translate(this.px(l), this.py(g));
+    c.scale(this.pxL / this.pxG, 1);
+    c.drawImage(img, -w * scale * 0.5, -h * scale * 0.5, w * scale, h * scale);
+    c.restore();
+  }
+
+  /**
+   * Stamps a supplied wordmark where `decal` would have drawn type.
+   *
+   * Sized by HEIGHT in metres, exactly as the text it replaces is sized by cap
+   * height, with the width following the image's own aspect. Rotated by the
+   * same rule `text` resolves — see that method for why the three faces differ.
+   */
+  decalImage(l: number, g: number, img: CanvasImageSource,
+    opts: { face: 'left' | 'right' | 'deck'; heightM: number }): void {
+    const w = imageWidth(img);
+    const h = imageHeight(img);
+    if (w <= 0 || h <= 0) return;
+    const c = this.ctx;
+    c.save();
+    c.translate(this.px(l), this.py(g));
+    let drawH: number;
+    let squash: number;
+    if (opts.face === 'deck') {
+      c.rotate(-Math.PI / 2);
+      drawH = opts.heightM * this.pxL;
+      squash = this.pxG / this.pxL;
+    } else {
+      if (opts.face === 'left') c.rotate(Math.PI);
+      drawH = opts.heightM * this.pxG;
+      squash = this.pxL / this.pxG;
+    }
+    c.scale(squash, 1);
+    const drawW = drawH * (w / h);
+    c.drawImage(img, -drawW * 0.5, -drawH * 0.5, drawW, drawH);
     c.restore();
   }
 
@@ -889,6 +1020,7 @@ const FAMILIES: Record<LiveryFamilyId, FamilyPainter> = {
  */
 function paintBody(
   p: Panel, spec: LiverySpec, flash: number, ink: string, d: LiveryDesign,
+  brand: BrandOverrides = NO_BRAND,
 ): void {
   const base = css(spec.colour);
   const acc = css(flash);
@@ -970,7 +1102,13 @@ function paintBody(
   // team's name, so the badge on the screen and the badge on the car are one
   // badge. Only a team that has chosen one carries it; `mark: -1` is the
   // default and is what every car on the real grid has.
-  if (d.mark >= 0) {
+  //
+  // A DROPPED-IN BADGE SUPPRESSES THE GENERATED ONE rather than sitting on top
+  // of it, and it is drawn later, in `stampBrand`, so that it lands over a
+  // replacement livery atlas rather than under it. Note the asymmetry with
+  // `mark >= 0`: an override shows even for a team that never chose a device,
+  // because a user who has put `ferrari/badge.png` on disk has chosen one.
+  if (d.mark >= 0 && !brand.badge) {
     const ground = css(shade(spec.colour, luminance(spec.colour) > 0.45 ? -0.55 : 0.18));
     p.mark(0.585, 0.50, d.mark, 0.20, ground, acc);
     p.mark(0.305, 0.300, d.mark, 0.11, ground, acc);
@@ -993,7 +1131,10 @@ function paintBody(
 }
 
 /** Sidepod: inlet surround, downwash ramp, and the flash that runs off the body. */
-function paintPod(p: Panel, spec: LiverySpec, flash: number, d: LiveryDesign): void {
+function paintPod(
+  p: Panel, spec: LiverySpec, flash: number, d: LiveryDesign,
+  brand: BrandOverrides = NO_BRAND,
+): void {
   p.fill(css(spec.colour));
   // The undercut is bare laminate on every current car, and it is a large area
   // seen from every trackside and chase angle.
@@ -1017,9 +1158,16 @@ function paintPod(p: Panel, spec: LiverySpec, flash: number, d: LiveryDesign): v
   const podFaint = luminance(spec.colour) > 0.45 ? 'rgba(12,16,22,0.58)' : 'rgba(240,244,248,0.58)';
   const brands = sponsorSet(d);
   for (const [g, face] of [[0.30, 'left'], [0.70, 'right']] as const) {
-    p.decal(0.30, g, brands[(spec.number + 2) % brands.length], {
-      face, heightM: 0.115, colour: podInk, weight: 800,
-    });
+    // The title slot only. A supplied decal replaces the 115mm wordmark and
+    // nothing else — the two faint ones below it stay generated, because a
+    // sidepod carrying one graphic and no small print reads emptier than one
+    // carrying none at all. Drawn later, in `stampBrand`, for the same reason
+    // the badge is.
+    if (!brand.sponsor) {
+      p.decal(0.30, g, brands[(spec.number + 2) % brands.length], {
+        face, heightM: 0.115, colour: podInk, weight: 800,
+      });
+    }
     p.decal(0.60, g, brands[(spec.number + 5) % brands.length], {
       face, heightM: 0.065, colour: podFaint,
     });
@@ -1214,7 +1362,7 @@ function swatchColour(
 // Texture assembly
 // ===========================================================================
 
-const cache = new Map<string, LiveryTextures>();
+const cache = new Map<string, CacheEntry>();
 
 /**
  * One shared surface map PER FINISH, rather than one for the whole grid.
@@ -1374,9 +1522,21 @@ function buildSurfaceMap(size: number, finish: LiveryFinish): THREE.Texture {
     accent: [R.paint - 0.01, 0.02],
     // Clear-coated laminate. See the CARBON constant above.
     carbon: [0.40, 0.02],
-    // Painted carbon suspension and the titanium halo share this swatch. The
-    // halo is the metal one and it is 30mm of the car; the wishbones are not.
-    trim: [0.42, 0.10],
+    // Painted carbon suspension and the halo share this swatch.
+    //
+    // 0.02, NOT 0.10. This entry used to read "the halo is the metal one and it
+    // is 30mm of the car; the wishbones are not", and split the difference —
+    // which is the exact mistake the paragraph above this table spends fifteen
+    // lines forbidding. A half-metal is not a weighted average of two
+    // materials, it is a third material that does not exist, and the swatch is
+    // shared by an area that is overwhelmingly painted aerofoil-section carbon.
+    //
+    // It is also the wrong minority to have optimised for. A regulation halo is
+    // titanium UNDER a bonded aerodynamic fairing, and on every car on the grid
+    // that fairing is painted in the team's colours — so the surface actually
+    // being drawn is paint over composite, and 0.02 is right for both users of
+    // the swatch rather than a compromise between them.
+    trim: [0.42, 0.02],
     // The one honestly metallic swatch: machined and anodised hardware.
     rim: [0.26, 0.90],
     tyre: [0.88, 0.02],
@@ -1423,6 +1583,7 @@ export function paintLiveryAtlas(
 ): void {
   const flash = contrastFlash(spec.colour, spec.accent);
   const ink = readable(flash);
+  const brand = brandFor(spec);
 
   ctx.fillStyle = css(spec.colour);
   ctx.fillRect(0, 0, size, size);
@@ -1430,17 +1591,124 @@ export function paintLiveryAtlas(
   const mk = (name: PanelName) =>
     new Panel(ctx, PANEL[name], size, PANEL_SIZE[name].lengthM, PANEL_SIZE[name].girthM);
 
-  paintBody(mk('body'), spec, flash, ink, design);
-  paintPod(mk('pod'), spec, flash, design);
+  paintBody(mk('body'), spec, flash, ink, design, brand);
+  paintPod(mk('pod'), spec, flash, design, brand);
   paintAirbox(mk('airbox'), spec, flash, design);
+
+  stampBrand(ctx, mk, size, brand);
 
   for (const name of SWATCH_ORDER) {
     new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash, design)));
   }
 }
 
+/**
+ * Lays the dropped-in artwork over the painted atlas.
+ *
+ * NO-OP WHEN NOTHING IS ON DISK, which is the point: `brand` is `NO_BRAND`,
+ * every branch below is skipped, and the function returns having issued no
+ * canvas call at all. `probe:assets` §3 is the proof.
+ *
+ * THE ORDER IS THE DESIGN. A replacement `livery.png` is a whole atlas and goes
+ * down FIRST, over the generated panels; the badge and the sponsor go on top of
+ * it, so a community livery downloaded from somewhere still gets this team's
+ * badge stamped where the game puts badges. The flat swatches are repainted by
+ * the caller AFTERWARDS and are deliberately out of reach: they are not
+ * graphics, they are the single texel a wishbone, a tyre and a visor pin their
+ * UVs to, and a supplied atlas that got those wrong would turn parts of the car
+ * a colour nobody asked for with no visible cause.
+ */
+function stampBrand(
+  ctx: CanvasRenderingContext2D,
+  mk: (name: PanelName) => Panel,
+  size: number,
+  brand: BrandOverrides,
+): void {
+  if (brand === NO_BRAND) return;
+
+  // A whole replacement atlas. Drawn to the full sheet, so what an author has
+  // to match is `PANEL` and `SWATCH_REGION` in this file at any square size.
+  if (brand.livery) ctx.drawImage(brand.livery, 0, 0, size, size);
+
+  if (brand.badge) {
+    // The same three stations the generated mark uses, so a team that swaps
+    // between them does not have its badge move.
+    const body = mk('body');
+    body.badge(0.585, 0.50, brand.badge, 0.20);
+    body.badge(0.305, 0.300, brand.badge, 0.11);
+    body.badge(0.305, 0.700, brand.badge, 0.11);
+  }
+
+  if (brand.sponsor) {
+    const pod = mk('pod');
+    for (const [g, face] of [[0.30, 'left'], [0.70, 'right']] as const) {
+      pod.decalImage(0.30, g, brand.sponsor, { face, heightM: 0.115 });
+    }
+  }
+}
+
 /** Where the monocoque panel sits in the atlas, so a chip can crop to it. */
 export const BODY_PANEL_RECT = PANEL.body;
+
+/**
+ * Paints one car's whole atlas into a context.
+ *
+ * Extracted from `buildLivery` so that a car whose asset slot arrives after the
+ * first frame can be REPAINTED INTO THE CANVAS IT ALREADY HAS. Rebuilding the
+ * texture instead would mean a new `CanvasTexture`, a new material and a new
+ * mesh for every car on the grid, which is a scene-graph edit in the middle of
+ * a session; this is one `drawImage` chain and a `needsUpdate`, and it moves
+ * nothing.
+ */
+function paintFullAtlas(
+  ctx: CanvasRenderingContext2D, spec: LiverySpec, size: number, design: LiveryDesign,
+): void {
+  const flash = contrastFlash(spec.colour, spec.accent);
+  const ink = readable(flash);
+  const brand = brandFor(spec);
+
+  // Fill everything with the body colour first, so a UV that lands on unused
+  // atlas space picks up something plausible rather than transparent black.
+  ctx.fillStyle = css(spec.colour);
+  ctx.fillRect(0, 0, size, size);
+
+  const mk = (name: PanelName) =>
+    new Panel(ctx, PANEL[name], size, PANEL_SIZE[name].lengthM, PANEL_SIZE[name].girthM);
+
+  paintBody(mk('body'), spec, flash, ink, design, brand);
+  paintPod(mk('pod'), spec, flash, design, brand);
+  paintAirbox(mk('airbox'), spec, flash, design);
+  paintHelmet(mk('helmet'), spec, flash);
+
+  stampBrand(ctx, mk, size, brand);
+
+  for (const name of SWATCH_ORDER) {
+    new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash, design)));
+  }
+}
+
+/** Everything needed to repaint a cached atlas without rebuilding anything. */
+interface CacheEntry extends LiveryTextures {
+  ctx: CanvasRenderingContext2D;
+  spec: LiverySpec;
+  design: LiveryDesign;
+  size: number;
+}
+
+/**
+ * Repaints every cached atlas when an asset slot arrives.
+ *
+ * Registered ONCE, at module scope, for the whole process — not per car. It
+ * fires only when a slot resolves to an actual file (`BrandAssets` deliberately
+ * does not notify for a slot that resolved to nothing), so on a build with no
+ * `public/brand/` it never runs at all.
+ */
+onBrandChange(() => {
+  for (const entry of cache.values()) {
+    paintFullAtlas(entry.ctx, entry.spec, entry.size, entry.design);
+    entry.map.needsUpdate = true;
+  }
+});
 
 export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   // The design comes from the call if there is one and from the registry
@@ -1452,8 +1720,14 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   // registration REPLACES a design at the same colour pair: without it, a
   // repaint in the livery editor would be served the previous texture out of
   // this cache and nothing on screen would change.
+  //
+  // The team id is in the key because it is what selects the asset slot, and
+  // two teams that happen to share a colour pair must not share a badge. It
+  // contributes an empty string for every caller that does not pass one, which
+  // is every probe and both audit harnesses, so no existing key moves.
   const key = `${spec.colour}:${spec.accent}:${spec.number}:${spec.code}:${size}`
-    + `:${design.family}:${design.trim}:${design.finish}:${design.mark}:${designEpoch}`;
+    + `:${design.family}:${design.trim}:${design.finish}:${design.mark}:${designEpoch}`
+    + `:${spec.team ?? ''}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
@@ -1461,25 +1735,7 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d')!;
 
-  const flash = contrastFlash(spec.colour, spec.accent);
-  const ink = readable(flash);
-
-  // Fill everything with the body colour first, so a UV that lands on unused
-  // atlas space picks up something plausible rather than transparent black.
-  ctx.fillStyle = css(spec.colour);
-  ctx.fillRect(0, 0, size, size);
-
-  const mk = (name: PanelName) =>
-    new Panel(ctx, PANEL[name], size, PANEL_SIZE[name].lengthM, PANEL_SIZE[name].girthM);
-
-  paintBody(mk('body'), spec, flash, ink, design);
-  paintPod(mk('pod'), spec, flash, design);
-  paintAirbox(mk('airbox'), spec, flash, design);
-  paintHelmet(mk('helmet'), spec, flash);
-
-  for (const name of SWATCH_ORDER) {
-    new Panel(ctx, swatchRect(name), size).fill(css(swatchColour(name, spec, flash, design)));
-  }
+  paintFullAtlas(ctx, spec, size, design);
 
   const map = new THREE.CanvasTexture(canvas);
   map.colorSpace = THREE.SRGBColorSpace;
@@ -1493,7 +1749,7 @@ export function buildLivery(spec: LiverySpec, size = 512): LiveryTextures {
     surfaces.set(surfaceKey, surface);
   }
 
-  const result: LiveryTextures = { map, surface };
+  const result: CacheEntry = { map, surface, ctx, spec: { ...spec }, design, size };
   cache.set(key, result);
   return result;
 }

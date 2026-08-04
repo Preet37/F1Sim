@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { buildCar, type CarVisual, type ActuationId } from '../src/render/CarMesh';
 import { disposeCarGeometryCache } from '../src/render/CarMesh';
 import { registerLiveryDesign, clearLiveryDesigns } from '../src/render/Livery';
+import {
+  preloadBrand, brandReady, setBrandRoot, resetBrandAssets, brandState,
+} from '../src/render/BrandAssets';
 import { coerceDesign, type LiveryDesign } from '../src/render/LiveryDesign';
 import { EnvProbe, type Ambience } from '../src/render/EnvProbe';
 
@@ -36,6 +39,18 @@ interface CarAuditApi {
   shoot(view: ViewName, opts?: ShotOpts): Promise<string>;
   views: readonly ViewName[];
   stats(): Stats;
+  /**
+   * Forgets every resolved asset slot and the manifest.
+   *
+   * So that `probe:assets` can shoot all three of its arms — no file, file
+   * present, file removed again — in ONE GL context. Byte-identity between the
+   * first and third arm is the assertion the whole issue turns on, and running
+   * them in separate contexts would leave "the two contexts agreed" as an
+   * unstated premise of the result.
+   */
+  resetBrand(root?: string): void;
+  /** What the loader believes right now, for the probe to print and assert. */
+  brand(): ReturnType<typeof brandState>;
 }
 
 interface BuildOpts {
@@ -61,6 +76,22 @@ interface BuildOpts {
   actuation?: ActuationId;
   /** Light the three regulation rear lights, as wet tyres require. */
   rainLight?: boolean;
+  /**
+   * The team id, which is the key to `public/brand/<team-id>/` (issue #36).
+   *
+   * OMITTED BY EVERY EXISTING CALLER, and that is deliberate: `audit:car` and
+   * `audit:livery` photograph the generated car, and a harness that quietly
+   * picked up whatever artwork happened to be on the developer's disk would
+   * stop being a reference. Only `probe:assets` passes one.
+   */
+  team?: string;
+  /**
+   * Points the asset-slot loader somewhere else.
+   *
+   * The red-proof seam. `probe:assets` sets it to a directory that has no
+   * manifest and no artwork, and the override assertions must then fail.
+   */
+  brandRoot?: string;
 }
 
 /** Per-LOD-tier cost, measured off the built scene graph rather than declared. */
@@ -234,12 +265,21 @@ async function build(opts: BuildOpts): Promise<Stats> {
   clearLiveryDesigns();
   disposeCarGeometryCache();
   if (opts.design) registerLiveryDesign(colour, accent, coerceDesign(opts.design));
+  // Asset slots are resolved over the network and the painter is synchronous,
+  // so without this the shot is a race between the first paint and the badge
+  // arriving. Resolving BEFORE `buildCar` means the very first atlas the car is
+  // ever painted with already carries whatever is on disk, which is also what
+  // makes the "no file, byte-identical" comparison exact rather than probable.
+  if (opts.brandRoot) setBrandRoot(opts.brandRoot);
+  if (opts.team) await preloadBrand([opts.team]);
+  else await brandReady();
   car = buildCar(colour, accent, {
     quality,
     number: 16,
     code: 'AUD',
     compound: opts.compound ?? 'soft',
     actuation: opts.actuation ?? 'central',
+    ...(opts.team ? { team: opts.team } : {}),
   });
   scene.add(car.root);
   // The shell sits with its wheel centres at y = tyreRadius already.
@@ -342,4 +382,9 @@ window.__car = {
   shoot,
   views: Object.keys(VIEWS) as ViewName[],
   stats: () => stats,
+  resetBrand: (root?: string) => {
+    if (root) setBrandRoot(root);
+    resetBrandAssets();
+  },
+  brand: () => brandState(),
 };

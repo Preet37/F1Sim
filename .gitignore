@@ -35,3 +35,18 @@ cockpit-out-low/
 # Symlinks an agent worktree makes to the main checkout.
 /reference
 /node_modules
+
+# THIRD-PARTY ARTWORK. Issue #36.
+#
+# `src/render/BrandAssets.ts` resolves `public/brand/<team-id>/<slot>.png|webp|svg`
+# for the team badge, the sponsor decal, the driver portrait and a replacement
+# livery, plus `public/brand/shared/` for materials, LUTs and environment maps.
+# Drop a file in and it appears on the next reload; take it away and the game
+# falls back to the generated marks in `LiveryDesign.ts` and `Livery.ts`.
+#
+# IT IS IGNORED BECAUSE THAT IS THE ENTIRE POINT OF THE SLOT. The repo has to
+# stay shippable while the user tests locally with whatever artwork they like,
+# and a badge or a livery committed here by accident is the one thing that would
+# make it not. `npm run probe:assets` proves that deleting this directory
+# returns the render to byte-identical.
+public/brand/
