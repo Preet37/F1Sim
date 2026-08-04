@@ -12,6 +12,8 @@ import { MIRROR_PANES, type PaneRect } from '../src/ui/Hud';
 import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CIRCUITS } from '../src/data/tracks/circuits';
 import { PHYSICS_DT } from '../src/core/SimClock';
+import { bankedCarGroundY, roadPoseUnderCar } from '../src/render/TrackMesh';
+import { newSurfacePose } from '../src/render/CarAttitude';
 
 /**
  * Where the halo actually lands in the frame.
@@ -324,7 +326,15 @@ function pillarSamples(n: number): { p: THREE.Vector3; rx: number; ry: number }[
  * to 5.7 degrees of relative roll that is not in the picture. At the edge of a
  * wide frame that is several per cent of frame width, which is the difference
  * between a mirror this reports as inside the frame and one it reports as
- * outside it. The Euler order is the renderer's own, 'XYZ' on the car root.
+ * outside it. Since issue #71 the ROAD is in those two numbers as well as the
+ * load, so they reach 11 degrees at Monaco and COTA rather than 3.4.
+ *
+ * THE EULER ORDER IS 'YXZ', which is what this function has always built and
+ * what the renderer builds since #71. It applies the roll and pitch to the
+ * car-local vector and THEN the yaw by hand, i.e. `Ry * Rx * Rz` — the comment
+ * that used to stand here called that "the renderer's own 'XYZ'", which was
+ * wrong twice over: the composition here is 'YXZ', and the renderer's was
+ * 'XYZ' and is now this.
  */
 function toWorld(
   local: THREE.Vector3, x: number, y: number, z: number, h: number, out: THREE.Vector3,
@@ -697,7 +707,20 @@ for (const def of CIRCUITS) {
   const engine = new RaceEngine(def, config);
   for (let i = 0; i < Math.round(30 / PHYSICS_DT); i++) engine.step();
   const car = engine.cars[0];
-  const carY = engine.track.elevationAt(car.s);
+  // WHERE THE RENDERER PUTS THE CAR, not the bare elevation the simulation
+  // carries. `CameraDirector` places every eye relative to
+  // `bankedCarGroundY(...) + roadPoseUnderCar(...).lift`, and this line used to
+  // read `elevationAt(car.s)` — so the car this probe projected the halo, the
+  // rim and the mirror panes onto stood `ROAD_SURFACE_Y` plus the banking rise
+  // plus the curvature lift below the car the camera was looking at. That is
+  // 20mm on a flat circuit, which is already 3 per cent of frame height by the
+  // note in `CameraDirector`, and it reaches 66mm on Monaco's climb once the
+  // car follows the road (issue #71). Same rule, same arguments, same pose as
+  // the rig — the two must not be two answers.
+  const carPose = roadPoseUnderCar(
+    engine.track, car.renderS, car.renderLateral, car.renderHeading, newSurfacePose(),
+  );
+  const carY = bankedCarGroundY(engine.track, car.renderS, car.renderLateral) + carPose.lift;
 
   for (const [frameName, w, h] of FRAMES) {
     for (const mode of MODES) {
@@ -745,7 +768,10 @@ for (const def of CIRCUITS) {
 
       const m = measure(
         cam, rest, w, h,
-        car.physics.position.x, carY, car.physics.position.y, car.physics.heading,
+        // The DRAWN pose, matching what the rig was just given. The solver's
+        // last step and the interpolated one differ by up to a step of travel,
+        // and the camera reads the interpolated pair.
+        car.renderX, carY, car.renderZ, car.renderHeading,
         dir.chassisRoll, dir.chassisPitch,
       );
 

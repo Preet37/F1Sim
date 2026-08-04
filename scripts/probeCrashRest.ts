@@ -59,9 +59,31 @@
  * rule — is a tautology that stays green with the whole thing deleted.
  *
  * It asserts the LEAN'S OWN CONTRIBUTION: how much deeper the leaned car is
- * than the same car standing level at the same point of the same lap. That
- * isolates this defect from a second, larger and quite separate one which this
- * probe REPORTS and does not assert — see the closing note.
+ * than the same car standing on the road at the same point of the same lap.
+ * That isolates this defect from the second, larger and quite separate one that
+ * section 4 now owns.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. SURFACE — every car, all the time, has to lie ON the road (issue #71)
+ * ---------------------------------------------------------------------------
+ *
+ * The larger half of the same sentence, and a different population: this is not
+ * a wreck, it is the whole field on every lap. The car root's `rotation.y` came
+ * from the heading and its `rotation.x`/`rotation.z` from the car's own
+ * accelerations, and from NOTHING about the surface under it — so a car placed
+ * correctly at its origin was then drawn horizontal on a road that is neither
+ * flat nor level. Pure geometry: 3.6m of wheelbase on Spa's 18.7 per cent
+ * gradient buries an axle 337mm, and 1.925m of track on Zandvoort's 18 degrees
+ * buries a tyre 313mm.
+ *
+ * Section 4 sweeps ALL ELEVEN CIRCUITS at three lateral offsets with NO LEAN at
+ * all, and asserts. Eleven and not four, because on the build it was written
+ * against Monaco measured 434mm and Monza 15mm — Monza is flat, so a check
+ * written there reports this as fine. PROJECT.md section 3.5.
+ *
+ * Section 4b reads the source of BOTH consumers, because `CameraDirector`
+ * carried a line-for-line copy of the two expressions and the eye has to ride
+ * the same car the renderer draws.
  *
  * ---------------------------------------------------------------------------
  * 3. GEAR — "the speedometer is in N?"
@@ -84,9 +106,15 @@
  * ---------------------------------------------------------------------------
  * Circuits
  * ---------------------------------------------------------------------------
- * Monza (flat and fast, where the accident arrives at 290 km/h), Zandvoort
- * (18 degrees of banking), Spa (the steepest road on the calendar) and Monaco
- * (a wall a metre off the paint). PROJECT.md section 3.5.
+ * Sections 1, 2 and 3 stage a real accident, which costs a race apiece, so they
+ * run on four: Monza (flat and fast, where the accident arrives at 290 km/h),
+ * Zandvoort (18 degrees of banking), Spa (the steepest road on the calendar)
+ * and Monaco (a wall a metre off the paint).
+ *
+ * SECTION 4 RUNS ON ALL ELEVEN. It needs no accident — it places a car on the
+ * road and asks whether the road is under it — so there is no reason to sample
+ * the calendar, and every reason not to: the flat circuit is the one that
+ * reports the defect as fine. PROJECT.md section 3.5.
  *
  * Run: npm run probe:crashrest
  */
@@ -106,9 +134,11 @@ const { buildWorldModel } = await import('../src/track/WorldObstacles');
 const { SimClock } = await import('../src/core/SimClock');
 const { updateRenderPoses } = await import('../src/render/RenderPose');
 const { Vec2 } = await import('../src/core/MathUtils');
-const { bankedCarGroundY, buildTrackMeshes, ROAD_MESH_NAME } =
+const { bankedCarGroundY, roadPoseUnderCar, buildTrackMeshes, ROAD_MESH_NAME } =
   await import('../src/render/TrackMesh');
-const { CONTACT_POINTS, groundLift, wreckLean } = await import('../src/render/CarAttitude');
+const { CONTACT_POINTS, groundLift, newSurfacePose, wreckLean } =
+  await import('../src/render/CarAttitude');
+const { CIRCUITS: ALL_CIRCUITS } = await import('../src/data/tracks/circuits');
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); console.log('    FAIL — ' + msg); }
@@ -135,6 +165,27 @@ const REST_TOL_M = 0.0001;
  * on flat road.
  */
 const LEAN_TOL_M = 0.002;
+
+/**
+ * How far below the drawn asphalt a tyre of a car with NO lean may sit, metres.
+ *
+ * TEN MILLIMETRES, and it is derived rather than negotiated. Two things stop it
+ * being zero and both are the mesh's own discretisation rather than the rule's:
+ *
+ *  - The road is swept at a node every 3.00m with its elevation interpolated
+ *    LINEARLY, so the drawn surface creases at every node while the car is a
+ *    rigid plate spanning 3.6m of it. The worst node kink on the calendar is
+ *    0.0057 of gradient (Spa, at the foot of Eau Rouge — `probe:framerate`
+ *    measures it), worth 0.0057 * 1.8 = 10.3mm at an axle in the worst phase.
+ *  - Across the width the ribbon is drawn as quads between node rows, so on a
+ *    corner the drawn edge is a CHORD where the placement rule walks the arc.
+ *
+ * `probe:banking` holds the ORIGIN to 2mm against these same triangles; this is
+ * the same measurement taken 1.8m out along a rigid body, so it is that bound
+ * with the mesh's own crease added and nothing else. The artefact it is there
+ * to catch measured 434mm — forty times the bound.
+ */
+const SURFACE_TOL_M = 0.010;
 
 /** Frame rates to draw at. Neither divides 120, so `alpha` sweeps. */
 const FRAME_RATES = [50, 85];
@@ -262,6 +313,16 @@ console.log('   circuit      cars  worst lean cost   at                         
 const MESH_STEP = 2;
 /** How far from where the car stands a hit still counts as this piece of road. */
 const SAME_ROAD_M = 5;
+/**
+ * Height difference below which two hits are the same piece of asphalt.
+ *
+ * A millimetre, the same figure and the same reason as `probe:banking`: the
+ * road is drawn as triangles and a ray through the edge two of them share is
+ * reported against both, which is not two surfaces.
+ */
+const COINCIDENT_M = 0.001;
+/** Contact points that found the lap crossing itself. Reported, not asserted. */
+let ambiguous = 0;
 
 const scratchEuler = new THREE.Euler();
 const scratchMatrix = new THREE.Matrix4();
@@ -269,41 +330,140 @@ const ray = new THREE.Raycaster();
 ray.far = 2000;
 const from = new THREE.Vector3();
 const down = new THREE.Vector3(0, -1, 0);
+const carAt = new Vec2();
 
 /**
  * Depth of the deepest contact point below the drawn asphalt, metres.
  *
  * Positive means buried. Returns null where no triangle of THIS piece of road
  * lies under the car — off the mesh, or under another leg of the lap.
+ *
+ * DRIVES THE REAL RULE, step for step with `Renderer.syncCars`: the origin from
+ * `bankedCarGroundY`, the road's attitude from `TrackMesh.roadPoseUnderCar`
+ * (which is `CarAttitude.surfaceAttitude` over the drawn surface), the body
+ * lean added on top, the Euler built in the renderer's own 'YXZ' order, and
+ * `groundLift` for a wreck. A probe that restated any of those would be
+ * measuring its own copy, which is the failure mode PROJECT.md section 3.2
+ * exists to prevent. What is NOT restated is the surface: every height below
+ * comes off a raycast against the drawn triangles.
  */
+const probePose = newSurfacePose();
+const patches = new Float64Array(CONTACT_POINTS.length * 3);
+
+/** What one placement measured: see `deepestBelowRoad`. */
+interface Depths {
+  /** Deepest contact point below the DRAWN triangles, metres. Null: no road. */
+  drawn: number | null;
+  /**
+   * Worst departure of the DRAWN triangles from the placement rule, metres.
+   *
+   * A PROPERTY OF THE ROAD MESH ALONE, and it is not zero. Measured at the
+   * exact world points `roadPoseUnderCar` read the surface at, against the
+   * `bankedCarGroundY` it read there — one point, two surfaces, no car in it.
+   *
+   * The road is swept as ONE quad across its full width per node. A quad whose
+   * two node rows FAN — every corner — is not a plane, so the diagonal it is
+   * split on puts the drawn surface off the analytic one everywhere except at
+   * the four corners. `probe:banking` reports 0.000m because it only ever
+   * raycasts AT a node row, where those corners are exact by construction.
+   * Measured here at up to 69mm.
+   *
+   * It is the floor below which no placement rule built on `bankedCarGroundY`
+   * can go, which is why the bound on `drawn` is this plus a margin rather than
+   * a number somebody chose. It is a real defect and a separate one; see
+   * PROJECT.md section 7.
+   */
+  mesh: number;
+  /**
+   * Worst `drawn` at a contact point less `mesh` at that SAME contact point.
+   *
+   * What the attitude rule owns, with the mesh's own error taken off where it
+   * can be measured, wheel by wheel. Null where no contact point had both.
+   */
+  excess: number | null;
+}
+
 function deepestBelowRoad(
   track: InstanceType<typeof TrackSpline>, road: THREE.Mesh,
-  s: number, lateral: number, heading: number, roll: number, pitch: number,
-): number | null {
-  const out = new Vec2();
-  track.toWorld(s, lateral, out);
-  const rootY = bankedCarGroundY(track, s, lateral) + groundLift(pitch, heading, roll);
-  scratchEuler.set(pitch, heading, roll, 'XYZ');
+  s: number, lateral: number, heading: number,
+  leanRoll: number, leanPitch: number, retired: boolean, withMesh = false,
+): Depths {
+  track.toWorld(s, lateral, carAt);
+  const surf = roadPoseUnderCar(track, s, lateral, heading, probePose, patches);
+  const pitch = surf.pitch + leanPitch;
+  const roll = surf.roll + leanRoll;
+  let rootY = bankedCarGroundY(track, s, lateral) + surf.lift;
+  if (retired) rootY += groundLift(pitch, heading, roll, surf.gradX, surf.gradZ);
+  scratchEuler.set(pitch, heading, roll, 'YXZ');
   scratchMatrix.makeRotationFromEuler(scratchEuler);
   const m = scratchMatrix.elements;
-  let deepest: number | null = null;
-  for (const [lx, lz] of CONTACT_POINTS) {
-    const wx = out.x + m[0] * lx + m[8] * lz;
-    const wy = rootY + m[1] * lx + m[9] * lz;
-    const wz = out.y + m[2] * lx + m[10] * lz;
-    from.set(wx, wy + 80, wz);
+
+  /**
+   * The one unambiguous piece of asphalt under a world point, or null.
+   *
+   * TWO PIECES OF ASPHALT UNDER ONE TYRE is not a fault of anything measured
+   * here. The lap crosses itself and neither leg is drawn as a bridge, so at
+   * Suzuka's crossover there is genuinely no single answer to "what height is
+   * the road here" — the two legs are drawn 170mm apart and whichever one a car
+   * stands on, the other passes through it. `probe:banking` excludes those
+   * points for the same reason and in the same words: a real defect and a
+   * separate one, which cannot be charged to a rule being measured at a point
+   * where the question is ambiguous. Counted, and reported by the caller.
+   *
+   * Two hits at the SAME height are one surface — a ray through the edge two
+   * triangles share is reported against both — so they are folded first.
+   */
+  const asphaltAt = (x: number, y: number, z: number, count = false): number | null => {
+    from.set(x, y + 80, z);
     ray.set(from, down);
-    const hits = ray.intersectObject(road, true);
-    let surf = -Infinity;
-    for (const h of hits) {
+    const ys: number[] = [];
+    for (const h of ray.intersectObject(road, true)) {
       if (Math.abs(h.point.y - rootY) > SAME_ROAD_M) continue;
-      if (h.point.y > surf) surf = h.point.y;
+      if (ys.some((v) => Math.abs(v - h.point.y) <= COINCIDENT_M)) continue;
+      ys.push(h.point.y);
     }
-    if (surf === -Infinity) continue;
-    const below = surf - wy;
-    if (deepest === null || below > deepest) deepest = below;
+    if (ys.length === 0) return null;
+    if (ys.length > 1) { if (count) ambiguous++; return null; }
+    return ys[0];
+  };
+
+  let deepest: number | null = null;
+  let meshGap = 0;
+  let excess: number | null = null;
+  for (let k = 0; k < CONTACT_POINTS.length; k++) {
+    const [lx, lz] = CONTACT_POINTS[k];
+    const wx = carAt.x + m[0] * lx + m[8] * lz;
+    const wy = rootY + m[1] * lx + m[9] * lz;
+    const wz = carAt.y + m[2] * lx + m[10] * lz;
+    const surfY = asphaltAt(wx, wy, wz, true);
+    let below: number | null = null;
+    if (surfY !== null) {
+      below = surfY - wy;
+      if (deepest === null || below > deepest) deepest = below;
+    }
+    // The mesh's own departure, at the point `roadPoseUnderCar` read — one
+    // world position, the rule's height and the drawn height, no car involved.
+    // Costed separately because section 2 sweeps twenty cars and does not need
+    // it; only section 4's bound is built on it.
+    if (withMesh) {
+      const px = patches[k * 3], py = patches[k * 3 + 1], pz = patches[k * 3 + 2];
+      const drawnAtPatch = asphaltAt(px, py, pz);
+      if (drawnAtPatch !== null) {
+        const gap = Math.abs(drawnAtPatch - py);
+        if (gap > meshGap) meshGap = gap;
+        // PER CONTACT POINT. This tyre's depth, less what the mesh does to this
+        // tyre's own metre of road. Pairing a circuit's worst burial against a
+        // circuit's worst mesh error would be comparing two different corners,
+        // and pairing a car's worst against the same car's worst would still be
+        // comparing two different wheels.
+        if (below !== null) {
+          const e = below - gap;
+          if (excess === null || e > excess) excess = e;
+        }
+      }
+    }
   }
-  return deepest;
+  return { drawn: deepest, mesh: meshGap, excess };
 }
 
 for (const id of CIRCUITS) {
@@ -327,8 +487,11 @@ for (const id of CIRCUITS) {
       for (const frac of [-0.7, 0.7]) {
         const lateral = hw * frac;
         const heading = track.headingAt(s);
-        const leaned = deepestBelowRoad(track, road, s, lateral, heading, lean.roll, lean.pitch);
-        const level = deepestBelowRoad(track, road, s, lateral, heading, 0, 0);
+        const leanedD = deepestBelowRoad(
+          track, road, s, lateral, heading, lean.roll, lean.pitch, true,
+        );
+        const levelD = deepestBelowRoad(track, road, s, lateral, heading, 0, 0, false);
+        const leaned = leanedD.drawn, level = levelD.drawn;
         if (leaned === null || level === null) continue;
         sampled++;
         const cost = leaned - level;
@@ -446,17 +609,177 @@ for (const id of CIRCUITS) {
 }
 
 // ===========================================================================
+// 4. A RUNNING CAR STANDS ON THE ROAD — issue #71
+// ===========================================================================
+//
+// The larger half of *"one the wheels are in the ground"*, and a different
+// population from section 2: every car, all the time, not a wreck.
+//
+// `Renderer.syncCars` used to set the car root's `rotation.y` from the heading
+// and its `rotation.x`/`rotation.z` from the car's own accelerations — and from
+// NOTHING about the surface under it. The origin is placed correctly
+// (`bankedCarGroundY`; `probe:banking` holds it to 2mm on eleven circuits) and
+// the car was then drawn HORIZONTAL, so on any gradient the downhill axle went
+// under the asphalt and on any banking the low-side tyre did. It is #3 one
+// level up: the placement rule is right AT THE ORIGIN, and a car is a rigid
+// body 3.6m long and 1.9m wide, so being right at one point is not being right.
+//
+// This section is what section 2's "level baseline" column used to only report.
+// It carries NO LEAN AT ALL — the body's lean is section 2's business — so what
+// it measures is the road and the car's attitude to it and nothing else.
+//
+// ALL ELEVEN CIRCUITS. On the build this was written against Monza measured
+// 15mm and Monaco 434mm, because Monza is flat; a check written at Monza
+// reports this as fine, which is PROJECT.md section 3.5 in one line.
+//
+// THREE LATERAL OFFSETS: the racing line the cars actually use, and the two
+// white lines, with the car placed so that its whole width is still on the
+// asphalt. The edges are where the cross-slope is largest and where the camber
+// is about to run out, and a sweep of the racing line alone would miss both.
+//
+// THE BOUND IS MEASURED, NOT CHOSEN, AND FINDING OUT WHY IS HALF OF THIS WORK.
+// The drawn road and the surface every car is PLACED on are not the same
+// surface, and the difference is not small. The road is swept as ONE quad
+// across its full width per node; a quad whose two node rows FAN — every corner
+// — is not a plane, so the diagonal it is split on puts the drawn triangles off
+// `bankedCarGroundY` everywhere except at the four corners. Measured, at the
+// points the attitude rule itself reads: up to 69mm.
+//
+// `probe:banking` reports 0.000m on eleven circuits and is not wrong: it
+// raycasts at `px[i] + nx[i] * lat`, which is a mesh VERTEX ROW, where the
+// quad's corners are exact by construction. It has never sampled between them.
+//
+// No placement rule built on `bankedCarGroundY` can beat that floor, so what is
+// asserted is the part of a tyre's depth the floor does NOT account for —
+// PER PLACEMENT, not per circuit. The two are measured at the same car in the
+// same pose in the same metre of road, and pairing a circuit's worst burial
+// against a circuit's worst mesh error would be comparing two different corners.
+// The floor is measured in the same run at the same points rather than written
+// down, so the bound cannot be widened quietly, and the mesh defect it exposes
+// is real and separate — see PROJECT.md section 7.
+
+console.log('\n4. A RUNNING CAR — is any tyre below the DRAWN asphalt, with no lean at all? (issue #71)');
+console.log(`   bound: the road mesh's own departure from the placement rule, plus`);
+console.log(`   ${(SURFACE_TOL_M * 1000).toFixed(1)}mm, raycast against the drawn ${ROAD_MESH_NAME} triangles,`);
+console.log('   at the racing offset and hard against each white line, on all eleven circuits.');
+console.log('   `cross` counts contact points where the lap crosses itself and two pieces of');
+console.log('   asphalt lie under one tyre — excluded, exactly as probe:banking excludes them.\n');
+console.log('   circuit        rays   tyre below drawn   mesh vs rule   UNEXPLAINED  cross  worst at');
+
+const SURFACE_SAMPLE_STRIDE = 8;
+/** Half the width of the car, from its own contact points. */
+const CAR_HALF_W = CONTACT_POINTS.reduce((m, p) => Math.max(m, Math.abs(p[0])), 0);
+
+for (const def of ALL_CIRCUITS) {
+  const track = new TrackSpline(def);
+  const world = buildWorldModel(track);
+  const meshes = buildTrackMeshes(track, 'high', world);
+  const road = meshes.root.getObjectByName(ROAD_MESH_NAME) as THREE.Mesh | undefined;
+  if (!road) { fail(`${def.id}: no mesh named ${ROAD_MESH_NAME}`); continue; }
+
+  let worstDrawn = -Infinity, worstDrawnAt = '';
+  let worstMesh = 0, worstMeshAt = '';
+  let worstExcess = -Infinity, worstExcessAt = '';
+  let rays = 0;
+  const ambiguousBefore = ambiguous;
+  for (let i = 0; i < track.count; i += SURFACE_SAMPLE_STRIDE) {
+    const s = track.dist[i];
+    const hw = track.width[i] * 0.5;
+    // Hard against each white line, with the whole car still on the asphalt —
+    // any further out and the outer contact points are over the run-off, which
+    // is a different surface and a different question.
+    const edge = Math.max(0, hw - CAR_HALF_W);
+    const heading = track.headingAt(s);
+    for (const [where, lateral] of [
+      ['racing', track.lineOffset[i]],
+      ['left', edge],
+      ['right', -edge],
+    ] as [string, number][]) {
+      const d = deepestBelowRoad(track, road, s, lateral, heading, 0, 0, false, true);
+      rays++;
+      const at = `${where}, s=${s.toFixed(0)}, lat=${lateral.toFixed(1)}`;
+      if (d.drawn === null) continue;
+      if (d.drawn > worstDrawn) { worstDrawn = d.drawn; worstDrawnAt = at; }
+      if (d.mesh > worstMesh) { worstMesh = d.mesh; worstMeshAt = at; }
+      if (d.excess === null) continue;
+      if (d.excess > worstExcess) { worstExcess = d.excess; worstExcessAt = at; }
+    }
+  }
+  meshes.dispose();
+
+  const mm = (v: number): string => (v === -Infinity ? 'n/a' : (v * 1000).toFixed(1) + 'mm');
+  const crossed = ambiguous - ambiguousBefore;
+  console.log(`   ${padr(def.id, 14)} ${pad(String(rays), 4)}   ${pad(mm(worstDrawn), 16)}  `
+    + `${pad(mm(worstMesh), 13)}  ${pad(mm(worstExcess), 11)}  ${pad(String(crossed), 5)}  `
+    + `${worstExcessAt}`);
+
+  if (worstExcess > SURFACE_TOL_M) {
+    fail(`${def.id}: a car with no lean at all has a tyre ${(worstExcess * 1000).toFixed(1)}mm `
+      + `deeper into the drawn asphalt than the road mesh's own departure from the placement `
+      + `rule accounts for (${worstExcessAt}), bound ${(SURFACE_TOL_M * 1000).toFixed(1)}mm — `
+      + 'the car is not following the road. Worst raw burial on this circuit '
+      + `${(worstDrawn * 1000).toFixed(1)}mm at ${worstDrawnAt}; worst mesh departure `
+      + `${(worstMesh * 1000).toFixed(1)}mm at ${worstMeshAt}`);
+  } else ok();
+}
+
+// ---------------------------------------------------------------------------
+// 4b. WIRING — and both consumers have to actually apply it
+// ---------------------------------------------------------------------------
+//
+// Section 4 measures the RULE, and it computes the root's rotation itself, so
+// it would stay green with the renderer's call deleted. Same tautology, same
+// remedy, as 2b: read the source. And there are TWO consumers here rather than
+// one — `CameraDirector` used to carry a line-for-line copy of the two lean
+// expressions, with a comment saying the two must not disagree — so the check
+// is both that each applies the shared rule and that neither has kept a private
+// copy of it.
+
+console.log('\n4b. WIRING — do the renderer AND the camera take their attitude from the road?\n');
+{
+  const renderer = readFileSync('src/render/Renderer.ts', 'utf8');
+  const director = readFileSync('src/render/CameraDirector.ts', 'utf8');
+  const rows: [string, boolean, string][] = [
+    ['Renderer imports roadPoseUnderCar ..........',
+      /import\s*\{[^}]*\broadPoseUnderCar\b[^}]*\}\s*from\s*'\.\/TrackMesh'/s.test(renderer),
+      'src/render/Renderer.ts does not import roadPoseUnderCar — every car is drawn level with the world'],
+    ['Renderer calls it for every car ............',
+      /roadPoseUnderCar\(/.test(renderer),
+      'src/render/Renderer.ts never calls roadPoseUnderCar'],
+    ["Renderer's car root is 'YXZ' ...............",
+      /v\.root\.rotation\.set\([\s\S]{0,200}?'YXZ'/.test(renderer),
+      "src/render/Renderer.ts does not build the car root's rotation in 'YXZ' order — "
+      + 'a car heading along +x gets its braking pitch as roll'],
+    ['CameraDirector imports roadPoseUnderCar ....',
+      /import\s*\{[^}]*\broadPoseUnderCar\b[^}]*\}\s*from\s*'\.\/TrackMesh'/s.test(director),
+      'src/render/CameraDirector.ts does not import roadPoseUnderCar — the eye and the car disagree'],
+    ['CameraDirector calls it ....................',
+      /roadPoseUnderCar\(/.test(director),
+      'src/render/CameraDirector.ts never calls roadPoseUnderCar'],
+    ["CameraDirector's chassis Euler is 'YXZ' ....",
+      !/carEuler\.set\([^)]*'XYZ'\)/.test(director),
+      "src/render/CameraDirector.ts still builds the chassis Euler in 'XYZ' order"],
+  ];
+  for (const [label, pass, msg] of rows) {
+    console.log(`   ${label} ${pass ? 'yes' : 'NO'}`);
+    if (pass) ok(); else fail(msg);
+  }
+}
+
+// ===========================================================================
 
 console.log('\n' + '-'.repeat(100));
-console.log('WHAT THIS PROBE DOES NOT ASSERT, AND IT IS A REAL DEFECT.');
-console.log('The "level baseline" column of section 2 is how deep a tyre is with NO lean at all:');
-console.log('the car root is placed on the drawn asphalt correctly (probe:banking, 2mm on eleven');
-console.log('circuits) and then drawn LEVEL WITH THE WORLD, while the road under it is neither');
-console.log('flat nor level. A 3.6m wheelbase on Spa\'s 18.7% gradient buries an axle 337mm, and');
-console.log('a 1.925m track on Zandvoort\'s 18 degrees of banking buries a tyre 313mm. That is a');
-console.log('separate bug from this one — it applies to every car all the time, not to a wreck —');
-console.log('and fixing it means giving the car the road\'s attitude, which the cameras copy line');
-console.log('for line and probe:framing is laid out against. ISSUE #71; see PROJECT.md 7.');
+console.log('WHAT THIS PROBE STILL DOES NOT ASSERT, AND IT IS A DELIBERATE OMISSION.');
+console.log('Section 4 carries no lean; section 2 asserts only what the WRECK\'s lean costs. The');
+console.log('lean a RUNNING car is drawn at — up to 0.06 rad of roll and 0.05 of pitch under load');
+console.log('— is still applied without a ground lift, and at the 962mm and 1800mm the contact');
+console.log('points sit from the axes it can reach ~148mm of tyre under the road at full lock in');
+console.log('both axes at once. That is issue #58\'s decision and #71 did not overturn it: a');
+console.log('running car\'s roll models the BODY moving on its suspension while the tyres stay');
+console.log('planted, and this rig cannot express that — lifting the whole car under braking');
+console.log('draws it hopping off the road, which is a worse artefact and a transient one. What');
+console.log('#71 changed is that the lean is now a deviation from the ROAD PLANE rather than from');
+console.log('the horizontal, so it is the only thing left over. See PROJECT.md section 7.');
 console.log('-'.repeat(100));
 
 console.log(`\n${checks} ok, ${failures.length} failed`);

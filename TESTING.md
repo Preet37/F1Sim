@@ -107,7 +107,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | Q2 runs 20 cars | **#74** |
 | Cars phase through each other in the pit lane | **#75** |
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
-| Every car sits level on a road that is not level — up to 434mm of tyre under the asphalt at Monaco | **#71** |
+| ~~Every car sits level on a road that is not level~~ — **fixed**. Was up to 409mm of tyre under the asphalt at Monaco, 396mm at Zandvoort, 341mm at Spa; now 80 / 34 / 27mm, and 10 of 11 circuits are within 5.3mm of what the road MESH itself allows | **#71** |
+| **The drawn road is up to 113mm away from the surface cars are placed on, between node rows.** A corner's road quad fans and is not planar, so its diagonal split lifts or drops the drawn triangles in between. Worst at Suzuka, Monaco, Zandvoort and COTA. This is what is left of #71 and it is a road-mesh job, not a car one | filed under **#71** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace ~1.43× reference | **#1** |
 | Career screens (ratings, market, accolades) not built | **#77** |
@@ -140,13 +141,17 @@ Useful individual probes:
 | `probe:handling` | the keyboard can hold a lane |
 | `probe:graphics` | the quality setting reaches the GL context |
 | `probe:carrig` | every car part attached, nothing interpenetrating |
+| `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |
 | `probe:people` | 42 principals, all different, all reachable |
 | `probe:qualiretire` | a crash in qualifying does not take the screen |
 | `audit:circuits` | photographs 11 circuits × 7 camera modes |
 
 **Known-failing, expected:** `probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
 `probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · `shoot:panels` 2 mirror (rail went to 0 with #17) ·
-`probe:grade` 4 of 16 (see below).
+`probe:grade` 4 of 16 (see below) · **`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline
+radius on a 10m-wide road, where the road mesh's own quad is degenerate and a rigid 3.6m car
+cannot lie on it. 43.6mm over a bound the mesh's own error sets. The other ten circuits are
+inside 5.3mm.
 
 **`probe:grade` needs shots first**, and it takes a tag:
 
