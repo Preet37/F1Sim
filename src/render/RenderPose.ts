@@ -1,5 +1,6 @@
 import { wrapAngle } from '../core/MathUtils';
 import type { CarEntry } from '../race/CarEntry';
+import type { SafetyCar } from '../race/SafetyCar';
 
 /**
  * Movement in one physics step beyond which the car was PLACED, not driven.
@@ -122,4 +123,50 @@ export function updateRenderPoses(cars: readonly CarEntry[], trackLength: number
     car.renderS = s;
     car.renderLateral = car.prevLateral + dlat * a;
   }
+}
+
+/**
+ * The same rule, for the one vehicle on the circuit that is not a `CarEntry`.
+ *
+ * WHY IT NEEDED ITS OWN CALL. #54 gave every racing car a five-number pose and
+ * `Renderer.syncSafetyCar` was left reading `sc.s`/`sc.lateral` — the raw
+ * solver state — for its height AND for its plan position, because both come
+ * out of `toWorld(sc.s, sc.lateral)`. So the safety car was stepped in all
+ * three axes while everything around it was smooth, which under a
+ * neutralisation is the one vehicle every camera in the game is pointed at.
+ * §7 of PROJECT.md listed it as the half #54 could not reach, because
+ * `SafetyCar` is race-side code.
+ *
+ * It is a SEPARATE function rather than a widened `updateRenderPoses` because
+ * the safety car is not a competitor and deliberately not in `engine.cars` —
+ * see the header of `SafetyCar.ts` for the twenty things that array subscript
+ * means. What it does share is this rule, and sharing the rule is the whole
+ * point: a probe that measured the cars with one interpolation and the safety
+ * car with another would be measuring its own copy.
+ *
+ * The teleport test is the one that matters here rather than an optimisation.
+ * The safety car is PLACED twice in every deployment — `join()` sets `s` to the
+ * pit exit and `returnToPits()`/the garage arrival set it back to the holding
+ * point, both of which move it most of a lap in one step.
+ */
+export function updateSafetyCarPose(sc: SafetyCar, trackLength: number, alpha: number): void {
+  const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+  const half = trackLength * 0.5;
+
+  let ds = sc.s - sc.prevS;
+  if (ds < -half) ds += trackLength;
+  else if (ds > half) ds -= trackLength;
+  const dlat = sc.lateral - sc.prevLateral;
+
+  if (Math.abs(ds) > TELEPORT_M || Math.abs(dlat) > TELEPORT_M) {
+    sc.renderS = sc.s;
+    sc.renderLateral = sc.lateral;
+    return;
+  }
+
+  let s = sc.prevS + ds * a;
+  if (s < 0) s += trackLength;
+  else if (s >= trackLength) s -= trackLength;
+  sc.renderS = s;
+  sc.renderLateral = sc.prevLateral + dlat * a;
 }

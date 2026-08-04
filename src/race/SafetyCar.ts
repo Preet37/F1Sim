@@ -102,6 +102,29 @@ export class SafetyCar {
   s = 0;
   /** Lateral offset from the centreline, metres, +left. */
   lateral = 0;
+
+  /**
+   * Where it was at the top of the previous physics step, and where it should
+   * be DRAWN this frame. Issue #54, second half.
+   *
+   * The pair `(s, lateral)` is not a plan position that happens to be handy —
+   * it is the ONLY way to ask how high the road is under this vehicle, because
+   * the road is a swept ribbon and `bankedCarGroundY` takes exactly those two
+   * numbers. It is also where the renderer's X and Z come from, via
+   * `toWorld(s, lateral)`. So for the safety car, unlike a racing car, all
+   * three drawn axes hang off this pair, and reading the raw 120Hz solver state
+   * at a display rate that does not divide 120 draws it as a staircase in every
+   * one of them.
+   *
+   * Written here and nowhere else: `advance()` records the previous values at
+   * the top of the step, and `updateSafetyCarPose` (in `render/RenderPose.ts`,
+   * the same module and the same rule the twenty racing cars use) fills the
+   * render pair once per frame.
+   */
+  prevS = 0;
+  prevLateral = 0;
+  renderS = 0;
+  renderLateral = 0;
   /** Which lap of the circuit it is on. Only meaningful while on the circuit. */
   lap = 0;
   /** Current speed, m/s. */
@@ -144,6 +167,10 @@ export class SafetyCar {
     this.station = 'garage';
     this.s = this.bayS;
     this.lateral = pit.lateralOffsetM;
+    this.prevS = this.s;
+    this.prevLateral = this.lateral;
+    this.renderS = this.s;
+    this.renderLateral = this.lateral;
     this.lap = 0;
     this.speedMs = 0;
     this.orangeLights = false;
@@ -246,6 +273,13 @@ export class SafetyCar {
    * @returns true on the step it crosses the Line
    */
   advance(dt: number, paceMs: number, lateralM: number): boolean {
+    // Where it is BEFORE it moves, in the pair every drawn axis comes from.
+    // Recorded here rather than at the end of the previous step so that the
+    // two placements in a deployment — `join()` and the garage arrival below —
+    // sweep from where the car now is, which is what makes the teleport test
+    // in `updateSafetyCarPose` mean anything.
+    this.prevS = this.s;
+    this.prevLateral = this.lateral;
     this.stationS += dt;
     const pit = this.track.def.pitLane;
     const len = this.track.length;

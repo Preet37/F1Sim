@@ -878,10 +878,33 @@ console.log('\nSAFETY CAR (Monza, 14 laps — dangerous incident, Art. 55.3 / B5
     console.log('  ' + 'over the ten-car-length limit'.padEnd(32) + pct(over) +
       ' of samples (limit ' + limit.toFixed(0) + 'm)');
     console.log('  ' + 'cars on the lead lap in the queue'.padEnd(32) + m.queueSize);
-    if (quantile(gaps, 0.5) > limit * 2) {
+    /**
+     * THE BAR IS THE ARTICLE'S OWN NUMBER, and it used to be twice it.
+     *
+     * "All F1 Cars must reduce speed and form up behind the Safety Car no more
+     * than ten (10) car lengths apart" — Art. 55.7 / B5.13.2b. There is no
+     * multiple of ten car lengths anywhere in the regulations, and the `x2`
+     * that was here was a concession to a field that could not form up at all
+     * (issue #6: a median of 219m against this 56m).
+     *
+     * IT WAS PROVED TOO COARSE RATHER THAN ARGUED TOO COARSE. Deliberately
+     * re-breaking the form-up — putting `safetyCarPaceMs`'s bunching crawl back
+     * on the LEADER's gap instead of on the whole field's, which is the bug
+     * Art. 55.10 / B5.13.5a's second half describes — takes the median from
+     * 34.4m to 58.6m, the p90 from 265.9m to 630.5m and the share of samples
+     * over the limit from 35.3% to 51.7%, and **this check stayed green through
+     * all of it**, because 58.6 is not more than 112. A probe a broken feature
+     * passes is worse than no probe (PROJECT.md section 3.2).
+     *
+     * A median at the limit says half the field is inside ten car lengths,
+     * which is a weaker statement than the article makes and is the strongest
+     * one a median can make. Measured on `main`: 34.4m, 39% inside the bar.
+     */
+    if (quantile(gaps, 0.5) > limit) {
       fail(
-        `median safety car gap ${quantile(gaps, 0.5).toFixed(0)}m is more than twice the ` +
-        `ten-car-length limit — the field is not forming up`,
+        `median safety car gap ${quantile(gaps, 0.5).toFixed(0)}m is outside the ` +
+        `ten-car-length limit of Art. 55.7 / B5.13.2b (${limit.toFixed(0)}m) — the field ` +
+        `is not forming up`,
       );
     }
   } else {

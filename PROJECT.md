@@ -146,6 +146,8 @@ src/
     VehicleSpec.ts        TeamPerformance — THE channel between career and simulation
     PitLimiter.ts         Shared pit-lane speed limiting
     NeutralisedLimiter.ts SC/VSC speed limiting, sibling of PitLimiter
+    FuelPlan.ts           How much fuel a race needs, and what a driver does
+                          when it is not enough. Third of the same family
   race/
     RaceEngine.ts         The simulation. Steps cars, resolves contact, owns sessions
     CarEntry.ts           Per-car state
@@ -218,6 +220,7 @@ Run `npm run` to list. The important ones:
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
+| `probe:neutral` | **Rewritten by #10.** The standstill (car-seconds under the engine's own stranded threshold, on clear road, under a neutralisation, at FULL distance), how much of a race is neutralised, and that the safety car is drawn from an interpolated pose on all eleven circuits. It used to be forty minutes of compute that could not report a failure |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
@@ -264,7 +267,16 @@ Run `npm run` to list. The important ones:
   "call site that never fires" diagnosis was wrong and that code works. Issue #28 supplied
   the correct explanation (the probe parked its own car), and #21 supplied the missing
   half, which was content: 13 authored exchanges became 41.
-- `validate:flags` — safety-car form-up, three failures, stable numbers.
+- ~~`validate:flags`~~ — **PASSES on merged `main`, and it had already been passing before
+  the safety-car work of issue #10 started.** Run on a clean `main` on 2026-08-03: exit 0,
+  `Flag compliance validated`, zero failures. Issue #6's three failures (219m median form-up
+  gap, x1.36 safety car lap ratio) were fixed by the `safetyCarPaceMs` rewrite that is
+  already merged — its own comment quotes the 219m — and **nobody re-ran the probe
+  afterwards**, so this file carried it as the project's last known-failing probe for
+  longer than it was true. Today: median form-up gap **34.4m against a 56m limit**, safety
+  car lap **x1.65** a green lap (bar 1.45–2.20), green shown **100m from the Line**, 3 of 3
+  lapped cars unlapped, 0 illegal passes, 0 delta penalties. Proved it can still fail — see
+  §6. **Check a known-failing entry by running it before quoting it.**
 - `shoot:panels` — **2 rail + 2 mirror layout failures**, down from 5 + 2. The two radio-card
   failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
   hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
@@ -300,6 +312,11 @@ Run `npm run` to list. The important ones:
   fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
   own job with its own measurement, and it is listed here rather than done badly.
   **Nobody is on this.**
+- `probe:racelog` at FULL distance — **2 failures, `11.50 cars retire per race` and
+  `21.00 car-to-car contacts a race`.** Both were failing before #10 at 20.00 and 26.50; the
+  fuel fix removed the artefact on top of them and what is underneath is issue #26. See §7.
+- `validate:race` — **1 failure, `monaco: fastest lap 152% of reference`,** and it is
+  pre-existing: identical on a clean `main`. See §7.
 - `probe:fieldsize` — **14 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
   regression: on 2026-08-03 clean `main` extracted to a scratch tree and the
@@ -1568,6 +1585,114 @@ limiter stall in §7, which this work found and localised but did not cause and 
 now disproved: at full distance the dominant mode is cars stopping dead behind a
 neutralisation on an empty track.
 
+**And that localisation was wrong too. The cars were running out of fuel — issue #10.**
+See the section below.
+
+### The standstill was an empty fuel tank, not the neutralised limiter (#10, #26)
+
+Two issues in a row localised this to the wrong subsystem, and the correction is worth as
+much as the fix. #26 said the field was "spinning off slowly and getting stuck"; #28
+disproved that and said the cause was "in the neutralised limiter, not in recovery"; both
+were reasoning from *where the cars stopped* rather than from *why they stopped*. The
+instrumented trace settles it in one line — the state of a car doing 0.05 m/s under a VSC
+at the #26 configuration:
+
+```
+vsc ai=FOLLOW thr=0.20 brk=0.00 gear=1 rpm=4000 trac=0.20
+gripF=0.807 gripR=0.807 wearF=0.99 corner=29.3 line=39.9 cap=50 scale=0.50
+```
+
+The tyres are at 0.807 grip and 0.99 wear, the car's own cornering limit is 29.3 m/s, the
+neutralised limit is asking for about 20 m/s, **the brake is at zero and the driver has the
+throttle open.** Nothing is braking the car. `VehiclePhysics.step` makes no drive force at
+all below 0.01 L of fuel, and an empty tank reproduces the trace on the bench: 20% throttle
+from 3 m/s in first gear decays to 0.76 m/s in eight seconds and keeps going.
+
+**Two defects, either of which alone would have been survivable.**
+
+- **`peakFuelBurnLps` was 0.048 L/s, which is 129.6 kg/h against the 100 kg/h of FIA
+  Technical Regulations Art. 5.1.4** — a power unit that could not be homologated, running
+  a flow limiter that does not exist. The thermodynamics say the same thing: 0.02778 kg/s
+  of fuel at ~42 MJ/kg is 1167 kW in against `icePowerW`'s 560 kW out, i.e. 48% thermal
+  efficiency, which is what a modern F1 hybrid is quoted at; at 0.048 the same arithmetic
+  gives 37%, which is a road car. The constant is read in exactly one place — the `burn`
+  line — and never in the force or power path, so this cost nothing in performance and
+  everything in reliability.
+- **The tank was filled per KILOMETRE and is emptied per SECOND.** `raceLaps × lengthKm ×
+  0.33 + 4` agrees with a per-second burn at exactly one lap time and the field does not
+  run it: the AI is 1.4–1.6× the solved reference lap (§7's oldest open item) and a
+  neutralisation adds seconds without adding metres. It also used the CHAMPIONSHIP distance
+  whatever the session was, so a five-lap harness race started with a full Grand Prix of
+  fuel — about eighty kilos of ballast on a car whose lap time the same harness measured.
+
+**Measured by the rewritten `probe:neutral`, full distance, F3, medium, on `main` and after:**
+
+| | Silverstone 52 laps | Monza 53 laps |
+|---|---|---|
+| fuel loaded | 105.1 → **131.0 L** | 105.3 → **123.5 L** |
+| burnt | 2.85 → **2.16 L/lap** | 2.63 → **2.05 L/lap** |
+| **tanks emptied** | **14 → 0** | **9 → 0** |
+| **retired** | **20 of 20 → 11** | **20 of 20 → 13** |
+| stalled under a neutralisation, clear road | 12 → **0** | 8 → **0** |
+| car-seconds under 2.5 m/s, clear road, neutralised | 119 → **1** | 86 → **3** |
+| car-seconds stationary, clear road, neutralised | 67 → **0** | 46 → **0** |
+
+Mean a race across both: crawl **103 → 2** car-seconds, stationary **56 → 0**, stall
+retirements **10.00 → 0.00**, tanks emptied **11.50 → 0.00**.
+
+**Twenty of twenty cars retired from a full-distance race, at two circuits, and the
+simulation called it `Stopped on track`.** That is issue #26's 10.5 retirements a race, and
+it is why full-distance retirement counts have not been measuring attrition since #28
+landed.
+
+What landed:
+- **`src/physics/FuelPlan.ts`** — the third member of the `PitLimiter` / `NeutralisedLimiter`
+  family, and here for the same reason both of those are: several parts of the simulation
+  have to agree about a limit the car is under. It owns the race fuel load, derived from the
+  race's expected DURATION and the burn model rather than from a litres-per-kilometre
+  constant, and `fuelPaceScale` — lift and coast, which is the single most common
+  instruction on a team radio and which this codebase **already broadcast** (`RaceEngineer`
+  files a `fuel` note when the margin goes negative) with nothing at all listening to it.
+  The scale is linear in the shortfall because that is the burn model's own arithmetic: a
+  lap at fraction `k` of pace takes `1/k` as long at a throttle that falls as `k²`, so the
+  litres per lap fall as `k`.
+- **An empty tank is retired as `Out of fuel`**, not `Stopped on track`. `probe:attrition`'s
+  own classifier files it under MECH, which is correct. A retirement the simulation cannot
+  name is a retirement somebody will mis-attribute, and this one was mis-attributed twice.
+- **A floor in `NeutralisedLimiter`**, and it is honestly a guard rather than the fix: a
+  neutralisation is a speed LIMIT and both articles are minimum TIMES (Art. 55.7 and 56.5 /
+  B5.13.2b and B5.12.2b), so nothing in them can bring a car to rest. `scale` multiplies the
+  car's own live grip-limited speed, so a car whose grip collapsed would be neutralised
+  twice and could pass under `STRANDED_SPEED_MS`. Nothing was measured doing that; nothing
+  should be able to.
+
+**`probe:neutral` was rewritten because it could not report a failure.** §4 recorded it as
+"40+ minutes of compute that cannot report a failure" and that was exact — it printed a
+table and exited 0 whatever the table said. It now runs at FULL DISTANCE, which is not an
+optimisation but the whole point: the old fuel load used the championship distance whatever
+the session was, so **every probe in this repository that runs five or fourteen laps was
+structurally incapable of seeing this**, and `probe:racelog` at full distance — the one that
+could — read it as thirteen beachings and a path-tracking failure.
+
+### The safety car is drawn from an interpolated pose (#54, second half)
+
+`Renderer.syncSafetyCar` read `sc.s`/`sc.lateral` — raw 120Hz solver state — and **all three
+of its drawn axes hang off that pair**, X and Z through `toWorld` and Y through
+`bankedCarGroundY`. So the one vehicle everybody is looking at under a neutralisation was a
+staircase while the twenty cars around it were smooth. #54 could not reach it because
+`SafetyCar` is race-side code and listed it in §7; this is that entry closed.
+
+`SafetyCar` now carries `prevS`/`prevLateral`/`renderS`/`renderLateral`, written in
+`advance()` on the same step the plan pose is, and `updateSafetyCarPose` in
+**`src/render/RenderPose.ts`** — the same module and the same rule the racing cars use —
+fills the render pair. Measured by `probe:neutral`'s new third section, the real `SafetyCar`
+on the real spline at 50 and 85 fps, worst per-frame second difference of its DRAWN height,
+stepped → interpolated: **Spa 55.7mm → 3.8mm, COTA 44.9 → 2.4, Monaco 36.7 → 3.1, Red Bull
+Ring 22.1 → 0.8, Interlagos 18.6 → 1.0, Zandvoort 11.9 → 1.1, Suzuka 8.0 → 0.4**, against
+the same 20mm bound `probe:framerate` derives from the 3.00m node spacing. Bahrain, Jeddah,
+Silverstone and Monza were already inside the bound stepped and stay inside it — they are
+the flat ones, exactly as #54 found for the cars.
+
 ### AI
 - `alongsideLeft`/`alongsideRight` were computed every step and **read by nothing.**
   Following distance was in *seconds* — at 80m/s a 0.6s preference is 48m and the car needs
@@ -2102,7 +2227,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
-| Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
+| Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
 | Race authenticity | Sparks/skid marks/brake lights/DRS flaps, remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
@@ -2243,7 +2368,22 @@ accident, and `probe:qualiretire` stages one.
   *multiplicative*, so it inflates both arms and therefore the delta. Ratios survive it.
   **Anyone re-deriving a budget from a number in this document should re-measure at load
   under 8 first.**
-- **AI pace ~1.43× reference.** The oldest open item in the project.
+- **AI pace ~1.43× reference.** The oldest open item in the project, and since #10 it is
+  load-bearing in a second place: `FuelPlan.RACE_PACE_VS_REFERENCE` is 1.50 because the
+  field takes half as long again as the solved lap, and a race that takes longer burns more
+  fuel for the same distance. It is one named constant in one file so that closing the pace
+  item can take it down. `validate:race`'s `monaco: fastest lap 152% of reference` is the
+  same item failing an assertion.
+- **#26 is not closed by #10 and the honest position is that it is now MEASURABLE rather
+  than answered.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
+  F3, P18, medium, 2 seeds): retirements **20.00 → 11.50** a race, contacts **26.50 →
+  21.00**, and **`Stopped on track` has gone from 10.50 a race to zero** — it does not
+  appear in the cause table at all. What is left is 6.50 beached, 3.50 accident and 1.50
+  accident damage, which is the question #26 was originally asking and could not be asked
+  while the fuel artefact was on top of it. The probe still fails its own two headline bars
+  (`11.50 cars retire per race — a Grand Prix loses one or two`, `21.00 car-to-car contacts
+  a race`) and **that is the live part of #26.** The player still retires from 100% of
+  full-distance races, now by beaching rather than by stopping.
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
@@ -2307,15 +2447,21 @@ accident, and `probe:qualiretire` stages one.
   this that ignored the containment line reported errors of **1.5m at Spa and 5.1m at
   Monaco**; those laterals are behind the barriers and no car can be there, and the numbers
   are recorded here only so nobody re-derives them and files a bug that is not one.
-- **The safety car is drawn from stepped state in all three axes.** `Renderer.syncSafetyCar`
-  takes its position from `toWorld(sc.s, sc.lateral)` and its height from
-  `bankedCarGroundY(sc.s, sc.lateral)`, none of which is interpolated — so under a
-  neutralisation the one vehicle everybody is looking at is the one still juddering. It
-  needs a `prevS`/`prevLateral` on `SafetyCar` itself, which is race-side code the
-  in-flight safety-car work owns; #54 deliberately did not reach into it.
+- ~~The safety car is drawn from stepped state in all three axes.~~ **Fixed by #10** —
+  `SafetyCar` carries the render pair and `probe:neutral` measures it on eleven circuits.
+  §6.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `validate:flags` — safety-car form-up.
+- ~~`validate:flags` — safety-car form-up.~~ **Passes. See §4** — it had already been passing
+  before #10 started and nobody had re-run it.
+- **`validate:race` fails one assertion, and it is pre-existing: `monaco: fastest lap 152%
+  of reference — AI is far too slow`, bar 145%.** Measured on a clean export of `main` on
+  2026-08-03 (152%) and on the #10 branch (150%), so the branch improves it slightly and
+  neither passes. This is the AI-pace item above wearing a different hat, and it had **not
+  previously been recorded as known-failing** — the second probe in two days found red
+  without anybody noticing (the first was `probe:fieldsize`, #44). The Spa spread assertion
+  that §7 warns about is NOT the one failing: it read +25.4s on `main` and +38.0s on the
+  branch against a 70s bar. **Do not raise the 145% bar.**
 - **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
   rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
   than off it. §6 says the fast line moving off the dry groove is the headline of the
@@ -2459,17 +2605,15 @@ Two candidates were eliminated by measurement; the third is now located and **un
   rear slip 1.39°, peak yaw 0.4385 rad/s. Pinned in 4th: **7.572m**, 1.59°, 0.4797 rad/s —
   a **0.872×** lateral excursion ratio. The stranded car yaws about 9% harder and wanders
   **less**, not more. #45 is not what the player was feeling when they said "swerving".
-- **Cars come to a standstill under a VSC on completely clear track.** Found while fixing
-  #28 and *not* caused by it. At the #26 configuration (52 laps, Silverstone, F3, medium)
-  on pre-#28 `main`, cars spent **3458 car-seconds stationary with nothing within 60m in
-  front of them while the race was neutralised**, in a race that was 38% neutralised and
-  took 14457 simulated seconds — four hours for a ninety-minute Grand Prix. The simulation
-  counted every one of those cars as still running. #28's retirement drops that to **144
-  car-seconds, 26% neutralised, 8438s**, because the stalled cars are now recovered — but
-  it recovers them by *retiring* them, so what used to be an invisible stall is now 10.5
-  retirements a race. **The cause is in the neutralised limiter, not in the recovery**, and
-  it belongs with the safety-car work already in flight. Until it is fixed, full-distance
-  retirement counts are measuring this and not attrition.
+- ~~**Cars come to a standstill under a VSC on completely clear track**, and the cause is in
+  the neutralised limiter.~~ **The standstill is real and the localisation was wrong twice
+  over: the cars were running out of fuel.** Fixed by #10; the trace, the two defects and
+  the before/after are in §6. It is worth keeping the wrong answers on the record, because
+  both were reached by careful people from real measurements: #26 read thirteen beachings
+  and inferred a path-tracking failure, #28 disproved that and inferred a neutralised-limiter
+  stall, and both were reasoning from *where the cars stopped* rather than from *why*. The
+  question that settled it in one line was "what are the controls doing" — brake at zero,
+  throttle open, and the car slowing down.
 - **`validate:race` Spa spread is a one-seed sample of a high-variance quantity.** The
   assertion is `slowestCarBest - fastestLap < 70s` on seed 20260729, and at Spa that is
   dominated by how much of a five-lap race happens to be neutralised. Measured over five
