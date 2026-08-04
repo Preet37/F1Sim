@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp01 } from '../core/MathUtils';
 import type { CarCapability, TrackSpline } from '../track/TrackSpline';
+import { ACHIEVABLE_GRIP_FRACTION } from '../physics/VehicleSpec';
 
 /**
  * The racing-line overlay: the optimal line laid on the track, coloured by
@@ -499,13 +500,57 @@ function colourFor(ratio: number): [number, number, number] {
  *    already shut by then (it requires `brake < 0.05` and closes on the pedal).
  */
 export function capabilityOf(
-  physics: {
-    spec: { baseMu: number; clBase: number; cdBase: number; maxBrakeForceN: number };
-    frontTires: { grip: number };
-    rearTires: { grip: number };
-    totalMassKg: number;
-    dirtyAirDownforceMult: number;
-  },
+  physics: PhysicsLike,
+  maxSpeedMs: number,
+): CarCapability {
+  const raw = rawCapabilityOf(physics, maxSpeedMs);
+  // THE CORRECTION, and it is the whole point of this function existing
+  // separately from `rawCapabilityOf`.
+  //
+  // `baseMu` is a magic-formula coefficient. `mu * N` is what a point mass with
+  // that coefficient would deliver, and a car with two axles, load transfer and
+  // two different peak slip angles delivers measurably less — measured at
+  // `ACHIEVABLE_GRIP_FRACTION` of it by `npm run probe:envelope`, flat across
+  // speed, downforce, tyre and team.
+  //
+  // Colouring the road against the uncorrected number is how the overlay came to
+  // show GREEN to a driver who was already past the limit, which is the user's
+  // *"if the racing line is green how did i go off the track?"* and is
+  // `probe:racingline` section 3. The display's whole job is to be believed, so
+  // it is the display that has to carry the correction.
+  //
+  // Applied to `mu` rather than to the resulting speed because mu is where the
+  // error is: it then flows correctly into the cornering solve, whose speed
+  // answer is NOT linear in mu (the aero term is on both sides), and into
+  // `brakingDecelForCar`, which is grip-limited at every speed a corner happens
+  // at. Braking comes out ~7% optimistic still and that is recorded rather than
+  // claimed fixed — see `probe:envelope`'s third check.
+  return { ...raw, mu: raw.mu * ACHIEVABLE_GRIP_FRACTION };
+}
+
+interface PhysicsLike {
+  spec: { baseMu: number; clBase: number; cdBase: number; maxBrakeForceN: number };
+  frontTires: { grip: number };
+  rearTires: { grip: number };
+  totalMassKg: number;
+  dirtyAirDownforceMult: number;
+}
+
+/**
+ * The same capability with `baseMu` taken at face value.
+ *
+ * Exported for ONE caller: `probe:envelope`, which measures how much of it the
+ * vehicle model actually delivers and is therefore the thing
+ * `ACHIEVABLE_GRIP_FRACTION` is derived from. Measuring against the corrected
+ * capability instead would be circular — the ratio would read 1.000 by
+ * construction whatever the tyre model did, which is PROJECT.md §3.2 with the
+ * arithmetic hidden inside a division.
+ *
+ * Nothing in `src/` should call this. Anything asking what a car can do for the
+ * purpose of telling a human about it wants `capabilityOf`.
+ */
+export function rawCapabilityOf(
+  physics: PhysicsLike,
   maxSpeedMs: number,
 ): CarCapability {
   const spec = physics.spec;

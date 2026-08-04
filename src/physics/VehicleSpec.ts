@@ -318,6 +318,61 @@ export const BASE_F1_SPEC: VehicleSpec = {
 };
 
 /**
+ * The fraction of `mu * N` that this car's axles actually deliver in a corner.
+ *
+ * **`baseMu` is a magic-formula coefficient, not an achievable lateral friction
+ * coefficient, and for the whole life of this project four separate places have
+ * treated it as though it were one.** `TrackSpline.corneringSpeedForCar`,
+ * `TrackSpline.brakingDecelForCar`, `AIVehicleController.corneringSpeedLimitMs`
+ * and the racing-line overlay all evaluate the same closed form,
+ *
+ *     mu * (m*g + cl*v^2)  =  m*v^2/r
+ *
+ * and all four read `mu` straight off `baseMu`. A point mass with one friction
+ * coefficient reaches that. A car with two axles does not, for three reasons
+ * that are all in `VehiclePhysics` already and none of which the closed form
+ * can see: tyre grip is sub-linear in load, so transferring load across an axle
+ * loses more on the unloaded wheel than the loaded one gains; the two axles peak
+ * at different slip angles (see `corneringStiffness*` above), so they cannot
+ * both be at their peak at once; and holding a steady corner spends some of the
+ * budget on drag.
+ *
+ * **MEASURED, not chosen.** `npm run probe:envelope` steps the real
+ * `VehiclePhysics` at the real `PHYSICS_DT` through a steering sweep at five
+ * speeds, on eleven circuits, with two cars — front-runner on mediums with 60L
+ * and backmarker on hards with 100L — and takes the largest steady lateral g the
+ * car will actually hold. The mean of `measured / closed-form` over those 110
+ * samples is this number, and the probe FAILS if the two drift more than 0.03
+ * apart. It also fails if the ratio stops being flat across speed, downforce and
+ * tyre, because a single scalar is only the right shape while it is.
+ *
+ * Measured 2026-08-03: **mean 0.7770 over 110 samples, range 0.730..0.813.**
+ * The spread is the part that justifies one scalar: it is 0.083 wide over a
+ * 2.6x range of speed, a 0.12..1.00 range of downforce demand, two teams and two
+ * compounds. The residual structure in it is real and is the direction physics
+ * predicts — the ratio falls slightly with speed, because more downforce means
+ * more load and grip is sub-linear in load — but 8% is not worth a table.
+ *
+ * The first value written here was 0.858, arrived at by hand arithmetic off a
+ * single circuit. The probe failed it immediately and named the number, which is
+ * the demonstration that it can go red, for free and on the first run.
+ *
+ * **What it is for.** The overlay colours the road GREEN while the corner ahead
+ * is inside the closed form's answer, so an uncorrected closed form promises the
+ * player grip the car has not got — the user's *"if the racing line is green how
+ * did i go off the track?"*. Applying this makes the promise honest.
+ *
+ * **What it is NOT for.** It is deliberately NOT applied inside
+ * `solveSpeedProfile`. `REFERENCE_CAR.mu` is not a physical claim about any car
+ * — it is a parameter `npm run calibrate` fitted so that the solved lap time
+ * lands on real pole times across the whole calendar, and moving it re-bases
+ * every lap-time assertion in the suite at once. The gap between the reference
+ * lap and what the vehicle model can do is real and is issue #1's ground; it is
+ * measured by `scripts/diagAiPace.ts` rather than papered over here.
+ */
+export const ACHIEVABLE_GRIP_FRACTION = 0.777;
+
+/**
  * Per-team performance deltas. Each field multiplies the base spec.
  * A value of 1.0 is the reference car.
  */
