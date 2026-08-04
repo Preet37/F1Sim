@@ -3254,6 +3254,55 @@ the whole calendar at 40 seeds the wet rate is the **same 69 of 440 either way**
 re-run *with* its real spline on every run so the equivalence is asserted rather than
 remembered (18 of 60 against 18 of 60).
 
+#### The re-baseline — every seeded number that moved, measured both ways on this tree
+
+`src/race/Weather.ts` was swapped between `main`'s copy and this one and **nothing else
+changed**, so every difference below is the rain and only the rain. Both arms ran on the same
+machine within two hours of each other.
+
+| probe | `main` | with rain | |
+|---|---|---|---|
+| `probe:racesweep` | **11 / 55** fail, mean lap/ref **1.3284** | **11 / 55**, mean **1.3327** | the eleven failing races are the *same eleven*, byte-identical messages |
+| …mean finishers | 19.38 | 19.36 | |
+| …mean retirements | 0.62 | 0.64 | |
+| …mean overtakes | 261.51 | 262.15 | |
+| …mean off-track | 39.89 | 40.24 | |
+| …mean pit stops | 26.60 | 26.69 | |
+| …mean spread | 30.98 | 31.29 | |
+| `validate:race` | **2** fail (`monaco 150%`, `cota 145%`) | **2**, identical | 9 of the 11 circuit rows are byte-identical |
+| `probe:racelog` quarter | **PASS** | **1 FAIL** — 15.63 contacts a race against a bar of 12.0, was 8.63 | see below |
+| `probe:attrition` | PASS | PASS | Spa survivors 17.0 → 16.7 of 20 |
+| `probe:strategy` | PASS | PASS | byte-identical — the Silverstone race it is calibrated on stays dry |
+| `probe:framerate` | PASS, 3548 jump frames | PASS, **3548**, byte-identical | its own seed-54 race does not rain |
+| `probe:weather` | PASS | PASS | §3c 0 of 660 → 98 of 660 |
+
+**Only two circuits move anywhere, and they are the right two.** Checked directly rather than
+inferred: at the seed those harnesses use, `Spa` reaches **0.796** peak water and `Interlagos`
+**0.792**, both raining from the start; Monza and Silverstone at the same seed stay at
+**0.000**. Spa's `rainChance` is 0.42 and Interlagos's 0.45 — the two wettest circuits on the
+calendar. In `probe:racesweep` that is **2 of 55 races**, because the sweep runs five seeds
+across eleven circuits and `Weather` seeds its Rng from the session seed alone, so a seed that
+rains is the *same* seed at every circuit and only the wet circuits clear their own threshold.
+
+#### And the thing the re-baseline found, which is bigger than the re-baseline
+
+**A wet race is currently a bloodbath, and nothing in this project could have known that
+because no race had ever been wet.** `probe:racelog`'s quarter-distance set is eight races; one
+of them — **Spa, seed 20260729, eleven laps** — is now wet, and it alone takes the probe red:
+
+| that one race | dry | wet |
+|---|---|---|
+| cars retired | **0** | **6 of 20** |
+| car-to-car contacts | **3** | **59** |
+| safety car / VSC periods | **0** | **5** |
+| the player | finished P13 | **OUT, beached in the gravel, 4 contacts** |
+
+The eight-race mean goes 8.63 → **15.63** contacts against a bar of 12.0, and 1.00 → 1.75
+retirements against a bar of 3.0. **One race in eight does that.** This is the cost of making
+rain reachable and it is reported rather than hidden: the wet grip model, the AI's wet pace and
+the wet line are all live now for the first time, and the field cannot drive on them. It is
+`src/ai/` and the tyre model, both held elsewhere, and **nobody is on it.** See §7.
+
 ### The crash and penalty rate, as the player feels it (#12)
 
 *"there are too many accidents happened and way too many penalties being given out...
@@ -4894,6 +4943,18 @@ shared files and the run that matters passed. **Nobody is on this.**
     itself, which is now a **relative** weight rather than the probability of a wet session.
     It reads high by about 3x. Not touched — the screens are `main.ts` and
     `StrategyScreen.ts`.
+- **A WET RACE IS A BLOODBATH, and this is what making the rain reachable exposed.** Nothing
+  in this project could have known: no race had ever been wet. `probe:racelog`'s
+  quarter-distance set is eight races and exactly one of them — **Spa, seed 20260729, eleven
+  laps** — now rains. That one race goes from **0 retirements to 6 of 20**, from **3
+  car-to-car contacts to 59**, from **0 safety-car periods to 5**, and the player from P13
+  finished to **out, beached in the gravel**. The eight-race mean goes 8.63 → **15.63**
+  contacts against a bar of 12.0, which takes `probe:racelog` from PASS to one failure; the
+  retirement mean, 1.00 → 1.75, still passes its bar of 3.0. **The probe is red for a real
+  reason and the bar was not touched.** The wet grip model, the AI's wet pace multiplier and
+  #42's wet racing line are all being exercised for the first time and the field cannot drive
+  on them. It is `src/ai/` and the tyre model, both held by other work, and it is the obvious
+  next piece: **rain is now reachable and the cars cannot handle it.** Nobody is on it.
 - **`probe:stewards` IS RED ON `main` AND THIS FILE HAS NEVER SAID SO** — and the number
   it quotes for the bench, in the entry above and in issue #26, is stale. Measured
   2026-08-03 on a clean `main` (the branch's `TrackSpline` copied out, `git checkout --`,

@@ -185,6 +185,7 @@ Do not spend time reporting these; they are on the list with measurements.
 
 | | issue |
 |---|---|
+| **A WET RACE IS A BLOODBATH.** New, and only visible because it can now rain at all: an eleven-lap wet race at Spa loses **6 cars of 20**, has **59 car-to-car contacts** against 3 in the dry, needs **5 safety cars**, and put the driven car in the gravel. The wet grip model, the AI's wet pace and the wet racing line are all being used in anger for the first time. **If you get a wet race and it feels like a demolition derby, that is this — do not report it separately** | **#26** |
 | Leaderboard: the row is **0.104 of the panel's width tall against the reference's 0.171**, because 20 rows at the reference's spacing needs 725px of board and a 900px screen with a radio rail has ~580. A straight trade against showing all 20 cars — **your call** | **#76** |
 | Leaderboard: the type is **Titillium Web**, not Formula One's own face (proprietary), and the mark reads **`F1SIM`**, not the F1 logo (trademark) | **#76** |
 | Leaderboard: a **race** board shows gaps and no lap-time column, because that is what the reference shows. Whether a race should also show lap times is **your call** | **#35** |
@@ -277,15 +278,31 @@ climbing Beau Rivage — band questions, neither loosened) ·
 `probe:crashrest` **1** (Monaco s=336, a 9.2m centreline radius on a 10m road) ·
 `probe:racingline` **4** (#46 — green still asks 103–107% of the car's grip; it was **28.7%**
 before #1's work, and what remains is the *colouring* rule) ·
-`probe:racesweep` **11 of 55** and `validate:race` **1**, both `monaco: fastest lap 150% of
-reference` (#1) · `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
-run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (identical on clean
-`main`, never previously recorded) · `probe:grade` **4 of 16**.
+`probe:racesweep` **11 of 55** and `validate:race` **2** — `monaco: fastest lap 150%` **and
+`cota: 145%`** (#1) · `probe:racelog` **at `RACELOG_LAPS=full`**, and **since #97 at quarter
+distance too** — see below · `probe:stewards` **1** at 9.7 penalties against a bar of 8
+(identical on clean `main`, never previously recorded) · `probe:grade` **4 of 16**.
+
+**Two numbers in the paragraph above were stale and are corrected here**, which is §4's rule
+again: `validate:race` was written down as **1** failure and measures **2** on `main` today
+(Austin joined Monaco), and `probe:racesweep`'s mean lap/reference was written as **1.3131**
+and measures **1.3284**. Both re-run on this tree on 2026-08-04 before being quoted.
+
+**`probe:racelog` is NEWLY red at quarter distance, and it is the rain (#97).** Eight races;
+exactly one of them — Spa, seed 20260729 — now rains, and that one race goes from 0
+retirements to **6 of 20**, from 3 car-to-car contacts to **59**, and from 0 safety cars to
+**5**. The eight-race mean goes 8.63 → **15.63** contacts against a bar of 12.0. **The bar
+was not moved.** It had never been possible to see this because no race in this project had
+ever been wet. **A wet race is currently a bloodbath and that is the next piece of work** —
+it is the AI and the tyre model, not the weather.
 
 **Green as of 2026-08-04, and worth knowing because several were red for a long time:**
 `shoot:panels` **0 rail + 0 mirror** · `probe:banking` PASS *including between the mesh rows* ·
-`probe:grain` **132/0** · `probe:people` **3,615** · `probe:fieldsize` **0** · `probe:weather`
-**0** · `probe:smoke` **32/32 routes** · `validate:flags` PASS · `npm run build` PASS.
+`probe:grain` **132/0** · `probe:kerbs` PASS *including the new paint ceiling* ·
+`probe:people` **3,615** · `probe:fieldsize` **0** · `probe:weather` **0** *and §3c asserts
+now* · `probe:framerate` PASS · `probe:strategy` PASS · `probe:attrition` PASS ·
+`validate:tracks` PASS · `validate:world` PASS · `probe:smoke` **32/32 routes** ·
+`validate:flags` PASS · `npm run build` PASS.
 
 **`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
 stale and several of them are fixed:
