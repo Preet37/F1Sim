@@ -95,10 +95,16 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
 9. **Stop on the racing line and wait.** Race control should raise double yellows naming
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
-8. **Race in the rain — and you have to ask for it: `http://localhost:5173/?wet=0.9`.**
-   **It does not rain by itself. Ever.** That is a real fault found while fixing the one
-   below, it is measured (0 of 440 circuit-and-seed sessions get even damp), and it is on
-   the list in §5 — so do not go hunting for a wet seed.
+8. **Race in the rain. It rains by itself now (#97) — but not often, on purpose.**
+   Until 2026-08-04 it had **never** rained in this game, on any seed, at any circuit: a rate
+   limiter snapped the rainfall back to zero faster than it could build at the rate the game
+   steps at. That is fixed, and the schedule behind it is calibrated to a real season:
+   **about one session in seven sees meaningful rain** (measured 14.55% over 2,200
+   circuit-and-seed sessions), weighted by circuit — **Interlagos and Suzuka 24%, Spa 21.5%,
+   Zandvoort 20%, Monaco 9.5%, Bahrain 0.5%, Jeddah 1.0%.** So a wet race is something you
+   should occasionally *be surprised by* rather than something you can order, and if you want
+   one on demand you still want the URL below.
+   **To see the wet model on purpose: `http://localhost:5173/?wet=0.9`.**
    With `?wet=` set, watch where the cars put themselves through a corner. The field should
    stop using the dark, rubbered-in groove and run **wider — a later apex, roughly two and a
    half metres off the dry line at a tight corner** — because rubber under water is slick and
@@ -187,12 +193,12 @@ Do not spend time reporting these; they are on the list with measurements.
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | ~~Every car sits level on a road that is not level~~ — **fixed**. Was up to 409mm of tyre under the asphalt at Monaco, 396mm at Zandvoort, 341mm at Spa; now 80 / 34 / 27mm, and 10 of 11 circuits are within 5.3mm of what the road MESH itself allows | **#71** |
 | **The drawn road is up to 113mm away from the surface cars are placed on, between node rows.** A corner's road quad fans and is not planar, so its diagonal split lifts or drops the drawn triangles in between. Worst at Suzuka, Monaco, Zandvoort and COTA. This is what is left of #71 and it is a road-mesh job, not a car one | filed under **#71** |
-| **IT NEVER RAINS.** Not on any seed, at any circuit, in any session — measured 0 of 440 circuit×seed sessions reaching even "Damp". A rate limiter in the weather model snaps the rainfall back to zero faster than it can build at the rate the game steps at, so the sky is permanently dry. Every weather probe passes because they all force the rain on directly, which is the one thing the game itself never does. **Do not spend time trying to get a wet race** — you cannot, and the fix needs the how-often-does-it-rain schedule calibrated at the same time, or three races in four would be wet | **#97** |
-| The rain that *is* there works, and you can see all of it: **`?wet=0.9`** on the dev-server URL forces standing water before the lights go out, and everything downstream — spray, the wet line, the crossover, the pit wall's call — is live from there | |
+| ~~**IT NEVER RAINS.**~~ — **fixed**. It had never rained on any seed at any circuit (0 of 440 sessions reaching even "Damp"); the floor in the weather model caught rain on the way *up* as well as on the way down. Fixing it alone would have put **98.5% of sessions in the rain**, so the schedule was calibrated with it: **14.55% now, one session in 6.9**, weighted by circuit. Two loose ends, both in the front end and neither fixed: the **`Simulate Race`** button still rolls the raw `rainChance` (25.7% calendar mean, 11 points wetter than a driven session), and the **`Rain risk` percentage** the briefing prints is that same raw weight, so it reads about 3× high | **#97** |
+| The rain also works on demand: **`?wet=0.9`** on the dev-server URL forces standing water before the lights go out, and everything downstream — spray, the wet line, the crossover, the pit wall's call — is live from there | |
 | **A full-distance race is interrupted seven times.** Measured at 52 laps, Silverstone, F3, P18, medium: **7 safety-car or VSC periods and 35% of the race neutralised.** Real F1 averages well under one a race. It is downstream of the cars retiring, so it closes when that does | **#26** |
 | ~~The drawn road is up to 113mm away from the surface cars are placed on, between node rows~~ — **fixed**. Was 85.7mm at Spa, 82.7 at COTA, 78.7 at Monaco, 56.8 at Zandvoort; now 1.5 / 1.4 / 1.6 / 0.7mm on all eleven circuits, and `probe:banking` can see between the node rows at all, which it could not before | filed under **#71** |
 | ~~Suzuka's crossover draws two roads 0.159m apart and neither leg is a bridge~~ — **fixed**. The two legs are 7.92m apart now, which is what the real overpass has. It did not move the lap-time solver at all | **#37** |
-| **A white line carries almost no surface relief** — 0.66° of facet slope against the asphalt's 1.86°, because #48's band limit is shared by every surface and paint's own strength is a quarter of the road's. Whether a white line should look like a smooth film or like painted aggregate is **your call**, and it needs looking at rather than measuring | **#86** |
+| ~~**A white line carries almost no surface relief**~~ — **decided, and it is correct.** Ours is 0.66° of facet slope against the asphalt's 1.86°, a ratio of 0.357. Measured off your own `reference/target/90.png`, the painted kerb blocks in that frame carry **0.32–0.50** of the asphalt beside them — so a white line really is a smooth film there too, and the paint stays as it is. It is now guarded by a **ceiling** rather than left exempt: wind the paint's bump up toward the road's and `probe:kerbs` goes red. **If it still looks wrong to you in motion, say so** — this was measured on a still frame, and the half that is not built is `probe:grain` masked to the kerb instead of the road | **#86** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
 | **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |

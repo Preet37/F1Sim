@@ -194,6 +194,26 @@ export const SURFACES: Record<string, SurfaceProfile> = {
   paint: {
     scaleA: 1.4, scaleB: 0.055,
     strengthA: 0.12, strengthB: 0.1,
+    // 0.15 IS A DECISION NOW, NOT A LEFTOVER — issue #86, closed.
+    //
+    // #48's band limit (see THE BUMP BAND LIMIT below) took the relief a white
+    // line carries from about 1.8 degrees of RMS facet slope to 0.66, which is
+    // under the visibility floor `probe:kerbs` applies to every granular
+    // surface. The kerb's own 55mm is `Y_KERB` geometry in `TrackMesh.ts` and
+    // was never at risk; the paint was left exempt on a stated property —
+    // thermoplastic road film is genuinely smooth — and the question of whether
+    // a white line should LOOK like a film or like painted aggregate was left
+    // open as a look decision.
+    //
+    // It was made against the user's own reference frame rather than argued.
+    // `reference/target/90.png`, Bahrain at night, measured as relative
+    // high-frequency luma modulation on colour-classified regions eroded clear
+    // of their own edges: near asphalt 5.62%, kerb white paint 2.83%, kerb red
+    // paint 1.80%. The reference's painted blocks carry 0.32-0.50 of the
+    // asphalt's fine relief. Ours is 0.66/1.86 = 0.357 — inside that range.
+    // **Smooth paint is what the specification shows, so 0.15 stays**, and
+    // `probe:kerbs` now asserts a CEILING on this number rather than exempting
+    // it: wind it up toward the asphalt's 0.42 and the probe goes red.
     normalStrength: 0.15,
     roughnessVariation: 0.1,
     roughness: 0.72, metalness: 0.0,

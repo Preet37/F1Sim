@@ -395,60 +395,186 @@ console.log('\n=== 3b. the crossover, driven ===\n');
 }
 
 // ===========================================================================
-// 3c. Does it ever rain at the rate the game steps at? REPORTED, NOT ASSERTED
+// 3c. DOES IT RAIN BY ITSELF, AT THE RATE THE GAME STEPS AT? — issue #97
 // ===========================================================================
 //
-// Every other section of this probe reaches the road through `forceRain`, which
-// assigns `rainRate` directly. That is deliberate and it is documented on
-// `forceRain` itself — a probe that waits for a seed that happens to rain at the
-// right moment is measuring the seed. The consequence, found while working #42,
-// is that the ONE path a player is ever on — the sky raining by itself, stepped
-// at `PHYSICS_DT` — is the one path nothing in this repository exercises.
+// THIS IS THE ONE SECTION OF THIS PROBE THAT DOES NOT USE `forceRain`, and that
+// is the whole point of it. Every other section reaches the road through
+// `forceRain`, which assigns `rainRate` directly. That is deliberate and it is
+// documented on `forceRain` itself — a probe that waits for a seed that happens
+// to rain at the right moment is measuring the seed. The consequence, found
+// while working #42, was that the ONE path a player is ever on — the sky
+// raining by itself, stepped at `PHYSICS_DT` — was the one path nothing in this
+// repository exercised, and it had never worked. PROJECT.md §3.2, in its purest
+// form: not a probe that would pass a broken feature, a whole suite of probes
+// built on a bypass around the feature.
 //
-// It does not work. `Weather.update` damps `rainRate` toward its target and then
-// snaps anything under 0.01 to zero; from a dry sky one 120Hz step moves it by
-// at most 0.00024, so the floor puts it back every time and the rain can never
-// start. See the block above that line in `Weather.ts`.
+// It printed both columns and asserted NOTHING, because the fix was not the
+// floor on its own — the schedule behind it had to be calibrated in the same
+// commit or the game went from never-wet to always-wet. Both landed together
+// and this section now ASSERTS, in four directions:
 //
-// REPORTED RATHER THAN ASSERTED, and that is a deliberate choice with precedent
-// in §1 of this same probe. The fix is not the floor on its own: with the floor
-// out of the way the schedule runs 78% of sessions wet, which is not a calendar,
-// and correcting both together re-baselines every seeded race in the repository.
-// Asserting it here would take `probe:weather` red for a defect this branch is
-// not fixing and would bury the two #42 assertions that are the point of it. It
-// prints, loudly, on every run instead. PROJECT.md §7 carries it.
+//   REACHABLE   the calendar's wet rate is not zero. This is #97 itself, and it
+//               is the assertion that goes red on every build before the fix.
+//   CALIBRATED  it is between one race in eight and one race in six — the band
+//               `RAIN_ONSET_SCALE` and `RAIN_ARRIVAL_SCALE` are fitted to, and
+//               the band is the target rather than a ring drawn round today's
+//               output. Fixing the floor and leaving the schedule alone puts
+//               132 of 132 sessions in the rain and fails this.
+//   STEP-FREE   the answer at `PHYSICS_DT` matches the answer at 1 Hz. This is
+//               the invariant #97 actually violated — a weather model whose
+//               calendar depends on the integrator's step size is wrong however
+//               plausible either number looks — and it is the assertion that
+//               would have caught the bug the day it was written.
+//   CLIMATE     the desert circuits stay dry and the wet ones are wet. The
+//               schedule used to re-roll a FLAT 0.35 every few minutes, so
+//               Jeddah at `rainChance` 0.01 rained exactly as often as Spa at
+//               0.42; that passes a calendar-mean test and this catches it.
+//
+// THE SWEEP RUNS `Weather` WITHOUT A TrackSpline, and that is a cost decision
+// with a measurement behind it rather than a shortcut. The sky is independent of
+// the track; the spline only selects the water FIELD, and `TrackSurface` already
+// carries a documented single-node path for exactly this. Integrating two
+// thousand nodes at 5 Hz is about fifty times the cost of the sky itself, and
+// with it this sweep is ~20 minutes rather than ~25 seconds. Measured over the
+// whole calendar at 40 seeds, with and without the spline, the wet rate is the
+// SAME 69 of 440 — and one circuit is re-run below WITH its real spline every
+// time this probe runs, so the equivalence is asserted rather than remembered.
 
-console.log('\n=== 3c. does it rain by itself, at the rate the game steps at? ===\n');
+console.log('\n=== 3c. does it rain by itself, at the rate the game steps at? (#97) ===\n');
+
+/** Sessions per circuit. Deterministic seeds, so this number has no sampling noise. */
+const RAIN_SEEDS = 60;
+/** 90 minutes — a practice session, and longer than any race in the game. */
+const RAIN_SESSION_S = 5400;
+/**
+ * The calendar the schedule is calibrated to: one race weekend in eight to one
+ * in six sees meaningful rain. Counted off published F1 race classifications for
+ * 2022-2024 — see the block above `RAIN_ONSET_SCALE` in `src/race/Weather.ts`,
+ * which carries the races and the counting rule.
+ *
+ * NEVER WIDEN THIS TO MAKE A RUN PASS — PROJECT.md §3.3. It is the specification,
+ * not a ring drawn round an output, and the run below is deterministic: if it
+ * moves, something in the model moved.
+ */
+const WET_RATE_MIN = 1 / 8;
+const WET_RATE_MAX = 1 / 6;
+
+interface RainSweep { rained: number; total: number; peak: number; byCircuit: Map<string, number> }
+
+/**
+ * Runs the real `Weather` for a full session, seed by seed, and counts the ones
+ * that reach damp or worse. NOTHING here calls `forceRain`.
+ */
+function sweepRain(dt: number, withSpline: boolean, only?: string): RainSweep {
+  const out: RainSweep = { rained: 0, total: 0, peak: 0, byCircuit: new Map() };
+  for (let ci = 0; ci < CIRCUITS.length; ci++) {
+    const def = CIRCUITS[ci];
+    if (only && def.id !== only) continue;
+    const track = withSpline ? new TrackSpline(def) : undefined;
+    let hits = 0;
+    for (let s = 0; s < RAIN_SEEDS; s++) {
+      // INDEPENDENT PER CIRCUIT. `Weather` seeds its Rng with `seed ^ constant`,
+      // so handing every circuit the same seed hands every circuit the same
+      // uniform draws: the wet sessions come out perfectly NESTED by
+      // `rainChance` and eleven columns stop being eleven samples. This harness
+      // measured exactly that on its first run.
+      const w = new Weather(def, 1000 + s * 7919 + ci * 104729, track);
+      let peak = 0;
+      for (let t = 0; t < RAIN_SESSION_S; t += dt) {
+        w.setTraffic(20);
+        w.update(dt);
+        if (w.wetness > peak) peak = w.wetness;
+      }
+      out.total++;
+      if (peak > 0.05) { out.rained++; hits++; }
+      if (peak > out.peak) out.peak = peak;
+    }
+    out.byCircuit.set(def.id, hits);
+  }
+  return out;
+}
 
 {
-  const SEEDS = 12;
-  const SESSION_S = 5400;
+  const rows = new Map<string, RainSweep>();
   console.log('  step        sessions reaching damp or worse      wettest');
   for (const [label, dt] of [['1Hz', 1], ['PHYSICS_DT', PHYSICS_DT]] as [string, number][]) {
-    let rained = 0, total = 0, peakAll = 0;
-    for (const def of CIRCUITS) {
-      const track = new TrackSpline(def);
-      for (let s = 0; s < SEEDS; s++) {
-        const w = new Weather(def, 1000 + s * 7919, track);
-        let peak = 0;
-        for (let t = 0; t < SESSION_S; t += dt) {
-          w.setTraffic(20);
-          w.update(dt);
-          if (w.wetness > peak) peak = w.wetness;
-        }
-        total++;
-        if (peak > 0.05) rained++;
-        if (peak > peakAll) peakAll = peak;
-      }
-    }
-    console.log(`  ${label.padEnd(12)}${String(rained).padStart(5)} of ${total}` +
-      `  (${((rained / total) * 100).toFixed(1)}%)`.padEnd(24) + `${peakAll.toFixed(4)}`);
+    const r = sweepRain(dt, false);
+    rows.set(label, r);
+    console.log(`  ${label.padEnd(12)}${String(r.rained).padStart(5)} of ${r.total}` +
+      `  (${((r.rained / r.total) * 100).toFixed(1)}%)`.padEnd(24) + `${r.peak.toFixed(4)}`);
   }
-  console.log('');
-  console.log('  NOT ASSERTED. `PHYSICS_DT` is the step `RaceEngine.step` passes, so the second');
-  console.log('  row is what the player gets: it has never rained in this game. The floor in');
-  console.log('  `Weather.update` is why; the schedule behind it is why fixing the floor alone');
-  console.log('  would be wrong. PROJECT.md §7, and see the comment on the line itself.');
+
+  const now = rows.get('PHYSICS_DT')!;
+  const slow = rows.get('1Hz')!;
+  const rate = now.rained / now.total;
+
+  console.log('\n  per circuit, at `PHYSICS_DT`, which is what `RaceEngine.step` passes:\n');
+  console.log('  circuit        rainChance   wet sessions      rate');
+  for (const def of CIRCUITS) {
+    const hits = now.byCircuit.get(def.id)!;
+    console.log('  ' + def.id.padEnd(15) + def.rainChance.toFixed(2).padStart(10) +
+      `${hits} of ${RAIN_SEEDS}`.padStart(15) +
+      ((100 * hits / RAIN_SEEDS).toFixed(1) + '%').padStart(10));
+  }
+
+  console.log(`\n  calendar wet rate ${(100 * rate).toFixed(2)}%  (1 in ${(1 / Math.max(rate, 1e-9)).toFixed(1)}), ` +
+    `target ${(100 * WET_RATE_MIN).toFixed(1)}-${(100 * WET_RATE_MAX).toFixed(1)}%`);
+
+  // --- REACHABLE ---------------------------------------------------------
+  check(now.rained > 0,
+    'it never rains: 0 of ' + now.total + ' sessions reached even damp at `PHYSICS_DT` with ' +
+    'nothing forcing the rain — issue #97, the floor in `Weather.update`');
+
+  // --- CALIBRATED --------------------------------------------------------
+  check(rate >= WET_RATE_MIN && rate <= WET_RATE_MAX,
+    `the calendar runs ${(100 * rate).toFixed(1)}% of sessions wet, against a target of ` +
+    `${(100 * WET_RATE_MIN).toFixed(1)}-${(100 * WET_RATE_MAX).toFixed(1)}% — ` +
+    'the rain SCHEDULE is out, not the ramp');
+
+  // --- STEP-FREE ---------------------------------------------------------
+  //
+  // Two sessions of slack on 660, not zero, because the two step sizes land the
+  // 5Hz water integrator on different sub-steps and a session sitting exactly on
+  // the 0.05 damp threshold may fall either side of it. #97 was a gap of 660.
+  const gap = Math.abs(now.rained - slow.rained);
+  check(gap <= 2,
+    `the calendar depends on the integrator's step size: ${slow.rained} of ${slow.total} ` +
+    `sessions are wet at 1Hz and ${now.rained} at \`PHYSICS_DT\` — a weather model whose ` +
+    'answer changes with dt is wrong whichever number is nicer');
+
+  // --- CLIMATE -----------------------------------------------------------
+  //
+  // The schedule re-rolled a FLAT 0.35 every 210-900s before #97, so the circuit
+  // was consulted exactly once and a 90-minute session got ten rolls of it. A
+  // calendar mean cannot see that; these two rows can.
+  const dry = CIRCUITS.filter((d) => d.rainChance <= 0.05);
+  const wetIds = CIRCUITS.filter((d) => d.rainChance >= 0.34);
+  const dryHits = dry.reduce((a, d) => a + now.byCircuit.get(d.id)!, 0);
+  const wetHits = wetIds.reduce((a, d) => a + now.byCircuit.get(d.id)!, 0);
+  const dryRate = dryHits / (dry.length * RAIN_SEEDS);
+  const wetRate = wetHits / (wetIds.length * RAIN_SEEDS);
+  console.log(`  desert circuits (${dry.map((d) => d.id).join(', ')}): ${(100 * dryRate).toFixed(1)}% wet`);
+  console.log(`  wet circuits (${wetIds.map((d) => d.id).join(', ')}): ${(100 * wetRate).toFixed(1)}% wet`);
+  check(dryRate < 0.05,
+    `Bahrain and Jeddah run ${(100 * dryRate).toFixed(1)}% of sessions wet on a rainChance of ` +
+    '0.01-0.02 — the schedule is not reading the circuit');
+  check(wetRate > 3 * Math.max(dryRate, 0.005),
+    `the wettest circuits on the calendar are only ${(wetRate / Math.max(dryRate, 0.005)).toFixed(1)}x ` +
+    'the driest — the schedule is not reading the circuit');
+
+  // --- and the spline the sweep leaves out does not change the answer -----
+  const splined = sweepRain(PHYSICS_DT, true, 'spa');
+  const bare = now.byCircuit.get('spa')!;
+  console.log(`  spa re-run WITH its real spline: ${splined.rained} of ${splined.total} ` +
+    `against ${bare} of ${RAIN_SEEDS} without`);
+  check(Math.abs(splined.rained - bare) <= 2,
+    `dropping the TrackSpline from this sweep changes Spa's wet rate from ${bare} to ` +
+    `${splined.rained} of ${RAIN_SEEDS} — the cost shortcut above is not sound`);
+
+  console.log('\n  ASSERTED, in four directions: it rains at all, it rains at the rate a real');
+  console.log('  season does, the answer does not depend on the step size, and the circuit\'s own');
+  console.log('  climate still reaches it. None of this section touches `forceRain`.');
 }
 
 // ===========================================================================
