@@ -245,7 +245,9 @@ Run `npm run` to list. The important ones:
 | `diag:aipace` | **The pace gap, attributed.** REF / ACHV / SOLO / RACE per circuit, so "1.43× reference" stops being one number. ACHV is the floor and REF is not reachable |
 | `diag:paceprofile` | Where on the lap the time goes, split into "the AI asked for less" and "the AI asked and did not get it" — off the controller's own published target, not a copy of it |
 | `diag:brakingzone` | One braking zone step by step: pedal, deceleration used, deceleration available, traction limit |
+| `diag:attrition` | **Why a full-distance race loses eleven cars — issue #26's third attempt.** The state of every car that retires at three moments: when it stops, twenty seconds earlier, and at `lastRacing` (the last sample with the car on the road above 15 m/s, so nothing about the excursion leaks into it). Tyres, damage, fuel, whether anybody touched it, whether the race was neutralised — plus retirements, contacts and the field's worst component by tenth of the race. **Reports; `probe:racelog` judges.** Node-only |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
+| `probe:finish` | **The end of a race, both ways round.** §1–3: the field is timed across the Line one car at a time rather than stamped at one instant, and the backmarkers get a window. §4, since #44: and NOBODY RACES AFTER IT — no lap counted, no lap time set, no retirement, and no finisher stamped in a batch instead of timed at the Line. Five races, two of them at a distance where cars are a lap down, because a car that is never lapped cannot exercise the batch test |
 | `probe:neutral` | **Rewritten by #10.** The standstill (car-seconds under the engine's own stranded threshold, on clear road, under a neutralisation, at FULL distance), how much of a race is neutralised, and that the safety car is drawn from an interpolated pose on all eleven circuits. It used to be forty minutes of compute that could not report a failure |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
@@ -356,17 +358,23 @@ Run `npm run` to list. The important ones:
   own job with its own measurement, and it is listed here rather than done badly.
   **Nobody is on this.**
 - `probe:racelog` at FULL distance — **2 failures, `11.50 cars retire per race` and
-  `21.00 car-to-car contacts a race`.** Both were failing before #10 at 20.00 and 26.50; the
-  fuel fix removed the artefact on top of them and what is underneath is issue #26. See §7.
+  `22.50 car-to-car contacts a race`,** re-measured at #26's own configuration on merged
+  `main` at `8cde5ae` on 2026-08-03. **The contacts figure was written here as 21.00 and is
+  stale by a merge** — see the §8 note on quoting counts. Both were failing before #10 at
+  20.00 and 26.50; the fuel fix removed the artefact on top of them and what is underneath is
+  issue #26, whose third cause is now measured in §7. Byte-identical before and after the #44
+  fix, so cars racing past the flag is not part of it. See §7.
 - `validate:race` — **1 failure, `monaco: fastest lap 152% of reference`,** and it is
   pre-existing: identical on a clean `main`. See §7.
-- `probe:fieldsize` — **14 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
-  racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
-  regression: on 2026-08-03 clean `main` extracted to a scratch tree and the
-  `timing-tower-truth` branch produced **the same 14 lines in the same order**. This
-  entry used to say 23; the count came down with some other merge and nobody re-measured
-  it, so **check it rather than quoting it**. Everything structural in the probe still
-  passes at 20, 22 and 24 cars. Issue #44.
+- ~~`probe:fieldsize`~~ — **PASSES. Fixed by the `race-lifecycle-fixes` branch, issue #44.**
+  It was **16 failures** on merged `main` at `8cde5ae` on 2026-08-03, not the 14 this entry
+  had said and not the 23 it said before that — **the count has now been wrong here three
+  times running**, because it moves with any change to how a race runs and nobody re-measures
+  it. Do not quote it; run it. What it was: nothing in the step loop read `car.finished`, so
+  a car that had taken the chequered flag went on being driven, went on counting laps, and
+  went on being eligible to retire for as long as `checkSessionEnd` held the session open —
+  180 seconds. See §6, "A race that did not know it had ended". Now **0 failures**, with the
+  finisher counts at 20/22/24 cars byte-identical to before, so nothing else moved.
 
 **Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
 engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
@@ -2596,6 +2604,130 @@ pristine `main` it reports 12 failures including *"CONTINUE is one of the corner
 controls (found: [])"* and *"every car that was still running set a time (0 of
 20)"*.
 
+### A race that did not know it had ended, and a race classified before it did (#44, #56)
+
+Filed as candidates for being **one** bug — "a session that does not know it has ended would
+both let cars keep lapping and classify from mid-race" — and the first job was to find out.
+**They are two bugs, in two modules, with preconditions that cannot both hold.**
+
+| | #44 | #56 |
+|---|---|---|
+| fires | only **after** `raceControl.raceFinished` | only **before** it |
+| lives in | `RaceEngine.onCrossLine` and the four retirement sites | `Game.retireOnTheRadio` in `main.ts` |
+| symptom | a car scores laps the race no longer has | a race is scored before it has any |
+
+The measurement that settles it: the engine fix alone — three edits, none of them outside
+`src/race/RaceEngine.ts` — takes `probe:fieldsize` from **16 failures to 0** and
+`probe:finish` §4 from **4 to 0**, and does not touch #56's path at all, because `Continue`
+on the race bar goes on classifying a race that is on lap 1 of 8 whatever the engine does
+about the flag. They are duals of each other, which is presumably why they read as one, and
+nothing either fix touches is shared: `probe:fieldsize` and `probe:finish` never press a
+button, and `probe:qualiretire` never reaches a chequered flag before the player stops.
+
+**#44 — the step loop never read `car.finished`.** `onCrossLine` stamped it and then
+nineteen other things went on treating the car as a competitor. It kept being driven at
+racing pace, `completeLap` kept incrementing `car.lap` and pushing laps into `bestLapTime`,
+`checkReliability`, the barrier write-off and the damage model kept being able to retire it —
+for as long as `checkSessionEnd` held the session open, which is the **180-second backmarker
+window**. At Monaco over six laps that is two extra laps, which is the probe's own report:
+`NOR completed 8 laps of a 6-lap race`.
+
+**And the window could not close early, because a lapped car could never finish.** The only
+route to `car.finished` was `car.lap > laps` — a test a car a lap down never satisfies. So
+`anyRunning` stayed true, the 180 seconds always ran in full, and the lapped cars were then
+stamped in a batch by `finishSession` at one shared timestamp. Measured at Spa over six laps
+before the fix: **10 of 18 classified finishers carried the session's own end time to the
+microsecond.**
+
+The fix is the regulation, in three parts:
+
+- **A car that has taken the chequered flag is on the slowing-down lap** (2025 Art. 43.3 /
+  2026 Art. B4.2.1), so `onCrossLine` returns before `completeLap`. No lap, no lap time.
+- **The end-of-race signal is given at the Line "as soon as the leading car has covered the
+  full race distance"** (Art. 57.1 / B5.14.1) and is shown to *every* car that reaches the
+  Line after it — not only to the ones on the lead lap. A car a lap down takes the flag and
+  is classified on what it covered (Art. 6.5 / B2.5.1). So the flag being out is what
+  finishes a car now, and `car.lap > laps` is only what brings the flag out.
+- **A classified finisher cannot become a DNF.** `checkStranded` had carried that rule since
+  #10 and said so in a comment; `checkReliability`, the barrier write-off and the accident-
+  damage roll had not. All three now do.
+
+**Measured. `probe:fieldsize` 16 → 0**, with `finished=` unchanged on all nine rows
+(19/20, 21/22, 24/24, 18/20, 20/22, 22/24, 19/20, 21/22, 23/24) and `laps=` going from
+7 or 8 to **7 on every row** — 7 being `laps + 1`, the lap a car that completed six is on.
+**`probe:finish` gained a §4** measuring the mechanism rather than the symptom: across five
+races, **7 laps scored after the flag → 0** and **9 batch-stamped finishers → 0**. Two cars
+also come back into the classification — Monaco **19 → 20** classified finishers, Spa
+**18 → 19** — because each was a lapped car that had been racing on through the 180-second
+window and was lost in it, and now takes the flag at its next crossing instead.
+
+**§4 needed a scenario §1–3 does not have.** Three circuits at five laps from a standing
+start laps nobody, and a car that is never a lap down is a car the batch-stamp assertion has
+nothing to fire on. Monaco and Spa over six laps — `probe:fieldsize`'s own reproduction — are
+added for §4 only; §1–3's configuration and its published numbers are untouched. §2 is
+deliberately **not** applied there, because at six laps a *correct* simulation has classified
+finishers who did not cover the distance, and asserting otherwise would be asserting that
+lapping does not happen.
+
+**Proved red twice, one break per half, and the two halves fail DIFFERENT assertions** —
+which is the point of splitting §4 into four checks rather than one.
+
+| break | §4a laps after the flag | §4d batch-stamped |
+|---|---|---|
+| restore `car.lap > laps` as the finish test, keep the slowing-down guard | green, 0 | **red — 10 of 18 at Spa** |
+| remove the slowing-down guard, keep the flag test | **red — 5 laps over 3 circuits** | green, 0 |
+
+**§4b and §4c did not fire on either broken tree, and that is stated rather than glossed.**
+No car improved a best lap after the flag and none retired after it in these five short
+races, so they are guards on a mechanism that existed — `checkReliability` had no `finished`
+test at all — rather than reproductions of an observed event. A probe a broken feature passes
+is worse than no probe; these two are honest about being unexercised.
+
+**#56 — `Continue` classified a Grand Prix that was still being run.** The race branch of
+`retireOnTheRadio` called `Game.finishSession` on the spot, which reads `engine.standings` and
+hands it to `recordPlayerRound`. A player who retired on lap 4 of 57 published the running
+order of lap 4 as the result of the round, and a career championship was scored from it.
+
+**THE CAREER-DATA DECISION, WHICH IS WHY #33 DID NOT DO THIS.** The choice is between
+recording a classification that is cheap and false, and paying wall-clock for one that is
+true. It is taken in favour of the truth, and the reasoning is that the cheap option is not
+*faster*, it is *wrong data*: championship points awarded on an order that never existed, to
+nineteen cars that had not finished. A championship is the sum of what happened. The player's
+own retirement is unaffected either way — running the race out does not un-retire them, and
+`probe:qualiretire` asserts that — so what is being bought is the other nineteen results.
+The user's words cover it directly: *"even tho I DNF doesn't mean that the rest weren't able
+to get a time classification."*
+
+**And the cost is real and is stated rather than buried.** A full-distance Silverstone Grand
+Prix in this simulation is **8353 seconds of simulated time** (measured; a real one is about
+5400, and the difference is the AI pace item, §7's oldest). At the **~27x realtime**
+`runOutToTheFlag` was measured at for #33, running that out from lap 4 is about **five
+minutes of wall clock**, not seconds. On this machine at load average 300+ the same race took
+**1505 s at 6x realtime**, which is the honest worst case and also exactly the load warning in
+§4. Mitigations, all of them already built: the run-out has a `Watch it instead` button that
+puts the player back on the circuit, `Watch the race` beside `Continue` is the same race at
+the same speed with the cameras on, and the progress bar now **tells the truth** — it used to
+return `byClock` for a race, and a race has `durationS: 0`, so it sat at 0% for the whole
+run-out.
+
+**`runOutProgress` still refuses a race an early exit, and that is the decision, not an
+omission.** An LTCS is classified on the best lap each driver set, so once everybody has one
+the answer already exists and stopping early only declines to re-read it. A race is
+classified on who covered the distance, so before the flag there is no state to read a result
+from. Giving a race the qualifying exit would be #56 again wearing a progress bar. What the
+race branch does get is a bar in laps, capped **below 1** until `engine.over` — because
+`stepRunOut` stops on `progress >= 1`, and the leader completing the distance is not the end
+of the race.
+
+**`probe:qualiretire` §4's print became §5's assertions**, which is what issue #56 asked for
+in as many words. It had printed the leader's lap against the race distance at the moment
+`Continue` becomes available and deliberately not asserted on it. It now presses the button
+and asserts on the ENGINE's state at the moment the classification screen appears: the race
+reached its own end, the chequered flag came out, the winner covered the distance, at least
+half the field did, every car is either a classified finisher or a retirement, and the player
+is still retired. The print stays, because the lap the player stopped on is what makes the
+assertions mean anything.
+
 ### Career
 - **`SessionConfig.playerIndex` was hard-coded to `0`.** `Career.grid()` is the championship
   in *team order*, and a rookie starts at the weakest team, which sorts last — so the player's
@@ -3503,16 +3635,61 @@ shared files and the run that matters passed. **Nobody is on this.**
   .RACE_PACE_VS_REFERENCE` is still 1.50 and is still the one named constant that comes down
   when the pace item does. `validate:race`'s Monaco assertion now reads **150%** — it said
   152% here for a while and nobody had re-run it, so check it rather than quoting it.
-- **#26 is not closed by #10 and the honest position is that it is now MEASURABLE rather
-  than answered.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
-  F3, P18, medium, 2 seeds): retirements **20.00 → 11.50** a race, contacts **26.50 →
-  21.00**, and **`Stopped on track` has gone from 10.50 a race to zero** — it does not
-  appear in the cause table at all. What is left is 6.50 beached, 3.50 accident and 1.50
-  accident damage, which is the question #26 was originally asking and could not be asked
-  while the fuel artefact was on top of it. The probe still fails its own two headline bars
-  (`11.50 cars retire per race — a Grand Prix loses one or two`, `21.00 car-to-car contacts
-  a race`) and **that is the live part of #26.** The player still retires from 100% of
-  full-distance races, now by beaching rather than by stopping.
+- **#26 — the third cause, named and measured. Still open, and the fix is not in this
+  branch's ground.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
+  F3, P18, medium, 2 seeds) measured on merged `main` at `8cde5ae`: **11.50 retirements and
+  22.50 contacts a race**, against bars of 3.0 and 12.0. (The 21.00 contacts this file and
+  the issue both quote is stale by one merge — **run it before quoting it**.) The cause
+  table is 7.00 beached, 2.00 accident, 2.00 accident damage, 0.50 mechanical.
+
+  **What is NOT the cause, and all three are now measured rather than argued.** The new
+  `diag:attrition` (`scripts/diagRaceAttrition.ts`) takes the state of every car that
+  retires — at the moment it stops, twenty seconds earlier, and at `lastRacing`, the most
+  recent sample with the car on the road and above 15 m/s — plus the field's health, tyres
+  and contacts by tenth of the race. One full race at #26's own configuration:
+
+  | | |
+  |---|---|
+  | beached cars touched by another car in the previous 10s | **0 of 11** |
+  | retirements on rear tyres below 0.85 grip | **0 of 15** |
+  | retirements with under 2 litres of fuel (#10's mechanism) | **0 of 15** |
+  | beached cars already off the road before they stopped | **11 of 11** |
+  | pit stops, mean over the survivors | 1.40 (min 1, max 2) |
+
+  So it is **not contact**, **not tyres**, and **not fuel** — #10's fix holds. Cars leave
+  the road on their own, and none of the three previously-named mechanisms is putting them
+  there.
+
+  **What it is back-loaded on, which is the distance-specific part.** Not one retirement in
+  the first fifth of the race; 2 in the third tenth and then 13 spread over the last four
+  tenths, at 0.0, 0.0, 2.0, 0.0, 0.0, 4.0, 3.0, 2.0, 1.0, 3.0 per tenth. A cause that is
+  absent for ten laps and then arrives is an ACCUMULATING one, which is why the
+  quarter-distance run passes and why nothing measured at five or fourteen laps has ever
+  seen this — the same structural blindness §6 records for the fuel bug.
+
+  **The candidate the instrument points at is accumulated component damage**, and it is
+  named as a candidate rather than as an answer: 12 of 15 retirements were already carrying a
+  component below 0.70 health. `CarDamage.applyWear` is a per-second cost (kerbs, gravel, the
+  rev limiter) whose own comment says it "matters over a race distance rather than over a
+  corner", and a pit stop repairs only the front wing and the sidepods — floor, suspension
+  and power unit stay with the car for the rest of the race, deliberately and correctly.
+  **And there is a second-order effect on that candidate worth writing down before anybody
+  re-derives it.** `applyWear` is per SECOND and its comment says it is "sized so a full race
+  distance driven hard costs a few percent" — but a full-distance Silverstone race in this
+  simulation is **8353 seconds** (measured, §6) against a real one's ~5400. So a "full race
+  distance" here is **55% more wear-seconds than the constant was sized for**, and that
+  inflation is the AI pace item (#1) arriving somewhere nobody was looking for it. Anybody
+  re-calibrating the wear rates has to decide whether they are calibrating against the sport's
+  race duration or against this simulation's, and the two are not the same number.
+
+  **Not fixed here.** It is `src/physics/DamageModel.ts` and `src/ai/`, and this branch's
+  ground is the session lifecycle; a change to the damage rates without its own before/after
+  across the whole suite is exactly the kind of change §3 exists to prevent.
+
+  **And #44 is ruled out as a contributor, by measurement.** Cars racing past the chequered
+  flag was the obvious suspect and it contributes nothing: `probe:racelog` at full distance
+  is **byte-identical before and after the #44 fix** — 11.50 / 22.50, the same cause table,
+  the same contact locations. Two clean A/B runs.
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
@@ -3621,18 +3798,17 @@ shared files and the run that matters passed. **Nobody is on this.**
     the bottom eighth to the bottom fifth, which is why it was not moved.
   - **1 is a driver's-eye pane reading 22.5% of frame width at Monaco** against a 22.0
     bound. A band question, not a geometry question, but it has not been re-derived.
-- **A RACE that the player retires from is still classified from where it stood.
-  Issue #56.** Found while fixing the same defect in qualifying (§6) and
-  **deliberately not fixed there**. `Continue` on the race corner bar calls `finishSession`
-  immediately, which records `engine.standings` for a race that is still being
-  run — measured by `probe:qualiretire`, which prints the leader's lap against
-  the race distance at that moment and does not assert on it. It is the same
-  species of mistake as the qualifying truncation and the user's words cover it
-  just as well, but it feeds `recordPlayerRound` and a career championship, so
-  changing it is a career-data decision rather than a presentation one. The
-  machinery to fix it exists — `Game.runOutToTheFlag` — and `runOutProgress`
-  already declines to give a race an early exit, so a race would have to be run
-  in full. **Nobody is on this.**
+- ~~A RACE that the player retires from is classified from where it stood.~~ **Fixed,
+  issue #56 — see §6, "A race that did not know it had ended".** `Continue` on the race
+  corner bar now runs the race out to the flag before classifying it, which is a
+  career-data decision taken in favour of correct data over wall clock and argued in §6.
+  **What is NOT reached, and it is the honest residual: the cost.** A full-distance
+  Silverstone Grand Prix is 8353 s of simulated time, which is about five minutes of wall
+  clock at the 27x realtime `runOutToTheFlag` was measured at, and twenty-five on a loaded
+  machine. The player is never trapped — `Watch it instead` cancels back to the circuit and
+  `Watch the race` is offered beside `Continue` — but nobody has built the obvious third
+  option, which is to let the remainder run while the player is somewhere else in the
+  paddock and post the result when it lands. **Nobody is on that.**
 - **`regress:exit` (issue #25): the pause menu works. The harness was the bug, it
   reproduces on demand, and the six failures in the issue are ONE cascade with a
   stopwatch at the bottom of it. Closed.**
@@ -3689,16 +3865,13 @@ shared files and the run that matters passed. **Nobody is on this.**
   of wall clock and the whole probe is minutes. **It is a `.mjs` of the same lineage as
   `regress:exit` was, so assume it has the same two defects — a watching dev server and
   fixed sleeps — until somebody looks.** Same for `regress:career`. **Nobody is on this.**
-- **`probe:fieldsize`: cars finish 8 laps of a 6-lap race — 14 of them.** Pre-existing on `main`,
-  measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
-  previously recorded as known-failing, so it went red without anybody noticing.
-  **The count is 14, not 23** — re-measured the same way on 2026-08-03 from the
-  `timing-tower-truth` branch and from a clean `main` export, same 14 lines in the same
-  order. Issue #44. **Measured again on this branch: still all one species, and the count
-  moves with any change to how a race runs** — 14 on the base this branch was cut from, 14
-  with the #74/#75 fix in, and **13** with the #83 pit-lane perception fix in, twice over
-  and byte-identical both times. Nothing new appears; the set of cars that runs past the
-  flag shifts. Do not read the count as a score.
+- ~~`probe:fieldsize`: cars finish 8 laps of a 6-lap race.~~ **Fixed, issue #44 — see §6, "A
+  race that did not know it had ended".** The count in this file was wrong three times
+  running (23, then 14, then 14 again) because it moves with any change to how a race runs;
+  it measured **16 on merged `main` at `8cde5ae`** and is now **0**. The lesson stands and is
+  the one this file keeps repeating: *the set of cars that runs past the flag shifts, so the
+  count is not a score* — and the corollary nobody applied, that a number which drifts under
+  unrelated merges is a number to re-measure rather than to quote.
 - **`eliminatedInPhase` is wrong for everybody knocked out more than one segment ago.**
   `RaceEngine` writes `car.eliminatedInPhase = (config.qualifyingPhase ?? 1) - 1` for every
   non-participant, so in the **Q3** engine all ten already-out cars report `2` — including
@@ -4220,6 +4393,15 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
   of the load. Check `uptime` before quoting any number, and say plainly when a
   measurement was skipped rather than quoting one taken under load.
+- **Quoting a known-failing count instead of running it. `probe:fieldsize` was written down
+  as 23, then as 14, then as 14 again, and it was 16.** Three successive entries in §4, each
+  one written by somebody correcting the previous one, and none of them measured on the tree
+  they were written against. The entry itself said *"the count moves with any change to how a
+  race runs — do not read the count as a score"*, which is true and was exactly the reason to
+  re-measure rather than the reason not to. **A number that is known to drift is a number
+  that must be re-run before it is quoted**, and this file now says that at the entry as well
+  as here. Same species as `validate:flags` (recorded as the last known-failing probe for
+  longer than it was true) and `shoot:panels` (a de-duplicated list read as its own count).
 - **Blaming the load for something that was a real bug.** The list above is right and the
   rule is right, and on 2026-08-03 it also swallowed a genuine defect for two rewrites.
   *"The asset-loader probe hit a 200 response carrying a valid PNG and an `onerror`"* is on

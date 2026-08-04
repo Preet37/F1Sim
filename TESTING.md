@@ -79,7 +79,19 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
    message, `CONTINUE` in the corner, and the session keeps running behind it.
 6. **Press `Skip to the result`.** The other cars must still have real times. Retiring
    should never blank the classification (fixed, #52).
-7. **Stop on the racing line and wait.** Race control should raise double yellows naming
+7. **Crash out of a RACE and press `Continue`.** You should get a progress screen headed
+   *Running out Grand Prix* while the other nineteen finish, and only then the
+   classification — **not the classification immediately** (fixed, #56). Before this, a
+   race you retired from on lap 4 of 57 was scored from lap 4, and in a career that went
+   straight into the championship. **This costs real time: about five minutes for a
+   full-distance Grand Prix**, because it is the whole remaining race being simulated. Two
+   ways out, both on screen: `Watch it instead` on the progress screen puts you back on the
+   circuit, and `Watch the race` beside `Continue` never leaves it.
+8. **Watch the finish.** Once the winner crosses the line, the rest of the field should take
+   the flag one car at a time and the race should end — **nobody should start another lap**
+   (fixed, #44). The lap counter on the board stops at the race distance; a car that has
+   finished cannot then retire.
+9. **Stop on the racing line and wait.** Race control should raise double yellows naming
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
 
@@ -189,14 +201,18 @@ amber), not in the capability calculation. Nobody is on it ·
 `probe:framing` **113** — recorded as 56, measured **51** on merged `main`, then the probe was
 corrected to place its car where the renderer places it rather than 20mm low, which is +49 on
 `main` alone and belongs to the HUD's `MIRROR_PANES` rectangles (PROJECT.md §6/§7) ·
-`probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
+~~`probe:fieldsize` 14 (#44)~~ — **fixed, and it was 16 rather than 14 when it was measured
+rather than quoted** · `probe:weather` 2 (#42) · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
 list read as the count; confirmed 9 on a `src/` checked out at `3f229b7`, so not a regression ·
 `probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
 `probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
 a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55 and
 `validate:race` 1, both `monaco: fastest lap 150% of reference` (#1) plus four spread rows
-that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — the default
-quarter-distance run passes ·
+that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — **11.50
+retirements and 22.50 contacts a race**, re-measured 2026-08-03; the default quarter-distance
+run passes. The third cause is now measured (see PROJECT.md §7): not contact, not tyres, not
+fuel — cars leaving the road on their own, later and later into the race, most of them already
+carrying damage. `npm run diag:attrition` is the instrument ·
 **`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where the
 road mesh's own quad is degenerate and a rigid 3.6m car cannot lie on it. 43.6mm over a bound
 the mesh's own error sets; the other ten circuits are inside 5.3mm.
