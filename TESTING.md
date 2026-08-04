@@ -153,7 +153,11 @@ Useful individual probes:
 | `probe:qualiretire` | a crash in qualifying does not take the screen |
 | `audit:circuits` | photographs 11 circuits × 7 camera modes |
 
-**Known-failing, expected:** `probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
+**Known-failing, expected:** `probe:racingline` 4 — green still asks for 103–107% of the
+car's grip at Bahrain s=543m, Monaco s=346m, COTA s=3441m, Interlagos s=2696m. It was
+**28.7%** before the #1 work; what remains is in the *colouring* rule (when green turns
+amber), not in the capability calculation. Nobody is on it ·
+`probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
 `probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · `shoot:panels` 2 mirror (rail went to 0 with #17) ·
 `probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
 `probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
