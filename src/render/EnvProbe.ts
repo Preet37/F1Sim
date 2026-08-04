@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 
 /**
  * The environment probe: the thing the car's paint reflects.
@@ -561,7 +561,9 @@ export class EnvProbe {
     const url = `${base}assets/hdri/${name}/${name}.hdr`;
 
     const job = new Promise<LoadedHdri | null>((resolve) => {
-      const loader = new RGBELoader();
+      // `HDRLoader`, not `RGBELoader`: three deprecated the latter in r18x and it
+      // warns on every construction. Same Radiance decoder, same API.
+      const loader = new HDRLoader();
       // Full float, not half. The sun direction is found by scanning the
       // texels, and `Uint16Array` half-floats would have to be decoded by hand
       // to do it. The array is discarded immediately after filtering.

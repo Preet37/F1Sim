@@ -198,8 +198,71 @@ function checkNear(
 }
 
 
+/**
+ * OUR OWN before against our own after, same crop, same scale, one file.
+ *
+ * `GRADE_AB=before,after2 npm run probe:grade`
+ *
+ * This exists because of where the comparison has to be READ. The full
+ * reference-against-result panels this probe also writes have a frame from a
+ * commercial F1 game as their top half, and `Preet37/F1Sim` is a public
+ * repository — `reference/` is gitignored for that reason as much as for its
+ * size (PROJECT.md §9), and committing the panels into the repo to embed them
+ * in a pull request would walk straight through that boundary for the sake of
+ * a picture. The user's stated goal is a publishable game and §3 is built
+ * around keeping the IP surface swappable, so this writes the half that is
+ * unambiguously ours and can be published, and the reference comparison stays
+ * a one-command regeneration on a machine that has the frames.
+ */
+async function writeBeforeAfter(): Promise<void> {
+  const [beforeTag, afterTag] = (process.env.GRADE_AB ?? '').split(',').map((s) => s.trim());
+  const dirOf = (t: string): string => resolve(process.cwd(), 'sharp-out', t);
+  const pick = (dir: string, prefix: string): string | null => {
+    if (!existsSync(dir)) return null;
+    const hit = readdirSync(dir)
+      .filter((f) => f.startsWith(`${prefix}-s`) && f.endsWith('.png')).sort();
+    return hit.length ? resolve(dir, hit[hit.length - 1]) : null;
+  };
+
+  console.log(`OUR OWN FRAME, ${beforeTag} above ${afterTag}, same crop and scale\n`);
+  for (const p of PAIRS) {
+    const a = pick(dirOf(beforeTag), p.shot);
+    const b = pick(dirOf(afterTag), p.shot);
+    if (!a || !b) {
+      console.log(`  ${p.name}: SKIPPED — need ${p.shot} in both shoots`);
+      continue;
+    }
+    const wasImg = windowOf(decodePng(a), p.ourWindow);
+    const nowImg = windowOf(decodePng(b), p.ourWindow);
+    const was = lookStats(wasImg);
+    const now = lookStats(nowImg);
+    console.log(`  ${p.name}`);
+    console.log(`      ${beforeTag.padEnd(8)} ${fmtStats(was)}`);
+    console.log(`      ${afterTag.padEnd(8)} ${fmtStats(now)}`);
+    const W = 1100;
+    const GAP = 8;
+    const t = resize(wasImg, W, Math.round((wasImg.height / wasImg.width) * W));
+    const u = resize(nowImg, W, Math.round((nowImg.height / nowImg.width) * W));
+    const H = t.height + GAP + u.height;
+    const out = new Uint8Array(W * H * 3);
+    out.fill(24);
+    out.set(t.rgb, 0);
+    out.set(u.rgb, (t.height + GAP) * W * 3);
+    // Named for the PAIR, not the shot: two pairs share the `bahrain-chase`
+    // frame and differ only in which band of it they read.
+    const file = `ab-${p.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`;
+    await writeFile(resolve(OUT_DIR, file), encodePng({ width: W, height: H, rgb: out }));
+    console.log(`      -> ${file}\n`);
+  }
+}
+
 async function main(): Promise<void> {
   await mkdir(OUT_DIR, { recursive: true });
+
+  if (process.env.GRADE_AB) {
+    await writeBeforeAfter();
+    return;
+  }
 
   if (process.env.GRADE_REF === '1') {
     console.log('THE REFERENCE SET, measured. These are where the bars come from.\n');
