@@ -4117,22 +4117,18 @@ shared files and the run that matters passed. **Nobody is on this.**
   it cannot fail CI. That is correct for what it is (it answers *which of four arms*, not
   *is this right*), but do not count it as cover. The cover for issue #32 is
   `probe:pitstop` §1 and §6.
-- **`probe:framing` now fails 56 assertions, and all 56 are new and true.** Correcting the
-  probe's settling time from 20 frames to 2 seconds (§6) opened every onboard lens to where
-  it actually sits in play, and that moved the picture:
-  - **54 are `MIRROR_PANES` keep-out escapes** in `src/ui/Hud.ts`, on all eleven circuits
-    in all three onboard modes. A wider lens carries a pane that sits below centre *up* the
-    frame by 1–2 points, and the keep-out rectangles were measured against the narrow lens
-    — the same rectangle 7f1f3da widened for banking. The HUD is laid out against it, and
-    `shoot:panels` is laid out against the HUD, so this belongs to the HUD owner. **Not a
-    reason to move the rectangle without re-running `shoot:panels`.**
-  - **1 is a real framing defect:** at Suzuka on 16:9 the cockpit camera's left halo rail
-    leaves through the **side** of the frame at 87% of frame height — the "black pipe
-    running off the edge of the screen" complaint. Only a settled lens shows it. It is also
-    the case that would have been *concealed* had the rails-exit threshold been moved from
-    the bottom eighth to the bottom fifth, which is why it was not moved.
-  - **1 is a driver's-eye pane reading 22.5% of frame width at Monaco** against a 22.0
-    bound. A band question, not a geometry question, but it has not been re-derived.
+- ~~**`probe:framing` now fails 56 assertions, and all 56 are new and true.**~~ **FIXED, and
+  the diagnosis in this entry was half right.** Kept because the half that was wrong is
+  instructive. Correcting the probe's settling time from 20 frames to 2 seconds (§6) did open
+  every onboard lens to where it sits in play, and that did move the picture — but the 54
+  keep-out escapes it attributed to "a wider lens carrying a pane up the frame by 1–2 points"
+  were **99 by the time anybody measured them again**, and the cause was not the lens. The
+  camera was riding the MIRROR IMAGE of the chassis, `2 x rigPitch` out, so a pane's position
+  in the frame depended on the GRADIENT and moved by up to 22 points. The Suzuka rail was
+  right in kind and wrong in circuit: on merged `main` it was Bahrain, COTA and Interlagos.
+  Both are §6, "The onboard camera rode the MIRROR IMAGE of the car" (#49/#50/#31). The
+  driver's-eye pane-width band question is the one part of this entry that is still open —
+  3 rows at 22.2–22.4 per cent against a 22.0 bound, and **it has still not been re-derived.**
 - **A RACE that the player retires from is still classified from where it stood.
   Issue #56.** Found while fixing the same defect in qualifying (§6) and
   **deliberately not fixed there**. `Continue` on the race corner bar calls `finishSession`
