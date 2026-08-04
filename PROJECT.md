@@ -3086,6 +3086,18 @@ build and height, and ten crew at the 62px the garage actually draws them at.
 same fixture the probe measures — so the picture and the 276 failures cannot drift apart.
 Both in `docs/people/`.
 
+**`probe:smoke` was NOT measurable while this was built, and no number from it is quoted
+anywhere in this entry.** The load average on this machine went 9 → 42 → 141 → 362 → 448
+during the attempt as other agents worked, and the run died on
+`TimeoutError: Navigation timeout of 120000 ms exceeded` after four screens, having spent
+**305 seconds on the first-run flow alone**. That is §8's documented failure mode
+verbatim: *under load, probes do not fail, they TIME OUT.* Its required set holds the
+presser, the podium and the garage since #13/#38, so **it has to be run on a quiet machine
+before this merges.** What can be said honestly is narrower: this branch changes the SVG
+each of those three screens draws and touches none of their routes, screen ids or
+headings, and `typecheck`, `probe:frontdoor`, `probe:people` and `shoot:people` all
+exercise the same modules without an exception.
+
 **IP boundary, re-confirmed for the body.** Sponsor blocks on the suits are **blank
 rectangles**: the rhythm of light blocks on a coloured suit is what reads at these sizes,
 not the words in them, and `reference/target/81.png` is covered in real wordmarks that §3
