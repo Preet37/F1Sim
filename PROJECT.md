@@ -3086,17 +3086,28 @@ build and height, and ten crew at the 62px the garage actually draws them at.
 same fixture the probe measures — so the picture and the 276 failures cannot drift apart.
 Both in `docs/people/`.
 
-**`probe:smoke` was NOT measurable while this was built, and no number from it is quoted
-anywhere in this entry.** The load average on this machine went 9 → 42 → 141 → 362 → 448
-during the attempt as other agents worked, and the run died on
+**`probe:smoke` PASSES, and the first two attempts at it are worth writing down because
+they are §8 in miniature.** Attempt one died on
 `TimeoutError: Navigation timeout of 120000 ms exceeded` after four screens, having spent
-**305 seconds on the first-run flow alone**. That is §8's documented failure mode
-verbatim: *under load, probes do not fail, they TIME OUT.* Its required set holds the
-presser, the podium and the garage since #13/#38, so **it has to be run on a quiet machine
-before this merges.** What can be said honestly is narrower: this branch changes the SVG
-each of those three screens draws and touches none of their routes, screen ids or
-headings, and `typecheck`, `probe:frontdoor`, `probe:people` and `shoot:people` all
-exercise the same modules without an exception.
+**305 seconds on the first-run flow alone**, at a load average that went 9 → 42 → 141 →
+362 → 448 as other agents worked. That is the documented failure mode verbatim: *under
+load, probes do not fail, they TIME OUT.* Attempt two, started at load 54 and finishing at
+25:
+
+```
+Required routes: 32 of 32 reached
+walked  podium   walked  presser   walked  garage
+34 distinct screens walked in 2307.2s over 32 cold boots
+PASS — every required front-end screen opened, and every screen reached
+       renders and throws nothing.
+```
+
+**2307s against the 665s §7 records for this probe, and that is the point rather than a
+caveat.** §8 impeaches a *red* result taken under load, and impeaches a *green* one that
+came back faster than it should have. A green that took three and a half times as long,
+booted Chrome 32 times and opened all 32 required routes is the case neither caveat
+covers. The three screens this work changes — `podium`, `presser`, `garage` — are all in
+the walked list, all three modules are still imported by the shell, and nothing throws.
 
 **IP boundary, re-confirmed for the body.** Sponsor blocks on the suits are **blank
 rectangles**: the rhythm of light blocks on a coloured suit is what reads at these sizes,
