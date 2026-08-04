@@ -79,7 +79,7 @@
  * What this covers, and what it does not
  * ---------------------------------------------------------------------------
  *
- * COVERED: every triangle of `buildPaddock`, `MarshalPosts`, `buildTrackMeshes`
+ * COVERED: every triangle of `buildPaddock`, `MarshalPosts`, `FloodlightTowers`, `buildTrackMeshes`
  * (road, kerbs, paint, run-off, pit lane, armco and pit walls, catch fence,
  * hoardings, start/finish gantry, braking marker boards, ground plane and all
  * instanced set dressing) and `buildPitBoxMarker`.
@@ -121,6 +121,7 @@ const { PHYSICS_DT } = await import('../src/core/SimClock');
 const { bandOf } = await import('../src/race/DamageModel');
 const { buildPaddock } = await import('../src/render/Paddock');
 const { MarshalPosts } = await import('../src/render/MarshalPost');
+const { FloodlightTowers } = await import('../src/render/FloodlightTowers');
 const { buildTrackMeshes } = await import('../src/render/TrackMesh');
 const { buildPitBoxMarker } = await import('../src/render/PitBoxMarker');
 const { CarEntry } = await import('../src/race/CarEntry');
@@ -756,6 +757,18 @@ for (const def of CIRCUITS) {
   const posts = new MarshalPosts(track, new RaceControlManager(track).marshalSectorCount);
   scanTree(posts.root, field, stats, () => 'marshal');
   posts.dispose();
+
+  // Light masts, at the two circuits that race under lights. Added with the
+  // masts themselves (issue #78) rather than afterwards, because this file's
+  // own header is a list of renderer-side builders that were NOT in this scan
+  // and were therefore drawing on the road unchecked — adding a thirty-six
+  // metre steel column to the world without adding it here would have been the
+  // next entry on that list. `Renderer` gates on the same property.
+  if (def.ambience === 'night') {
+    const masts = new FloodlightTowers(track);
+    scanTree(masts.root, field, stats, () => 'floodlight');
+    masts.dispose();
+  }
 
   const meshes = buildTrackMeshes(track, 'high', world);
   const labels = labelCircuitChildren(meshes.root);

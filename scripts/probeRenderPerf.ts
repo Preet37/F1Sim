@@ -336,6 +336,21 @@ const SAMPLES = (n: number): string =>
      const t = c.renderTarget2; if (t.samples === ${n}) return;
      t.samples = ${n}; t.dispose(); })()`;
 
+/**
+ * The COLOUR GRADE alone, inside the grade pass, without disabling the pass.
+ *
+ * The existing `grade` factor toggles the whole pass, which is bloom-add,
+ * twelve-tap AO, vignette, wet grade, dither and flash together; it cannot say
+ * what the fifteen instructions issue #78 added actually cost. This flips only
+ * `uGradeOn`, so the pass still runs and the difference is the grade block and
+ * nothing else. No shader recompilation: it is a uniform, and the branch is
+ * uniform-controlled so both arms execute the same code path shape.
+ */
+const GRADE_LOOK = (on: boolean): string =>
+  `(() => { const g = window.__game.renderer.post.composer;
+     if (!g) return; const p = g.passes[2];
+     if (p && p.uniforms && p.uniforms.uGradeOn) p.uniforms.uGradeOn.value = ${on ? 1 : 0}; })()`;
+
 const SET_SCALE = (v: number): string =>
   `(() => { const r = window.__game.renderer; r.resolutionScale = ${v}; r.resize(); })()`;
 
@@ -357,6 +372,11 @@ const FACTORS: Record<string, Factor> = {
     name: 'bloom pyramid',
     aLabel: 'bloom on', a: PASS(1, true),
     bLabel: 'bloom off', b: PASS(1, false),
+  },
+  gradelook: {
+    name: 'colour grade block (issue #78)',
+    aLabel: 'grade on', a: GRADE_LOOK(true),
+    bLabel: 'grade off', b: GRADE_LOOK(false),
   },
   grade: {
     name: 'grade + AO pass',

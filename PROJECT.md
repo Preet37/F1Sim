@@ -236,6 +236,8 @@ Run `npm run` to list. The important ones:
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
+| `probe:grade` | **The in-race picture against `reference/target/`.** Median luma, RMS contrast, HSV saturation and mean(R)-mean(B) over a stated region, ours against the user's own frames, off `probe:sharpness` shots taken at the scale the real scaler settled on. Bars are the reference frame plus a tolerance. Issue #78 |
+| `probe:env` | **What is actually lighting the scene**, in a real browser: the captured sky is fetched from a gitignored directory and falls back silently by design, and a light mast that cannot be placed clear of the circuit is not placed — so both can be false while everything still looks fine. Reports `environmentSource` and the mast count |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
 | `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
@@ -905,6 +907,174 @@ red at 164.2mm**. Deleting the renderer's call to it: **2 of 4 §2b wiring check
 
 `probe:banking`, `probe:carrig`, `probe:rideheight`, `probe:recovery`, `probe:blockage`,
 `probe:gearbox` and `validate:world` are all unchanged and passing.
+
+### The in-race picture, measured against the reference frames (issue #78)
+
+> *"every image that I attached, i want that to that quality, the way that is, the way it
+> looks, everything that I showed you and shared with you I want you to do it that way."*
+> *"im not going to publish this game until it doesn't look like that."*
+
+`reference/target/` is the specification (§2, and `INDEX.md` in that directory). Nothing in
+this project had ever measured the drawn frame against it. **The first result is therefore
+the measurement, and two thirds of the brief this work was given turned out to be wrong.**
+
+**`probe:grade`** photographs the real game through `probe:sharpness` — the browser's own
+screenshot at whatever scale the real resolution scaler settled on, because `audit:circuits`
+drives a fixed `dt` and has only ever produced full-resolution frames no player has seen
+(above) — and compares four separable properties of a stated region of the frame against the
+same four taken from the user's own images: **median luma** (exposure), **RMS contrast**,
+**mean HSV saturation**, and **mean(R) − mean(B)** (white balance). One number per thing that
+can be wrong, so that a movement can be attributed.
+
+**The gap on `main`, before anything was touched:**
+
+| | `76.png` | ours | `90.png` road | ours | `90.png` sky | ours |
+|---|---|---|---|---|---|---|
+| median luma | **81** | 166 | **107** | 57 | **106** | 29 |
+| RMS contrast | **57.1** | 47.0 | **48.8** | 45.0 | **30.6** | 27.3 |
+| saturation | **0.253** | 0.153 | **0.126** | 0.212 | **0.060** | 0.670 |
+| warmth | **−17.0** | −8.4 | **+6.4** | +14.7 | **+3.0** | −33.4 |
+| 1st percentile | **1** | 46 | **3** | 4 | **59** | 8 |
+| in shadow | **6.1%** | 0.1% | **18.9%** | 13.6% | **0.0%** | 53.5% |
+
+**Three findings, and the two that matter most contradict the brief.**
+
+1. **The pass named `grade` did not grade.** It added bloom, occluded, vignetted,
+   desaturated for rain, dithered and flashed — every one of which is a lens or a weather
+   effect. **There was no tonal or chromatic transform in the renderer at all**; the frame
+   went from ACES straight to the screen. This was invisible for as long as it was precisely
+   because "colour grading" is the one thing everybody assumes is already there.
+2. **The day image was over-exposed by about a stop and a third, not slightly.**
+   `EXPOSURE.day = 1.35` is justified in `Renderer.ts` against a stated target — *"reference
+   footage of a real circuit, day or night, has its road sitting closer to 0.45"* of full
+   scale. **That number was never measured off a reference frame, and it is wrong.**
+   `76.png`'s asphalt band sits at 68/255 = **0.27**. Ours sat at 0.65, with 4.4% of the
+   frame clipped to white at Zandvoort and 9.2% at Monza, and with **no black anywhere in
+   it**: 1st percentile at code value 46 against the reference's 1, and 0.1% of the frame in
+   shadow against 6.1%.
+3. **We were 40% UNDER-saturated, not over.** The look was described as "slightly
+   desaturated"; the daylight frame measured 0.153 against the reference's 0.253. Almost all
+   of the deficit was the clipping — HSV saturation collapses as pixels approach white.
+   Pulling saturation, which is what the brief asked for, would have made it worse.
+
+**A fourth, found while fitting: the reference set does not define a daylight white balance.**
+`76.png` reads −17.0 and `71.png` reads +0.9. The least-squares balance term is a compromise
+that is wrong for both, so the day grade ships with **balance at unity** and says so.
+
+**`scripts/lib/gradeModel.ts` is what made this a measurement loop rather than a week.** One
+shoot of `probe:sharpness` is a build, a preview server, a headful Chrome and eleven
+circuits. The model inverts three's ACES exactly — the matrices, `RRTAndODTFit` by bisection,
+the sRGB transfer — recovers the linear radiance behind a frame the renderer already
+produced, applies a candidate grade in the shader's own arithmetic, and re-applies the
+pipeline. **The identity round trip is 0 code values on every statistic**, which is the check
+that the inverse is real. A candidate then costs a second. Its one stated inexactness is that
+ACES clips at 1.0, so a frame with clipped highlights under-predicts what raising contrast
+does to them — which is why the model chooses the parameters and a real shoot confirms them.
+
+**What landed.**
+
+- **A four-term colour grade in linear light, before the tone mapper.** White balance
+  (per-channel gain), contrast about a pivot, a shadow toe, saturation — one term per number
+  the probe reports separately. Run before ACES for the same reason bloom is: a contrast
+  curve applied after the tone mapper is operating on highlights that have already been
+  thrown away. It is **not a LUT**, deliberately, and the shader says why: a LUT is an
+  arbitrary transform nobody can measure the parts of, and it is measuring the parts that let
+  these be fitted. `PostFX.setGrade` is the swap point if a hand-authored `.cube` is ever
+  wanted.
+- **`EXPOSURE.day` 1.35 → 0.333**, from an exposure sweep on a real shot.
+- **A captured CC0 sky as `scene.environment`.** Poly Haven HDRIs from `public/assets/hdri/`
+  through `PMREMGenerator`. Loaded **asynchronously with the generated probe installed
+  first**, so a clone that never ran `scripts/fetchAssets.ts`, a build with the directory
+  deleted and a dropped request all still light their scene — deleting
+  `public/assets/hdri/` returns the renderer to its pre-#78 behaviour exactly.
+- **Night deliberately keeps the generated probe, and that is a measurement.** `hdri/night`
+  is Dikhololo Night, a rural starfield with no artificial light in it. A floodlit circuit is
+  the opposite, and `PALETTES.night` already models the thing that matters — fourteen point
+  sources at 20× radiance in two staggered rows, which is what puts hard specular streaks
+  along a car's flanks. A real sky of the wrong place loses to a deliberate model of the
+  right one.
+- **The environment's sun did not agree with the scene's, by 104°.** `applyAmbience` takes
+  care to point the sky dome's disc at the key light so *"the halo, the silver lining on the
+  cloud edges and the shadows on the track all agree"*, and then handed the probe nothing.
+  `PALETTES.day.sunAzimuth` is 205°; the day key light stands at 309.3°. **The reflected
+  highlight came from 104° away from the light casting the shadow.** A loaded HDRI is now
+  scanned for its own brightest direction and rotated so that direction lands on the key
+  light's azimuth. Rotating the environment rather than moving the light is deliberate: the
+  shadow direction is what `probe:framing`, `probe:banking` and every audit shot in the
+  repository are laid out against.
+- **The Bahrain night sky.** It measured a median of **29 against the reference's 106** and
+  was a near-black navy void: `0x01030a / 0x081020 / 0x243149` put sRGB (0,0,2), (1,7,24) and
+  (30,52,90) on screen. The reference frame's own sky is a **neutral hazy grey** — top 5%
+  mean sRGB (99, 98, 100), horizon (128, 126, 119), saturation 0.06, and **no black in it at
+  all**. The three dome colours are now *solved*, not picked: `toScene()` inverts the whole
+  display chain on those measured targets and returns the hexes.
+- **`FloodlightTowers.ts` — the light masts.** Put the two frames side by side and the
+  largest single difference is that theirs is full of floodlight towers and ours had none,
+  **while the environment probe was already reflecting fourteen of them off the cars**. Same
+  shape of defect as the mirrors in #29: the effect was modelled and the thing producing it
+  was not drawn. **47 masts at Bahrain, 53 at Jeddah, 0 by day**, three `InstancedMesh` draws,
+  placed by the same outward walk against `buildKeepOutField` the marshal posts use. They
+  **cast no light** and the module says so — the aggregate illumination is the night
+  hemisphere light that is already there and already tuned, and adding real lights would
+  double-count it.
+- **The night light rig scaled 1.9×** — hemisphere 1.85 → 3.5, sun 0.75 → 1.4, fill 0.78 →
+  1.45, rim 1.0 → 1.6. The lever is the rig and **not** the exposure, because with the sky
+  corrected the two *skies* agreed at 112 against 106 while the two *roads* read 58 against
+  107: the sky half was already right, and exposure would have moved both.
+
+**Probes, and what each of them is for.**
+
+- **`probe:env`, new, and it exists because both new claims can be false while everything
+  still looks fine.** The HDRI is fetched over HTTP from a gitignored directory and falls
+  back silently *by design*; a mast that cannot be placed clear of the circuit is not placed,
+  and a `FloodlightTowers` with a count of zero adds an empty group and throws nothing.
+  §3.2. It boots the real built application in a real browser and asserts what is actually
+  lighting the scene: `hdri:partly_cloudy` at Zandvoort, the generated probe at night, and
+  the mast counts. **6 ok / 0 failed — and proved red twice, with each break failing exactly
+  the assertions it should and no others.** Pointing the HDRI URL at a file that does not
+  exist: Zandvoort reports `generated` and fails, while Bahrain and Jeddah stay green,
+  because the generated probe is what they are *supposed* to have. Gating the masts off with
+  `if (false && …)`: Bahrain and Jeddah fail at 0 masts while Zandvoort's `0 masts` correctly
+  passes. **3 ok / 3 failed** on each break, exit 1; restored, **6 ok / 0 failed**.
+- **`probe:world` now scans `FloodlightTowers`.** That file's own header is a list of
+  renderer-side builders that were *not* in its scan and were therefore drawing on the road
+  unchecked; a 36m steel column would have been the next entry on it. **PASS on all eleven
+  circuits**, nothing named `floodlight` among the offenders.
+
+**After, on the same shoot harness, same eleven circuits, same windows:**
+
+| | `76.png` | before | **after** | `90.png` road | before | **after** | `90.png` sky | before | **after** |
+|---|---|---|---|---|---|---|---|---|---|
+| median luma | 81 | 166 | **123** | 107 | 57 | **83** | 106 | 29 | **113** |
+| RMS contrast | 57.1 | 47.0 | **54.5** | 48.8 | 45.0 | **54.6** | 30.6 | 27.3 | **22.0** |
+| saturation | 0.253 | 0.153 | **0.255** | 0.126 | 0.212 | **0.173** | 0.060 | 0.670 | **0.061** |
+| warmth | -17.0 | -8.4 | **-16.9** | +6.4 | +14.7 | **+12.1** | +3.0 | -33.4 | **+2.1** |
+| 1st percentile | 1 | 46 | **1** | 3 | 4 | **3** | 59 | 8 | **40** |
+| in shadow | 6.1% | 0.1% | **13.1%** | 18.9% | 13.6% | **7.7%** | 0.0% | 53.5% | **0.2%** |
+| clipped white | 1.1% | 4.4% | **0.1%** | 0.3% | 0.0% | **1.7%** | 0.6% | 0.0% | **0.1%** |
+
+**`probe:grade`: 6 ok / 10 failed -> 12 ok / 4 failed.** On `76.png` — the frame the user
+called "the best image" — three of the four land almost exactly: saturation **0.255 against
+0.253**, white balance **-16.9 against -17.0**, contrast **54.5 against 57.1**, and the black
+point is **1 against 1** where it had been 46. All four of Bahrain's night road numbers and
+all four of its night sky numbers now pass, from two and one respectively.
+
+**Sharpness held.** `probe:sharpness`'s own grain-by-band metric, mean over 11 circuits:
+band 1 (horizon) **2.78 -> 2.89**, band 2 **12.50 -> 13.34**, band 3 **26.19 -> 29.51**,
+bands 5 and 6 **down**. The middle bands rising ~7-13% is the contrast term doing exactly
+what it was raised to do — a power curve amplifies existing luma differences, including
+high-frequency ones — and it is nowhere near the 5.4-11.3x that §6 records as hard won. One
+shot moved a lot and it is explained rather than averaged: **Bahrain cockpit band 2 went
+1.5 -> 10.1**, because that band was the near-black night sky and now contains a hazy
+gradient, cloud and floodlight masts. That is content arriving, not speckle.
+
+- **`probe:grade`'s bars are the reference frame plus a tolerance**, and the first version of
+  them was wrong in a way worth recording. They were absolute ranges derived from four
+  world-and-road crops, then applied unchanged to the night *sky* — which is nearly
+  colourless, so **the specification failed the bar taken from it**. A bar the reference
+  cannot pass is not measuring what it claims to. Per-pair tolerances are also tighter almost
+  everywhere: the old median bar allowed 55 code values of drift at Zandvoort, the new one
+  allows 25.
 
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
@@ -2085,6 +2255,85 @@ measurement passes every version of it that is wrong.
   *"if the racing line is green how did i go off the track?"* and it is a live bug in
   `src/render/RacingLine.ts` — **deliberately not touched here**, because `src/render/` was
   held by other agents for #54 and #47 while this work was in flight. **Nobody is on it.**
+
+### The in-race picture: what #78 did NOT close, and why
+
+`probe:grade` went from **6 ok / 10 failed** to ****12 ok / 4 failed**** against
+`reference/target/`. What is left is not tuning, and the measurements say what it is.
+
+- **The scene's DYNAMIC RANGE is the residual, and a grade cannot manufacture range.**
+  `76.png` holds a median of 81 *with* an RMS contrast of 57.1 — a dark median under a wide
+  spread. Every exposure our renderer can be set to trades one for the other: at the level
+  that puts our median near the reference's, our spread falls to 34–40, and at the level that
+  holds the spread the median is 50 too high. The exposure sweep is in the PR and it is
+  monotone in both directions. **What our world lacks is deep shadow and specular highlight,
+  not a curve.** The candidates, in the order a measurement should attack them: ambient fill
+  (a hemisphere light, an environment probe, a fill light and a rim light all lifting every
+  surface that faces away from the key), the exponential fog, and the very large untextured
+  surfaces — the run-off, the barrier faces and the terrain — that occupy a third of the
+  frame and return one flat value each. **Nobody is on this.**
+- **Monza's frame is 50 code values brighter than Zandvoort's under identical settings**
+  (147 against 136 before the final grade; 202 against 166 on `main`), while the two
+  reference frames differ by 8. So there is a per-circuit brightness variation of about 1.4×
+  that no global exposure can serve, and it has not been diagnosed. The exposure is set from
+  Zandvoort because the user named `76.png` "the best image", and **Monza's residual is
+  reported rather than averaged away**. Prime suspect is how much sky each frame contains
+  against how much shadowed geometry, which would make it a framing artefact of the probe's
+  window rather than a renderer defect — but that is a hypothesis and nobody has measured it.
+- **The near-field high-frequency detail is a third to a sixth of the reference's, and it is
+  not this work's ground.** Mean absolute Laplacian over the compared band: Zandvoort
+  **10.3 against `76.png`'s 20.8**, Bahrain's floodlit road **3.3 against `90.png`'s 19.7**.
+  The night road is the extreme case — a six-fold deficit — and it is the asphalt carrying
+  essentially no texture. That is issue #48's ground (`TrackMesh.ts` / `SurfaceDetail.ts`)
+  and the `materials/asphalt` set that `scripts/fetchAssets.ts` now pulls is explicitly the
+  #48 agent's to bind. **Recorded here so the number exists, not claimed as closed.**
+- **`materials/concrete`, `materials/grass` and `materials/gravel` are fetched and NOT
+  BOUND.** They are trackside and therefore in scope, and they are exactly what would fix the
+  "huge untextured surfaces" item above, but the surfaces that want them — the run-off, the
+  verge and the barrier faces — are all built in `TrackMesh.ts`, which the road-surface work
+  holds. Binding them from a second file would have produced two materials for one surface.
+  The honest state is: **the assets are on disk, the surfaces that need them are in somebody
+  else's file, and the two have not been introduced.**
+- **The trackside inventory is better than the brief assumed, and the gap is specific.** An
+  audit of what the renderer actually draws found grandstands with real per-person crowd
+  geometry and roofs, a continuous advertising hoarding ribbon with twelve invented sponsors,
+  chain-link catch fencing with a measured shimmer fix, marshal posts with live FIA panels, a
+  start/finish gantry, braking boards, trees and a fully detailed pit building with a media
+  centre. What is genuinely absent, measured against the reference frames: **TecPro barriers
+  and tyre walls; marshals as people; catch fencing on street circuits** (skipped entirely,
+  so Monaco and Jeddah have bare walls); **palm trees or any vegetation variety beyond one
+  cone-and-cylinder**; **DRS, sector and timing gantries** (there is exactly one gantry per
+  circuit); and **crowd variety between stands** — every trackside stand on a circuit is one
+  instanced geometry off one seed, so it is literally the same crowd repeated.
+- **`dusk` is not fitted and cannot be.** No circuit in `src/data/tracks/circuits.ts` uses
+  it — all eleven are `day` or `night` — so there is nothing to shoot, and there is no dusk
+  frame in `reference/target/`. Its grade is the day grade with the toe eased, on stated
+  reasoning, and it is labelled a guess in the source.
+- **Frame time was NOT measured on a quiet machine, and no absolute number from this work
+  should be quoted.** Load average was 36–71 for most of the session and **203 during the
+  final shoot**. What the changes can cost is bounded by inspection and stated as such: the
+  grade is ~15 ALU operations inside a full-screen pass that was already running; the HDRI is
+  a one-off download and PMREM filter with no per-frame cost, because a filtered cubemap
+  costs the same to sample whatever produced it; the masts are three draw calls and about
+  6,200 triangles at two circuits. `PERF_PAIR=gradelook` was added to `probe:renderperf` to
+  isolate the grade block from the pass around it, and **one** paired run was taken, at
+  Bahrain, at load average 205: **grade on 36.12ms, grade off 35.97ms, paired delta +0.37ms
+  over 12 cycles, spread −0.63..0.98.** The spread straddles zero, so the honest reading is
+  that the grade block's cost is **not distinguishable from zero** — and the 36ms absolute is
+  a measurement of this machine's contention, not of the renderer, and must not be quoted as
+  a frame time. **Nothing else was measured**: no viewport sweep, no phone geometry, no
+  whole-frame before/after, and no second circuit.
+- **`probe:graphics` DID NOT COMPLETE, on either of two attempts, and this is the
+  load-fragility §7 already records rather than anything about the change.** The first run
+  reached **52 ok / 0 failed** and then died on a puppeteer navigation —
+  `Execution context was destroyed, most likely because of a navigation` — at load average
+  205. A second run at load 72-110 reached **50 of its 67 checks, 0 failed**, and was still
+  crawling through its cold page loads when the work was handed over. **Zero failures in either, and every
+  section it did reach passed**, including the three-tier GL configuration table and all
+  three of the per-switch overrides. The change it is being asked about adds uniforms to an
+  existing pass and allocates no new one, so there is no mechanism by which it should move —
+  but 52 of 67 is not 67, and the run should be repeated on a quiet machine before the branch
+  is merged. Same species as the `regress:exit` and `probe:qualiretire` entries below.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not

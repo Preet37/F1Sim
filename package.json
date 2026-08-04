@@ -102,7 +102,9 @@
     "diag:pitchoice": "tsx scripts/diagPitChoice.ts",
     "shoot:people": "tsx scripts/shootPeople.ts",
     "probe:qualiretire": "node scripts/probeQualiRetire.mjs",
-    "probe:people": "tsx scripts/probePeople.ts"
+    "probe:people": "tsx scripts/probePeople.ts",
+    "probe:grade": "tsx scripts/probeGrade.ts",
+    "probe:env": "tsx scripts/probeEnv.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

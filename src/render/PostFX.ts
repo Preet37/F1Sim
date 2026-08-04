@@ -143,6 +143,143 @@ const BLOOM_STRENGTH = 0.3;
  */
 const BLOOM_LEVELS = 4;
 
+/**
+ * A colour grade: four separable terms, in linear light. See the shader.
+ *
+ * `balance` is a per-channel linear gain, `contrast` a power about `pivot`,
+ * `toe` a crush of everything below `toeRange`, `saturation` a mix toward luma.
+ * Identity is `[1,1,1] / 1 / 0 / 1`, and `GRADES.off` is exactly that.
+ */
+export interface Grade {
+  balance: [number, number, number];
+  contrast: number;
+  pivot: number;
+  toe: number;
+  toeRange: number;
+  saturation: number;
+}
+
+/**
+ * The grades, one per ambience, FITTED TO THE REFERENCE FRAMES.
+ *
+ * Every number here was produced by `npm run probe:grade`, which photographs
+ * the real game through the real browser at the resolution the real scaler
+ * settles on, measures the median luma, RMS contrast, HSV saturation and
+ * mean(R)-mean(B) of the world region of the frame, and compares them against
+ * the same four numbers taken from `reference/target/`. None of it was chosen
+ * by looking at the picture — PROJECT.md section 3.1, and this is precisely the
+ * kind of claim that section exists about.
+ *
+ * WHAT THE REFERENCE ACTUALLY MEASURES, because one part of the brief for this
+ * work turned out to be wrong and it is worth recording rather than quietly
+ * correcting. The look was described as "slightly desaturated, high contrast,
+ * warm key". Two of those three hold: `76.png`'s world region carries an RMS
+ * contrast of 57.1 against a mean of 30-40 for a typical game render, and its
+ * saturation is 0.261. The third does not — its mean(R)-mean(B) is MINUS 17.0,
+ * i.e. decidedly cool, because a daylight F1 frame is dominated by open sky and
+ * grey asphalt and the warm key light is a small, bright fraction of the pixels.
+ * `90.png` at night is warm, at +6.5 across the road. So the balance term is per
+ * ambience and it does not all point the same way, which is the whole reason it
+ * is a table rather than a constant.
+ */
+const GRADES: Record<'day' | 'dusk' | 'night' | 'off', Grade> = {
+  off: { balance: [1, 1, 1], contrast: 1, pivot: 0.18, toe: 0, toeRange: 0.06, saturation: 1 },
+  /**
+   * Fitted against `reference/target/76.png` — the frame the user named "the
+   * best image" — with `EXPOSURE.day` at its measured value of 0.333.
+   *
+   * MEASURED ON THE SHIPPED BUILD, `npm run probe:grade`, world band above the
+   * halo, at the resolution the real scaler settled on:
+   *
+   *             reference   before    after
+   *   p50            81       166      123
+   *   rms          57.1      47.0     54.5
+   *   saturation  0.253     0.153    0.255
+   *   warmth      -17.0      -8.4    -16.9
+   *   p1              1        46        1
+   *   shadow       6.1%      0.1%    13.1%
+   *   clipped      1.1%      4.4%     0.1%
+   *
+   * Four of those land: saturation to within 0.002, white balance to within
+   * 0.1, contrast to within 2.6, and the black point exactly. The median is
+   * still 42 high and that residual is the scene's dynamic range rather than
+   * this grade's — see PROJECT.md section 7, which has the sweep showing that
+   * every exposure trades the median against the spread.
+   *
+   * BALANCE IS LEFT AT UNITY DELIBERATELY, and it is the one term that was not
+   * fitted. The optimiser wanted [1.149, 1.000, 0.931] — a warm push — and it
+   * wanted it because the two daylight reference frames DISAGREE about white
+   * balance: `76.png` reads -17.0 and `71.png` reads +1.1, so the least-squares
+   * answer is a compromise that is wrong for both. The reference set does not
+   * define a daylight white balance, so this does not invent one, and the frame
+   * lands at -16.9 against -17.0 with no balance term at all.
+   *
+   * SATURATION MOVES THE OPPOSITE WAY FROM THE BRIEF, and the 0.82 here does
+   * not contradict that — read it with the before/after column, not on its own.
+   * The look was described as "slightly desaturated"; measured, our daylight
+   * frame was at 0.153 against the reference's 0.253, i.e. **40% UNDER**. The
+   * exposure cut and the contrast term both push HSV saturation UP — the first
+   * because saturation collapses as pixels approach white and 4.4% of the frame
+   * was clipped, the second because a power curve pushes the channels apart —
+   * and together they overshoot to about 0.30. This term is the brake that puts
+   * it back on 0.253. The net movement is still 0.153 -> 0.255, upward.
+   */
+  day: {
+    balance: [1, 1, 1],
+    contrast: 1.38,
+    pivot: 0.19,
+    toe: 0.39,
+    toeRange: 0.066,
+    saturation: 0.82,
+  },
+  /**
+   * NOT FITTED, AND SAID SO. No circuit in `src/data/tracks/circuits.ts` uses
+   * `dusk` — all eleven are `day` or `night` — so there is no shot of it to
+   * measure and there is no dusk frame in `reference/target/`. This is the day
+   * grade with the toe eased, on the reasoning that a low sun already supplies
+   * the contrast the toe is there to add. It is a guess, it is labelled as one,
+   * and the moment a circuit uses it `probe:grade` should get a fourth pair.
+   */
+  dusk: {
+    balance: [1, 1, 1],
+    contrast: 1.38,
+    pivot: 0.19,
+    toe: 0.26,
+    toeRange: 0.066,
+    saturation: 0.82,
+  },
+  /**
+   * Fitted against `reference/target/90.png`'s road band.
+   *
+   * THE NIGHT GRADE IS SMALL ON PURPOSE, AND THE REASON IS THE INTERESTING
+   * PART. The night frame's gap is not a grade gap: our floodlit road measured
+   * p50 57 against the reference's 107, and an exposure sweep says that even at
+   * 2.6 — half a stop past anything defensible — it only reaches 80, while the
+   * shadow fraction goes the wrong way. A grade cannot add light that the scene
+   * never emitted. What was actually wrong was the SKY and the absence of any
+   * light-source geometry; both are fixed in `Renderer.applyAmbience` and
+   * `FloodlightTowers.ts`, and this grade only does the last few per cent on
+   * top of them. See PROJECT.md section 6.
+   *
+   * MEASURED ON THE SHIPPED BUILD, with the sky and the rig corrected under it,
+   * all eight assertions passing where three did before:
+   *
+   *                road ref   before   after     sky ref   before   after
+   *   p50               107       57      83         106       29     113
+   *   rms              48.8     45.0    54.6        30.6     27.3    22.0
+   *   saturation      0.126    0.212   0.173       0.060    0.670   0.061
+   *   warmth           +6.4    +14.7   +12.1        +3.0    -33.4    +2.1
+   */
+  night: {
+    balance: [1, 1, 1],
+    contrast: 1.05,
+    pivot: 0.16,
+    toe: 0.10,
+    toeRange: 0.05,
+    saturation: 0.90,
+  },
+};
+
 /** Threshold and downsample, four bilinear taps, in one pass. */
 const BLOOM_PREFILTER_SHADER = {
   uniforms: {
@@ -258,6 +395,25 @@ const GRADE_SHADER = {
     uAORadius: { value: 0.5 },
     /** One over the render target size, in pixels. */
     uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
+    /**
+     * THE COLOUR GRADE. See `GRADES` and the shader block for what each term
+     * does and where its value came from. Identity is
+     * balance (1,1,1) / contrast 1 / saturation 1 / toe 0, and the whole block
+     * is skipped when `uGradeOn` is 0, so a build with the grade off is
+     * byte-identical to the pre-#78 image.
+     */
+    uGradeOn: { value: 0 },
+    /** Per-channel gain in linear light: white balance. */
+    uBalance: { value: new THREE.Vector3(1, 1, 1) },
+    /** Contrast exponent about `uPivot`, in linear light. */
+    uContrast: { value: 1 },
+    /** The linear value contrast pivots about. 0.18 is mid grey. */
+    uPivot: { value: 0.18 },
+    /** Shadow crush, 0..1, applied below `uToeRange`. */
+    uToe: { value: 0 },
+    uToeRange: { value: 0.06 },
+    /** 1 leaves saturation alone; below 1 desaturates. */
+    uSaturation: { value: 1 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -287,6 +443,13 @@ const GRADE_SHADER = {
     uniform float uAO;
     uniform float uAORadius;
     uniform vec2 uTexel;
+    uniform float uGradeOn;
+    uniform vec3 uBalance;
+    uniform float uContrast;
+    uniform float uPivot;
+    uniform float uToe;
+    uniform float uToeRange;
+    uniform float uSaturation;
     varying vec2 vUv;
 
     // Interleaved gradient noise: one line, well distributed, and stable enough
@@ -557,6 +720,75 @@ const GRADE_SHADER = {
         float lum = dot(colour, vec3(0.2126, 0.7152, 0.0722));
         colour = mix(colour, vec3(lum), uWet * 0.22);
         colour = mix(colour, colour * 0.92 + vec3(0.022), uWet);
+      }
+
+      // --- The colour grade ---------------------------------------------------
+      //
+      // THE PASS WAS CALLED grade AND DID NOT GRADE. Until issue #78 this
+      // shader added bloom, occluded, vignetted, desaturated for rain, dithered
+      // and flashed — every one of which is a lens or a weather effect — and
+      // there was no tonal or chromatic transform in the renderer at all. The
+      // image went straight from ACES to the screen. That is the actual reason
+      // the picture reads flat against reference/target/76.png and 90.png,
+      // and it was invisible for as long as it was because "colour grading" is
+      // the one thing everybody assumes is already there.
+      //
+      // RUN IN LINEAR LIGHT, BEFORE THE TONE MAPPER, and that is deliberate for
+      // exactly the reason stated at the top of this file for bloom: once ACES
+      // has compressed the top four stops into the last few code values, a
+      // contrast curve applied afterwards is operating on an image whose
+      // highlights have already been thrown away, and pushing it makes the
+      // bright end posterise instead of getting brighter. A power curve about a
+      // pivot in linear light IS an S-curve by the time it comes out of ACES,
+      // with the roll-off preserved, which is the shape wanted.
+      //
+      // FOUR TERMS, EACH ANSWERING ONE OF THE FOUR THINGS probe:grade
+      // MEASURES SEPARATELY, so that a number moving can be attributed:
+      //
+      //  - uBalance   per-channel gain -> warmth, mean(R) - mean(B)
+      //  - uContrast  power about a pivot -> rms, and p50 through the pivot
+      //  - uToe       crush below the toe range -> p1 and the shadow fraction
+      //  - uSaturation mix toward luma -> sat
+      //
+      // They are four because they were three at first and the third one could
+      // not be tuned: contrast about a pivot moves the black point, the median
+      // AND the spread together, so fitting it to the reference's rms drove the
+      // median off and fitting the median drove the spread off. Splitting the
+      // shadow end out into its own term is what made the fit converge.
+      //
+      // NOT A LUT, AND THIS IS THE ONE PLACE THE OBVIOUS ANSWER IS THE WRONG
+      // ONE. A 3D LUT is the standard tool and the user named it. What a LUT
+      // gets you is an arbitrary transform an artist authored in a grading
+      // application; what it costs is a 32x32x32 texture fetch per pixel, a
+      // second asset to ship and version, and — the part that matters here —
+      // a transform nobody can measure the parts of. This grade is fifteen ALU
+      // operations and every one of its four numbers is separately readable in
+      // probe:grade's output, which is what let them be FITTED to the
+      // reference frames rather than eyeballed. If a hand-authored look is ever
+      // wanted, this operator is exactly what a .cube would be baked FROM, and
+      // the swap point is PostFX.setGrade.
+      if (uGradeOn > 0.5) {
+        colour = max(colour, vec3(0.0));
+
+        // WHITE BALANCE. A per-channel gain, which is what a camera's white
+        // balance physically is.
+        colour *= uBalance;
+
+        // CONTRAST about a pivot. pow of a non-negative base, so no NaN.
+        colour = uPivot * pow(colour / uPivot, vec3(uContrast));
+
+        // SHADOW TOE. Crushes the bottom of the range without touching
+        // anything above it, which is the half of "high contrast" that a
+        // symmetric power curve cannot deliver on its own.
+        if (uToe > 0.001) {
+          float sl = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+          colour *= mix(1.0 - uToe, 1.0, smoothstep(0.0, uToeRange, sl));
+        }
+
+        // SATURATION, last, so it acts on the tones the curve actually
+        // produced rather than on the ones it was handed.
+        float gl = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+        colour = mix(vec3(gl), colour, uSaturation);
       }
 
       // Dither, not grain.
@@ -848,6 +1080,10 @@ export class PostFX {
     // contacts, and those survive at 0.6 with the noise cut by a third.
     this.aoStrength = 0.6;
     this.grade.uniforms.uAO.value = this.aoStrength;
+    // Whatever grade was in force before the chain was rebuilt. The Video tab
+    // can turn the chain off and on mid-session (issue #29), and the grade
+    // belongs to the circuit's ambience, which is not re-applied on that path.
+    this.applyGrade();
     composer.addPass(this.grade);
 
     // Applies the renderer's tone mapping and converts to sRGB. Last in the
@@ -945,6 +1181,39 @@ export class PostFX {
       u.uBloom.value = BLOOM_STRENGTH;
       this.bloom.threshold = BLOOM_THRESHOLD + nightBias * 0.35;
     }
+  }
+
+  /**
+   * The grade in force. Held on the instance rather than only on the uniform,
+   * because the chain is built and torn down on demand (issue #29) and a grade
+   * set while the chain was off would otherwise be lost on the way back.
+   */
+  private gradeParams: Grade = GRADES.off;
+
+  /**
+   * Install a colour grade by name, or turn it off.
+   *
+   * `Renderer.applyAmbience` is the caller: the grade belongs to the time of
+   * day, because a floodlit circuit and an overcast afternoon do not want the
+   * same white balance and the reference frames measure differently on every
+   * one of the four terms.
+   */
+  setGrade(which: 'day' | 'dusk' | 'night' | 'off'): void {
+    this.gradeParams = GRADES[which];
+    this.applyGrade();
+  }
+
+  private applyGrade(): void {
+    if (!this.grade) return;
+    const g = this.gradeParams;
+    const u = this.grade.uniforms;
+    u.uGradeOn.value = g === GRADES.off ? 0 : 1;
+    (u.uBalance.value as THREE.Vector3).set(g.balance[0], g.balance[1], g.balance[2]);
+    u.uContrast.value = g.contrast;
+    u.uPivot.value = g.pivot;
+    u.uToe.value = g.toe;
+    u.uToeRange.value = g.toeRange;
+    u.uSaturation.value = g.saturation;
   }
 
   /** A full-screen flash: impacts, the start, a chequered flag. */
