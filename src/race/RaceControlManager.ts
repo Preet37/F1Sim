@@ -2497,6 +2497,25 @@ export class RaceControlManager {
    *
    * Exceeding it is a drive-through in a race. The check uses a small tolerance
    * so a car sitting exactly on the limiter is not penalised for float noise.
+   *
+   * JUDGED ON SPEED ALONG THE LANE, not on the magnitude of the velocity, and
+   * the difference between those two is worth a drive-through. A pit lane speed
+   * limit is a limit on how fast you travel DOWN the pit lane — it is measured
+   * between two loops set in the road — and the limiter that holds a car to it
+   * is an engine cut, which can only ever act on forward speed. Judging the
+   * magnitude instead charges the driver for sideslip the automatic limiter has
+   * no mechanism to remove.
+   *
+   * Measured, Monza, a car driven the length of the lane on full throttle: the
+   * limiter held it at vx = 80.09 km/h against an 80 limit while `speedKph` read
+   * 86.86 — 22.8 degrees of slip — and the drive-through was issued at 80.6 with
+   * the car doing 79.85 forward. No limiter setpoint can cover that, because the
+   * excess is not a speed the limiter controls. `PitLimiter.ts` already states
+   * the rule this restores: "if the game presses the button, the game owes the
+   * driver an entry that is not an instant penalty."
+   *
+   * A car genuinely travelling too fast down the lane is unaffected — that speed
+   * IS its forward speed.
    */
   private checkPitLaneSpeed(car: CarEntry, index: number, sessionTime: number): void {
     if (!car.inPitLane) {
@@ -2504,12 +2523,13 @@ export class RaceControlManager {
       return;
     }
 
+    const alongLaneKph = Math.abs(car.physics.forwardSpeedMs) * 3.6;
     const limit = this.track.def.pitLane.speedLimitKph + PIT_SPEED_TOLERANCE_KPH;
-    if (car.physics.speedKph > limit && !car.pitSpeedingFlagged) {
+    if (alongLaneKph > limit && !car.pitSpeedingFlagged) {
       car.pitSpeedingFlagged = true;
       car.penalties.push({
         kind: 'drive-through',
-        reason: 'Speeding in the pit lane (' + car.physics.speedKph.toFixed(1) + ' km/h)',
+        reason: 'Speeding in the pit lane (' + alongLaneKph.toFixed(1) + ' km/h)',
         lap: car.lap, timeS: 0, served: false,
       });
       this.log(

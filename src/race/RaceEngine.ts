@@ -3328,16 +3328,32 @@ export class RaceEngine {
       // wheels are actually changed, so an overshoot costs a lap and a fresh
       // run at the entry, which is what it costs in a race.
       //
-      // A transit — a drive-through penalty — IS answered by the transit, so it
-      // clears either way.
-      if (served || car.pitTransitOnly) {
+      // A TRANSIT DISCHARGES THE PENALTY, NOT THE STOP, and this used to say the
+      // opposite: `served || car.pitTransitOnly`. It is the same defect as the
+      // one above, through a different door, and it is the whole of "a missed
+      // box is unrecoverable".
+      //
+      // A drive-through forces `pitTransitOnly` on the NEXT visit, whatever the
+      // driver came in for. So: overshoot the box (or pick up a penalty for
+      // anything at all while a stop is called), come round again as this file
+      // promises you can, and the second visit is spent serving the penalty and
+      // then clears the tyre stop you never got. The wheels were never changed,
+      // the driver was never told, and on a two-stop strategy that is the
+      // two-compound disqualification this branch of the code exists to prevent.
+      //
+      // Measured at Monza before the fix: visit 1 overshoots and the call
+      // correctly stands; visit 2 is a transit; `pitStops` 0, `pitRequested`
+      // false, and the car never comes in again.
+      if (served) {
         car.pitRequested = false;
         // ...and the pit wall's own latch with it, or it would keep
         // re-requesting a stop that has already happened.
         this.pitWalls[car.index]?.onServed();
-      } else if (car.isPlayer) {
+      } else if (car.isPlayer && car.pitRequested) {
         this.raceControl.log(
-          'No stop — you are still due in. Box again next lap.',
+          car.pitTransitOnly
+            ? 'Penalty served — you are still due in for tyres. Box again next lap.'
+            : 'No stop — you are still due in. Box again next lap.',
           'warning', this.time, car.index,
         );
       }
