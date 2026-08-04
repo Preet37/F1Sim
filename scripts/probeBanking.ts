@@ -38,9 +38,28 @@
  *     the cars still placed by the wrong function, which is the state issue #3
  *     described.
  *
- * Sampling is at the mesh's own node stride, so each ray lands on a row of mesh
- * vertices and the comparison is exact rather than an argument about how a chord
- * sags across a quad.
+ * ---------------------------------------------------------------------------
+ * AND THE FIRST VERSION OF (1) COULD ONLY EVER LOOK AT THE VERTEX ROWS
+ * ---------------------------------------------------------------------------
+ *
+ * Section 1 fires every ray at `px[i] + nx[i] * lat` — a row of MESH VERTICES,
+ * where the drawn corners are on the placement rule by construction. It
+ * reported `0.000m` on eleven circuits and it was not wrong; it was blind.
+ *
+ * The road is swept as ONE quad across its full width per node. Where the two
+ * node rows FAN — every corner on the calendar — that quad is not planar, so
+ * the diagonal it is split on lifts or drops the drawn triangles off
+ * `bankedCarGroundY` EVERYWHERE EXCEPT AT THE FOUR CORNERS. `probe:crashrest`
+ * §4 found it while measuring something else (issue #71): up to 113.5mm at
+ * Suzuka. A probe that samples only at the corners of the one place a mesh can
+ * be wrong reports zero forever.
+ *
+ * So section 2 samples BETWEEN the rows and BETWEEN the edges — five stations
+ * across each span, seven offsets across the road — and asks the same question
+ * section 1 asks, at the points section 1 cannot reach. Same rule, same
+ * raycast, same exclusion of the crossover; only the sample positions differ.
+ * That is the whole of the addition, and it is what makes the mesh fix below
+ * measurable rather than asserted.
  *
  * Run: npm run probe:banking
  */
@@ -49,6 +68,7 @@ import * as THREE from 'three';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { installCanvasStub } from './lib/domStub';
+import { RoadTriangles } from './lib/roadTriangles';
 
 // The renderer paints signage and surface-detail textures into canvases as it
 // builds. None of that is measured here, but it has to succeed before there are
@@ -113,6 +133,62 @@ const SAME_ROAD_M = 5;
  * of them share is reported against both, which is not two surfaces.
  */
 const COINCIDENT_M = 0.001;
+
+/**
+ * Where section 2 samples ALONG a span, as a fraction of the node interval.
+ *
+ * Strictly inside (0, 1) and deliberately never 0 or 1: those are section 1's
+ * vertex rows, where the answer is exact by construction and proves nothing.
+ * Five stations rather than one because the worst point of a warped quad is not
+ * reliably its middle — the diagonal the quad is split on makes the error
+ * asymmetric, so a mid-span-only sweep understates one half of every corner.
+ */
+const BETWEEN_LONG_FRACS = [1 / 6, 1 / 3, 1 / 2, 2 / 3, 5 / 6];
+
+/**
+ * Where section 2 samples ACROSS the road, as a fraction of half-width.
+ *
+ * 0.9 rather than 1.0: the outermost column of a subdivided sweep meets the
+ * white line exactly, and a sample sitting on the mesh's outer edge is another
+ * vertex row. 0.9 of half-width is still a car's outside tyre on the paint at
+ * every circuit on the calendar. The centreline is included because a quad
+ * split on its diagonal is wrong in the MIDDLE of the road too — that is where
+ * the diagonal runs.
+ */
+const BETWEEN_LAT_FRACS = [-0.9, -0.6, -0.3, 0, 0.3, 0.6, 0.9];
+
+/**
+ * How far the drawn road may sit from the placement rule BETWEEN the rows.
+ *
+ * The same 2mm as section 1, and it is the same rule for the same reason
+ * rather than a second budget. Every vertex of the road mesh is on
+ * `bankedCarGroundY` exactly — that is what section 1 measures — so between
+ * them the only thing that can differ is how finely the surface is
+ * tessellated, which is a decision this file makes and not a property of the
+ * surveyed data. There is no floor here to be generous about: a sweep fine
+ * enough drives it to zero, and the honest expectation is therefore section
+ * 1's own number.
+ *
+ * NOT loosened to fit. On the build this section was written against it fails
+ * on seven of eleven circuits, worst 113.5mm.
+ */
+const TOL_BETWEEN_M = 0.002;
+
+/** One circuit's answer to section 2. */
+interface BetweenRow {
+  id: string;
+  samples: number;
+  offMesh: number;
+  crossings: number;
+  max: number;
+  mean: number;
+  atS: number;
+  atLat: number;
+}
+
+const betweenRows: BetweenRow[] = [];
+/** Largest disagreement between the grid index and THREE's own raycaster. */
+let crossCheck = 0;
 
 console.log('\n' + '='.repeat(102));
 console.log('BANKING — is a car placed on the asphalt that is DRAWN under it?');
@@ -258,6 +334,67 @@ for (const def of CIRCUITS) {
       }
     }
   }
+
+  // =======================================================================
+  // SECTION 2 — the same question, at the points section 1 cannot reach.
+  // =======================================================================
+  const index = new RoadTriangles(road);
+  const hits: number[] = [];
+  const kept: number[] = [];
+  let bMax = 0, bSum = 0, bN = 0, bOff = 0, bCross = 0, bAtS = 0, bAtLat = 0;
+  let checkTick = 0;
+  for (let i = 0; i < t.count; i++) {
+    const j = (i + 1) % t.count;
+    const sNode = t.dist[i];
+    let span = t.dist[j] - sNode;
+    if (span <= 0) span += t.length;
+    for (const lf of BETWEEN_LONG_FRACS) {
+      const s = sNode + span * lf;
+      const hw = t.widthAt(s) * 0.5;
+      const elev = t.elevationAt(s);
+      for (const vf of BETWEEN_LAT_FRACS) {
+        const lateral = vf * hw;
+        // Where the placement rule says a car standing at (s, lateral) IS, and
+        // how high it says the car's origin goes. Both come out of `src/`; the
+        // only thing measured here is whether a triangle is drawn there.
+        const p = t.toWorld(s, lateral, t.tmpA);
+        const ruleY = bankedCarGroundY(t, s, lateral);
+        index.heightsAt(p.x, p.y, hits);
+        kept.length = 0;
+        for (const y of hits) if (Math.abs(y - elev) <= SAME_ROAD_M) kept.push(y);
+        if (kept.length === 0) { bOff++; continue; }
+        // Two pieces of asphalt under one point: issue #37, excluded here for
+        // exactly the reason section 1 excludes it.
+        if (kept.length > 1) { bCross++; continue; }
+
+        // THE INDEX IS CHECKED AGAINST THE RAYCASTER, on a thinned subset, so
+        // that a bug in the acceleration structure cannot quietly report a
+        // flat road. One in 997 samples, which is ~70 per circuit.
+        if (++checkTick % 997 === 0) {
+          origin.set(p.x, elev + 500, p.y);
+          ray.set(origin, down);
+          let best = -Infinity;
+          for (const h of ray.intersectObject(road, false)) {
+            if (Math.abs(h.point.y - elev) > SAME_ROAD_M) continue;
+            if (h.point.y > best) best = h.point.y;
+          }
+          if (best > -Infinity) {
+            const d = Math.abs(best - kept[0]);
+            if (d > crossCheck) crossCheck = d;
+          }
+        }
+
+        const err = Math.abs(kept[0] - ruleY);
+        bSum += err; bN++;
+        if (err > bMax) { bMax = err; bAtS = s; bAtLat = lateral; }
+      }
+    }
+  }
+  betweenRows.push({
+    id: def.id, samples: bN, offMesh: bOff, crossings: bCross,
+    max: bMax, mean: bN > 0 ? bSum / bN : 0, atS: bAtS, atLat: bAtLat,
+  });
+
   meshes.dispose();
 
   const m = (v: number): string => v.toFixed(3) + 'm';
@@ -284,6 +421,48 @@ if (overlaps > 0) {
     `${worstOverlapM.toFixed(3)}m (${worstOverlapAt}). Not a banking error — the lap crosses`);
   console.log('itself and neither leg is drawn as a bridge. Excluded from the figures above.');
 }
+
+// ===========================================================================
+// SECTION 2 — BETWEEN THE ROWS
+// ===========================================================================
+
+console.log('\n' + '='.repeat(102));
+console.log('BETWEEN THE ROWS — is the DRAWN road the surface the placement rule describes,');
+console.log('                  at the points that are not mesh vertices?');
+console.log('='.repeat(102));
+console.log(
+  `${BETWEEN_LONG_FRACS.length} stations across every span x ${BETWEEN_LAT_FRACS.length} offsets ` +
+  'across the road, none of them on a vertex row.',
+);
+console.log('Section 1 above samples only where the quad\'s corners are, which is where the mesh');
+console.log('and the rule agree by construction. This is the same comparison, off the corners.\n');
+
+console.log(
+  padr('circuit', 14) + pad('samples', 10) + pad('no road', 9) + pad('crossover', 11) +
+  pad('max err', 11) + pad('mean err', 11) + '  worst at',
+);
+let worstBetween = 0;
+let worstBetweenAt = '';
+for (const r of betweenRows) {
+  console.log(
+    padr(r.id, 14) + pad(String(r.samples), 10) + pad(String(r.offMesh), 9) +
+    pad(String(r.crossings), 11) +
+    pad((r.max * 1000).toFixed(1) + 'mm', 11) + pad((r.mean * 1000).toFixed(1) + 'mm', 11) +
+    `  s=${r.atS.toFixed(0)}m lat=${r.atLat.toFixed(1)}m` +
+    (r.max > TOL_BETWEEN_M ? '  <== FAIL' : ''),
+  );
+  if (r.max > worstBetween) {
+    worstBetween = r.max;
+    worstBetweenAt = `${r.id} s=${r.atS.toFixed(0)} lat=${r.atLat.toFixed(1)}`;
+  }
+}
+console.log(
+  `\nworst departure between the rows: ${(worstBetween * 1000).toFixed(1)}mm  (${worstBetweenAt})`,
+);
+console.log(
+  `index vs THREE's raycaster, worst disagreement on the cross-checked subset: ` +
+  `${(crossCheck * 1000).toFixed(4)}mm`,
+);
 
 /** Every `.ts` file under a directory, recursively. */
 function tsFilesUnder(dir: string, out: string[] = []): string[] {
@@ -351,11 +530,31 @@ if (misses > 0) {
   console.log('The placement must go through the same `bankHeight` the mesh does.');
   failed = true;
 }
+const betweenBad = betweenRows.filter((r) => r.max > TOL_BETWEEN_M);
+if (betweenBad.length > 0) {
+  console.log(
+    `FAIL — BETWEEN the mesh's node rows the drawn road departs from the placement rule by up\n` +
+    `to ${(worstBetween * 1000).toFixed(1)}mm, on ${betweenBad.length} of ${CIRCUITS.length} ` +
+    `circuits, bound ${(TOL_BETWEEN_M * 1000).toFixed(0)}mm:`,
+  );
+  for (const r of betweenBad) {
+    console.log(
+      `  ${padr(r.id, 13)} ${(r.max * 1000).toFixed(1).padStart(7)}mm ` +
+      `at s=${r.atS.toFixed(0)}m, lat=${r.atLat.toFixed(1)}m`,
+    );
+  }
+  console.log('A car placed by the rule stands that far off the asphalt a player can see. The road');
+  console.log('is swept as one quad across its full width; where the node rows fan it is not planar,');
+  console.log('so the diagonal it is split on carries the surface away from the rule between the');
+  console.log('corners. Sub-divide the sweep ACROSS the width the way it already sub-divides ALONG.');
+  failed = true;
+}
 if (failed) {
   process.exitCode = 1;
 } else {
   console.log(`PASS — cars stand on the drawn asphalt within ${(TOL_M * 1000).toFixed(0)}mm on all`);
   console.log(`${CIRCUITS.length} circuits, including on 18 degrees of banking at Zandvoort, and`);
-  console.log("the drawn cross-slope is the circuit's own surveyed banking.");
+  console.log("the drawn cross-slope is the circuit's own surveyed banking — and the road stays");
+  console.log(`within ${(TOL_BETWEEN_M * 1000).toFixed(0)}mm of the rule BETWEEN the rows as well as on them.`);
 }
 console.log('');
