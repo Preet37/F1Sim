@@ -612,7 +612,18 @@ both been written against a boundary that was not there.
   `probe:assets` builds one team three times in ONE GL context — no file, file dropped in,
   file removed — and sha256s three views of each. Separate page loads would have left "and
   the two contexts agreed" as an unstated premise, which is the class of hidden assumption
-  §3.2 exists to catch.
+  §3.2 exists to catch. **35 ok / 0 failed.** The middle arm moves 1047 pixels across the
+  three views, in a bounding box on the engine cover and the flank; **0 of those 1047
+  carried the badge's hue before and 146 do after**; and the third arm is
+  `5f21ed39e05c / 44d258083e0b / a3ea642d3f06` against the first arm's identical three.
+
+- **Proved it can go red.** `ASSETS_BREAK=root` points the loader at a directory with no
+  manifest and no artwork while the badge is on disk: **30 ok / 5 failed, exit 1**, and the
+  five are exactly the override half — the slot resolves to nothing, the manifest is empty,
+  the render does not change, 0 px move, and nothing carries the badge's hue. **The
+  byte-identity assertions stay green**, which is the right answer rather than a weakness: a
+  loader that finds nothing IS the shipped state, and a break that turned the shippability
+  guarantee red would mean the probe was measuring the loader rather than the guarantee.
 
 - **A slot with no file costs ZERO network requests and produces ZERO console output.** The
   loader makes exactly one request that can miss, `/brand/manifest.json`, and the Vite
@@ -703,6 +714,15 @@ centre-lock nut and the caliper". Underneath it: cover **0.10**, spokes **0.25**
 | `Livery` `trim` swatch | 0.10 | **0.02** | see below |
 | `Livery` carbon weave map | 0.05 | **0.02** | dry laminate and resin are both dielectrics |
 | `CockpitMesh` `accent` | 0.20 | **0.02** | painted trim in the team's colour |
+
+**What it looks like, at real on-screen size.** `audit:car` before and after, `rimClose` and
+`steer--wheelFront`: the centre-lock nut goes from a flat blue-grey blob to a machined
+hexagon with a specular highlight, and the rim's outer ring from a faint blue line to a
+brushed machined band that catches the floodlights at night. **The cover itself is
+unchanged in character** — still a dark composite fairing, no chrome — which is the part
+that mattered, because the whole reason those numbers existed was a report of wheels
+reading as blue mirrors. At `hero` distance the change is not visible at all. `cost.md` is
+**identical**: same draw calls, same triangles, same vertices, on all fourteen passes.
 
 **THE ALBEDOS HAD TO MOVE WITH THE METALNESS, and that is the part that is easy to get
 wrong.** Under metalness 1 the base colour stops being a diffuse albedo and becomes the
@@ -1883,6 +1903,30 @@ should be done together, because they are the same bug §6 already has a name fo
 safety car's paint at 0.35 and the paddock's glazing at 0.70. Both need the albedo checked
 at the same time — see §6 on why switching metalness without moving the base colour makes a
 correct change look like a regression. **Nobody is on this.**
+
+### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
+
+Found while running the regression set for #36, and it is a probe defect rather than a
+rendering one. `audit:livery` asserts that its `control` build — no design, identical
+options to `audit:car`'s `day-high` — is BYTE-IDENTICAL to `audit:car`'s shot, on `hero`,
+`side` and `top`. On one run it failed on `hero` alone:
+`bcdf59e974d3 vs 15aebc66fcb0`, with `side` and `top` byte-identical.
+
+**Three measurements say it is not a repaint.** (a) A material change moves every view; two
+of three were identical. (b) The difference image is **the whole car body with the ground
+plane and the contact shadow untouched**, which is the signature of an asset the shell's
+material takes and the ground's does not — the detail normal map — rather than of a
+constant. 147,204 px, mean delta 39. (c) **It did not reproduce**: an immediate re-run gave
+`control--hero == 15aebc66`, and a direct test of `audit/car.html` (build, shoot `hero`,
+wait 4s, shoot again, rebuild, shoot again) returns `15aebc66` all three times.
+
+So the first shot a page takes can differ from every shot after it, under load, and neither
+harness warms up. `probe:assets` does warm up, for exactly this reason and having found it
+independently: `CarMesh` starts the carbon-weave `TextureLoader` inside `buildCar` and
+nothing waits for it. **The risk is that `audit:livery`'s one real assertion — the guarantee
+that the existing 2026 grid has not been repainted — reads as a false alarm often enough to
+be ignored.** The fix is a warm-up build in both harnesses; not done here because both are
+shared files and the run that matters passed. **Nobody is on this.**
 
 ### Measured, deferred, and still true
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
