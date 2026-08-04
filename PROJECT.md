@@ -2264,11 +2264,157 @@ display. The controlled run is in §7. **The load column is not comparable acros
 runs**, because its denominator changed meaning; what is comparable is the colour at the
 moment of exceedance, and on an honest car four circuits still read GREEN past the limit.
 
+**Those four were a HOLE IN THE PROBE'S OWN COLOUR CLASSIFIER, and the display had been
+telling the truth all along — see "The four green lies" below.** They are 0 now. Nothing in
+`RacingLine.ts` changed except that `colourFor` is exported, so that the probe stops
+transcribing the colouring rule the way it used to transcribe `capabilityOf`.
+
 **No simulation behaviour changed.** `capabilityOf` has one consumer in `src/`, the
 `Renderer`'s overlay. The one addition to `src/ai/` is `lastTargetSpeedMs`, which is written
 and never read by the simulation, and exists so that a harness can tell *"the AI aimed low"*
 apart from *"the AI aimed right and could not hold it"* off the real rule rather than a copy
 — which is how §7 can now say those are two thirds and one third rather than guessing.
+
+### `tractionLimitFraction` was dividing by a force the car does not make (issue #1)
+
+§7 named corner exit and `tractionLimitFraction` as where the controller's 16.6% goes, and
+said nobody was on it. **The traction limit is real and its SHAPE is right** — an F1 car in
+second gear at 60 km/h genuinely cannot use full throttle, so an AI that is traction-limited
+for most of every exit is not by itself a bug. The question worth asking was whether it is
+traction-limited **at the right number**, and it was not.
+
+`tractionLimitFraction` is `remaining rear longitudinal capacity / force at full pedal`. The
+denominator was re-derived inside the getter, under a comment stating it was *"computed with
+the SAME min(torque, power) expression step() uses"*. **It was not.** It read
+`icePowerW * torqueCurve(rpm) + ersPowerW`, and the drive branch applies four things it
+omits: the **ERS deployment mode** (`balanced` deploys 0.55 of `ersPowerW`, `harvest` deploys
+NOTHING, against the full value assumed here), the flat-battery and 4MJ-per-lap cut-offs, the
+sub-12 m/s derate, and `airDensityRatio`. Every one inflates the denominator, and the
+denominator is what the permitted throttle is divided by — so **the AI was held under the
+throttle it had.**
+
+**`npx tsx scripts/diagCornerExit.ts all` measures it**, over the 150m past every local
+minimum of the solver's own speed profile — the apexes — on all eleven circuits:
+
+| | before | after |
+|---|---|---|
+| getter's denominator ÷ force the car really makes | **1.088** (range 1.083..1.095) | **1.000** |
+| `tractionLimitFraction` on exit, mean | 0.4658 | 0.5045 |
+| rear grip circle actually spent | 0.842 | 0.870 |
+
+**The fix is to stop having two copies.** `step()` computes the full-pedal force with the
+same expression that produces the force it applies — factored so they cannot drift — and
+publishes `driveForceFullN`; the getter divides by that. Computed **unconditionally** rather
+than inside the `throttle > 0.001` branch, because a cached value would be stale by a whole
+braking zone at exactly the moment a corner exit asks for it. `frontLongitudinalN` /
+`rearLongitudinalN` are published alongside, the other half of the friction circle from the
+lateral forces that already were: without them nothing outside the class could say how much
+of an axle's budget is really spent, so *"the AI is traction-limited"* and *"the AI is at the
+limit"* were the same observation.
+
+**`probe:envelope` gained a section that asserts it and never transcribes the rule.** In a
+straight line the rear axle spends nothing on cornering, so the getter's own denominator can
+be recovered from its return value as `capRearN / tractionLimitFraction` and compared with
+the force the car is *observed* to make at a pedal under the limit,
+`rearLongitudinalN / pedal` — both read off the same car at the same instant, so nothing
+depends on holding a speed. Sixteen cases: two teams × four ERS modes × charged/flat.
+
+**Proved red for free (§3.2)**, by restoring the old denominator verbatim — and the shape of
+the failure is the finding:
+
+| ratio | state |
+|---|---|
+| 0.9983 | `overtake`, charged — **the one state the old expression was right in** |
+| 1.0254 | `push`, charged |
+| 1.0842 | `balanced`, charged — **what the field actually runs** |
+| 1.2121 | `harvest`, or **any** mode on a flat battery |
+
+→ 4 ok / 1 failed, worst 21.2% out. Fixed: **mean 1.0000, worst departure 0.0000 over all
+16.**
+
+**And that table is the real defect, not the 8.8%.** A nominal `throttleShare` of 1.03 was
+really a throttle discipline that **wandered between 0.85 and 1.03 of the rear axle's true
+limit as a side effect of which ERS mode `chooseErsMode` happened to have picked** — most
+aggressive in `overtake` and `push` (which is what the AI selects when a corner opens onto a
+straight), most timid in `harvest`. Nobody chose that coupling, nothing recorded it, and it
+had been silently doing part of the tuning. See §7 for what removing it cost and what had to
+be re-derived because of it.
+
+### The four green lies were a hole in the probe, not in the display (issues #46, #30)
+
+`probe:racingline` §3 had four standing failures — *"green still asks 103–107% of the grip
+the car has"* at Bahrain s=543m, Monaco s=346m, COTA s=3441m and Interlagos s=2696m — and
+they were the last of the user's *"if the racing line is green how did i go off the track?"*
+after `capabilityOf`'s 28.7% was fixed. §7 recorded them as a live bug in the colouring rule
+with nobody on it. **They were not in the colouring rule. They were in the probe's own
+classifier, and the ribbon had been drawing the right colour the whole time.**
+
+`reads()` decides which band a drawn colour is in:
+
+```
+if (r > 0.85 && g < 0.35) return 'RED';
+if (r > 0.6  && g > 0.45) return 'AMBER';
+return 'GREEN';
+```
+
+`colourFor` shades amber to red as `[1.0, 0.75 - 0.70k, 0.03]`, so the green channel sweeps
+0.75 down to 0.05 and **passes straight between those two tests**. A colour of
+**(1.00, 0.41, 0.03)** — a deep orange three quarters of the way from amber to red — is not
+RED, because `g` is not below 0.35, and is not AMBER, because `g` is not above 0.45. It fell
+through to the `return 'GREEN'` at the bottom. **A classifier with an undefined region,
+defaulting it to the one answer that makes the display look like it lied.**
+
+`RL_TRACE=1` prints every near-limit sample with the raw colour beside the band it was put
+in, which is how it was found and is why it is kept:
+
+```
+s=541 v=11.70 grip=12.21 ask=0.958 colour=GREEN rgb=1.00,0.41
+s=543 v=12.81 grip=12.21 ask=1.049 colour=GREEN rgb=1.00,0.41
+```
+
+The ribbon's own ratio there is **0.958** and it is drawing a red-orange. Worse, the probe's
+driver *acts on its own classification* — so having read that as green it went to full
+throttle, which is how a 0.958 ratio became the 1.049 load it then blamed the display for.
+**The probe was manufacturing the excursion it reported.**
+
+**The fix classifies on the one channel that is monotone over the whole ramp.** Red saturates
+at 1.0 halfway along and cannot tell the second half apart at all; green falls 0.95 → 0.75 →
+0.05 without ever turning back, so a single threshold on it is total by construction.
+
+**No boundary moved, and the probe proves that rather than asserting it.** A new first
+section sweeps ratio 0.000..1.400 at 0.0005, classifies every colour both ways, and requires
+that the only disagreements are colours the old rule matched neither positive test on:
+**35 resolved out of the hole (up to ratio 0.968), 0 band edges moved.** 0.844 is not a new
+number either — on the green-to-amber ramp `r = 0.15 + 0.85k` and `g = 0.95 - 0.20k` are both
+linear in the same `k`, so the old `r > 0.6` **is** `g < 0.844`; 0.35 is the old red test
+untouched. This is not §3.3 being bent, it is an undefined region being defined, and the
+sweep exists so that nobody has to take that on trust.
+
+| circuit | worst load | colour at that moment |
+|---|---|---|
+| bahrain | 1.049 → **1.015** | GREEN → AMBER |
+| jeddah | 1.004 → **0.949** | GREEN → AMBER |
+| monaco | 1.066 → **1.002** | GREEN → AMBER |
+| redbullring | 1.009 → **0.955** | GREEN → AMBER |
+| spa | 1.143 → **1.057** | RED → AMBER |
+| cota | 1.031 → **1.017** | GREEN → AMBER |
+| interlagos | 1.028 → **0.928** | GREEN → AMBER |
+
+**4 failures → 0.** The loads fall as well as the colours, because a driver who reads a deep
+orange correctly brakes for it.
+
+**Proved red (§3.2), and against the DISPLAY rather than the probe.** With `colourFor`'s band
+shifted to hold green to a ratio of 1.02, the same fixed probe fails six circuits, up to
+*"monaco: asked for 117% of the grip it has with the road ahead still reading GREEN"*. So the
+assertion still catches an overlay that lies; it has simply stopped catching one that does
+not.
+
+**This is the third instrument in this file to have quietly stopped pointing at the thing** —
+after `probe:handling` before #46, `raceSweep` before its exit code, and `probe:racingline`'s
+own `capabilityFor` transcription. The species is the same and it is worth naming: **a probe
+that reads the product of the code under test through a hand-written decoder is two programs
+that have to agree, and nothing checks that they do.** `colourFor` is exported now and the
+probe calls it.
 
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
