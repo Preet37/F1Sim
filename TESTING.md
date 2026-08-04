@@ -11,12 +11,18 @@ something already on the list.
 
 ## 0. Before you start — one setting that matters
 
-**Settings → Video → Quality.** Leave it on `auto` if you want to see what a new player
-sees. **Force `high` if you want to judge the picture**, because `auto` measures your
-machine and drops the tier when it is busy — and until #73 lands it never climbs back.
+**Settings → Video → Quality.** `auto` is now safe to leave alone: since #73 it needs
+**six seconds of unbroken trouble** before it drops a tier, retries a tier once before
+giving up on it, and tells you on screen when it moves in either direction. It used to
+drop on three quarters of a second of evidence and never climb back, which is why the
+game looked grainy on a busy machine and stayed that way.
 
-That is the single most likely reason the game looks worse than it should on your
-machine. `low` measures **16× more speckle at the horizon** than `high` on identical code.
+**Force `high` if you want to judge the picture on its merits** regardless of what else
+your machine is doing. A manually chosen tier is never touched by `auto` — that is
+asserted, not assumed.
+
+For scale: `low` measures **16× more speckle at the horizon** than `high` on identical
+code. If the picture ever looks worse than you remember, check this setting first.
 
 ---
 
@@ -95,7 +101,6 @@ Do not spend time reporting these; they are on the list with measurements.
 
 | | issue |
 |---|---|
-| Auto quality latches down and never recovers | **#73** |
 | Leaderboard is not the broadcast board yet | **#76** |
 | Q2 runs 20 cars | **#74** |
 | Cars phase through each other in the pit lane | **#75** |
