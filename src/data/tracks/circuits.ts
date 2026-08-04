@@ -363,10 +363,29 @@ const SUZUKA: CircuitSpec = {
     // Suzuka is a figure-of-eight: the Degners section crosses under the
     // back straight. The crossover is a bridge, so the loop stays planar here
     // and the elevation profile carries the height difference.
+    //
+    // IT DID NOT CARRY IT — issue #37. The two legs cross in plan at s=2274-2300
+    // and s=4649-4676, and this profile put them 0.25m apart at the nodes and
+    // 0.159m apart on the drawn asphalt: no bridge, two pieces of road on top of
+    // each other, and a car on the lower one with the upper one through its
+    // bodywork. `probe:banking` counted twelve sample points where it could not
+    // say what height the road was because there were two answers.
+    //
+    // The two control points either side of the crossing now separate them by
+    // about eight metres, which is the clearance the real overpass has and is
+    // enough that a 0.95m car on the lower leg is clear of the upper one with
+    // room for a deck. The steepest gradient this asks for is 2.8% (the drop
+    // from Dunlop into Degner), against 1.7% before and the ~4% the real
+    // circuit falls through that section; Spa's Eau Rouge is 18.7%, so it is
+    // nowhere near the steepest thing on the calendar.
     elevationPoints: [
       { s: 0, y: 4 }, { s: 900, y: 20 }, { s: 1700, y: 26 },
-      { s: 2400, y: 14 }, { s: 3100, y: 2 }, { s: 4000, y: 8 },
-      { s: 4900, y: 16 }, { s: 5500, y: 8 },
+      // Under the bridge.
+      { s: 2300, y: 9 },
+      { s: 3100, y: 2 }, { s: 4000, y: 8 },
+      // On it.
+      { s: 4650, y: 17 }, { s: 4900, y: 17 },
+      { s: 5500, y: 8 },
     ],
   },
   turningNumber: 0,
