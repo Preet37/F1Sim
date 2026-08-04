@@ -1758,6 +1758,12 @@ runs are the red proof for each half.
   the landscape phone already makes and for the same reason: it is the one panel whose fact is
   also legible out of the windscreen.
 
+**`probe:halo` was checked too, and it is the interesting one to have checked.** It landed on
+`main` the same day (#34) and it photographs the halo *through the camera this work re-aims*,
+on 11 circuits x day/night x both onboard modes. **44 ok / 0 failed, plus 8 ok / 0 across
+teams** — the paint measurement is an edge contrast and does not care where in the frame the
+edge is, which is the right answer and is worth knowing rather than assuming.
+
 **`probe:tower` was disturbed and put back, which is worth recording because it was not
 supposed to be touched.** #76 landed it at 156 ok / 0 the same day. Moving two rail feet made
 it fail three assertions — `portrait phone/cockpit: 12 of 20 cars with 63px of unused rail
