@@ -1703,7 +1703,11 @@ export class RaceEngine {
         },
       );
     }
-    if (writeOff) {
+    // `&& !car.finished`: the same rule `checkReliability` and `checkStranded`
+    // carry. A driver who parks it in the wall on the slowing-down lap has still
+    // finished the race and is still classified on it. The damage is applied
+    // above either way — the car is wrecked, it is simply not a DNF. Issue #44.
+    if (writeOff && !car.finished) {
       // The severity goes with the retirement: a car folded into a barrier is a
       // crane job with a debris sweep after it, not something four marshals
       // push through a gap. See `Recovery.ts`.
@@ -2471,6 +2475,23 @@ export class RaceEngine {
   }
 
   private onCrossLine(car: CarEntry): void {
+    // A CAR THAT HAS TAKEN THE CHEQUERED FLAG IS NOT ON A LAP OF THE RACE.
+    //
+    // "after receiving the end-of-race signal all cars must proceed on the
+    // slowing down lap to the post race parc fermé" — 2025 Sporting Regs
+    // Art. 43.3 / 2026 Section B Art. B4.2.1. The slowing down lap is not
+    // scored, not timed, and reaching the Line at the end of it does not put the
+    // driver on another one.
+    //
+    // Nothing read `car.finished` in the step loop, so it was: `completeLap`
+    // incremented `car.lap` and pushed the lap into `lapHistory` and into
+    // `bestLapTime`, on every crossing, for as long as `checkSessionEnd` held
+    // the session open — up to the 180 seconds the backmarker window allows.
+    // Measured by `probe:fieldsize` as "NOR completed 8 laps of a 6-lap race" on
+    // 16 of its rows, and by `probe:finish` §4 as seven scored laps after the
+    // flag across five races. Issue #44.
+    if (this.config.kind === 'race' && car.finished) return;
+
     car.completeLap(this.time);
 
     // Racing resumes for THIS car at the Line, not when the safety car left the
@@ -2487,12 +2508,6 @@ export class RaceEngine {
 
     if (this.config.kind === 'race') {
       const laps = this.config.laps || this.track.def.raceLaps;
-      if (car.lap > laps) {
-        if (!car.finished) {
-          car.finished = true;
-          car.finishTime = this.time;
-        }
-      }
       // The leader finishing waves the chequered flag.
       //
       // "The leader" is the FIRST car to complete the distance, which is what
@@ -2510,6 +2525,28 @@ export class RaceEngine {
       // earned by distance, so the first car here IS the leader.
       if (!this.raceControl.raceFinished && car.lap > laps) {
         this.raceControl.chequeredFlag(this.time);
+      }
+
+      // AND ONCE IT IS OUT, THIS CROSSING IS THE END OF THE RACE FOR THIS CAR —
+      // whether or not it covered the distance.
+      //
+      // "The end-of-race signal will be given at the Line as soon as the leading
+      // car has covered the full race distance" (Art. 57.1 / B5.14.1), and it is
+      // shown to every car that reaches the Line after that, not only to the
+      // ones on the lead lap. A car a lap down has NOT covered the distance and
+      // is still classified on what it did (Art. 6.5 / B2.5.1 classifies anyone
+      // who covered 90% of the winner's distance).
+      //
+      // The test used to be `car.lap > laps` alone, which a lapped car can never
+      // satisfy. So the only thing that could ever finish one was the batch in
+      // `finishSession`, which fires when the 180-second backmarker window
+      // expires — and the whole field kept RACING for those 180 seconds, which
+      // is where the extra laps came from. Measured at Spa over six laps: 10 of
+      // 18 classified finishers carried the session's own end time to the
+      // microsecond. Issue #44.
+      if (this.raceControl.raceFinished && !car.finished) {
+        car.finished = true;
+        car.finishTime = this.time;
       }
     }
   }
@@ -4076,7 +4113,9 @@ export class RaceEngine {
       );
     }
 
-    if (severity > 0.85 && this.rng.chance(0.12)) {
+    // `&& !car.finished` for the reason given at the barrier write-off above:
+    // a result taken at the Line is not rewritten by the slowing-down lap.
+    if (severity > 0.85 && !car.finished && this.rng.chance(0.12)) {
       car.retire('Accident damage', this.time, severity);
       // The same rule as a barrier write-off: the impact that ends a session
       // is the one that takes the bodywork off. Applied here rather than in the
@@ -4299,6 +4338,13 @@ export class RaceEngine {
    */
   private checkReliability(car: CarEntry, dt: number): void {
     if (this.config.kind !== 'race') return;
+    // A car that has taken the chequered flag has finished the race and is
+    // classified on it. What the power unit does on the slowing-down lap is a
+    // problem for the mechanics, not a DNF — the result was earned at the Line
+    // (Art. 57.1 / B5.14.1) and nothing after it rewrites one. `checkStranded`
+    // had carried this rule since #10 and the other three retirement sites had
+    // not; see `probe:finish` §4c. Issue #44.
+    if (car.finished) return;
     const gpMetres = this.track.def.raceLaps * this.track.length;
     const perMetre = car.team.performance.failureRate / Math.max(gpMetres, 1);
     // Mileage covered this step. A car stationary in its box is not wearing

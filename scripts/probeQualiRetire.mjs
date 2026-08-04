@@ -531,13 +531,89 @@ check(raceScene.labels.some((l) => /^continue$/i.test(l)) &&
   `the race's two corner controls are there (${JSON.stringify(raceScene.labels)})`);
 check(raceScene.corner, 'the race controls are in the top-right corner');
 check(!raceScene.paused, 'a race retirement does not stop the race');
-// NOT AN ASSERTION — a measurement, and a finding this probe does not fix.
-// `Continue` on the race path calls `finishSession` immediately, which records
-// `engine.standings` for a race that is still being run. Same species as the
-// qualifying truncation fixed above, but it feeds `recordPlayerRound` and a
-// career championship, so it is reported rather than changed here.
-console.log(`  NOTE: the leader is on lap ${raceScene.lap} of ${raceScene.laps}; ` +
-  `pressing Continue classifies the race from here. See the PR body / issue.`);
+
+// ===========================================================================
+// 5. AND `CONTINUE` PUBLISHES A RACE THAT WAS ACTUALLY RUN (issue #56)
+// ===========================================================================
+//
+// This section used to be the two lines below it: a `console.log` of the
+// leader's lap against the race distance, printed and deliberately not
+// asserted, with the note "pressing Continue classifies the race from here."
+// It did — `Continue` called `Game.finishSession` on the spot, which reads
+// `engine.standings` (the live running order of a Grand Prix the other
+// nineteen cars are still in the middle of) and hands it to
+// `recordPlayerRound` as the round's result.
+//
+// Issue #56 asked for exactly this: "turn that print into an assertion when
+// this is fixed." So the print stays — the lap the player stopped on is the
+// thing that makes the assertion mean something — and the assertions sit under
+// it. They are on the ENGINE'S OWN STATE at the moment the classification
+// screen appears, not on the button or on the screen, because the defect was
+// never in the presentation: what was published was a real screen showing a
+// race that had not happened.
+console.log(`  the player stopped with the leader on lap ${raceScene.lap} of ` +
+  `${raceScene.laps}; Continue must not classify the race from here`);
+
+check(raceScene.lap !== null && raceScene.laps !== null && raceScene.lap <= raceScene.laps,
+  `the race really is still running when Continue becomes available ` +
+  `(leader on lap ${raceScene.lap} of ${raceScene.laps}) — otherwise this section ` +
+  'proves nothing');
+
+await page.evaluate(() => {
+  const b = [...document.querySelectorAll('.retirebar button')]
+    .find((x) => /^continue$/i.test((x.textContent || '').trim()));
+  if (b) b.click();
+});
+
+// It must go to the run-out FIRST. A jump straight to the classification is the
+// bug, and it is the fast path, so this is checked before the slow wait below —
+// otherwise a build that classified instantly would satisfy the final state
+// checks by accident on a race short enough to be already over.
+const wentToRunOut = await waitFor(
+  () => page.evaluate(() => window.__game.screen === 'simulating'),
+  20_000, 'the race to be run out to the flag');
+check(wentToRunOut,
+  'Continue runs the race out to the flag rather than classifying it where it stood');
+
+const gotClassification = await waitFor(
+  () => page.evaluate(() => window.__game.screen === 'results'),
+  420_000, 'the classification of the run-out race');
+check(gotClassification, 'the run-out reaches the classification screen');
+
+const published = await page.evaluate(() => {
+  const e = window.__game.engine;
+  if (!e) return null;
+  const laps = e.config.laps;
+  return {
+    over: e.over,
+    raceFinished: e.raceControl.raceFinished,
+    laps,
+    leaderLap: Math.max(...e.cars.map((c) => c.lap)),
+    wentTheDistance: e.cars.filter((c) => c.lap > laps).length,
+    unresolved: e.cars.filter((c) => !c.finished && !c.retired).length,
+    cars: e.cars.length,
+    playerRetired: !!e.playerCar?.retired,
+  };
+});
+
+check(!!published && published.over,
+  `the race the classification is taken from reached its own end ` +
+  `(over=${published?.over})`);
+check(!!published && published.raceFinished,
+  'the chequered flag came out before the classification was published');
+check(!!published && published.leaderLap > published.laps,
+  `the winner covered the full distance ` +
+  `(leader on lap ${published?.leaderLap} of ${published?.laps})`);
+// The leader alone is not enough — the whole point of #56 is the OTHER cars.
+check(!!published && published.wentTheDistance >= Math.ceil(published.cars * 0.5),
+  `the field covered the distance, not just the winner ` +
+  `(${published?.wentTheDistance} of ${published?.cars} completed ${published?.laps} laps)`);
+check(!!published && published.unresolved === 0,
+  `every car is either a classified finisher or a retirement ` +
+  `(${published?.unresolved} of ${published?.cars} are neither)`);
+// And running it out did not quietly give the player their race back.
+check(!!published && published.playerRetired,
+  'the player is still retired in the classification they published');
 
 check(pageErrors.length === 0, `no uncaught page errors (${pageErrors.slice(0, 3).join(' | ')})`);
 

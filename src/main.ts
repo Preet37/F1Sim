@@ -4107,11 +4107,30 @@ class Game {
    * qualifying segment exists to rank cars on their best lap, and once everyone
    * has had their runs another six minutes of circulating almost never changes
    * the order — so the run-out stops there rather than grinding the clock down.
-   * A race has to reach its own end and gets no early exit.
+   *
+   * A RACE HAS TO REACH ITS OWN END AND GETS NO EARLY EXIT, and that is the
+   * decision rather than an omission (issue #56). A Lap Time Classified Session
+   * is classified on the best lap each driver set, and once everybody has set
+   * one the answer already exists — stopping early reads a result that is
+   * already there. A race is classified on who covered the distance, so before
+   * the flag there is NO state to read the result from: the order is whatever
+   * the cars happen to be doing. Handing a race the qualifying exit would be
+   * exactly the bug #56 is about, wearing a progress bar.
+   *
+   * What a race gets instead is a bar that tells the truth. This used to return
+   * `byClock`, and a race has `durationS: 0` — so it returned 0 for every step
+   * of a run-out that could last minutes, and the player watched a progress
+   * screen sit at 0% until it vanished. It is laps of the race now, and it is
+   * capped BELOW 1 until the engine says it is over, because `stepRunOut` stops
+   * on `progress >= 1` and the leader completing the distance is not the end of
+   * the race — the backmarkers have not taken the flag yet, and stopping there
+   * would classify the field one lap early.
    */
   private runOutProgress(engine: RaceEngine): number {
     const byClock = engine.config.durationS > 0 ? engine.time / engine.config.durationS : 0;
-    if (engine.config.kind === 'race') return clamp(byClock, 0, 1);
+    if (engine.config.kind === 'race') {
+      return engine.over ? 1 : Math.min(0.99, Math.max(byClock, engine.progress));
+    }
     const cars = engine.participants;
     if (cars.length === 0) return 1;
     let ready = 0;
@@ -4610,9 +4629,34 @@ class Game {
       bar.appendChild(b);
     };
     if (isRace) {
+      // `Continue` RUNS THE RACE OUT FIRST. It used to call `finishSession` on
+      // the spot, which reads `engine.standings` — the live running order of a
+      // Grand Prix the other nineteen cars are still in the middle of — and
+      // hands it to `recordPlayerRound` as the round's result. A player who
+      // retired on lap 4 of 57 published a classification of a race nobody had
+      // finished, and a career championship was scored from it. Issue #56.
+      //
+      // THIS IS A CAREER-DATA DECISION AND IT IS DELIBERATE. The alternative was
+      // cheaper: keep classifying from where the race stood. It is not faster,
+      // it is WRONG DATA — points awarded on an order that never existed, to a
+      // field that had not finished. A championship is the sum of what happened,
+      // so the only honest thing to record is what happened. The player's own
+      // retirement survives either way: running the race out does not un-retire
+      // them, it lets the other nineteen finish the race they were in.
+      //
+      //   "also like even tho I DNF doesn't mean that the rest weren't able to
+      //    get a time classification, just make the simulation up or something,
+      //    ykwim"
+      //
+      // The cost is real and is stated rather than hidden: a full-distance Grand
+      // Prix run out from lap 4 is minutes of wall clock, not seconds — see
+      // PROJECT.md §6 for the measurement. `runOutToTheFlag` puts a progress
+      // screen up with `Watch it instead` on it, so the player is never held
+      // without a way out, and `Watch the race` beside this button is the same
+      // race at the same speed with the cameras on.
       act('Continue', 'primary', () => {
         this.dismissRetirement();
-        this.finishSession();
+        this.runOutToTheFlag(() => this.finishSession());
       });
       act('Watch the race', 'ghost', () => {
         this.spectating = true;
