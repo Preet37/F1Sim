@@ -2362,7 +2362,11 @@ Side effects, all measured and all in the right direction. `probe:traffic` censu
 eleven circuits, five laps, twenty cars: contacts **0.185 → 0.113 per car-lap** (COTA
 1.21 → 0.24, Spa 0.62 → 0.53), at a cost of 8% of the overtakes (3040 → 2800).
 `probe:attrition` five-lap survivors: **Spa 16.0 → 18.3**, Suzuka 18.7 → 19.3, the rest
-20.0/20 unchanged — and the new `STOPPED` column reads **0.0 on all five circuits**, so the
+20.0/20 unchanged — **and the Suzuka figure is stale: it measures 18.3 on merged `main` at
+`8cde5ae` (2026-08-03), not 19.3.** Checked by A/B because the `race-lifecycle-fixes` branch
+looked like it might have moved it; the whole table is **byte-identical on `main` and on that
+branch** (20.0 / 18.3 / 20.0 / 20.0 / 18.3), so something between #28 and now took Suzuka down
+a point and nobody re-ran it — and the new `STOPPED` column reads **0.0 on all five circuits**, so the
 twelve-second timeout retires nobody in ordinary racing. And `probe:hudtext`, failing since
 #5, now passes — see the corrected record in §4.
 
@@ -3660,21 +3664,43 @@ shared files and the run that matters passed. **Nobody is on this.**
   the road on their own, and none of the three previously-named mechanisms is putting them
   there.
 
-  **What it is back-loaded on, which is the distance-specific part.** Not one retirement in
-  the first fifth of the race; 2 in the third tenth and then 13 spread over the last four
-  tenths, at 0.0, 0.0, 2.0, 0.0, 0.0, 4.0, 3.0, 2.0, 1.0, 3.0 per tenth. A cause that is
-  absent for ten laps and then arrives is an ACCUMULATING one, which is why the
-  quarter-distance run passes and why nothing measured at five or fourteen laps has ever
-  seen this — the same structural blindness §6 records for the fuel bug.
+  **THE THIRD CAUSE IS A DAMAGE CASCADE, AND ITS LAG IS WHY THREE INVESTIGATIONS MISSED IT.**
+  Every previous attempt looked at the car at the moment it stopped. So did the first version
+  of this instrument, and it was wrong for a reason worth keeping: a car is retired
+  `BEACHED_RETIRE_S` = **nine seconds** after it stops, so a sample three seconds before the
+  retirement is six seconds *into* the excursion — it reports a stationary car in the gravel,
+  which is what the retirement already said. `lastRacing` needs no chosen interval and it
+  changes the answer:
 
-  **The candidate the instrument points at is accumulated component damage**, and it is
-  named as a candidate rather than as an answer: 12 of 15 retirements were already carrying a
-  component below 0.70 health. `CarDamage.applyWear` is a per-second cost (kerbs, gravel, the
-  rev limiter) whose own comment says it "matters over a race distance rather than over a
-  corner", and a pit stop repairs only the front wing and the sidepods — floor, suspension
-  and power unit stay with the car for the rest of the race, deliberately and correctly.
-  **And there is a second-order effect on that candidate worth writing down before anybody
-  re-derives it.** `applyWear` is per SECOND and its comment says it is "sized so a full race
+  | at `lastRacing` — on the road, above 15 m/s | |
+  |---|---|
+  | already carrying a component below **0.70** health | **11 of 15** |
+  | already below **0.40** on some component | 4 of 15 |
+  | an undamaged car on good tyres with fuel and nobody near it | **4 of 15** |
+
+  And the field-wide curve is monotonic. Worst component, field mean, by tenth of the race:
+  **0.94, 0.92, 0.86, 0.83, 0.70, 0.68, 0.64, 0.65, 0.75, 0.59** — the late rise is the
+  damaged cars retiring out of the sample. Cars below 0.70, by tenth: **1, 1, 3, 4, 9, 9, 6,
+  5, 3, 4.**
+
+  **The lag is the whole thing.** Contacts peak in the FIFTH tenth of the race (11 of the
+  29); retirements peak in the sixth and seventh (4 and 3). Not one beached car had been
+  touched by another car in the previous ten seconds — and eleven of them were driving a car
+  that a contact had already broken, laps earlier. The worst component is
+  `suspFL`/`suspFR`/`floor` in most rows, which a pit stop explicitly does **not** repair
+  ("not parts anyone changes in three seconds", and that is correct). So:
+
+  > **contact → permanent damage → a car that cannot hold the road → an excursion nobody
+  > was near → `Beached in the gravel`.**
+
+  Which means 11.50 retirements and 22.50 contacts are **not two failures, they are one**,
+  and the retirement bar is downstream of the contact bar. It also explains the distance
+  dependence exactly: at quarter distance the cascade has no laps to run in, which is why
+  that run passes and why nothing measured at five or fourteen laps has ever seen this — the
+  same structural blindness §6 records for the fuel bug.
+
+  **And there is a second-order effect worth writing down before anybody re-derives it.**
+  `applyWear` is per SECOND and its comment says it is "sized so a full race
   distance driven hard costs a few percent" — but a full-distance Silverstone race in this
   simulation is **8353 seconds** (measured, §6) against a real one's ~5400. So a "full race
   distance" here is **55% more wear-seconds than the constant was sized for**, and that
@@ -3682,9 +3708,16 @@ shared files and the run that matters passed. **Nobody is on this.**
   re-calibrating the wear rates has to decide whether they are calibrating against the sport's
   race duration or against this simulation's, and the two are not the same number.
 
-  **Not fixed here.** It is `src/physics/DamageModel.ts` and `src/ai/`, and this branch's
-  ground is the session lifecycle; a change to the damage rates without its own before/after
-  across the whole suite is exactly the kind of change §3 exists to prevent.
+  **Not fixed here, and the next person has a choice rather than a bug to find.** The cascade
+  has three links and each is a different owner: the CONTACT RATE (`src/ai/`,
+  `TrafficAwareness`), how much permanent damage a contact does and how much of it a stop can
+  undo (`src/physics/DamageModel.ts`, `RaceEngine.applyContactDamage`), and how little it
+  takes for a damaged car to be retired rather than to limp home (`checkStranded`'s nine
+  seconds, and the fact that nothing in the AI tries to rejoin from a gravel trap). This
+  branch's ground is the session lifecycle; changing any of the three without its own
+  before/after across the whole suite is exactly what §3 exists to prevent, and the reason to
+  say so rather than to reach is that this issue has already been closed twice on a mechanism
+  that turned out to be the wrong one.
 
   **And #44 is ruled out as a contributor, by measurement.** Cars racing past the chequered
   flag was the obvious suspect and it contributes nothing: `probe:racelog` at full distance
@@ -3865,6 +3898,23 @@ shared files and the run that matters passed. **Nobody is on this.**
   of wall clock and the whole probe is minutes. **It is a `.mjs` of the same lineage as
   `regress:exit` was, so assume it has the same two defects — a watching dev server and
   fixed sleeps — until somebody looks.** Same for `regress:career`. **Nobody is on this.**
+
+  **Both defects observed directly on 2026-08-03 while landing #56, and they are worth
+  recording because they look exactly like real failures.** First attempt, load average ~50:
+  died outright on `page.goto: Timeout 120000ms exceeded` before a single assertion ran.
+  Second attempt, load ~38: reached the end and reported **2 failures, both in the QUALIFYING
+  half and both carrying the signature**:
+  - *"the principal asked after the driver before anything else"* — and the string it printed
+    is the radio card **caught mid-typewriter**, the same fragment repeated four times
+    (`HalvorsenRadioYESNO Halvorsen…"That…"That is…"That is our…`). That is a screen read
+    while it was still animating, not a missing line.
+  - *"the other nineteen are still running (0.10 -> 0.10)"* — a session-clock delta of
+    **exactly zero** over the sample window, which is #25's own signature one notch worse than
+    the `0.0666… → 0.0666…` quoted elsewhere in this file: not one frame was painted in it.
+
+  Neither is in the race half, which this branch's §5 added and which reported **8 of 8 ok**
+  in the same run. **They have NOT been confirmed on a quiet machine**, and this file does not
+  claim they are pre-existing — only that they are the shape the entry above predicts.
 - ~~`probe:fieldsize`: cars finish 8 laps of a 6-lap race.~~ **Fixed, issue #44 — see §6, "A
   race that did not know it had ended".** The count in this file was wrong three times
   running (23, then 14, then 14 again) because it moves with any change to how a race runs;

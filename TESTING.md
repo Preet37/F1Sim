@@ -210,9 +210,12 @@ a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55
 `validate:race` 1, both `monaco: fastest lap 150% of reference` (#1) plus four spread rows
 that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — **11.50
 retirements and 22.50 contacts a race**, re-measured 2026-08-03; the default quarter-distance
-run passes. The third cause is now measured (see PROJECT.md §7): not contact, not tyres, not
-fuel — cars leaving the road on their own, later and later into the race, most of them already
-carrying damage. `npm run diag:attrition` is the instrument ·
+run passes. **The third cause is now measured and it is a damage cascade** (see PROJECT.md
+§7): not tyres, not fuel, and not a car being hit at the moment it stops — 11 of 15 retiring
+cars were already carrying a broken component *while still racing*, contacts peak at half
+distance and retirements a tenth or two later, and the field's worst part falls 0.94 → 0.59
+across the race. So the two failing bars are one problem, not two: the retirements are
+downstream of the contacts. `npm run diag:attrition` is the instrument ·
 **`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where the
 road mesh's own quad is degenerate and a rigid 3.6m car cannot lie on it. 43.6mm over a bound
 the mesh's own error sets; the other ten circuits are inside 5.3mm.
