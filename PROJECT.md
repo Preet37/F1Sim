@@ -195,6 +195,7 @@ Run `npm run` to list. The important ones:
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
+| `probe:neutral` | **Rewritten by #10.** The standstill (car-seconds under the engine's own stranded threshold, on clear road, under a neutralisation, at FULL distance), how much of a race is neutralised, and that the safety car is drawn from an interpolated pose on all eleven circuits. It used to be forty minutes of compute that could not report a failure |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
@@ -255,6 +256,11 @@ Run `npm run` to list. The important ones:
   the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
   cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
   in §7. **This is a probe that got stricter, not a feature that broke.**
+- `probe:racelog` at FULL distance — **2 failures, `11.50 cars retire per race` and
+  `21.00 car-to-car contacts a race`.** Both were failing before #10 at 20.00 and 26.50; the
+  fuel fix removed the artefact on top of them and what is underneath is issue #26. See §7.
+- `validate:race` — **1 failure, `monaco: fastest lap 152% of reference`,** and it is
+  pre-existing: identical on a clean `main`. See §7.
 - `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
   regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
@@ -1463,11 +1469,15 @@ against every threshold and so stops binding silently rather than throwing.
   item can take it down. `validate:race`'s `monaco: fastest lap 152% of reference` is the
   same item failing an assertion.
 - **#26 is not closed by #10 and the honest position is that it is now MEASURABLE rather
-  than answered.** Full-distance retirements at the issue's own configuration went from
-  **20 of 20** — every car, at two circuits — to 11 and 12, and every one of the removed
-  ones was a fuel stall. What is left has not been diagnosed. `probe:neutral` at full
-  distance is the instrument; `probe:racelog` at full distance can now be read for
-  attrition, which is the thing #26's own comment says it could not be.
+  than answered.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
+  F3, P18, medium, 2 seeds): retirements **20.00 → 11.50** a race, contacts **26.50 →
+  21.00**, and **`Stopped on track` has gone from 10.50 a race to zero** — it does not
+  appear in the cause table at all. What is left is 6.50 beached, 3.50 accident and 1.50
+  accident damage, which is the question #26 was originally asking and could not be asked
+  while the fuel artefact was on top of it. The probe still fails its own two headline bars
+  (`11.50 cars retire per race — a Grand Prix loses one or two`, `21.00 car-to-car contacts
+  a race`) and **that is the live part of #26.** The player still retires from 100% of
+  full-distance races, now by beaching rather than by stopping.
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
