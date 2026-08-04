@@ -66,6 +66,15 @@ interface RowReading {
   /** The driver-code cell: its width, and how much of the code is cut off. */
   codeW: number;
   codeClipped: number;
+  /** The team mark: drawn, and how big. `reference/target/68.png` has one. */
+  markDrawn: boolean;
+  /** The compound letter at the right-hand edge. */
+  tyre: string;
+  tyreVisible: boolean;
+  /** `Leader` is italic in the reference. */
+  gapItalic: boolean;
+  /** The badge column's class suffix — fastest lap, `P`, penalty, chequer. */
+  badges: string;
 }
 
 export interface TowerReading {
@@ -260,6 +269,21 @@ const api: TowerApi = {
         overflow: Math.max(0, el.scrollWidth - el.clientWidth),
         codeW: Math.round((el.querySelector<HTMLElement>('.tower-code')
           ?.getBoundingClientRect().width ?? 0) * 10) / 10,
+        markDrawn: (() => {
+          const m = el.querySelector<HTMLElement>('.tower-mark');
+          if (!m || getComputedStyle(m).display === 'none') return false;
+          const b = m.getBoundingClientRect();
+          return !!m.querySelector('svg') && b.width > 1 && b.height > 1;
+        })(),
+        tyre: el.querySelector<HTMLElement>('.tower-tyre')?.textContent ?? '',
+        tyreVisible: (() => {
+          const t = el.querySelector<HTMLElement>('.tower-tyre');
+          if (!t || getComputedStyle(t).display === 'none') return false;
+          const b = t.getBoundingClientRect();
+          return b.width > 1 && b.right <= tr.right + 0.5;
+        })(),
+        gapItalic: gap ? getComputedStyle(gap).fontStyle === 'italic' : false,
+        badges: el.querySelector<HTMLElement>('.tower-badges')?.className ?? '',
         // `.tower-code` is `overflow: hidden`, so a column too narrow for a
         // three-letter code does not wrap or shrink it — it cuts letters off
         // the end, silently.

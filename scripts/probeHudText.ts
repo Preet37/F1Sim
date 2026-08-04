@@ -73,25 +73,27 @@ for (let i = 0; i < standings.length; i++) {
   check(cells.tyre.length > 0, `row ${i}: no compound`);
 
   if (i === 0) {
-    // The leader's cell names the COLUMN. Every other row in it is a figure,
-    // so a word there reads as the heading it is — and restating "leader" beside
-    // a position that already says 1 is the panel saying it twice.
-    check(cells.gap === 'Interval', `leader gap should read Interval, got ${cells.gap}`);
-  } else if (!car.retired && !car.disqualified) {
+    // `Leader`, in the reference board's own word — issue #76, "copy this!!!
+    // don't change shit from it". This used to assert `Interval`, which is a
+    // column heading standing in a row of figures.
+    check(cells.gap === 'Leader', `leader gap should read Leader, got ${cells.gap}`);
+  } else if (!car.retired && !car.disqualified && !car.inPitLane && !car.onOutLap) {
     const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
     if (lapsBehind > 0) {
       sawLapped = true;
       check(/LAPS?$/.test(cells.gap),
         `a car ${lapsBehind} lap(s) down must be reported as laps, not as ${cells.gap}`);
     } else {
-      check(/^[+-]/.test(cells.gap) || cells.gap === '—',
+      check(/^[+-]/.test(cells.gap) || cells.gap === 'NO TIME',
         `row ${i}: interval ${cells.gap} is not a signed gap`);
     }
   }
   // `Out`, not `DNF`. The row is already dimmed and already at the foot of the
   // order; three capitals of jargon on top of that is the third statement of the
   // same fact.
-  if (car.retired) check(cells.gap === 'Out', `a retired car must read Out, got ${cells.gap}`);
+  if (car.retired && !car.inPitLane) {
+    check(cells.gap === 'Out', `a retired car must read Out, got ${cells.gap}`);
+  }
 }
 console.log(`running order: ${standings.length} rows, lapped car present: ${sawLapped}`);
 
@@ -149,6 +151,9 @@ console.log(`running order: ${standings.length} rows, lapped car present: ${sawL
   // have no gap. That must not be contagious.
   const mine = standingsCells(idle, me, null, quickest);
   check(mine.best === '—', `a driver with no lap shows a best of "${mine.best}"`);
+  // And the gap column says so in words rather than with an em dash — #76.
+  check(['NO TIME', 'Out Lap', 'IN PIT', 'Out'].includes(mine.gap),
+    `a driver with no lap shows a gap of "${mine.gap}"`);
   console.log(`idle player: ${shown} of ${idle.cars.length - 1} rivals' times shown ` +
     'while the player has none');
 
@@ -251,10 +256,14 @@ check(towerFit(1400, 900).rows >= 20,
 // 2b. The window, with the player at the back of a field of wrecks
 // ---------------------------------------------------------------------------
 //
-// "why can I only see like 4 cars on the leaderboard, where is everyone and all
-//  the cars?" — reported from a screenshot showing P1, a break, and P14 to P20,
-// of which six were marked `Out`. The player was eighteenth. This is that exact
-// situation: twenty cars, the six behind the player retired, eight rows.
+// "also the leader board has 1st place and then 7-20th why not how the whole
+//  fucking leaderboard bro"
+//
+// THE BOARD DOES NOT SKIP. The window used to drop retired cars out of the
+// middle of the order and pin the leader above what was left, which is how a
+// board came to read P1 and then P7 to P20 with five cars missing between two
+// rows drawn touching. Same scenario as before — twenty cars, the six behind
+// the player retired, eight rows — and now the assertion is contiguity.
 
 {
   const field = Array.from({ length: 20 }, (_, i) => ({ retired: i >= 14 }));
@@ -262,11 +271,12 @@ check(towerFit(1400, 900).rows >= 20,
   const win = towerWindow(field, 8, me);
   check(win.rows.length === 8, `the window drew ${win.rows.length} of 8 rows`);
   check(win.rows.includes(me), 'the window does not contain the player');
-  check(win.pinLeader && win.rows[0] === 0, 'the leader is not pinned above the window');
-  // The whole point: a scarce row does not go to a car that cannot be raced.
-  const wrecks = win.rows.filter((i) => field[i].retired && i !== me).length;
-  check(wrecks === 0,
-    `${wrecks} of 8 rows went to retired cars while the player was racing`);
+  check(!win.pinLeader, 'the leader is pinned above a run it is not part of');
+  // CONTIGUOUS, with no hole anywhere in it. This is the whole of #76's
+  // row-count half, and it is one comparison.
+  const holes = win.rows.filter((r, i) => i > 0 && r !== win.rows[i - 1] + 1);
+  check(holes.length === 0,
+    `the board skips ${holes.length} place(s): ${win.rows.map((i) => i + 1).join(', ')}`);
   // And most of what is shown is the road ahead rather than the road behind.
   const ahead = win.rows.filter((i) => i < me).length;
   check(ahead >= 5, `only ${ahead} of the 8 rows are cars the player can catch`);

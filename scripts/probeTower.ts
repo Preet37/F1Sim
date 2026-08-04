@@ -28,10 +28,12 @@
  */
 
 import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import type { TowerOpen, TowerReading } from '../audit/tower';
-import { TOWER_RAIL_FLOOR_PX } from '../src/ui/Hud';
+import { towerRailFloorPx } from '../src/ui/Hud';
 
 const failures: string[] = [];
 function check(ok: boolean, msg: string): void {
@@ -73,15 +75,32 @@ const VIEWPORTS: { name: string; w: number; h: number }[] = [
 const CAMERAS = ['chase', 'cockpit', 'driver'];
 
 /**
- * How much room a row needs before its absence is the panel's fault.
+ * WHEN A MISSING CAR IS THE PANEL'S FAULT.
  *
- * A row is 20 CSS pixels on a desktop and 17 on a phone. If the tower stops
- * short of the room it has by more than one row's height while cars are
- * missing from it, those cars were dropped by a rule rather than by geometry —
- * which is the whole of #17. One row of slack, so the assertion is never about
- * a rounding difference.
+ * Not a tolerance: an exact question. If a car is missing from the board, then
+ * drawing ONE more row must overrun the room the panel has — otherwise that
+ * car was dropped by a rule rather than by geometry, which is the whole of
+ * #17. Measured with the flag band out, because that is the tallest the panel
+ * ever is and the row count is reserved against it.
  */
-const ROW_SLACK_PX = 21;
+function oneMoreRowWouldOverrun(bottomBanded: number, rowH: number, floor: number): boolean {
+  return bottomBanded + rowH + CHROME_SLACK_PX > floor;
+}
+
+/**
+ * What the panel's own reservation is allowed to be wrong by, in pixels.
+ *
+ * `towerFit` reserves the LARGER of its measured chrome and its modelled
+ * constant, because the measurement arrives a frame late and the thing under
+ * this panel is the radio card — see the note there. That asymmetry can leave
+ * up to about half a row unused, and this is the allowance for it. It is not a
+ * tolerance on the fault: the fault this section exists to catch measured
+ * 182–269 pixels of unused rail with nine to fifteen cars missing.
+ */
+const CHROME_SLACK_PX = 12;
+
+/** Where the board's own portrait is written, for the comparison in the PR. */
+const SHOT_DIR = resolve(process.cwd(), 'hud-out', 'tower');
 
 /**
  * What the rail below the tower must keep for itself.
@@ -94,7 +113,7 @@ const ROW_SLACK_PX = 21;
  * when the session gives them a reason to and are measured directly when
  * they do.
  */
-const RAIL_FLOOR_PX = TOWER_RAIL_FLOOR_PX;
+const railFloorFor = towerRailFloorPx;
 
 async function main(): Promise<void> {
   const server: ViteDevServer = await createServer({
@@ -211,9 +230,38 @@ async function main(): Promise<void> {
         }
       }
       check(withTime > 0, `${where}: no drawn row belongs to a car with a time`);
-      check(blank.length === 0,
-        `${where}: ${blank.length} of ${withTime} drawn rows withhold a time that was set` +
-        (blank.length ? ` — e.g. ${blank[0]}` : ''));
+      // THE BOARD HAS A LAP-TIME COLUMN IN A LAP TIME CLASSIFIED SESSION, and
+      // only where the panel is wide enough for the reference's five columns
+      // plus a sixth. A compact panel is 176-232px and does not have the room:
+      // the seven columns it does have are exactly the five the reference
+      // names plus the livery bar and the badge, and the lap time is what
+      // leaves. So the assertion follows the column, and where there is no
+      // column the figure in the GAP cell has to be the car's own.
+      const hasTimeColumn = r.timed && vp.w > 900 && vp.h > 470;
+      if (!hasTimeColumn) {
+        // REPORTED, NOT ASSERTED, and the reason is a conflict between two of
+        // the user's own instructions rather than a tolerance. The race board
+        // in `reference/target/68.png` is position, team mark, code, gap,
+        // compound — there is no lap-time column in it, and the instruction
+        // about that image is "copy this!!! don't change shit from it". So the
+        // column is not drawn in a race, and every rival's lap time is still
+        // missing from a race board, which is what #35 reports. A column was
+        // built, measured and taken back out; the issue stays open with this
+        // number on it and the user arbitrates.
+        console.log(`  REPORTED (#35, open): ${blank.length} of ${withTime} rows on this ` +
+          'board carry a lap time the car set in a cell the board has no column for');
+        // What the race board MUST do is show every car its own figure, per
+        // car, owing nothing to the player — which is the half of #35 that is
+        // decidable without contradicting the reference.
+        const noFigure = drawn.filter((row) => row.gap.trim() === '' || row.gapW < 1).length;
+        check(noFigure === 0,
+          `${where}: ${noFigure} rows have no figure in the gap column while the ` +
+          'player has completed no lap');
+      } else {
+        check(blank.length === 0,
+          `${where}: ${blank.length} of ${withTime} drawn rows withhold a time that was set` +
+          (blank.length ? ` — e.g. ${blank[0]}` : ''));
+      }
 
       // The row is a grid and the panel is a fixed width: a column added to a
       // template that has no room for it does not show a time, it pushes
@@ -268,9 +316,16 @@ async function main(): Promise<void> {
       // The floor the panel is competing with: whatever the rail is actually
       // carrying, or the rail's own minimum when it is carrying nothing, and
       // the mirror band when the camera has one.
+      // THE LIMIT IS THE RAIL'S OWN MEASURED FOOT, not the bottom of the
+      // screen. `.hud-notices` stops 86px above the foot on a desktop, 196 in
+      // portrait, and rises again by the whole mirror band when the camera has
+      // glass in it — so the panel's budget is the band's foot, and a probe
+      // that measured against the viewport would demand rows there is no room
+      // for.
+      const floorPx = railFloorFor(r.viewport.h);
       const railFloor = r.rail.pinned.length > 0
         ? r.rail.occupiedTop
-        : (r.mirrorTopPx > 0 ? r.mirrorTopPx : r.viewport.h) - RAIL_FLOOR_PX;
+        : r.rail.bottom - floorPx;
       // Measured on the BANDED panel in both directions, because that is the
       // height the row count is reserved against: asking the quiet frame
       // whether it wasted a row would count the flag band's own 39 pixels as
@@ -282,16 +337,31 @@ async function main(): Promise<void> {
         `${String(r.shown).padStart(2)}/${r.field} rows  row ${rowH}px  ` +
         `tower ${r.tower.top}–${r.tower.bottom} (${banded.tower.bottom} banded)  ` +
         `floor ${Math.round(railFloor)}  ` +
-        `unused ${unused}px (~${couldFit} rows)  rail [${r.rail.pinned.join(' ')}]`);
-      check(r.shown === r.field || unused < ROW_SLACK_PX,
+        `unused ${unused}px (~${couldFit} rows)  band +${banded.tower.bottom - r.tower.bottom}px  rail [${r.rail.pinned.join(' ')}]`);
+      check(r.shown === r.field
+        || oneMoreRowWouldOverrun(banded.tower.bottom, rowH, railFloor),
         `${vp.name}/${cam}: ${r.shown} of ${r.field} cars on the board with ` +
         `${unused}px of unused rail beneath it — room for ~${couldFit} more`);
+      // THE BOARD DOES NOT SKIP — issue #76, and the assertion is one line.
+      //
+      //   "also the leader board has 1st place and then 7-20th why not how the
+      //    whole fucking leaderboard bro"
+      //
+      // Positions down the drawn rows must increment by exactly one. A pinned
+      // leader over a window that has scrolled off them fails this, which is
+      // what the user photographed; so does dropping a retirement out of the
+      // middle of the order.
+      const drawnPos = r.rows.map((row) => Number(row.pos));
+      const skips = drawnPos.filter((p, i) => i > 0 && p !== drawnPos[i - 1] + 1);
+      check(skips.length === 0,
+        `${vp.name}/${cam}: the board skips ${skips.length} place(s) — ` +
+        drawnPos.join(','));
       // Whatever else happens, the player's own row is on the board. A tower
       // that drops the driver reading it has answered no question at all.
       check(r.rows.some((row) => row.cls.includes('is-player')),
         `${vp.name}/${cam}: the player's own row is not on the board`);
       // And the panel may not stand on the mirrors or run off the screen.
-      const bottomLimit = r.mirrorTopPx > 0 ? r.mirrorTopPx : r.viewport.h;
+      const bottomLimit = r.rail.bottom;
       check(r.tower.bottom <= bottomLimit,
         `${vp.name}/${cam}: the tower reaches ${r.tower.bottom}px past a limit of ` +
         `${Math.round(bottomLimit)}px`);
@@ -309,10 +379,10 @@ async function main(): Promise<void> {
       // an empty panel. That trade is older than this work and the numbers are
       // unchanged by it — 4 rows, tower bottom 138px, before and after.
       const atFloor = r.shown <= 4;
-      check(atFloor || bottomLimit - banded.tower.bottom >= RAIL_FLOOR_PX - 1,
+      check(atFloor || bottomLimit - banded.tower.bottom >= floorPx - 1,
         `${vp.name}/${cam}: with the flag band out the tower leaves the rail ` +
         `${Math.round(bottomLimit - banded.tower.bottom)}px against a floor of ` +
-        `${RAIL_FLOOR_PX}px`);
+        `${floorPx}px`);
     }
     await camera('chase');
   }
@@ -330,13 +400,101 @@ async function main(): Promise<void> {
     const r = await open({ kind: 'race', circuit: 'monza', seconds: 180, laps: 60,
       standingStart: false, pitLaneStart: false, cars });
     const railFloor = r.rail.pinned.length > 0 ? r.rail.occupiedTop
-      : r.viewport.h - RAIL_FLOOR_PX;
+      : r.rail.bottom - railFloorFor(r.viewport.h);
     const unused = Math.round(railFloor - r.tower.bottom);
     console.log(`  ${cars} cars: ${r.shown} rows drawn, field ${r.field}, ` +
       `unused ${unused}px`);
     check(r.field === cars, `field of ${cars} produced ${r.field} participants`);
-    check(r.shown === r.field || unused < ROW_SLACK_PX,
+    check(r.shown === r.field
+      || oneMoreRowWouldOverrun(r.tower.bottom, r.rows[0]?.height ?? 20, railFloor),
       `${cars} cars: ${r.shown} rows with ${unused}px unused beneath the tower`);
+  }
+
+  // =========================================================================
+  // 4. #76 — the row the reference draws
+  // =========================================================================
+  //
+  // `reference/target/68.png`, row one: `1  <Ferrari mark>  LEC  Leader  M`.
+  // Five things, in that order, and the user's instruction about the image is
+  // "copy this!!! don't change shit from it". This asserts the five are on
+  // every drawn row, in pixels, in a race and in qualifying.
+  //
+  // WHAT IT DELIBERATELY DOES NOT ASSERT: the type, the scale and the header.
+  // The board in the reference is a phone-height panel in F1's own proprietary
+  // face, and matching its metrics is the open half of #76 — see the PR. A
+  // probe that claimed the copy was complete would be worse than no probe.
+  console.log('\n4. THE ROW THE REFERENCE DRAWS');
+  await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
+  for (const s of [
+    { kind: 'race' as const, circuit: 'monza', seconds: 300,
+      o: { standingStart: false, pitLaneStart: false, laps: 60 } },
+    { kind: 'qualifying' as const, circuit: 'monza', seconds: 420,
+      o: { qualifyingPhase: 1 as const, advancing: 15, durationS: 1080, playerIndex: 19 } },
+  ]) {
+    const r = await open({ kind: s.kind, circuit: s.circuit, seconds: s.seconds, ...s.o });
+    const noMark = r.rows.filter((row) => !row.markDrawn).length;
+    const noCode = r.rows.filter((row) => !/^[A-Z]{2,4}$/.test(row.code.trim())).length;
+    const noTyre = r.rows.filter((row) => !row.tyreVisible || row.tyre.trim() === '').length;
+    const noGap = r.rows.filter((row) => row.gap.trim() === '' || row.gapW < 1).length;
+    const noPos = r.rows.filter((row) => !/^\d+$/.test(row.pos.trim())).length;
+    console.log(`  ${s.kind}: ${r.shown} rows — ` +
+      `${r.rows.slice(0, 3).map((row) => `${row.pos} ${row.code} ${row.gap} ${row.tyre}`)
+        .join(' | ')}`);
+    check(noPos === 0, `${s.kind}: ${noPos} rows have no position number`);
+    check(noMark === 0, `${s.kind}: ${noMark} rows have no team mark drawn`);
+    check(noCode === 0, `${s.kind}: ${noCode} rows have no three-letter code`);
+    check(noGap === 0, `${s.kind}: ${noGap} rows have nothing in the gap column`);
+    const gapCol = Math.min(...r.rows.map((row) => row.gapW));
+    check(gapCol > 20,
+      `${s.kind}: the gap column is ${gapCol}px wide — the figures are not drawn`);
+    check(noTyre === 0, `${s.kind}: ${noTyre} rows have no compound letter`);
+    // The leader's own cell, in the reference's own word and slant.
+    const first = r.rows[0];
+    if (s.kind === 'race') {
+      check(first.gap.trim() === 'Leader',
+        `the leader's cell reads "${first.gap.trim()}" and the reference says Leader`);
+      check(first.gapItalic, 'the leader\'s cell is not italic');
+    }
+    // NO TIME, which is the state the board used to draw as an em dash — the
+    // 2024 board in `reference/target/69.png` is eleven rows of it.
+    const noTime = r.rows.filter((row) => row.gap.trim() === 'NO TIME').length;
+    const dashes = r.rows.filter((row) => row.gap.trim() === '—').length;
+    check(dashes === 0, `${s.kind}: ${dashes} rows say "—" where the reference says NO TIME`);
+    if (s.kind === 'qualifying') {
+      console.log(`  qualifying: ${noTime} rows read NO TIME, ` +
+        `${r.rows.filter((row) => row.badges.includes('has-pit')).length} carry the P marker`);
+    }
+  }
+
+  // A picture of the board at real size, for the comparison against
+  // `reference/target/68.png` that PROJECT.md §3.1 asks for. Written rather
+  // than described: every visual claim in this project that was made from a
+  // sentence has eventually turned out to be wrong.
+  {
+    await mkdir(SHOT_DIR, { recursive: true });
+    for (const shot of [
+      { name: 'race-desktop', w: 1400, h: 900,
+        o: { kind: 'race' as const, circuit: 'monza', seconds: 300, laps: 57,
+          standingStart: false, pitLaneStart: false } },
+      { name: 'race-portrait', w: 390, h: 844,
+        o: { kind: 'race' as const, circuit: 'monza', seconds: 300, laps: 57,
+          standingStart: false, pitLaneStart: false } },
+      { name: 'qualifying-desktop', w: 1400, h: 900,
+        o: { kind: 'qualifying' as const, circuit: 'monza', seconds: 300,
+          qualifyingPhase: 1 as const, advancing: 15, durationS: 1080, playerIndex: 19 } },
+    ]) {
+      await page.setViewport({ width: shot.w, height: shot.h, deviceScaleFactor: 2 });
+      const r = await open(shot.o);
+      await page.screenshot({
+        path: resolve(SHOT_DIR, `${shot.name}.png`) as `${string}.png`,
+        clip: {
+          x: r.tower.left - 4, y: r.tower.top - 4,
+          width: r.tower.width + 8, height: r.tower.bottom - r.tower.top + 8,
+        },
+      });
+      console.log(`  wrote ${shot.name}.png — ${r.shown} rows, ` +
+        `${r.tower.width}x${r.tower.bottom - r.tower.top}px`);
+    }
   }
 
   await browser.close();

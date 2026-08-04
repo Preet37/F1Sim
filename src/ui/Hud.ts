@@ -859,6 +859,7 @@ export class Hud {
       // interesting happened, which is the worst frame to spend one in.
       const badges = this.el('tower-badges', root);
       this.el('tbadge tb-fast', badges).appendChild(stopwatchSvg());
+      this.el('tbadge tb-pit', badges, 'P');
       this.el('tbadge tb-pen', badges, '!');
       this.el('tbadge tb-fin', badges).appendChild(chequerSvg());
       this.rows.push({
@@ -1461,7 +1462,8 @@ export class Hud {
    */
   private updateTower(engine: RaceEngine, player: CarEntry): void {
     const standings = engine.standings;
-    const fit = towerFit(window.innerWidth, window.innerHeight, this.mirrorFloorPx);
+    const fit = towerFit(
+      window.innerWidth, window.innerHeight, this.mirrorFloorPx, this.towerChromePx);
     // THE TOWER GIVES WAY TO THE PIT SHEET on a short screen. 390 pixels of
     // height leaves the notice rail a 94-pixel band between the running order
     // and the tyre panel, and no arrangement of a tyre choice and a wing choice
@@ -1585,21 +1587,38 @@ export class Hud {
     // One layout read, on the frames where the row count or the flag band has
     // actually changed. `Hud.update` does not measure anything.
     //
-    // THE LAP-TIME COLUMN IS NO LONGER SWITCHED BY SESSION KIND, and that is
-    // issue #35. It used to be `kind !== 'race'`, and `.hud-tower:not(
-    // .is-timed) .tower-time` set the cell to `display: none` — so in a race
-    // every row carried the right lap time in a cell zero pixels wide.
-    // Measured on today's build, Monza, player retired on the grid with no lap
-    // of their own: 17 rivals had set a time and 17 of 17 rows drew none of
-    // them. A lap time belongs to the car that set it in every session there
-    // is, which is what the player asked for — "why are you waiting on me to
-    // display their times that they did at other laps?" — and the column is in
-    // one template now, so there is no state in which it can be hidden.
-    const shape = shown + '|' + (this.flagBandShown ? 'f' : '');
+    // A Lap Time Classified Session gets the lap-time column; a race does not.
+    // One class write per session, not per frame.
+    //
+    // MEASURED AND LEFT AS IT IS, which is the open half of issue #35. In a
+    // race `.hud-tower:not(.is-timed) .tower-time` is `display: none`, so
+    // every row carries the right lap time in a cell zero pixels wide:
+    // `probe:tower` at Monza, player retired on the grid with no lap of their
+    // own, 17 rivals timed and 17 of 17 rows drawing none of them. Giving the
+    // race board the column fixes that and contradicts the reference board in
+    // issue #76 — position, team mark, code, gap, compound, and *"don't change
+    // shit from it"* — so it was built, measured and taken back out. The user
+    // arbitrates; the issue keeps the number.
+    const timed = engine.config.kind !== 'race';
+    const shape = shown + '|' + (this.flagBandShown ? 'f' : '') + (timed ? 't' : '');
     if (shape !== this.lastTowerShape) {
       this.lastTowerShape = shape;
-      const bottom = Math.round(this.tower.getBoundingClientRect().bottom);
+      this.tower.classList.toggle('is-timed', timed);
+      const box = this.tower.getBoundingClientRect();
+      const bottom = Math.round(box.bottom);
       if (bottom > 0) this.root.style.setProperty('--rail-top', bottom + 8 + 'px');
+      // THE PANEL'S OWN CHROME, MEASURED. Everything the running order is not:
+      // the header, the flag band when it is out, the column rule, the
+      // fastest-lap strip and the padding. `towerFit` had this as a constant
+      // and a constant is wrong by up to nine pixels — which is a whole car on
+      // the board when the column is short. Read here because this branch is
+      // already forcing a layout for `--rail-top`, so it costs nothing extra,
+      // and used on the next frame.
+      const rowsH = this.rowsBox.getBoundingClientRect().height;
+      if (box.height > 0 && rowsH >= 0) {
+        this.towerChromePx = Math.round(box.height - rowsH)
+          + (this.flagBandShown ? 0 : flagBandPx(fit.compact));
+      }
     }
   }
 
@@ -2785,6 +2804,15 @@ export class Hud {
   }
   /** Which camera is live. Read by nothing yet; see `setCameraMode`. */
   cockpitView = false;
+  /**
+   * The panel's own chrome, measured, with the flag band counted whether or
+   * not it is out.
+   *
+   * Zero until the first layout, where `towerFit` falls back to its own
+   * figure. See the read in `updateTower`.
+   */
+  private towerChromePx = 0;
+
   /** Height of the mirror band as a fraction of the viewport, 0 when none. */
   private mirrorFloor = 0;
   /** The same, in pixels, for `towerFit`. */
@@ -3331,6 +3359,44 @@ function enterNextFrame(card: HTMLElement): void {
 export const TOWER_RAIL_FLOOR_PX = RADIO_CARD_MIN_PX + RAIL_MASK_PX + 8;
 
 /**
+ * The same floor, for a viewport that does not draw a radio card at all.
+ *
+ * A landscape phone has a 94-pixel band and `sizeRadioCard` declines the plate
+ * there, so reserving a plate's worth of room for one costs that screen five
+ * rows of running order for nothing. What it does still have to carry is a
+ * live cue — an instruction, where the card is atmosphere — and the mask.
+ *
+ * Exported so `probe:tower` measures the panel against the same floor the
+ * panel is laid out against, rather than against a second copy of it.
+ */
+export function towerRailFloorPx(h: number): number {
+  return h <= 470 ? RAIL_MASK_PX + LIVE_CUE_PX : TOWER_RAIL_FLOOR_PX;
+}
+
+/**
+ * One live cue — the neutralisation line or the pit line — in pixels.
+ *
+ * What a rail too short for a radio card still has to carry, because a cue is
+ * an instruction and the card is atmosphere. Read off `.hud-neutral-cue` in
+ * the compact layout.
+ */
+const LIVE_CUE_PX = 30;
+
+/**
+ * The flag band's own height, including the margin under it.
+ *
+ * Added to the measured chrome on the frames the band is NOT out, because the
+ * row count has to survive the frame it comes out on: a safety car is the
+ * moment a driver most needs the running order and the worst moment for it to
+ * be standing on the radio. Measured by `probe:tower` — a desktop panel goes
+ * from 109 to 148 pixels of chrome when the band appears, a compact one from
+ * 55 to 86.
+ */
+function flagBandPx(compact: boolean): number {
+  return compact ? 31 : 39;
+}
+
+/**
  * A bound on the row count, against a viewport nobody has thought about.
  *
  * Not a design decision: the field is the cap and `updateTower` applies it.
@@ -3353,7 +3419,7 @@ const MAX_TOWER_ROWS = 26;
  * screen — without standing up a browser to measure it.
  */
 export function towerFit(
-  w: number, h: number, floorPx = 0,
+  w: number, h: number, floorPx = 0, chromePx = 0,
 ): { rows: number; compact: boolean } {
   // Written the same way round as the media query that shrinks the row —
   // `@media (max-width: 900px), (max-height: 470px)`. If these two ever
@@ -3364,8 +3430,10 @@ export function towerFit(
   // a broadcast tower row is tighter than this one was.
   const rowH = compact ? 17 : 20;
   // What is NOT available to the rows: the panel's own top offset (10), its
-  // header block, flag band, column rule and fastest-lap strip, the 5px break
-  // under a pinned leader, and the rail's floor beneath the panel.
+  // header block, flag band, column rule and fastest-lap strip, and the rail's
+  // floor beneath the panel. There is no longer a break under a pinned leader
+  // to reserve for — see `towerWindow`, where the pin went with the hole it
+  // used to sit above.
   //
   // THE CHROME IS MEASURED WITH THE FLAG BAND OUT — 148 on a desktop and 86
   // compact, read off the laid-out panel by `probe:tower`, against 109 and 55
@@ -3386,9 +3454,45 @@ export function towerFit(
   //
   // See `TOWER_RAIL_FLOOR_PX` for why a floor is the honest reservation and a
   // worst case is not.
-  const chrome = compact ? 86 : 148;
-  const reserved = 10 + chrome + 5 + TOWER_RAIL_FLOOR_PX;
-  const fits = Math.floor((h - floorPx - reserved) / rowH);
+  // THE LARGER OF THE TWO, and the asymmetry is deliberate. The measured
+  // figure arrives a frame late — it is read on the frame the shape changed
+  // and used on the next one — so trusting it below the modelled value lets a
+  // row in that the next frame has no room for, and the thing under this panel
+  // is the radio. Above the modelled value it is strictly better information:
+  // a wider viewport with taller rows really does have more chrome than the
+  // constant knows about.
+  const chrome = Math.max(chromePx, compact ? 86 : 148);
+  // THE RAIL DOES NOT REACH THE BOTTOM OF THE SCREEN, and forgetting that is
+  // how a taller running order lands on the radio card. `.hud-notices` stops
+  // 86 pixels above the foot on a desktop, 196 in portrait and 80 on a
+  // landscape phone, because the car state and the tyre panel are under it —
+  // and under a mirror camera the whole band lifts again by the height of the
+  // glass, which the stylesheet writes as `bottom: calc(86px + var(--floor))`.
+  // Additive, exactly as the CSS adds them.
+  //
+  // DERIVED HERE RATHER THAN MEASURED, and that is a correction rather than a
+  // preference. Reading `.hud-notices` off the document gives the same numbers
+  // and gives them a frame late, because the tower is laid out before the rail
+  // it is being budgeted against. One stale frame in a game at 60fps is
+  // invisible; in `shoot:panels`, which paints once per scene, it sized a
+  // twenty-row tower against the chase camera's rail and then drew it under a
+  // mirror band — 19 rail failures, every one of them in portrait with the
+  // glass in shot. The conditions below are written the same way round as the
+  // media queries that set the values.
+  //
+  // Four numbers, because the stylesheet has four rules: 196 in portrait, 6 on
+  // a landscape phone with the mirrors in shot (the band moves into the
+  // corridor between the panes and takes the whole height it can), 80 on the
+  // same phone without them, 86 everywhere else.
+  const portrait = w <= 620 && h > w;
+  const railBase = portrait ? 196 : h <= 470 ? (floorPx > 0 ? 6 : 80) : 86;
+  const takenBelow = floorPx + railBase;
+  // The radio plate is the whole of the rail's floor, and there are viewports
+  // where the stylesheet does not draw one: a landscape phone has a 94-pixel
+  // band and `sizeRadioCard` declines it there. Reserving a plate's worth of
+  // room for a plate that will never be raised costs that phone five rows.
+  const reserved = 10 + chrome + towerRailFloorPx(h);
+  const fits = Math.floor((h - takenBelow - reserved) / rowH);
   // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
   // glass in shot the bottom of the frame is not the HUD's to use — see
   // `MIRROR_PANES` — so the whole left column lifts by the height of the band
@@ -3414,27 +3518,32 @@ export function towerFit(
 /**
  * Which cars the tower draws, when it cannot draw all of them.
  *
- * THE REPORTED FAULT, and it is worth being exact about it because the
- * behaviour it replaces is defensible in principle and failed completely in
- * practice. The window centred itself on the player and pinned the leader
- * above it. Running eighteenth of twenty in eight rows, that produced P1, a
- * dashed break, and P14 to P20 — and in the screenshot it was reported from,
- * six of those seven were marked `Out`. The player could see the leader, five
- * retirements and one moving car.
+ * THE BOARD DOES NOT SKIP. That is the whole rule now, and it is the user's:
  *
- * Two things are wrong there and only one of them is the row count.
+ *   "also the leader board has 1st place and then 7-20th why not how the whole
+ *    fucking leaderboard bro"
  *
- * A RETIRED CAR IS NOT PART OF THE FIGHT. It holds its classified position and
- * belongs on a results screen, but it cannot be raced, caught or lost to, and
- * spending a scarce row on it to tell the driver something that will still be
- * true in twenty laps is the worst trade this panel can make. So when the
- * window is short, retirements are the first thing dropped from it.
+ * What they were looking at was this function's previous answer. It dropped
+ * retired cars out of the middle of the order and then pinned the leader on
+ * top of a window that had scrolled off them, so a board could read P1, a
+ * dashed rule, and then P7 to P20 — five cars gone from between two rows that
+ * are drawn touching. Both halves were defensible in isolation and both are
+ * gone: a running order that silently omits positions is not a running order,
+ * it is a list of cars that happen to be interesting, and no broadcast board
+ * has ever done it. Issue #76 is the reference and the reference is
+ * contiguous.
  *
- * AND THE FIGHT IS AHEAD. Centring the window puts as many rows behind the
- * player as in front, which is even-handed and wrong: the cars a driver can do
- * something about are the ones they are catching. The player now sits two
- * thirds of the way down their own window, so most of what they can see is
- * road they might make up.
+ * So: every car, in order, whenever they fit — which after the `towerFit`
+ * work is every viewport except a landscape phone with the mirrors in shot.
+ * When they do not fit, a CONTIGUOUS run that contains the player, sitting two
+ * thirds of the way down it so most of what they can see is road they might
+ * make up. Retirements inside that run keep their rows, because taking them
+ * out is what put the hole in the order.
+ *
+ * `pinLeader` is retained in the return so callers do not have to change, and
+ * it is now always false: there is nothing to pin a leader above, because the
+ * leader is either on the board or the board is a slice that does not claim
+ * to start at the front.
  *
  * Pure and exported so `probe:hudtext` can put a player at the back of a field
  * of wrecks and assert what they are shown.
@@ -3448,32 +3557,15 @@ export function towerWindow(
   }
   if (shown <= 0) return { rows: [], pinLeader: false };
 
-  // The cars worth a row: everybody still running, plus the player, who keeps
-  // theirs whatever has happened to them.
-  const live: number[] = [];
-  for (let i = 0; i < n; i++) {
-    if (!standings[i].retired || i === playerIdx) live.push(i);
-  }
-  // If dropping the retirements is not enough to fit, or there is nobody
-  // running at all, fall back to the whole order — a short tower of wrecks is
-  // still better than an empty one.
-  const pool = live.length >= Math.min(shown, 2) ? live : Array.from({ length: n }, (_, i) => i);
-
-  const at = Math.max(0, pool.indexOf(playerIdx));
-  if (pool.length <= shown) return { rows: pool, pinLeader: false };
-
-  // The player two thirds down, so most of the window is the road ahead.
+  const at = Math.max(0, playerIdx);
+  // The player two thirds down, so most of the window is the road ahead, and
+  // clamped into the order at both ends so the run is always `shown` long.
   const behind = Math.max(1, Math.round(shown / 3));
-  let from = Math.max(0, Math.min(at - (shown - behind), pool.length - shown));
-  // The leader is pinned whenever the window has scrolled off them, because
-  // "who is winning" is the one question this panel must always answer.
-  const pinLeader = from > 0;
-  if (pinLeader) {
-    const rest = shown - 1;
-    from = Math.max(1, Math.min(at - (rest - behind), pool.length - rest));
-    return { rows: [pool[0], ...pool.slice(from, from + rest)], pinLeader: true };
-  }
-  return { rows: pool.slice(from, from + shown), pinLeader: false };
+  const from = Math.max(0, Math.min(at - (shown - behind), n - shown));
+  return {
+    rows: Array.from({ length: shown }, (_, i) => from + i),
+    pinLeader: false,
+  };
 }
 
 /**
@@ -3503,16 +3595,20 @@ export function standingsCells(
   // arithmetic and the two disagreed, which is how `LEADER` came to be printed
   // during a qualifying session.
   //
-  // What is left here is PRESENTATION, and it is two words. `Interval` because
-  // the leader's cell names the column rather than restating a position the
-  // number beside it already gives — every other row in that column is a
-  // figure, so a word there reads as the heading it is. `Out` because the row
-  // is already dimmed and already at the foot of the order, and three capitals
-  // of jargon on top of that is the panel saying the same thing three times.
+  // What is left here is PRESENTATION, and it is one word: `Out`, because the
+  // row is already dimmed and already at the foot of the order and three
+  // capitals of jargon on top of that is the panel saying the same thing three
+  // times. It used to be two — the leader's cell was relabelled `Interval` on
+  // the reasoning that a word among figures reads as a column heading — and
+  // issue #76's reference board prints `Leader` there, so that is what prints
+  // there.
   const ruled = liveGapCell(car, ahead, leader, engine.config.kind === 'race');
-  const gap = ruled === 'LEADER' ? 'Interval'
-    : ruled === 'DNF' || ruled === 'OUT' ? 'Out'
-    : ruled;
+  // `Out`, because the row is already dimmed and already at the foot of the
+  // order, and three capitals of jargon on top of that is the panel saying the
+  // same thing three times. `LEADER` is NOT relabelled any more — it used to
+  // be printed as `Interval`, a column heading standing in a row of figures,
+  // and issue #76's reference board says `Leader` in the leader's own row.
+  const gap = ruled === 'DNF' || ruled === 'OUT' ? 'Out' : ruled;
 
   return {
     pos: String(car.position),
@@ -3542,6 +3638,11 @@ export function standingsCells(
 export function statusBadges(car: CarEntry, sessionBest: number): string {
   let out = '';
   if (sessionBest > 0 && car.bestLapTime === sessionBest) out += ' has-fast';
+  // `P`, at the right-hand edge beside the compound, exactly as the 2024 and
+  // 2025 qualifying boards in `reference/target/69.png` mark the eleven cars
+  // sitting in their garages. It is the one fact about a row that explains why
+  // the figure beside it is not moving, and the board had no way of saying it.
+  if (car.inPitLane && !car.retired) out += ' has-pit';
   // Anything not yet served, and any time already added to the race result. A
   // five-second penalty is served at the stop and is a fact about the classified
   // order from the moment it is issued.
