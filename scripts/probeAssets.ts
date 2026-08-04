@@ -344,19 +344,6 @@ async function main(): Promise<void> {
       + `slots=[${s1.slots.map((x) => x.key + '=' + (x.path ?? 'none')).join(', ')}]`);
     console.log(`  brand requests this arm: ${brandRequests.join(', ') || 'none'}`);
     console.log(`  brand responses so far: ${brandResponses.join(' | ') || 'none'}`);
-    const wire = await page.evaluate(async (u: string) => {
-      const r = await fetch(u, { cache: 'no-cache' });
-      const buf = await r.arrayBuffer();
-      const head = [...new Uint8Array(buf).slice(0, 8)].join(',');
-      const loaded = await new Promise<string>((done) => {
-        const i = new Image();
-        i.onload = () => done(`ok ${i.naturalWidth}x${i.naturalHeight}`);
-        i.onerror = (e) => done('onerror ' + String(e));
-        i.src = u;
-      });
-      return { status: r.status, type: r.headers.get('content-type'), bytes: buf.byteLength, head, loaded };
-    }, `/brand/${PROBE_TEAM}/badge.png`);
-    console.log(`  wire: ${JSON.stringify(wire)}`);
     check(
       s1.undecodable.length === 0,
       `nothing the manifest listed failed to decode (${s1.undecodable.join(', ') || 'none'})`,

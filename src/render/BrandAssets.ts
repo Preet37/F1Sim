@@ -294,14 +294,22 @@ async function decode(url: string): Promise<HTMLImageElement | null> {
       el.src = src;
     });
     if (!img) { undecodable.push(`undecodable ${url}`); return null; }
-    // Decoded fully before the object URL is released, so the painter cannot
-    // be handed an element whose backing blob has already been revoked.
+    // THE OBJECT URL IS NEVER REVOKED, deliberately. A raster image holds its
+    // decoded bitmap after load and would survive it — but an SVG does not: it
+    // is rasterised lazily at whatever size it is drawn, and this atlas is
+    // repainted every time another slot arrives, so revoking would work
+    // perfectly until somebody dropped in a `.svg` and then produce a badge
+    // that renders once and disappears. The cost of not revoking is bounded by
+    // slots x teams and is a rounding error beside the decoded images
+    // themselves.
     if (typeof img.decode === 'function') { try { await img.decode(); } catch { /* already loaded */ } }
+    objectUrl = null;
     return img;
   } catch (e) {
     undecodable.push(`${String(e)} ${url}`);
     return null;
   } finally {
+    // Only on a path that produced no usable image.
     if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
 }
