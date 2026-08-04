@@ -300,6 +300,9 @@ export class Hud {
    * `Hud.update` measures nothing on the frames where neither has moved.
    */
   private lastTowerShape = '';
+
+  /** The elastic row height last written, so it is written on change only. */
+  private lastRowPx = 0;
   private flagBandShown = false;
 
   private buttonBar!: HTMLElement;
@@ -409,17 +412,35 @@ export class Hud {
 
     // --- The header -------------------------------------------------------
     //
-    // The series mark, then the lap. Two facts and no more: a broadcast tower
-    // header says which championship you are watching and how far through the
-    // race it is, and the lap is the one number on the whole panel that is read
-    // from across a room, so it is set big and the total is set small beside
-    // it.
+    // TWO LINES, IN THE REFERENCE'S OWN ORDER — `reference/target/68.png`:
     //
-    // The mark is this game's own, and it is the only wordmark anywhere in the
-    // HUD. No real series mark is reproduced.
+    //     +-----------------------+
+    //     |   [F1 mark]   RACE    |   <- the mark, then the SESSION word
+    //     +-----------------------+
+    //     |      LAP 3/57         |   <- centred, current lap heavy
+    //     +-----------------------+
+    //
+    // What changed for #76, and both changes are the reference disagreeing
+    // with what was here:
+    //
+    //  - the second slot used to carry the CIRCUIT NAME (`MONZA`). The
+    //    reference carries the session word — `RACE`, `Q1`, `Q2`, `Q3`,
+    //    `DAY 1` — which is the fact a board about the session should print,
+    //    and the circuit is already named on the map panel and in the pause
+    //    menu. It is one word either way; this is the word the reference uses.
+    //  - the lap was on the SAME line, pushed to the right by `margin-left:
+    //    auto` — measured at 0.846 of the panel's width. The reference gives
+    //    it a line of its own, centred (0.500), on the lighter header ground.
+    //    So do 73, 74, 75 and 80.
+    //
+    // The mark is this game's own (`F1SIM`), and it is the only wordmark
+    // anywhere in the HUD. **Formula One's own mark is a registered trademark
+    // and is deliberately not reproduced** — see the PR for what that costs
+    // against the reference.
     const towerHead = this.el('tower-head', this.tower);
-    this.el('tower-series', towerHead).innerHTML = 'F1<b>SIM</b>';
-    this.sessionName = this.el('tower-session', towerHead, '');
+    const markLine = this.el('tower-markline', towerHead);
+    this.el('tower-series', markLine).innerHTML = 'F1<b>SIM</b>';
+    this.sessionName = this.el('tower-session', markLine, '');
     const lapBlock = this.el('tower-lapblock', towerHead);
     this.lapBlock = lapBlock;
     this.el('tower-lapword', lapBlock, 'LAP');
@@ -442,18 +463,14 @@ export class Hud {
     this.flagBandCause = this.el('flagband-cause', this.flagBand, '');
     this.flagBand.style.display = 'none';
 
-    // The column header. It shares its grid template with every row below it
-    // through one custom property, so a column cannot drift from its label —
-    // which is what a header row is for, and what two separately-tuned widths
-    // would eventually undo.
-    const cols = this.el('tower-cols', this.tower);
-    for (const [cls, label] of [
-      ['c-bar', ''], ['c-pos', 'P'], ['c-mark', ''], ['c-code', 'Driver'],
-      ['c-time', 'Best'], ['c-gap', 'Gap'], ['c-tyre', ''], ['c-badge', ''],
-    ] as [string, string][]) {
-      this.el('tower-col ' + cls, cols, label);
-    }
-
+    // THE COLUMN HEADER IS GONE, and that is the reference rather than a
+    // preference. `P . DRIVER . BEST . GAP` in small capitals across the top
+    // of the order is a spreadsheet convention; no board in
+    // `reference/target/` — 68, 69, 73, 74, 75 or 80 — has one, because a
+    // position, a three-letter code and a `+1.230` do not need labelling to
+    // anybody who has ever watched a race. It cost 24 pixels, which on a
+    // 1400x900 desktop is a car on the board.
+    //
     // The rows get a box of their own so the fastest-lap strip can sit under
     // them: rows are appended as the field is sized, and a footer appended
     // before them would end up in the middle of the order.
@@ -1241,7 +1258,7 @@ export class Hud {
     // --- Position and timing ---------------------------------------------
     setStyle(this.teamStripe, 'background',
       '#' + player.team.colour.toString(16).padStart(6, '0'));
-    setText(this.sessionName, engine.track.def.name.toUpperCase());
+    setText(this.sessionName, sessionWord(engine.config));
     const totalLaps = engine.config.laps || engine.track.def.raceLaps;
     if (engine.config.kind === 'race') {
       setText(this.lapCounter, String(Math.min(player.lap + 1, totalLaps)));
@@ -1491,6 +1508,24 @@ export class Hud {
     const shown = squeezed ? 0 : Math.min(standings.length, capped);
     this.ensureRows(shown);
 
+    // THE ROW SCALE — #76. The reference board's row pitch is 0.171 of its own
+    // panel width and ours measured 0.067, so the single loudest difference
+    // between the two pictures is that our rows are two and a half times too
+    // tight. The budget `towerFit` divided to get the count is divided again
+    // here by the cars actually being drawn, and whatever is left over goes
+    // into the row rather than into empty rail. On a 1400x900 desktop with
+    // twenty cars that was 155 unused pixels; they are rows now.
+    //
+    // Written as a custom property because everything inside the row — the
+    // type, the mark, the badge, the livery bar — is sized in fractions of it
+    // in the stylesheet, off the reference's own proportions. One number moves
+    // and the whole row moves with it, in the ratios the reference has.
+    const rowPx = towerRowPx(fit.budgetPx, Math.max(1, shown), fit.compact);
+    if (rowPx !== this.lastRowPx) {
+      this.lastRowPx = rowPx;
+      this.tower.style.setProperty('--tower-row', rowPx + 'px');
+    }
+
     // Which cars get a row, when there are not enough rows for everybody. See
     // `towerWindow` — retirements go first, and the player sits two thirds down
     // their own window so most of what they can see is the road ahead.
@@ -1600,7 +1635,10 @@ export class Hud {
     // shit from it"* — so it was built, measured and taken back out. The user
     // arbitrates; the issue keeps the number.
     const timed = engine.config.kind !== 'race';
-    const shape = shown + '|' + (this.flagBandShown ? 'f' : '') + (timed ? 't' : '');
+    // The row height is part of the shape: a taller row moves the foot of the
+    // panel, and the foot of the panel is where the notice rail starts.
+    const shape = shown + '|' + rowPx + '|' +
+      (this.flagBandShown ? 'f' : '') + (timed ? 't' : '');
     if (shape !== this.lastTowerShape) {
       this.lastTowerShape = shape;
       this.tower.classList.toggle('is-timed', timed);
@@ -3430,6 +3468,36 @@ function flagBandPx(compact: boolean): number {
 const MAX_TOWER_ROWS = 26;
 
 /**
+ * THE ROW SCALE, AND THE ONE NUMBER THE REFERENCE ACTUALLY FIXES.
+ *
+ * Measured off `reference/target/68.png` — the copy target — with the panel's
+ * own edges found by the luma step at x=102 and x=481, so W = 379px, and the
+ * row pitch found from the text bands of rows 1, 2 and 3 at y=243, 306 and
+ * 373, so pitch = 65px:
+ *
+ *     row pitch / panel width = 65 / 379 = 0.171
+ *
+ * The same ratio holds on the in-situ frames, which is what makes it a ratio
+ * rather than a coincidence: `73.png` has a 95px-wide board on a 16px pitch
+ * (0.168) and `74.png` a 165px board on a 16px pitch.
+ *
+ * OURS MEASURED 20 / 300 = 0.067, i.e. two and a half times too tight, and
+ * this is the single biggest difference between our board and the
+ * reference's. It is also the one that cannot be fully paid for: 20 rows at
+ * 0.171 of a 212px panel is 725 pixels of running order, and a 900px viewport
+ * that must also carry a notice rail has about 580. See the PR — this is the
+ * headline entry under "could not reproduce".
+ *
+ * So the row is ELASTIC between a floor and a ceiling instead of being a
+ * constant. The floor is what the row used to be, so no viewport loses a car
+ * it had before; the ceiling is what the panel can spend a whole empty rail
+ * on without the type breaking down. `towerRowPx` divides the budget by the
+ * cars actually drawn and lands somewhere between them.
+ */
+const TOWER_ROW_MIN_PX = { compact: 17, full: 20 };
+const TOWER_ROW_MAX_PX = { compact: 22, full: 30 };
+
+/**
  * How many rows the tower shows, and whether they are the single-line kind.
  *
  * Bounded at both ends and on purpose. The floor stops a short viewport
@@ -3438,21 +3506,31 @@ const MAX_TOWER_ROWS = 26;
  * applies, because a running order that stops before the last car is the
  * reported fault.
  *
+ * `budgetPx` comes back with the count because the count is computed by
+ * dividing it: the caller needs the remainder to decide how tall a row can
+ * be, and re-deriving the budget on the other side of the call is how two
+ * numbers that must agree stop agreeing.
+ *
  * Pure, and exported, so `probe:hudtext` can assert the landscape-phone case —
  * this repo has a history of HUD panels running off the bottom of a 390px
  * screen — without standing up a browser to measure it.
  */
 export function towerFit(
   w: number, h: number, floorPx = 0, chromePx = 0,
-): { rows: number; compact: boolean } {
+): { rows: number; compact: boolean; budgetPx: number; rowPx: number } {
   // Written the same way round as the media query that shrinks the row —
   // `@media (max-width: 900px), (max-height: 470px)`. If these two ever
   // disagree the panel is measured for one row height and drawn at another,
   // which is exactly how a tower ends up hanging off the bottom of a phone.
   const compact = w <= 900 || h <= 470;
-  // 22 rather than 26 on a desktop. Four pixels a row is three more cars, and
-  // a broadcast tower row is tighter than this one was.
-  const rowH = compact ? 17 : 20;
+  // THE COUNT IS COMPUTED AT THE ROW'S FLOOR, ALWAYS, and the elastic height
+  // is applied afterwards out of whatever is left over. Doing it the other way
+  // round — pick a handsome row height, then see how many fit — is how "make
+  // the board look like the reference" turns into #17 all over again, because
+  // the first thing a taller row buys is fewer cars. Every viewport keeps at
+  // least the row count it had before this work; the scale is spent on the
+  // slack and on nothing else.
+  const rowH = compact ? TOWER_ROW_MIN_PX.compact : TOWER_ROW_MIN_PX.full;
   // What is NOT available to the rows: the panel's own top offset (10), its
   // header block, flag band, column rule and fastest-lap strip, and the rail's
   // floor beneath the panel. There is no longer a break under a pinned leader
@@ -3485,7 +3563,17 @@ export function towerFit(
   // is the radio. Above the modelled value it is strictly better information:
   // a wider viewport with taller rows really does have more chrome than the
   // constant knows about.
-  const chrome = Math.max(chromePx, compact ? 86 : 148);
+  //
+  // 130 RATHER THAN 148 SINCE #76, AND IT IS A MEASUREMENT. The column-header
+  // row — `P · DRIVER · BEST · GAP` — is gone, because no board in the
+  // reference set has one; the panel's own vertical padding went with it. The
+  // banded desktop panel now measures 125px of chrome (`probe:tower`: an
+  // 11-row driver's-eye tower 10–355 with 220px of rows in it), and a model
+  // 23px above the truth is a row of the field held back on every camera that
+  // is short of room. 130 keeps the model just above the measurement, which is
+  // the asymmetry this comment is about. The compact figure was re-measured on
+  // the same run and is unchanged at 83 against a model of 86.
+  const chrome = Math.max(chromePx, compact ? 86 : 130);
   // THE RAIL DOES NOT REACH THE BOTTOM OF THE SCREEN, and forgetting that is
   // how a taller running order lands on the radio card. `.hud-notices` stops
   // 86 pixels above the foot on a desktop, 196 in portrait and 80 on a
@@ -3516,7 +3604,8 @@ export function towerFit(
   // band and `sizeRadioCard` declines it there. Reserving a plate's worth of
   // room for a plate that will never be raised costs that phone five rows.
   const reserved = 10 + chrome + towerRailFloorPx(h, w, floorPx);
-  const fits = Math.floor((h - takenBelow - reserved) / rowH);
+  const budgetPx = Math.max(0, h - takenBelow - reserved);
+  const fits = Math.floor(budgetPx / rowH);
   // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
   // glass in shot the bottom of the frame is not the HUD's to use — see
   // `MIRROR_PANES` — so the whole left column lifts by the height of the band
@@ -3536,7 +3625,89 @@ export function towerFit(
   return {
     rows: Math.max(min, Math.min(fits, MAX_TOWER_ROWS)),
     compact,
+    budgetPx,
+    rowPx: rowH,
   };
+}
+
+/**
+ * How tall a row may be, given the budget and the cars that have to go in it.
+ *
+ * The whole of the elastic scale, as one pure function, so `probe:tower` can
+ * drive the rule rather than a copy of it and so nothing in the stylesheet has
+ * to know the arithmetic.
+ *
+ * Floored at what the row used to be — a viewport that was full before is
+ * still full and has lost nobody — and capped at `TOWER_ROW_MAX_PX`, which is
+ * the point past which growing the row stops being a copy of the reference and
+ * starts being a different graphic. Between the two it takes every pixel the
+ * rail is not using, because on a 1400x900 desktop with twenty cars there were
+ * 155 of them and the reference says the board is nearly twice as tall as it
+ * looks with them left empty.
+ */
+export function towerRowPx(
+  budgetPx: number, shown: number, compact: boolean,
+): number {
+  const min = compact ? TOWER_ROW_MIN_PX.compact : TOWER_ROW_MIN_PX.full;
+  const max = compact ? TOWER_ROW_MAX_PX.compact : TOWER_ROW_MAX_PX.full;
+  if (shown <= 0) return min;
+  const grow = budgetPx - TOWER_GROWTH_RESERVE_PX;
+  return Math.max(min, Math.min(max, Math.floor(grow / shown)));
+}
+
+/**
+ * WHAT THE ROW MAY NOT GROW INTO — measured, by breaking it.
+ *
+ * THE COUNT AND THE SCALE DO NOT RESERVE THE SAME THING, and that asymmetry is
+ * the whole of this constant. `towerFit` budgets the row COUNT against
+ * `TOWER_RAIL_FLOOR_PX` — 140px, the radio card squeezed to its minimum plus
+ * the rail's mask — deliberately, because reserving the rail's worst case
+ * instead is issue #17 in one line: it costs nine to fifteen cars on the
+ * board. That is the right trade for a car.
+ *
+ * It is NOT the right trade for a pixel of row height, and the difference
+ * showed up the moment the row stopped being a constant. `shoot:panels` on the
+ * first elastic build:
+ *
+ *     desktop/radio: the radio card is not on screen in a 171px band
+ *
+ * — one new rail failure against the nine pre-existing ones. The safety-car
+ * rail is a neutralisation cue (`LIVE_CUE_PX`, 45), a pit cue (30), the gaps
+ * between them (16) and the card at `RADIO_CARD_MIN_PX` (104): 195 of content
+ * plus the 28px mask is 223, against a floor that reserved 140. The old fixed
+ * 20px row left 251px of slack and never noticed; the elastic row spent it.
+ *
+ * So the SCALE reserves the difference — the rail's worst case less the floor
+ * the count already holds — and the COUNT is untouched. A car on the board
+ * still beats a pixel of leading; a pixel of leading does not beat the radio.
+ */
+const TOWER_GROWTH_RESERVE_PX =
+  LIVE_CUE_PX + 30 + 16 + RADIO_CARD_MIN_PX + RAIL_MASK_PX - TOWER_RAIL_FLOOR_PX;
+
+/**
+ * The word beside the mark in the tower's header.
+ *
+ * `reference/target/68.png` reads `F1 RACE`; `69.png` reads `F1 DAY 1`;
+ * `74.png` and `75.png` read `F1 Q2` and `F1 Q1`. So: the session, in one
+ * short word, in capitals — never the circuit, which is what stood here
+ * before and which is named on the map panel two feet away.
+ *
+ * `config.name` is the authored label (`FP1`, `Q2`, `Grand Prix`) and is used
+ * where it is already short enough. A race is `RACE` rather than
+ * `GRAND PRIX`, because that is the reference's word and because the header
+ * has one line for it.
+ *
+ * Pure and exported so `probe:tower` can assert the header against the
+ * session rather than against a copy of this rule.
+ */
+export function sessionWord(config: {
+  kind: string; name: string; qualifyingPhase?: 1 | 2 | 3;
+}): string {
+  if (config.kind === 'race') return 'RACE';
+  if (config.kind === 'qualifying') {
+    return config.qualifyingPhase ? 'Q' + config.qualifyingPhase : 'QUALIFYING';
+  }
+  return (config.name || 'PRACTICE').toUpperCase();
 }
 
 /**

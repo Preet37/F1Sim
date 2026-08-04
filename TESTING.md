@@ -55,13 +55,31 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
    an empty track.
 3. **Timing tower** should list the whole field, contiguously — no gap between P1 and P7.
    On a 1280×800 laptop in the driver's eye it used to draw **4 rows of 20**; it now draws
-   8 there, 20 in chase, and 22/24 on a bigger grid. The styling is not the broadcast
-   board yet (#76), but the *rows* are all there.
-4. **Crash deliberately.** The session should NOT take over the screen — you get a radio
+   9 there, 20 in chase, and 22/24 on a bigger grid.
+4. **The board is meant to look like the reference you sent (#76).** Check it against
+   `reference/target/68.png` yourself — that image is the specification. What you should
+   see, top to bottom: `F1SIM RACE` on a lighter band, then `LAP 3/57` **centred** under
+   it with the current lap bold; then a row per car, edge to edge, carrying a team-colour
+   bar, the position, the team mark, the three-letter code, the gap and the compound
+   letter coloured by compound (S red, M yellow, H white). P1 reads *`Leader`* in italic;
+   everybody else `+1.230` to three decimals with the decimal points lining up down the
+   column. Your own row is outlined. The fastest lap is a **purple circle** at the right
+   of the row that holds it. In qualifying the lap counter becomes a clock, the header
+   reads `Q1`/`Q2`/`Q3`, a car with no time reads `NO TIME` and a car in the garage gets a
+   `P`.
+   **Three things are knowingly NOT the reference and will look wrong if you compare
+   closely.** (a) The rows are **less than two thirds as tall, relative to the panel, as
+   the reference's** — 0.104 of the panel's width against 0.171. Twenty rows at the
+   reference's spacing needs 725 pixels of board and a 900-pixel screen with a radio rail
+   under it has about 580, so this is a straight trade against showing all twenty cars.
+   Say which you want. (b) The **type is Titillium Web, not Formula One's own face**,
+   which is proprietary and cannot be shipped. (c) The mark reads **`F1SIM`, not the F1
+   logo**, which is a trademark.
+5. **Crash deliberately.** The session should NOT take over the screen — you get a radio
    message, `CONTINUE` in the corner, and the session keeps running behind it.
-5. **Press `Skip to the result`.** The other cars must still have real times. Retiring
+6. **Press `Skip to the result`.** The other cars must still have real times. Retiring
    should never blank the classification (fixed, #52).
-6. **Stop on the racing line and wait.** Race control should raise double yellows naming
+7. **Stop on the racing line and wait.** Race control should raise double yellows naming
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
 
@@ -107,7 +125,9 @@ Do not spend time reporting these; they are on the list with measurements.
 
 | | issue |
 |---|---|
-| Leaderboard rows are all there now, but the *styling* is not the broadcast board yet — header, type, livery bar, leader's red cell | **#76** |
+| Leaderboard: the row is **0.104 of the panel's width tall against the reference's 0.171**, because 20 rows at the reference's spacing needs 725px of board and a 900px screen with a radio rail has ~580. A straight trade against showing all 20 cars — **your call** | **#76** |
+| Leaderboard: the type is **Titillium Web**, not Formula One's own face (proprietary), and the mark reads **`F1SIM`**, not the F1 logo (trademark) | **#76** |
+| Leaderboard: a **race** board shows gaps and no lap-time column, because that is what the reference shows. Whether a race should also show lap times is **your call** | **#35** |
 | Q2 runs 20 cars | **#74** |
 | Cars phase through each other in the pit lane | **#75** |
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
