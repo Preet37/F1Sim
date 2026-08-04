@@ -89,6 +89,31 @@ const STEEL_DARK = 0x3c424a;
 const FLOOR = 0xc9ced4;
 const TARMAC = 0x33363c;
 const RUBBER = 0x141518;
+/**
+ * Tinted architectural glazing.
+ *
+ * `0x24404f` until 2026-08-03, chosen against `metalness: 0.7`. It is the
+ * DIFFUSE half of the window — the dark interior seen through the tint — and
+ * the reflection is the material's Fresnel term, not this. Rescaled by 0.306
+ * when the metalness came down to the dielectric floor, so that the diffuse
+ * term lands where it already was instead of jumping 3.3x; the derivation is on
+ * the glazing material at the bottom of this file.
+ */
+const GLAZING_TINT = 0x11222b;
+/**
+ * The other two surfaces drawn with the glazing material.
+ *
+ * `0x0a1a26` and `0x0d2430` until 2026-08-03. They are not windows — they are
+ * the monitors on a garage's back wall and the screens on the pit-wall stand —
+ * but they are in the same merged bin and therefore take the same BRDF, so the
+ * metalness correction below moves them too and their albedos have to move
+ * with it or they would triple in lightness for free. Rescaled by the SAME
+ * 0.306, which is the whole rule: the material's metalness changed, so every
+ * vertex colour feeding it is scaled so the diffuse term lands where it was.
+ * A dark screen is a dark screen either way.
+ */
+const MONITOR_TINT = 0x030a12;
+const STAND_SCREEN_TINT = 0x041118;
 
 /**
  * Re-exported for the circuit builder, which suppresses trackside furniture
@@ -437,8 +462,8 @@ export function buildPaddock(
     bench.dispose();
     const monitor = chamferBox(0.08, 0.5, 0.85, D.trim);
     for (let i = 0; i < 3; i++) {
-      bayGlass.add(monitor, 0x0a1a26, -half + 1.5, 2.1, z0 + 3.6 + i * 1.7);
-      bayGlass.add(monitor, 0x0a1a26, half - 1.5, 2.1, z0 + 3.6 + i * 1.7);
+      bayGlass.add(monitor, MONITOR_TINT, -half + 1.5, 2.1, z0 + 3.6 + i * 1.7);
+      bayGlass.add(monitor, MONITOR_TINT, half - 1.5, 2.1, z0 + 3.6 + i * 1.7);
     }
     monitor.dispose();
 
@@ -562,7 +587,7 @@ export function buildPaddock(
     }
     standPost.dispose();
     const standScreen = chamferBox(5.6, 0.7, 0.12, D.trim);
-    bayGlass.add(standScreen, 0x0d2430, -1.5, PIT_WALL_HEIGHT_M + 2.25, wallZ + 0.45);
+    bayGlass.add(standScreen, STAND_SCREEN_TINT, -1.5, PIT_WALL_HEIGHT_M + 2.25, wallZ + 0.45);
     standScreen.dispose();
 
     // Engineers sitting along the stand facing the track, and one crew member
@@ -641,7 +666,7 @@ export function buildPaddock(
       // Glazed front wall, set back behind a balcony.
       const balconyZ = 1.0;
       const glazing = chamferBox(segLen - 0.4, storey - 0.9, 0.16, D.trim);
-      segGlass.add(glazing, 0x24404f, 0, y0 + 0.55 + (storey - 0.9) * 0.5, balconyZ + 2.4);
+      segGlass.add(glazing, GLAZING_TINT, 0, y0 + 0.55 + (storey - 0.9) * 0.5, balconyZ + 2.4);
       glazing.dispose();
       const mullion = chamferBox(0.16, storey - 0.9, 0.3, D.trim);
       for (let i = 0; i <= 7; i++) {
@@ -718,7 +743,7 @@ export function buildPaddock(
         seg.add(shell, 0xd7dae0, 0, roofY + towerH * 0.5, 4.2);
         shell.dispose();
         const towerGlass = chamferBox(segLen - 0.5, 2.3, 0.2, D.trim);
-        segGlass.add(towerGlass, 0x24404f, 0, roofY + 2.5, -1.5);
+        segGlass.add(towerGlass, GLAZING_TINT, 0, roofY + 2.5, -1.5);
         towerGlass.dispose();
         const brow = chamferBox(segLen + 0.6, 0.42, 12.4, 0.1);
         seg.add(brow, 0x8f959c, 0, roofY + towerH + 0.2, 4.2);
@@ -950,8 +975,45 @@ export function buildPaddock(
   };
 
   publish(solid, structureMaterial({ roughness: 0.78, metalness: 0.1 }));
+  /**
+   * GLASS IS A DIELECTRIC. Metalness 0.70 until 2026-08-03, and it was the
+   * worst half-metal left in the scene (PROJECT.md section 7).
+   *
+   * At 0.70 the shader deleted 70% of the glazing's diffuse term and turned it
+   * into a specular lobe tinted with the glass's own blue: F0 was (0.024,
+   * 0.048, 0.067) — a BLUE mirror at between two and seven percent — and the
+   * diffuse that remained was (0.005, 0.015, 0.023), essentially nothing. So
+   * every window in the paddock was a dim blue mirror rather than a dark
+   * interior behind tinted glass, and it reflected the sky in its own hue.
+   *
+   * Soda-lime glass has n = 1.52, which is F0 = **0.040, neutral**, and that is
+   * not a choice — it is Fresnel's equation at normal incidence. Metalness 0.02
+   * puts it there (0.0392 + a rounding of the tint) and, crucially, makes the
+   * reflection WHITE and steeply angle-dependent, which is the whole reason
+   * glazing reads as glazing: dark head-on, mirror at a glancing angle.
+   * `Livery.ts` already writes the same rule for the one other transparent
+   * thing in the game — the visor swatch, `glass: [0.05, 0.02]`, commented
+   * *"Dielectric — it is polycarbonate with a tint, and its reflection is
+   * white."*
+   *
+   * THE ALBEDO MOVED WITH IT, and here the target is to hold the diffuse term
+   * where it was rather than to raise it: at 0.70 metal the drawn diffuse was
+   * old_linear x 0.30, and at 0.02 it is new_linear x 0.98, so the vertex
+   * colour was scaled by 0.306 — `0x24404f` to `0x11222b`, linear (0.0054,
+   * 0.0157, 0.0239). That is the correct target for this surface and NOT the
+   * one used on the safety car's paint, for a stated reason: what this diffuse
+   * term stands for is the dark interior seen through a tint, and it was
+   * already a defensible value for that, whereas the safety car's was a white
+   * paint being drawn at half the reflectance of white paint. Carrying it over
+   * unscaled would have made every paddock window 3.3x lighter overnight.
+   *
+   * Total apparent reflectance at normal incidence is now ~5.4% rising steeply
+   * off-axis, against the 8-12% visible reflectance quoted for solar-control
+   * architectural glazing — the right order, and honestly on the dark side,
+   * which is what a dark interior behind tint should be. Roughness unchanged.
+   */
   publish(glass, new THREE.MeshStandardMaterial({
-    vertexColors: true, roughness: 0.14, metalness: 0.7,
+    vertexColors: true, roughness: 0.14, metalness: 0.02,
   }));
   const boardMat = new THREE.MeshBasicMaterial({ map: boardTex, side: THREE.DoubleSide });
   publish(boards, boardMat);

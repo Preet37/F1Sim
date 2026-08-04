@@ -107,7 +107,8 @@
     "probe:people": "tsx scripts/probePeople.ts",
     "probe:grade": "tsx scripts/probeGrade.ts",
     "probe:env": "tsx scripts/probeEnv.ts",
-    "probe:assets": "tsx scripts/probeAssets.ts"
+    "probe:assets": "tsx scripts/probeAssets.ts",
+    "shoot:safetycar": "tsx scripts/shootSafetyCar.ts"
   },
   "dependencies": {
     "three": "^0.185.1"
