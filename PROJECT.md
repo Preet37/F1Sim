@@ -643,6 +643,13 @@ both been written against a boundary that was not there.
   Nothing here measures, sizes or reflows anything, so there is no layout shift by
   construction.
 
+- **The rest of the suite, on the merged tree, at load 11–45:** `typecheck` both projects,
+  `vite build` (which emits `dist/brand/manifest.json`), `probe:carrig` clean at 141 parts
+  in 1 cluster, `probe:graphics` **72 ok / 0 failed**, `probe:sharpness` clean on every
+  circuit at `high+post+shadow+msaa`, `shoot:panels` at the **2 rail + 2 mirror** §4 records
+  — confirmed, not added to — `audit:livery` OK, and `probe:smoke` **PASS** with 35 distinct
+  screens and **32 of 32 required routes**.
+
 - **`portrait` and the shared slots RESOLVE but nothing CONSUMES them yet, and that is a
   gap rather than an omission.** `probe:assets` §1 asserts all four team slots and all three
   shared ones resolve to the right paths, and `brandUrl(team, 'portrait')` returns a usable
