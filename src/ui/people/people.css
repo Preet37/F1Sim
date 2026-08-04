@@ -227,6 +227,43 @@
   .presser-answer { font-size: 13.5px; padding: 9px 12px; }
 }
 
+/* ---------------------------------------------------------------------------
+   A PHONE HELD SIDEWAYS — 844x390, and the third defect issue #22 was filed
+   for.
+
+   Stacked, the 21:9 room alone is 362px of a 390px viewport. The question and
+   all three answers were BELOW THE FOLD on every landscape phone, which is
+   what `hud-out/people/phone-presser.png` showed on the build this replaces:
+   a photograph of a press conference with the press conference missing.
+
+   Side by side instead. The room takes 42% of the width — 166px tall at that
+   width, which still reads, because a press conference is three faces and a
+   desk and all three survive being small — and the conversation gets the other
+   58%, which is 455px and fits the question and three answers with room over.
+   --------------------------------------------------------------------------- */
+@media (orientation: landscape) and (max-height: 520px) and (min-width: 660px) {
+  .presser {
+    display: grid;
+    grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      'room step'
+      'room ask'
+      'room answers';
+    column-gap: 14px;
+    row-gap: 7px;
+    align-items: start;
+  }
+  .presser-room { grid-area: room; align-self: start; min-height: 0; }
+  .presser-step { grid-area: step; }
+  .presser-ask { grid-area: ask; padding: 8px 10px; gap: 10px; }
+  .presser-answers { grid-area: answers; gap: 6px; }
+  .presser-ask-face { width: 34px; }
+  .presser-q { font-size: 13px; line-height: 1.34; }
+  .presser-answer { font-size: 12.5px; padding: 7px 10px; }
+  .presser-cost { font-size: 9.5px; margin-top: 3px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .presser-answer { transition: none; }
 }

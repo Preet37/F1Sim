@@ -103,9 +103,17 @@ export function buildPodium(parent: HTMLElement, spec: PodiumSpec): HTMLElement 
     // made in `career/Identity.ts` and it is right. A driver on the top step is
     // a person holding a trophy with their helmet in the other hand, and the
     // first thing that happens up there, before the anthem, is that the helmet
-    // comes off. So this is a figure: race suit in the team's colours, one arm
-    // up, the trophy in it, and the helmet tucked at their side so the design
-    // the player made is still on the screen.
+    // comes off. So this is a figure: race suit in the team's colours, both
+    // arms up, the trophy held in one hand, the winner's champagne in the
+    // other, and the helmet tucked at their side so the design the player made
+    // is still on the screen.
+    //
+    // BOTH ARMS, AND LEGS. `reference/target/82.png` is the specification and
+    // it is a full-body shot: the winner has both hands above his head and you
+    // can see him standing on the step. What this drew until #22 was a torso
+    // cropped at the waist with ONE constant-width stroke going up to a trophy
+    // and no hand on the end of it — the user's "forget about the lego people"
+    // in a different register.
     const art = document.createElement('div');
     art.className = 'pod-art';
     const fig = figureSvg(e.look ?? lookFor(e.driverId, 'driver'), {
@@ -115,6 +123,7 @@ export function buildPodium(parent: HTMLElement, spec: PodiumSpec): HTMLElement 
       team: hex(e.colour),
       pose: 'raised',
       trophy: (['gold', 'silver', 'bronze'] as const)[pos] ?? 'bronze',
+      champagne: pos === 0,
     });
     fig.setAttribute('class', 'person-figure pod-figure');
     art.appendChild(fig);

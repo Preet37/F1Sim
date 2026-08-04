@@ -39,8 +39,6 @@ const H = 675;
 const FLOOR = 452;
 /** The bench the crew work at. It is also what crops them. */
 const BENCH_Y = 556;
-/** Figure-space: shoulders to the bottom of the drawn torso. */
-const FIGURE_SPAN = 560;
 
 export interface GarageSpec {
   teamId: string;
@@ -84,35 +82,49 @@ export function garageSvg(spec: GarageSpec): SVGSVGElement {
   let back = '';
   let front = '';
 
+  // THE CREW HAD NO ARMS. Until #22 every one of these was `standing`, which
+  // drew an upper arm and nothing below it, in the suit colour, BEHIND the
+  // torso — so what `desktop-garage.png` showed was four armless torsos. They
+  // are whole people now: two poses, hands, legs, boots, and the bench cropping
+  // them at the shin the way a real bench does.
+  const CREW_POSES = ['standing', 'walking', 'folded'] as const;
   for (let i = 0; i < crewCount; i++) {
     const uid = 'gc' + i;
     const look = lookFor(spec.teamId + ':crew:' + i, 'crew');
     const art = figureArt(look, {
-      uid, suit: team, accent, team, pose: i % 2 === 0 ? 'standing' : 'seated',
+      uid, suit: team, accent, team, sponsors: false,
+      pose: CREW_POSES[i % CREW_POSES.length],
     });
     defs += art.defs;
-    const s = 0.44 + ((i * 7) % 3) * 0.035;
-    const x = 360 + i * 215 + ((i * 13) % 5) * 12;
-    // The bottom of every figure box lands ON the bench top, whatever its
-    // scale, so nobody is standing in a hole.
-    const y = BENCH_Y + 10 - (FIGURE_SPAN) * s + 205 * s;
-    back += `<ellipse cx="${x}" cy="${BENCH_Y + 8}" rx="${(70 * s).toFixed(1)}" `
-      + `ry="${(11 * s).toFixed(1)}" fill="#04070b" opacity="0.5"/>`
-      + `<g transform="translate(${(x - 100 * s).toFixed(1)} ${(y - 205 * s).toFixed(1)}) `
+    const s = 0.27 + ((i * 7) % 3) * 0.020;
+    const x = 400 + i * 205 + ((i * 13) % 5) * 12;
+    // Their soles land BEHIND the bench, so the bench crops them at the thigh
+    // and nobody is standing in a hole. The number comes off the rig rather
+    // than off a constant, because a tall person's feet are further from their
+    // shoulders than a short one's — that constant is what put the old crew's
+    // shoulders at the bench top with everything else out of frame.
+    const sole = 500 + ((i * 5) % 3) * 9;
+    const ty = sole - art.rig.floorY * s;
+    back += `<ellipse cx="${x}" cy="${sole}" rx="${(74 * s).toFixed(1)}" `
+      + `ry="${(12 * s).toFixed(1)}" fill="#04070b" opacity="0.5"/>`
+      + `<g transform="translate(${(x - 100 * s).toFixed(1)} ${ty.toFixed(1)}) `
       + `scale(${s.toFixed(3)})" opacity="0.95">${art.markup}</g>`;
   }
 
   if (spec.principal !== false) {
     const p = principalFor(spec.teamId);
     const art = figureArt(p.look, {
-      uid: 'gp', suit: team, accent, team, pose: 'standing',
+      uid: 'gp', suit: team, accent, team, pose: 'standing', sponsors: false,
     });
     defs += art.defs;
-    // Front and left, at the size a person standing three metres from the
-    // camera is. This is the biggest figure in the frame and it is the one the
-    // screen is about.
-    const s = 0.86;
-    front += `<g transform="translate(${(212 - 100 * s).toFixed(1)} ${(FLOOR + 46 - 205 * s).toFixed(1)}) `
+    // Front and left, standing on the near floor in front of the bench, WHOLE:
+    // this is the biggest figure in the frame, it is the one the screen is
+    // about, and it used to run off the bottom edge at the waist.
+    const s = 0.50;
+    const ty = H - 26 - art.rig.floorY * s;
+    front += `<ellipse cx="212" cy="${H - 24}" rx="${(80 * s).toFixed(1)}" `
+      + `ry="${(12 * s).toFixed(1)}" fill="#04070b" opacity="0.55"/>`
+      + `<g transform="translate(${(212 - 100 * s).toFixed(1)} ${ty.toFixed(1)}) `
       + `scale(${s.toFixed(3)})">${art.markup}</g>`;
   }
 
