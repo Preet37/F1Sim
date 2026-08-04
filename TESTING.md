@@ -109,7 +109,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | Every car sits level on a road that is not level — up to 434mm of tyre under the asphalt at Monaco | **#71** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
-| AI pace ~1.43× reference | **#1** |
+| AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
+| **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |
 | Career screens (ratings, market, accolades) not built | **#77** |
 | Podium/press bodies below the neck are unfinished | **#22** |
 
@@ -131,6 +132,12 @@ Chrome, and under load they do not fail — they *time out*, which reads like a 
 is not one. Load average above ~8 makes the numbers worthless. This has cost real time
 repeatedly and it is why issue #25 existed at all.
 
+**The exception, and it is worth knowing which probes it covers.** `probe:racesweep`,
+`probe:envelope`, `validate:race` and the `diag:` scripts are node-only: no browser, no
+wall-clock deadline anywhere in them, and every seed is stated. Under load they get *slower*
+and they do not get *different*, so a number from one of those is trustworthy on a busy
+machine. Everything driving Chrome is not.
+
 Useful individual probes:
 
 | command | proves |
@@ -141,12 +148,32 @@ Useful individual probes:
 | `probe:graphics` | the quality setting reaches the GL context |
 | `probe:carrig` | every car part attached, nothing interpenetrating |
 | `probe:people` | 42 principals, all different, all reachable |
+| `probe:envelope` | the car does what the lap-time solver and the racing line say it will |
+| `probe:racesweep` | 55 races. **Slow — 20+ minutes, and an hour on a busy machine** |
 | `probe:qualiretire` | a crash in qualifying does not take the screen |
 | `audit:circuits` | photographs 11 circuits × 7 camera modes |
 
 **Known-failing, expected:** `probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
 `probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · `shoot:panels` 2 mirror (rail went to 0 with #17) ·
-`probe:grade` 4 of 16 (see below).
+`probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
+`probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
+a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55 and
+`validate:race` 1, both `monaco: fastest lap 150% of reference` (#1) plus four spread rows
+that belong to #27.
+
+**`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
+stale and several of them are fixed:
+
+| | issue #30 as filed | now |
+|---|---|---|
+| races failing | 13 / 55 | **11 / 55** |
+| mean lap/reference | 1.3662 | **1.3131** |
+| Monaco fastest | 151–175% | **148–150%** |
+| Monaco off-track | 107–123 | **under the 90 bar on every seed** |
+| Silverstone | failed 2 seeds | **passes all five** |
+
+Nothing in this branch made those move — #10 (fuel), #4 (centreline easing) and the
+`aeroBalanceFront` change did, and nobody had re-run the sweep afterwards.
 
 **`probe:grade` needs shots first**, and it takes a tag:
 

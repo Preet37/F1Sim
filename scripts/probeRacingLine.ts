@@ -1,4 +1,4 @@
-import { RacingLine } from '../src/render/RacingLine';
+import { RacingLine, capabilityOf } from '../src/render/RacingLine';
 import { TrackSpline, type CarCapability } from '../src/track/TrackSpline';
 import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
 import {
@@ -107,20 +107,34 @@ const SCENARIOS: readonly Scenario[] = [
  * The capability the overlay will be handed for this car on this circuit.
  *
  * Built through the real spec pipeline — team multipliers, then the circuit's
- * baseline setup — so it is the same number the game produces, not a
- * re-derivation that could quietly disagree with it.
+ * baseline setup — and then handed to **`capabilityOf`, the shipped function**,
+ * rather than to a copy of its arithmetic.
+ *
+ * IT USED TO BE A COPY, and that mattered. The body of this function was
+ * `mu: spec.baseMu * sc.tyre, cl: spec.clBase, ...` — the same four lines
+ * `capabilityOf` contains, transcribed. So the probe was measuring its own
+ * duplicate of the rule: a fix to the real one could not move a single number
+ * here, and a defect introduced into the real one could not fail a single
+ * assertion. PROJECT.md §3.2 — a probe a broken feature passes is worse than no
+ * probe — with the break being that the probe and the game had stopped sharing
+ * the code under test.
+ *
+ * The struct-literal shim exists because `capabilityOf` reads a live
+ * `VehiclePhysics`, and the point of this sweep is to cover cars that are not
+ * currently on a circuit anywhere — a worn set, a hard compound, an empty tank.
+ * The tyre grip and the mass are supplied; every rule applied to them is the
+ * game's.
  */
 function capabilityFor(sc: Scenario, demand: number, maxSpeedMs: number): CarCapability {
   const team = getTeam(sc.teamId);
   const spec = applySetup(specForTeam(team.performance, BASE_F1_SPEC), baselineSetupFor(demand, sc.fuelL));
-  return {
-    mu: spec.baseMu * sc.tyre,
-    cl: spec.clBase,
-    cd: spec.cdBase,
-    massKg: spec.dryMassKg + sc.fuelL * spec.fuelDensity,
-    maxBrakeForceN: spec.maxBrakeForceN,
-    maxSpeedMs,
-  };
+  return capabilityOf({
+    spec,
+    frontTires: { grip: sc.tyre },
+    rearTires: { grip: sc.tyre },
+    totalMassKg: spec.dryMassKg + sc.fuelL * spec.fuelDensity,
+    dirtyAirDownforceMult: 1,
+  }, maxSpeedMs);
 }
 
 // ===========================================================================

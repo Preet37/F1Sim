@@ -618,6 +618,19 @@ export class AIVehicleController {
     reverse: false,
   };
 
+  /**
+   * The speed this driver was asking for last tick, m/s, after every cap.
+   *
+   * Written for one reason: so that a harness can tell "the AI aimed low" apart
+   * from "the AI aimed correctly and could not hold it". Those are different
+   * defects with different fixes, and for the whole life of issue #1 the only
+   * number anybody had was the lap time, which is their sum. A probe that
+   * recomputes the target itself is measuring its own copy of the rule
+   * (PROJECT.md §3.2), so the real one is published instead. Never read by the
+   * simulation.
+   */
+  lastTargetSpeedMs = 0;
+
   private profile: DriverProfile;
   private decisionTimer = 0;
   private errorPhase = 0;
@@ -2023,6 +2036,9 @@ export class AIVehicleController {
       const shed = clamp01((speed - targetSpeed) / CRAWL_MS);
       if (shed > 0.02) c.brake = Math.max(c.brake, shed * 0.9);
     }
+
+    // Published for measurement only — see the field's own comment.
+    this.lastTargetSpeedMs = targetSpeed;
 
     // --- Braking for the pit entry and for the box -------------------------
     // Commanded directly rather than left to the pedal model above, because
