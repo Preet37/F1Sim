@@ -32,14 +32,18 @@ import puppeteer, { type Browser, type Page } from 'puppeteer-core';
  */
 
 const CASES: { circuit: string; expectHdri: string; expectMasts: 'some' | 'none' }[] = [
-  // Night, and the frame `reference/target/90.png` specifies.
-  { circuit: 'bahrain', expectHdri: 'hdri:night', expectMasts: 'some' },
+  // Night, and the frame `reference/target/90.png` specifies. It expects the
+  // GENERATED probe, not a capture: `EnvProbe.HDRI_FOR.night` is null on
+  // purpose, because the only CC0 night sky in the fetched set is a rural
+  // starfield and the analytic probe models a floodlight ring. Asserting the
+  // generated probe here is what stops that decision being undone by accident.
+  { circuit: 'bahrain', expectHdri: 'generated', expectMasts: 'some' },
   // Day, and the frame `reference/target/76.png` specifies.
   { circuit: 'zandvoort', expectHdri: 'hdri:partly_cloudy', expectMasts: 'none' },
   // A street circuit at night: the masts are expected to be FEW or none,
   // because a 36m tower does not fit beside a road with buildings on it, and
   // the probe records which rather than asserting a number it made up.
-  { circuit: 'jeddah', expectHdri: 'hdri:night', expectMasts: 'some' },
+  { circuit: 'jeddah', expectHdri: 'generated', expectMasts: 'some' },
 ];
 
 function chromePath(): string {
@@ -90,12 +94,18 @@ async function main(): Promise<void> {
       "!!window.__game && window.__game.screen === 'racing'",
       { timeout: 300_000, polling: 250 },
     );
-    // The capture is a 5-7MB Radiance file decoded on the main thread and then
-    // PMREM-filtered. Poll rather than guess a delay.
-    await page.waitForFunction(
-      "window.__game.renderer.environmentSource !== 'generated'",
-      { timeout: 120_000, polling: 250 },
-    ).catch(() => { /* reported below as a failure, not thrown here */ });
+    if (c.expectHdri !== 'generated') {
+      // The capture is a 5-7MB Radiance file decoded on the main thread and
+      // then PMREM-filtered. Poll rather than guess a delay.
+      await page.waitForFunction(
+        "window.__game.renderer.environmentSource !== 'generated'",
+        { timeout: 120_000, polling: 250 },
+      ).catch(() => { /* reported below as a failure, not thrown here */ });
+    } else {
+      // Give a capture that should NOT arrive time to arrive anyway, so this
+      // case can fail rather than pass by being asked too early.
+      await new Promise((r) => setTimeout(r, 8000));
+    }
 
     const got = await page.evaluate(`({
       env: window.__game.renderer.environmentSource,
