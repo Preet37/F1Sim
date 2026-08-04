@@ -170,7 +170,8 @@ amber), not in the capability calculation. Nobody is on it ·
 `probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
 a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55 and
 `validate:race` 1, both `monaco: fastest lap 150% of reference` (#1) plus four spread rows
-that belong to #27.
+that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — the default
+quarter-distance run passes.
 
 **`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
 stale and several of them are fixed:
