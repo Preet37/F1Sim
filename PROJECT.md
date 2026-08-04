@@ -2415,7 +2415,7 @@ Four separate defects, one subsystem, and **the thing that found three of them w
 the measurement first**. §3.1 and §3.2 both, in one piece of work: every one of the four had
 already been "fixed" in a comment, and the comments were describing intentions.
 
-**`probe:effects` — 96 checks, five sections.** It exists because the complaint in #11 is
+**`probe:effects` — 77 checks, five sections, 11 circuits.** It exists because the complaint in #11 is
 *"sparks don't fly until like the car is braking so idk why they are CONSTANTLY flying"*
 and *"f1 cars don't leave marks unless they lock up"*. Both are claims about an effect
 firing WHEN IT SHOULD NOT, and a probe that asserts "sparks were drawn" passes **more
@@ -2436,7 +2436,12 @@ of it. `probe:effects` found the other three:
 | COTA, before | 6.13s | 0.028 | 0.114 | 222.8 |
 | Suzuka, after | **3.40s** | 0.111 | 0.317 | 688.8 |
 | Zandvoort, after | 3.38s | 0.105 | 0.368 | 595.2 |
+| COTA, after | 1.98s | 0.021 | 0.084 | 148.6 |
 | Bahrain, before / after | 0.03s / 0.12s | 0.027 / 0.026 | 0.083 / 0.079 | 166.8 / 157.4 |
+
+The whole calendar, after: longest shower **0.03s (Jeddah) to 3.40s (Suzuka)**, duty
+**0.006 (Spa) to 0.111 (Suzuka)**, duty above 200 km/h **0.014 to 0.368**, sparks per lap
+**43 to 689**. **77 ok / 0 failed.**
 
 A ten-second unbroken shower is a car with a permanent flame under it, and *"they are
 constantly flying"* was still literally true at Suzuka. **The cause was not a bug in

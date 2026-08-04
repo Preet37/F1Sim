@@ -133,8 +133,8 @@ interface Run {
  * there is a defect, in seconds.
  *
  * NOT a negotiated tolerance. `fx.compression` is a one-pole filter at
- * `0.72/0.28`, so from a full strike it decays under the 0.02 emission gate in
- * 12 frames — 0.20s at the 60fps this probe draws at — and that persistence is
+ * `0.72/0.28`, so from a full strike it decays under `SPARK_STRIKE_GATE` in
+ * about a dozen frames — 0.20s at the 60fps this probe draws at — and that persistence is
  * deliberate: a shower should carry over a crest rather than switch off between
  * two physics steps. Half a second is that decay with a factor of 2.5 on it.
  * The artefact this exists to catch had NO decay in it at all: it fired for the
@@ -300,12 +300,15 @@ for (const id of CIRCUITS) {
     fail(`${id}: rubber laid by a tyre with lockup ${f(r.rubberOffTrigger.lockup, 3)} and wheelspin ${f(r.rubberOffTrigger.spin, 3)} — it was rolling`);
   } else ok();
 
-  // A car cannot lay rubber down the whole lap. The circuit's own length in
-  // quads is the ceiling the broken version ran at: at MIN_SEGMENT_M = 0.28m,
-  // four tyres marking continuously is `4 * length / 0.28` quads a lap, which
-  // is 60,000 at Spa. 900 is two orders of magnitude below that and still
-  // roughly six full lock-ups a lap per car, which is more than anyone does.
-  check(r.fieldRubberPerCarLap < 900,
+  // A car cannot lay rubber down the whole lap. Set from BOTH measurements
+  // rather than guessed: the fixed build runs 26.9-56.6 quads per car-lap over
+  // the whole calendar, and restoring the pre-#11 rule — `clamp01((slip-2)/5)`,
+  // an ordinary cornering slip angle — took MONZA, the circuit that marks
+  // LEAST of the eleven, to 860.7. 200 is 3.5x the worst honest circuit and a
+  // quarter of the re-break's easiest one. (The theoretical ceiling is far
+  // higher again: at MIN_SEGMENT_M = 0.28m four tyres marking continuously is
+  // `4 * length / 0.28`, about 60,000 quads a lap at Spa.)
+  check(r.fieldRubberPerCarLap < 200,
     `${id}: ${f(r.fieldRubberPerCarLap, 0)} rubber quads per car-lap — the field is painting the circuit`);
 
   // AND the other direction: somebody in a field of twenty must get round
@@ -320,7 +323,10 @@ for (const id of CIRCUITS) {
 // perfectly by an emitter that has been deleted, and this project has shipped
 // exactly that mistake before.
 check(anySparks > 0, 'no sparks were struck anywhere on the calendar — the emitter is dead, not fixed');
-check(circuitsWithSparks >= 4,
+// A third of the calendar, so `FX_CIRCUITS` narrowing the run cannot fail this
+// on arithmetic alone.
+const SPARK_CIRCUIT_FLOOR = Math.max(1, Math.round(CIRCUITS.length / 3));
+check(circuitsWithSparks >= SPARK_CIRCUIT_FLOOR,
   `sparks fired on only ${circuitsWithSparks} of ${CIRCUITS.length} circuits`);
 check(worstRun < 4.0,
   `sparks ran continuously for ${f(worstRun, 2)}s — that is a shower that never stops`);
