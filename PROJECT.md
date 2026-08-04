@@ -3848,15 +3848,12 @@ the broken and the fixed halo, which is exactly why `probe:halo` had to exist.
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** The FIA banner (#15) is **measured against `77.png` and listed, not fixed** — see §7, "The race-control strip against `77.png`". It needs `Hud.ts`, which #49/#50/#31 hold |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
-<<<<<<< HEAD
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) is CLOSED — re-measured on merged `main` in all three axes, see §6. The world juddering vertically (#54) landed with it.** The halo's paint, the other half of #34, has landed too |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**. **Bodies below the neck have landed too — issue #22, see §6**: a rig, five poses, hands, legs, held objects, and 3,016 new checks in `probe:people` that read the drawn polygons back. What is still missing is the press room's **consequences** — `onAnswer` and the `effects` lists are display-only and nothing in the career reads an answer back. That is the publicist/agencies layer and it is not built |
-=======
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | **Measured — #12, see §6.** The PENALTY half is not too high: 3.00 penalties on 3.00 of 20 cars at the player's own configuration, all from the stewards' bench, none on the driven car, and 0.002 sanctionable excursions a car-lap against a 0.075 bar. The CRASH half is over by a quarter (player in 1.50 contacts a race against a derived 1.20) and is the field's 22.50, i.e. #26. What dominates the player's race is neither: **7.00 SC/VSC deployments and 35.2% of it neutralised**, which nothing had ever counted and which closes when #26 does |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
->>>>>>> origin/weather-and-penalties
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### `probe:smoke` had never opened the front end it claimed to cover — issue #62
@@ -4149,7 +4146,6 @@ shared files and the run that matters passed. **Nobody is on this.**
   .RACE_PACE_VS_REFERENCE` is still 1.50 and is still the one named constant that comes down
   when the pace item does. `validate:race`'s Monaco assertion now reads **150%** — it said
   152% here for a while and nobody had re-run it, so check it rather than quoting it.
-<<<<<<< HEAD
 - **#26 — the third cause, named and measured. Still open, and the fix is not in this
   branch's ground.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
   F3, P18, medium, 2 seeds) measured on merged `main` at `8cde5ae`: **11.50 retirements and
@@ -4234,7 +4230,6 @@ shared files and the run that matters passed. **Nobody is on this.**
   flag was the obvious suspect and it contributes nothing: `probe:racelog` at full distance
   is **byte-identical before and after the #44 fix** — 11.50 / 22.50, the same cause table,
   the same contact locations. Two clean A/B runs.
-=======
 - **#26, re-measured 2026-08-03 on the `weather-and-penalties` branch and unchanged:**
   `probe:racelog` at `RACELOG_LAPS=full`, Silverstone, F3, P18, medium, 2 seeds reads
   **11.50 retired, 22.50 contacts** (the entry below says 21.00 — two races, so treat the
@@ -4318,7 +4313,6 @@ shared files and the run that matters passed. **Nobody is on this.**
   cannot tell those apart, because it tests lateral displacement only. Whether that is
   actually over-firing is **not established** and was not investigated far enough to say.
   **Nobody is on this.**
->>>>>>> origin/weather-and-penalties
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
