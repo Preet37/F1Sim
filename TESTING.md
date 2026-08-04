@@ -184,7 +184,7 @@ Useful individual probes:
 | `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
 | `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |
-| `probe:people` | 42 principals, all different, all reachable — **and every limb of every body, measured off the drawing**: 3,615 checks. `PEOPLE_LEGACY=1 npm run probe:people` runs it against the body as it shipped before #22 and fails 276 of 1,471 |
+| `probe:people` | 42 principals, all different, all reachable — **and every limb of every body, measured off the drawing**: 3,615 checks (576 of them the pre-#22 ones). `PEOPLE_LEGACY=1 npm run probe:people` runs it against the body as it shipped before #22 and fails 276 of 1,471 |
 | `probe:envelope` | the car does what the lap-time solver and the racing line say it will |
 | `probe:racesweep` | 55 races. **Slow — 20+ minutes, and an hour on a busy machine** |
 | `probe:qualiretire` | a crash in qualifying does not take the screen |

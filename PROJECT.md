@@ -3015,9 +3015,16 @@ walking — cover the press room, the podium, the garage and the paddock, and `f
 returns a separate `overlay` layer for the parts that must be painted AFTER a scene's
 furniture.
 
-**`probe:people` is 537 → 3,615 checks**, and the 3,016 new ones are a different kind of
-assertion from the 537. Those were distance between records, which is arithmetic, and
-every one of them passed on the build described in the table above. A body is about
+**`probe:people` is 576 → 3,615 checks — and the 537 this file has carried since #18 was
+stale.** Measured rather than quoted: `git show main:scripts/probePeople.ts` run on this
+tree reports **576 checks passed**, so the count had grown by 39 with some roster merge
+and nobody re-ran it. The same species of stale entry this file records for
+`validate:flags`, `probe:fieldsize` and `shoot:panels`. The pre-existing section is
+**unchanged at 576** on the branch (3,615 − 3,016 anatomy − 23 desk/wiring = 576).
+
+The 3,016 new checks are a different kind of assertion from the 576. Those were distance
+between records, which is arithmetic, and every one of them passed on the build described
+in the table above. A body is about
 **shapes sharing area**: a hand overlaps the forearm it is on, a forearm overlaps its
 upper arm, an upper arm overlaps the torso but is not buried in it, a held object's grip
 is inside the hand, and every limb is a filled shape that measurably narrows from one end
