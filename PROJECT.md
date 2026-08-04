@@ -1650,7 +1650,7 @@ it used to read −10.20 at Monaco, −3.16 at Spa and −1.60 at Red Bull Ring.
 
 **What it did to the panes, which is the whole of #49.** The cockpit's own left pane used to
 start anywhere between **63.3 and 84.9 per cent of frame height** depending on the gradient;
-it now starts between **78.5 and 81.5** on all eleven circuits. No rectangle can enclose a
+it now starts between **78.5 and 81.3** on all eleven circuits. No rectangle can enclose a
 22-point vertical range without swallowing a third of the picture, which is why the keep-out
 had been re-measured twice and was wrong both times. What is left of the spread is the HEAD
 TURN — ±11.4° in the cockpit, ±13.9° in the driver's eye — which slides both panes the same
@@ -1708,7 +1708,9 @@ runs are the red proof for each half.
   the corridor to **92**, where a pit sheet cannot go at any width worth reading, so the rail
   goes back to the left edge lifted clear by `--floor` — the same place it is in every other
   camera — and the running order stands down, which is the trade that block already states
-  and stopped one step short of.
+  and stopped one step short of. The binding camera there is the driver's eye, whose band is
+  the deepest at 137 pixels of 390: **241 pixels of rail for a 191-pixel sheet**, against
+  the 183 that was eight short.
 - **The 9 rail failures were an off-by-twelve, and the twelve is in the failure message.**
   `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px`: 138 is the tyre panel's own
   width and 12 is `92 − 80`. The tyre panel on a landscape phone is 86 tall and sits 6 up, so

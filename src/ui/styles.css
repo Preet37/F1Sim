@@ -3269,11 +3269,13 @@ canvas#view {
          goes.
 
      A rail on the LEFT EDGE lifted clear of the glass by `--floor` has the
-     frame's whole width and, with the running order down, 294 pixels of height
-     for a 191-pixel sheet — against the 183 that was one short. It is also the
-     same place the rail is in every other camera, which is worth more than the
-     eight pixels: a panel that jumps across the screen when the camera changes
-     is a panel you have to go looking for.
+     frame's whole width and, with the running order down, the height of the
+     frame less the band. The binding camera is the driver's eye, whose band is
+     the deepest of the three at 137 pixels of 390: that leaves 241 for a
+     191-pixel sheet, against the 183 that was eight short. It is also the same
+     place the rail is in every other camera, which is worth more than the eight
+     pixels: a panel that jumps across the screen when the camera changes is a
+     panel you have to go looking for.
 
      Everything that was sharing the bottom strip with it still stands down for
      the two seconds this lasts. The tyre panel goes because the sheet IS the

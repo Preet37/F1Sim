@@ -3084,7 +3084,7 @@ export interface PaneRect {
  *     enclose a 22-point range without swallowing a third of the picture.
  *
  * With the camera bolted to the car the panes stop moving vertically at all: the
- * cockpit's left pane now starts between 78.5 and 81.5 per cent on all eleven
+ * cockpit's left pane now starts between 78.5 and 81.3 per cent on all eleven
  * circuits, a three-point range, and what is left of the spread is the HEAD
  * TURN, which slides both panes the same way across the frame and is the reason
  * the rectangles are wide rather than tall. Run `npm run probe:framing` and read
