@@ -539,6 +539,24 @@ export class VehiclePhysics {
   frontLateralN = 0;
   rearLateralN = 0;
   /**
+   * Longitudinal force each axle is currently using, N — signed, drive
+   * positive. The other half of the friction circle from `frontLateralN` and
+   * `rearLateralN`, and published for the same reason: without it nothing
+   * outside this class can say how much of an axle's budget is actually spent,
+   * so "the AI is traction-limited" and "the AI is at the limit" were the same
+   * observation. Post-circle, i.e. what the tire really transmitted.
+   */
+  frontLongitudinalN = 0;
+  rearLongitudinalN = 0;
+  /**
+   * Longitudinal force the drivetrain would put down at FULL pedal, N.
+   *
+   * Written by `step()` from the same expression that produces the force it
+   * actually applies, so `tractionLimitFraction` can be a fraction of a real
+   * number rather than of a re-derived one. See the block that sets it.
+   */
+  driveForceFullN = 0;
+  /**
    * Contact-patch slip speed per axle, m/s.
    *
    * Already computed for the tire thermal model; published here because it is
@@ -566,8 +584,6 @@ export class VehiclePhysics {
    * light up the rears and lose two tenths.
    */
   get tractionLimitFraction(): number {
-    const spec = this.spec;
-
     // Longitudinal force the rear axle has left AFTER what cornering is already
     // using — the friction circle applied to the pedal rather than only to the
     // resulting force. An AI that ignores this floors the throttle mid-corner,
@@ -577,20 +593,26 @@ export class VehiclePhysics {
     const remainingSq = cap * cap - lat * lat;
     const maxForce = remainingSq > 0 ? Math.sqrt(remainingSq) : 0;
 
-    // Force the drivetrain would actually deliver at full throttle right now,
-    // computed with the SAME min(torque, power) expression step() uses.
+    // Force the drivetrain would actually deliver at full throttle right now.
     //
-    // Using only the power term is wrong at low speed, where the gearbox is
-    // torque-limited: at 3 m/s in first gear the power term says 210kN and the
-    // torque term says 78kN. Overestimating available force by 2.7x makes the
-    // permitted throttle 2.7x too small, and a "modulated" launch ends up slower
-    // than simply flooring it — the opposite of the intended behaviour.
-    const gearRatio = spec.gearRatios[this.gear - 1] ?? spec.gearRatios[0];
-    const totalPower = spec.icePowerW * torqueCurve(this.rpm / spec.redlineRpm) + spec.ersPowerW;
-    const fromTorque =
-      (totalPower / Math.max(this.rpm * 0.10472, 1)) * gearRatio * spec.driveEfficiency / spec.tireRadiusM;
-    const fromPower = (totalPower * spec.driveEfficiency) / Math.max(Math.abs(this.localVelX), 3);
-    const atFullThrottle = Math.min(fromTorque, fromPower);
+    // Read from `step()` rather than re-derived here. This used to be its own
+    // copy of the min(torque, power) expression, under a comment claiming it was
+    // "the SAME expression step() uses" — and it was not. It read
+    // `icePowerW * torqueCurve(rpm) + ersPowerW`, which omits four things the
+    // drive branch applies: the ERS deployment MODE (`balanced` deploys 0.55 of
+    // `ersPowerW` and `harvest` deploys NOTHING, against the full value assumed
+    // here), the flat-battery and 4MJ-per-lap cut-offs, the sub-12 m/s derate,
+    // and `airDensityRatio`.
+    //
+    // Every one of those inflates the denominator, and the denominator is what
+    // the permitted throttle is divided by: measured over corner exits on all
+    // eleven circuits (`npx tsx scripts/diagCornerExit.ts all`) the old value
+    // was 1.088x the force the car really makes — range 1.083..1.095 — so the
+    // AI was held to 91.9% of the throttle it had, everywhere, all the time.
+    // That is issue #1's corner-exit deficit, and it is a transcription bug of
+    // exactly the species §6 records for `probe:racingline`'s `capabilityFor`:
+    // two copies of one rule that had stopped agreeing.
+    const atFullThrottle = this.driveForceFullN;
 
     if (atFullThrottle <= 1) return 1;
     return clamp(maxForce / atFullThrottle, 0.02, 1);
@@ -1097,21 +1119,49 @@ export class VehiclePhysics {
     // deliberately feeble: reverse exists to recover from a spin or a gravel
     // trap, not to be driven.
     this.inReverse = c.reverse && vx < 1.2 && vx > -8;
+
+    // --- What the drivetrain would deliver at FULL pedal, right now ---------
+    //
+    // Computed here, unconditionally, and by the same expression that produces
+    // `driveForce` below, because `tractionLimitFraction` is a fraction OF this
+    // and there is no way to state it correctly without it.
+    //
+    // It used to be re-derived inside that getter as `icePowerW * torqueCurve +
+    // ersPowerW`, which is not what this branch delivers: the ERS term ignored
+    // the deployment mode (`balanced` is 0.55 of `ersPowerW`, `harvest` is
+    // ZERO), the flat-battery and per-lap-energy cut-offs, the sub-12 m/s
+    // derate and `airDensityRatio`. Every one of those omissions inflates the
+    // denominator, and an inflated denominator makes the permitted throttle too
+    // SMALL — see issue #1.
+    //
+    // Unconditional matters as much as shared. The old getter's value was a
+    // function of live state, so it was right whenever it was asked; a cached
+    // one computed only inside the `throttle > 0.001` branch would be stale by
+    // a whole braking zone at exactly the moment a corner exit needs it.
+    const gearRatioNow = spec.gearRatios[this.gear - 1] ?? spec.gearRatios[0];
+    const icePowerFull = spec.icePowerW * torqueCurve(this.rpm / spec.redlineRpm) * env.airDensityRatio;
+    const ersModeNow = ERS_MODES[c.ersMode] ?? ERS_MODES.balanced;
+    let deployFull = spec.ersPowerW * ersModeNow.deploy;
+    if (this.batteryJ <= 0 || this.deployedThisLapJ >= spec.batteryCapacityJ) deployFull = 0;
+    // No point deploying at low speed where traction, not power, is the limit.
+    if (speed < 12) deployFull *= 0.35;
+    /** Force from power, capped by the torque the gearbox can put down here. */
+    const wheelForceFor = (p: number): number => Math.min(
+      (p / Math.max(this.rpm * 0.10472, 1)) * gearRatioNow * spec.driveEfficiency / spec.tireRadiusM,
+      (p * spec.driveEfficiency) / Math.max(absVx, 3),
+    );
+    this.driveForceFullN = wheelForceFor(icePowerFull + deployFull);
+
     if (this.inReverse) {
       const reverseForce = 5200 * clamp01(Math.max(throttle, c.brake));
       driveForce = -reverseForce;
       this.fuelL = Math.max(0, this.fuelL - 0.004 * dt);
       this.gear = -1;
     } else if (this.shiftTimer <= 0 && throttle > 0.001 && this.fuelL > 0.01) {
-      const gearRatio = spec.gearRatios[this.gear - 1] ?? spec.gearRatios[0];
-      const icePower = spec.icePowerW * torqueCurve(this.rpm / spec.redlineRpm) * throttle * env.airDensityRatio;
+      const icePower = icePowerFull * throttle;
 
       // ERS deployment, limited by mode, charge, and the 4MJ-per-lap rule.
-      const mode = ERS_MODES[c.ersMode] ?? ERS_MODES.balanced;
-      let deployW = spec.ersPowerW * mode.deploy * throttle;
-      if (this.batteryJ <= 0 || this.deployedThisLapJ >= spec.batteryCapacityJ) deployW = 0;
-      // No point deploying at low speed where traction, not power, is the limit.
-      if (speed < 12) deployW *= 0.35;
+      const deployW = deployFull * throttle;
 
       const totalPower = icePower + deployW;
       this.powerOutputW = totalPower;
@@ -1120,12 +1170,7 @@ export class VehiclePhysics {
       this.batteryJ = Math.max(0, this.batteryJ - deployW * dt);
       this.deployedThisLapJ += deployW * dt;
 
-      // Force from power, capped by the torque the gearbox can actually put
-      // down at this speed. The cap is what limits first-gear acceleration.
-      const wheelForceFromTorque =
-        (totalPower / Math.max(this.rpm * 0.10472, 1)) * gearRatio * spec.driveEfficiency / spec.tireRadiusM;
-      const wheelForceFromPower = (totalPower * spec.driveEfficiency) / Math.max(absVx, 3);
-      driveForce = Math.min(wheelForceFromTorque, wheelForceFromPower);
+      driveForce = wheelForceFor(totalPower);
 
       const burn = spec.peakFuelBurnLps * throttle * (0.35 + 0.65 * this.rpmFraction);
       this.fuelL = Math.max(0, this.fuelL - burn * dt);
@@ -1251,6 +1296,8 @@ export class VehiclePhysics {
     this.capRearN = capRear;
     this.frontLateralN = Math.abs(fyFrontFinal);
     this.rearLateralN = Math.abs(fyRearFinal);
+    this.frontLongitudinalN = fxFront;
+    this.rearLongitudinalN = fxRear;
 
     // --- Resistive forces --------------------------------------------------
     const rollDrag = 220 * SURFACE_ROLL_DRAG[this.surface] * Math.sign(vx || 1);
