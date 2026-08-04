@@ -115,7 +115,8 @@
     "probe:grade": "tsx scripts/probeGrade.ts",
     "probe:env": "tsx scripts/probeEnv.ts",
     "probe:assets": "tsx scripts/probeAssets.ts",
-    "shoot:safetycar": "tsx scripts/shootSafetyCar.ts"
+    "shoot:safetycar": "tsx scripts/shootSafetyCar.ts",
+    "probe:ratings": "tsx scripts/probeRatings.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

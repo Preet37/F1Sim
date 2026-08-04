@@ -1,6 +1,6 @@
 import './career.css';
 import './myteam.css';
-import { escapeHtml, splitName, timingBoard, timingRow } from './TimingRow';
+import { escapeHtml, timingBoard, timingRow } from './TimingRow';
 import { hex } from './LiveryEditor';
 import type { Career } from '../career/Career';
 import {
@@ -450,78 +450,27 @@ export function engineDeal(parent: HTMLElement, opts: TeamScreenOptions): void {
 }
 
 // ===========================================================================
-// The driver market
+// The driver market — MOVED, not copied
 // ===========================================================================
-
-/**
- * Who could drive the second car.
- *
- * These are real `WorldDriver` records. Whoever is signed qualifies on merit in
- * every session, races the same physics with their own skill, aggression and
- * tyre management, and takes constructors' points off the grid — and off the
- * player. A quick team-mate is expensive and will beat you.
- */
-export function driverMarket(parent: HTMLElement, opts: TeamScreenOptions): void {
-  const { career } = opts;
-  const t = career.myTeam;
-  if (!t) return;
-
-  const mate = career.teammate();
-  el('div', 'mt-why', parent,
-    'Salaries sit outside the cost cap, so a quick team-mate competes with the '
-    + 'engine deal for cash rather than with the factory for development. They '
-    + 'score constructors’ points, and they will be trying to beat you.');
-
-  if (mate) {
-    const n = splitName(mate.firstName + ' ' + mate.lastName);
-    const board = timingBoard(parent, ['Now', 'Your second car', 'Pace', 'Exp', '']);
-    timingRow(board, {
-      pos: String(mate.raceNumber),
-      code: mate.code,
-      name: mate.firstName + ' ' + mate.lastName,
-      first: n.first, last: n.last,
-      note: mate.nationality + ' · age ' + mate.age + ' · '
-        + mate.contractYears + (mate.contractYears === 1 ? ' year left' : ' years left'),
-      figs: [
-        { text: (mate.skill * 100).toFixed(0) },
-        { text: String(mate.experience) },
-      ],
-      tag: { text: '$' + money(mate.salaryUsd), cls: 'green' },
-      state: 'me',
-    }).classList.add('is-current');
-  }
-
-  const board = timingBoard(parent, ['Rank', 'Available', 'Pace', 'Exp', 'Asking']);
-  const reason = el('div', 'mt-reason', parent);
-  for (const [i, d] of career.driverMarket().slice(0, 12).entries()) {
-    const n = splitName(d.firstName + ' ' + d.lastName);
-    const check = career.canCommit(d.salaryUsd, { underCap: false });
-    const row = timingRow(board, {
-      pos: String(i + 1),
-      code: d.code,
-      name: d.firstName + ' ' + d.lastName,
-      first: n.first, last: n.last,
-      note: d.nationality + ' · age ' + d.age + ' · '
-        + (d.experience === 0 ? 'no Formula 1 starts'
-          : d.experience + (d.experience === 1 ? ' season' : ' seasons')),
-      figs: [
-        { text: (d.skill * 100).toFixed(0), cls: d.skill > 0.78 ? 'best' : '' },
-        { text: String(d.experience) },
-      ],
-      tag: { text: '$' + money(d.salaryUsd), cls: check.ok ? '' : 'red' },
-      index: i,
-      onClick: () => {
-        const r = career.signTeammate(d);
-        reason.textContent = r.ok
-          ? `${d.firstName} ${d.lastName} is in the second car.`
-          : r.reason;
-        reason.classList.toggle('ok', r.ok);
-        if (r.ok) opts.onChange();
-      },
-    });
-    if (!check.ok) row.classList.add('is-locked');
-  }
-}
+//
+// This file used to hold a `driverMarket` of its own: twelve `timingRow`s with
+// a column headed "Pace" printing `skill * 100`. Three things were wrong with
+// it and only the third mattered.
+//
+//   · It is not `reference/target/88.png`, which is what issue #77 asks for.
+//   · `skill * 100` is not a rating. It was one of the four sites
+//     `probe:ratings` §6 found where a screen invented its own figure out of a
+//     raw driver attribute, and no two of the four agreed with each other.
+//   · Building the reference's table BESIDE it would have left the game with
+//     two driver markets disagreeing about what a driver is worth, which is
+//     `TIER_INFO.carPace` and the pit panel's four derivations of one fact in
+//     a third place.
+//
+// So there is one market now — `src/ui/DriverMarketScreen.ts`, reading
+// `Career.market()` — and it does both jobs: a driver career opens it to see
+// where they stand, a My Team career opens the same screen and signs the
+// second car from it. `probe:smoke`'s required route for `Driver market` now
+// names the screen id `driver-market` rather than `team-hq`.
 
 // ===========================================================================
 // The identity block
