@@ -453,6 +453,94 @@ function brightestAzimuth(tex: THREE.DataTexture): number | null {
 }
 
 /**
+ * The largest finite value a 16-bit float can hold.
+ *
+ * Not a tuning constant and not a tolerance: it is a property of the IEEE 754
+ * binary16 format. `65505` and above is `+Infinity`.
+ */
+const HALF_FLOAT_MAX = 65504;
+
+/**
+ * Clamps a captured sky to what the filter chain downstream can represent.
+ *
+ * WHY THIS EXISTS, AND IT COST A DAY. `PMREMGenerator` filters into
+ * `HalfFloatType` render targets — that is fixed inside three and is not a
+ * parameter — while `load` below asks the Radiance decoder for `FloatType`, for
+ * the stated reason that `brightestAzimuth` scans the texels and would
+ * otherwise have to decode half-floats by hand. So the source can carry values
+ * the target cannot, and Poly Haven's `partly_cloudy` — the DEFAULT DAYLIGHT
+ * SKY — does:
+ *
+ *   | capture         | peak radiance | texels over 65504 |
+ *   |-----------------|---------------|-------------------|
+ *   | partly_cloudy   | 73503.1       | 6                 |
+ *   | overcast        | 61166.9       | 0                 |
+ *   | sunset          |  8352.6       | 0                 |
+ *   | night (unused)  |   345.3       | 0                 |
+ *
+ * SIX TEXELS OF 8,388,608, all of them the core of the solar disc. They become
+ * `+Infinity` the moment they are written to the half-float target, the blur
+ * that follows multiplies an infinity by a zero weight, and `Inf * 0` is `NaN`.
+ * The NaN then propagates through every remaining mip of the chain, so EVERY
+ * roughness level of the environment map is NaN — and every `MeshStandardMaterial`
+ * in the scene samples it, returns NaN, and is written to the framebuffer as
+ * zero. **The whole frame goes black with a full set of draw calls issued, no
+ * GL error, and nothing on the console.**
+ *
+ * The diagnostic that separates this from every other cause of a black frame is
+ * that setting `scene.environmentIntensity = 0` does NOT bring the picture
+ * back — because `0 * NaN` is `NaN` — while `scene.environment = null` does.
+ * That asymmetry is what NaN looks like from the outside, and it is the only
+ * cheap way to tell this apart from a lost context, a leaked render target or a
+ * culled scene, all of which it otherwise resembles exactly.
+ *
+ * WHY NOBODY SAW IT, AND IT IS NOT THAT NOBODY LOOKED. Whether `Inf * 0` yields
+ * `NaN` or is flushed to zero is a property of the DRIVER, not of the shader.
+ * Apple's Metal backend compiles with fast-math — which is licensed to assume
+ * no infinities exist — and quietly produces zero; SwiftShader is IEEE-strict
+ * and produces `NaN`. Measured, same commit, same capture, same three views:
+ *
+ *   | GPU                            | top       | hero    | side    |
+ *   |--------------------------------|-----------|---------|---------|
+ *   | real (headful, Metal/ANGLE)    | 111/121/129 | 86/91/97 | 66/71/74 |
+ *   | SwiftShader (every probe here) | 0/0/0     | 0/0/0   | 0/0/0   |
+ *
+ * So every shot a human has ever looked at was taken on the machine where the
+ * bug is invisible, and `probe:env` — which boots the real app HEADFUL on the
+ * real GPU — reported `6 ok / 0 failed` and the correct capture name throughout.
+ * It reads `environmentSource`, not pixels, so it would not have caught this
+ * even under a strict rasteriser. `probe:assets` is what caught it, by
+ * accident, and it now asserts the frame is a picture at all; see its §2.
+ *
+ * That GPU-dependence is the reason this is a shipping defect and not a probe
+ * artefact: a browser game is not entitled to assume the driver has fast-math.
+ *
+ * CLAMPING IS THE CORRECT FIX RATHER THAN A PATCH OVER ONE. three's own
+ * `HalfFloatType` path already does exactly this — `DataUtils.toHalfFloat`
+ * clamps its input to +/-65504 — so this makes the `FloatType` path agree with
+ * the `HalfFloatType` path instead of inventing a rule. It touches six texels
+ * of the sun's core on one capture, at a value already four orders of magnitude
+ * above the sky around it, and it changes no other texel on any capture: the
+ * next brightest sky in the set peaks at 61167, inside the ceiling.
+ */
+function clampToHalfFloat(tex: THREE.DataTexture): void {
+  const data = (tex.image as { data?: ArrayLike<number> } | undefined)?.data;
+  // Only the `FloatType` path stores plain floats. A `HalfFloatType` texture is
+  // a `Uint16Array` of raw bit patterns and three has already clamped it.
+  if (!data || tex.type !== THREE.FloatType || !(data instanceof Float32Array)) return;
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    // `NaN` fails both comparisons and is written as 0, which is the only sane
+    // answer for a texel that has no radiance: leaving it would poison the
+    // chain exactly as an infinity does.
+    if (v > HALF_FLOAT_MAX) data[i] = HALF_FLOAT_MAX;
+    else if (v < -HALF_FLOAT_MAX) data[i] = -HALF_FLOAT_MAX;
+    else if (Number.isNaN(v)) data[i] = 0;
+  }
+  tex.needsUpdate = true;
+}
+
+/**
  * Owns the scene's environment map and swaps it when the ambience changes.
  *
  * Holds one generated PMREM target at a time and disposes the previous one,
@@ -573,6 +661,7 @@ export class EnvProbe {
         (tex: THREE.DataTexture) => {
           try {
             tex.mapping = THREE.EquirectangularReflectionMapping;
+            clampToHalfFloat(tex);
             const sunAzimuth = brightestAzimuth(tex);
             const target = this.pmrem.fromEquirectangular(tex);
             tex.dispose();
