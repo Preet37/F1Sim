@@ -464,8 +464,14 @@ export class CarEntry {
    * with the idle car in its corridor nine metres up the same working lane,
    * unable to accelerate because of it and unable to pull out because it is not
    * accelerating.
+   *
+   * DEFAULTS TRUE, and that matters: a car that starts the session ON TRACK has
+   * never been in a box, so it must not be treated as sitting in one. Only
+   * `placeGrid`'s pit-lane start clears it. Defaulting it false sends a car
+   * that is merely driving THROUGH the lane down the working lane instead of
+   * the fast lane, past every garage on the way.
    */
-  pulledAwayFromBox = false;
+  pulledAwayFromBox = true;
   /**
    * True once this car has begun a flying lap this session.
    *

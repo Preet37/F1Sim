@@ -1905,6 +1905,23 @@ back at −0.0m outboard, i.e. on the fast lane's centreline.
 driving into a car stopped in the pit lane — and it is unchanged: **closest approach 2.59m
 at Silverstone, 5.48m at Monza and Spa, 6.20m at Monaco, no contact.**
 
+**On the merged tree `probe:pitcrew` goes 18 failures → 6, and every one of the 6 is
+already failing on `main`.** They are one pre-existing Monza group — three pit-entry
+approaches taking a speeding penalty at 80.6 km/h against an 80 limit, and `waylong` and
+`nobrake` never getting their stop on a later lap — and they arrived with the render/fuel
+work that landed on `main` while this branch was in flight, not with this branch. The
+twelve that go green are the six #83 rows and the six #74/#75 rows. Nothing on this branch
+fails that does not also fail on `main`.
+
+**One thing this got wrong first and it is worth keeping.** `pulledAwayFromBox` was
+originally declared `false` and that is the wrong default: a car that starts the session on
+track has never been in a box, so it was treated as sitting in one and driven down the
+WORKING lane — past every garage — on its way in for a stop. It defaults `true` now and
+only `placeGrid`'s pit-lane start clears it. The wrong default also happened to mask three
+of `main`'s six pre-existing Monza failures, which is the more useful half of the lesson: a
+change that makes a known failure disappear for no stated reason is a change to be
+suspicious of, not pleased about.
+
 - Out-lap track limits: deleting a lap that was never going to be timed.
 - **Stewards** built from the Driving Standards Guidelines (2026-02-26 v01) and ISC
   Appendix L: racing room (one car's width), corner priority at the apex (front axle
