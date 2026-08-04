@@ -261,9 +261,14 @@ interface Visit {
   /** Did it come round and complete a stop on a later lap? */
   completedLater: boolean;
   penalties: string[];
+  /** Every penalty the car was carrying has been discharged. */
+  penaltiesServed: boolean;
 }
 
-function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'race'): Visit {
+function runVisit(
+  circuitId: string, approach: Approach, kind: SessionKind = 'race',
+  owedPenalty = false,
+): Visit {
   const def = getCircuit(circuitId);
   const config: SessionConfig = {
     kind,
@@ -292,6 +297,17 @@ function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'ra
   player.placeOnTrack(track, startS, track.lineOffset[i0], track.targetSpeed[i0]);
   engine.requestPit(player, true);
 
+  // A drive-through the driver has already been given, on top of the stop they
+  // have asked for. See `driveThroughDoesNotEatTheStop` below for why this is a
+  // separate arm and not a variation on an approach.
+  if (owedPenalty) {
+    player.penalties.push({
+      kind: 'drive-through',
+      reason: 'Staged by probe:pitcrew',
+      lap: player.lap, timeS: 0, served: false,
+    });
+  }
+
   const driver = new PitDriver(player, track, approach);
   const c = engine.playerControls;
 
@@ -309,6 +325,7 @@ function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'ra
     outsideWallM: 0,
     completedLater: false,
     penalties: [],
+    penaltiesServed: true,
   };
 
   let wasInLane = false;
@@ -398,6 +415,7 @@ function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'ra
     r.stationaryS = stationary;
     r.stillOwed = player.pitRequested;
   }
+  r.penaltiesServed = player.penalties.every((p) => p.served);
   return r;
 }
 
@@ -470,6 +488,71 @@ function checkVisit(r: Visit): void {
   const speeding = r.penalties.filter((p) => /speeding/i.test(p));
   if (speeding.length > 0) {
     fail(tag + ': pit lane speeding penalty — ' + speeding[0]);
+  }
+}
+
+// ===========================================================================
+// A drive-through does not eat the stop you asked for
+// ===========================================================================
+
+/**
+ * The driver has called for tyres AND has a drive-through outstanding.
+ *
+ * WHY THIS IS ITS OWN SECTION AND NOT A SIXTH APPROACH, and it is the more
+ * useful half of the finding. The exit path used to clear `pitRequested` on
+ * `served || car.pitTransitOnly`, and a pending drive-through forces
+ * `pitTransitOnly` on the NEXT visit whatever the driver came in for — so
+ * serving the penalty silently discharged the stop as well. Reverting that
+ * clause alone, with everything else on this branch left fixed, **this probe
+ * still passed**: nothing in the approach sweep issues a penalty any more, so
+ * there was no drive-through to make `pitTransitOnly` true and the defect was
+ * unreachable.
+ *
+ * That is §3.2 exactly — a probe that a broken feature passes is worse than no
+ * probe — and the answer is to stage the state rather than to hope a scenario
+ * wanders into it. The penalty is pushed onto the car directly, which is what
+ * the stewards do, and then:
+ *
+ *   1. the first visit is a TRANSIT: no service, and the penalty discharged;
+ *   2. the driver is STILL OWED the stop when they leave the lane;
+ *   3. and they get it on the next visit.
+ *
+ * A player reaches this by picking up a penalty for anything at all while a
+ * stop is called. On a two-stop strategy the old behaviour was a two-compound
+ * disqualification at the flag for a stop they had asked for and been quietly
+ * refused — the same sentence this whole file was written for.
+ */
+function driveThroughDoesNotEatTheStop(): void {
+  console.log('  circuit       served on the retry   still owed after the transit   penalty');
+  for (const id of ['bahrain', 'monza', 'monaco']) {
+    const r = runVisit(id, 'onmarks', 'race', true);
+    console.log(
+      '  ' + r.circuit.padEnd(12) +
+      '  ' + (r.completedLater ? 'yes' : 'NO ').padStart(17) +
+      '  ' + (r.stillOwed ? 'yes' : 'NO ').padStart(28) +
+      '  ' + (r.penaltiesServed ? 'served' : 'STILL OUTSTANDING'));
+
+    const tag = r.circuit + ' / drive-through + tyre stop';
+    if (!r.entered) {
+      fail(tag + ': the car never got into the pit lane.');
+      continue;
+    }
+    if (r.serviced) {
+      fail(tag + ': the crew worked on a car serving a drive-through. ' +
+        'Art. B1.9.5c — a drive-through is served by driving THROUGH.');
+    }
+    if (!r.stillOwed) {
+      fail(tag + ': serving the drive-through cleared the tyre stop the driver had ' +
+        'asked for and not yet had. A transit discharges the PENALTY, not the STOP — ' +
+        'on a two-stop strategy this is a two-compound disqualification at the flag.');
+    }
+    if (!r.completedLater) {
+      fail(tag + ': the car never got its stop after serving the penalty.');
+    }
+    if (!r.penaltiesServed) {
+      fail(tag + ': the car transited the pit lane and the drive-through is still ' +
+        'outstanding. The transit IS the penalty.');
+    }
   }
 }
 
@@ -1169,6 +1252,10 @@ function main(): void {
       checkVisit(r);
     }
   }
+
+  // ---- A drive-through does not eat the stop you asked for ----------------
+  console.log('\nA drive-through, on a driver who has also called for tyres:');
+  driveThroughDoesNotEatTheStop();
 
   // ---- Every session kind -------------------------------------------------
   //

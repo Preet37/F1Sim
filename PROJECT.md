@@ -443,6 +443,17 @@ Run `npm run` to list. The important ones:
   180 seconds. See §6, "A race that did not know it had ended". Now **0 failures**, with the
   finisher counts at 20/22/24 cars byte-identical to before, so nothing else moved.
 
+- ~~`probe:pitcrew`~~ — **was RED on `main` and NOTHING RECORDED IT, which is the fifth time
+  that has happened in this project.** Issue #24 had it written down as **6** failures;
+  merged `main` at `0c39917` measured **2**, both `Monza / nobrake`, and the issue's own
+  quote put the speeding penalty on `waylong`, which passes. **Fixed — 0.** The substantive
+  one was a gameplay defect: serving a drive-through silently discharged a tyre stop the
+  driver had asked for and not yet had. See §6, "A missed pit box was unrecoverable". The
+  probe now also carries an anatomy section that fails **11** against the crew figure as it
+  shipped, and a staged drive-through section without which the recovery fix has no failing
+  test at all — with all three fixes reverted the probe reads **8**, so `main` was carrying
+  four times the defect anybody had counted.
+
 **Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
 engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
 an agent sent to that call site would have found working code.** The probe builds a race
@@ -2961,10 +2972,37 @@ visits=2  pitStops=0  pitRequested=false  penalties=drive-through/served
   still due in for tyres"*; and the pit wall's latch is deliberately still not cleared,
   because the car still owes a stop.
 
-**`probe:pitcrew` 2 → 0.** Each half proved red on its own by reverting it alone and leaving
-the other fixed: restoring `served || car.pitTransitOnly` puts back *"the car never got its
-stop on a later lap"*; restoring the magnitude test in `checkPitLaneSpeed` puts back the
-80.6 km/h drive-through.
+**`probe:pitcrew` 2 → 0. And the break verification found a hole in the probe, which is the
+more useful half of this.**
+
+Each fix was reverted on its own with the other two left in place, and **two of the three
+runs came back GREEN**:
+
+| reverted, alone | `probe:pitcrew` | |
+|---|---|---|
+| the physics cap back to the posted limit | **FAIL 1** — `Monza / nobrake: pit lane speeding penalty — drive-through: Speeding in the pit lane (80.6 km/h)` | the speeding half, reproduced exactly |
+| the magnitude test in `checkPitLaneSpeed` | **PASS** | the setpoint alone absorbs it: the car holds 78 and never reaches the 80.5 bar |
+| the recovery clause (`served \|\| car.pitTransitOnly`) | **PASS** | **the defect is UNREACHABLE** — nothing in the approach sweep issues a penalty any more, so `pitTransitOnly` is never true |
+| **all three** | **FAIL 8** | `main`'s own two exactly, plus the six the new staged section adds |
+
+**Two things follow and both are §3.2.**
+
+**The speeding half is belt and braces, and the probe only proves one of the two.** The
+margin is what the measurement demands: reverting it puts the drive-through straight back.
+The forward-speed change passes on its own here and is kept anyway, because the diagnostic
+shows the two quantities diverging by **6.8 km/h in the lane** (vx 80.09 against `speedKph`
+86.86) and no setpoint can bound a gap that is not a speed the limiter controls. That is
+stated as a judgement rather than as a measurement, which is what it is.
+
+**The recovery fix had no failing test at all**, and that is the more useful finding. It is
+only reachable through a penalty, and the same branch that fixes the speeding removes the
+penalty — so reverting it alone left the probe green while the defect was still in the code.
+So `probe:pitcrew` gained a section that **stages** the state rather than hoping a scenario
+wanders into it: a drive-through pushed onto the car directly, on a driver who has also
+called for tyres, on three circuits, asserting that the transit discharges the penalty, that
+the driver is still owed the stop, and that they get it on the next visit. Reverting the
+recovery clause against that section goes red — **6 failures**, two on each of Bahrain, Monza and Monaco: *"serving the drive-through cleared the tyre stop the driver had asked for and not yet had"* and *"the car never got its stop after serving the penalty"*. **A probe that a broken feature
+passes is worse than no probe, and this one was, until it was asked properly.**
 
 **Second: "the people are like legos", and this time it was measured before it was
 changed.** The previous pit-stop agent rebuilt the TORSO — three chamfered boxes became
@@ -2989,13 +3027,13 @@ combination *is* the shipped figure):
 | | shipped | now |
 |---|---|---|
 | distinct figures on screen | **1 of 21** | **21 of 21** |
-| stature, standing | 1.66–1.66m, **spread 0.0cm** | 1.56–1.74m, **spread 17.6cm** |
-| drawn surface per figure | 3.06–3.06 m², **ratio 1.00** | 2.67–3.37 m², **ratio 1.26** |
+| stature, standing | 1.66–1.66m, **spread 0.0cm** | 1.56–1.74m, **spread 17.7cm** |
+| drawn surface per figure | 3.06–3.06 m², **ratio 1.00** | 2.58–3.51 m², **ratio 1.36** |
 | down on one knee, `ready` | **0 of 21** | **21 of 21** (11 left, 10 right) |
 | down on one knee, `gun` | **0 of 21** | **21 of 21** (11 left, 10 right) |
-| left/right disagreement, `ready` | 0.060m | 0.515m |
-| left/right disagreement, `stand` | 0.009m | 0.138m |
-| chromaticities per figure | **1** (median) | 2–3 (median 2) |
+| left/right disagreement, `ready` | 0.060m | 0.513m |
+| left/right disagreement, `stand` | 0.009m | 0.139m |
+| chromaticities per figure | **1** (median) | 1–3 (median 2) |
 | distinct colour layouts across the crew | **1** | **16** |
 
 **11 anatomy checks fail on the shipped figure and 0 fail now.**
@@ -6243,7 +6281,7 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   complaint was still true for a different reason. Off the drawn triangles, the twenty-one
   crew were **1 distinct figure of 21**, at **0.0cm of stature spread**, a **1.00× surface
   ratio**, **0 of 21** down on one knee and **1 colour layout** across the whole crew.
-  They are now 21 of 21, 17.6cm, 1.26×, 21 of 21 (11 left knees, 10 right) and 16 layouts;
+  They are now 21 of 21, 17.7cm, 1.36×, 21 of 21 (11 left knees, 10 right) and 16 layouts;
   `CREW_LEGACY=1 npm run probe:pitcrew` still fails **11** anatomy checks against the
   shipped figure, which is what stops it coming back.
   **What is honestly NOT done in the 3D crew:**

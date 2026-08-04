@@ -163,9 +163,9 @@ export function crewBuild(seed: number): CrewBuild {
     girth: 0.90 + b * 0.22 + (a - 0.5) * 0.06,
     kneelSide: c < 0.5 ? -1 : 1,
     armBias: (d - 0.5) * 0.34,
-    accent: r1(seed * 9.7 + 21.3) < 0.6 ? 0 : 1,
+    accent: r1(seed * 9.7 + 21.3) < 0.7 ? 0 : 1,
     accentSleeves: r1(seed * 11.3 + 2.7) < 0.55,
-    accentLegs: r1(seed * 4.3 + 31.9) < 0.7,
+    accentLegs: r1(seed * 4.3 + 31.9) < 0.6,
     helmet: (Math.floor(r1(seed * 13.1 + 6.5) * 3) % 3) as 0 | 1 | 2,
   };
 }
@@ -463,10 +463,15 @@ export function poseCrew(
   out.chest.set(0, hipY + spineL * cy, hipZ + spineL * cx);
 
   // Shoulders sit across the top of the chest, in the chest's own frame, so
-  // they tip with it. Span carries a little of the girth as well as the
-  // stature: a heavier person is broader across the shoulders, and the arms
-  // have to hang off where the ball joints in the torso geometry actually are.
-  const span = SHOULDER_HALF * h * (0.94 + 0.06 * build.girth * 2 - 0.06);
+  // they tip with it.
+  //
+  // `h * girth` and NOT some other blend of the two, and it is not a taste
+  // decision: the torso geometry carries a BALL at ±SHOULDER_HALF and the
+  // instanced torso is scaled by exactly `h * girth` across, so this is where
+  // that ball ends up. Anything else and the arm starts outside the joint it is
+  // meant to come out of — a centimetre and a half of daylight at the shoulder
+  // on the tallest figure, which was in the first version of this.
+  const span = SHOULDER_HALF * h * build.girth;
   for (let s = 0; s < 2; s++) {
     const side = s === 0 ? -1 : 1;
     out.shoulder[s].set(
@@ -599,8 +604,15 @@ const W_HELMET = 0.88;
  */
 const _t = new THREE.Color();
 const _acc = new THREE.Color();
-/** Off-white, for the third helmet. */
-const _pale = new THREE.Color(0.82, 0.82, 0.80);
+/**
+ * The light neutral.
+ *
+ * NOT white. Photographed in the pit lane at 0.82 it read as bare bone rather
+ * than as a light panel on a suit — an arm brighter than the garage floor stops
+ * being fabric. 0.60 sits it below the concrete and above the charcoal, which
+ * is where a light grey suit panel actually sits.
+ */
+const _pale = new THREE.Color(0.60, 0.60, 0.58);
 
 export function crewPartColours(
   teamColour: THREE.ColorRepresentation, build: CrewBuild, out: THREE.Color[],
@@ -815,8 +827,12 @@ function boneMatrix(
 export function writeCrewMatrices(
   j: CrewJoints, out: THREE.Matrix4[], build: CrewBuild = CREW_BUILD_STOCK,
 ): void {
-  const g = build.girth;
-  const limb = 1 + (g - 1) * 0.75;
+  // Every radial scale carries the STATURE as well as the girth. A taller
+  // person is a wider person at the same build, and — more importantly — the
+  // torso's own across-scale is what puts its shoulder balls where `poseCrew`
+  // has just put the shoulder joints. The two have to be the same product.
+  const g = build.girth * build.height;
+  const limb = build.height * (1 + (build.girth - 1) * 0.75);
   boneMatrix(j.knee[0], j.hip, BONE.thigh, out[0], limb);
   boneMatrix(j.knee[1], j.hip, BONE.thigh, out[1], limb);
   boneMatrix(j.ankle[0], j.knee[0], BONE.shin, out[2], limb);

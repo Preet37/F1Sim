@@ -105,8 +105,9 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
 10. **Miss your pit box on purpose.** Press `PIT`, come down the lane, and do not brake.
-    You should sail past the box, be told *"You overshot the box — round again"*, and
-    **still owe the stop**: come round, stop on the marks, and get your tyres. Two things
+    You should sail past the box, be told *"<your code> overshot the box — round again"*
+    and then *"No stop — you are still due in. Box again next lap."*, and **still owe the
+    stop**: come round, stop on the marks, and get your tyres. Two things
     that used to go wrong here are fixed. You should **not** collect a drive-through for
     speeding while the automatic limiter is holding you at the limit — the limiter now
     sits 2 km/h under the posted number the way the AI always has, and race control now
@@ -277,7 +278,7 @@ Do not spend time reporting these; they are on the list with measurements.
 | Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
 | Career screens (ratings, market, accolades) not built | **#77** |
 | Podium/press bodies: **the head does not turn with the body**, so a panel of three all face the camera from the neck down; there is no applause pose — the one written for it draws folded arms and is named `folded` for that reason; nothing is animated. The three defects that were on this line — a stick arm, armless crew, hands hidden by the desk — are **fixed** | **#22** |
-| ~~The **3D pit crew** in the pit lane is a different rendering path and #22 did not touch it~~ — **done separately**. The twenty-one crew were **one figure drawn twenty-one times**: 0.0cm between the tallest and the shortest, identical build, identical flat team colour on every part of them including the boots and the visor, and **0 of 21** down on one knee. Now 17.6cm of stature spread, 1.26× between the heaviest and the lightest, 16 different kits, and **21 of 21** on one knee — 11 on the left, 10 on the right | **#24** |
+| ~~The **3D pit crew** in the pit lane is a different rendering path and #22 did not touch it~~ — **done separately**. The twenty-one crew were **one figure drawn twenty-one times**: 0.0cm between the tallest and the shortest, identical build, identical flat team colour on every part of them including the boots and the visor, and **0 of 21** down on one knee. Now 17.7cm of stature spread, 1.36× between the heaviest and the lightest, 16 different kits, and **21 of 21** on one knee — 11 on the left, 10 on the right | **#24** |
 | **The pit crew's kit is a team colour plus a charcoal and an off-white, and nothing else** — no sponsor blocks, no numbers, no second team colour. `reference/target/89.png` has all three. The wordmarks are an IP question (PROJECT.md §3); the rest is just not built | **#24** |
 | **Nobody in the pit crew turns their head.** The helmet is its own part now, which is what turning it would need, and it is not wired to anything | **#24** |
 | **The crew figure is 1.66m to the top of the helmet where its own source comment says 1.78m.** Found by measuring it. Not corrected, because the crew's stations, their reach to the hubs and the jack handle's length are all authored against the smaller figure — it is a re-authoring job, not a constant | **#24** |
@@ -373,7 +374,10 @@ that has happened in this project.** Measured on merged `main` at `0c39917` on 2
 a different approach. **Fixed** — see PROJECT.md §6, "A missed pit box was unrecoverable".
 The substantive one was a real gameplay defect: serving a drive-through penalty silently
 wiped a tyre stop you had asked for and not yet had. It is **0** now, and the probe carries
-a new anatomy section that fails **11** checks against the figure as it shipped.
+two new sections: an anatomy section that fails **11** checks against the crew figure as it
+shipped, and a staged drive-through section that the recovery fix had no failing test
+without. With all three fixes reverted the probe reads **8**, so `main` was carrying four
+times the defect anybody had counted.
 
 **Two more that this list had never recorded, both confirmed identical on clean `main` by a
 controlled run on 2026-08-04** — so they are pre-existing and neither is a regression:
