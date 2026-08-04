@@ -775,6 +775,56 @@ function pitLaneSpacing(circuitId: string, segment: 'Q1' | 'Q2', durationS: numb
   };
 }
 
+/**
+ * A driver who does nothing at all, in the first garage.
+ *
+ *   "Monza, practice and qualifying: with the player sitting idle in the first
+ *    garage, 0 of 20 cars leave the pit lane after fifteen minutes."  — #83
+ *
+ * A whole-session deadlock reachable by doing nothing, which is what a player
+ * does while reading the setup screen.
+ *
+ * The staging is the whole test and it has to be exact. `pitSlot` is the car
+ * index and box 0 is the box NEAREST THE PIT EXIT, so the player at index 0 is
+ * parked at the head of the queue with nineteen cars behind them: every single
+ * car in the session has to get past that one car to leave. Nothing is written
+ * to `engine.playerControls`, so the car sits at zero throttle — which is not a
+ * contrivance, it is what the engine does for a player who has not touched a
+ * key, and PROJECT.md §4 records the same omission silently disabling
+ * `probe:hudtext` for weeks.
+ *
+ * PRACTICE IS RUN AS WELL AS QUALIFYING, and that is what separates this from
+ * the parked-eliminated-car fault above: a practice session has no
+ * `participants` list, so nobody is `sittingOut` and there is nothing parked in
+ * the lane at all. If practice deadlocks too, the cause is where the RUNNERS
+ * are placed, not where the absentees are.
+ */
+function idlePlayerInTheFirstGarage(
+  circuitId: string, kind: SessionKind, durationS: number,
+): { left: number; others: number; stillInLane: number; playerOutboard: number } {
+  const def = getCircuit(circuitId);
+  const engine = new RaceEngine(def, {
+    kind, name: 'idle', durationS, laps: 0, playerIndex: 0,
+    standingStart: false, pitLaneStart: true, seed: 8302,
+  });
+  const g = pitLaneGeometry(def, engine.track.length);
+  const player = engine.cars[0];
+
+  // Deliberately never written: `engine.playerControls` stays at its default,
+  // which is no throttle, no brake, no steering. The player is in the car and
+  // is not driving it.
+  const steps = Math.round(durationS / PHYSICS_DT);
+  for (let i = 0; i < steps && !engine.over; i++) engine.step();
+
+  const others = engine.cars.filter((c) => c !== player);
+  return {
+    left: others.filter((c) => c.leftThePits).length,
+    others: others.length,
+    stillInLane: others.filter((c) => c.inPitLane).length,
+    playerOutboard: Math.abs(player.lateral) - g.centre,
+  };
+}
+
 // ===========================================================================
 
 
@@ -925,6 +975,30 @@ function main(): void {
   // ---- A penalty served in the box ---------------------------------------
   console.log('\nA time penalty served in the box, held at the front of the stop:');
   penaltyHold();
+
+  // ---- An idle player in the first garage --------------------------------
+  //
+  // Fifteen minutes, which is what the issue reports, on three circuits and in
+  // both session kinds that start in the lane.
+  console.log('\nAn idle player in the first garage (#83):');
+  console.log('  circuit       kind         left the pits   still in the lane   player is');
+  for (const circuitId of ['monza', 'monaco', 'bahrain']) {
+    for (const kind of ['practice', 'qualifying'] as SessionKind[]) {
+      const r = idlePlayerInTheFirstGarage(circuitId, kind, 900);
+      console.log(
+        '  ' + circuitId.padEnd(12) +
+        '  ' + kind.padEnd(11) +
+        '  ' + (r.left + ' of ' + r.others).padStart(13) +
+        '  ' + String(r.stillInLane).padStart(17) +
+        '  ' + r.playerOutboard.toFixed(1) + 'm outboard');
+      if (r.left < r.others) {
+        fail(circuitId + ' ' + kind + ': the player sat still in the first garage and only ' +
+          r.left + ' of ' + r.others + ' other cars left the pit lane in ' +
+          '15 minutes (' + r.stillInLane + ' still in it at the flag). A driver who does ' +
+          'nothing must not be able to stop the session happening.');
+      }
+    }
+  }
 
   // ---- Twenty cars in one pit lane ---------------------------------------
   //

@@ -444,6 +444,28 @@ export class CarEntry {
    * groups a no-time driver can be sorted into.
    */
   leftThePits = false;
+
+  /**
+   * True once this car has pulled out of its pit box into the fast lane.
+   *
+   * A car standing in its box is beside the lane, not in it — that is where the
+   * paint and the crew are, and it is where a session that starts in the pit
+   * lane places every car. A car LEAVING runs down the fast lane. Which of the
+   * two a car is doing cannot be read off its speed alone, because the answer
+   * has to survive the car being stationary: a driver who never touches the
+   * throttle must stay in the box for the whole session, and a car that has
+   * pulled out and then had to stop for traffic must not be dragged back across
+   * the lane into somebody else's box.
+   *
+   * So it is a latch, set the first time a released car asks for throttle or
+   * gets moving, and it is the difference between issue #83 being fixed and
+   * being moved: holding EVERY stationary car in its box deadlocks the car
+   * behind the idle one instead of the whole field — it sits in its own box
+   * with the idle car in its corridor nine metres up the same working lane,
+   * unable to accelerate because of it and unable to pull out because it is not
+   * accelerating.
+   */
+  pulledAwayFromBox = false;
   /**
    * True once this car has begun a flying lap this session.
    *
