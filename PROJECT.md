@@ -8,6 +8,23 @@ is still wrong, and what the user has asked for in their own words.
 Written by the assistant, for the assistant, at the user's request. Keep it current: when
 something lands, move it from "outstanding" to "done" with the measurement that proves it.
 
+**Companion documents.** This file is for whoever is *building*. Two others exist:
+- **`TESTING.md`** — for the user. How to test everything by hand, in order, with what a
+  *known* fault looks like so they do not spend time reporting something already on the
+  list. Keep the "knowingly not done" table in it current or it is worse than useless.
+- **`reference/target/`** (gitignored) — the user's 24 reference images with an `INDEX.md`
+  mapping each to the thing it specifies. **These are the visual specification**, not a
+  mood board. §2 records the standing instruction; their words on supplying the set were
+  *"every image that I attached, i want that to that quality… I want you to do it that
+  way"* and *"copy this!!! don't change shit from it."*
+
+**Standing instruction on delivery, given 2026-08-03:**
+> *"finish everything up first though and I will test it out once you've shipped the final
+> product and i don't want to test it out if you haven't shipped it completely"*
+
+So: do not hand the user things to try piecemeal. Work the backlog down, keep `TESTING.md`
+accurate, and hand over once.
+
 ---
 
 ## 1. What this is
