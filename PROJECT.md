@@ -3319,11 +3319,42 @@ one**. That is a true measurement and it is not a defect — what makes a painte
 on that frame is hue, and luma is blind to hue by construction. **A bar set to make that
 table pass would have been a bar fitted to the answer.**
 
-So the edge fraction is reported and judges nothing, and what is asserted is the defect as
-§7 stated it — *"painted `trim` `0x1e222a`, luma 34/255"* — measured as the halo's rendered
-luma in a finished frame. **75 sits in the 10.9-level gap between the broken build's
-brightest row (70.3) and the fixed build's darkest (81.2)**, so it is green on all 44 rows
-of one arm and red on all 44 of the other.
+**THE SECOND METRIC WAS ALSO WRONG, AND SECTION 3 IS WHAT FOUND OUT.** The obvious repair
+is to assert the defect as §7 stated it — *"painted `trim` `0x1e222a`, luma 34/255"* — as
+an absolute floor on the halo's rendered luma. It separates the two arms perfectly: broken
+1.6..70.3, fixed 81.2..183.0, and 75 sits in the 10.9-level gap. It is still wrong,
+because **all 44 of those rows are the same car.** Moving the camera to nine other cars on
+the same grid found three painted exactly as the reference says that draw at **57.6, 51.5
+and 44.0** — a purple, a navy and a dark red. A dark car has a dark halo; `90.png`'s Aston
+is one. A floor set off the brightest livery on the grid is not a stricter probe, it is a
+probe demanding that three liveries be bleached to satisfy an instrument.
+
+**WHAT SHIPS IS THE PAIRED DIFFERENCE.** The frame is drawn twice in one session — once as
+it ships, once with the halo cell of the REAL atlas overwritten by the REAL trim cell,
+colour and surface map both — and the halo's luma is read from each. Livery, circuit,
+ambience, exposure, tone curve and camera are identical between the arms by construction,
+so what is left is the paint, and on a build carrying #34 the two texels are the same texel
+and the lift is **0.0 exactly**. The bound is **3 display levels and is a NOISE FLOOR
+rather than a quality bar**, and the probe says so at length: 20 was tried and the three
+dark liveries fail it while being correct, so they are counted and printed as a residual
+instead of being buried under a bar fitted to the answer (§3.3). The replacement colour is
+read out of the trim cell rather than restated, so a probe that outlives a change to
+`0x1e222a` cannot keep passing against a stale constant.
+
+**PROVED IT GOES RED.** `HALO_BREAK=1` — which is `?haloUnpainted=1`, so it drives the real
+`swatchColour` rather than the probe's own repaint — over the same 52 measurements:
+**lift −0.1 .. 0.1**, `52 of 52` red, exit 1, with the halo's absolute luma back down to
+**2.3 .. 70.4**. The ±0.1 is the whole numerical noise budget of the paired arm, measured
+rather than assumed, and it is what the 3-level bound has under it.
+
+**The run that ships**: `44 ok / 0 failed, plus 8 ok / 0 failed across teams`, exit 0.
+Lift over 52 measurements **7.9 .. 140.9**; absolute halo luma **81.1 .. 183.0** over the
+44 in-frame rows; the reported edge fraction mean **3.2%**, worst 18.7% at
+`jeddah night driver`; **2 of 52 lift by under 20** and are named in §7. Taken at a load
+average of 300+ on a ten-core box, which §8 puts far past the point where a number means
+anything — but every quantity here is a deterministic render read back in the same frame,
+not a stopwatch, so the only load-sensitive input is the resolution scaler and the run
+prints what it settled on per circuit (1.00 on eight, 0.95 on two, 0.89 at Interlagos).
 
 **Two holes found and closed while measuring, both of the kind that do not announce
 themselves.**
@@ -3361,10 +3392,10 @@ the broken and the fixed halo, which is exactly why `probe:halo` had to exist.
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
-| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
+| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** The FIA banner (#15) is **measured against `77.png` and listed, not fixed** — see §7, "The race-control strip against `77.png`". It needs `Hud.ts`, which #49/#50/#31 hold |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
-| Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
+| Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) is CLOSED — re-measured on merged `main` in all three axes, see §6. The world juddering vertically (#54) landed with it.** The halo's paint, the other half of #34, has landed too |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
@@ -4002,10 +4033,11 @@ the same against `77.png` is what would stop this being settled by eye for a fou
 
 Measured, reported, and left as a decision for the user rather than tuned. `probe:halo`
 draws the same frame twice — once as it ships and once with the halo cell of the atlas
-overwritten by the trim cell — and the difference is the paint. Most cars lift **67.7 to
-141.0 display levels**. Three on the grid do not: `#6b2d8f` lifts 12.7, `#0e3b5c` lifts
-4.7, `#7a1020` lifts 8.1. They are a purple, a navy and a dark red, and their halos are
-nearly as dark as the black they replaced **because their bodies are**.
+overwritten by the trim cell — and the difference is the paint. Over 52 measurements the
+lift runs **7.9 to 140.9 display levels**, and **2 of the 52 are under 20**: `#0e3b5c` at
+15.5 and `#7a1020` at 7.9, a navy and a dark red. In a daylight frame `#6b2d8f` joins them
+at 12.7 and the other two fall to 4.7 and 8.1. Their halos are nearly as dark as the black
+they replaced **because their bodies are**.
 
 That is not obviously wrong — `90.png` is a dark green halo on a dark green car — and the
 probe's bound is deliberately a noise floor rather than a bar set above those three,
@@ -4441,6 +4473,18 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   this, and it presents as a corrupt asset. Fixed for `public/brand/` by serving it from the
   plugin (see §6, issue #36). **A symptom that matches the load excuse is not evidence for
   it — make the failing component say WHY before accepting the environment as the cause.**
+- **Nothing in this project ever ran `npm run build`, and it had been failing on `main`.**
+  Found on 2026-08-03 by a probe that builds the site before driving it. A comment in
+  `src/ui/styles.css` contained `dist/assets/fonts/titillium*/`, and `*` followed by `/`
+  CLOSES a CSS comment: six lines of prose then parsed as CSS and `lightningcss` rejected
+  the file with `Invalid empty selector`. Confirmed pre-existing by stashing the branch and
+  building a clean `main`. **`vite dev` does not minify and a browser error-recovers over
+  the garbage silently**, so the game looked perfect and the only thing that was broken was
+  shipping it — on a project whose stated end goal is to be publishable. It also took
+  `probe:grain`, `probe:sharpness`, `probe:graphics`, `probe:autotier` and every other
+  build-then-drive probe offline, and none of them said why, because the useful line is at
+  the TOP of a thirty-line bundler stack. **`npm run build` is not covered by
+  `npm run typecheck` and never was. Run it.**
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
