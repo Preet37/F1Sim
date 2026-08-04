@@ -264,56 +264,22 @@ Useful individual probes:
 | `probe:qualiretire` | a crash in qualifying does not take the screen |
 | `audit:circuits` | photographs 11 circuits × 7 camera modes |
 
-**Known-failing, expected:** `probe:racingline` 4 — green still asks for 103–107% of the
-car's grip at Bahrain s=543m, Monaco s=346m, COTA s=3441m, Interlagos s=2696m. It was
-**28.7%** before the #1 work; what remains is in the *colouring* rule (when green turns
-amber), not in the capability calculation. Nobody is on it ·
-`probe:framing` **113** — recorded as 56, measured **51** on merged `main`, then the probe was
-corrected to place its car where the renderer places it rather than 20mm low, which is +49 on
-`main` alone and belongs to the HUD's `MIRROR_PANES` rectangles (PROJECT.md §6/§7) ·
-~~`probe:fieldsize` 14 (#44)~~ — **fixed, and it was 16 rather than 14 when it was measured
-rather than quoted** · `probe:weather` 2 (#42) · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
-`probe:fieldsize` 14 (#44) · ~~`probe:weather` 2 (#42)~~ **fixed — passes** · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
-list read as the count; confirmed 9 on a `src/` checked out at `3f229b7`, so not a regression ·
-`probe:framing` **5**, down from **113** — 108 of the 113 were one sign error in the onboard
-camera's orientation (it rode the mirror image of the car's own pitch and roll; PROJECT.md
-§6). What is left is 3 rows of `a mirror pane reads 22.2–22.4% of frame width` against a 22.0
-bound and 2 of `monaco cockpit: horizon at 51%` against a 34–50 band — the second is the
-correct number for a car climbing Beau Rivage. Neither bound was moved ·
-`probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · ~~`shoot:panels`~~ **0 rail + 0
-mirror** — was 9 + 2, and this line said 2 + 2 because the harness prints a count and then a
-de-duplicated list and the list was read as the count ·
-`probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
-`probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
-a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55 and
-`validate:race` 1, both `monaco: fastest lap 150% of reference` (#1) plus four spread rows
-that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — **11.50
-retirements and 22.50 contacts a race**, re-measured 2026-08-03; the default quarter-distance
-run passes. **The third cause is now measured and it is a damage cascade** (see PROJECT.md
-§7): not tyres, not fuel, and not a car being hit at the moment it stops — 11 of 15 retiring
-cars were already carrying a broken component *while still racing*, contacts peak at half
-distance and retirements a tenth or two later, and the field's worst part falls 0.94 → 0.59
-across the race. So the two failing bars are one problem, not two: the retirements are
-downstream of the contacts. `npm run diag:attrition` is the instrument ·
-that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** **3** (#26 and #12) — the default
-quarter-distance run passes. Two are the field's (11.50 retirements, 22.50 contacts a race)
-and the third is new and is the player's own (in 1.50 contacts a race against a derived
-share of 1.20) ·
-`probe:stewards` **1 — and it is on `main` too, it had simply never been written down.**
-`even the optimistic end of the full-distance estimate is 9.7 penalties`, against a bar of
-8. It is the probe's own extrapolator, from 5 events over 44 race-laps, and the probe's
-comment already warns that that figure "can read 3.0 one week and 0.4 the next". The direct
-count at full distance disagrees with it — see the penalty row in §7 ·
-**`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where the
-road mesh's own quad is degenerate and a rigid 3.6m car cannot lie on it. 43.6mm over a bound
-the mesh's own error sets; the other ten circuits are inside 5.3mm.
-that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — the default
-quarter-distance run passes ·
-**`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where a
-rigid 3.6m car cannot lie on the road mesh's own quad. **10.7mm over, down from 43.6mm**, and
-the bound came down with it rather than being widened: it is the mesh's own error plus 10mm,
-and the mesh's own error at Monaco fell from 51.6mm to 1.5mm with the road-surface work. The
-worst any tyre is buried anywhere on the calendar is now **11.3mm**, against 79.7mm.
+**Known-failing, expected** — every number here re-measured on merged `main` on 2026-08-04:
+`probe:framing` **5** (3 panes at 22.2–22.4% against a 22.0 bound already violated on `main` at
+22.6; 2 Monaco horizon rows at 51% against 34–50, where 51 is the *correct* number for a car
+climbing Beau Rivage — band questions, neither loosened) ·
+`probe:crashrest` **1** (Monaco s=336, a 9.2m centreline radius on a 10m road) ·
+`probe:racingline` **4** (#46 — green still asks 103–107% of the car's grip; it was **28.7%**
+before #1's work, and what remains is the *colouring* rule) ·
+`probe:racesweep` **11 of 55** and `validate:race` **1**, both `monaco: fastest lap 150% of
+reference` (#1) · `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
+run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (identical on clean
+`main`, never previously recorded) · `probe:grade` **4 of 16**.
+
+**Green as of 2026-08-04, and worth knowing because several were red for a long time:**
+`shoot:panels` **0 rail + 0 mirror** · `probe:banking` PASS *including between the mesh rows* ·
+`probe:grain` **132/0** · `probe:people` **3,615** · `probe:fieldsize` **0** · `probe:weather`
+**0** · `probe:smoke` **32/32 routes** · `validate:flags` PASS · `npm run build` PASS.
 
 **`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
 stale and several of them are fixed:
