@@ -111,6 +111,32 @@ console.log(`RACE SWEEP: ${rows.length} races (${CIRCUITS.length} circuits x ${S
 for (const r of failed) {
   console.log(`  FAIL ${r.circuit}/${r.seed}: ${r.failures.join('; ')}`);
 }
+// PER CIRCUIT, and this exists because issue #30 is about a number the sweep
+// would only print when it crossed a bar.
+//
+// The failure list above says `monaco: 113 off-track excursions` when Monaco is
+// over 90 and says nothing whatsoever when it is at 89 — so "Monaco stopped
+// failing" and "Monaco is fine" were the same output, and the difference
+// between them is the whole question the issue asks. A sweep whose only
+// per-circuit reporting is its own assertions can tell you that something is
+// broken and can never tell you whether it got better.
+console.log('');
+console.log('  circuit        lap/ref  worst   off-track  worst   spread  retire  finish');
+for (const def of CIRCUITS) {
+  const rs = rows.filter((r) => r.circuit === def.id);
+  const mean = (f: (r: Row) => number) => rs.reduce((a, r) => a + f(r), 0) / rs.length;
+  const max = (f: (r: Row) => number) => Math.max(...rs.map(f));
+  console.log(
+    '  ' + def.id.padEnd(13) +
+    mean((r) => r.fastestLap / r.referenceLap).toFixed(3).padStart(7) +
+    max((r) => r.fastestLap / r.referenceLap).toFixed(3).padStart(7) +
+    mean((r) => r.offTrack).toFixed(1).padStart(11) +
+    String(max((r) => r.offTrack)).padStart(7) +
+    mean((r) => r.spread).toFixed(1).padStart(9) +
+    mean((r) => r.retirements).toFixed(2).padStart(8) +
+    mean((r) => r.finishers).toFixed(2).padStart(8));
+}
+
 const sum = (f: (r: Row) => number) => rows.reduce((a, r) => a + f(r), 0);
 const n = rows.length;
 console.log('');

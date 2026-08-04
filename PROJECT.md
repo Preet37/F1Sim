@@ -241,6 +241,10 @@ Run `npm run` to list. The important ones:
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
+| `probe:envelope` | **What the car actually does, against what four different closed forms say it will.** The real `VehiclePhysics` at the real `PHYSICS_DT` with no controller: a steering sweep at five speeds on 11 circuits with two cars, and a braking run with both a locked and a modulated pedal. Asserts `ACHIEVABLE_GRIP_FRACTION` still describes the vehicle model, **and that the ratio is still flat** — a single scalar is only the right shape while it is. Node-only and load-insensitive. Issues #1/#30 |
+| `diag:aipace` | **The pace gap, attributed.** REF / ACHV / SOLO / RACE per circuit, so "1.43× reference" stops being one number. ACHV is the floor and REF is not reachable |
+| `diag:paceprofile` | Where on the lap the time goes, split into "the AI asked for less" and "the AI asked and did not get it" — off the controller's own published target, not a copy of it |
+| `diag:brakingzone` | One braking zone step by step: pedal, deceleration used, deceleration available, traction limit |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
 | `probe:neutral` | **Rewritten by #10.** The standstill (car-seconds under the engine's own stranded threshold, on clear road, under a neutralisation, at FULL distance), how much of a race is neutralised, and that the safety car is drawn from an interpolated pose on all eleven circuits. It used to be forty minutes of compute that could not report a failure |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
@@ -1446,6 +1450,81 @@ gradient, cloud and floodlight masts. That is content arriving, not speckle.
   everywhere: the old median bar allowed 55 code values of drift at Zandvoort, the new one
   allows 25.
 
+### `baseMu` is not grip, and four things had been reading it as though it were (issues #1, #30)
+
+The project's oldest open item is *"AI pace is ~1.43× reference"*, and the ratio it names is
+`fastest lap / TrackSpline.referenceLapTime`. **Nobody had ever asked whether that
+denominator is a lap time this simulation's car can drive.** It is not, and the reason is
+one confusion repeated in four places.
+
+`REFERENCE_CAR.mu` is **1.86**, fitted by `npm run calibrate` against real pole times across
+the calendar — but fitted *through a point-mass closed form*, so it is a parameter of that
+model and not a property of a car. `VehicleSpec.baseMu` is **1.70** and is a **magic-formula
+coefficient**. Neither is the lateral acceleration an axle pair produces, and four places
+evaluate `mu * (m*g + cl*v^2)` and treat one of them as though it were:
+`solveSpeedProfile`, `TrackSpline.corneringSpeedForCar`, `TrackSpline.brakingDecelForCar`
+and `AIVehicleController.corneringSpeedLimitMs`.
+
+It cannot come out right, and the reasons are all already in `VehiclePhysics`: tyre grip is
+sub-linear in load, so transferring load across an axle loses more on the unloaded wheel
+than the loaded one gains; the two axles peak at different slip angles by construction (see
+`corneringStiffnessFront`/`Rear`); and holding a steady corner spends some of the budget on
+drag.
+
+**`npm run probe:envelope` measures the difference** — the real `VehiclePhysics` at the real
+`PHYSICS_DT`, no controller in the way, a steering sweep at five speeds on eleven circuits
+with a front-runner on mediums with 60L and a backmarker on hards with 100L:
+
+| | mean | range | samples |
+|---|---|---|---|
+| lateral, measured ÷ closed form | **0.7770** | 0.730..0.813 | 110 |
+| braking, measured ÷ closed form | **0.7392** | 0.714..0.790 | 110 |
+
+**The spread is the part that earns the single scalar.** 0.083 wide across a 2.6× range of
+speed, a 0.12..1.00 range of downforce demand, two teams and two compounds. The residual
+structure in it is real and is the direction the physics predicts — the ratio falls slightly
+with speed, because more downforce means more load and grip is sub-linear in load — and the
+probe asserts the flatness as well as the mean, because a scalar is only the right shape
+while it stays flat.
+
+That is `ACHIEVABLE_GRIP_FRACTION = 0.777`. **It went red on its own first run**: the value
+written into it was 0.858, from hand arithmetic off one circuit, and the probe failed it and
+printed the correct number. That is the §3.2 demonstration, obtained for free.
+
+**What it is applied to, and what it is deliberately not.** It is applied in
+`RacingLine.capabilityOf`, because the overlay colours GREEN against that number and was
+therefore promising the player **28.7% more grip than the car has** — the user's *"if the
+racing line is green how did i go off the track?"*. It is **not** applied inside
+`solveSpeedProfile`: `REFERENCE_CAR.mu` is a fitted parameter, not a claim, and moving it
+re-bases every lap-time assertion in the suite at once. The gap between the reference lap
+and what the car can do is real, is 7.5% on average, and is now measured by
+`scripts/diagAiPace.ts` rather than hidden.
+
+**`rawCapabilityOf` exists for exactly one caller.** `probe:envelope` has to measure against
+the *uncorrected* capability, because measuring the correction against the corrected number
+reads 1.000 by construction — §3.2 with the arithmetic hidden inside a division. Nothing in
+`src/` calls it.
+
+**`probe:racingline` had transcribed the rule instead of calling it.** Its `capabilityFor`
+was `mu: spec.baseMu * sc.tyre, cl: spec.clBase, …` — the same four lines `capabilityOf`
+contains, copied. So the probe and the game had stopped sharing the code under test, and a
+fix to the real rule could not have moved a single number in it. It calls the shipped
+function now. **This is the same species as `probe:handling` before #46 and `raceSweep`
+before its exit code: an instrument that had quietly stopped pointing at the thing.**
+
+**The result on `probe:racingline` is 3 failures → 4, and it is the probe getting stricter.**
+Correcting `capabilityOf` corrects the car the probe FLIES as well as the ribbon it flies at,
+and the flown car had been braking 28% harder than any real one — which was flattering the
+display. The controlled run is in §7. **The load column is not comparable across the two
+runs**, because its denominator changed meaning; what is comparable is the colour at the
+moment of exceedance, and on an honest car four circuits still read GREEN past the limit.
+
+**No simulation behaviour changed.** `capabilityOf` has one consumer in `src/`, the
+`Renderer`'s overlay. The one addition to `src/ai/` is `lastTargetSpeedMs`, which is written
+and never read by the simulation, and exists so that a harness can tell *"the AI aimed low"*
+apart from *"the AI aimed right and could not hold it"* off the real rule rather than a copy
+— which is how §7 can now say those are two thirds and one third rather than guessing.
+
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
   information about the player's car and coloured against the AI's reference car. Green
@@ -2625,12 +2704,15 @@ shared files and the run that matters passed. **Nobody is on this.**
   *multiplicative*, so it inflates both arms and therefore the delta. Ratios survive it.
   **Anyone re-deriving a budget from a number in this document should re-measure at load
   under 8 first.**
-- **AI pace ~1.43× reference.** The oldest open item in the project, and since #10 it is
-  load-bearing in a second place: `FuelPlan.RACE_PACE_VS_REFERENCE` is 1.50 because the
-  field takes half as long again as the solved lap, and a race that takes longer burns more
-  fuel for the same distance. It is one named constant in one file so that closing the pace
-  item can take it down. `validate:race`'s `monaco: fastest lap 152% of reference` is the
-  same item failing an assertion.
+- **AI pace — the oldest open item, and "1.43× reference" was never one number.** Still
+  open, but it is now split, and the split changes what work is left. Full breakdown under
+  "The AI pace gap is three deficits" below and in §6. Headline, re-measured on `main`
+  2026-08-03: the sweep's mean is **1.3131**, not 1.43; the reference lap is **unreachable
+  by 7.5%** by any driver in this vehicle model; a single car alone on an empty circuit laps
+  at **1.2531**; and the part `src/ai/` actually owns is **1.1658**. `FuelPlan
+  .RACE_PACE_VS_REFERENCE` is still 1.50 and is still the one named constant that comes down
+  when the pace item does. `validate:race`'s Monaco assertion now reads **150%** — it said
+  152% here for a while and nobody had re-run it, so check it rather than quoting it.
 - **#26 is not closed by #10 and the honest position is that it is now MEASURABLE rather
   than answered.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
   F3, P18, medium, 2 seeds): retirements **20.00 → 11.50** a race, contacts **26.50 →
@@ -2933,10 +3015,130 @@ measurement passes every version of it that is wrong.
   1.017, Suzuka 1.012 and Interlagos 1.001 also exceed the limit but had already turned
   amber, so the driver was warned; those are reported and not asserted. This is the user's
   *"if the racing line is green how did i go off the track?"* and it is a live bug in
-  `src/render/RacingLine.ts` — **deliberately not touched here**, because `src/render/` was
-  held by other agents for #54 and #47 while this work was in flight. **Nobody is on it.**
+  `src/render/RacingLine.ts`. **PARTLY DIAGNOSED AND PARTLY FIXED — see "The AI pace gap is
+  three deficits" below.** The cause of most of it was `capabilityOf` handing the overlay
+  `baseMu * tyre`, which is 28.7% more grip than the vehicle model produces; that is
+  corrected. **The residual is still live and the probe now names four circuits rather than
+  three**, because it also stopped flying a car that could brake 28% harder than a real one.
+  **Nobody is on the residual.**
 
-### The in-race picture: what #78 did NOT close, and why
+### The AI pace gap is three deficits, and only one of them is the AI (issues #1 and #30)
+
+**Neither issue is closed.** What changed is that "1.43× reference" has been split into
+parts that can be attributed, and two of the three parts are not in `src/ai/` at all.
+
+**First, the number itself had moved and nobody had re-run it.** Re-baselined on merged
+`main` (3f229b7), 55 races, 11 circuits × 5 seeds:
+
+| | issue #30 as filed | `main`, 2026-08-03 |
+|---|---|---|
+| races failing | 13 / 55 | **11 / 55** |
+| mean lap/reference | 1.3662 | **1.3131** |
+| Monaco fastest | 151–175% | **148–150%** |
+| Monaco off-track | 107–123 | **under the 90 bar on every seed** |
+| Silverstone | 152%, 171% | **passes on all five seeds** |
+| mean off-track | — | 40.65 |
+| mean retirements | — | 0.84 |
+
+So **the off-track half of #30 is gone** and **Silverstone is gone**, both from work that
+landed the same day and neither claimed by anybody: #10 (fuel), #4 (centreline easing) and
+the `aeroBalanceFront` 0.435 → 0.40 change, whose own comment in `VehicleSpec.ts` records
+`1.507 → 1.444` and is the largest single contributor. What is left of #30 is Monaco's
+**pace**, at 148–150% against a 145% bar — marginal now, where it was not.
+
+**Second: `probe:racesweep` prints a per-circuit table now.** Its failure list said
+`monaco: 113 off-track excursions` at 113 and said nothing at all at 89, so *"Monaco stopped
+failing"* and *"Monaco is fine"* were the same output — and the difference between them is
+the entire question #30 asks. A sweep whose only per-circuit reporting is its own assertions
+can tell you something is broken and can never tell you whether it improved.
+
+**Third, and this is the finding: the reference lap is not reachable, and nothing had ever
+checked.** `scripts/diagAiPace.ts`, all eleven circuits:
+
+| | mean | what it is |
+|---|---|---|
+| ACHV / REF | **1.0745** | the floor. Nobody can drive faster than this. |
+| SOLO / ACHV | **1.1658** | the controller — the only part `src/ai/` owns |
+| SOLO / REF | 1.2531 | one car, empty circuit |
+| RACE / REF | 1.3131 | twenty cars, from the sweep |
+
+`REFERENCE_CAR.mu` is 1.86, fitted by `npm run calibrate` against real pole times through a
+**point-mass closed form**. `VehicleSpec.baseMu` is 1.70 and is a **magic-formula
+coefficient, not an achievable friction coefficient**. Four places evaluate
+`mu * (m*g + cl*v^2)` and read `mu` off one or the other as though it were the lateral
+acceleration the car will produce: `solveSpeedProfile`, `corneringSpeedForCar`,
+`brakingDecelForCar` and `AIVehicleController.corneringSpeedLimitMs`.
+
+**`npm run probe:envelope` measures what the vehicle model actually produces** — the real
+`VehiclePhysics`, real `PHYSICS_DT`, no controller, a steering sweep at five speeds on
+eleven circuits with two cars: **0.7770 of the closed form, range 0.730..0.813 over 110
+samples.** Braking measures 0.739 of the same form. It is flat across speed, downforce, tyre
+and team, which is what makes one scalar the right shape for it — and the probe fails if it
+stops being flat, because then it is not.
+
+That is `ACHIEVABLE_GRIP_FRACTION` in `VehicleSpec.ts`. **Proved red for free on its first
+run**: the value written into it by hand off one circuit was 0.858, and the probe failed it
+and named 0.7770.
+
+**Deliberately NOT applied inside `solveSpeedProfile`.** `REFERENCE_CAR.mu` is not a physical
+claim about any car — it is a parameter fitted so the solved lap lands on real pole times,
+and moving it re-bases every lap-time assertion in the suite at once. The gap is measured
+rather than papered over.
+
+**Applied to the racing-line overlay, which was the visible victim.** `capabilityOf` handed
+the display `baseMu * tyre` and the display colours GREEN against it, so it was promising
+28.7% more grip than the car has. That is the user's *"if the racing line is green how did i
+go off the track?"*. `rawCapabilityOf` is the uncorrected form and exists for exactly one
+caller — `probe:envelope` — because measuring the correction against the corrected number
+reads 1.000 by construction, which is §3.2 with the arithmetic hidden inside a division.
+
+**`probe:racingline` could not have seen that fix, and that is its own finding.** Its
+`capabilityFor` was a **transcription** of `capabilityOf`'s four lines rather than a call to
+it. The probe and the game had stopped sharing the code under test: a fix to the real rule
+could not move a single number and a defect introduced into it could not fail a single
+assertion. It calls the shipped function now.
+
+**And the probe got stricter rather than the display getting worse — 3 failures → 4.**
+Correcting `capabilityOf` corrects the car the probe FLIES as well as the ribbon it flies
+at, and the flown car had been braking 28% harder than a real one, which was flattering the
+display. Controlled run, same fixed probe with the correction switched off: Monaco 1.042,
+Zandvoort 1.032, COTA 1.032 — the three §7 has always recorded. With it on: Bahrain 1.049,
+Monaco 1.066, COTA 1.031, Interlagos 1.028, and Zandvoort and Silverstone now pass. **The
+load column is not comparable between the two runs** — its denominator changed meaning — so
+what is comparable is the colour at the moment of exceedance, and on an honest car four
+circuits still read GREEN past the limit. That residual is a real, live bug and it is in the
+colouring rule rather than in the capability. **Nobody is on it.**
+
+**#1 AND #30 ARE NOT ONE PROBLEM, and that is measured.** A single car alone on an empty
+circuit goes off track **zero times on all eleven circuits** while lapping at 125% of
+reference. So #30's excursion count needs twenty cars and #1's pace gap does not:
+
+- the **pace** half of #30 is #1 amplified by Monaco's geometry — Monaco's floor is
+  **111.5%** against Monza's 104.5%, the worst on the calendar, and its controller cost is
+  **28 points against Monza's 14**;
+- the **off-track** half is a different mechanism that only exists in traffic, and it is now
+  under its bar anyway.
+
+**What was NOT reached, and it is most of the remaining gap.** `SOLO/ACHV = 1.1658` is the
+16.6% that is genuinely the controller's, and it is not fixed. What is known about it:
+
+- **It is not the commitment scale.** `npx tsx scripts/tuneAI.ts commitment` sweeps
+  `AI_TUNING.commitmentScale` from 0.90 to 1.00 and the mean moves only **124.0% → 118.3%**,
+  about six of the twenty-five points — and at 0.96 and 1.00 **Monaco stops setting a lap at
+  all**, which says the controller there is already at the edge of what it can track.
+- **It is not the AI aiming low.** `scripts/diagPaceProfile.ts` publishes the controller's
+  real `speedTargetAt` (a new write-only `lastTargetSpeedMs`, so a harness reads the real
+  rule rather than a copy) and splits the deficit into "asked for less than the reference"
+  and "asked and did not get it". The AI asks for **91–100%** of the reference everywhere
+  and achieves **57–94%**. Roughly two thirds of the loss is the second kind.
+- **The braking-zone deficit is a symptom, not a cause.** `scripts/diagBrakingZone.ts` traces
+  it: the car is slow in the braking zones because it arrives slow, and its pedal application
+  is correct for the speed it is doing. Do not go and make the AI brake later.
+- **Where it actually goes is corner exit and the traction limit**, and that is where the
+  next agent should start. `tractionLimitFraction` reads 0.10–0.55 through a whole Silverstone
+  corner exit and the AI's throttle tracks it exactly, which is physically right in itself —
+  but it means the AI is traction-limited for most of every exit and never recovers the
+  speed on the following straight (STRAIGHT bin 0.87–0.94 of reference). **Nobody is on it.**
 
 `probe:grade` went from **6 ok / 10 failed** to ****12 ok / 4 failed**** against
 `reference/target/`. What is left is not tuning, and the measurements say what it is.
