@@ -35,6 +35,10 @@ code. If the picture ever looks worse than you remember, check this setting firs
 | **Steering** | Take a fast corner on the keyboard | The car should hold a line. If it saws left–right at roughly 8 Hz, that is the fault #46 fixed — say so, because it means the fix did not reach you. |
 | **Steering feel** | `STEER_FEEL=calm npm run dev` | Alternative feel: calmer mid-corner, slower to change direction. `classic` is the old behaviour, byte-identical, for A/B. |
 | **Brakes, DRS, ERS** | On a straight | DRS opens only in a zone and only within a second of the car ahead. |
+| **The wing opens differently per team** | Chase or rear camera behind two different teams' cars in a DRS zone | Four solutions on the grid: Red Bull/McLaren/Audi lay the flap almost flat (biggest opening, slowest), Ferrari/Williams/Cadillac tip it forward, Mercedes/Alpine/Haas the compromise, Aston Martin/Racing Bulls barely open it but do it quickest. **Until #19 every car on the grid ran the same one** — the lookup was keyed on team names this game stopped using. |
+| **Sparks** | Fast, undulating circuits — Suzuka's esses, Zandvoort, COTA | Bursts as the floor strikes the road, over crests and kerbs and under the brakes. **They should never be a continuous flame.** The longest single shower on the calendar is now 3.4s at Suzuka, down from 10.4s. |
+| **Skid marks** | Lock a front under braking; then drive a normal lap | A lock-up leaves a black line. **An ordinary corner should leave nothing at all** — cars slide in every corner and none of that marks the road. |
+| **Rear lights** | Fit intermediates or wets, then brake hard | Three red lamps (one central, one in each rear-wing endplate pod). **Steady when merely on; they flash at 4Hz while you are braking**, because the MGU-K is recovering. On slicks in the dry they stay off however hard you brake — an F1 car has no brake light. |
 
 **Known and not yet fixed:** at **280 km/h on a straight** the car still wanders 2.6–3.3m
 on a keyboard where a wheel holds 0.02–0.11m. Undiagnosed, tracked on #46.
@@ -111,6 +115,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
 | **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |
+| The halo is near-black and loses its outline against a dark background — it is *attached* (146/146 bolted, measured), but it is not painted the way the reference cars are | **#34** |
+| Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
 | Career screens (ratings, market, accolades) not built | **#77** |
 | Podium/press bodies below the neck are unfinished | **#22** |
 
@@ -146,7 +152,8 @@ Useful individual probes:
 | `probe:gearbox` | a number key does not trap the gearbox |
 | `probe:handling` | the keyboard can hold a lane |
 | `probe:graphics` | the quality setting reaches the GL context |
-| `probe:carrig` | every car part attached, nothing interpenetrating |
+| `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
+| `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:people` | 42 principals, all different, all reachable |
 | `probe:envelope` | the car does what the lap-time solver and the racing line say it will |
 | `probe:racesweep` | 55 races. **Slow — 20+ minutes, and an hour on a busy machine** |

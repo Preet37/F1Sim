@@ -106,6 +106,10 @@ export class SkidMarks {
    * @param width   contact patch width, metres
    * @param opacity 0 lifts the pen off the paper; above 0 lays rubber
    * @param y       road height at this point
+   * @returns whether a quad was actually stamped — the measurement
+   *          `probe:effects` counts. "A mark was reported" and "a mark was
+   *          LAID" are different questions and the issue (#11, *"f1 cars don't
+   *          leave marks unless they lock up"*) is about the second one.
    */
   report(
     id: number,
@@ -114,16 +118,16 @@ export class SkidMarks {
     width: number,
     opacity: number,
     y: number,
-  ): void {
+  ): boolean {
     const t = this.trails[id];
-    if (!t) return;
+    if (!t) return false;
 
     if (opacity <= 0.02) {
       // Lift the pen. The next contact starts a fresh trail rather than drawing
       // a long quad across the gap — otherwise a car that stops sliding, drives
       // half a straight and slides again leaves a stripe down the straight.
       t.active = false;
-      return;
+      return false;
     }
 
     const hw = width * 0.5;
@@ -136,17 +140,18 @@ export class SkidMarks {
       t.active = true;
       t.x = x; t.z = z;
       t.lx = lx; t.lz = lz; t.rx = rx; t.rz = rz;
-      return;
+      return false;
     }
 
     const dx = x - t.x;
     const dz = z - t.z;
-    if (dx * dx + dz * dz < MIN_SEGMENT_M * MIN_SEGMENT_M) return;
+    if (dx * dx + dz * dz < MIN_SEGMENT_M * MIN_SEGMENT_M) return false;
 
     this.pushQuad(t.lx, t.lz, t.rx, t.rz, lx, lz, rx, rz, y, opacity);
 
     t.x = x; t.z = z;
     t.lx = lx; t.lz = lz; t.rx = rx; t.rz = rz;
+    return true;
   }
 
   /** Writes one quad, sharing its leading edge with the previous quad. */
