@@ -181,8 +181,12 @@ export class FloodlightTowers {
         const col = l % 4;
         const row = l < 4 ? 0 : 1;
         const across = (col - 1.5) * (HEAD_W / 4.4);
+        // (cos h, -sin h) is where the head box's own local +X points after a
+        // yaw of `heading`, so the lamps lie along the deck rather than merely
+        // near it. Deriving it from the rotation instead of from `track.nx`
+        // means the two cannot drift apart if the head's orientation changes.
         pos.set(
-          x + track.nx[idx] * 0 + Math.cos(heading) * across,
+          x + Math.cos(heading) * across,
           y + MAST_H + 0.55 + row * 0.62,
           z - Math.sin(heading) * across,
         );
