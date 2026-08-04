@@ -36,6 +36,9 @@ cockpit-out-low/
 /reference
 /node_modules
 
+# Fetched CC0/OFL assets — regenerate with `npx tsx scripts/fetchAssets.ts`
+public/assets/
+
 # THIRD-PARTY ARTWORK. Issue #36.
 #
 # `src/render/BrandAssets.ts` resolves `public/brand/<team-id>/<slot>.png|webp|svg`
@@ -43,6 +46,12 @@ cockpit-out-low/
 # livery, plus `public/brand/shared/` for materials, LUTs and environment maps.
 # Drop a file in and it appears on the next reload; take it away and the game
 # falls back to the generated marks in `LiveryDesign.ts` and `Livery.ts`.
+#
+# NOT THE SAME THING AS `public/assets/` ABOVE, and the difference is the
+# licence. That directory is FETCHED — CC0/OFL only, by a script, with the
+# licence of every file written down beside it, and it is regenerable from a
+# clean clone. This one is a DROP BOX: whatever the user wants on their own
+# machine while testing, licensed or not, with no manifest and no promises.
 #
 # IT IS IGNORED BECAUSE THAT IS THE ENTIRE POINT OF THE SLOT. The repo has to
 # stay shippable while the user tests locally with whatever artwork they like,
