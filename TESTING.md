@@ -132,7 +132,9 @@ Do not spend time reporting these; they are on the list with measurements.
 | Cars phase through each other in the pit lane | **#75** |
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | ~~Every car sits level on a road that is not level~~ — **fixed**. Was up to 409mm of tyre under the asphalt at Monaco, 396mm at Zandvoort, 341mm at Spa; now 80 / 34 / 27mm, and 10 of 11 circuits are within 5.3mm of what the road MESH itself allows | **#71** |
-| **The drawn road is up to 113mm away from the surface cars are placed on, between node rows.** A corner's road quad fans and is not planar, so its diagonal split lifts or drops the drawn triangles in between. Worst at Suzuka, Monaco, Zandvoort and COTA. This is what is left of #71 and it is a road-mesh job, not a car one | filed under **#71** |
+| ~~The drawn road is up to 113mm away from the surface cars are placed on, between node rows~~ — **fixed**. Was 85.7mm at Spa, 82.7 at COTA, 78.7 at Monaco, 56.8 at Zandvoort; now 1.5 / 1.4 / 1.6 / 0.7mm on all eleven circuits, and `probe:banking` can see between the node rows at all, which it could not before | filed under **#71** |
+| ~~Suzuka's crossover draws two roads 0.159m apart and neither leg is a bridge~~ — **fixed**. The two legs are 7.92m apart now, which is what the real overpass has. It did not move the lap-time solver at all | **#37** |
+| **A white line carries almost no surface relief** — 0.66° of facet slope against the asphalt's 1.86°, because #48's band limit is shared by every surface and paint's own strength is a quarter of the road's. Whether a white line should look like a smooth film or like painted aggregate is **your call**, and it needs looking at rather than measuring | **#86** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
 | **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |
@@ -153,6 +155,14 @@ npm run validate      # tracks, physics, race, qualifying, integrity, world, fla
 npm run regress       # lap counting, classification, session exit, career flow
 npm run probe:smoke   # 35 front-end screens, 32 required routes
 ```
+
+**`npm run build` is BROKEN right now, and so is `probe:grain`.** One comment in
+`src/ui/styles.css` line 162 contains the text `titillium*/`, and `*/` ends a CSS comment —
+so everything after it is read as CSS and the minifier stops with `Invalid empty selector`.
+It has been that way since the timing-board work landed on `main`; `npm run dev` is
+unaffected (the dev server does not minify), so you can still play the game. `probe:grain`
+does a real production build before it opens a browser, so **its "132 / 0" cannot be checked
+until that comment is fixed.** One character. Nobody is on it.
 
 **Run these on a quiet machine.** Nearly every probe in this project drives headless
 Chrome, and under load they do not fail — they *time out*, which reads like a failure and
@@ -176,6 +186,8 @@ Useful individual probes:
 | `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
 | `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |
+| `probe:banking` | cars stand on the asphalt that is DRAWN — and, since the road-surface work, **between** the mesh's node rows as well as on them, which is where an 85mm error had been hiding behind a probe reporting 0.000m |
+| `probe:kerbs` | how much of a lap is kerbed — and that every surface which claims to have relief still HAS it: the band limit that fixed the road's speckle is shared by the kerbs, the grass and the run-off, and nothing measured them until now |
 | `probe:people` | 42 principals, all different, all reachable |
 | `probe:envelope` | the car does what the lap-time solver and the racing line say it will |
 | `probe:racesweep` | 55 races. **Slow — 20+ minutes, and an hour on a busy machine** |
@@ -197,9 +209,11 @@ a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55
 `validate:race` 1, both `monaco: fastest lap 150% of reference` (#1) plus four spread rows
 that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** 2 (#26) — the default
 quarter-distance run passes ·
-**`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where the
-road mesh's own quad is degenerate and a rigid 3.6m car cannot lie on it. 43.6mm over a bound
-the mesh's own error sets; the other ten circuits are inside 5.3mm.
+**`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where a
+rigid 3.6m car cannot lie on the road mesh's own quad. **10.7mm over, down from 43.6mm**, and
+the bound came down with it rather than being widened: it is the mesh's own error plus 10mm,
+and the mesh's own error at Monaco fell from 51.6mm to 1.5mm with the road-surface work. The
+worst any tyre is buried anywhere on the calendar is now **11.3mm**, against 79.7mm.
 
 **`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
 stale and several of them are fixed:

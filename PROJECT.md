@@ -265,9 +265,10 @@ Run `npm run` to list. The important ones:
 | `probe:assets` | **The asset slots, and the shippability guarantee.** Resolution order in Node with no browser; then one team built three times in ONE GL context — no file, a badge dropped into `public/brand/`, the file removed again — sha256'd on three views. The middle arm must differ and the third must be BYTE-IDENTICAL to the first. Also: a slot with no file costs zero requests and zero console output, and a second build issues nothing. `ASSETS_BREAK=root` points the loader at a directory with no manifest and proves the override half can go red. Issue #36 |
 | `probe:effects` | **What fires, and what the car was doing at the time.** Sparks, rubber, the purple, the three rear lamps and whether the four wing actuations reach the GRID. Every section asserts BOTH directions — the effect fires when it should AND does not when it should not — because "sparks were drawn" is truer on the build #11 was reported against than on the fixed one. `EffectsDirector.frame` publishes the emission counts beside the physics that caused them. 11 circuits. `FX_BREAK=chroma|blur|teams|flash`, `FX_CIRCUITS=` |
 | `validate:world` | Nothing built on the racing surface |
-| `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
+| `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts`. **§2 samples BETWEEN the mesh's node rows** — five stations per span × seven offsets across the road, ~65,000 a circuit, through an index over the built geometry that is cross-checked against `THREE.Raycaster` every run. §1 could only ever look at vertex rows, where the mesh is exact by construction, and reported 0.000m over an 85mm error for as long as it existed |
 | `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing on the road, and the gear readout for a stopped car is `N` and stays `N` (#58). **And since #71, §4: a RUNNING car lies ON the road** — all eight contact patches raycast against the drawn triangles on **all eleven circuits**, at the racing offset and hard against each white line, with the road mesh's own departure from the placement rule measured in the same run so the bound is derived rather than chosen. §4b reads the source of `Renderer` **and** `CameraDirector`, which used to carry a copy of the same rule |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
+| `probe:kerbs` | How much of a lap is kerbed and how tight the corners are — **and, since #86, that every surface which CLAIMS relief still has it.** #48's band limit is on a height field shared by the kerbs, the paint, the grass and the run-off, and `probe:grain` masks to the road. Facet slope in degrees RMS off the real `makeGrain(256)` texture at stated WORLD wavelengths, floored as well as capped, because "the kerb is not noisy" is passed by a kerb flattened to a mirror |
 | `probe:grade` | **The in-race picture against `reference/target/`.** Median luma, RMS contrast, HSV saturation and mean(R)-mean(B) over a stated region, ours against the user's own frames, off `probe:sharpness` shots taken at the scale the real scaler settled on. Bars are the reference frame plus a tolerance. Issue #78 |
 | `probe:env` | **What is actually lighting the scene**, in a real browser: the captured sky is fetched from a gitignored directory and falls back silently by design, and a light mast that cannot be placed clear of the circuit is not placed — so both can be false while everything still looks fine. Reports `environmentSource` and the mast count |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
@@ -1576,6 +1577,200 @@ are inside **5.3mm** of it. Monaco's s=336 is 43.6mm over, and that node is a **
 centreline radius on a 10m-wide road**, the tightest span on the calendar and the one this
 file already names as the fold margin's worst case. See §7 for the mesh defect itself, which
 is a real finding of this work and is **not** fixed here.
+
+**Superseded in part.** The mesh defect this section hands to §7 is fixed in the next
+section, and the numbers above moved with it: Monaco's §4 excess went 43.6mm → **10.7mm** on
+a bound that came DOWN, and the whole calendar's worst tyre burial 79.7mm → **11.3mm**. The
+attribution of Suzuka's 113.5mm to the fan was wrong; it was #37. Read both.
+
+### The probe that reported 0.000m was sampling the four corners of the one place the mesh can be wrong (issue #71's road half, and #37)
+
+**`probe:banking` fired every ray at `px[i] + nx[i] * lat`.** That is a row of mesh
+VERTICES, where the drawn road is on `bankedCarGroundY` by construction. It reported
+`0.000m` on eleven circuits for as long as it existed, and it was not wrong — it was blind.
+#71 found the defect from the side, in `probe:crashrest` §4, while measuring something else.
+
+**The mechanism, and it is one line of geometry.** The road was swept as ONE quad per node
+across its FULL width. Take the four corners
+
+    A = c0 + v0*n0   B = c1 + v0*n1   C = c1 + v1*n1   D = c0 + v1*n0
+
+and C sits off the plane of A, B, D by `|v1 - v0| * |d(tan bank) - fan * gradient|`: the
+lateral span of the quad, times the change in cross-slope across it, plus the angle the
+frame turns through times how steeply the road climbs. **Exactly zero on a straight,
+exactly zero on the flat, worst where a tight corner has a gradient on it.** The diagonal
+the quad is split on then carries the drawn surface away from the placement rule everywhere
+except at the four corners, which is precisely where the probe was looking.
+
+**`probe:banking` §2 samples between the rows** — five stations across every span, seven
+offsets across the road, none of them a vertex row, ~65,000 samples a circuit. Same rule,
+same comparison, same exclusion of the crossover; only the sample positions differ. It
+raycasts through an index over the built geometry rather than `THREE.Raycaster`, because
+70k rays × every triangle is minutes a circuit, and the index is **cross-checked against
+the raycaster on a thinned subset every run** (worst disagreement 0.0000mm).
+
+| circuit | before | after | | circuit | before | after |
+|---|---|---|---|---|---|---|
+| **Spa** | **85.7mm** | 1.5mm | | Red Bull Ring | 52.4mm | 0.8mm |
+| **COTA** | **82.7mm** | 1.4mm | | Suzuka | 23.4mm | 0.7mm |
+| **Monaco** | **78.7mm** | 1.6mm | | Interlagos | 19.5mm | 0.5mm |
+| **Zandvoort** | **56.8mm** | 0.7mm | | Bahrain | 7.6mm | 0.7mm |
+| Monza | 5.6mm | 0.7mm | | Silverstone | 1.2mm | 0.4mm |
+| | | | | Jeddah | 0.6mm | 0.3mm |
+
+A denser sweep than the probe's own — 13 stations × 61 offsets out to 0.97 of half-width —
+agrees and finds the true worst: **before 88.9 (Spa) / 85.9 (Monaco) / 83.7 (COTA), after
+1.8 / 1.8 / 1.7mm.** The bound is **2mm, the same number §1 holds**, and it is the same
+number for the same reason rather than a second budget: every vertex of the road is on the
+rule exactly, so between them the only thing that can differ is tessellation, which is a
+decision this file makes and not a property of the surveyed data. There is no floor here to
+be generous about.
+
+**Suzuka's 113.5mm in `probe:crashrest` §4 is NOT this defect, and that is worth writing
+down.** Sampling out to the very edge of the road at Suzuka reports **177.4mm at s=4654,
+lat=-7.00** — the crossover, where the ray finds the OTHER leg of the figure-of-eight. At
+0.97 of half-width, where only one piece of asphalt is under the sample, Suzuka's genuine
+fan error is **23.2mm at s=2655**, the Degner-to-hairpin run. §4's Suzuka figure was #37
+leaking through the same window as #71. Both are fixed below; the attribution was wrong.
+
+**The fix is to sub-divide ACROSS the width the way the sweep already sub-divides ALONG it**
+— a ribbon has two directions and only one of them was being tessellated. The deviation is
+LINEAR in the lateral span, so `n` columns divides it by `n`, and the count is derived per
+span from `width * (fan * grade + d(tan bank))` against a 1.5mm target. Adaptive, because
+both factors are zero on a straight and zero on the flat and most of every lap is one or
+the other.
+
+**The first version of that fix opened cracks down every node row, and the measurement
+caught it.** With a per-SPAN column count, two neighbouring spans meet along a row carrying
+two different chains of vertices — collinear in double precision, and NOT collinear once
+rounded into a Float32 attribute. A T-junction of about **60 microns**, on every node row of
+the road, showing the ground through the middle of the asphalt: the "weird black lines" this
+project has already fixed once. **386 of ~19,000 vertex-row rays at the racing offset found
+no triangle at all** — §1 went red while §2 went green. So the column count belongs to the
+ROW, both spans meeting there use it, and the two rows of a span are **zipped** rather than
+quadded: every vertex of a row is shared exactly with the span on its other side, the road's
+outer boundary is untouched (still `±halfWidth`, still the chord between them, so the white
+lines, kerbs and run-off meet it exactly where they always did), and with one column on both
+rows it emits the old quad's own two triangles with the old quad's own diagonal, byte for
+byte.
+
+**What it costs.** Road triangles ×1.0 (Jeddah) to ×7.4 (Zandvoort); the whole circuit mesh
+**+0.0% to +9.7% on `high`** (worst Monaco) and **+0.0% to +13.8% on `low`** (worst Monaco,
+Zandvoort +13.0%). Zandvoort and Monaco are the expensive ones for different reasons — 18
+degrees of banking ramping in and out at Zandvoort, a 9.2m radius on a 10m road at Monaco.
+For scale, the per-node sub-quad change that preceded this cost 2.0–5.6%.
+
+**What it bought the cars, and the bound came DOWN rather than out.** `probe:crashrest` §4
+bounds a car's burial by the road mesh's own departure from the placement rule **plus 10mm**,
+measured in the same run — so a mesh that stops departing tightens its own bound with no
+line of the probe edited. Monaco's mesh departure fell **51.6mm → 1.5mm**, its worst raw tyre
+burial **79.7mm → 11.3mm**, and its excess over the bound **43.6mm → 10.7mm**. COTA's burial
+fell 46.5 → 2.5mm, Suzuka's 34.3 → 5.9mm (with #37 below), Monza's 2.7 → 0.3, Interlagos'
+3.4 → 0.3. The probe is still **48 ok / 1 failed** and the one is still Monaco s=336, but it
+is no longer a road-mesh defect: the mesh there is right to a millimetre and what is left is
+a rigid 3.6m plate on a 9.2m radius.
+
+**Suzuka's crossover is a bridge now (issue #37).** The two legs cross in plan at
+s=2274–2300 and s=4649–4676, and the elevation profile — whose own comment said *"the
+crossover is a bridge, so the elevation profile carries the height difference"* — put them
+**0.25m apart at the nodes and 0.159m apart on the drawn asphalt.** Two pieces of road on
+top of each other, no single answer to "what height is the road here", and a car on the
+lower one with the upper one through its bodywork. Two control points either side of the
+crossing now separate them by **7.92m**, which is the clearance the real overpass has. The
+steepest gradient that asks for is **2.8%** (the drop from Dunlop into Degner) against 1.7%
+before and Spa's 18.7% on the same calendar. `probe:banking`'s two-surface counts go **12 →
+0** in §1 and **395 → 0** in §2, and the twelve points it could not measure are now measured.
+
+**It did not move the speed solver, and that is measured rather than assumed.**
+`validate:tracks` reports Suzuka's solved lap at **1:29.148, +1.1% of the real pole time,
+before and after, to the millisecond** — the solver reads curvature and banking and does not
+read elevation. Grade forces in `VehiclePhysics` do read it, so a DRIVEN lap at Suzuka will
+differ; `probe:racesweep` was not re-run (20+ minutes on a quiet machine, and the machine
+was not quiet — see below).
+
+**The regression set, on the merged tree with all of the above in it:** `probe:banking` PASS,
+`probe:curvature` PASS, `validate:limits` PASS, `validate:world` PASS, `validate:tracks` PASS
+(**every circuit's solved lap identical to `main`'s to the millisecond**, mean bias +1.7%,
+checked by reverting `TrackSpline.ts` to `8cde5ae` and running it again), `probe:shoulders` 0
+invisible, `probe:kerbs` PASS, `probe:framerate` PASS, `probe:racingline` the known 4 (#30),
+`probe:crashrest` 48 ok / 1 known, `npm run typecheck` clean. **`probe:grain` could not be
+run at all** — see §7: `npm run build` fails on `main` on a CSS comment, and that probe does
+a real `vite build` first.
+
+**One `validate:tracks` run in twenty gave a different answer and it has not been
+explained.** At 23:18 on 2026-08-03 it reported mean bias +2.1% with Monaco at 1:09.599
+(−1.0%), Bahrain 1:29.760, Spa 1:42.638, Monza 1:22.046 and Austin 1:36.532. Five runs
+before and after it, on the same tree and on `main`'s `TrackSpline.ts`, all report +1.7% with
+Monaco at 1:08.555 (−2.5%) and every other row byte-identical. There is no wall clock and no
+`Math.random` anywhere in the solver or the harness. **Recorded rather than deleted**; the
+figure this branch is reported against is the one five runs agree on, which is `main`'s.
+
+**`car.s` advanced further than the car travelled, and it was the projection stepping
+between nodes (issue #66).** `TrackSpline.project` took the NEAREST node and read `s` off
+that node's own tangent line. Every term of that is continuous in the car's position except
+the choice of node, and the choice steps: the moment a car crossed the perpendicular
+bisector between two nodes, `s` jumped by however much the two node frames disagreed —
+`h*(k*h)^2/6 + 2*w*sin(k*h/2)`, dominated by `w*k*h`, which is over a metre at Monza's
+Ascari. It is now a blend of BOTH nodes' opinions, weighted by `a0/(a0-a1)`, which is 0
+exactly where the first node's perpendicular is and 1 exactly where the second's is — the
+two places the segment choice changes. **Continuous across every node on the lap by
+construction**, and on a circular arc exact to first order in the curvature, so `ds` per
+metre travelled comes out at `1/(1 - w*k)`: the geometric answer, in the middle of the
+envelope `probe:framerate` checks against. The obvious alternative — the nearest point on
+the polyline — is worse and was rejected on the geometry: on the OUTSIDE of a corner it
+sticks at the node for the whole wedge between two segments, and at Monaco's hairpin that
+wedge is nineteen degrees, so a car five metres out covers 1.65m of ground for no advance at
+all. The same defect with the sign reversed.
+
+### #48's low pass reached every surface in the scene and only the road was ever measured (issue #86)
+
+The normal map is differentiated from a LOW-PASSED copy of the height field (§6, #48), and
+**that height field is shared by every surface**: kerbs, grass, run-off, paint and the road
+all read the same two textures at their own tiling scale. `probe:grain` masks to
+`ROAD_MESH_NAME`. Nothing measured any of the others at all.
+
+`probe:kerbs` now measures them, headlessly, off `makeGrain(256)` — the same call
+`SurfaceDetail`'s constructor makes — and each surface's own `scaleA` and `normalStrength`,
+reported as facet slope in degrees RMS at stated **world** wavelengths:
+
+| surface | cycles/m | mm/texel | strength | kept (>12mm) | fine (<12mm) | at >40mm |
+|---|---|---|---|---|---|---|
+| asphalt | 1.40 | 2.79 | 0.42 | 1.86° | 0.10° | 1.40° |
+| paint | 1.40 | 2.79 | 0.15 | **0.66°** | 0.04° | **0.50°** |
+| kerb | 2.20 | 1.78 | 0.30 | 1.27° | 0.14° | **0.72°** |
+| run-off | 0.75 | 5.21 | 0.85 | 3.86° | 0.05° | 3.50° |
+| grass | 0.55 | 7.10 | 0.80 | 3.66° | 0.01° | 3.45° |
+| wall | 0.50 | 7.81 | 0.00 | — | — | declares no bump |
+
+**TWO BOUNDS, AND THE FLOOR IS THE LOAD-BEARING ONE.** §3.2 in its exact form: "the kerb is
+not noisy" is passed with flying colours by a kerb flattened to a mirror. So the RMS slope
+at wavelengths a pixel can hold must be **at least 1.0°** — a Lambertian term moves about
+1.2% per degree of facet tilt at a 45° sun, one display level in 128, so below that a
+surface is a painted plane — and the slope below 12mm must be **at most 1.5°**. Proved red
+both ways: `BUMP_SIGMA_TEXELS` 3.4 → 12 takes asphalt to 0.26°, kerb to 0.18°, run-off to
+0.54° and grass to 0.51° and fails four of four; differentiating from `height` instead of
+`bumpHeight` — reverting #48 outright — takes the KERB's sub-12mm slope to **1.65°** and
+fails the ceiling. The kerb is the surface that fails first because it tiles finest.
+
+**The answer to the question #86 asked is: the kerb's 55mm is safe and its bump is not.** A
+kerb's 55mm relief is `Y_KERB`, the extruded SECTION in `TrackMesh.ts` — mesh geometry,
+which a texture low pass never touched and cannot touch. What #48 did touch is the bump, and
+because the kerb tiles at 2.2 cycles/m — **the finest in the scene, 1.6× finer than the
+road** — the relief that survives lands at correspondingly shorter world wavelengths: at
+40mm and above the kerb carries **0.72°** against the road's 1.40° and the run-off's 3.50°.
+It clears the resolvable-limit floor at 1.27° and it is the closest thing to it on the
+calendar. The `>40mm` column is printed and NOT asserted, because 40mm is read off the kerb's
+crown and the crown is geometry; moving the bound to it would be choosing a number from the
+output. **Paint is exempt from the floor by a stated property of the object** — track paint
+is a thermoplastic film and is smoother than the aggregate beside it, which is why its
+profile carries 0.15 against 0.42 — and its number is printed anyway, because #48 took it
+from about 1.8° to 0.66°. See §7: whether a white line should read as a film or as painted
+aggregate is a LOOK question and needs a look review.
+
+**What this does NOT measure.** It reads the MAP, not a frame, so it cannot see
+`detailResolve` fading a band out with distance. That is a screen-space question, it belongs
+in `probe:grain` masked to the kerb the way it is masked to the road, and **that half is not
+built.**
 
 ### The in-race picture, measured against the reference frames (issue #78)
 
@@ -3456,14 +3651,23 @@ shared files and the run that matters passed. **Nobody is on this.**
   the directory is still byte-identical, a decision about 12MB of JPEG on a page that
   currently downloads nothing, and a look review of a road whose colour has been tuned by
   hand for a year. **Nobody has bound it and nobody has looked at it in the engine.**
-- **The low pass in `SurfaceDetail.makeGrain` is shared by every surface, and only the road
-  was measured.** Grass, run-off, kerbs and walls read the same normal map, so their mean
-  facet slope fell 13.3° → 4.1° with the asphalt's. For grass and run-off that is very
-  probably right — both are seen at grazing angles constantly and `runoff`'s own comment
-  already records it sparkling — and grass at roughness 0.97 has almost no specular lobe to
-  alias, so it could afford more bump than the road can. **`probe:grain` masks to
-  `ROAD_MESH_NAME` and says nothing about any of them.** The verges were eyeballed in
-  `audit:circuits` and looked right; that is not a measurement and is not claimed as one.
+- **The low pass in `SurfaceDetail.makeGrain` is shared by every surface. It is measured
+  now — on the MAP — and the residual is PAINT (issue #86).** `probe:kerbs` gained a
+  SURFACE RELIEF section: facet slope in degrees RMS off the real `makeGrain(256)` texture
+  and each surface's own tiling scale and `normalStrength`, floored at 1.0° for anything
+  meant to read as a granular material and capped at 1.5° below the resolvable limit, proved
+  red in both directions. Asphalt 1.86°, kerb 1.27°, run-off 3.86°, grass 3.66°, **paint
+  0.66°.** Full table and the derivations in §6. Two things are left:
+  - **Paint is exempt from the floor by a stated property of the object** — thermoplastic
+    road paint is a smooth film and is legitimately smoother than the aggregate beside it —
+    but #48 took it from about 1.8° to 0.66°, which is under the visibility floor, and
+    **whether a white line should read as a film or as painted aggregate has not been
+    looked at.** It is a look decision and it needs a look review, not a probe. Nobody is
+    on it.
+  - **`probe:grain` still masks to `ROAD_MESH_NAME` alone.** What `probe:kerbs` measures is
+    the map; what a FRAME draws of it — through `detailResolve`, which fades a band out with
+    distance — is a screen-space question, and the kerb mask that would answer it **is not
+    built**. Nobody is on it.
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
   established the first half by measurement (§6). The second half is the reason `medium`
   exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple
@@ -3516,46 +3720,74 @@ shared files and the run that matters passed. **Nobody is on this.**
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
-- **Suzuka's crossover draws two roads on top of each other.** Twelve sample points between
-  s=2280–2298 and s=4649–4667 have two pieces of asphalt within 0.159m; neither leg of the
-  figure-of-eight is a bridge, so a car on the lower one sinks into the upper one. Found by
-  `probe:banking` while measuring something else, counted and printed there, issue #37.
-- **`car.s` advances further than the car travels, on every circuit, hundreds of times a
-  lap. Issue #66.** Found by the new `probe:framerate` "WORLD SMOOTHNESS" section while
-  measuring #54, and it is a **simulation-side** discontinuity, not a drawing one: `s` is
-  the projection of the car onto the centreline, so how far it may advance for a given
-  metre travelled is fixed by geometry — between `plan × (1 − |lateral·κ|)` and
-  `plan / (1 − |lateral·κ|)`. Outside that envelope the projection has moved without the
-  car moving. Measured over one lap at 50fps: **Monza 602 frames, worst +1.30m at s=620m;
-  Red Bull Ring 453, +1.10m; Suzuka 678, +0.89m; Bahrain 595, +0.72m** — every circuit,
-  including the flat ones, so it is not the crossover case (#37) and not banking. Anything
-  that reads a height, a sector, a gap or a marshal post off `s` inherits it. The probe
-  **excludes those frames from both of its columns and prints them** rather than swallowing
-  them, so the exclusion is visible and the count is the measurement. **Nobody is on this.**
+- ~~**Suzuka's crossover draws two roads on top of each other.**~~ **Fixed, #37.** The two
+  legs are 7.92m apart now against 0.25m at the nodes and 0.159m on the drawn asphalt, which
+  is the clearance the real overpass has; `probe:banking`'s two-surface counts go 12 → 0 in
+  §1 and 395 → 0 in §2. It cost 2.8% of gradient on the drop from Dunlop into Degner and
+  **nothing at all in the speed solver** — `validate:tracks` reports Suzuka at 1:29.148,
+  +1.1%, before and after to the millisecond, because the solver reads curvature and banking
+  and does not read elevation. See §6. **A driven lap will differ** (grade forces do read
+  elevation) and `probe:racesweep` has not been re-run.
+- **`car.s` advances further than the car travels. Issue #66 — an order of magnitude
+  better, and NOT closed.** The mechanism is found and fixed: `TrackSpline.project` read
+  `s` off the NEAREST node's own tangent line, so the choice of node stepped and `s` jumped
+  with it. It is a blend of both nodes now, continuous across every node by construction and
+  exact to first order in the curvature — see §6. Measured on this branch, frames per lap at
+  50fps outside the geometric envelope and the worst excess:
+
+  | circuit | before | after | | circuit | before | after |
+  |---|---|---|---|---|---|---|
+  | Monza | 475 / **+1.44m** | 347 / +0.14m | | Zandvoort | 623 / +0.59m | 147 / +0.08m |
+  | Monaco | 451 / **+1.35m** | 264 / +0.11m | | Silverstone | 572 / +0.55m | **63** / +0.04m |
+  | Red Bull Ring | 485 / **+1.14m** | 218 / +0.09m | | Interlagos | 603 / +0.54m | 263 / +0.05m |
+  | Bahrain | 625 / +0.89m | 307 / +0.09m | | COTA | 655 / +0.48m | 159 / +0.05m |
+  | Spa | 463 / +0.70m | **59** / +0.05m | | Suzuka | 640 / +0.47m | **49** / +0.06m |
+  | Jeddah | 261 / +0.44m | 279 / +0.10m | | | | |
+
+  **The "before" column is not the one this file used to carry** — it said Monza 602 /
+  +1.30m and the re-measurement says 475 / +1.44m. §4's rule again: run it before quoting
+  it.
+
+  **What is left is second order and part of it is the instrument.** The blend is exact to
+  first order in `κ`; the residue goes as `(κh)²`, which is 2.9% at Monza's Ascari. The
+  probe's envelope is also evaluated with a **node-snapped** curvature and an
+  **end-of-frame** lateral, so some of the residue is the bound rather than the projection, and
+  **nobody has separated the two.** The counts are still in the hundreds; the magnitudes are
+  now under 150mm everywhere and under 100mm on eight of eleven circuits. **Nobody is on the
+  rest.**
+- **`npm run build` FAILS on `main`, and it is one character in a comment.**
+  `src/ui/styles.css:162` contains the literal ``dist/assets/fonts/titillium*/`` inside a
+  `/* … */` block, and `*/` closes the comment — everything after it is parsed as CSS and
+  `lightningcss` rejects it with `Invalid empty selector`. Confirmed by running
+  `lightningcss.transform` on each stylesheet in `src/ui/` separately: six pass,
+  `styles.css` fails. Present at `8cde5ae`, which is `main`'s tip; the branch that found it
+  touches no CSS, no HTML and no build config. **It takes `probe:grain` with it** — that
+  probe does a real `vite build` before it opens a browser — so the "132 / 0" this file
+  records for `probe:grain` **cannot be verified today**. `src/ui/styles.css` is the
+  timing-board work's ground (#76) and was deliberately not touched from here. **Nobody is
+  on this and it blocks shipping.**
 - ~~EVERY CAR IS DRAWN LEVEL WITH THE WORLD~~ and ~~the pitch is applied about the WORLD x
-  axis~~ — **both fixed by #71**, see §6. What is LEFT of them is one span and it is a road
-  mesh defect rather than an attitude one: **Monaco s=336, where the centreline radius is
-  9.2m on a 10m-wide road** — the tightest span on the calendar, and the one §6 already
-  names as the fold margin's worst case. A rigid 3.6m car placed square to the centreline
-  there is **43.6mm deeper into the drawn asphalt than the road mesh's own departure from
-  the placement rule accounts for**, and `probe:crashrest` §4 fails on it. Ten of eleven
-  circuits are inside 5.3mm. **Nobody is on the remaining span.**
-- **THE DRAWN ROAD IS NOT THE SURFACE CARS ARE PLACED ON, between node rows — up to 113mm,
-  and `probe:banking` structurally cannot see it.** Found by #71, and it is the single
-  biggest thing that work turned up that it did not go looking for. The road is swept as
-  ONE quad across its full width per node; a quad whose two node rows FAN — every corner —
-  is not planar, so the diagonal it is split on puts the drawn triangles off
-  `bankedCarGroundY` everywhere except at the four corners. Measured at the eight points a
-  car's contact patches read, on all eleven circuits: **Suzuka 113.5mm, Monaco 51.6mm,
-  Zandvoort 45.2mm, COTA 45.9mm, Red Bull Ring 35.4mm, Spa 30.8mm, Interlagos 12.8mm,
-  Bahrain 2.7mm, Monza 2.9mm, Silverstone 0.8mm, Jeddah 0.4mm.** `probe:banking` reports
-  **0.000m** and is not wrong — it raycasts at `px[i] + nx[i] * lat`, which is a mesh VERTEX
-  ROW, where the quad's corners are exact by construction. It has never sampled between
-  them. This is the floor below which no placement rule built on `bankedCarGroundY` can go,
-  which is why `probe:crashrest` §4's bound is that floor plus 10mm, measured in the same
-  run. The fix is in the road sweep — sub-divide across the width where the node rows fan,
-  the way the sweep already sub-divides along it — and it belongs with #4's family, not with
-  #71. **Nobody is on this.**
+  axis~~ — **both fixed by #71**, see §6. What is LEFT of them is one span: **Monaco s=336,
+  where the centreline radius is 9.2m on a 10m-wide road** — the tightest span on the
+  calendar, and the one §6 already names as the fold margin's worst case. `probe:crashrest`
+  §4 still fails there and it is **10.7mm over now, down from 43.6mm**, on a bound that came
+  DOWN rather than being widened: the bound is the mesh's own error plus 10mm, and the
+  mesh's own error at Monaco went from 51.6mm to 1.5mm with the road-surface work. **The
+  worst any tyre is buried anywhere on the calendar is 11.3mm against 79.7mm**, so this is
+  no longer a road-mesh defect — the mesh is right to a millimetre and what is left is a
+  rigid 3.6m plate on a 9.2m radius. **Nobody is on the remaining span.**
+- ~~**THE DRAWN ROAD IS NOT THE SURFACE CARS ARE PLACED ON, between node rows — up to 113mm,
+  and `probe:banking` structurally cannot see it.**~~ **Fixed, and the probe can see it now.**
+  `probe:banking` §2 samples between the rows and between the edges, and the road sweep
+  sub-divides ACROSS its width with a per-node-row column count, zipped so that no
+  T-junction is created. **Spa 85.7 → 1.5mm, COTA 82.7 → 1.4, Monaco 78.7 → 1.6, Zandvoort
+  56.8 → 0.7, Red Bull Ring 52.4 → 0.8, Suzuka 23.4 → 0.7, Interlagos 19.5 → 0.5, Bahrain
+  7.6 → 0.7, Monza 5.6 → 0.7, Silverstone 1.2 → 0.4, Jeddah 0.6 → 0.3**, bound 2mm, and a
+  denser sweep than the probe's own agrees (worst 88.9 → 1.8mm). Full account in §6,
+  including why the 113.5mm this entry quoted at Suzuka was **#37 and not the fan**, and
+  what the extra triangles cost. `probe:crashrest` §4's bound is still that floor plus 10mm
+  and the floor is now single millimetres, so the bound has tightened by about fifty
+  millimetres on the four worst circuits without a line of it being edited.
 - **A car standing OFF the road is placed on the road's plane, and mostly that is fine.**
   Checked while working #58 because it was the obvious candidate for "a crashed car is on a
   different placement path", and **it is not**: the run-off strip is swept at
