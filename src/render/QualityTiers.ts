@@ -39,11 +39,17 @@
  *
  * So `auto` does not try to be clever about the hardware. It picks a floor it
  * is confident about and then **measures the device it is actually on** —
- * `Renderer.updateAutoTier` promotes a tier once the frame-cost window says
- * there is room, and demotes and latches if there is not. That is the same
- * shape as the dynamic resolution scaler, which is already the only thing in
- * this renderer that has ever correctly described the machine it was running
- * on. See `AUTO_PROMOTE_MS` / `AUTO_DEMOTE_MS`.
+ * `AutoTierPolicy` (below) promotes a tier once the frame-cost window says
+ * there is room and demotes when there is sustained evidence there is not.
+ * That is the same shape as the dynamic resolution scaler, which is already
+ * the only thing in this renderer that has ever correctly described the
+ * machine it was running on. See `AUTO_PROMOTE_MS` / `AUTO_DEMOTE_MS`.
+ *
+ * **It is reversible, and issue #73 is what that word cost.** The first
+ * version latched the tier it was leaving out of the session on the FIRST
+ * demotion, so a machine that was busy for three quarters of a second lost the
+ * picture until the page was reloaded. See `AUTO_LATCH_AFTER_DEMOTIONS` and
+ * `AUTO_VERDICT_S`.
  *
  * ---------------------------------------------------------------------------
  * WHY THREE TIERS AND FOUR SEPARATE SWITCHES
@@ -350,8 +356,52 @@ export const AUTO_DEMOTE_MS = 24;
 export const AUTO_PROMOTE_MS = 16.9;
 /** Seconds held at the ceiling and under budget before a promotion. */
 export const AUTO_PROMOTE_AFTER_S = 8;
-/** Seconds after a promotion during which a demotion blames the promotion. */
+/**
+ * Seconds of CONTINUOUS trouble at minimum resolution before a demotion, and
+ * the window inside which a demotion is read as the verdict on the promotion
+ * that preceded it.
+ *
+ * ISSUE #73 — THIS IS THE NUMBER THAT WAS MISSING. The pass used to demote on
+ * a single window's frame cost: one `frameCostMs` reading above
+ * `AUTO_DEMOTE_MS` while the scaler happened to be at `MIN_SCALE` and the tier
+ * dropped, permanently. `frameCostMs` is a trimmed mean over 45 frames, i.e.
+ * about three quarters of a second, so a background compile, another browser
+ * tab or a thermal blip was enough. The reporting user lost `high` and then
+ * `medium` to six headless Chromes running on the same machine at load average
+ * 17-148, and finished the session on the tier #29 measured at 20.3 horizon /
+ * 63.6 mid-distance grain against `high`'s 1.2 / 14.8.
+ *
+ * Six seconds of *unbroken* trouble is eight times the evidence, and it is the
+ * same length as the settling window a promotion gets — so a promotion that
+ * was a mistake is undone almost immediately, and a machine that is merely
+ * busy for a moment is not judged at all. The resolution scaler continues to
+ * absorb everything shorter than this, which is what it is for.
+ */
 export const AUTO_VERDICT_S = 6;
+/**
+ * How many demotions FROM a tier, in one page load, latch it out for good.
+ *
+ * ISSUE #73, THE OTHER HALF. The latch used to fire on the FIRST demotion:
+ * `autoLatchedCeiling = this.features.tier` before the move, and the promotion
+ * path then refused it forever. That makes `auto` a one-way ratchet — any
+ * transient the scaler could not absorb cost the player the picture for the
+ * rest of the session, silently and with no way back short of Settings.
+ *
+ * Deleting the latch is not the fix either, and the reason is written into
+ * `Renderer.applyResolved`: promoting into `high` turns the shadow map on,
+ * which changes the `#define` set every material in the scene was compiled
+ * with, so every one of them has to recompile — a stall of a few hundred
+ * milliseconds. A device that genuinely cannot hold a tier must not be made to
+ * pay that every time it looks briefly comfortable.
+ *
+ * So the latch survives, and what changed is what it counts. A tier is retried
+ * once. If it fails a SECOND time, that is no longer a transient, it is a
+ * verdict about the device, and it is latched. The worst case for a genuinely
+ * weak machine is therefore exactly one extra stall per tier per page load —
+ * bounded, stated, and much cheaper than the sixteen-times-grainier image the
+ * old rule handed a fast machine that had a bad three quarters of a second.
+ */
+export const AUTO_LATCH_AFTER_DEMOTIONS = 2;
 
 export function tierAbove(t: QualityTier): QualityTier | null {
   return t === 'low' ? 'medium' : t === 'medium' ? 'high' : null;
@@ -361,7 +411,233 @@ export function tierBelow(t: QualityTier): QualityTier | null {
   return t === 'high' ? 'medium' : t === 'medium' ? 'low' : null;
 }
 
+/** 0, 1, 2. `low` < `medium` < `high`, so tiers can be compared. */
+export function tierRank(t: QualityTier): number {
+  return QUALITY_TIERS.indexOf(t);
+}
+
 /** Human wording for the readout on the Video tab. */
 export const TIER_LABEL: Record<QualityTier, string> = {
   low: 'Low', medium: 'Medium', high: 'High',
 };
+
+// ===========================================================================
+// THE ADAPTIVE TIER DECISION
+// ===========================================================================
+
+/** One frame, as the resolution scaler already measures it. */
+export interface AutoTierFrame {
+  /** Seconds since the previous frame. */
+  dt: number;
+  /** Trimmed-mean frame cost in ms — `Renderer.frameCostMs`. */
+  costMs: number;
+  /** The resolution scaler has no pixels left to give. */
+  atMinScale: boolean;
+  /** The resolution scaler is sitting at the ceiling it believes in. */
+  atCeiling: boolean;
+}
+
+/** What the pass decided to do, and everything needed to explain it. */
+export interface AutoTierMove {
+  dir: 'down' | 'up';
+  from: QualityTier;
+  to: QualityTier;
+  /** `from` will not be tried again this page load. Only ever set going down. */
+  latched: boolean;
+  /** Seconds of unbroken evidence behind the move. */
+  evidenceS: number;
+  /** This move puts the player back on the best tier they have had. */
+  restored: boolean;
+}
+
+/** For the Video tab's readout and for `probe:autotier`. */
+export interface AutoTierReport {
+  latchedCeiling: QualityTier | null;
+  demotionsFrom: Readonly<Record<QualityTier, number>>;
+  troubleForS: number;
+  comfortableForS: number;
+  /** True while the player is below the best tier this page load has held. */
+  reduced: boolean;
+  peak: QualityTier;
+}
+
+/**
+ * MEASURES THE DEVICE AND DECIDES THE TIER. `auto`'s second half.
+ *
+ * Detection is a dead end — `hardwareConcurrency` is clamped on iOS and
+ * `deviceMemory` is absent from Safari entirely, so no static rule can tell a
+ * 2026 phone from a 2015 one (see the module note above). What CAN be told
+ * apart is a device holding its frame budget from one that is not, and the
+ * renderer already computes that every frame for the resolution scaler.
+ *
+ * It lives here, as a pure object with no THREE and no DOM in it, for the same
+ * reason `RenderPose.ts` exists: so a probe can drive **the real rule** instead
+ * of a copy of it. `Renderer.updateAutoTier` is now glue — it reads the
+ * scaler's state, calls `update`, and applies whatever comes back.
+ *
+ * THE ONE THING THIS HAS TO GET RIGHT (issue #73) is the difference between a
+ * TRANSIENT and a VERDICT, because the two want opposite treatment and the
+ * first version could not tell them apart at all:
+ *
+ *   - a transient — another tab, a compile, six headless Chromes, a thermal
+ *     blip — must cost the player nothing permanent, and
+ *   - a verdict — this device cannot hold this tier — must not be re-tested
+ *     every twenty seconds, because finding out costs a shader recompile.
+ *
+ * Three things separate them, and none of them is a guess:
+ *
+ *   1. **Duration.** A demotion needs `AUTO_VERDICT_S` of UNBROKEN trouble at
+ *      minimum resolution, not one window's median. Any comfortable frame
+ *      resets the clock.
+ *   2. **Repetition.** The first demotion from a tier is reversible; the
+ *      second latches it out (`AUTO_LATCH_AFTER_DEMOTIONS`). Once is bad luck.
+ *   3. **Escalating proof.** Retrying a tier that has already failed once
+ *      costs twice the comfortable time the first attempt did, so a machine
+ *      hovering on the boundary walks away from it rather than flapping.
+ */
+export class AutoTierPolicy {
+  private comfortableFor = 0;
+  private troubleFor = 0;
+  private readonly demotions: Record<QualityTier, number> = { low: 0, medium: 0, high: 0 };
+  /** The lowest tier auto has given up on. Nothing at or above it is retried. */
+  private latched: QualityTier | null = null;
+  /** The best tier this page load has held. What "restored" is measured against. */
+  private peak: QualityTier;
+  /** True once a demotion has taken the player below `peak`. */
+  private reduced = false;
+
+  constructor(startTier: QualityTier) {
+    this.peak = startTier;
+  }
+
+  /**
+   * Throws away the evidence, keeps the verdicts.
+   *
+   * Called when a session loads. The timers describe the last few seconds of a
+   * session that has ended and mean nothing in the next one; the demotion
+   * counts and the latch describe the DEVICE, which has not changed, and
+   * forgetting them would hand a weak machine the promote/demote stall again
+   * at every session load.
+   */
+  resetWindows(): void {
+    this.comfortableFor = 0;
+    this.troubleFor = 0;
+  }
+
+  /**
+   * The player set a tier by hand on the Video tab.
+   *
+   * Everything is forgotten, including the latch: a tier auto gave up on is a
+   * statement about auto's own measurements, and the player looking at the
+   * screen outranks them. If they go back to `auto` afterwards it starts clean.
+   */
+  playerChose(tier: QualityTier): void {
+    this.comfortableFor = 0;
+    this.troubleFor = 0;
+    this.demotions.low = 0;
+    this.demotions.medium = 0;
+    this.demotions.high = 0;
+    this.latched = null;
+    this.peak = tier;
+    this.reduced = false;
+  }
+
+  report(): AutoTierReport {
+    return {
+      latchedCeiling: this.latched,
+      demotionsFrom: { ...this.demotions },
+      troubleForS: this.troubleFor,
+      comfortableForS: this.comfortableFor,
+      reduced: this.reduced,
+      peak: this.peak,
+    };
+  }
+
+  /** Seconds of comfort a promotion into `t` has to show. Doubles per failure. */
+  promoteAfterS(t: QualityTier): number {
+    return AUTO_PROMOTE_AFTER_S * (1 + this.demotions[t]);
+  }
+
+  /**
+   * One frame. Returns the tier move to make, or null.
+   *
+   * `tier` is passed in rather than held, because the Video tab can change it
+   * underneath this object at any moment and a second copy of "what tier are
+   * we on" is exactly the kind of drift this file exists to stop.
+   */
+  update(tier: QualityTier, f: AutoTierFrame): AutoTierMove | null {
+    const dt = f.dt > 0 && f.dt < 0.5 ? f.dt : 0;
+
+    // Resolution moves first in BOTH directions, and that ordering is measured
+    // rather than assumed: `AUTO_DEMOTE_MS` sits above the scaler's `DROP_MS`,
+    // so a device in trouble gives up pixels before it gives up the picture.
+    // See the note on `AUTO_DEMOTE_MS` for the paired A/B that settled it.
+    const inTrouble = f.costMs > AUTO_DEMOTE_MS && f.atMinScale;
+    // A device short of frames spends its time BELOW the scaler's ceiling, so
+    // `atCeiling` is what stops a machine that only looks fast because it is
+    // drawing a quarter of the pixels from asking for the post chain as well.
+    const comfortable = f.costMs < AUTO_PROMOTE_MS && f.atCeiling;
+
+    this.troubleFor = inTrouble ? this.troubleFor + dt : 0;
+    this.comfortableFor = comfortable ? this.comfortableFor + dt : 0;
+
+    if (this.troubleFor >= AUTO_VERDICT_S) {
+      const to = tierBelow(tier);
+      // Already at the floor. Clear the clock so the next six seconds of
+      // trouble are measured fresh rather than firing on the same evidence.
+      if (!to) { this.troubleFor = 0; return null; }
+      const evidenceS = this.troubleFor;
+      const n = ++this.demotions[tier];
+      const latched = n >= AUTO_LATCH_AFTER_DEMOTIONS;
+      if (latched && (this.latched === null || tierRank(tier) < tierRank(this.latched))) {
+        this.latched = tier;
+      }
+      if (tierRank(to) < tierRank(this.peak)) this.reduced = true;
+      this.comfortableFor = 0;
+      this.troubleFor = 0;
+      return { dir: 'down', from: tier, to, latched, evidenceS, restored: false };
+    }
+
+    const to = tierAbove(tier);
+    if (!to) return null;
+    if (this.latched !== null && tierRank(to) >= tierRank(this.latched)) return null;
+    if (this.comfortableFor < this.promoteAfterS(to)) return null;
+
+    const evidenceS = this.comfortableFor;
+    this.comfortableFor = 0;
+    this.troubleFor = 0;
+    const restored = this.reduced && tierRank(to) >= tierRank(this.peak);
+    if (restored) this.reduced = false;
+    if (tierRank(to) > tierRank(this.peak)) this.peak = to;
+    return { dir: 'up', from: tier, to, latched: false, evidenceS, restored };
+  }
+}
+
+/** One line for the player, or null when the move is not worth interrupting for. */
+export interface TierNotice { text: string; hint: string }
+
+/**
+ * WHAT THE PLAYER IS TOLD. Issue #73's third requirement.
+ *
+ * The half of this defect that made it read as the game being broken rather
+ * than the game adapting is that **nothing said it had happened**. The picture
+ * got worse mid-session, stayed worse, and the only evidence was on the Video
+ * tab under a heading nobody had a reason to open.
+ *
+ * A promotion is announced only when it puts the player back where they were,
+ * because "graphics increased" is not news and the first promotion of a
+ * session is auto doing its job quietly, which is the whole design.
+ */
+export function tierNoticeFor(m: AutoTierMove): TierNotice | null {
+  if (m.dir === 'down') {
+    return {
+      text: `Graphics reduced to ${TIER_LABEL[m.to]} to keep the frame rate`,
+      hint: m.latched
+        ? 'Set it yourself in Menu ▸ Settings ▸ Video.'
+        : 'It will go back up on its own — or set it in Menu ▸ Settings ▸ Video.',
+    };
+  }
+  return m.restored
+    ? { text: `Graphics back to ${TIER_LABEL[m.to]}`, hint: '' }
+    : null;
+}

@@ -415,12 +415,29 @@ await page.waitForTimeout(300);
 console.log('\nA SEASON CAN BE RUN TO ITS END');
 
 let simulated = 0;
+let podiums = 0;
 for (let i = 0; i < 30; i++) {
   const sim = page.locator('.btn', { hasText: 'Simulate Race' }).first();
   if (await sim.count() === 0 || !(await sim.isVisible().catch(() => false))) break;
   await sim.click({ force: true, noWaitAfter: true });
   await page.waitForTimeout(260);
   simulated++;
+
+  // THE ROSTRUM, which a simulated round now goes through — issues #13 and
+  // #38. It is COUNTED rather than merely clicked past, and the count is
+  // asserted below, because the failure mode this loop has if the ceremony
+  // ever disappears again is silence: it would simply find `Simulate Race`
+  // where it expected the podium and carry on none the wiser. That is the
+  // shape of the bug all three issues are about, so the harness that walks
+  // the season holds the route as well as `probe:smoke` does.
+  if (await page.evaluate(() => window.__game?.screen === 'podium')) {
+    podiums++;
+    const on = page.locator('.btn', { hasText: 'Continue' }).first();
+    if (await on.count() > 0) {
+      await on.click({ force: true, noWaitAfter: true });
+      await page.waitForTimeout(260);
+    }
+  }
 
   // A narrative event may interrupt. Answer it and carry on.
   const choice = page.locator('.choice').first();
@@ -430,6 +447,9 @@ for (let i = 0; i < 30; i++) {
   }
 }
 check(simulated >= 8, `a whole season could be simulated from the hub (${simulated} rounds)`);
+check(podiums === simulated,
+  `every simulated round showed the podium (${podiums} of ${simulated}) — the ceremony `
+  + 'is what issue #13 was about and it had never once fired for this user');
 check(pageErrors.length === 0, 'simulating a season threw nothing (' + pageErrors.join(' | ') + ')');
 
 /**

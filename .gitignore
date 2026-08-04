@@ -35,3 +35,16 @@ cockpit-out-low/
 # Symlinks an agent worktree makes to the main checkout.
 /reference
 /node_modules
+
+# Fetched CC0/OFL assets — regenerate with `npx tsx scripts/fetchAssets.ts`
+public/assets/
+public/brand/
+
+# Side-by-side comparisons written by `npm run probe:grade`. Evidence, not build.
+grade-out/
+
+# Agent scratch: parameter sweeps and one-off fits. Never part of a build.
+scratch/
+
+# The symlink an agent worktree makes to the main checkout.
+/public/assets

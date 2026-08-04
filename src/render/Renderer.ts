@@ -16,15 +16,16 @@ import { EnvProbe } from './EnvProbe';
 import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
 import {
-  AUTO_DEMOTE_MS, AUTO_PROMOTE_AFTER_S, AUTO_PROMOTE_MS, AUTO_VERDICT_S,
-  DEFAULT_GRAPHICS, applyOverrides, readDeviceSignals, resolveGraphics,
-  tierAbove, tierBelow,
-  type DeviceSignals, type GraphicsSettings, type QualityTier, type ResolvedGraphics,
+  AutoTierPolicy, DEFAULT_GRAPHICS, applyOverrides, readDeviceSignals, resolveGraphics,
+  tierNoticeFor,
+  type AutoTierMove, type DeviceSignals, type GraphicsSettings, type QualityTier,
+  type ResolvedGraphics, type TierNotice,
 } from './QualityTiers';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
 import { buildPitCrew, PIT_JACK_LIFT_M, type PitCrewScene } from './PitCrew';
 import { MarshalPosts } from './MarshalPost';
+import { FloodlightTowers } from './FloodlightTowers';
 import { buildSafetyCar, type SafetyCarVisual } from './SafetyCarMesh';
 import type { RaceEngine } from '../race/RaceEngine';
 import type { CarEntry } from '../race/CarEntry';
@@ -89,7 +90,48 @@ const RAIN_LIGHT_HZ = 2;
  * instead of clipping, and the correction lands where it is needed, in the
  * midtones.
  */
-const EXPOSURE = { day: 1.35, dusk: 1.4, night: 1.7 };
+/**
+ * DAY WAS 1.35 AND IT WAS OVER-EXPOSED BY ABOUT A STOP AND A THIRD. Issue #78.
+ *
+ * The paragraph above justifies 1.35 against a stated target — "reference
+ * footage of a real circuit, day or night, has its road sitting closer to 0.45"
+ * of full scale. That number was never measured off a reference frame, and when
+ * it finally was, it was wrong: `reference/target/76.png`'s asphalt band sits at
+ * a median of 68/255 = 0.27, and the whole world band above the halo sits at
+ * 82/255 = 0.32. Ours measured 166/255 = 0.65 on the same band — 2.0x the
+ * reference — with 4.4% of the frame clipped to white at Zandvoort and 9.2% at
+ * Monza, and with NO BLACK ANYWHERE IN IT: the 1st percentile was code value 46
+ * against the reference's 1, and 0.1% of the frame was in shadow against 6.1%.
+ *
+ * `npm run probe:grade` is the instrument and `scripts/lib/gradeModel.ts` is
+ * how the value was chosen: the display pipeline is inverted on a real shot,
+ * the exposure swept, and the pipeline re-applied.
+ *
+ * IT WAS FITTED TWICE, AND THE SECOND FIT IS WHY IT IS THIS LOW. Against the
+ * generated environment probe the answer was 0.50. Then the captured sky landed
+ * (`EnvProbe.ts`) and the same frame came back at a median of 136 rather than
+ * the predicted 95, because a photographed sky delivers substantially more
+ * ambient light than a 256x128 analytic one — which is a real result about the
+ * HDRI and not an error in the model. Re-swept on a shot that HAD the capture
+ * in it, the answer is 0.333.
+ *
+ * MEASURED, shipped, with `GRADES.day` on top: Zandvoort's world band lands at
+ * a median of 123 against `76.png`'s 81, RMS contrast 54.5 against 57.1,
+ * saturation 0.255 against 0.253, white balance -16.9 against -17.0, 1st
+ * percentile 1 against 1, 13.1% in shadow against 6.1%, and 0.1% clipped
+ * against 4.4% before. It is set from the Zandvoort frame rather than the Monza
+ * one because the user named `76.png` "the best image"; **Monza still comes out
+ * at 139 against `71.png`'s 89, and that residual is recorded rather than
+ * averaged away** — the two circuits differ by 50 code values under identical
+ * settings while the two reference frames differ by 8, and nobody has diagnosed
+ * why. See PROJECT.md section 7.
+ *
+ * Dusk is moved with it and NOT measured — no circuit uses `dusk`, so there is
+ * nothing to shoot and no reference frame for it. Night is unchanged, because
+ * the night gap measured as a scene problem rather than an exposure one: the
+ * sky and the light rig in `applyAmbience`, and `GRADES.night` in `PostFX.ts`.
+ */
+const EXPOSURE = { day: 0.333, dusk: 0.37, night: 1.7 };
 
 /** Never scale below this fraction of native resolution. */
 const MIN_SCALE = 0.5;
@@ -191,6 +233,24 @@ export class Renderer {
 
   /** Current resolution scale, 0.5 .. 1.0. */
   resolutionScale = 1;
+
+  /**
+   * What is actually lighting the scene: `hdri:<name>` or `generated`.
+   *
+   * Public because `probe:env` reads it, and it reads it because the captured
+   * sky is loaded ASYNCHRONOUSLY from a gitignored directory and falls back
+   * silently by design (see `EnvProbe.ts`). A silent fallback that nobody can
+   * observe is a change that can be REPORTED as landed while never having run —
+   * PROJECT.md section 3.2 — so the state is exposed rather than assumed.
+   */
+  get environmentSource(): string {
+    return this.envProbe.hdriActive ? `hdri:${this.envProbe.hdriName}` : 'generated';
+  }
+
+  /** Light masts placed, for the same reason. Zero everywhere but at night. */
+  get floodlightCount(): number {
+    return this.floodlights?.count ?? 0;
+  }
   /**
    * The tier in force right now.
    *
@@ -237,6 +297,8 @@ export class Renderer {
   private pitBox: PitBoxMarker | null = null;
   private pitCrew: PitCrewScene | null = null;
   private marshalPosts: MarshalPosts | null = null;
+  /** Light masts. Night circuits only; null everywhere else. Issue #78. */
+  private floodlights: FloodlightTowers | null = null;
   /**
    * Readable so the audit harness can find the car with the cockpit in it and
    * project its mirror panes. A mirror pane is about sixty pixels across in a
@@ -320,6 +382,9 @@ export class Renderer {
     this.features = resolveGraphics(this.tierPref, this.prefs, this.signals);
     this.quality = this.features.tier;
     this.builtDetail = this.features.detail;
+    // The tier we start on is the one a demotion is measured against, so the
+    // policy has to be told it rather than assuming `high`.
+    this.autoTier = new AutoTierPolicy(this.features.tier);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: opts.canvas,
@@ -490,13 +555,14 @@ export class Renderer {
     this.tierPref = tier;
     this.prefs = { ...prefs };
     const next = resolveGraphics(tier, this.prefs, this.signals);
-    // A change made by hand clears the adaptive pass's latch, so a tier it
-    // had given up on can be tried again. Switching back to `auto` restarts
-    // from detection rather than from whatever the pass had measured — the
-    // measurement is better information, but it was taken under the tier the
-    // player has just changed, and carrying it forward would mean `auto` did
-    // something different depending on what you had it set to first.
-    this.autoLatchedCeiling = null;
+    // A change made by hand clears everything the adaptive pass had concluded,
+    // including the latch, so a tier it had given up on can be tried again.
+    // Switching back to `auto` restarts from detection rather than from
+    // whatever the pass had measured — the measurement is better information,
+    // but it was taken under the tier the player has just changed, and
+    // carrying it forward would mean `auto` did something different depending
+    // on what you had it set to first.
+    this.autoTier.playerChose(next.tier);
     this.applyResolved(next);
     return {
       needsReload: this.renderer.getContext().getContextAttributes()?.antialias !== next.msaa,
@@ -771,6 +837,18 @@ export class Renderer {
     this.marshalPosts = new MarshalPosts(engine.track, engine.raceControl.marshalSectorCount);
     this.scene.add(this.marshalPosts.root);
 
+    // The light masts, at a circuit that races under lights. Issue #78: the
+    // largest single difference between `reference/target/90.png` and our own
+    // Bahrain frame was that theirs is full of floodlight towers and ours had
+    // none — while the environment probe was already reflecting fourteen of
+    // them off the cars. Built here rather than in `TrackMesh` because it is a
+    // scene fixture of the ambience, not of the road, and because `TrackMesh`
+    // is held by the road-surface work.
+    if (engine.track.def.ambience === 'night') {
+      this.floodlights = new FloodlightTowers(engine.track);
+      this.scene.add(this.floodlights.root);
+    }
+
     // The player's pit box. Built for the player's car only — there is nothing
     // to highlight in a fully simulated session, and the twenty boxes the
     // circuit paints are identical, so without this the player has no way of
@@ -853,9 +931,45 @@ export class Renderer {
       // So: darker and cooler at the zenith, warmer and lighter at the horizon
       // — a wider range across the same frame, which is what stops it reading
       // as a flat wash — and a third of the cloud.
-      setSky(0x01030a, 0x081020, 0x243149);
-      setClouds(0x1c2537, 0x070b12, 0x9fb4d8, overcast * 0.3);
-      fogColour = 0x141d2e;
+      // AND THE ABOVE IS WRONG, MEASURED AGAINST THE FRAME IT IS DESCRIBING.
+      // Issue #78.
+      //
+      // `reference/target/90.png` IS the reference this paragraph appeals to —
+      // Bahrain at night, two cars, floodlights, grandstands — and its sky is
+      // not near-black and is not blue. Measured off the frame:
+      //
+      //   top 5% of the frame     mean sRGB (99, 98, 100), saturation 0.06-0.10
+      //   the band at the horizon mean sRGB (128, 126, 119)
+      //   the whole upper band    median 106, 1st percentile 59, 0.0% in shadow
+      //
+      // That is a NEUTRAL MID GREY, brighter at the horizon and very slightly
+      // warm, with no black in it at all. What `0x01030a / 0x081020 / 0x243149`
+      // actually put on screen at exposure 1.7 was sRGB (0,0,2), (1,7,24) and
+      // (30,52,90): a deep navy void. Our own measured upper band came back at
+      // a median of 29 against the reference's 106.
+      //
+      // The physical reason the reference looks like that, and the reason it is
+      // right rather than a rendering error in their game: a floodlit desert
+      // circuit throws a very large amount of light UPWARD into dust and
+      // humidity, and the camera is exposed for the track. The sky is not a
+      // window onto space, it is the near side of a lit atmosphere. Every
+      // broadcast frame of Bahrain and Jeddah shows the same thing.
+      //
+      // The hexes below are SOLVED, not picked. `Color(hex)` decodes as sRGB
+      // into the linear working space, the dome shader writes it, ACES maps it
+      // at `EXPOSURE.night` and `OutputPass` encodes back to sRGB — so the hex
+      // is not the colour on screen and the difference is nearly a factor of
+      // three. `scratch`-side, `toScene()` from `scripts/lib/gradeModel.ts`
+      // inverts that whole chain on the measured sRGB targets above and returns
+      // these three values.
+      setSky(0x4c4b4c, 0x535251, 0x5c5b56);
+      // The cloud deck goes with it. A near-black cloud colour against a mid
+      // grey sky would draw the deck as holes punched in the sky, which is the
+      // inverse of what thin cloud over a lit city does.
+      setClouds(0x6a6a6c, 0x45444a, 0xbfae95, overcast * 0.3);
+      // Fog matched to the horizon band rather than to the old navy, so that
+      // distance fades into the sky it is actually in front of.
+      fogColour = 0x3d3b38;
       // Floodlights, not moonlight. A circuit under lights is genuinely BRIGHT
       // at track level — the reference footage has asphalt sitting at a solid
       // mid grey — and it is the sky that is black, not the road. The previous
@@ -882,7 +996,16 @@ export class Renderer {
       // darker; it narrows the range at the bottom end only, which is where
       // legibility lives.
       this.hemi.groundColor.setHex(0x3a3c45);
-      this.hemi.intensity = 1.85;
+      // SCALED 1.9x AGAINST THE MEASURED ROAD, issue #78. With the sky dome
+      // corrected above, `probe:grade` read our floodlit asphalt at a median
+      // of 58 against `90.png`'s 107 while the two SKIES agreed at 112 and
+      // 106 — so the sky was right and the road was half as bright as it
+      // should be relative to it. The lever is the light rig and not the
+      // exposure, because the sky dome is an unlit shader whose colour goes
+      // to the frame directly: raising the rig moves the road and leaves the
+      // sky where it was measured to belong, and raising the exposure would
+      // move both and break the half that is already right.
+      this.hemi.intensity = 3.5;
       // A floodlit circuit is lit by two hundred lamps from every direction at
       // once, so the DIRECTIONAL component of it is weak. It is the ambient
       // and the probe that carry the night, not a key light — and the probe is
@@ -893,16 +1016,16 @@ export class Renderer {
       // spread over the whole frame; the onboard shot went white from the road
       // alone. Kept low, it survives only as the shadow caster.
       this.sun.color.setHex(0xfff4de);
-      this.sun.intensity = 0.75;
+      this.sun.intensity = 1.4;
       this.sun.position.set(60, 300, 40);
       // The fill is the other half of the shadow-detail problem: it is the only
       // light that reaches the side of a car the key is not on, and at 0.55 that
       // side was reading as a silhouette. The rim goes up with it so the top
       // edges still separate from the sky, which is now darker than it was.
       this.fill.color.setHex(0xa8bcdc);
-      this.fill.intensity = 0.78;
+      this.fill.intensity = 1.45;
       this.rim.color.setHex(0xfff0d4);
-      this.rim.intensity = 1.0;
+      this.rim.intensity = 1.6;
       this.renderer.toneMappingExposure = EXPOSURE.night;
     } else if (dusk) {
       setSky(0x1e2a55, 0x9a5c72, 0xf0a070);
@@ -945,7 +1068,17 @@ export class Renderer {
     // says "midday" while the shading on it says "dusk" and the car reads as a
     // cut-out. Rebuilt only when the ambience or the weather actually changes.
     this.ambience = night ? 'night' : dusk ? 'dusk' : 'day';
-    this.envProbe.apply(this.scene, this.ambience, engine.weather.wetness);
+    // The sun's position goes with it now. The probe used to be built with no
+    // knowledge of where the key light was standing, and its own sun was 104
+    // degrees away from it — see the header of `EnvProbe.ts`.
+    this.envProbe.apply(this.scene, this.ambience, engine.weather.wetness, this.sun.position);
+
+    // THE COLOUR GRADE BELONGS TO THE TIME OF DAY. Until issue #78 there was no
+    // colour grade at all: the frame went from ACES straight to the screen, and
+    // the pass named `grade` in `PostFX` only ever added bloom, occluded and
+    // vignetted. See `GRADES` there for the four terms and where each of their
+    // values was measured from.
+    this.post.setGrade(this.ambience);
     // Point the shader's sun at the same place as the light, so the halo, the
     // silver lining on the cloud edges and the shadows on the track all agree.
     if (skyMat) {
@@ -1086,6 +1219,11 @@ export class Renderer {
       this.marshalPosts.dispose();
       this.marshalPosts = null;
     }
+    if (this.floodlights) {
+      this.scene.remove(this.floodlights.root);
+      this.floodlights.dispose();
+      this.floodlights = null;
+    }
     if (this.safetyCar) {
       this.scene.remove(this.safetyCar.root);
       this.safetyCar.dispose();
@@ -1180,85 +1318,141 @@ export class Renderer {
     this.climbCeiling = Math.min(MAX_SCALE, this.features.maxResolutionScale);
     this.lastClimbAt = -1e9;
     this.lastDropAt = -1e9;
-    this.comfortableFor = 0;
-    this.lastTierMoveAt = -1e9;
+    // The timers go; the demotion counts and the latch STAY. Those describe the
+    // device, which has not changed between one session load and the next, and
+    // forgetting them would hand a machine that genuinely cannot hold a tier
+    // the promote-and-fall-back stall again at every session start.
+    this.autoTier.resetWindows();
   }
 
-  /** Seconds the frame budget has been comfortable AT the scaler's ceiling. */
-  private comfortableFor = 0;
-  private lastTierMoveAt = -1e9;
   /**
-   * A tier the adaptive pass tried and had to give back. Never retried.
+   * THE ADAPTIVE TIER DECISION. Lives in `QualityTiers.ts`, not here.
    *
-   * Unlike the resolution scaler's `climbCeiling`, this does NOT relax. A
-   * resolution that failed once may succeed later because the machine got less
-   * busy; a tier that failed cost the player a stall to find out — shadows
-   * recompile every material — and doing that to them every twenty-five
-   * seconds for the rest of the race would be worse than the tier they lost.
+   * `readonly` and public for the same reason `RenderPose.ts` is a module of
+   * its own: so `probe:autotier` can drive **the real rule** rather than a
+   * reimplementation of it. Everything below is glue — it reads the scaler's
+   * state, asks the policy, and applies whatever comes back. There is no
+   * second copy of a threshold or of the latch in this file, deliberately; the
+   * previous version had the whole decision inline and issue #73 is what that
+   * cost.
    */
-  private autoLatchedCeiling: QualityTier | null = null;
+  readonly autoTier: AutoTierPolicy;
+
+  /**
+   * Told when the adaptive pass moves the tier and the player should know.
+   *
+   * Null means the renderer shows its own one-line banner — see
+   * `presentTierNotice`. A front end that would rather put it in the HUD's own
+   * notice column can take it over by assigning here; nothing else changes.
+   */
+  onTierNotice: ((n: TierNotice) => void) | null = null;
 
   /**
    * MEASURES THE DEVICE AND MOVES THE TIER. The other half of `auto`.
    *
-   * This exists because detection is a dead end. `hardwareConcurrency` is
-   * clamped on iOS and `deviceMemory` is absent there, so no static rule can
-   * separate a 2026 phone from a 2015 one — see the module note in
-   * `QualityTiers.ts`. What CAN be separated is a device that is holding its
-   * frame budget from one that is not, and the renderer already computes that
-   * every frame for the resolution scaler.
+   * Two gates before the policy is consulted, and both matter:
    *
-   * The promotion test is deliberately conservative and has three parts,
-   * because a false promotion is expensive:
-   *
-   *   1. The frame cost is under `AUTO_PROMOTE_MS`, and
-   *   2. the resolution scaler is AT its ceiling — a device that is short of
-   *      frames spends its time below the ceiling, so this is what stops a
-   *      machine that only looks fast because it is rendering a quarter of the
-   *      pixels from asking for the post chain as well, and
-   *   3. both have been true continuously for `AUTO_PROMOTE_AFTER_S`.
-   *
-   * Demotion is the mirror image and is latched. Resolution moves first in
-   * both directions: `AUTO_DEMOTE_MS` sits above the scaler's `DROP_MS`, so a
-   * device in trouble gives up pixels before it gives up the picture.
+   *   - `features.adaptive` is false whenever the player has STATED a tier on
+   *     the Video tab (`resolveGraphics` sets it from `tier === 'auto'`), so
+   *     **auto can never overrule a choice made by hand.** Issue #73 asked for
+   *     that to be verified rather than assumed; `probe:autotier` §5 asserts
+   *     it against the live GL context.
+   *   - the two facts the policy needs about the resolution scaler are derived
+   *     HERE, from the scaler's own state, so the ordering "pixels first, then
+   *     the picture" cannot drift out of step with the scaler itself.
    */
   private updateAutoTier(dt: number, med: number): void {
     if (!this.features.adaptive) return;
-    if (this.sessionTime - this.lastTierMoveAt < AUTO_VERDICT_S) return;
-
-    const atCeiling = this.resolutionScale >= Math.min(this.climbCeiling, MAX_SCALE) - 1e-6;
-
-    if (med > AUTO_DEMOTE_MS && this.resolutionScale <= MIN_SCALE + 1e-6) {
-      const down = tierBelow(this.features.tier);
-      if (!down) return;
-      // What failed is the tier we are LEAVING, and it is never tried again.
-      this.autoLatchedCeiling = this.features.tier;
-      this.moveTier(down);
-      return;
-    }
-
-    if (med < AUTO_PROMOTE_MS && atCeiling) {
-      this.comfortableFor += dt;
-    } else {
-      this.comfortableFor = 0;
-      return;
-    }
-    if (this.comfortableFor < AUTO_PROMOTE_AFTER_S) return;
-
-    const up = tierAbove(this.features.tier);
-    if (!up || up === this.autoLatchedCeiling) return;
-    // A promotion that would turn the shadow map on recompiles every material
-    // in the scene, which is a stall of a few hundred milliseconds. It is
-    // taken once, on a device that has just proved it has eight seconds of
-    // headroom, and it is never taken twice because of the latch above.
-    this.moveTier(up);
+    const move = this.autoTier.update(this.features.tier, {
+      dt,
+      costMs: med,
+      atMinScale: this.resolutionScale <= MIN_SCALE + 1e-6,
+      atCeiling: this.resolutionScale >= Math.min(this.climbCeiling, MAX_SCALE) - 1e-6,
+    });
+    if (move) this.moveTier(move);
   }
 
-  private moveTier(t: QualityTier): void {
-    this.comfortableFor = 0;
-    this.lastTierMoveAt = this.sessionTime;
-    this.applyResolved(applyOverrides(t, this.features.detectedTier, true, this.prefs));
+  /**
+   * Drives the adaptive tier pass with a stated frame cost.
+   *
+   * The real path — the real policy, the real `moveTier`, the real GL changes,
+   * the real notice — with the one number the frame loop would have computed
+   * supplied instead of measured. This is how `probe:autotier` puts a load
+   * spike on the renderer without needing a machine that is genuinely in
+   * trouble, which is not a thing a probe can arrange and certainly not a
+   * thing it can arrange REPEATABLY. Set `resolutionScale` to say where the
+   * scaler had got to; everything else is derived as it is in a live frame.
+   */
+  feedFrameCost(dt: number, costMs: number): void {
+    this.updateAutoTier(dt, costMs);
+  }
+
+  private moveTier(m: AutoTierMove): void {
+    this.applyResolved(applyOverrides(m.to, this.features.detectedTier, true, this.prefs));
+    // The frames either side of a tier change describe two different pictures.
     this.resetFrameWindow();
+    const notice = tierNoticeFor(m);
+    if (!notice) return;
+    if (this.onTierNotice) this.onTierNotice(notice);
+    else this.presentTierNotice(notice);
+  }
+
+  private tierNoticeEl: HTMLElement | null = null;
+  private tierNoticeTimer = 0;
+
+  /**
+   * The default presenter: one line, bottom centre, for eight seconds.
+   *
+   * Self-contained on purpose — its own element, its own inline styles, no
+   * class in `styles.css` and nothing inside `.hud-notices`. The HUD's notice
+   * column is a bounded band whose contents are measured by `shoot:panels`,
+   * and a renderer-owned message appearing in it would be a layout failure
+   * somebody else has to explain. `pointer-events: none` so it can never eat a
+   * touch on the pit button underneath it.
+   *
+   * It names the route rather than offering a button, because the route works
+   * today: the pause menu is one press away and the Video tab is in it. A
+   * button here would have to reach into the app shell's screen router, which
+   * is a different file with a different owner.
+   */
+  private presentTierNotice(n: TierNotice): void {
+    if (typeof document === 'undefined') return;
+    const host = this.canvas.parentElement ?? document.body;
+    if (!this.tierNoticeEl) {
+      const el = document.createElement('div');
+      el.className = 'render-tier-notice';
+      el.setAttribute('role', 'status');
+      el.style.cssText = [
+        'position:fixed', 'left:50%', 'transform:translateX(-50%)',
+        'bottom:calc(64px + env(safe-area-inset-bottom, 0px))',
+        'z-index:60', 'pointer-events:none', 'max-width:min(420px, 86vw)',
+        'padding:9px 14px', 'border-radius:9px', 'text-align:center',
+        'background:rgba(8,10,15,0.86)', 'border:1px solid rgba(255,255,255,0.14)',
+        'box-shadow:0 6px 22px rgba(0,0,0,0.45)',
+        'font:600 12px/1.35 system-ui, -apple-system, sans-serif',
+        'letter-spacing:0.02em', 'color:#e8ecf3',
+        'transition:opacity 220ms ease', 'opacity:0',
+      ].join(';');
+      host.appendChild(el);
+      this.tierNoticeEl = el;
+    }
+    const el = this.tierNoticeEl;
+    el.textContent = '';
+    const line = document.createElement('div');
+    line.textContent = n.text;
+    el.appendChild(line);
+    if (n.hint) {
+      const hint = document.createElement('div');
+      hint.textContent = n.hint;
+      hint.style.cssText = 'margin-top:3px;font-weight:500;font-size:10.5px;color:#9aa4b4';
+      el.appendChild(hint);
+    }
+    el.style.opacity = '1';
+    if (this.tierNoticeTimer) clearTimeout(this.tierNoticeTimer);
+    this.tierNoticeTimer = setTimeout(() => {
+      if (this.tierNoticeEl) this.tierNoticeEl.style.opacity = '0';
+      this.tierNoticeTimer = 0;
+    }, 8000) as unknown as number;
   }
 
   /**
@@ -2056,6 +2250,9 @@ export class Renderer {
     }
     this.envProbe.dispose();
     this.renderer.dispose();
+    if (this.tierNoticeTimer) { clearTimeout(this.tierNoticeTimer); this.tierNoticeTimer = 0; }
+    this.tierNoticeEl?.remove();
+    this.tierNoticeEl = null;
   }
 
   /** Triangles in the scene last frame, for the diagnostics overlay. */

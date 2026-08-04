@@ -8,6 +8,23 @@ is still wrong, and what the user has asked for in their own words.
 Written by the assistant, for the assistant, at the user's request. Keep it current: when
 something lands, move it from "outstanding" to "done" with the measurement that proves it.
 
+**Companion documents.** This file is for whoever is *building*. Two others exist:
+- **`TESTING.md`** — for the user. How to test everything by hand, in order, with what a
+  *known* fault looks like so they do not spend time reporting something already on the
+  list. Keep the "knowingly not done" table in it current or it is worse than useless.
+- **`reference/target/`** (gitignored) — the user's 24 reference images with an `INDEX.md`
+  mapping each to the thing it specifies. **These are the visual specification**, not a
+  mood board. §2 records the standing instruction; their words on supplying the set were
+  *"every image that I attached, i want that to that quality… I want you to do it that
+  way"* and *"copy this!!! don't change shit from it."*
+
+**Standing instruction on delivery, given 2026-08-03:**
+> *"finish everything up first though and I will test it out once you've shipped the final
+> product and i don't want to test it out if you haven't shipped it completely"*
+
+So: do not hand the user things to try piecemeal. Work the backlog down, keep `TESTING.md`
+accurate, and hand over once.
+
 ---
 
 ## 1. What this is
@@ -193,6 +210,7 @@ Run `npm run` to list. The important ones:
 |---|---|
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
 | `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
+| `probe:autotier` | **Does the picture come back?** Drives the real `AutoTierPolicy` off synthetic frame costs — a load spike at minimum resolution, then the load removed — and asserts the tier *returns*, in node and again through the real `Renderer` in a browser reading `shadowMap.enabled` and the composer. Also: a transient is absorbed, repeated failure still latches, and a tier chosen in Settings survives five minutes of trouble untouched. **Not load sensitive** — every frame cost is stated, not measured. Issue #73 |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
@@ -218,13 +236,15 @@ Run `npm run` to list. The important ones:
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
+| `probe:grade` | **The in-race picture against `reference/target/`.** Median luma, RMS contrast, HSV saturation and mean(R)-mean(B) over a stated region, ours against the user's own frames, off `probe:sharpness` shots taken at the scale the real scaler settled on. Bars are the reference frame plus a tolerance. Issue #78 |
+| `probe:env` | **What is actually lighting the scene**, in a real browser: the captured sky is fetched from a gitignored directory and falls back silently by design, and a light mast that cannot be placed clear of the circuit is not placed — so both can be false while everything still looks fine. Reports `environmentSource` and the mast count |
 | `audit:circuits` | Photographs 11 circuits, 7 camera modes each |
 | `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:people` | 42 principals: all named, all unique, none within a look distance |
 | `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
-| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
+| `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
 - **`probe:handling` 1** (was 4). The steering-feel work took it to **10 ok / 1 failed** —
@@ -248,6 +268,8 @@ Run `npm run` to list. The important ones:
   failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
   hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
   .hud-notices over mirror[R1] by 26×72px`. Both pre-existing and untouched by that work.
+  **Re-confirmed byte-for-byte on 2026-08-03** by the #13/#38 routing branch, which touches
+  no HUD code: still 2 + 2, same two sentences.
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
@@ -258,6 +280,25 @@ Run `npm run` to list. The important ones:
   the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
   cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
   in §7. **This is a probe that got stricter, not a feature that broke.**
+- ~~`shoot:frontend`~~ — **was red on `main` and nobody had recorded it, and the cause was
+  not the front end.** It exited 1 on every run with three identical lines, one per
+  viewport: `console Failed to load resource: the server responded with a status of 404`.
+  The text of a console error is the same for a missing icon as for a missing module, so
+  the report said nothing about which. Measured on 2026-08-03 by listening on `response`
+  and printing every non-2xx URL the front end produces: **exactly one, `404
+  /favicon.ico`.** `index.html` references no icon, `public/` holds only `textures/`, and
+  Chrome asks every document for one. Filtered on the URL — the same exclusion
+  `probe:smoke` has carried since #62 — and any surviving console error now prints its URL.
+  **Same species as `probe:fieldsize` below: a probe going red without anybody noticing.**
+  **NOT YET CONFIRMED GREEN**, and the reason is worth writing down: the confirming re-run
+  died at load average 47–72 on `TimeoutError: Waiting for selector '.mm' failed —
+  20000ms exceeded`, waiting for the main menu after `Start driving`, and it threw before
+  the error summary is printed. **That is a fixed 20-second deadline on a probe driving a
+  software rasteriser — issue #25's defect exactly, in a third harness.** `probe:smoke`
+  and `regress:career` both open that same menu happily on the same tree, so the menu is
+  fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
+  own job with its own measurement, and it is listed here rather than done badly.
+  **Nobody is on this.**
 - `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
   regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
@@ -450,6 +491,79 @@ What landed:
   red:** deleting the arguments to `new Renderer` in `main.ts`, which is the exact bug the
   issue describes, takes it from **67 ok / 0 failed to 48 ok / 19 failed**, and the three
   tiers collapse to one GL configuration.
+
+### Auto quality latched DOWN permanently on transient load (issue #73)
+
+> *"everything is very grainy again and like you can't really see anything in front of you
+> to a high quality its pixelated and idk why its like that"*
+
+**A regression introduced by #29 the same day, and the mechanism was exactly as filed.**
+`Renderer.updateAutoTier` demoted a tier the instant `frameCostMs` read above
+`AUTO_DEMOTE_MS` while the scaler happened to be at `MIN_SCALE`, and set
+`autoLatchedCeiling` to the tier it was **leaving** — which the promotion path then refused
+forever (`if (!up || up === this.autoLatchedCeiling) return`). Six headless Chromes were
+running on the user's machine at load average 17–148. The scaler gave up pixels first
+(correct); then `high` → `medium`, latching `high` out; then `medium` → `low`, latching
+`medium` out. They finished on `low` — **20.3 horizon / 63.6 mid-distance grain against
+`high`'s 1.2 / 14.8, i.e. 16× and 4.3× more speckle by #29's own table above** — and it
+never came back, with nothing on screen saying it had happened.
+
+**Two faults, not one, and both had to be fixed.** The evidence was one trimmed mean over
+45 frames — about three quarters of a second — and the consequence was permanent.
+
+- **Duration.** A demotion now needs `AUTO_VERDICT_S` (6s) of **unbroken** trouble at
+  minimum resolution. Any comfortable frame resets the clock. That is eight times the
+  evidence, and the resolution scaler continues to absorb everything shorter, which is what
+  it is for. Measured: 20 five-second bursts of 40ms frames at `MIN_SCALE`, each broken by
+  0.2s of calm, move the tier **not at all**.
+- **Repetition.** The latch survives — deleting it is not the fix, because promoting into
+  `high` turns the shadow map on and `applyResolved` then marks **every material in the
+  scene** `needsUpdate`, a stall of a few hundred milliseconds — but it now counts. A tier
+  is retried **once**; a **second** failure is a verdict about the device and latches
+  (`AUTO_LATCH_AFTER_DEMOTIONS = 2`). The worst case for a genuinely weak machine is one
+  extra stall per tier per page load, which is bounded and stated.
+- **Escalating proof.** A retry of a tier that has already failed costs **twice** the
+  comfortable time the first attempt did (`promoteAfterS`), so a machine hovering on the
+  boundary walks away from it instead of flapping. Measured: twelve alternating
+  trouble/calm cycles produce **6 tier changes and exactly 1 promotion into `high`**, then
+  it stops.
+- **The player is told.** A one-line renderer-owned banner — *"Graphics reduced to Low to
+  keep the frame rate"* / *"It will go back up on its own — or set it in Menu ▸ Settings ▸
+  Video"* — and *"Graphics back to High"* when it returns. A routine first promotion is
+  **not** announced; auto doing its job quietly is the design. It is deliberately its own
+  element with inline styles and is **not** inside `.hud-notices`, whose band `shoot:panels`
+  measures.
+- **The decision moved out of `Renderer` into `AutoTierPolicy` in `QualityTiers.ts`** — no
+  THREE, no DOM — for the same reason `RenderPose.ts` exists: so a probe can drive **the
+  real rule**. `Renderer.updateAutoTier` is now glue that derives the scaler's two facts and
+  applies whatever comes back, and `probe:autotier` §6 asserts by source inspection that no
+  threshold or latch is compared against anywhere in `Renderer.ts`.
+
+**A tier chosen in Settings was already safe, and that is now measured rather than
+asserted.** `resolveGraphics` sets `adaptive` from `tier === 'auto'`, and `updateAutoTier`
+reads it first. Five minutes of 40ms frames at `MIN_SCALE` against a stored `quality:'high'`
+move nothing — tier, `shadowMap.enabled` and the composer all unchanged, and no notice is
+shown. The same holds for a stored `medium`, checked separately so *"it had nowhere to go
+anyway"* cannot be what passes it. **No second bug.**
+
+**`probe:autotier` — 55 checks, 40 of them with no browser at all.** §1–§4 drive the real
+policy off synthetic frame costs; §5 loads the real game in headless Chrome and drives
+`Renderer.feedFrameCost` — the real policy, the real `moveTier`, the real `applyResolved` —
+then reads the **GL context**, because a tier that "came back" without `shadowMap.enabled`
+and the composer coming back with it has not come back. **It is not load sensitive**: every
+frame cost is stated, never measured, so unlike `probe:renderperf` it says the same thing on
+a busy machine.
+
+**Proved it goes red.** Restoring the old rule verbatim inside `AutoTierPolicy.update` —
+demote on one window, latch on the first failure — takes it from **55 ok / 0 failed to 33 ok
+/ 22 failed**, and the two headline lines are the user's session:
+
+    FAIL  THE TIER COMES BACK WHEN THE LOAD GOES AWAY  — low -> low
+    FAIL  THE REAL RENDERER GETS BACK TO HIGH          — on 'low'
+
+Under that same re-break the four manual-tier assertions stayed **green**, which is the
+independent confirmation that requirement 4 was never broken. `probe:graphics` **72 ok / 0
+failed** unchanged.
 
 ### The world
 - **Corner "cliffs":** the ground beyond every circuit was one flat quad at y = −0.62
@@ -793,6 +907,174 @@ red at 164.2mm**. Deleting the renderer's call to it: **2 of 4 §2b wiring check
 
 `probe:banking`, `probe:carrig`, `probe:rideheight`, `probe:recovery`, `probe:blockage`,
 `probe:gearbox` and `validate:world` are all unchanged and passing.
+
+### The in-race picture, measured against the reference frames (issue #78)
+
+> *"every image that I attached, i want that to that quality, the way that is, the way it
+> looks, everything that I showed you and shared with you I want you to do it that way."*
+> *"im not going to publish this game until it doesn't look like that."*
+
+`reference/target/` is the specification (§2, and `INDEX.md` in that directory). Nothing in
+this project had ever measured the drawn frame against it. **The first result is therefore
+the measurement, and two thirds of the brief this work was given turned out to be wrong.**
+
+**`probe:grade`** photographs the real game through `probe:sharpness` — the browser's own
+screenshot at whatever scale the real resolution scaler settled on, because `audit:circuits`
+drives a fixed `dt` and has only ever produced full-resolution frames no player has seen
+(above) — and compares four separable properties of a stated region of the frame against the
+same four taken from the user's own images: **median luma** (exposure), **RMS contrast**,
+**mean HSV saturation**, and **mean(R) − mean(B)** (white balance). One number per thing that
+can be wrong, so that a movement can be attributed.
+
+**The gap on `main`, before anything was touched:**
+
+| | `76.png` | ours | `90.png` road | ours | `90.png` sky | ours |
+|---|---|---|---|---|---|---|
+| median luma | **81** | 166 | **107** | 57 | **106** | 29 |
+| RMS contrast | **57.1** | 47.0 | **48.8** | 45.0 | **30.6** | 27.3 |
+| saturation | **0.253** | 0.153 | **0.126** | 0.212 | **0.060** | 0.670 |
+| warmth | **−17.0** | −8.4 | **+6.4** | +14.7 | **+3.0** | −33.4 |
+| 1st percentile | **1** | 46 | **3** | 4 | **59** | 8 |
+| in shadow | **6.1%** | 0.1% | **18.9%** | 13.6% | **0.0%** | 53.5% |
+
+**Three findings, and the two that matter most contradict the brief.**
+
+1. **The pass named `grade` did not grade.** It added bloom, occluded, vignetted,
+   desaturated for rain, dithered and flashed — every one of which is a lens or a weather
+   effect. **There was no tonal or chromatic transform in the renderer at all**; the frame
+   went from ACES straight to the screen. This was invisible for as long as it was precisely
+   because "colour grading" is the one thing everybody assumes is already there.
+2. **The day image was over-exposed by about a stop and a third, not slightly.**
+   `EXPOSURE.day = 1.35` is justified in `Renderer.ts` against a stated target — *"reference
+   footage of a real circuit, day or night, has its road sitting closer to 0.45"* of full
+   scale. **That number was never measured off a reference frame, and it is wrong.**
+   `76.png`'s asphalt band sits at 68/255 = **0.27**. Ours sat at 0.65, with 4.4% of the
+   frame clipped to white at Zandvoort and 9.2% at Monza, and with **no black anywhere in
+   it**: 1st percentile at code value 46 against the reference's 1, and 0.1% of the frame in
+   shadow against 6.1%.
+3. **We were 40% UNDER-saturated, not over.** The look was described as "slightly
+   desaturated"; the daylight frame measured 0.153 against the reference's 0.253. Almost all
+   of the deficit was the clipping — HSV saturation collapses as pixels approach white.
+   Pulling saturation, which is what the brief asked for, would have made it worse.
+
+**A fourth, found while fitting: the reference set does not define a daylight white balance.**
+`76.png` reads −17.0 and `71.png` reads +0.9. The least-squares balance term is a compromise
+that is wrong for both, so the day grade ships with **balance at unity** and says so.
+
+**`scripts/lib/gradeModel.ts` is what made this a measurement loop rather than a week.** One
+shoot of `probe:sharpness` is a build, a preview server, a headful Chrome and eleven
+circuits. The model inverts three's ACES exactly — the matrices, `RRTAndODTFit` by bisection,
+the sRGB transfer — recovers the linear radiance behind a frame the renderer already
+produced, applies a candidate grade in the shader's own arithmetic, and re-applies the
+pipeline. **The identity round trip is 0 code values on every statistic**, which is the check
+that the inverse is real. A candidate then costs a second. Its one stated inexactness is that
+ACES clips at 1.0, so a frame with clipped highlights under-predicts what raising contrast
+does to them — which is why the model chooses the parameters and a real shoot confirms them.
+
+**What landed.**
+
+- **A four-term colour grade in linear light, before the tone mapper.** White balance
+  (per-channel gain), contrast about a pivot, a shadow toe, saturation — one term per number
+  the probe reports separately. Run before ACES for the same reason bloom is: a contrast
+  curve applied after the tone mapper is operating on highlights that have already been
+  thrown away. It is **not a LUT**, deliberately, and the shader says why: a LUT is an
+  arbitrary transform nobody can measure the parts of, and it is measuring the parts that let
+  these be fitted. `PostFX.setGrade` is the swap point if a hand-authored `.cube` is ever
+  wanted.
+- **`EXPOSURE.day` 1.35 → 0.333**, from an exposure sweep on a real shot.
+- **A captured CC0 sky as `scene.environment`.** Poly Haven HDRIs from `public/assets/hdri/`
+  through `PMREMGenerator`. Loaded **asynchronously with the generated probe installed
+  first**, so a clone that never ran `scripts/fetchAssets.ts`, a build with the directory
+  deleted and a dropped request all still light their scene — deleting
+  `public/assets/hdri/` returns the renderer to its pre-#78 behaviour exactly.
+- **Night deliberately keeps the generated probe, and that is a measurement.** `hdri/night`
+  is Dikhololo Night, a rural starfield with no artificial light in it. A floodlit circuit is
+  the opposite, and `PALETTES.night` already models the thing that matters — fourteen point
+  sources at 20× radiance in two staggered rows, which is what puts hard specular streaks
+  along a car's flanks. A real sky of the wrong place loses to a deliberate model of the
+  right one.
+- **The environment's sun did not agree with the scene's, by 104°.** `applyAmbience` takes
+  care to point the sky dome's disc at the key light so *"the halo, the silver lining on the
+  cloud edges and the shadows on the track all agree"*, and then handed the probe nothing.
+  `PALETTES.day.sunAzimuth` is 205°; the day key light stands at 309.3°. **The reflected
+  highlight came from 104° away from the light casting the shadow.** A loaded HDRI is now
+  scanned for its own brightest direction and rotated so that direction lands on the key
+  light's azimuth. Rotating the environment rather than moving the light is deliberate: the
+  shadow direction is what `probe:framing`, `probe:banking` and every audit shot in the
+  repository are laid out against.
+- **The Bahrain night sky.** It measured a median of **29 against the reference's 106** and
+  was a near-black navy void: `0x01030a / 0x081020 / 0x243149` put sRGB (0,0,2), (1,7,24) and
+  (30,52,90) on screen. The reference frame's own sky is a **neutral hazy grey** — top 5%
+  mean sRGB (99, 98, 100), horizon (128, 126, 119), saturation 0.06, and **no black in it at
+  all**. The three dome colours are now *solved*, not picked: `toScene()` inverts the whole
+  display chain on those measured targets and returns the hexes.
+- **`FloodlightTowers.ts` — the light masts.** Put the two frames side by side and the
+  largest single difference is that theirs is full of floodlight towers and ours had none,
+  **while the environment probe was already reflecting fourteen of them off the cars**. Same
+  shape of defect as the mirrors in #29: the effect was modelled and the thing producing it
+  was not drawn. **47 masts at Bahrain, 53 at Jeddah, 0 by day**, three `InstancedMesh` draws,
+  placed by the same outward walk against `buildKeepOutField` the marshal posts use. They
+  **cast no light** and the module says so — the aggregate illumination is the night
+  hemisphere light that is already there and already tuned, and adding real lights would
+  double-count it.
+- **The night light rig scaled 1.9×** — hemisphere 1.85 → 3.5, sun 0.75 → 1.4, fill 0.78 →
+  1.45, rim 1.0 → 1.6. The lever is the rig and **not** the exposure, because with the sky
+  corrected the two *skies* agreed at 112 against 106 while the two *roads* read 58 against
+  107: the sky half was already right, and exposure would have moved both.
+
+**Probes, and what each of them is for.**
+
+- **`probe:env`, new, and it exists because both new claims can be false while everything
+  still looks fine.** The HDRI is fetched over HTTP from a gitignored directory and falls
+  back silently *by design*; a mast that cannot be placed clear of the circuit is not placed,
+  and a `FloodlightTowers` with a count of zero adds an empty group and throws nothing.
+  §3.2. It boots the real built application in a real browser and asserts what is actually
+  lighting the scene: `hdri:partly_cloudy` at Zandvoort, the generated probe at night, and
+  the mast counts. **6 ok / 0 failed — and proved red twice, with each break failing exactly
+  the assertions it should and no others.** Pointing the HDRI URL at a file that does not
+  exist: Zandvoort reports `generated` and fails, while Bahrain and Jeddah stay green,
+  because the generated probe is what they are *supposed* to have. Gating the masts off with
+  `if (false && …)`: Bahrain and Jeddah fail at 0 masts while Zandvoort's `0 masts` correctly
+  passes. **3 ok / 3 failed** on each break, exit 1; restored, **6 ok / 0 failed**.
+- **`probe:world` now scans `FloodlightTowers`.** That file's own header is a list of
+  renderer-side builders that were *not* in its scan and were therefore drawing on the road
+  unchecked; a 36m steel column would have been the next entry on it. **PASS on all eleven
+  circuits**, nothing named `floodlight` among the offenders.
+
+**After, on the same shoot harness, same eleven circuits, same windows:**
+
+| | `76.png` | before | **after** | `90.png` road | before | **after** | `90.png` sky | before | **after** |
+|---|---|---|---|---|---|---|---|---|---|
+| median luma | 81 | 166 | **123** | 107 | 57 | **83** | 106 | 29 | **113** |
+| RMS contrast | 57.1 | 47.0 | **54.5** | 48.8 | 45.0 | **54.6** | 30.6 | 27.3 | **22.0** |
+| saturation | 0.253 | 0.153 | **0.255** | 0.126 | 0.212 | **0.173** | 0.060 | 0.670 | **0.061** |
+| warmth | -17.0 | -8.4 | **-16.9** | +6.4 | +14.7 | **+12.1** | +3.0 | -33.4 | **+2.1** |
+| 1st percentile | 1 | 46 | **1** | 3 | 4 | **3** | 59 | 8 | **40** |
+| in shadow | 6.1% | 0.1% | **13.1%** | 18.9% | 13.6% | **7.7%** | 0.0% | 53.5% | **0.2%** |
+| clipped white | 1.1% | 4.4% | **0.1%** | 0.3% | 0.0% | **1.7%** | 0.6% | 0.0% | **0.1%** |
+
+**`probe:grade`: 6 ok / 10 failed -> 12 ok / 4 failed.** On `76.png` — the frame the user
+called "the best image" — three of the four land almost exactly: saturation **0.255 against
+0.253**, white balance **-16.9 against -17.0**, contrast **54.5 against 57.1**, and the black
+point is **1 against 1** where it had been 46. All four of Bahrain's night road numbers and
+all four of its night sky numbers now pass, from two and one respectively.
+
+**Sharpness held.** `probe:sharpness`'s own grain-by-band metric, mean over 11 circuits:
+band 1 (horizon) **2.78 -> 2.89**, band 2 **12.50 -> 13.34**, band 3 **26.19 -> 29.51**,
+bands 5 and 6 **down**. The middle bands rising ~7-13% is the contrast term doing exactly
+what it was raised to do — a power curve amplifies existing luma differences, including
+high-frequency ones — and it is nowhere near the 5.4-11.3x that §6 records as hard won. One
+shot moved a lot and it is explained rather than averaged: **Bahrain cockpit band 2 went
+1.5 -> 10.1**, because that band was the near-black night sky and now contains a hazy
+gradient, cloud and floodlight masts. That is content arriving, not speckle.
+
+- **`probe:grade`'s bars are the reference frame plus a tolerance**, and the first version of
+  them was wrong in a way worth recording. They were absolute ranges derived from four
+  world-and-road crops, then applied unchanged to the night *sky* — which is nearly
+  colourless, so **the specification failed the bar taken from it**. A bar the reference
+  cannot pass is not measuring what it claims to. Per-pair tolerances are also tighter almost
+  everywhere: the old median bar allowed 55 code values of drift at Zandvoort, the new one
+  allows 25.
 
 ### Handling and input
 - **The racing line was graded for a car nobody drives.** `RacingLine.update` received no
@@ -1364,9 +1646,10 @@ controls (found: [])"* and *"every car that was still running set a time (0 of
   no code at all** — an F3 race was driven in a 1000hp F1 car. Now F2 +13.3%, F3 +19.6%
   against real ~13% and ~19%.
 - The **weekend itself was never saved** — qualify, close the tab, gone.
-- Intro sequence and podium built. **The user has never seen either**: the intro is
-  first-run-only via a flag set on their very first load, and the podium only fires after
-  finishing a career *race*.
+- ~~Intro sequence and podium built. **The user has never seen either**~~ — **routed, and
+  the routes are now held by `probe:smoke`'s required set.** See "Built, correct, and
+  nobody could get to it" below. This entry stood in this file for months as a note; the
+  thing that changed is that it is an assertion.
 
 ### The team radio — one radio, one switch, one voice (issue #21)
 
@@ -1470,6 +1753,78 @@ from WebKit's documented rule and from the same pattern `main.ts` uses to unlock
 `AudioContext`, and run on nothing but Chrome/macOS. If it is wrong, the symptom is a
 silent radio with a working card, which is the default experience anyway. Treat it as
 unverified.
+
+### Built, correct, and nobody could get to it (issues #13, #38, #25)
+
+Three issues, one defect. **Work that exists, is right, and has no route into it** — the
+pattern this file has recorded four separate times (`TIER_INFO.carPace` read by nothing,
+`alongsideLeft/Right` computed and read by nothing, `speakExchange` dead, the intro and the
+podium). What was different this time is that #62's rebuilt `probe:smoke` made it
+*measurable*: it parses the `Screen` union out of `main.ts` itself and enforces a required
+set of routes, so "you cannot get there" is a named failure rather than a note.
+
+| | before | now |
+|---|---|---|
+| Opening titles | first-run only, behind a flag set on the player's very first load | main menu, Settings › This device, and `?intro=1` |
+| Podium | only at the foot of a classification you had to drive a full race to reach | the rostrum after every simulated round, before the paddock; still inline on a driven race's classification |
+| Press conference | **no import, no screen id, no button** — 540 lines whose only executor was `npm run shoot:people` | offered from the rostrum and from a driven career race's classification |
+| Garage | **no import, no screen id, no button** — 236 lines, same | Paddock › Into the garage, with the real `CarStage` standing in the car-shaped hole it was drawn around |
+
+- **Three new screen ids** — `podium`, `presser`, `garage` — because a screen id is what
+  lets the probe name the thing that is missing. Measured, `SMOKE_FREE_S=0` at load average
+  22: **32 of 32 required routes reached** (from 28 of 28) and **19 of 23 declared screen
+  ids** (from 15 of 20). The four not reached are `racing`, `simulating`, `results` and
+  `event` — all of which need a running session or a narrative draw, all of which are other
+  probes' ground, and the probe prints them as such rather than counting them as holes.
+- **The order is the real Sunday.** `Simulate Race` on the career hub used to go from the
+  button straight to a narrative event, which is exactly why a player could run a whole
+  season and never once have the podium screen built. It now goes chequered flag → rostrum
+  → press room → paddock. The press room is **offered rather than imposed** on a driven
+  race, because a mandatory screen between the flag and the paddock every round is a screen
+  players learn to click through without reading.
+- **The press room asks about the race that was just run** — the panel is the top three
+  with the player substituted into third when they finished off the rostrum, and the
+  questions branch on whether they won, placed or did not see the flag. **What it does not
+  do is apply consequences.** `PressAnswer.effects` and `PressConferenceSpec.onAnswer`
+  exist and nothing reads them back; a reputation model behind them is the publicist and
+  the agencies that §7 records as not built. Routing the room is this work. Furnishing it
+  is not, and it is still open.
+- **Proved red by removing one route — and read the caveat.** Deleting the `Into the
+  garage` button from `showPaddock` and leaving everything else in place, the walk reaches
+  the paddock, cannot go on, and prints
+
+  ```
+  MISSING   Garage   [Paddock > Into the garage]
+  ```
+
+  which is the required-set check firing and naming the route. It is emitted on the same
+  branch that pushes `REQUIRED "Garage" is UNREACHABLE: the route [Paddock > Into the
+  garage] broke — a button on it is gone` onto the failure list, so observing it means the
+  failure was recorded. **What was NOT observed is the failure list itself**, because both
+  attempts at the broken run died before the end: the first to `probe:smoke`'s own
+  crash-recovery bug at load average 40 (found by this, and fixed — see the bullet below),
+  the second to a 120-second navigation timeout at load average **116**, which is a
+  statement about the machine and not about the probe. A third attempt was not affordable:
+  the box went to load 134–181 with other agents on it, which is §8's over-parallelising
+  note happening in real time. **The second half of the proof — that the coverage block
+  also reports `screen "garage" is in the required set and the walk never opened it` — is
+  therefore read off the code path rather than off a run, and is flagged here as such
+  rather than being written up as if it had been measured.**
+- **`regress:exit` was reporting a working pause menu as six failures — and the pause menu
+  was never the defect.** Full account under issue #25 in §7.
+- **The same defect was in `probe:smoke`'s own crash recovery, one level up, and it was
+  found by this work rather than reasoned about.** `noteCrash` was one `await boot()`, and
+  `boot()` starts by calling `page.url()` and `page.evaluate` on the tab that has just
+  died — so when the tab was genuinely gone rather than merely reloading, the recovery
+  threw `Attempted to use detached Frame` **from inside the catch block handling the first
+  crash**, and the exception escaped every handler. At load average 40 that killed the
+  break-verification run *after* it had printed its finding and *before* it could print
+  the failure list. The tab is now a factory, so a dead one is replaced by one carrying
+  the same viewport, error collectors, dialog handler and storage seed; and the top-level
+  catch calls `process.exit` rather than only setting `exitCode`, because the vite server
+  and the browser are both created inside `main` and neither is closed on the error path —
+  so a crashed run **hung** instead of failing, and had to be killed by hand. **A harness
+  that turns a result into a stack trace is the shape of bug this whole branch is about.**
 
 ### People (issues #18, #22)
 - **Every team principal was "Pit wall".** `Hud.PRINCIPALS` was a table keyed on the ten
@@ -1608,13 +1963,13 @@ against every threshold and so stops binding silently rather than throwing.
 |---|---|
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
-| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
+| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
 | Race authenticity | Sparks/skid marks/brake lights/DRS flaps, remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
-| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage built but **unreachable — #38**. Bodies below the neck unfinished |
+| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### `probe:smoke` had never opened the front end it claimed to cover — issue #62
@@ -1686,6 +2041,20 @@ stated rather than silently crossed. **The retirement flow is on the same list**
 accident, and `probe:qualiretire` stages one.
 
 ### Measured, deferred, and still true
+- **The tier-demotion notice tells the player the route to the Video tab; it does not offer
+  a button.** The renderer owns a self-contained banner (issue #73, §6) that reads *"Set it
+  in Menu ▸ Settings ▸ Video"*. That route works today with no wiring, and it was chosen
+  over a button because a button has to reach the app shell's screen router, which lives in
+  `main.ts` — a file three other issues (#25/#13/#38) were open in at the time. Wiring
+  `Renderer.onTierNotice` into the HUD's own notice column, or adding a real button, is a
+  small follow-up for whoever owns that file next; the hook exists and assigning to it
+  replaces the default presenter entirely.
+- **`auto` still cannot get back a tier it has latched without the player asking.** By
+  design (a second failure is a verdict, and retrying costs a full-scene shader recompile),
+  but it means a device that was *genuinely* throttled twice — a phone that got hot and then
+  cooled down — stays reduced for the rest of the page load. A thermal-recovery relax, on
+  the model of the resolution scaler's `CEILING_RELAX_S`, is the obvious extension and is
+  **not built**. Nobody has measured how often that case actually occurs.
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
   established the first half by measurement (§6). The second half is the reason `medium`
   exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple
@@ -1840,21 +2209,62 @@ accident, and `probe:qualiretire` stages one.
   machinery to fix it exists — `Game.runOutToTheFlag` — and `runOutProgress`
   already declines to give a race an early exit, so a race would have to be run
   in full. **Nobody is on this.**
-- **`regress:exit` (issue #25) does not reproduce, but the harness is still
-  load-fragile.** Run three times on 2026-08-03: the first died on its warm-up
-  navigation at `page.goto: Timeout 120000ms exceeded` at load average 29,
-  before reaching an assertion; the second and third were **16 of 16 ok**,
-  including every one of the six failures the issue lists. The pause menu
-  (`src/ui/PauseMenu.ts` + `Game.setPaused`) shares no code path with the
-  retirement panel. The issue's `0.0666… → 0.0666…` is one physics step between
-  samples, which is a loaded machine rather than a broken Resume button. Left
-  open against the robustness problem rather than the logic one.
-- **`probe:qualiretire` needs a quiet machine.** It boots a dev server and drives
-  Chrome under swiftshader, where the simulation runs at roughly a tenth of
-  realtime, so the retirement delay alone is 20–40s of wall clock and the whole
-  probe is minutes. At load average 29 the *first* attempt at `regress:exit` on
-  2026-08-03 died on its warm-up navigation at 120s; the second passed all 16.
-  This is the same load sensitivity §8 records, not a flaky assertion.
+- **`regress:exit` (issue #25): the pause menu works. The harness was the bug, it
+  reproduces on demand, and the six failures in the issue are ONE cascade with a
+  stopwatch at the bottom of it. Closed.**
+
+  The previous entry here left #25 open against a robustness problem it could not
+  reproduce — 16 of 16 twice on a quiet box, one death on warm-up navigation at load 29.
+  Five consecutive runs on 2026-08-03 settle it. **The distribution, in order:**
+
+  | run | load average at start | outcome |
+  |---|---|---|
+  | 1 | 6.4 | **16 of 16** |
+  | 2 | 8.9 | **16 of 16** |
+  | 3 | 8.7 | died: `TypeError: Cannot read properties of undefined (reading 'screen')` |
+  | 4 | 10.8 | died: `Execution context was destroyed, most likely because of a navigation` |
+  | 5 | **27.6** | **the issue, verbatim: 6 failures, same wording, same order** |
+
+  **Two independent harness defects, and neither of them is in `src/`.**
+
+  **(a) The dev server was watching the files.** It spawned `npx vite` with the project's
+  ordinary configuration, so HMR was live: runs 3 and 4 died because `src/main.ts` was
+  edited *while they were running*, which full-reloaded the page under the test. They died
+  on an **uncaught exception with no assertion output and exit 1** — indistinguishable, in
+  a log, from a genuine regression. That is the mechanism most likely to have produced the
+  original report. `probe:smoke` has built its server with `hmr: false, watch: null` since
+  #62; this one now does the same, in-process, which also disposes of the free-port dance
+  and the "vite did not start in 60s" timeout.
+
+  **(b) Every wait was a fixed sleep sized for a quiet machine.** The probe drives Chrome
+  under swiftshader, where a frame of this game costs a large fraction of a second, and a
+  keyboard event is consumed on a frame boundary. Run 5 measured **the page painting 1
+  frame per ~1.5s**; the harness waited 3000ms after `Escape` and asserted. So the key had
+  not been through a frame — **not paused → no overlay → no Resume button → the click found
+  nothing → the clock never stopped.** All six failures, from one missed frame. The issue's
+  own `0.0666… → 0.0666…` is the same signature one notch worse: 0.0666s is exactly eight
+  120Hz steps, i.e. **one frame in the whole sample window.**
+
+  **The fix waits for the state it is about to assert on**, up to a deadline derived from
+  the frame period the harness *measures* on the machine it is running on (`40 × frameMs`,
+  floored at 8s, capped at 120s). **Nothing was loosened**: every assertion is the
+  assertion it always was, and a build where Resume genuinely does not work still fails —
+  at the deadline instead of instantly. One check got **stricter**: `paused time really
+  stands still` used to sleep 1500ms and compare two clock readings, which at one frame a
+  second is *less than one frame*, so it would have passed a build that had stopped
+  painting altogether — the exact hang this regression exists to rule out. It now counts
+  the frames the page painted during the window and requires several of them beside a
+  clock that did not move. **17 assertions, up from 16.** The run also prints the frame
+  rate it measured, so a log says what the machine was doing.
+
+  **The pause menu itself was not touched.** `src/ui/PauseMenu.ts` and `Game.setPaused` are
+  unmodified on this branch.
+- **`probe:qualiretire` needs a quiet machine**, and unlike `regress:exit` it has *not*
+  been rebuilt. It boots a dev server and drives Chrome under swiftshader, where the
+  simulation runs at roughly a tenth of realtime, so the retirement delay alone is 20–40s
+  of wall clock and the whole probe is minutes. **It is a `.mjs` of the same lineage as
+  `regress:exit` was, so assume it has the same two defects — a watching dev server and
+  fixed sleeps — until somebody looks.** Same for `regress:career`. **Nobody is on this.**
 - **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
   measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
   previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
@@ -1987,6 +2397,85 @@ measurement passes every version of it that is wrong.
   `src/render/RacingLine.ts` — **deliberately not touched here**, because `src/render/` was
   held by other agents for #54 and #47 while this work was in flight. **Nobody is on it.**
 
+### The in-race picture: what #78 did NOT close, and why
+
+`probe:grade` went from **6 ok / 10 failed** to ****12 ok / 4 failed**** against
+`reference/target/`. What is left is not tuning, and the measurements say what it is.
+
+- **The scene's DYNAMIC RANGE is the residual, and a grade cannot manufacture range.**
+  `76.png` holds a median of 81 *with* an RMS contrast of 57.1 — a dark median under a wide
+  spread. Every exposure our renderer can be set to trades one for the other: at the level
+  that puts our median near the reference's, our spread falls to 34–40, and at the level that
+  holds the spread the median is 50 too high. The exposure sweep is in the PR and it is
+  monotone in both directions. **What our world lacks is deep shadow and specular highlight,
+  not a curve.** The candidates, in the order a measurement should attack them: ambient fill
+  (a hemisphere light, an environment probe, a fill light and a rim light all lifting every
+  surface that faces away from the key), the exponential fog, and the very large untextured
+  surfaces — the run-off, the barrier faces and the terrain — that occupy a third of the
+  frame and return one flat value each. **Nobody is on this.**
+- **Monza's frame is 50 code values brighter than Zandvoort's under identical settings**
+  (147 against 136 before the final grade; 202 against 166 on `main`), while the two
+  reference frames differ by 8. So there is a per-circuit brightness variation of about 1.4×
+  that no global exposure can serve, and it has not been diagnosed. The exposure is set from
+  Zandvoort because the user named `76.png` "the best image", and **Monza's residual is
+  reported rather than averaged away**. Prime suspect is how much sky each frame contains
+  against how much shadowed geometry, which would make it a framing artefact of the probe's
+  window rather than a renderer defect — but that is a hypothesis and nobody has measured it.
+- **The near-field high-frequency detail is a third to a sixth of the reference's, and it is
+  not this work's ground.** Mean absolute Laplacian over the compared band: Zandvoort
+  **10.3 against `76.png`'s 20.8**, Bahrain's floodlit road **3.3 against `90.png`'s 19.7**.
+  The night road is the extreme case — a six-fold deficit — and it is the asphalt carrying
+  essentially no texture. That is issue #48's ground (`TrackMesh.ts` / `SurfaceDetail.ts`)
+  and the `materials/asphalt` set that `scripts/fetchAssets.ts` now pulls is explicitly the
+  #48 agent's to bind. **Recorded here so the number exists, not claimed as closed.**
+- **`materials/concrete`, `materials/grass` and `materials/gravel` are fetched and NOT
+  BOUND.** They are trackside and therefore in scope, and they are exactly what would fix the
+  "huge untextured surfaces" item above, but the surfaces that want them — the run-off, the
+  verge and the barrier faces — are all built in `TrackMesh.ts`, which the road-surface work
+  holds. Binding them from a second file would have produced two materials for one surface.
+  The honest state is: **the assets are on disk, the surfaces that need them are in somebody
+  else's file, and the two have not been introduced.**
+- **The trackside inventory is better than the brief assumed, and the gap is specific.** An
+  audit of what the renderer actually draws found grandstands with real per-person crowd
+  geometry and roofs, a continuous advertising hoarding ribbon with twelve invented sponsors,
+  chain-link catch fencing with a measured shimmer fix, marshal posts with live FIA panels, a
+  start/finish gantry, braking boards, trees and a fully detailed pit building with a media
+  centre. What is genuinely absent, measured against the reference frames: **TecPro barriers
+  and tyre walls; marshals as people; catch fencing on street circuits** (skipped entirely,
+  so Monaco and Jeddah have bare walls); **palm trees or any vegetation variety beyond one
+  cone-and-cylinder**; **DRS, sector and timing gantries** (there is exactly one gantry per
+  circuit); and **crowd variety between stands** — every trackside stand on a circuit is one
+  instanced geometry off one seed, so it is literally the same crowd repeated.
+- **`dusk` is not fitted and cannot be.** No circuit in `src/data/tracks/circuits.ts` uses
+  it — all eleven are `day` or `night` — so there is nothing to shoot, and there is no dusk
+  frame in `reference/target/`. Its grade is the day grade with the toe eased, on stated
+  reasoning, and it is labelled a guess in the source.
+- **Frame time was NOT measured on a quiet machine, and no absolute number from this work
+  should be quoted.** Load average was 36–71 for most of the session and **203 during the
+  final shoot**. What the changes can cost is bounded by inspection and stated as such: the
+  grade is ~15 ALU operations inside a full-screen pass that was already running; the HDRI is
+  a one-off download and PMREM filter with no per-frame cost, because a filtered cubemap
+  costs the same to sample whatever produced it; the masts are three draw calls and about
+  6,200 triangles at two circuits. `PERF_PAIR=gradelook` was added to `probe:renderperf` to
+  isolate the grade block from the pass around it, and **one** paired run was taken, at
+  Bahrain, at load average 205: **grade on 36.12ms, grade off 35.97ms, paired delta +0.37ms
+  over 12 cycles, spread −0.63..0.98.** The spread straddles zero, so the honest reading is
+  that the grade block's cost is **not distinguishable from zero** — and the 36ms absolute is
+  a measurement of this machine's contention, not of the renderer, and must not be quoted as
+  a frame time. **Nothing else was measured**: no viewport sweep, no phone geometry, no
+  whole-frame before/after, and no second circuit.
+- **`probe:graphics` DID NOT COMPLETE, on either of two attempts, and this is the
+  load-fragility §7 already records rather than anything about the change.** The first run
+  reached **52 ok / 0 failed** and then died on a puppeteer navigation —
+  `Execution context was destroyed, most likely because of a navigation` — at load average
+  205. A second run at load 72-110 reached **50 of its 67 checks, 0 failed**, and was still
+  crawling through its cold page loads when the work was handed over. **Zero failures in either, and every
+  section it did reach passed**, including the three-tier GL configuration table and all
+  three of the per-switch overrides. The change it is being asked about adds uniforms to an
+  existing pass and allocates no new one, so there is no mechanism by which it should move —
+  but 52 of 67 is not 67, and the run should be repeated on a quiet machine before the branch
+  is merged. Same species as the `regress:exit` and `probe:qualiretire` entries below.
+
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not
   completed theirs. *"why are you waiting on me to display their times?"*
@@ -1998,10 +2487,11 @@ measurement passes every version of it that is wrong.
   chamfered boxes rather than plain boxes, and the one `BoxGeometry` in `PitCrew.ts` is
   the light gantry's head, not a person's — so the line **may** already be stale. Nobody
   has measured it. `probe:pitcrew` and the pit-stop work own that question.
-- **`PressConference.ts` and `GarageScene.ts` are unreachable.** ~800 lines imported by
-  `audit/people.ts` and by nothing in `src/`. `src/main.ts` has no screen id, no route and
-  no key for either; the only way any human has seen them is `npm run shoot:people`. This
-  is §6's intro-and-podium failure repeating. **Issue #38.**
+- ~~**`PressConference.ts` and `GarageScene.ts` are unreachable.**~~ **Routed — issue #38,
+  closed.** Both have a screen id, a route and a button; `probe:smoke`'s required set holds
+  them. See §6. **What #38 asked for and did NOT get: consequences.** The press room's
+  `onAnswer` hook and its `effects` lists are display-only — nothing in the career reads an
+  answer back. That is the publicist/agencies layer below, and it is still not built.
 - **The figures are flat-vector illustrated people, not blocky — but the bodies are
   unfinished.** Heads read well and the eleven principals are plainly eleven people
   (`hud-out/people/desktop-principals.png`), and they survive down to 40px on hair colour,
@@ -2023,6 +2513,29 @@ measurement passes every version of it that is wrong.
 - **Over-parallelising.** Nine agents on one machine took load average to 36–218. Every
   headless sweep runs Chrome under software rendering; a 2-minute probe becomes 20+ minutes.
   Agents are not stuck, they are queuing. **Keep concurrency to about 4–5.**
+
+  **Re-learned the hard way on 2026-08-03, three times in one day, and the third time is
+  the one that matters.** With seven agents the load average reached **209**, and at that
+  point the failure is not slowness — it is that *measurement stops being possible*:
+  - `regress:exit` produced **issue #25's exact six failures at load 27.6 and 16/16 at load
+    6–9, on the same commit.** A whole issue existed because a probe was measuring the
+    machine. Two more of its runs died outright.
+  - The `probe:smoke` coverage work lost a 25-minute run and a second run to a 120s
+    navigation timeout, so its break test could never print its failure list.
+  - The asset-loader probe hit a 200 response with a valid PNG *and* an `onerror`, with a
+    manual load of the same URL succeeding seconds later.
+  - My own verification of a merge died with `TimeoutError` — on the merge that fixed the
+    harness defect causing exactly that.
+
+  **The distinction that costs the time: under load, probes do not fail, they TIME OUT**,
+  and a timeout reads like a failure. Any red result taken above load ~8 must be re-run
+  before it is believed, and any *green* one is equally suspect if it was a sweep that
+  should have taken minutes and returned instantly.
+
+  Also: the machine is not yours alone. On this box the user's own Chrome accounted for
+  **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
+  of the load. Check `uptime` before quoting any number, and say plainly when a
+  measurement was skipped rather than quoting one taken under load.
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).

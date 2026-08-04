@@ -69,9 +69,14 @@
  *     `probe:qualiretire` own that side and drive a real engine to do it.
  *   - The retirement flow, for the same reason: it needs an accident, and
  *     `probe:qualiretire` stages one in a browser and asserts every string.
- *   - The press conference and the garage scene, which have no route into them
- *     at all. That is issue #38, and the coverage block below re-measures it
- *     rather than taking it on trust.
+ *
+ * WHAT IS NEW SINCE — issues #13 and #38. This list used to carry a third
+ * entry: "the press conference and the garage scene, which have no route into
+ * them at all", with a block at the bottom that re-measured their absence and
+ * printed it. Both are routed now, along with the opening titles and the
+ * podium, and all four are in `REQUIRED` — so the thing that was a printed
+ * observation is an assertion, and the four screens that had been built and
+ * abandoned cannot go quietly unreachable a second time.
  *
  * Run: npm run probe:smoke                        ~11 min on a quiet machine
  *   SMOKE_FREE_S=0  required set only, no free walk — and it is the whole of
@@ -337,7 +342,68 @@ const REQUIRED: Route[] = [
     screen: 'team-hq', expect: 'The second car',
   },
   { name: 'Race weekend briefing', path: ['Continue', 'Race Weekend'], screen: 'briefing' },
+
+  // ---------------------------------------------------------------------
+  // THE FOUR SET-PIECES — issues #13 and #38, and the reason they are here
+  // ---------------------------------------------------------------------
+  //
+  // Every one of these was BUILT, was CORRECT, and could not be got to. The
+  // intro was first-run-only behind a flag set on the player's very first
+  // load; the podium fired only at the foot of a classification you had to
+  // drive a whole race to see; `PressConference.ts` and `GarageScene.ts` had
+  // no import, no screen id and no button anywhere in `src/main.ts` and their
+  // only executor in the entire repository was `npm run shoot:people`.
+  //
+  // Routing them is a morning's work. Keeping them routed is the actual bug,
+  // and it is what these four lines are for: unreachable is now RED, by name,
+  // in the probe that walks the front end the way a player does. The version
+  // of this file that shipped with issue #62 listed the press conference and
+  // the garage under "what this does not cover" and re-measured their absence
+  // as a printed note. That note is now an assertion.
+  //
+  // `Opening titles` and `Simulate Race` are both in `NO_FOLLOW` so the free
+  // walk does not spend sixteen seconds of titles or a whole simulated race on
+  // every pass. `walkTo` does not consult `NO_FOLLOW` — a required route is a
+  // deliberate route — so these still open them.
+  // No `expect` on three of the four: `expect` exists for routes that share a
+  // screen id with a fallback they could silently land on instead (the four
+  // rooms of `team-hq`, the eight settings tabs). These four ids are their own
+  // and nothing else in the shell reports them, so the id IS the assertion —
+  // and the podium and the garage title themselves after the circuit and the
+  // team, which vary by career and by where the paddock carousel was left.
+  { name: 'Opening titles', path: ['Opening titles'], screen: 'intro' },
+  { name: 'Podium', path: ['Continue', 'Simulate Race'], screen: 'podium' },
+  {
+    name: 'Press conference', path: ['Continue', 'Simulate Race', 'Press conference'],
+    screen: 'presser', expect: 'Press conference',
+  },
+  { name: 'Garage', path: ['Paddock', 'Into the garage'], screen: 'garage' },
 ];
+
+/**
+ * Restores the storage seed before the app's first line runs.
+ *
+ * Carried in `window.name` because that is the one thing that survives a
+ * same-tab navigation without a round trip. The alternative is loading the
+ * origin once to write `localStorage` and then loading it AGAIN to boot the
+ * game, which is two full app boots per screen under software GL — and that is
+ * a large part of why the old probe took over an hour.
+ *
+ * Module scope so it can be installed on a replacement tab as well as on the
+ * first one. It closes over nothing: it is serialised into the page and reads
+ * `window.name` there.
+ */
+function restoreSeed(): void {
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+    const raw = window.name;
+    if (raw && raw.startsWith('{')) {
+      const seed = JSON.parse(raw) as Record<string, string>;
+      for (const k of Object.keys(seed)) localStorage.setItem(k, seed[k]);
+    }
+  } catch { /* a browser blocking storage is a case the game handles */ }
+}
 
 async function main(): Promise<void> {
   const startedAt = Date.now();
@@ -370,61 +436,43 @@ async function main(): Promise<void> {
     ],
   });
 
-  const page: Page = await browser.newPage();
-  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
-  page.setDefaultTimeout(120_000);
-
   let errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(`uncaught: ${String(e)}`));
-  page.on('console', (m) => {
-    if (m.type() !== 'error') return;
-    // Chrome requests /favicon.ico from every document whether one is
-    // referenced or not. Matched on the URL, because the message text is the
-    // same for a missing icon and a missing module.
-    if (/\/favicon\.ico(\?|$)/.test(m.location().url ?? '')) return;
-    errors.push(`console.error: ${m.text()}`);
-  });
-  // DIALOGS, AND WHY THE TWO KINDS ARE SCORED DIFFERENTLY.
-  //
-  // The walk presses every button on the front end, and two of them are
-  // destructive: "Delete driver" and "wipe this browser". Both ask through
-  // `confirm()`, and both are ANSWERED NO here — that is the walk being a
-  // careful player, and the question itself is the control working. Nothing to
-  // fail on. But nothing would answer at all without this handler, and an
-  // unanswered dialog blocks the page for the rest of the run, so the old walk
-  // was one Delete button away from hanging for its whole timeout.
-  //
-  // An `alert()` is different: on this front end it is how a career refuses to
-  // load and how a save migration reports itself. One appearing during an
-  // ordinary walk of the menus IS a finding, so it fails.
   const asked: string[] = [];
   const alerts: string[] = [];
-  page.on('dialog', (d) => {
-    const line = `${d.type()}: ${d.message().replace(/\s+/g, ' ').slice(0, 110)}`;
-    (d.type() === 'alert' ? alerts : asked).push(line);
-    void d.dismiss().catch(() => { /* already gone */ });
-  });
 
   /**
-   * Restores the storage seed before the app's first line runs.
+   * A tab, wired up.
    *
-   * Carried in `window.name` because that is the one thing that survives a
-   * same-tab navigation without a round trip. The alternative is loading the
-   * origin once to write `localStorage` and then loading it AGAIN to boot the
-   * game, which is two full app boots per screen under software GL — and that
-   * is a large part of why the old probe took over an hour.
+   * `let` rather than `const`, and a factory rather than a literal, because
+   * the recovery below has to be able to throw the tab away and open another.
+   * Everything a walk needs is re-installed here so a replacement tab is
+   * indistinguishable from the original: the viewport, the error collectors
+   * and the dialog handler. A replacement that quietly lost the dialog handler
+   * would hang on the first `confirm()` it met.
    */
-  await page.evaluateOnNewDocument(() => {
-    try {
-      localStorage.clear();
-      sessionStorage.clear();
-      const raw = window.name;
-      if (raw && raw.startsWith('{')) {
-        const seed = JSON.parse(raw) as Record<string, string>;
-        for (const k of Object.keys(seed)) localStorage.setItem(k, seed[k]);
-      }
-    } catch { /* a browser blocking storage is a case the game handles */ }
-  });
+  let page: Page;
+  async function openTab(): Promise<Page> {
+    const p: Page = await browser.newPage();
+    await p.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    p.setDefaultTimeout(120_000);
+    p.on('pageerror', (e) => errors.push(`uncaught: ${String(e)}`));
+    p.on('console', (m) => {
+      if (m.type() !== 'error') return;
+      // Chrome requests /favicon.ico from every document whether one is
+      // referenced or not. Matched on the URL, because the message text is the
+      // same for a missing icon and a missing module.
+      if (/\/favicon\.ico(\?|$)/.test(m.location().url ?? '')) return;
+      errors.push(`console.error: ${m.text()}`);
+    });
+    p.on('dialog', (d) => {
+      const line = `${d.type()}: ${d.message().replace(/\s+/g, ' ').slice(0, 110)}`;
+      (d.type() === 'alert' ? alerts : asked).push(line);
+      void d.dismiss().catch(() => { /* already gone */ });
+    });
+    await p.evaluateOnNewDocument(restoreSeed);
+    return p;
+  }
+  page = await openTab();
 
   let seed: Record<string, string> = {};
   /** Cold boots of the game. The unit this probe's wall clock is made of. */
@@ -465,6 +513,23 @@ async function main(): Promise<void> {
       .test(String(e));
   }
 
+  /**
+   * THE RECOVERY HAS TO SURVIVE THE THING IT IS RECOVERING FROM.
+   *
+   * This used to be one `await boot()`, and `boot()` starts with
+   * `page.url()` and `page.evaluate` on the tab that has just died — so when
+   * the tab was genuinely gone rather than merely reloading, the recovery
+   * threw `Attempted to use detached Frame` from inside the catch block that
+   * was handling the first crash, and the exception escaped every handler and
+   * ended the process. Measured on 2026-08-03 at load average 40: a run that
+   * had already produced its finding died before it could print the failure
+   * list, which is precisely the failure mode issue #25 was about in
+   * `regress:exit` — a harness turning a result into a stack trace.
+   *
+   * So: reboot in the tab we have, and if the tab itself is unusable, throw it
+   * away and open another. The walk's whole state lives in this process, not
+   * in the tab, so a replacement costs one cold boot and nothing else.
+   */
   async function noteCrash(path: string[], e: unknown): Promise<void> {
     const where = path.join(' > ') || '(main menu)';
     const n = (crashedAt.get(where) ?? 0) + 1;
@@ -476,6 +541,15 @@ async function main(): Promise<void> {
         + 'screen rather than the machine');
     }
     here = null;
+    try {
+      await boot();
+      return;
+    } catch (again) {
+      if (!pageGone(again)) throw again;
+      console.log(`  the tab itself is gone (${String(again).slice(0, 60)}) — opening a new one`);
+    }
+    try { await page.close(); } catch { /* it is already gone; that is the point */ }
+    page = await openTab();
     await boot();
   }
 
@@ -828,17 +902,24 @@ async function main(): Promise<void> {
     if (!reachedRoutes.has(route.name)) console.log(`  NOT REACHED  ${route.name}`);
   }
 
-  // Issue #38, re-measured rather than believed. `PressConference` and
-  // `GarageScene` are ~800 lines that only a screenshot harness has ever
-  // executed. If a route into either ever lands, this stops printing and the
-  // note in PROJECT.md §7 should go with it.
-  const unrouted = ['PressConference', 'GarageScene']
-    .filter((m) => !new RegExp(`ui/${m}'`).test(src));
-  console.log('\nCorroborating issue #38 — front-end modules with no route in src/main.ts');
-  if (unrouted.length === 0) console.log('  none: both are routed now, #38 has moved');
-  for (const m of unrouted) {
-    console.log(`  unrouted  src/ui/${m}.ts — no import, no screen id, no button`);
+  // ISSUE #38, NOW AN ASSERTION RATHER THAN A NOTE.
+  //
+  // This block used to print which of the set-piece modules `src/main.ts` did
+  // not import, and printing is all it did. The import is the cheapest half of
+  // being reachable and it is not the half that was broken — the routes above
+  // are what prove a player can get there — but it is a real precondition and
+  // it costs one `grep` of the shell, so it is checked rather than reported.
+  // A module the shell has stopped importing is a route that is about to go.
+  const setPieces = ['PressConference', 'GarageScene', 'Podium', 'IntroSequence'];
+  const unrouted = setPieces.filter((m) => !new RegExp(`ui/${m}'`).test(src));
+  console.log('\nIssue #38 — the set-piece modules, and whether the shell imports them');
+  for (const m of setPieces) {
+    console.log(`  ${unrouted.includes(m) ? 'UNROUTED' : 'imported'}  src/ui/${m}.ts`);
   }
+  check(unrouted.length === 0,
+    `src/main.ts imports none of [${unrouted.join(', ')}] — ${unrouted.length === 1
+      ? 'that module is' : 'those modules are'} back to being code only a `
+    + 'screenshot harness executes (issue #38)');
 
   await writeFile(resolve(OUT_DIR, 'walk.txt'),
     order.join('\n')
@@ -880,4 +961,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => { console.error(e); process.exitCode = 1; });
+main().catch((e) => {
+  console.error(e);
+  // AND THEN ACTUALLY STOP. Setting `exitCode` alone left the vite server
+  // listening and the browser open — both are created inside `main` and
+  // neither is closed on the error path — so node had nothing to exit for and
+  // a crashed run HUNG rather than failing. Measured on 2026-08-03: a run that
+  // had already printed its finding sat there until it was killed by hand.
+  // Puppeteer kills the browser it launched on process exit.
+  process.exit(1);
+});
