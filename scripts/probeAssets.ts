@@ -363,7 +363,19 @@ async function main(): Promise<void> {
     );
 
     // Where, and by how much. A hash difference says something moved; this says
-    // the badge's own colour is on the car and that it is where a badge goes.
+    // the badge's own colour is on the car, and where.
+    //
+    // MEASURED AS HUE, NOT AS RGB MAGNITUDE, and the first version of this got
+    // it wrong. `#ff00c8` is drawn into a livery atlas, sampled through a
+    // roughness/metalness map, lit by an environment probe and then run through
+    // ACES — so the number that comes out the other end is nowhere near
+    // (255, 0, 200) and a threshold written against the source colour finds
+    // nothing. What SURVIVES all of that is the ordering: on a magenta pixel
+    // green is the minimum channel by a wide margin, and no amount of exposure
+    // changes which channel is smallest. `#0f4d35` racing green and `#e0a72c`
+    // gold both fail it by construction — green is the maximum on one and the
+    // middle channel on the other.
+    //
     // NOTE ON THE SHAPE OF THIS FUNCTION. No named function bindings inside it:
     // `tsx` compiles with esbuild's `keepNames`, which rewrites every named
     // function and const-arrow into a `__name(fn, '...')` call, and `__name` is
@@ -371,52 +383,67 @@ async function main(): Promise<void> {
     // extracted for readability here fails at runtime with
     // `ReferenceError: __name is not defined`, which is a confusing way to
     // discover a build-tool detail.
-    const diff = await page.evaluate(async (a: string, b: string) => {
-      const ia = await new Promise<HTMLImageElement>((r) => {
-        const i = new Image(); i.onload = () => r(i); i.src = a;
-      });
-      const ib = await new Promise<HTMLImageElement>((r) => {
-        const i = new Image(); i.onload = () => r(i); i.src = b;
-      });
-      const cv = document.createElement('canvas');
-      cv.width = ia.width; cv.height = ia.height;
-      const g = cv.getContext('2d')!;
-      g.drawImage(ia, 0, 0); const da = g.getImageData(0, 0, cv.width, cv.height).data;
-      g.clearRect(0, 0, cv.width, cv.height);
-      g.drawImage(ib, 0, 0); const db = g.getImageData(0, 0, cv.width, cv.height).data;
-      let changed = 0;
-      let magentaA = 0;
-      let magentaB = 0;
-      let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
-      for (let i = 0, p = 0; i < da.length; i += 4, p++) {
-        if (da[i] > 110 && da[i + 2] > 80
-          && da[i + 1] < da[i] * 0.55 && da[i + 1] < da[i + 2] * 0.85) magentaA++;
-        if (db[i] > 110 && db[i + 2] > 80
-          && db[i + 1] < db[i] * 0.55 && db[i + 1] < db[i + 2] * 0.85) magentaB++;
-        if (da[i] !== db[i] || da[i + 1] !== db[i + 1] || da[i + 2] !== db[i + 2]) {
+    const diff = await page.evaluate(async (as: string[], bs: string[], names: string[]) => {
+      const out: {
+        view: string; changed: number; total: number;
+        hueA: number; hueB: number; box: number[];
+      }[] = [];
+      for (let n = 0; n < as.length; n++) {
+        const ia = await new Promise<HTMLImageElement>((r) => {
+          const i = new Image(); i.onload = () => r(i); i.src = as[n];
+        });
+        const ib = await new Promise<HTMLImageElement>((r) => {
+          const i = new Image(); i.onload = () => r(i); i.src = bs[n];
+        });
+        const cv = document.createElement('canvas');
+        cv.width = ia.width; cv.height = ia.height;
+        const g = cv.getContext('2d')!;
+        g.drawImage(ia, 0, 0); const da = g.getImageData(0, 0, cv.width, cv.height).data;
+        g.clearRect(0, 0, cv.width, cv.height);
+        g.drawImage(ib, 0, 0); const db = g.getImageData(0, 0, cv.width, cv.height).data;
+        let changed = 0, hueA = 0, hueB = 0;
+        let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+        for (let i = 0, p = 0; i < da.length; i += 4, p++) {
+          if (da[i] === db[i] && da[i + 1] === db[i + 1] && da[i + 2] === db[i + 2]) continue;
           changed++;
           const x = p % cv.width, y = (p / cv.width) | 0;
           if (x < minX) minX = x; if (x > maxX) maxX = x;
           if (y < minY) minY = y; if (y > maxY) maxY = y;
+          // Counted ONLY over pixels the override moved, which is the whole of
+          // the question. Over the full frame it is the wrong region: this
+          // scene has a sky dome and a lit ground plane, both of which carry
+          // plenty of pixels where green is the minimum channel, and 3149 of
+          // them drowned a badge worth a few hundred.
+          //
+          // green is the minimum channel by 30%, and the pixel is not black
+          if (Math.min(da[i], da[i + 2]) > da[i + 1] * 1.3 && da[i] + da[i + 2] > 60) hueA++;
+          if (Math.min(db[i], db[i + 2]) > db[i + 1] * 1.3 && db[i] + db[i + 2] > 60) hueB++;
         }
+        out.push({
+          view: names[n], changed, total: cv.width * cv.height, hueA, hueB,
+          box: changed ? [minX, minY, maxX, maxY] : [0, 0, 0, 0],
+        });
       }
-      return {
-        changed, total: cv.width * cv.height, magentaA, magentaB,
-        box: changed ? [minX, minY, maxX, maxY] : [0, 0, 0, 0],
-        w: cv.width, h: cv.height,
-      };
-    }, armNone.shots.top, armFile.shots.top);
+      return out;
+    }, VIEWS.map((v) => armNone.shots[v]), VIEWS.map((v) => armFile.shots[v]), [...VIEWS]);
 
-    console.log(`  overhead view: ${diff.changed} of ${diff.total} px changed, `
-      + `badge-hue pixels ${diff.magentaA} -> ${diff.magentaB}, `
-      + `bbox ${diff.box.join(',')} in ${diff.w}x${diff.h}`);
+    let changedTotal = 0, hueATotal = 0, hueBTotal = 0;
+    for (const d of diff) {
+      changedTotal += d.changed; hueATotal += d.hueA; hueBTotal += d.hueB;
+      console.log(`  ${d.view.padEnd(5)} ${d.changed} of ${d.total} px changed, `
+        + `of those badge-hue ${d.hueA} -> ${d.hueB}, bbox ${d.box.join(',')}`);
+    }
     check(
-      diff.magentaA === 0,
-      `the badge's own hue appears NOWHERE on the generated car (${diff.magentaA} px)`,
+      changedTotal > 100,
+      `the override marks a real area of the car (${changedTotal} px over ${VIEWS.length} views)`,
     );
     check(
-      diff.magentaB > 200,
-      `the badge's own hue is on the car once the file is there (${diff.magentaB} px)`,
+      hueATotal === 0,
+      `NONE of what the badge replaced carried the badge's hue (${hueATotal} of ${changedTotal} px)`,
+    );
+    check(
+      hueBTotal >= 20,
+      `what replaced it does (${hueATotal} -> ${hueBTotal} of ${changedTotal} px)`,
     );
 
     // ---------------------------------------------------------------------
@@ -474,9 +501,12 @@ async function main(): Promise<void> {
     );
   } finally {
     await rm(PROBE_DIR, { recursive: true, force: true });
-    if (!brandDirPreexisted && existsSync(BRAND_DIR)) {
-      const left = await readdir(BRAND_DIR);
-      if (left.length === 0) await rm(BRAND_DIR, { recursive: true, force: true });
+    // An EMPTY `public/brand/` is removed whether or not it pre-existed: it
+    // holds none of the user's artwork by definition, and leaving one behind
+    // makes the next run skip the empty-directory assertion — which is how a
+    // probe quietly stops testing the case it was written for.
+    if (existsSync(BRAND_DIR) && (await readdir(BRAND_DIR)).length === 0) {
+      await rm(BRAND_DIR, { recursive: true, force: true });
     }
     await browser.close();
     await server.close();

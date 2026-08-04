@@ -1,5 +1,5 @@
-import { readdirSync, existsSync } from 'node:fs';
-import { resolve, posix } from 'node:path';
+import { createReadStream, readdirSync, existsSync, statSync } from 'node:fs';
+import { resolve, posix, sep } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
 /**
@@ -23,8 +23,14 @@ import { defineConfig, type Plugin } from 'vite';
  * step for the user to run and no manifest for them to maintain.
  */
 function brandManifest(): Plugin {
+  const PREFIX = '/brand/';
   const ENDPOINT = '/brand/manifest.json';
   const EXTS = new Set(['.png', '.webp', '.svg']);
+  const MIME: Record<string, string> = {
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+  };
 
   const scan = (dir: string, prefix = '', out: string[] = []): string[] => {
     if (!existsSync(dir)) return out;
@@ -50,13 +56,57 @@ function brandManifest(): Plugin {
     // the live scan.
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const path = (req.url ?? '').split('?')[0];
-        if (path !== ENDPOINT) { next(); return; }
-        const files = scan(brandDir).sort();
+        const path = decodeURIComponent((req.url ?? '').split('?')[0]);
+        if (!path.startsWith(PREFIX)) { next(); return; }
+
+        if (path === ENDPOINT) {
+          const files = scan(brandDir).sort();
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(JSON.stringify({ files }));
+          return;
+        }
+
+        // THE ARTWORK ITSELF IS SERVED HERE TOO, AND IT HAS TO BE.
+        //
+        // Vite keeps an in-memory Set of the files in `public/` scanned once at
+        // server start, and its static middleware `next()`s straight past
+        // anything not in that Set — the Set being kept current by the file
+        // watcher. Harnesses in `scripts/` create their server with
+        // `watch: null`, so a file dropped into `public/` while such a server is
+        // running is INVISIBLE to it, the request falls through to the SPA html
+        // fallback (which accepts `Accept: */*`, and `fetch` sends exactly
+        // that), and the answer to a request for `badge.png` is **`index.html`
+        // with a 200 and `Content-Type: text/html`**.
+        //
+        // That is not a hypothetical. It cost two rewrites of `BrandAssets
+        // .decode`, because through an `<img>` the whole thing arrives as a
+        // single `onerror` on a 200 response and reads exactly like a corrupt
+        // file. `probe:assets` named it the moment the decoder was asked for a
+        // reason: `element text/html 1509B /brand/__probe__/badge.png`.
+        //
+        // Serving it here is also simply right rather than a workaround: this
+        // directory is the one place in the project whose whole purpose is that
+        // a file appears the moment it is dropped in, and a cache refreshed
+        // only by a watcher is the wrong mechanism for that. Dev only — a
+        // production build copies `public/brand/` into `dist/` like any other
+        // static file.
+        const rel = path.slice(PREFIX.length);
+        const file = resolve(brandDir, rel);
+        if (!file.startsWith(brandDir + sep)) { next(); return; }
+        if (!EXTS.has(file.slice(file.lastIndexOf('.')).toLowerCase())) { next(); return; }
+        let size: number;
+        try {
+          const st = statSync(file);
+          if (!st.isFile()) { next(); return; }
+          size = st.size;
+        } catch { next(); return; }
         res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Type', MIME[file.slice(file.lastIndexOf('.')).toLowerCase()]);
+        res.setHeader('Content-Length', String(size));
         res.setHeader('Cache-Control', 'no-store');
-        res.end(JSON.stringify({ files }));
+        createReadStream(file).pipe(res);
       });
     },
     generateBundle() {

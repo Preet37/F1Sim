@@ -647,19 +647,35 @@ both been written against a boundary that was not there.
   waits for, so the FIRST car built in a page is drawn without it and every one after is
   drawn with it — two builds of the identical car are not identical, and a byte-identity
   assertion anchored on the first build would have been measuring texture arrival. The
-  probe warms up. (b) An `<img>` pointed straight at the network hands you exactly one bit
-  on failure. Two runs sat on a **200 response, `image/png`, 6508 bytes, a valid PNG
-  signature — and an `onerror`**, with a manual `new Image()` on the identical URL a moment
-  later succeeding. **§8 now records that same symptom as one of four collected that day at
-  load average 209, so the `<img>` path may never have been wrong at all** — under that much
-  contention a starved decode reads exactly like a corrupt file, and this is the clearest
-  case in the project of a code change made against a machine artefact. `decode()` fetches
-  first and hands the bytes to `createImageBitmap`, falling back to an `<img>` over an
-  object URL for SVG, which has no intrinsic size and which `createImageBitmap` rejects
-  outright. That is the right shape whatever the machine was doing — the HTTP status is
-  observable, the decoder rejects with a message rather than a bare event, and
-  `brandState().undecodable` reports what got that far and was refused instead of logging
-  it — but the fault it was written against is not established.
+  probe warms up.
+
+- **(b) A FILE DROPPED INTO `public/` IS INVISIBLE TO A DEV SERVER STARTED WITH
+  `watch: null`, and the answer it gives instead is `index.html` with a 200.** Vite keeps an
+  in-memory Set of the files in `public/` scanned once at server start and its static
+  middleware `next()`s past anything not in it, the Set being kept current by the file
+  watcher — and every harness in `scripts/` creates its server with `watch: null`. The
+  request then falls through to the SPA html fallback, which accepts `Accept: */*`, and
+  `fetch` sends exactly that. **Measured: `element text/html 1509B
+  /brand/__probe__/badge.png`.**
+
+  This is worth its own entry because of how long it took to see, and the reason it took
+  that long is §3.1 in a new costume. Through an `<img>` the whole failure arrives as a
+  **single `onerror` on a 200 response**, and the harness's own `page.on('response')` showed
+  `200`. Two implementations of `decode()` were rewritten against it; a manual `fetch` in
+  the page reported `image/png`, 6508 bytes, a valid PNG signature, and a `new Image()` that
+  loaded fine — which made it look like a race, and then like the load-average artefact §8
+  records, and it was neither. **One bit of failure information is not a diagnosis.** It
+  became obvious in one run the moment the decoder was asked to say WHY: `createImageBitmap`
+  rejects with `InvalidStateError` and the fallback path reports the blob's own
+  `Content-Type`, and `text/html` names the bug immediately.
+
+  Two things landed from it. `decode()` fetches first and hands the bytes to
+  `createImageBitmap` — bytes in hand, a real rejection message, no dependence on the DOM —
+  falling back to an `<img>` over an object URL only for SVG, which has no intrinsic size
+  and which `createImageBitmap` refuses. And the Vite plugin **serves the artwork as well as
+  the manifest**, which is not a workaround: `public/brand/` is the one directory in this
+  project whose entire purpose is that a file appears the moment it is dropped in, and a
+  cache refreshed only by a watcher is the wrong mechanism for that.
 
 ### Materials: the wheel corner's table contradicted its own comment (issue #36)
 
@@ -2248,6 +2264,17 @@ measurement passes every version of it that is wrong.
   **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
   of the load. Check `uptime` before quoting any number, and say plainly when a
   measurement was skipped rather than quoting one taken under load.
+- **Blaming the load for something that was a real bug.** The list above is right and the
+  rule is right, and on 2026-08-03 it also swallowed a genuine defect for two rewrites.
+  *"The asset-loader probe hit a 200 response carrying a valid PNG and an `onerror`"* is on
+  that list as a load artefact. **It was not.** Vite scans `public/` once at server start
+  and its static middleware skips anything not in that Set; every harness in `scripts/`
+  passes `watch: null`, so **a file written into `public/` while such a server is running is
+  invisible to it and the SPA html fallback answers with `index.html`, 200,
+  `Content-Type: text/html`.** Any probe that creates a file under `public/` at runtime has
+  this, and it presents as a corrupt asset. Fixed for `public/brand/` by serving it from the
+  plugin (see §6, issue #36). **A symptom that matches the load excuse is not evidence for
+  it — make the failing component say WHY before accepting the environment as the cause.**
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
