@@ -1663,12 +1663,21 @@ For scale, the per-node sub-quad change that preceded this cost 2.0–5.6%.
 **What it bought the cars, and the bound came DOWN rather than out.** `probe:crashrest` §4
 bounds a car's burial by the road mesh's own departure from the placement rule **plus 10mm**,
 measured in the same run — so a mesh that stops departing tightens its own bound with no
-line of the probe edited. Monaco's mesh departure fell **51.6mm → 1.5mm**, its worst raw tyre
-burial **79.7mm → 11.3mm**, and its excess over the bound **43.6mm → 10.7mm**. COTA's burial
-fell 46.5 → 2.5mm, Suzuka's 34.3 → 5.9mm (with #37 below), Monza's 2.7 → 0.3, Interlagos'
-3.4 → 0.3. The probe is still **48 ok / 1 failed** and the one is still Monaco s=336, but it
-is no longer a road-mesh defect: the mesh there is right to a millimetre and what is left is
-a rigid 3.6m plate on a 9.2m radius.
+line of the probe edited. Every column of §4, before → after, in millimetres:
+
+| circuit | mesh vs rule | worst tyre buried | over the bound | circuit | mesh vs rule | worst tyre buried | over the bound |
+|---|---|---|---|---|---|---|---|
+| **Suzuka** | **113.5 → 0.4** | 34.3 → 5.9 | 5.3 → 5.9 | Spa | 30.8 → 0.6 | 27.3 → 2.8 | 0.5 → 2.6 |
+| **Monaco** | **51.6 → 1.5** | **79.7 → 11.3** | **43.6 → 10.7** | Interlagos | 12.8 → 0.4 | 3.4 → 0.3 | 0.2 → 0.2 |
+| COTA | 45.9 → 1.3 | 46.5 → 2.5 | 4.1 → 1.8 | Monza | 2.9 → 0.4 | 2.7 → 0.3 | 0.5 → 0.0 |
+| Zandvoort | 45.2 → 0.8 | 34.4 → 0.6 | 0.2 → 0.2 | Bahrain | 2.7 → 0.4 | 2.4 → 0.4 | 0.0 → 0.1 |
+| Red Bull Ring | 35.4 → 0.8 | 8.6 → 0.6 | 0.3 → 0.5 | Silverstone | 0.8 → 0.3 | 0.5 → 0.2 | 0.0 → 0.0 |
+| | | | | Jeddah | 0.4 → 0.3 | 0.4 → 0.2 | 0.0 → 0.0 |
+
+**Every circuit's mesh departure is now 1.5mm or less**, and the worst tyre buried anywhere
+on the calendar is **11.3mm against 79.7mm.** The probe is still **48 ok / 1 failed** and the
+one is still Monaco s=336, but it is no longer a road-mesh defect: the mesh there is right to
+a millimetre and what is left is a rigid 3.6m plate on a 9.2m radius.
 
 **Suzuka's crossover is a bridge now (issue #37).** The two legs cross in plan at
 s=2274–2300 and s=4649–4676, and the elevation profile — whose own comment said *"the
