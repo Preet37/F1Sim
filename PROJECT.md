@@ -1805,6 +1805,69 @@ sticks at the node for the whole wedge between two segments, and at Monaco's hai
 wedge is nineteen degrees, so a car five metres out covers 1.65m of ground for no advance at
 all. The same defect with the sign reversed.
 
+**AND WHAT IS LEFT OF #66 IS NOT IN `project()` AT ALL — the ruler is wrong, found
+2026-08-04.** The residue after the blend was assumed to be the function's own second-order
+error plus the probe's node-snapped envelope. **The arithmetic rules the first one out before
+any probe does.** Expanding the blend on a circular arc, with `h` the node spacing, `k` the
+curvature, `w` the lateral offset and `x` the fraction of the segment:
+
+```
+ds − h·x  =  (h³/6) · [ k²·x(1−x)(1−2x)  +  k³w·x(x³+(1−x)³−x²) ]
+```
+
+The first bracket maxes at 0.0962, so `|error| ≤ 0.016·k²·h³` — at `h` = 3m and the tightest
+radius on the calendar, **well under a millimetre**, three orders of magnitude below what
+`probe:framerate` counts.
+
+**It is `dist`.** The constructor writes `dist[i] = i · def.lengthM / count` — a perfectly
+uniform ruler, every node exactly 3.00m of `s` from the last — and `easeCentrelineKinks()`
+then **moves nodes, by up to 10.4m at Monaco's hairpin by its own comment, without
+recomputing it.** Where the easing pulled two nodes together, the car drives the real gap and
+`s` advances the uniform figure. Measured over the eleven circuits, uniform spacing against
+the polyline's own gaps:
+
+| circuit | min gap | rms error | worst | at | worst jump `probe:framerate` records |
+|---|---|---|---|---|---|
+| **Monaco** | **2.247m** | 3.58% | **+33.6%** | s=330m | +0.11m at **s=328m** |
+| **COTA** | 2.792m | 0.82% | +7.4% | s=3428m | +0.05m at **s=3429m** |
+| **Monza** | 2.928m | 0.25% | +2.5% | s=618m | +0.14m at **s=615m** |
+| Bahrain | 2.882m | 0.45% | +4.1% | s=2541m | +0.09m at s=518m |
+| Spa | 2.926m | 0.23% | +2.5% | s=204m | +0.05m at s=6639m |
+| the other six | ≥2.987m | ≤0.03% | ≤+0.4% | | |
+
+**The three circuits with a real ruler error have their worst jump at the same metre.** A
+2.247m gap carrying 3.001m of `s` is `s` advancing **33.6% faster than the car**, which is
+issue #66's title, literally, and it is not a projection defect.
+
+**AND THE COUNT WAS NEVER ONE NUMBER.** `probe:framerate` attributes all 3548 jump frames
+now, and the first line is the one that matters:
+
+| | frames | |
+|---|---|---|
+| `s` running **AHEAD** of the car | **1665** | this is what #66 is about |
+| `s` running **BEHIND** it | **1883** | the opposite sign, and not a projection defect at all |
+| …of which the car's own SIDEWAYS SLIP accounts for | **1577** | 84% of them |
+| the RULER accounts for | 553 | |
+| the ENVELOPE's own node-snapping accounts for | 274 | |
+| **outside all three** | **1256** | **no mechanism, nobody is on it** |
+
+**More than half the count was never the defect.** `plan` is how far the car moved *through
+the world*, and a car sliding sideways covers ground that buys no advance along the lap, so
+`ds < plan·(1 − |lateral·k|)` is what an F1 car does in every corner. The probe allows a flat
+**20mm** for it — which is *exactly* 1 m/s of slip at 50fps — and takes the frames that
+exceed it into a count whose headline is "`s` advanced further than the car travelled". Take
+the frame's own lateral movement out of `plan` and 1577 of the 1883 under-runs are inside the
+floor. The second column above is the honest size of #66: **1665 frames, not 3548.**
+
+**Nothing was changed for it here, deliberately.** There are two fixes and both are
+constructor work: re-space the centreline after the easing so the uniform ruler becomes true
+again, or make `dist` the polyline's own cumulative length — and the second breaks every
+`(s / length) · count` lookup in `TrackSpline` (`toWorld`, `elevationAt`, `bankingAt`,
+`indexAt`), all of which assume the uniform ruler. Either moves node positions or `s` on four
+circuits and re-baselines every seeded race. `TrackSpline.ts` was held to `project()` on this
+branch. **`probe:framerate` now prints the ruler per circuit on every run and reports how
+many of its jump frames the ruler alone accounts for. #66 stays open on it — see §7.**
+
 ### #48's low pass reached every surface in the scene and only the road was ever measured (issue #86)
 
 The normal map is differentiated from a LOW-PASSED copy of the height field (§6, #48), and
@@ -1854,6 +1917,49 @@ aggregate is a LOOK question and needs a look review.
 `detailResolve` fading a band out with distance. That is a screen-space question, it belongs
 in `probe:grain` masked to the kerb the way it is masked to the road, and **that half is not
 built.**
+
+#### The paint decision, made against the reference frame — #86's look half, CLOSED
+
+The paint was left exempt from the floor on a stated property of the object, its 0.66° was
+printed rather than hidden, and the question — *should a white line read as a smooth film or
+as painted aggregate?* — was left open as a **look decision**. It has been made, and it was
+made the way this project is supposed to make them: with a number, off the user's own
+reference frames, not from an opinion about a screenshot.
+
+**Measured on `reference/target/90.png`** — Bahrain at night, which `INDEX.md` names as *"the
+lighting and surface target"* and which is more than half kerb. Metric: relative
+high-frequency luma modulation, RMS of luma minus a σ=2 Gaussian of luma, divided by the
+patch's own mean luma — normalising by the mean is what makes a white surface comparable with
+a dark one, because a Lambertian facet changes luma by a *fraction* of the local level.
+Regions are found **by colour** and then eroded by more than the blur radius, so no
+measurement contains a paint/asphalt boundary; a boundary is a step edge and would dominate
+any high-pass.
+
+| region of `90.png` | relative HF modulation | pixels |
+|---|---|---|
+| near asphalt, same distance band as the kerb | **5.62%** | 79,599 |
+| mid asphalt, further up the straight | 3.92% | 10,214 |
+| kerb **white** paint | **2.83%** | 16,288 |
+| kerb **red** paint | **1.80%** | 22,266 |
+
+**In the specification, painted kerb blocks carry 0.32 to 0.50 of the asphalt's fine relief**
+— and 0.50 is the generous end, because the white mask also contains the fluted drainage
+grooves cut into the kerb, which are geometry rather than surface. **Ours is 0.66 / 1.86 =
+0.357: inside that range, nearer the red blocks than the white.** So #48 did not take
+anything from the paint that the reference frame has, and the answer to the look question is
+that **a white line IS a smooth film. `paint.normalStrength` stays at 0.15.**
+
+`76.png`'s own white lines could not be measured and that is reported rather than fudged: at
+that frame's resolution the edge line and the grid markings are a few pixels across, so every
+pixel of them is inside the blur radius of their own edge. `90.png`'s kerb blocks are
+hundreds of pixels wide and are the right instrument.
+
+**The exemption is now from the FLOOR and not from measurement.** Paint carries a **ceiling**
+instead — `PAINT_RELIEF_CEILING = 0.50`, read off the reference and not off our own output —
+because the finding went the opposite way from the one #86 feared: the risk worth guarding is
+that somebody later "fixes" the 0.66° by winding `normalStrength` back up until a white line
+reads as aggregate. **Proved red**: 0.15 → 0.30 takes the ratio to 0.714 and `probe:kerbs`
+exits 1.
 ### The onboard camera rode the MIRROR IMAGE of the car (issues #49, #50, #31)
 
 `probe:framing` was the biggest known-failing probe in the project at **113**, and this file
@@ -3208,6 +3314,144 @@ touched.**
   **What that confound also says, and it is an open item rather than a fixed one:** the
   wet-line move the AI actually makes is smaller than the effect of it simply going slower.
   §7.
+
+### It had never rained, and the schedule underneath the bug was a 100% calendar (#97)
+
+**The headline is that this game had never simulated a wet race**, on any seed, at any
+circuit, in any session, since the weather model was written — and every probe was green,
+because every probe reached the road through `Weather.forceRain`, which assigns `rainRate`
+directly and skips the ramp. PROJECT.md §3.2 in its purest form: not a probe that would pass
+a broken feature, an entire suite built on a bypass around the one path a player is ever on.
+
+**The mechanism, in one line.** `Weather.update` damped `rainRate` toward its target and
+then snapped anything under 0.01 to zero — *unconditionally*. `damp` is
+`current + (target − current)·(1 − exp(−rate·dt))`, and from a dry sky at `PHYSICS_DT` one
+step moves `rainRate` by at most **0.00024**. The floor put it straight back. Every step.
+Forever. The fix is `&& this.targetRain < RAIN_FLOOR`: the floor exists so a *dying* drizzle
+snaps to dry rather than asymptoting, and gating it on the target says exactly that and
+nothing more.
+
+**THE SECOND HALF IS WHY #42 LEFT IT, AND IT IS WORSE THAN THE ISSUE SAYS.** Fixing the
+floor and leaving the schedule alone was measured on the real `Weather` at the real
+`PHYSICS_DT`, 11 circuits × 60 seeds × 90 minutes:
+
+| | sessions reaching damp or worse | of |
+|---|---|---|
+| `main`, as shipped | **0** | 660 |
+| floor fixed, schedule untouched | **650 (98.5%)** | 660 |
+| floor fixed, schedule calibrated | **98 (14.85%)** | 660 |
+
+Jeddah, whose `rainChance` is **0.01**, came out at 97.5% in the middle row. The issue's 78%
+figure was taken at 1 Hz, where the floor still catches about half the events on their way up
+and therefore *flatters* the schedule. The cause is compounding: `rollNextIntensity` re-rolled
+a **flat 0.35** every time an event landed, events land every 210–900s, and a 90-minute
+session gets about ten independent rolls — `1 − 0.65^9.7 = 99.4%` — with the circuit consulted
+exactly once, in the constructor, and never again.
+
+**THE CALENDAR IT IS CALIBRATED TO, AND THE SOURCE.** A Grand Prix is wet about **one weekend
+in seven**. Counted off the published F1 race classifications for 2022–2024, 68 races, the
+ones in which any car ran a wet-weather tyre during the race itself are Monaco, Singapore and
+Japan in 2022; Monaco and the Netherlands in 2023; Canada, Great Britain and Brazil in 2024 —
+eight or nine of 68, 12–13%, and about 17% if "materially affected by rain" is the test
+instead. So the honest figure is a **band, one race in six to one race in eight**, and the
+model is fitted to the middle of it rather than to a false precision. The regulations' own
+"wet race" (2026 Sporting Regs Art. B7.2.1 / 2025 Art. 41.1) is a Race Director's declaration
+about the START of a race and is deliberately *not* what is counted.
+
+**Both rolls are the circuit's own climate now**, scaled by two constants fitted together:
+`rainChance × RAIN_ONSET_SCALE` once in the constructor, and `rainChance × RAIN_ARRIVAL_SCALE`
+per scheduled event — so a long session is likelier to see rain than a short one, which is
+why a wet Sunday can follow a dry Saturday. `def.rainChance` is the figure the game already
+shows the player as **"Rain risk"** on the briefing and the strategy screen, so using anything
+else would have put the number on screen at odds with the sky. **Neither change alters the
+number or the order of draws taken from `rng`** — both were already single `chance()` calls in
+those two places — so the stream stays aligned with itself.
+
+**The calendar it produces**, 11 × 200 seeds = 2,200 sessions, **14.55%, one race in 6.9**:
+
+| | | | |
+|---|---|---|---|
+| Jeddah 1.0% | Bahrain 0.5% | Monaco 9.5% | Monza 11.0% |
+| COTA 11.5% | Silverstone 17.5% | Red Bull Ring 19.5% | Zandvoort 20.0% |
+| Spa 21.5% | Suzuka 24.0% | Interlagos 24.0% | |
+
+Roughly 55–60% of the wet sessions are raining when they start; the rest arrive.
+
+**`probe:weather` §3c was the section that printed the diagnosis every run and asserted
+nothing. It asserts now, in four directions**, and none of it touches `forceRain`:
+
+- **REACHABLE** — the calendar's wet rate is not zero. This is #97 itself.
+- **CALIBRATED** — it is between 1 in 8 and 1 in 6. The band is the *target*, not a ring
+  drawn round the output.
+- **STEP-FREE** — the answer at `PHYSICS_DT` equals the answer at 1 Hz. **This is the
+  invariant #97 actually violated**, and the assertion that would have caught it the day it
+  was written: a weather model whose calendar depends on the integrator's step size is wrong
+  however plausible either number looks. Measured today: 98 and 98 of 660, exactly.
+- **CLIMATE** — the desert circuits stay dry (0.0%) and the wet ones are wet (23.0%). A
+  calendar mean cannot see a flat 0.35; this can.
+
+**Proved red both ways.** Restoring the unconditional floor: exit 1, four failures, `0 of 660
+sessions reached even damp`, and the step-free assertion reads `54 of 660 at 1Hz and 0 at
+PHYSICS_DT`. Restoring the flat schedule with the floor fixed: exit 1, three failures,
+`98.5% of sessions wet against a target of 12.5–16.7%` and `Bahrain and Jeddah run 97.5% of
+sessions wet on a rainChance of 0.01–0.02`.
+
+**The sweep runs `Weather` without a `TrackSpline`**, which is a cost decision with a
+measurement behind it: the sky is independent of the track, `TrackSurface` already carries a
+documented single-node path, and integrating two thousand nodes at 5 Hz is about fifty times
+the cost of the sky. With the spline the sweep is ~20 minutes; without it, ~25 seconds. Over
+the whole calendar at 40 seeds the wet rate is the **same 69 of 440 either way**, and Spa is
+re-run *with* its real spline on every run so the equivalence is asserted rather than
+remembered (18 of 60 against 18 of 60).
+
+#### The re-baseline — every seeded number that moved, measured both ways on this tree
+
+`src/race/Weather.ts` was swapped between `main`'s copy and this one and **nothing else
+changed**, so every difference below is the rain and only the rain. Both arms ran on the same
+machine within two hours of each other.
+
+| probe | `main` | with rain | |
+|---|---|---|---|
+| `probe:racesweep` | **11 / 55** fail, mean lap/ref **1.3284** | **11 / 55**, mean **1.3327** | the eleven failing races are the *same eleven*, byte-identical messages |
+| …mean finishers | 19.38 | 19.36 | |
+| …mean retirements | 0.62 | 0.64 | |
+| …mean overtakes | 261.51 | 262.15 | |
+| …mean off-track | 39.89 | 40.24 | |
+| …mean pit stops | 26.60 | 26.69 | |
+| …mean spread | 30.98 | 31.29 | |
+| `validate:race` | **2** fail (`monaco 150%`, `cota 145%`) | **2**, identical | 9 of the 11 circuit rows are byte-identical |
+| `probe:racelog` quarter | **PASS** | **1 FAIL** — 15.63 contacts a race against a bar of 12.0, was 8.63 | see below |
+| `probe:attrition` | PASS | PASS | Spa survivors 17.0 → 16.7 of 20 |
+| `probe:strategy` | PASS | PASS | byte-identical — the Silverstone race it is calibrated on stays dry |
+| `probe:framerate` | PASS, 3548 jump frames | PASS, **3548**, byte-identical | its own seed-54 race does not rain |
+| `probe:weather` | PASS | PASS | §3c 0 of 660 → 98 of 660 |
+
+**Only two circuits move anywhere, and they are the right two.** Checked directly rather than
+inferred: at the seed those harnesses use, `Spa` reaches **0.796** peak water and `Interlagos`
+**0.792**, both raining from the start; Monza and Silverstone at the same seed stay at
+**0.000**. Spa's `rainChance` is 0.42 and Interlagos's 0.45 — the two wettest circuits on the
+calendar. In `probe:racesweep` that is **2 of 55 races**, because the sweep runs five seeds
+across eleven circuits and `Weather` seeds its Rng from the session seed alone, so a seed that
+rains is the *same* seed at every circuit and only the wet circuits clear their own threshold.
+
+#### And the thing the re-baseline found, which is bigger than the re-baseline
+
+**A wet race is currently a bloodbath, and nothing in this project could have known that
+because no race had ever been wet.** `probe:racelog`'s quarter-distance set is eight races; one
+of them — **Spa, seed 20260729, eleven laps** — is now wet, and it alone takes the probe red:
+
+| that one race | dry | wet |
+|---|---|---|
+| cars retired | **0** | **6 of 20** |
+| car-to-car contacts | **3** | **59** |
+| safety car / VSC periods | **0** | **5** |
+| the player | finished P13 | **OUT, beached in the gravel, 4 contacts** |
+
+The eight-race mean goes 8.63 → **15.63** contacts against a bar of 12.0, and 1.00 → 1.75
+retirements against a bar of 3.0. **One race in eight does that.** This is the cost of making
+rain reachable and it is reported rather than hidden: the wet grip model, the AI's wet pace and
+the wet line are all live now for the first time, and the field cannot drive on them. It is
+`src/ai/` and the tyre model, both held elsewhere, and **nobody is on it.** See §7.
 
 ### The crash and penalty rate, as the player feels it (#12)
 
@@ -4991,12 +5235,17 @@ shared files and the run that matters passed. **Nobody is on this.**
   meant to read as a granular material and capped at 1.5° below the resolvable limit, proved
   red in both directions. Asphalt 1.86°, kerb 1.27°, run-off 3.86°, grass 3.66°, **paint
   0.66°.** Full table and the derivations in §6. Two things are left:
-  - **Paint is exempt from the floor by a stated property of the object** — thermoplastic
-    road paint is a smooth film and is legitimately smoother than the aggregate beside it —
-    but #48 took it from about 1.8° to 0.66°, which is under the visibility floor, and
-    **whether a white line should read as a film or as painted aggregate has not been
-    looked at.** It is a look decision and it needs a look review, not a probe. Nobody is
-    on it.
+  - ~~**Paint is exempt from the floor by a stated property of the object**, and whether a
+    white line should read as a film or as painted aggregate has not been looked at~~ —
+    **DECIDED, 2026-08-04: smooth paint is correct, `paint.normalStrength` stays at 0.15,
+    and #86's look half is closed.** Measured off `reference/target/90.png` rather than
+    argued: relative high-frequency luma modulation on colour-classified, edge-eroded
+    regions reads near asphalt **5.62%**, kerb white paint **2.83%**, kerb red paint
+    **1.80%** — so the specification's own painted kerb blocks carry **0.32–0.50 of the
+    asphalt's fine relief**, and ours is 0.66/1.86 = **0.357**, inside that range. The
+    exemption is now from the FLOOR only: paint carries a **ceiling** instead
+    (`PAINT_RELIEF_CEILING = 0.50`, read off the reference), proved red at
+    `normalStrength` 0.30. Full derivation and the reason `76.png` could not be used in §6.
   - **`probe:grain` still masks to `ROAD_MESH_NAME` alone.** What `probe:kerbs` measures is
     the map; what a FRAME draws of it — through `detailResolve`, which fades a band out with
     distance — is a screen-space question, and the kerb mask that would answer it **is not
@@ -5141,44 +5390,40 @@ shared files and the run that matters passed. **Nobody is on this.**
   (`11.50 cars retire per race — a Grand Prix loses one or two`, `21.00 car-to-car contacts
   a race`) and **that is the live part of #26.** The player still retires from 100% of
   full-distance races, now by beaching rather than by stopping.
-- **IT HAS NEVER RAINED IN THIS GAME. NOT ONCE, ON ANY SEED, AT ANY CIRCUIT.** Found while
-  working #42, in `Weather.ts`, and it is the layer underneath it. `Weather.update` damps
-  `rainRate` toward its target and then snaps anything under 0.01 to zero. `damp` is
-  `current + (target − current) × (1 − exp(−rate·dt))`, and `rampRate` is 1/35 to 1/110, so
-  **one step at `PHYSICS_DT` moves `rainRate` from zero by at most 0.00024** — and the floor
-  puts it straight back. Every step. `rainRate` cannot leave zero.
-  **Measured, 11 circuits × 40 seeds × 90 minutes:**
-
-  | stepped at | sessions reaching damp or worse | wettest any of them got |
-  |---|---|---|
-  | 1 Hz | 343 of 440 (**78.0%**) | 0.848 |
-  | **`PHYSICS_DT`, which is what `RaceEngine.step` passes** | **0 of 440 (0.0%)** | **0.0000** |
-
-  Confirmed end to end on the configuration #12 and #26 are measured at — a full-distance
-  Silverstone race through the real `RaceEngine`: **peak line wetness 0.0000, 0.0% of steps
-  damp, peak `lineAvoidance` offered to any car 0.0000.**
-  **Nothing catches it because every weather probe, and the `?wet=` parameter in `main.ts`,
-  reach the road through `Weather.forceRain`** — which assigns `rainRate` directly and skips
-  the ramp. That is correct for a probe (its own comment explains why: a probe that hunts for
-  a seed that rains is measuring the seed) and it means **the one path the player is on is
-  the one path nothing exercises.** §3.2, in its purest form.
-  **There is already a note in the tree that saw this and explained it away.**
-  `probeStrategy.ts` records that its Silverstone race "went dry" when the weather model was
-  rewritten and attributes it to a shifted random stream — then re-calibrates an assertion
-  around the dry draw. It went dry because they all did.
-  **NOT FIXED ON THE #42 BRANCH, deliberately, and the reason is the first column.** The
-  floor's intent is right — a dying drizzle should snap to dry rather than asymptote — so the
-  correction is to apply it only while the sky is CLEARING. But 78% of sessions wet is not a
-  calendar; a real season runs about one race in five in the wet. The event schedule rolls a
-  fresh chance every 210–900s and compounds `def.rainChance` into something far larger over a
-  race distance, and **that has never been measured because the floor has been hiding it.**
-  Landing the floor alone takes the game from no weather to weather in three races out of
-  four *and* re-baselines every seeded race in the repository in the same commit — including
-  `probe:racelog`, `probe:racesweep`, `validate:race` and `probe:strategy`, one of which is
-  explicitly calibrated on the dry draw. It needs the schedule calibrated with it, against a
-  stated target for how often a Grand Prix should be wet. `probe:weather` **§3c prints both
-  columns on every run** and says so; the mechanism is written out on the line itself in
-  `Weather.ts`. **Issue #97. Nobody is on it.**
+- ~~**IT HAS NEVER RAINED IN THIS GAME. NOT ONCE, ON ANY SEED, AT ANY CIRCUIT.**~~ —
+  **FIXED, issue #97, and the schedule underneath it with it. See §6.** The floor in
+  `Weather.update` was applied unconditionally, so it caught rain on the way UP as well as on
+  the way down, and at `PHYSICS_DT` one step moves `rainRate` from zero by at most 0.00024.
+  It is gated on `targetRain` now, which is what "a dying drizzle should snap to dry" always
+  meant. **Fixing it alone would have been a different bug**: measured on the real `Weather`
+  at the real `PHYSICS_DT`, 11 circuits x 60 seeds x 90 minutes, the floor on its own puts
+  **650 of 660 sessions (98.5%)** into rain, Jeddah at `rainChance` 0.01 included at 97.5%,
+  because `rollNextIntensity` re-rolled a flat 0.35 every 210-900s and a 90-minute session
+  gets ten of them. Both rolls are the circuit's own climate now, scaled: **14.55% of
+  sessions wet over 2,200, one race in 6.9**, against a target of one in six to one in eight
+  counted off 2022-2024 race classifications. `probe:weather` §3c **asserts** it in four
+  directions and is proved red both ways. What is NOT done and is worth knowing:
+  - **`main.ts`'s `Simulate Race` button still rolls `Math.random() < circuit.rainChance`
+    directly** (line ~2024), so a career round the player simulates rather than drives is wet
+    at the raw calendar mean of **25.7%** while a driven session is wet at 14.6%. One line, in
+    a file held by the front-end work, and it wants the same scale applied or the two paths
+    disagree by 11 points. **Nobody is on it.**
+  - The `Rain risk` percentage the briefing and the strategy screen print is `rainChance`
+    itself, which is now a **relative** weight rather than the probability of a wet session.
+    It reads high by about 3x. Not touched — the screens are `main.ts` and
+    `StrategyScreen.ts`.
+- **A WET RACE IS A BLOODBATH, and this is what making the rain reachable exposed.** Nothing
+  in this project could have known: no race had ever been wet. `probe:racelog`'s
+  quarter-distance set is eight races and exactly one of them — **Spa, seed 20260729, eleven
+  laps** — now rains. That one race goes from **0 retirements to 6 of 20**, from **3
+  car-to-car contacts to 59**, from **0 safety-car periods to 5**, and the player from P13
+  finished to **out, beached in the gravel**. The eight-race mean goes 8.63 → **15.63**
+  contacts against a bar of 12.0, which takes `probe:racelog` from PASS to one failure; the
+  retirement mean, 1.00 → 1.75, still passes its bar of 3.0. **The probe is red for a real
+  reason and the bar was not touched.** The wet grip model, the AI's wet pace multiplier and
+  #42's wet racing line are all being exercised for the first time and the field cannot drive
+  on them. It is `src/ai/` and the tyre model, both held by other work, and it is the obvious
+  next piece: **rain is now reachable and the cars cannot handle it.** Nobody is on it.
 - **`probe:stewards` IS RED ON `main` AND THIS FILE HAS NEVER SAID SO** — and the number
   it quotes for the bench, in the entry above and in issue #26, is stale. Measured
   2026-08-03 on a clean `main` (the branch's `TrackSpline` copied out, `git checkout --`,
@@ -5238,13 +5483,33 @@ shared files and the run that matters passed. **Nobody is on this.**
   +1.30m and the re-measurement says 475 / +1.44m. §4's rule again: run it before quoting
   it.
 
-  **What is left is second order and part of it is the instrument.** The blend is exact to
-  first order in `κ`; the residue goes as `(κh)²`, which is 2.9% at Monza's Ascari. The
-  probe's envelope is also evaluated with a **node-snapped** curvature and an
-  **end-of-frame** lateral, so some of the residue is the bound rather than the projection, and
-  **nobody has separated the two.** The counts are still in the hundreds; the magnitudes are
-  now under 150mm everywhere and under 100mm on eight of eleven circuits. **Nobody is on the
-  rest.**
+  ~~**What is left is second order and part of it is the instrument.**~~ — **WRONG, and
+  measured wrong on 2026-08-04. What is left is the RULER, and it is not in `project()`.**
+  The blend's own second-order error is `|ds − h·x| ≤ 0.016·k²·h³`, which at 3m nodes and the
+  tightest radius on the calendar is **under a millimetre** — a thousand times too small to
+  be what the probe counts. The real cause: `TrackSpline`'s constructor writes
+  `dist[i] = i · def.lengthM / count`, a uniform ruler, and `easeCentrelineKinks()` then moves
+  nodes by up to 10.4m at Monaco **without recomputing it**. Monaco's tightest node gap is
+  **2.247m carrying 3.001m of `s` — +33.6%, at s=330m**, and the worst jump the probe records
+  at Monaco is +0.11m at **s=328m**. COTA 2.792m at s=3428m against a jump at s=3429m; Monza
+  2.928m at s=618m against a jump at s=615m. **The three circuits with a ruler error have
+  their worst jump at the same metre.** Full table in §6.
+  **And the count was never one number.** Of 3548 jump frames on the calendar, **1883 are
+  the WRONG SIGN for #66** — `s` advancing *less* than the envelope's floor, which is what a
+  car sliding sideways does, because `plan` is ground covered and not advance along the lap;
+  **1577 of those 1883 are inside the floor once the frame's own lateral movement is taken
+  out of `plan`**, and the probe's flat 20mm slack for it is exactly 1 m/s of slip at 50fps.
+  **The honest size of #66 is the 1665 over-runs.** Of the whole 3548: 553 the ruler, 274 the
+  envelope's own node-snapped curvature, and **1256 outside all three with no mechanism at
+  all.** `probe:framerate` prints this attribution every run and asserts none of it — no
+  tolerance was moved and the count is the count it has always been.
+  **Not fixed here.** Both fixes are constructor work — re-space the centreline after the
+  easing, or make `dist` the polyline's cumulative length, which breaks every
+  `(s / length) · count` lookup in the file — and `TrackSpline.ts` was held to `project()` on
+  the branch that found this, with the pace agent in the same file. Either one moves node
+  positions or `s` on four circuits and re-baselines every seeded race. `probe:framerate`
+  prints the ruler per circuit on every run now and reports how many jump frames it accounts
+  for. **The counts are still in the hundreds and #66 stays open. Nobody is on the fix.**
 - **`npm run build` FAILS on `main`, and it is one character in a comment.**
   `src/ui/styles.css:162` contains the literal ``dist/assets/fonts/titillium*/`` inside a
   `/* … */` block, and `*/` closes the comment — everything after it is parsed as CSS and

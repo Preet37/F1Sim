@@ -1889,6 +1889,57 @@ export class TrackSpline {
    * `lateral` is blended the same way and for the same reason. It has to come
    * from the same foot of the perpendicular that `s` does, or the pair (s,
    * lateral) is not a position.
+   *
+   * ---------------------------------------------------------------------
+   * WHAT IS LEFT OF #66 IS NOT IN THIS FUNCTION — measured, 2026-08-04
+   * ---------------------------------------------------------------------
+   *
+   * The blend took the worst overshoot from +1.44m to +0.14m at Monza, +1.35 to
+   * +0.11 at Monaco and +1.14 to +0.09 at the Red Bull Ring, and the frame
+   * COUNTS stayed in the hundreds. That residue was assumed to be this
+   * function's own second-order error. **It is not, and the arithmetic says so
+   * before any probe does.** Expanding the blend on a circular arc, with `h` the
+   * node spacing, `k` the curvature, `w` the lateral offset and `x` the fraction
+   * of the segment, the leading error is
+   *
+   *     ds - h*x  =  (h^3/6) * [ k^2 * x(1-x)(1-2x) + k^3*w * x(x^3+(1-x)^3-x^2) ]
+   *
+   * whose first term maxes at 0.0962, so |error| <= 0.016 * k^2 * h^3. At h = 3m
+   * and the tightest radius on the calendar that is well under a MILLIMETRE —
+   * three orders of magnitude below what `probe:framerate` counts.
+   *
+   * WHAT IT ACTUALLY IS: THE RULER. The constructor writes
+   * `dist[i] = i * def.lengthM / count` — a perfectly uniform ruler, every node
+   * exactly 3.00m of `s` from the last — and `easeCentrelineKinks()` then MOVES
+   * nodes, by up to 10.4m at Monaco's hairpin by its own comment, without
+   * recomputing it. Where the easing pulled two nodes together, the car drives
+   * the real gap and `s` advances the uniform figure. Measured over the eleven
+   * circuits: Monaco's tightest gap is **2.247m carrying 3.001m of `s`, +33.6%,
+   * at s=330m** — and the worst jump `probe:framerate` has ever recorded at
+   * Monaco is +0.11m at s=328m. COTA 2.792m at s=3428m against a jump at
+   * s=3429m; Monza 2.928m at s=618m against a jump at s=615m. The three
+   * circuits with a ruler error have the three jumps, at the same metre.
+   *
+   * AND THE COUNT WAS NEVER ONE NUMBER. Of the 3548 jump frames the probe
+   * counts across the calendar, **1883 are the WRONG SIGN for #66** — `s`
+   * advancing LESS than the envelope's floor, which is what a car sliding
+   * sideways does, because `plan` is ground covered through the world and not
+   * advance along the lap. 1577 of those 1883 are inside the floor once the
+   * frame's own lateral movement is taken out of `plan`; the probe allows a
+   * flat 20mm for it, which is exactly 1 m/s of slip at 50fps. **The honest
+   * size of #66 is the 1665 over-runs.** Of the whole 3548: 553 the ruler, 274
+   * the probe's own node-snapped curvature, 1256 outside all three with no
+   * mechanism.
+   *
+   * NOTHING IS CHANGED HERE FOR IT, DELIBERATELY. There are two fixes and both
+   * are constructor work: re-space the centreline after the easing so the
+   * uniform ruler becomes true again, or make `dist` the polyline's own
+   * cumulative length — and the second breaks every `(s / length) * count`
+   * lookup in this file (`toWorld`, `elevationAt`, `bankingAt`, `indexAt`),
+   * all of which assume the uniform ruler. Either moves node positions or `s`
+   * on four circuits and re-baselines every seeded race a second time. It is
+   * reported with the measurement instead — `probe:framerate` prints the ruler
+   * per circuit on every run — and #66 stays open on it.
    */
   project(x: number, z: number, hint: number, out: TrackProjection): number {
     const i0 = this.nearestIndex(x, z, hint);
