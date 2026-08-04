@@ -1261,11 +1261,14 @@ canvas#view {
      "that text box i told u to make it a square and make it bigger"
 
    THE COLUMN HAS A FLOOR AND IT IS THE MIRRORS. In the driver's eye the right
-   pane reaches from 68.5% to 93% of frame height — on a 900px screen that is
-   y=616 downwards — so every panel in this column has to finish above it. The
-   column is therefore laid out as a stack that ends by 615, not as things
+   pane reaches from 65.0% to 89.5% of frame height — on a 900px screen that is
+   y=585 downwards — so every panel in this column has to finish above it. The
+   column is therefore laid out as a stack that ends by 584, not as things
    hung off the bottom edge, and `shoot:panels` measures it every run. See
-   `MIRROR_PANES`.
+   `MIRROR_PANES`. **The floor was 616 until 2026-08-03**, when the keep-out was
+   re-derived against a camera that rides the car (#49); the 31 pixels came out
+   of the car diagram's own height, and only in this camera. See the block at
+   the end of this file.
 
    Beside the damage diagram rather than under it: the diagram is 92px of a
    244px column and the 142 left over is exactly a tyre panel. */
@@ -2488,7 +2491,8 @@ canvas#view {
   /* Down 52px to make room for the weather bug, which came across from the
      left column with the tyres. The stack in this column runs timing, wheel,
      gaps, buttons, conditions, then the car's physical state — and it has to
-     finish above the mirror band at 68.5% of frame height. */
+     finish above the mirror band, which starts at 65.0% of frame height in the
+     driver's eye and 77.0 in the cockpit. */
   top: calc(446px + var(--safe-t));
   right: calc(10px + var(--safe-r));
   left: auto;
@@ -2496,8 +2500,12 @@ canvas#view {
   /* 84 rather than 92, and the eight pixels are load-bearing: the diagram is
      drawn to a 100x170 viewBox, so its height is 1.7x whatever width it is
      given, and at 92 the panel finished at y=634 on a 900px screen — eighteen
-     pixels into the driver's right mirror pane, which starts at 68.5%. The
-     column has a hard floor and this is the panel that sits on it. */
+     pixels into the driver's right mirror pane, which used to start at 68.5%.
+     The column has a hard floor and this is the panel that sits on it. The
+     floor has since moved up to 65.0% and the remaining thirty pixels come out
+     of the DRAWING's height rather than the panel's width, in the driver's eye
+     only — see the block at the end of this file, and the measurement there for
+     why narrowing it further does not work. */
   width: 84px;
   padding: 7px 8px 8px;
   display: flex;
@@ -2765,11 +2773,24 @@ canvas#view {
     top: var(--rail-top, calc(216px + var(--safe-t)));
     /* Down to the top of the tyre panel, which is the first thing under it
        once the weather bug has moved out of the column. That takes the band
-       from 48 pixels to 94, which is what a principal's card needs. */
-    bottom: calc(80px + var(--safe-b));
+       from 48 pixels to 82, which is what a principal's card needs.
+
+       94 AND THE TOP OF THE TYRE PANEL WERE NOT THE SAME NUMBER, and the twelve
+       pixels between them are the whole of the oldest entry on `shoot:panels`'s
+       list. The panel is 86 tall and sits 6 from the bottom edge, so its top
+       edge is 92 up — and the rail's foot was written at 80, which put it
+       twelve pixels into the panel in every landscape-phone scene. That is
+       `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px` and
+       `phone/pit-choice: overlap .pitprompt x .hud-carstate by 138x12px`
+       exactly: 138 is the tyre panel's own width and 12 is 92 - 80. Nine of the
+       nine rail failures PROJECT.md §7 records as unowned are those two
+       sentences repeated across the scenes and the three onboard cameras.
+       94 rather than 92, so the two boxes are two pixels apart rather than
+       touching. */
+    bottom: calc(94px + var(--safe-b));
     gap: 5px;
   }
-  /* THE COMPACT CARD. 390 pixels of height leaves the rail a 94-pixel band
+  /* THE COMPACT CARD. 390 pixels of height leaves the rail an 82-pixel band
      between the running order and the tyre panel, and the two live cues want
      half of it — so a pop-up here is a name and two lines and nothing else.
      The portrait goes first: it is the most expensive 28 pixels on the card
@@ -2803,7 +2824,7 @@ canvas#view {
   }
   /* THE SQUARE IS OFF HERE, and this is the honest limit of the shape.
 
-     390 pixels of height leaves the rail a 94-pixel band between the running
+     390 pixels of height leaves the rail an 82-pixel band between the running
      order and the tyre panel. A 238-pixel square in it is not a square, it is
      a card with two thirds of itself outside the band — and `shoot:panels`
      measures exactly that and fails the sweep on it. So on a landscape phone
@@ -3129,6 +3150,32 @@ canvas#view {
 
 .hud[data-mirrors] .hud-map { display: none; }
 
+/* AND THE CAR DIAGRAM GETS SHORTER, IN ONE CAMERA.
+   The right-hand column is a stack that has to END above the driver's own right
+   mirror pane — see the note on `.hud-carstate` — and re-deriving `MIRROR_PANES`
+   against a camera that rides the car (#49) moved that pane's top edge from 68.5
+   per cent of frame height to 65.0. On a 900-pixel screen the floor went from
+   616 to 585, and `shoot:panels` duly reported
+   `desktop/pit-advice/driver: .hud-damage over mirror[R1] by 84x30px`.
+
+   THE HEIGHT, NOT THE WIDTH, and the difference is measured rather than
+   preferred. Narrowing the panel was tried first, on the arithmetic in the note
+   above — the diagram is a 100x170 viewBox, so its height is 1.7x its width and
+   thirty pixels of height ought to be eighteen of width. It is not: 84 to 64
+   bought 24 pixels rather than 34, because the summary line under the diagram
+   reflows onto a second line as the panel narrows and gives a third of it
+   straight back. `shoot:panels` said so — `by 64x6px` where the arithmetic
+   predicted clear. Capping the drawing's height instead leaves the panel its
+   width, the title and the summary on one line each, and is exact.
+
+   ONLY in the driver's eye — the cockpit's band starts at 77 per cent of frame
+   height and the T-cam's at 76.5, where the full-size diagram finishes a hundred
+   pixels clear — and only at the viewport where the base rule's 84 applies at
+   all, which is why this is behind a guard rather than in the block above. */
+@media (min-width: 621px) and (min-height: 471px) {
+  .hud[data-camera='driver'] .hud-damagesvg { width: auto; height: 82px; }
+}
+
 /* The left column, lifted whole. The rail's top comes up with it, because a
    band whose foot has risen 274 pixels and whose head has not is a band with
    nothing in it.
@@ -3136,9 +3183,9 @@ canvas#view {
    The tyre panel, the weather bug and the damage diagram are NOT lifted any
    more: they are anchored to the top of the right-hand column now rather than
    hung off the bottom edge, and a top-anchored stack that already finishes
-   above 68.5% of frame height has nothing to lift clear of. Lifting them by
-   the band's height was what put the weather bug through the damage diagram
-   under the T-cam. */
+   above the band has nothing to lift clear of. Lifting them by the band's
+   height was what put the weather bug through the damage diagram under the
+   T-cam. */
 .hud[data-mirrors] .hud-notices {
   bottom: calc(86px + var(--safe-b) + var(--floor));
 }
@@ -3154,18 +3201,26 @@ canvas#view {
     bottom: calc(10px + var(--safe-b) + var(--floor));
   }
   .hud[data-mirrors] .hud-damage { top: auto; bottom: calc(10px + var(--safe-b) + var(--floor)); }
-  .hud[data-mirrors] .hud-weather {
-    top: auto;
-    bottom: calc(150px + var(--safe-b) + var(--floor));
-  }
+  /* AND THE CONDITIONS STRIP STANDS DOWN, which is the same trade the landscape
+     phone below already makes and for the same reason. Re-deriving the keep-out
+     against a camera that rides the car (#49) took the driver's band from 31.5
+     to 35 per cent of frame height and the T-cam's from 18.5 to 23.5 — 29 and 42
+     pixels off an 844-pixel portrait rail, which is what
+     `portrait/safety-car/driver: clipped hud-neutral-cue out of the band by
+     20px` was. The bug is the one panel here whose fact is also legible out of
+     the windscreen, and the rail below it is carrying the neutralisation cue,
+     which is an instruction with a number in it. */
+  .hud[data-mirrors] .hud-weather { display: none; }
   /* Never above the gap readout, which holds the strip under the wheel panel
      in portrait — so here the measured tower bottom is a floor rather than the
      answer. The exception is a stop being chosen: the tower has already given
      up its rows for that, and the gap to the car ahead is not the number being
-     read while a tyre is being picked. */
+     read while a tyre is being picked.
+     The foot was 196, which was the top of the conditions strip. With the strip
+     down it is the top of the tyre panel plus a ten-pixel gap. */
   .hud[data-mirrors] .hud-notices {
     top: max(var(--rail-top, 300px), calc(300px + var(--safe-t)));
-    bottom: calc(196px + var(--safe-b) + var(--floor));
+    bottom: calc(150px + var(--safe-b) + var(--floor));
   }
   .hud.pit-open[data-mirrors] .hud-notices { top: var(--rail-top, 300px); }
   .hud.pit-open[data-mirrors] .hud-gaps { display: none; }
@@ -3177,61 +3232,76 @@ canvas#view {
 
 /* --- Landscape phones -------------------------------------------------
    The tightest case in the game and the only one where the band does not
-   simply lift: 390 pixels of height less a 119-pixel band leaves 271, and the
-   left column alone wants more than that. So the rail keeps the left edge and
-   takes the whole of what is left of it, and the four panels that used to
-   share the bottom strip with it move right — into the corridor between the
-   two panes, which is 434 pixels wide in the driver's eye and 261 in the
-   cockpit. The weather bug is the one that does not fit and stands down; it is
-   the only panel here whose fact is also legible out of the windscreen. */
+   simply lift: 390 pixels of height less a 137-pixel band in the driver's eye
+   leaves 253, and the left column alone wants more than that. So the rail keeps
+   the left edge and takes the whole of what is left of it, and the four panels
+   that used to share the bottom strip with it move right — into the corridor
+   between the two panes, which is 224 pixels wide in the driver's eye and 92 in
+   the cockpit. The weather bug is the one that does not fit and stands down; it
+   is the only panel here whose fact is also legible out of the windscreen.
+
+   THOSE TWO CORRIDOR FIGURES WERE 434 AND 261 UNTIL THE KEEP-OUT WAS RE-DERIVED
+   (#49), and the collapse is the head turn: the panes slide bodily across the
+   frame by up to 12 points of frame width as the driver looks into a corner, so
+   the corridor that is safe in EVERY frame is the instantaneous one less twice
+   that. Everything below is lifted by `--floor` rather than placed in the
+   corridor, which is why 92 pixels is survivable — and it is exactly why the pit
+   sheet stopped being placed there. */
 @media (max-height: 470px) {
   .hud[data-mirrors] .hud-weather { display: none; }
-  /* The last 27 pixels, and they come from the flag band. On a landscape phone
-     under a mirror camera with a stop being chosen, the rail runs from the foot
-     of the running order to the top of the glass and the sheet does not fit in
-     it by ten pixels. The band is the thing to give up here and only here: the
-     neutralisation cue pinned at the foot of that same rail already says
-     SAFETY CAR in words, with the limiter speed and the gap to the queue,
-     which is strictly more than the band says.
-     `!important` because `Hud.updateFlag` writes the band's `display` inline,
-     and an inline style beats any selector a stylesheet can offer. The
-     alternative is a second class toggled from TypeScript, which puts half of
-     one layout decision in each file. */
-  .hud.pit-open[data-mirrors] .tower-flagband { display: none !important; }
-  /* And the header with it, which leaves the panel as a sliver. That is the
-     honest end of this trade: on a 390-pixel screen, in a camera whose bottom
-     third belongs to the mirrors, with a decision on the rail that has a
-     deadline measured in corners, there is no running order. The pit cue at
-     the foot of the rail carries the lap. */
-  .hud.pit-open[data-mirrors] .tower-head { display: none; }
-  .hud.pit-open[data-mirrors] .hud-tower { padding: 3px 0; }
+  /* THE RUNNING ORDER STANDS DOWN, AND THAT IS WHERE THIS RULE USED TO STOP
+     ONE STEP SHORT. It gave up the flag band, then the header, then padded the
+     panel down to a sliver — three rules, each buying twenty or thirty pixels —
+     and then went looking sideways for the rest. The honest end of that trade
+     is the whole panel: on a 390-pixel screen, in a camera whose bottom third
+     belongs to the mirrors, with a decision on the rail that has a deadline
+     measured in corners, there is no running order. The pit cue at the foot of
+     the rail carries the lap, and the neutralisation cue pinned under it says
+     SAFETY CAR in words with the limiter speed and the gap to the queue, which
+     is strictly more than the flag band said.
 
-  /* AND THE RAIL GOES INTO THE CORRIDOR. Even with the running order down to a
-     sliver, a pit sheet does not fit in the 181 pixels left between the tower
-     and the top of the glass — it is 191 tall. Lifting it clear of the mirrors
-     is not negotiable and shrinking the sheet is not this file's to do, so the
-     rail moves sideways instead: into the 388-pixel gap between the two panes
-     in the driver's eye, 227 in the cockpit, where it has the whole height of
-     the frame again. The cockpit is what sizes it — 227 pixels less the 44 the
-     cards slide in from is 183, and the sheet is laid out in 176.
+     (The three rules this replaces are gone rather than kept: `.tower-flagband`
+     needed `display: none !important` to beat the inline style `Hud.updateFlag`
+     writes, and none of that matters once the panel it is inside is not drawn.)
 
-     Everything that was sharing the bottom strip with it stands down for the
-     two seconds this lasts. The tyre panel goes because the sheet IS the tyre
-     choice; the gap readout and the car diagram go because neither is the
-     question being answered. The camera buttons move right of the rail and
-     stay, because a player who cannot reach them is stuck. */
+     WHAT THIS REPLACES, AND WHY IT HAD TO GO — issue #31. The rail used to be
+     moved SIDEWAYS into the corridor between the two panes instead, at a width
+     of 176 pixels, on the arithmetic that the cockpit's corridor was 227 wide
+     and 227 less the 44 the cards slide in from is 183. Both halves of that
+     number have since moved and nobody re-derived it:
+
+       - widening the keep-out for banking (#31's own first half) took the
+         cockpit corridor from 227 pixels to 194, and 176 + 44 = 220 does not
+         fit in 194. That IS the reported failure,
+         `phone/pit-choice/cockpit: .hud-notices over mirror[R1] by 26x72px` —
+         26 is exactly 220 - 194;
+       - and re-deriving the whole table against a camera that rides the car
+         (#49, #50) takes it to 92. A pit sheet cannot be laid out in 92
+         pixels at any width worth reading, so the corridor is not where it
+         goes.
+
+     A rail on the LEFT EDGE lifted clear of the glass by `--floor` has the
+     frame's whole width and, with the running order down, the height of the
+     frame less the band. The binding camera is the driver's eye, whose band is
+     the deepest of the three at 137 pixels of 390: that leaves 241 for a
+     191-pixel sheet, against the 183 that was eight short. It is also the same
+     place the rail is in every other camera, which is worth more than the eight
+     pixels: a panel that jumps across the screen when the camera changes is a
+     panel you have to go looking for.
+
+     Everything that was sharing the bottom strip with it still stands down for
+     the two seconds this lasts. The tyre panel goes because the sheet IS the
+     tyre choice; the gap readout and the car diagram go because neither is the
+     question being answered. */
+  .hud.pit-open[data-mirrors] .hud-tower { display: none; }
   .hud.pit-open[data-mirrors] .hud-notices {
-    --rail-w: 176px;
-    left: calc(var(--mirror-l) + var(--safe-l));
-    width: calc(var(--rail-w) + var(--slide));
-    bottom: calc(6px + var(--safe-b));
+    left: calc(8px + var(--safe-l) - var(--slide));
+    top: calc(6px + var(--safe-t));
+    bottom: calc(6px + var(--safe-b) + var(--floor));
   }
   .hud.pit-open[data-mirrors] .hud-carstate,
   .hud.pit-open[data-mirrors] .hud-gaps,
   .hud.pit-open[data-mirrors] .hud-damage { display: none; }
-  .hud.pit-open[data-mirrors] .hud-buttons {
-    left: max(520px, calc(var(--mirror-l) + 260px));
-  }
   .hud[data-mirrors] .hud-notices {
     top: var(--rail-top, calc(150px + var(--safe-t)));
     bottom: calc(6px + var(--safe-b) + var(--floor));

@@ -308,6 +308,10 @@ export class CameraDirector {
   /** Scratch for the cockpit eye offset and the chassis attitude it rides on. */
   private readonly eye = new THREE.Vector3();
   private readonly carEuler = new THREE.Euler();
+  /** Scratch for `aimFromCar`. */
+  private readonly qCar = new THREE.Quaternion();
+  private readonly qNeck = new THREE.Quaternion();
+  private readonly neckEuler = new THREE.Euler(0, 0, 0, 'YXZ');
   private initialised = false;
 
   /** Smoothed speed, so FOV does not flicker on gear changes. */
@@ -973,6 +977,66 @@ export class CameraDirector {
   }
 
   /**
+   * Aims an onboard camera, IN THE CAR'S OWN FRAME.
+   *
+   * THE BUG THIS REPLACES, and it is the reason the cockpit swam on every
+   * gradient on the calendar. Both onboard rigs used to build one Euler:
+   *
+   *   camera.rotation.set(rigPitch - EYE_PITCH, heading + headYaw + PI, rigRoll, 'YXZ')
+   *
+   * The `+ PI` is there because a three.js camera looks along its own `-z` and
+   * the car's nose is `+z`. In 'YXZ' the yaw is the OUTERMOST rotation, so the
+   * pitch and the roll that follow it are taken about axes that the half turn
+   * has already reversed — and a rotation of `+rigPitch` about a reversed x axis
+   * is a rotation of `-rigPitch` about the car's. The camera therefore did not
+   * ride the chassis: it rode its MIRROR IMAGE, and the disagreement between the
+   * two is `2 x rigPitch`, not zero.
+   *
+   * Measured, on the composition alone with three.js doing the arithmetic
+   * (`Euler(p, h, r)` for the car against `Euler(p, h + PI, r)` for the camera):
+   *
+   *   car pitch 11.5deg, roll 0    ->  camera off the car by pitch -22.92deg
+   *   car pitch 0,  roll 11.5deg   ->  camera off the car by roll  -22.92deg
+   *
+   * and in the plainest form there is: at `rigPitch = 11.5deg` the car's nose
+   * points at `y = -0.199` and the camera looks at `y = +0.199`. Nose down,
+   * camera up.
+   *
+   * It was invisible for as long as the chassis attitude was the LOAD LEAN
+   * alone, because that is 3.4deg of roll and 2.9deg of pitch and it is
+   * symmetric about zero — a lean the wrong way still reads as a lean. Issue #71
+   * put the ROAD into `rigPitch`/`rigRoll`, which took them to 11 degrees at
+   * Monaco and 18 of roll at Zandvoort, and 22 degrees of camera-to-chassis
+   * disagreement is the whole cockpit sliding out of the frame. It is what
+   * `probe:framing` was reporting as `monaco phone cockpit: crown at 41% of
+   * frame height` and `the wheel rim tops out at 57%` — the steering wheel is
+   * bolted 0.44m in front of the driver's face and cannot move relative to it,
+   * and a 22-point swim in where it lands is not a road, it is a sign error.
+   *
+   * So the orientation is composed the way the geometry is: the CAR's attitude
+   * first, exactly as `Renderer.syncCars` puts it on the car root, and then the
+   * neck — the half turn, the head's yaw about the driver's own spine, and the
+   * fixed nose-down bias about the camera's own horizontal — applied INSIDE it.
+   * With the car level the result is identical to the old expression, which is
+   * why nothing on a flat circuit moves.
+   *
+   * @param heading   the car's yaw, world
+   * @param pitch     the chassis pitch the CAR is drawn at (`rigPitch`)
+   * @param roll      the chassis roll the CAR is drawn at, plus any head lean
+   * @param headYaw   how far the head is turned into the corner, about the car's own up
+   * @param nosePitch the fixed downward bias of this eye, radians, positive down
+   */
+  private aimFromCar(
+    heading: number, pitch: number, roll: number, headYaw: number, nosePitch: number,
+  ): void {
+    this.carEuler.set(pitch, heading, roll, 'YXZ');
+    this.qCar.setFromEuler(this.carEuler);
+    this.neckEuler.set(-nosePitch, headYaw + Math.PI, 0);
+    this.qNeck.setFromEuler(this.neckEuler);
+    this.camera.quaternion.copy(this.qCar).multiply(this.qNeck);
+  }
+
+  /**
    * The driver's-eye rig.
    *
    * Same skeleton as `updateCockpit` — bolted to the chassis, oriented from
@@ -1062,11 +1126,15 @@ export class CameraDirector {
     );
     this.headYaw = damp(this.headYaw, target, DRIVER_HEAD.lookRate, dt);
 
-    this.camera.rotation.set(
-      this.rigPitch - DRIVER_EYE_PITCH,
-      car.renderHeading + this.headYaw + Math.PI,
+    // Composed in the car's frame — see `aimFromCar`. The head's lean rides with
+    // the chassis roll, in the same direction, which is what makes it read as
+    // the head continuing past the car rather than as the horizon tilting.
+    this.aimFromCar(
+      car.renderHeading,
+      this.rigPitch,
       this.rigRoll + this.headLean,
-      'YXZ',
+      this.headYaw,
+      DRIVER_EYE_PITCH,
     );
     this.initialised = false;
   }
@@ -1133,11 +1201,12 @@ export class CameraDirector {
 
     // Nose-down bias. See EYE_PITCH: it is the other half of the roll-hoop
     // framing and belongs beside the eye point it goes with, not here.
-    this.camera.rotation.set(
-      this.rigPitch - EYE_PITCH,
-      car.renderHeading + this.headYaw + Math.PI,
-      this.rigRoll,
-      'YXZ',
+    //
+    // Composed in the CAR's frame — see `aimFromCar`. This pod is bolted to the
+    // roll hoop and the wheel, the halo and the mirrors are bolted to the same
+    // tub, so nothing car-local may move in this frame when the road pitches.
+    this.aimFromCar(
+      car.renderHeading, this.rigPitch, this.rigRoll, this.headYaw, EYE_PITCH,
     );
     this.initialised = false;
   }

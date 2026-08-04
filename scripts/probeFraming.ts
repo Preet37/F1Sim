@@ -685,6 +685,61 @@ function measure(
 
 const failures: string[] = [];
 
+/**
+ * The measured envelope of every pane, per mode and per side.
+ *
+ * WHY THIS IS PRINTED RATHER THAN ASSERTED. `MIRROR_PANES` is authored, not
+ * generated — see the note on it in `Hud.ts`: a table computed from the thing it
+ * is checking always agrees with it and checks nothing. But the table still has
+ * to be DERIVED from somewhere, and until this existed the derivation was a
+ * person reading escape messages out of a failing run and adding a margin in
+ * their head, which is how it came to be wrong twice.
+ *
+ * So the run now ends with the envelope it just measured, in the shape the table
+ * is written in. Whoever next moves a mirror mount copies these numbers, adds
+ * the stated margin, and pastes them; the probe still fails if they get it
+ * wrong, because the assertion above reads the authored table and not this.
+ */
+interface Envelope { x0: number; y0: number; x1: number; y1: number; rows: number }
+const envelope = new Map<string, Envelope>();
+function widen(mode: string, side: 'left' | 'right', r: PaneRect): void {
+  const key = `${mode}|${side}`;
+  const e = envelope.get(key);
+  if (!e) {
+    envelope.set(key, { x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1, rows: 1 });
+    return;
+  }
+  e.x0 = Math.min(e.x0, r.x0);
+  e.y0 = Math.min(e.y0, r.y0);
+  e.x1 = Math.max(e.x1, r.x1);
+  e.y1 = Math.max(e.y1, r.y1);
+  e.rows++;
+}
+
+/**
+ * Deliberate breakages, for proving the assertions can go red.
+ *
+ * PROJECT.md §3.2: a probe a broken feature passes is worse than no probe, and
+ * the way this file's keep-out check earns its place is that both of the
+ * instrument errors it has already survived can be put back on demand.
+ *
+ *   `FRAMING_BREAK=lowcar`     places the car at `track.elevationAt(car.s)`,
+ *                              which is where this probe put it until #71 —
+ *                              `ROAD_SURFACE_Y` = 20mm below the car the camera
+ *                              is looking at, plus the banking rise and the
+ *                              curvature lift.
+ *   `FRAMING_BREAK=narrowlens` reads the rig after 20 frames, mid-transition
+ *                              from the chase camera's 39-degree lens, which is
+ *                              what issue #49 was filed against.
+ *
+ * Diagnosis only. Nothing may be quoted from a run that sets either.
+ */
+const BREAK = process.env.FRAMING_BREAK ?? '';
+if (BREAK && BREAK !== 'lowcar' && BREAK !== 'narrowlens') {
+  throw new Error(`FRAMING_BREAK must be 'lowcar' or 'narrowlens', got '${BREAK}'`);
+}
+if (BREAK) console.log(`!! FRAMING_BREAK=${BREAK} — this run is a break test, quote nothing from it\n`);
+
 console.log(
   'Where the halo lands in the frame, measured off the geometry the mesh is built from,\n' +
   'and how big the mirrors read, measured off the panes the mesh is built from.\n' +
@@ -720,7 +775,9 @@ for (const def of CIRCUITS) {
   const carPose = roadPoseUnderCar(
     engine.track, car.renderS, car.renderLateral, car.renderHeading, newSurfacePose(),
   );
-  const carY = bankedCarGroundY(engine.track, car.renderS, car.renderLateral) + carPose.lift;
+  const carY = BREAK === 'lowcar'
+    ? engine.track.elevationAt(car.s)
+    : bankedCarGroundY(engine.track, car.renderS, car.renderLateral) + carPose.lift;
 
   for (const [frameName, w, h] of FRAMES) {
     for (const mode of MODES) {
@@ -753,7 +810,7 @@ for (const def of CIRCUITS) {
       //
       // `FRAMING_SETTLE` overrides it for diagnosis only. Nothing may be quoted
       // from a run that sets it.
-      const SETTLE = Number(process.env.FRAMING_SETTLE ?? 120);
+      const SETTLE = BREAK === 'narrowlens' ? 20 : Number(process.env.FRAMING_SETTLE ?? 120);
       for (let i = 0; i < SETTLE; i++) dir.update(1 / 60, car, engine.track, engine.world);
       const cam = dir.camera;
       if (process.env.FRAMING_FOV) console.log(`FOV ${frameName} ${mode} ${cam.fov.toFixed(2)}`);
@@ -761,8 +818,22 @@ for (const def of CIRCUITS) {
       cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
 
       // The same camera with the head put straight, for the resting framing.
+      //
+      // ABOUT THE CAR'S OWN UP AXIS, not the world's y. This line used to read
+      // `rest.rotation.y -= dir.headTurn`, which is the right inverse only while
+      // the head turn is the OUTERMOST rotation in the rig's Euler — and it was,
+      // which is the same composition mistake that had the camera riding the
+      // mirror image of the chassis (see `CameraDirector.aimFromCar`). The head
+      // turns about the driver's spine; on a banked or climbing road that is not
+      // vertical, and unturning it about the vertical leaves a residual that
+      // reaches tens of per cent of frame width at the edge.
       const rest = cam.clone();
-      rest.rotation.y -= dir.headTurn;
+      const carUp = new THREE.Vector3(0, 1, 0).applyEuler(
+        new THREE.Euler(dir.chassisPitch, car.renderHeading, dir.chassisRoll, 'YXZ'),
+      );
+      rest.quaternion.premultiply(
+        new THREE.Quaternion().setFromAxisAngle(carUp, -dir.headTurn),
+      );
       rest.updateMatrixWorld(true);
       rest.matrixWorldInverse.copy(rest.matrixWorld).invert();
 
@@ -845,6 +916,20 @@ for (const def of CIRCUITS) {
       // on the day the mirrors were first made to work.
       const declared = MIRROR_PANES[mode as keyof typeof MIRROR_PANES] as
         readonly PaneRect[] | undefined;
+      for (const r of m.paneRects) {
+        const side = r.x0 + r.x1 < 100 ? 'left' : 'right';
+        widen(mode, side, r);
+        if (process.env.FRAMING_PANES) {
+          const deg = (v: number): string => ((v * 180) / Math.PI).toFixed(1).padStart(7);
+          console.log(
+            `PANE ${def.id.padEnd(12)}${frameName.padEnd(6)}${mode.padEnd(10)}${side.padEnd(6)}` +
+            `${r.x0.toFixed(1).padStart(7)}${r.y0.toFixed(1).padStart(7)}` +
+            `${r.x1.toFixed(1).padStart(7)}${r.y1.toFixed(1).padStart(7)}` +
+            `  pitch${deg(dir.chassisPitch)} roll${deg(dir.chassisRoll)} head${deg(dir.headTurn)}` +
+            ` fov ${cam.fov.toFixed(2)}`,
+          );
+        }
+      }
       if (declared) {
         for (const r of m.paneRects) {
           const side = r.x0 + r.x1 < 100 ? 'left' : 'right';
@@ -884,6 +969,36 @@ for (const def of CIRCUITS) {
       );
       for (const b of bad) failures.push(`${def.id} ${frameName} ${mode}: ${b}`);
     }
+  }
+}
+
+// --- The envelope the keep-out table has to enclose ------------------------
+//
+// Clamped to the frame on the x axis for the same reason the assertion clamps:
+// a pane may legitimately leave the frame at full lock and a rectangle cannot
+// follow it off the edge. The y axis is NOT clamped — a pane leaving through
+// the top or the bottom of the frame would be a different fault entirely and
+// should be visible here rather than hidden by a clamp.
+console.log('');
+console.log(
+  'MEASURED PANE ENVELOPE — 11 circuits x 2 frame shapes, head at rest and turned.\n' +
+  "This is what MIRROR_PANES in src/ui/Hud.ts has to enclose; the table is authored\n" +
+  'from these numbers plus the margin its own note states, and is deliberately not\n' +
+  'generated from them (a table computed from the thing it checks checks nothing).\n',
+);
+console.log(
+  'mode'.padEnd(11) + 'side'.padEnd(7) + 'rows'.padStart(5) +
+  'x0'.padStart(8) + 'y0'.padStart(8) + 'x1'.padStart(8) + 'y1'.padStart(8),
+);
+for (const mode of MODES) {
+  for (const side of ['left', 'right'] as const) {
+    const e = envelope.get(`${mode}|${side}`);
+    if (!e) continue;
+    console.log(
+      mode.padEnd(11) + side.padEnd(7) + String(e.rows).padStart(5) +
+      Math.max(0, e.x0).toFixed(1).padStart(8) + e.y0.toFixed(1).padStart(8) +
+      Math.min(100, e.x1).toFixed(1).padStart(8) + e.y1.toFixed(1).padStart(8),
+    );
   }
 }
 

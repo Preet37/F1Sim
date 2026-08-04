@@ -1482,9 +1482,9 @@ export class Hud {
     const fit = towerFit(
       window.innerWidth, window.innerHeight, this.mirrorFloorPx, this.towerChromePx);
     // THE TOWER GIVES WAY TO THE PIT SHEET on a short screen. 390 pixels of
-    // height leaves the notice rail a 94-pixel band between the running order
+    // height leaves the notice rail an 82-pixel band between the running order
     // and the tyre panel, and no arrangement of a tyre choice and a wing choice
-    // fits in 94. So while a stop is being chosen the order drops its rows and
+    // fits in 82. So while a stop is being chosen the order drops its rows and
     // keeps its header — the lap count, your position, the fastest lap — and
     // the rail takes the space back for the few seconds the decision takes.
     //
@@ -1783,7 +1783,7 @@ export class Hud {
    * card is down" — and every one of them was wrong on some combination,
    * because what actually decides it is how much of the band the PINNED items
    * have already taken. A landscape phone under a safety car with a planned
-   * stop showing has two live cues in a 94-pixel band and no room for anything
+   * stop showing has two live cues in an 82-pixel band and no room for anything
    * at all; the same phone with one cue has room for exactly one card. Both
    * numbers fall out of the same subtraction.
    *
@@ -3059,34 +3059,58 @@ export interface PaneRect {
  *
  * A one-point margin is added to each measured edge, for the circuits and
  * chassis attitudes that are not in the twelve-sample sweep. The outboard edges
- * of the driver's panes run off the frame entirely at full lock, so they are
- * declared at the frame edge and the probe clamps to it.
+ * of the driver's and the cockpit's panes run off the frame entirely at full
+ * head turn, so they are declared at the frame edge and the probe clamps to it.
+ *
+ * RE-DERIVED A THIRD TIME, 2026-08-03, AND THIS TIME AGAINST A CAMERA THAT
+ * RIDES THE CAR (issues #49, #50). The two earlier versions of this table were
+ * both authored against instruments that were wrong, and the record is worth
+ * keeping because the numbers moved a long way each time:
+ *
+ *   - `probe:framing` read the rig after twenty frames, mid-transition from the
+ *     chase camera's 39-degree lens. Issue #49. Settled, that is up to seven
+ *     degrees of lens the table had never seen.
+ *   - the probe placed its car at `track.elevationAt(car.s)` while every eye is
+ *     placed relative to `bankedCarGroundY` — 20mm low on every circuit, which
+ *     is three per cent of frame height by `CameraDirector`'s own note. Issue
+ *     #71 corrected it.
+ *   - and the camera itself did not ride the chassis. `CameraDirector` built
+ *     one Euler with the half turn OUTERMOST, so the chassis pitch and roll were
+ *     applied about axes that half turn had reversed and the camera rode the
+ *     MIRROR IMAGE of the car: `2 x rigPitch` of disagreement, which is 22
+ *     degrees at Monaco. See `CameraDirector.aimFromCar`. That is what made the
+ *     panes swim: the cockpit's own left pane started anywhere between 63 and 85
+ *     per cent of frame height depending on the gradient, and no rectangle can
+ *     enclose a 22-point range without swallowing a third of the picture.
+ *
+ * With the camera bolted to the car the panes stop moving vertically at all: the
+ * cockpit's left pane now starts between 78.5 and 81.3 per cent on all eleven
+ * circuits, a three-point range, and what is left of the spread is the HEAD
+ * TURN, which slides both panes the same way across the frame and is the reason
+ * the rectangles are wide rather than tall. Run `npm run probe:framing` and read
+ * the MEASURED PANE ENVELOPE table at the end of it: these numbers are that
+ * table plus a point, and nothing else.
  */
 export const MIRROR_PANES: Readonly<Record<MirrorView, readonly PaneRect[]>> = {
   // The driver's own eye: the panes are nearest and largest here, a fifth of
-  // the frame across, and both reach the frame edge under head turn.
-  // Widened once more for banking. `carGroundY` used to ignore it, so the car
-  // -- and every camera riding it -- sat at the centreline's height while the
-  // asphalt beneath was banked. Correcting that moved the eye, and with it the
-  // panes: COTA escaped this table by 2.8 points outboard in the driver's eye
-  // and 3.7 in the cockpit. Measured again with the correction in, and widened
-  // to enclose it rather than trimmed to admit it -- the rectangle is only
-  // worth anything while it is allowed to be wrong, and this is the second time
-  // it has been.
+  // the frame across, and both reach the frame edge under a 14-degree head turn.
   driver: [
-    { x0: 0, y0: 69.5, x1: 27.0, y1: 90.5 },
-    { x0: 69.0, y0: 68.5, x1: 100, y1: 93.0 },
+    { x0: 0, y0: 65.0, x1: 37.0, y1: 89.0 },
+    { x0: 63.5, y0: 65.0, x1: 100, y1: 89.5 },
   ],
-  // The roll-hoop pod, 0.2m behind and above the eye: the panes pull inboard
-  // and drop down the frame.
+  // The roll-hoop pod, 0.2m behind and above the eye: the panes are half the
+  // size and sit lower, and an 11-degree head turn still carries the outside one
+  // off the edge of a 16:9 frame.
   cockpit: [
-    { x0: 2.0, y0: 77.5, x1: 37.0, y1: 94.0 },
-    { x0: 60.0, y0: 76.5, x1: 93.5, y1: 95.0 },
+    { x0: 0, y0: 77.5, x1: 44.5, y1: 92.5 },
+    { x0: 55.5, y0: 77.0, x1: 100, y1: 93.0 },
   ],
-  // The T-cam, 0.8m further back again. Small, low and close to the centre.
+  // The T-cam, 0.8m further back again. Small, low and close to the centre —
+  // and the only one of the three with no head turn on it at all, which is why
+  // its rectangles are barely wider than the glass.
   'onboard-t': [
-    { x0: 22.0, y0: 81.5, x1: 36.5, y1: 90.5 },
-    { x0: 64.0, y0: 81.5, x1: 78.5, y1: 91.5 },
+    { x0: 23.0, y0: 77.0, x1: 37.5, y1: 87.5 },
+    { x0: 62.5, y0: 76.5, x1: 76.5, y1: 87.5 },
   ],
 };
 
@@ -3399,7 +3423,7 @@ export const TOWER_RAIL_FLOOR_PX = RADIO_CARD_MIN_PX + RAIL_MASK_PX + 8;
 /**
  * The same floor, for a viewport that does not draw a radio card at all.
  *
- * A landscape phone has a 94-pixel band and `sizeRadioCard` declines the plate
+ * A landscape phone has an 82-pixel band and `sizeRadioCard` declines the plate
  * there, so reserving a plate's worth of room for one costs that screen five
  * rows of running order for nothing. What it does still have to carry is a
  * live cue — an instruction, where the card is atmosphere — and the mask.
@@ -3592,15 +3616,32 @@ export function towerFit(
   // glass in shot. The conditions below are written the same way round as the
   // media queries that set the values.
   //
-  // Four numbers, because the stylesheet has four rules: 196 in portrait, 6 on
-  // a landscape phone with the mirrors in shot (the band moves into the
-  // corridor between the panes and takes the whole height it can), 80 on the
-  // same phone without them, 86 everywhere else.
+  // FIVE numbers now, because the stylesheet has five rules: 150 in portrait
+  // with the mirrors in shot and 196 without, 6 on a landscape phone with them
+  // (everything under the rail has already lifted by the band, so the rail
+  // reaches the bottom of what is left), 94 on the same phone without them, and
+  // 86 everywhere else.
+  //
+  // TWO OF THE FIVE MOVED WITH THE KEEP-OUT RE-DERIVATION (#49/#31), and both
+  // moves are corrections rather than tuning:
+  //
+  //  - portrait under a mirror camera was 196, which was the top of the
+  //    conditions strip. The strip stands down there now — the driver's band
+  //    went from 31.5 to 35 per cent of frame height and the T-cam's from 18.5
+  //    to 23.5, and the rail could no longer carry a neutralisation cue in what
+  //    was left — so the rail's foot is the top of the tyre panel instead.
+  //  - a landscape phone without mirrors was 80, and the tyre panel's top edge
+  //    on that screen is 92: the panel is 86 tall and sits 6 up. Those twelve
+  //    pixels are the whole of `phone/clear: overlap .hud-pit-cue x
+  //    .hud-carstate by 138x12px`, which `shoot:panels` had been reporting for
+  //    long enough that PROJECT.md carried it as unowned. The rail's foot is 94
+  //    now, and the running order pays one row of twenty for it.
   const portrait = w <= 620 && h > w;
-  const railBase = portrait ? 196 : h <= 470 ? (floorPx > 0 ? 6 : 80) : 86;
+  const railBase = portrait ? (floorPx > 0 ? 150 : 196)
+    : h <= 470 ? (floorPx > 0 ? 6 : 94) : 86;
   const takenBelow = floorPx + railBase;
   // The radio plate is the whole of the rail's floor, and there are viewports
-  // where the stylesheet does not draw one: a landscape phone has a 94-pixel
+  // where the stylesheet does not draw one: a landscape phone has an 82-pixel
   // band and `sizeRadioCard` declines it there. Reserving a plate's worth of
   // room for a plate that will never be raised costs that phone five rows.
   const reserved = 10 + chrome + towerRailFloorPx(h, w, floorPx);
