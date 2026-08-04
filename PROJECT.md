@@ -289,10 +289,19 @@ Run `npm run` to list. The important ones:
   (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
   work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
   says the grip difference driving that is currently zero.
-- `probe:framing` — **56 failures, and they are new**, introduced deliberately by correcting
-  the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
-  cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
-  in §7. **This is a probe that got stricter, not a feature that broke.**
+- `probe:framing` — **113 failures, and this entry has been wrong twice.** It said 56; merged
+  `main` measured **51** on 2026-08-03, so the count had already come down with some other
+  merge and nobody re-ran it. It is now 113 and **+49 of the difference is a second
+  instrument correction, not a feature**: the probe placed its car at
+  `track.elevationAt(car.s)` while `CameraDirector` places every eye relative to
+  `bankedCarGroundY`, so it had been projecting the halo and the mirror panes onto a car
+  **20mm below the one the camera was looking at**, on every circuit, since that line was
+  written — and 20mm moves the halo three per cent of a frame height by the camera's own
+  note. `main` with the instrument corrected measures **100**. The remaining **+13 is
+  #71**, thirteen of its seventeen new rows at Monaco, whose onboard rig now pitches with an
+  11-degree road. The bulk of all three counts is the HUD's `MIRROR_PANES` keep-out, whose
+  rectangles were calibrated against the 20mm-low car. Full breakdown in §6 under #71.
+  **This is a probe that got stricter twice, not a feature that broke.**
 - ~~`shoot:frontend`~~ — **was red on `main` and nobody had recorded it, and the cause was
   not the front end.** It exited 1 on every run with three identical lines, one per
   viewport: `console Failed to load resource: the server responded with a status of 404`.
@@ -1180,6 +1189,44 @@ column reading **396 / 341 / 398 / 14mm** against the issue's 396 / 341 / 434 / 
 Jeddah stays green, because Jeddah is flat and level.** Restoring `'XYZ'` in both consumers:
 **46 ok / 3 failed**, with §4 unchanged and both §4b order checks red — which is what makes
 §4b load-bearing rather than decorative.
+
+**`probe:framing` moved, and the movement decomposes cleanly into a part that is this
+work's and a much larger part that is not.** Three runs, same machine, same day:
+
+| | failures |
+|---|---|
+| merged `main`, the instrument as it stood | **51** |
+| merged `main`, instrument corrected | **100** |
+| **this branch, instrument corrected** | **113** |
+
+**PROJECT.md said 56 and merged `main` measures 51** — the count came down with some other
+merge and nobody re-ran it. §4's own note about checking a known-failing entry before
+quoting it, again.
+
+**The instrument correction is +49 of the +62 and it is pre-existing.** `probe:framing`
+placed its car at `engine.track.elevationAt(car.s)` while `CameraDirector` places every eye
+relative to `bankedCarGroundY(...)` — so the car it projected the halo, the rim and the
+mirror panes onto stood **`ROAD_SURFACE_Y` = 20mm below the car the camera was looking at**,
+on every circuit, since the day that line was written. `CameraDirector`'s own note says 20mm
+of eye-to-chassis disagreement moves the halo three per cent of a frame height, which is
+exactly the scale of the 49. The `MIRROR_PANES` keep-out rectangles in `Hud.ts` were
+therefore calibrated against a car 20mm low. **That is the HUD work's to resolve**
+(`src/ui/Hud.ts` is #17/#35's ground and was not touched); the probe now measures the car
+the renderer draws, which is the only version of it that can be believed. It also uses the
+DRAWN pose — `renderX`/`renderZ`/`renderHeading` — rather than the solver's last step, for
+the same reason.
+
+**This work's own +13 is the road, and it is the feature.** Seventeen new, eight gone, and
+**thirteen of the seventeen are Monaco** — whose car at 30 seconds is on the Beau Rivage
+climb, so its onboard rig now pitches with an 11-degree road instead of a 3.4-degree load
+lean. `monaco phone cockpit: horizon at N% of frame height` is the honest signature of that:
+the horizon IS lower in the view from a car going up a hill. The other four are mirror panes
+at Suzuka and Zandvoort. The eight that went away are mostly Red Bull Ring. Nothing in the
+`MIRROR_PANES` band is this branch's to move, and nothing in it was moved.
+
+`probe:cameras` **PASS on all eleven circuits**, `probe:carrig`, `probe:rideheight`,
+`validate:world` and `audit:car` all unchanged and green, and **`probe:banking` is
+0.000m** — #3 is closed and has not moved.
 
 **What is left, and it is not the attitude.** §4's bound is the road mesh's own departure
 from `bankedCarGroundY`, measured in the same run at the same points, plus 10mm — because no
