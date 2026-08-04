@@ -146,7 +146,7 @@ Do not spend time reporting these; they are on the list with measurements.
 | The halo is near-black and loses its outline against a dark background — it is *attached* (146/146 bolted, measured), but it is not painted the way the reference cars are | **#34** |
 | Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
 | Career screens (ratings, market, accolades) not built | **#77** |
-| Podium/press bodies: **the head does not turn with the body**, so a panel of three all face the camera from the neck down; `applaud` reads as folded arms rather than clapping; nothing is animated. The three defects that were on this line — a stick arm, armless crew, hands hidden by the desk — are **fixed** | **#22** |
+| Podium/press bodies: **the head does not turn with the body**, so a panel of three all face the camera from the neck down; there is no applause pose — the one written for it draws folded arms and is named `folded` for that reason; nothing is animated. The three defects that were on this line — a stick arm, armless crew, hands hidden by the desk — are **fixed** | **#22** |
 | The **3D pit crew** in the pit lane is a different rendering path and #22 did not touch it | **#24** |
 
 ---

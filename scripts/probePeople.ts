@@ -489,7 +489,7 @@ const BODIES: { id: string; look: PersonLook }[] = [
   { id: 'principal', look: principalFor('ferrari').look },
 ];
 
-const ALL_POSES: Pose[] = ['seated', 'standing', 'raised', 'applaud', 'walking'];
+const ALL_POSES: Pose[] = ['seated', 'standing', 'raised', 'folded', 'walking'];
 const LEGACY_POSES: LegacyPose[] = ['seated', 'standing', 'raised'];
 
 interface BodyUnderTest {

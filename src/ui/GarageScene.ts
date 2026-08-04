@@ -87,7 +87,7 @@ export function garageSvg(spec: GarageSpec): SVGSVGElement {
   // torso — so what `desktop-garage.png` showed was four armless torsos. They
   // are whole people now: two poses, hands, legs, boots, and the bench cropping
   // them at the shin the way a real bench does.
-  const CREW_POSES = ['standing', 'walking', 'applaud'] as const;
+  const CREW_POSES = ['standing', 'walking', 'folded'] as const;
   for (let i = 0; i < crewCount; i++) {
     const uid = 'gc' + i;
     const look = lookFor(spec.teamId + ':crew:' + i, 'crew');

@@ -392,7 +392,7 @@ function bodies(): void {
     'Five poses off one rig. Every shape below the neck comes from a bone, a hand, '
     + 'a foot or the torso outline — nothing is drawn at a hard-coded offset.');
 
-  const POSES: Pose[] = ['seated', 'standing', 'raised', 'applaud', 'walking'];
+  const POSES: Pose[] = ['seated', 'standing', 'raised', 'folded', 'walking'];
   const kit = { suit: '#1868db', accent: '#f2f3f5' };
 
   el('div', 'audit-label', app, 'The five poses');
@@ -426,7 +426,7 @@ function bodies(): void {
   for (let i = 0; i < 10; i++) {
     cell(row3, figureSvg(lookFromSeed(500 + i * 313, 'crew'), {
       uid: 'bs' + i, suit: '#00a19c', accent: '#0d1218', team: '#00a19c',
-      pose: (['standing', 'walking', 'applaud'] as const)[i % 3], size: 62,
+      pose: (['standing', 'walking', 'folded'] as const)[i % 3], size: 62,
       sponsors: false,
     }), '');
   }

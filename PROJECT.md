@@ -3010,7 +3010,7 @@ height*, so a slight driver and a heavy principal are one body plan at two sizes
 is joint ANGLES; `seated` is **solved** against the desk height the scene is going to
 draw, which is the whole fix for the six hidden hands. `Figure.ts` paints the rig and
 paints nothing else: every shape below the neck is a bone, a hand, a foot or the torso
-outline, emitted as an explicit polygon. Five poses — seated, standing, raised, applaud,
+outline, emitted as an explicit polygon. Five poses — seated, standing, raised, folded,
 walking — cover the press room, the podium, the garage and the paddock, and `figureArt`
 returns a separate `overlay` layer for the parts that must be painted AFTER a scene's
 furniture.
@@ -4297,11 +4297,12 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
     the body is drawn dead front-on in every pose, so a row of people all face the camera
     from the neck down. On a three-person panel that reads as a line-up. The rig would
     take a shoulder-line rotation to fix and it was not attempted.
-  - **`applaud` reads as folded arms rather than as applause.** The forearms cross in
-    front of the chest and the hands overlap; `reference/target/82.png` has second and
-    third clapping with their hands apart. It is a good pose and it is not the pose in
-    the reference. It is also, by accident, the crossed-arms pose `70.png` wants for
-    portraits, which is why it was kept.
+  - **There is no applause pose.** `reference/target/82.png` has second and third
+    clapping with their hands apart; the pose written for it draws the hands meeting and
+    overlapping, so it was **renamed `folded`** rather than left carrying a name for what
+    it was meant to do — a name that describes an intention is how this project acquires
+    load-bearing fiction (§3). It earns its place as the crossed-arm press-shot stance
+    `reference/target/70.png` wants. Real applause is a sixth pose and is not built.
   - **Nothing is animated.** These are static SVGs. A podium that does not move is a
     photograph of a podium.
   - **The 3D pit crew (`src/render/CrewFigure.ts`, `PitCrew.ts`) is untouched by all of

@@ -47,7 +47,7 @@ import {
  *   · SCALE. It says how big the person is, which is the only way a viewer can
  *     tell a slight driver from a heavy principal once the heads are matched.
  *   · TEAM. It is the only large area of team colour on a screen full of faces.
- *   · POSE. Hands on a desk, arms at the sides, both arms up, applauding,
+ *   · POSE. Hands on a desk, arms at the sides, both arms up, arms folded,
  *     walking — five poses, and between them they cover a press conference, a
  *     podium, a garage and a paddock.
  *   · KIT. A race suit is not a coloured rectangle. It has a collar, a yoke

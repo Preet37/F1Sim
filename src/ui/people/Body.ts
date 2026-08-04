@@ -50,7 +50,7 @@ import type { PersonLook } from './Look';
  * ---------------------------------------------------------------------------
  *
  * A pose is joint ANGLES, not path coordinates. `standing`, `walking`,
- * `raised` and `applaud` are one table of numbers each; `seated` is the one
+ * `raised` and `folded` are one table of numbers each; `seated` is the one
  * exception and it is solved rather than posed, because a press conference has
  * a desk in it at a stated height and the hands have to land ON it — see
  * `seatedArm`.
@@ -116,7 +116,7 @@ export interface Foot {
   angle: number;
 }
 
-export type Pose = 'seated' | 'standing' | 'raised' | 'applaud' | 'walking';
+export type Pose = 'seated' | 'standing' | 'raised' | 'folded' | 'walking';
 
 export interface Rig {
   pose: Pose;
@@ -368,11 +368,19 @@ const POSES: Readonly<Record<Exclude<Pose, 'seated'>, PoseSpec>> = {
     legL: [5, -3], legR: [-4, -2],
     legs: true,
   },
-  // Applauding: upper arms almost vertical, forearms folded UP AND ACROSS so
-  // the hands meet in front of the chest — what second and third are doing in
-  // 82.png while the winner has his arms up. The forearm angle is negative
-  // because it crosses the centreline.
-  applaud: {
+  // Arms folded: upper arms almost vertical, forearms up AND ACROSS so the
+  // hands meet in front of the chest. The forearm angle is negative because it
+  // crosses the centreline.
+  //
+  // IT IS CALLED `folded` BECAUSE THAT IS WHAT IT DRAWS. It was written as
+  // `applaud`, for second and third on the podium in
+  // `reference/target/82.png`, and at every size it was photographed at it
+  // reads as folded arms — the hands meet and overlap rather than staying
+  // apart. A pose named for the intention rather than for the drawing is how
+  // this project acquires load-bearing fiction (PROJECT.md §3). Real applause
+  // is a sixth pose and is not built; what this IS good for is the crossed-arm
+  // press-shot stance in `reference/target/70.png`, which is why it stayed.
+  folded: {
     armL: [9, -132], armR: [8, -128],
     legL: [4, -2], legR: [-3, -2],
     legs: true, flatHands: true,
