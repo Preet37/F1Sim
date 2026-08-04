@@ -1,7 +1,9 @@
 import '../src/ui/career.css';
 import '../src/ui/people/people.css';
 import { faceSvg, type FaceOptions } from '../src/ui/people/Face';
-import { figureSvg } from '../src/ui/people/Figure';
+import { figureSvg, figureArt } from '../src/ui/people/Figure';
+import { headArt } from '../src/ui/people/Face';
+import { legacyBodyArt, type LegacyPose } from '../scripts/lib/legacyFigure';
 import type { Pose } from '../src/ui/people/Body';
 import {
   COMPLEXIONS, HAIR_PIGMENTS, HAIR_STYLES, FACIAL_HAIR, EYEWEAR, HEADWEAR,
@@ -430,8 +432,90 @@ function bodies(): void {
   }
 }
 
+// ===========================================================================
+// Before and after
+// ===========================================================================
+
+/**
+ * The body that shipped, beside the body that replaces it, AT ONE SCALE.
+ *
+ * The left column is `scripts/lib/legacyFigure.ts`, which is
+ * `src/ui/people/Figure.ts` verbatim from `5ac0a09` — the same ratios, the same
+ * control points, the same draw order — and it is the same fixture
+ * `PEOPLE_LEGACY=1 npm run probe:people` measures. So this sheet and the 276
+ * failing checks are two views of one thing, and neither can drift from the
+ * other by somebody editing a screenshot.
+ *
+ * Both columns share a viewBox, both share the head, and both share the suit.
+ * The head is drawn on the old body too, even though the old file drew one, so
+ * that what is being compared is unambiguously the part below the neck.
+ */
+const COMPARE_BOX = '-130 -300 460 1330';
+
+function pairRow(title: string, note: string, pose: LegacyPose): void {
+  el('div', 'audit-label', app, title);
+  if (note) el('div', 'audit-sub', app, note);
+  const row = el('div', 'audit-row', app);
+  const look = lookFor('compare-' + pose, 'driver');
+  const kit = { suit: '#1868db', accent: '#f2f3f5' };
+  const head = headArt(look, { uid: 'cmp-' + pose, team: kit.suit, accent: kit.accent });
+
+  const before = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  before.setAttribute('viewBox', COMPARE_BOX);
+  before.setAttribute('width', '210');
+  before.setAttribute('class', 'person-figure');
+  before.innerHTML = `<defs>${head.defs}</defs>${head.back}`
+    + legacyBodyArt(look, {
+      uid: 'lgc-' + pose, suit: kit.suit, accent: kit.accent, pose,
+      trophy: pose === 'raised' ? 'gold' : undefined,
+    })
+    + head.front;
+  cell(row, before, 'before — 5ac0a09');
+
+  const art = figureArt(look, {
+    uid: 'nwc-' + pose, suit: kit.suit, accent: kit.accent, team: kit.suit,
+    pose, number: 27,
+    trophy: pose === 'raised' ? 'gold' : undefined,
+    champagne: pose === 'raised',
+  });
+  const after = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  after.setAttribute('viewBox', COMPARE_BOX);
+  after.setAttribute('width', '210');
+  after.setAttribute('class', 'person-figure');
+  after.innerHTML = `<defs>${art.defs}</defs>${art.markup}${art.overlay}`;
+  cell(row, after, 'after');
+}
+
+function compare(): void {
+  app.innerHTML = '';
+  app.className = 'audit-sheet';
+  const head = el('div', 'audit-head', app);
+  el('div', 'audit-title', head, 'Before and after');
+  el('div', 'audit-sub', head,
+    'The same person, the same head, the same suit, the same viewBox. Left is the '
+    + 'body verbatim from 5ac0a09; right is the rig. PEOPLE_LEGACY=1 npm run '
+    + 'probe:people measures the left column and fails 276 of 1471 checks.');
+
+  pairRow('The podium — reference/target/82.png',
+    'Before: one constant-width stroke from inside the chest, a hand ellipse and a '
+    + 'trophy at two independent hard-coded offsets, and an upper arm behind the torso '
+    + 'with nothing below the elbow. No legs at all — the figure ends at y=560.',
+    'raised');
+
+  pairRow('The garage crew — the "armless torsos"',
+    'Before: standing returned two upper arms painted BEHIND the torso and nothing in '
+    + 'front, so the torso was painted over them in the same suit colour.',
+    'standing');
+
+  pairRow('The press desk — reference/target/81.png',
+    'Before: the only pose that ever had a forearm or a hand, but the hands sat where '
+    + 'the figure put them and the desk sat at a hard-coded 281.9, so they agreed for '
+    + 'exactly one build.',
+    'seated');
+}
+
 const SCENES: Record<string, () => void> = {
-  sheet, principals, presser, podium, garage, bodies,
+  sheet, principals, bodies, compare, presser, podium, garage,
 };
 
 window.__people = {

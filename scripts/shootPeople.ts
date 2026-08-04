@@ -27,7 +27,7 @@ const VIEWPORTS = [
 ];
 
 /** The sheets are reference walls, not screens: one wide shot each. */
-const SHEETS = new Set(['sheet', 'principals', 'bodies']);
+const SHEETS = new Set(['sheet', 'principals', 'bodies', 'compare']);
 
 function chromePath(): string {
   const candidates = [
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   // must name scenes that are actually there, or the harness reports a gap it
   // invented.
   const SCENES = (process.env.SHOOT_PEOPLE
-    ?? 'sheet,principals,bodies,presser,podium,garage').split(',');
+    ?? 'sheet,principals,bodies,compare,presser,podium,garage').split(',');
 
   for (const scene of SCENES) {
     for (const vp of VIEWPORTS) {
