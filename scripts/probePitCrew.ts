@@ -45,6 +45,7 @@ import { getCircuit } from '../src/data/tracks/circuits';
 import { loopDelta, Rng } from '../src/core/MathUtils';
 import { PHYSICS_DT } from '../src/core/SimClock';
 import type { TrackSpline } from '../src/track/TrackSpline';
+import { pitLaneGeometry } from '../src/track/PitGeometry';
 import { AIVehicleController, type AIPerception } from '../src/ai/AIVehicleController';
 import type { VehicleControls } from '../src/physics/VehiclePhysics';
 import {
@@ -597,6 +598,184 @@ function distribution(crewTimeS: number, n: number): {
 }
 
 // ===========================================================================
+// Twenty cars in one pit lane
+// ===========================================================================
+
+/**
+ * Car-to-car separation in the pit lane, over a whole qualifying segment.
+ *
+ *   "you didn't fix the phasing cars issue in the pit"  — issue #75
+ *
+ * WHY THIS PROBE OWNS IT. This file's question 2 is containment: is the car
+ * inside the lane, measured against the pit wall and the garage frontage. That
+ * is car-versus-WALL. Car-versus-CAR is the same measurement with a different
+ * other body, and nothing in the project made it. `probe:pitstop`,
+ * `probe:pitlimiter` and this probe's own `runVisit` all open with
+ *
+ *     for (const car of engine.cars) if (car !== player) car.eliminated = true;
+ *
+ * so every existing pit-lane measurement is taken in an EMPTY pit lane, and
+ * `audit:pitlane` photographs one serviced car. `probe:traffic` §1 does stage a
+ * queue, but it hand-places four cars at `pitLaneStart: false`. Nothing
+ * anywhere had ever run the real thing: the twenty-car `pitLaneStart` grid that
+ * every practice and qualifying session in the game actually begins with.
+ *
+ * WHAT IT MEASURES. Every pair of cars that is physically in the pit lane —
+ * every fourth step, against the same three-disc body the engine collides with.
+ * A gap below one car width is two cars occupying the same ground, which is
+ * what the player sees as phasing.
+ *
+ * "IN THE PIT LANE" IS ASKED OF THE GROUND, NOT OF `car.inPitLane`, and that is
+ * the whole design of this section. `sittingOut`, `inPitBox` and `inPitLane`
+ * are the flags that decide whether `resolveContacts` bothers with a pair, so
+ * choosing pairs by them would be asking the engine whether it agrees with
+ * itself — and worse, a "fix" that cleared `inPitLane` on a car it left parked
+ * in the middle of the lane would empty the pair set and turn this green while
+ * the player still drove through it. So a car is in the lane when it is
+ * standing between the pit wall and the garage frontage, at a lap distance the
+ * lane covers, and the flag is then checked against that answer separately.
+ *
+ * Q1 and Q2 are both run because they are different scenes. Q1 releases twenty
+ * runners and nobody is parked; Q2 releases fifteen past five cars that are out
+ * of the session and are standing in the lane for the whole segment.
+ */
+
+/** The same three discs `resolveContacts` uses: radius 1.0m at ±1.85m and 0. */
+const LANE_DISC_R = 1.0;
+const LANE_DISC_OFF = [1.85, 0, -1.85];
+/** Below this the bodywork of the two cars is sharing ground. */
+const LANE_TOUCH_M = LANE_DISC_R * 2;
+
+function laneBodyGapM(a: CarEntry, b: CarEntry): number {
+  const aS = Math.sin(a.physics.heading), aC = Math.cos(a.physics.heading);
+  const bS = Math.sin(b.physics.heading), bC = Math.cos(b.physics.heading);
+  let best = Infinity;
+  for (const oa of LANE_DISC_OFF) {
+    const ax = a.physics.position.x + aS * oa;
+    const az = a.physics.position.y + aC * oa;
+    for (const ob of LANE_DISC_OFF) {
+      const d = Math.hypot(
+        b.physics.position.x + bS * ob - ax,
+        b.physics.position.y + bC * ob - az,
+      );
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * The five cars knocked out of Q1, as car indices.
+ *
+ * Scattered rather than the last five, and that matters: `pitSlot` is the car
+ * index, so eliminating 15..19 would park every absentee at one end of the row
+ * and a runner leaving from slot 0 would never pass one. Real knockouts are
+ * interleaved through the row and a released car drives past them.
+ */
+const OUT_OF_Q1 = [2, 5, 9, 13, 18];
+
+interface LaneSpacing {
+  circuit: string;
+  segment: string;
+  /** Cars standing in the lane when the session opens. */
+  inLaneAtStart: number;
+  /** Cars entitled to run the segment. */
+  runners: number;
+  /** Closest body-to-body approach between any two cars in the lane. */
+  worstGapM: number;
+  /** ...and who, where, and when. */
+  worstReport: string;
+  /** Samples at which two bodies were sharing ground. */
+  overlaps: number;
+  /** Samples at which `inPitLane` disagreed with where the car was standing. */
+  flagDisagreements: number;
+  flagReport: string;
+}
+
+function pitLaneSpacing(circuitId: string, segment: 'Q1' | 'Q2', durationS: number): LaneSpacing {
+  const def = getCircuit(circuitId);
+  const isQ2 = segment === 'Q2';
+  const participants = isQ2
+    ? [...Array(20).keys()].filter((i) => !OUT_OF_Q1.includes(i))
+    : undefined;
+  const engine = new RaceEngine(def, {
+    kind: 'qualifying', name: segment, durationS, laps: 0, playerIndex: -1,
+    standingStart: false, pitLaneStart: true, seed: 8801,
+    qualifyingPhase: isQ2 ? 2 : 1, advancing: isQ2 ? 10 : 15,
+    participants,
+  });
+
+  const g = pitLaneGeometry(def, engine.track.length);
+  /** How far outboard of the fast lane's centreline a car is standing. */
+  const outboard = (car: CarEntry): number => Math.abs(car.lateral) - g.centre;
+  /**
+   * Is this car standing IN the pit lane, as a question about the ground?
+   *
+   * Between the pit wall and the garage frontage, at a lap distance the lane
+   * covers. Half a car width of slack at each edge, so a car with a wheel over
+   * a line still counts as being in the lane it is driving down.
+   */
+  const inTheLane = (car: CarEntry): boolean => {
+    if (!g.covers(car.s)) return false;
+    const mag = Math.abs(car.lateral);
+    return mag >= g.laneInner - LANE_DISC_R && mag <= g.garageFace + LANE_DISC_R;
+  };
+
+  const inLaneAtStart = engine.cars.filter(inTheLane).length;
+  const runners = engine.participants.filter((c) => !c.sittingOut).length;
+
+  let worstGapM = Infinity;
+  let worstReport = '';
+  let overlaps = 0;
+  let flagDisagreements = 0;
+  let flagReport = '';
+  const steps = Math.round(durationS / PHYSICS_DT);
+  for (let i = 0; i < steps && !engine.over; i++) {
+    engine.step();
+    // Every fourth step. At 8ms a car under the 80km/h limiter covers 18cm, so
+    // a pass this misses is not a pass that could have overlapped anything.
+    if (i % 4 !== 0) continue;
+    const inLane = engine.cars.filter(inTheLane);
+    // The flag has to describe the ground. A car standing in the lane whose
+    // `inPitLane` is false is invisible to every rule in the engine that is
+    // written on that flag — including the pit-wall test in `resolveContacts`.
+    // Only checked for cars that are stopped: a car crossing the pit entry or
+    // merging at the exit is legitimately mid-transition for a few steps.
+    for (const car of engine.cars) {
+      if (car.physics.speedMs > 0.5) continue;
+      if (inTheLane(car) === car.inPitLane) continue;
+      flagDisagreements++;
+      if (flagReport) continue;
+      flagReport =
+        `${car.driver.code} is standing ${outboard(car).toFixed(1)}m outboard of the fast ` +
+        `lane at s=${car.s.toFixed(0)}m with inPitLane=${car.inPitLane}`;
+    }
+    for (let a = 0; a < inLane.length; a++) {
+      for (let b = a + 1; b < inLane.length; b++) {
+        const gap = laneBodyGapM(inLane[a], inLane[b]);
+        if (gap < LANE_TOUCH_M) overlaps++;
+        if (gap >= worstGapM) continue;
+        worstGapM = gap;
+        const ca = inLane[a], cb = inLane[b];
+        worstReport =
+          `${ca.driver.code} (${ca.physics.speedMs * 3.6 < 1 ? 'stopped' : 'moving'}, ` +
+          `${outboard(ca).toFixed(1)}m outboard, box ${ca.pitSlot}, ` +
+          `sittingOut=${ca.sittingOut} inPitBox=${ca.inPitBox}) and ` +
+          `${cb.driver.code} (${cb.physics.speedMs * 3.6 < 1 ? 'stopped' : 'moving'}, ` +
+          `${outboard(cb).toFixed(1)}m outboard, box ${cb.pitSlot}, ` +
+          `sittingOut=${cb.sittingOut} inPitBox=${cb.inPitBox}) ` +
+          `at t=${(i * PHYSICS_DT).toFixed(1)}s`;
+      }
+    }
+  }
+
+  return {
+    circuit: circuitId, segment, inLaneAtStart, runners,
+    worstGapM, worstReport, overlaps, flagDisagreements, flagReport,
+  };
+}
+
+// ===========================================================================
 
 
 /**
@@ -746,6 +925,45 @@ function main(): void {
   // ---- A penalty served in the box ---------------------------------------
   console.log('\nA time penalty served in the box, held at the front of the stop:');
   penaltyHold();
+
+  // ---- Twenty cars in one pit lane ---------------------------------------
+  //
+  // Monaco's lane is the tightest on the calendar and Bahrain's is one of the
+  // longest, so they lay the same twenty boxes out over very different ground;
+  // Monza is a third shape again. Checking one of them is how every pit-lane
+  // claim in this project has been shipped broken before (§3.5).
+  console.log('\nTwenty cars in one pit lane (closest body-to-body approach):');
+  console.log('  circuit       seg  in lane  runners   worst gap   overlapping samples');
+  for (const circuitId of ['monaco', 'bahrain', 'monza']) {
+    for (const segment of ['Q1', 'Q2'] as const) {
+      const r = pitLaneSpacing(circuitId, segment, segment === 'Q1' ? 540 : 480);
+      console.log(
+        '  ' + r.circuit.padEnd(12) +
+        '  ' + r.segment +
+        '  ' + String(r.inLaneAtStart).padStart(7) +
+        '  ' + String(r.runners).padStart(7) +
+        '  ' + (r.worstGapM === Infinity ? '  n/a' : r.worstGapM.toFixed(2).padStart(9) + 'm') +
+        '  ' + String(r.overlaps).padStart(19));
+      if (r.overlaps > 0) {
+        fail(r.circuit + ' ' + r.segment + ': two cars shared the same ground in the pit lane ' +
+          'on ' + r.overlaps + ' samples — closest ' + r.worstGapM.toFixed(2) + 'm between ' +
+          'bodies that are ' + LANE_TOUCH_M.toFixed(1) + 'm wide. ' + r.worstReport);
+      }
+      // The lane holds the cars that are IN the session and nothing else. A
+      // car knocked out in an earlier segment is not one of them: Art. B2.4.3
+      // classifies it on the lap it set in the period it ran, and it takes no
+      // further part. Counted here rather than only in `probe:qualiboard`
+      // because what the player reported was a COUNT OF CARS IN THE PIT LANE.
+      if (r.inLaneAtStart !== r.runners) {
+        fail(r.circuit + ' ' + r.segment + ': ' + r.inLaneAtStart + ' cars are standing in the ' +
+          'pit lane at the start of a segment that ' + r.runners + ' cars are entitled to run.');
+      }
+      if (r.flagDisagreements > 0) {
+        fail(r.circuit + ' ' + r.segment + ': `inPitLane` disagreed with where a stopped car ' +
+          'was standing on ' + r.flagDisagreements + ' samples — ' + r.flagReport);
+      }
+    }
+  }
 
   // ---- The distribution ---------------------------------------------------
   console.log('\nStationary time by crew quality (20000 stops each):');

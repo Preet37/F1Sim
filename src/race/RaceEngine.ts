@@ -24,7 +24,9 @@ import { corneringSpeedLimitMs, createNeighbour } from '../ai/AIVehicleControlle
 import {
   CONTACT_WIDTH_M, HAZARD_CORRIDOR_M, lateralOverlap, safeFollowSpeedMs,
 } from '../ai/TrafficAwareness';
-import { pitLaneGeometry, type PitLaneGeometry } from '../track/PitGeometry';
+import {
+  pitLaneGeometry, PIT_GARAGE_PARK_INSET_M, type PitLaneGeometry,
+} from '../track/PitGeometry';
 import type { TrackDefinition } from '../data/tracks/TrackDefinition';
 import { buildWorldModel, type Obstacle, type WorldModel } from '../track/WorldObstacles';
 import {
@@ -818,20 +820,55 @@ export class RaceEngine {
    * box, under its own garage — makes the collision solver, the AI's
    * perception and the renderer all tell the same truth without any of them
    * needing a special case. `npm run probe:qualiboard` measures it.
+   *
+   * AND THE FIRST VERSION OF THAT FIX PARKED THEM IN THE ROAD. Issues #74 and
+   * #75, reported together and one bug:
+   *
+   *   "q3 there are 20 cars, q2 it should've been 15 but in the pitlane there
+   *    were 20 cars"
+   *   "you didn't fix the phasing cars issue in the pit"
+   *
+   * The lateral used here was `pitLane.lateralOffsetM`, which is the FAST
+   * LANE'S CENTRELINE — the line a car under the limiter drives down, and the
+   * line `updatePitLane` steers every released car onto. The comment above it
+   * said "behind the pit wall" and "in its own garage" and it was neither. So
+   * the five cars knocked out of Q1 stood in the middle of the road for the
+   * whole of Q2, which is the twenty cars the player counted in a fifteen-car
+   * segment, and — being `sittingOut`, which is exactly what keeps them out of
+   * `resolveContacts` — every runner released from a box further up the lane
+   * drove straight through one on its way out. Measured before the fix by
+   * `probe:pitcrew`: 675 to 819 samples a segment with two car bodies sharing
+   * the same ground, closest approach 0.00m, on all three circuits checked.
+   *
+   * The same twenty cars in Q1, where nobody is parked, never came closer than
+   * 2.24m at Monaco and 7.2m at Bahrain and Monza. Runner against runner was
+   * never the problem; the parked cars were.
+   *
+   * A garage is BEHIND the frontage, not in the lane in front of it, and the
+   * paddock builds a real bay there — `PIT_GARAGE_DEPTH_M` deep, with a floor,
+   * an opening and a back wall. That is where an eliminated car is in real
+   * life, it is out of the fast lane, out of the working lane, and out of the
+   * count of cars in the pit lane.
    */
   private parkSittingOut(): void {
-    const pit = this.track.def.pitLane;
+    // Inside the garage. `garageFace` is the lane's outer edge and the frontage
+    // the paddock is built on, so a car standing `PIT_GARAGE_PARK_INSET_M`
+    // beyond it is on the garage floor with the opening in front of it.
+    const parkLat =
+      this.pitGeom.sign * (this.pitGeom.garageFace + PIT_GARAGE_PARK_INSET_M);
     for (const car of this.cars) {
       if (!car.sittingOut) continue;
-      car.placeOnTrack(this.track, car.pitBoxS, pit.lateralOffsetM, 0);
+      car.placeOnTrack(this.track, car.pitBoxS, parkLat, 0);
       car.lap = 0;
       car.lapStartTime = 0;
-      // Behind the pit wall AND stopped in the box. Either alone would keep the
-      // car out of `resolveContacts`, and both are true of a car in a garage,
-      // but the honest reason it cannot be hit is `sittingOut` — these two say
-      // where it is, not whether it exists.
-      car.inPitLane = true;
-      car.inPitBox = true;
+      // NOT in the pit lane, because it is not: it is in the building beside
+      // it. Both flags describe WHERE the car is and the renderer, the tower
+      // and anything counting cars in the lane read them as such — the honest
+      // reason it cannot be hit is `sittingOut`, which says whether it exists.
+      // Claiming `inPitLane` for a car in a garage is what made the player
+      // count twenty cars in a fifteen-car pit lane.
+      car.inPitLane = false;
+      car.inPitBox = false;
       // It is not queuing to be released and it is not on an out-lap; it is
       // not going anywhere. Leaving `onOutLap` set would be a claim about a lap
       // this car is never going to start.
