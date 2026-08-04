@@ -917,8 +917,13 @@ does to them — which is why the model chooses the parameters and a real shoot 
   back silently *by design*; a mast that cannot be placed clear of the circuit is not placed,
   and a `FloodlightTowers` with a count of zero adds an empty group and throws nothing.
   §3.2. It boots the real built application in a real browser and asserts what is actually
-  lighting the scene: `hdri:partly_cloudy` at Zandvoort, the generated probe at night, and the mast
-  counts. **6 ok / 0 failed.**
+  lighting the scene: `hdri:partly_cloudy` at Zandvoort, the generated probe at night, and
+  the mast counts. **6 ok / 0 failed — and proved red twice, with each break failing exactly
+  the assertions it should and no others.** Pointing the HDRI URL at a file that does not
+  exist: Zandvoort reports `generated` and fails, while Bahrain and Jeddah stay green,
+  because the generated probe is what they are *supposed* to have. Gating the masts off with
+  `if (false && …)`: Bahrain and Jeddah fail at 0 masts while Zandvoort's `0 masts` correctly
+  passes. **3 ok / 3 failed** on each break, exit 1; restored, **6 ok / 0 failed**.
 - **`probe:world` now scans `FloodlightTowers`.** That file's own header is a list of
   renderer-side builders that were *not* in its scan and were therefore drawing on the road
   unchecked; a 36m steel column would have been the next entry on it. **PASS on all eleven
@@ -2071,8 +2076,13 @@ measurement passes every version of it that is wrong.
   a one-off download and PMREM filter with no per-frame cost, because a filtered cubemap
   costs the same to sample whatever produced it; the masts are three draw calls and about
   6,200 triangles at two circuits. `PERF_PAIR=gradelook` was added to `probe:renderperf` to
-  isolate the grade block from the pass around it, **and the run it exists for has not been
-  taken.**
+  isolate the grade block from the pass around it, and **one** paired run was taken, at
+  Bahrain, at load average 205: **grade on 36.12ms, grade off 35.97ms, paired delta +0.37ms
+  over 12 cycles, spread −0.63..0.98.** The spread straddles zero, so the honest reading is
+  that the grade block's cost is **not distinguishable from zero** — and the 36ms absolute is
+  a measurement of this machine's contention, not of the renderer, and must not be quoted as
+  a frame time. **Nothing else was measured**: no viewport sweep, no phone geometry, no
+  whole-frame before/after, and no second circuit.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not
