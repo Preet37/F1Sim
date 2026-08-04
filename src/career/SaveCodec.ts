@@ -332,7 +332,7 @@ function backfillRatings(state: CareerState): void {
   r.contract ??= newContractGoal(current(), year);
   r.contract.signedRtg ??= current();
   r.contract.targetRtg ??= Math.min(100, r.contract.signedRtg + 1);
-  r.contract.retainRtg ??= Math.max(1, r.contract.targetRtg - RETAIN_GAP);
+  r.contract.retainRtg ??= Math.max(1, r.contract.signedRtg - RETAIN_GAP);
   r.contract.signedYear ??= year;
   r.contract.seasonsAtTeam ??= 0;
 

@@ -9,6 +9,7 @@ import { money } from './DriverMarketScreen';
 import type { Career } from '../career/Career';
 import { findTeam, type WorldDriver } from '../career/World';
 import { getCircuit } from '../data/tracks/circuits';
+import { nationOf } from '../career/Identity';
 import {
   RATING_CODE, RATING_EFFECT, RATING_KEYS, RATING_NAME, RECOGNITION_PERKS,
   ratingsFor,
@@ -364,7 +365,10 @@ function ratingChart(parent: HTMLElement, spec: ChartSpec): void {
 function safeCircuit(id: string): { country: string; code: string } {
   try {
     const c = getCircuit(id);
-    return { country: c.country, code: c.countryCode.slice(0, 3).toUpperCase() };
+    // THREE LETTERS, from the nation record. `countryCode` is ISO-2, so
+    // `.slice(0, 3)` on it yields TWO — the axis read `BH`, `MC`, `AT` under
+    // plates saying `BHR`, `MON`, `AUT`. `85.png`'s axis is AUS, JPN, CHN.
+    return { country: c.country, code: nationOf(c.country).code };
   } catch {
     return { country: '', code: id.slice(0, 3).toUpperCase() };
   }
@@ -493,7 +497,6 @@ function accoladeGlyph(a: AccoladeProgress, size: number): SVGSVGElement {
 function rivalsTab(parent: HTMLElement, opts: DetailOptions): void {
   const { career } = opts;
   const panel = el('div', 'dd-panel', parent);
-  el('div', 'dd-panel-title', panel, 'Rivals');
   el('div', 'dd-panel-sub', panel,
     'Heat rises when you finish near each other and cools when you do not');
 
@@ -558,7 +561,6 @@ function findAnywhere(career: Career, id: string): WorldDriver | undefined {
 function recognitionTab(parent: HTMLElement, opts: DetailOptions): void {
   const { career } = opts;
   const panel = el('div', 'dd-panel', parent);
-  el('div', 'dd-panel-title', panel, 'Recognition');
 
   const rec = career.recognition();
   if (!rec) {
@@ -686,7 +688,6 @@ const SERIES_COLOUR: Record<RatingKey | 'rtg', string> = {
 
 function graphTab(parent: HTMLElement, opts: DetailOptions): void {
   const panel = el('div', 'dd-panel', parent);
-  el('div', 'dd-panel-title', panel, 'Driver Ratings Graph');
   el('div', 'dd-panel-sub', panel, 'Every attribute over recent race weekends');
   ratingChart(panel, {
     history: opts.career.ratingsState.history,
@@ -720,7 +721,6 @@ function comparisonTab(parent: HTMLElement, opts: DetailOptions): void {
   const them = market.find((r) => r.driver.id === themId);
 
   const panel = el('div', 'dd-panel', parent);
-  el('div', 'dd-panel-title', panel, 'Driver Rating Comparison');
   if (!me || !them) {
     el('div', 'dd-chart-empty', panel, 'There is nobody to compare against.');
     return;
@@ -793,9 +793,14 @@ function compareCard(
 
   const attrs = el('div', 'dd-cmp-attrs', card);
   for (const k of ['exp', 'rac', 'awa', 'pac'] as RatingKey[]) {
-    const head = Math.max(0, caps[k] - r[k]);
+    // NO HEADROOM CHIP ON EXPERIENCE. Its ceiling is 100 for everybody, so the
+    // chip read `+100` beside a rookie's `0` and said nothing about them —
+    // experience is bought with race starts, not with talent, and a potential
+    // figure against a counter of attendance is a figure that means nothing.
+    const head = k === 'exp' ? 0 : Math.max(0, caps[k] - r[k]);
     const line = el('div', 'dd-cmp-attr' + (head > 0 ? ' gain' : ''), attrs);
-    el('div', 'dd-cmp-attr-delta', line, head > 0 ? '+' + head : '—');
+    const chip = el('div', 'dd-cmp-attr-delta', line, head > 0 ? '+' + head : '—');
+    if (k === 'exp') chip.title = 'Experience has no ceiling but race starts.';
     el('div', 'dd-cmp-attr-name', line, title(RATING_CODE[k]));
     el('div', 'dd-cmp-attr-value', line, String(r[k]));
   }

@@ -308,6 +308,7 @@ Run `npm run` to list. The important ones:
 | `probe:tower` | **The running order, after layout, in a real browser** — real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`. §1 every rival's lap time in a cell with pixels in it (#35); §2 the row count against the room the panel has, and that positions increment by exactly one (#17, #76); §3 fields of 18/20/22/24; §4 the five things the reference's row is, per row, drawn; **§5 the COPY — where each column sits as a fraction of the panel, against numbers measured off `reference/target/68.png` itself, plus the face, the size relationships, the compound's own colour, the header's wording, centring and weights, and the badge's shape (#76).** Writes `hud-out/tower/*.png` |
 | `probe:people` | **Two halves, and the second is not arithmetic.** §1–6: 42 principals, all named, all unique, none within a look distance. §Anatomy (#22): 40 figures × 5 poses, **measured off the drawn markup** — a hand overlaps its forearm, a forearm its upper arm, an upper arm the torso without being buried in it, a held object's grip is inside the hand, and every limb is a filled shape that measurably tapers. 3,615 checks. `PEOPLE_LEGACY=1` runs it against the body as it shipped at `5ac0a09` (**276 of 1,471 fail**); `PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five ways |
 | `shoot:people` | Contact sheet of the cast, the five poses (`SHOOT_PEOPLE=bodies`), the shipped body beside the rig at one scale (`compare`), plus the presser/podium/garage scenes |
+| `probe:ratings` | **The driver ratings model — does it MOVE, does it PREDICT, and do the screens read it?** RTG plus EXP/RAC/AWA/PAC/FOC as a pure projection of the `WorldDriver` the simulation races. A season of wins rates 64 and a season of retirements 59; between two drivers **in the same car** the higher-rated one finishes ahead **69.3%** of 11,600 pairs; caps bind over 340 starts; and **no file in `src/ui/` may read a raw driver attribute** — four were, three of them printing `skill x 100` under a column headed "Pace". Node only and **not load sensitive**. `RATINGS_BREAK=static\|weights`. Issue #77 |
 | `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
@@ -3918,6 +3919,133 @@ dropping `ledger` from the encoder — and `SaveCodec.backfill` now defends the 
 block, because one missing ledger line turns the cost cap into `NaN`, which compares false
 against every threshold and so stops binding silently rather than throwing.
 
+### Driver ratings, and the six screens that read them (issue #77)
+
+> *"every image that I attached, i want that to that quality, the way that is, the way it
+> looks, everything that I showed you and shared with you I want you to do it that way."*
+
+Six frames — `reference/target/83.png`, `84`, `85`, `86`, `87`, `88` — and every one of
+them is a **view onto a driver rating**, of which this game had none. So the order was
+the model, then the market that prices it, then contracts, then the decorative half.
+Building the panels first would have produced six beautiful screens with nothing true in
+them, which is #13's trap (the podium, built and unreachable for weeks) and #62's (a
+probe reporting "every screen renders" having walked fourteen livery buttons).
+
+**`src/career/DriverRatings.ts` — a PURE PROJECTION, and that is the load-bearing
+decision.** A rating is a function of the `WorldDriver` record the simulation already
+races. Nothing is stored per driver, for anybody, ever. Sixty drivers with a stored
+rating each is sixty chances for the stored number and the raced number to disagree, and
+they would disagree the first time the off-season moved somebody's attributes. What IS
+in the save (`state.ratings`) is the four things a projection genuinely cannot recover:
+the rating at the last reveal, the rating after each past weekend, the goal the team set
+at signing, and the lifetime counters the accolades count.
+
+| shown | built from | who else reads that |
+|---|---|---|
+| `PAC` Pace | `skill` | `simulateRound` weight 0.36, `AIVehicleController` |
+| `RAC` Racecraft | `racecraft` | wheel-to-wheel, `Stewards` |
+| `AWA` Awareness | `tyreManagement`, less over-driving (`1 - aggression`) | `simulateRound` 0.04, `TrafficAwareness` |
+| `FOC` Focus | `consistency` and `wetSkill`, less `narrative.pressure` | the race-day spread, the driver-error retirement term |
+| `EXP` Experience | race starts, saturating | `valuation`, `prefersExperience` |
+
+**It moves with results.** `Career.recordPlayerRound` applies a bounded per-weekend move:
+pace against what the CAR was worth (a P12 in the worst car is a better weekend than a P6
+in the best, and a model rewarding the P6 rates the seat), racecraft against the other
+side of the garage, awareness for finishing, focus for delivering the result the car had
+in it.
+
+**`probe:ratings` — 3,436 checks, node only, not load sensitive.** Every input and every
+seed is stated, so it says the same thing on a busy machine.
+
+| section | what it measured |
+|---|---|
+| 1 | 75 drivers rated 52..93; RTG is the documented weighted mean of its own parts; five 99s make 99, which is the one arithmetic fact `86.png` pins down |
+| 2 | a season of wins rates **64**, a season of last places **61**, a season of retirements **59**, and a career that never raced is **unmoved** |
+| 3 | between two drivers **in the same car**, the higher-rated one finished ahead **69.3%** of 11,600 team-mate pairs over 1,200 simulated races |
+| 4 | caps bind over **340 race starts** of nothing but wins |
+| 5 | the market, the accolades and the recognition split are total — no NaN, the split always sums to 100, two unrated drivers do not divide by zero |
+| 6 | **no file in `src/ui/` reads a raw driver attribute** |
+
+**Section 3 is what stops the weighting being arbitrary.** RTG is not F1 Manager's formula
+and the file says so rather than pretending: their three worked examples do not fit one
+convex combination (`88.png` has Lawson at **93** from 49/83/78/87/98, which no weighted
+mean of those five can reach). What ours can be held to is that it *predicts this
+simulation*, controlled for the car, and that is measured rather than asserted.
+
+**Section 6 found four real violations on this branch's own base.** `Paddock.ts:269`,
+`TeamCreate.ts:226`, `TeamHQ.ts:486` and `TeamHQ.ts:508` — three of them printing
+`skill x 100` under a column headed "Pace", none of them agreeing with each other, all
+four a second rating that nothing kept in step with the first. This is
+`TIER_INFO.carPace` and the pit panel's four derivations of one fact, in a third place.
+All four now read the model.
+
+**And it found three defects in its own author's model**, each fixed and each documented
+at the line rather than quietly:
+- **A cap that followed its own subject.** `capsFor` was `current + headroom`, which is a
+  rolling window, not a ceiling: 340 starts of winning finished "at the cap" with the cap
+  26 points higher than it began. A cap that cannot bind is a progress bar that cannot
+  fill.
+- **A focus rule that punished improvement.** Focus was measured against the driver's own
+  recent ratings and rewarded a flat line, so a driver who was genuinely getting better
+  registered as inconsistent every round: 340 wins finished with **FOC at 17**, from 64.
+- **A pressure penalty written back into its own source.** `playerAsWorldDriver` bakes the
+  pressure erosion into `consistency`, correctly, because that is the record the
+  simulation races. `applyRoundToRatings` read that copy and wrote the moved record BACK
+  to the profile, so the penalty was re-applied and stored every round. Same species as
+  `narrative.departmentMorale` — a mirror written back into what it mirrors.
+
+**Proved red two ways, both genuine runtime breaks.** `RATINGS_BREAK=static` puts the
+driver back after every weekend — every counter still moves, every chart point is still
+appended, the rating never changes — and takes section 2 to **6 failures**, headed *"a
+season of wins rates 60 and a season of retirements rates 60"*. `RATINGS_BREAK=weights`
+moves the whole overall onto experience and takes section 3 to *"the higher-rated
+team-mate finished ahead only 59.3% of the time"*, **5 failures**. Section 4's cap has
+**no** break switch and that is stated rather than faked: `applyMove` is the only writer
+of a driver attribute in the model, so the only way to break the ceiling is to edit that
+function, and a switch that edited it would be testing the switch.
+
+**The save.** `SAVE_MINOR` 5 -> 6, `state.ratings` additive, `SaveCodec.backfill` defends
+every field — the My Team block's treatment, for the My Team block's reason. A missing
+counter is not a crash; it is an accolade bar of `NaN%` width, which CSS silently draws
+at zero, so the screen tells somebody with eighty-six race starts that they have none and
+never throws. `probe:save` gained the case. **Proved red by dropping the per-field
+loop — 1 failure — and by dropping the whole function, 4.**
+
+**The screens.** `src/ui/DriverDetails.ts` (one screen id, six sub-tabs — Contracts,
+Accolades, Rivals, Recognition, Driver Ratings Graph, Driver Rating Comparison),
+`src/ui/DriverMarketScreen.ts` and `src/ui/RatingsReveal.ts`, over `src/ui/driver.css`.
+**All nine routes are in `probe:smoke`'s required set on the day they were written**,
+which is the difference between this and every screen #13, #38 and #62 had to rescue.
+
+**The old My Team driver market is REPLACED, not duplicated.** It was a `timingBoard` of
+twelve rows printing `skill x 100`, and it was not `88.png`. Building the reference's
+table beside it would have left the game with two driver markets disagreeing about what a
+driver is worth. There is one now, at its own screen id, doing both jobs: a driver career
+opens it to see where they stand, a My Team career signs the second car from it.
+
+**Two unreachable methods are now reachable.** Section 7 recorded `Career.spendPrepSlot`
+and `Career.declareRivalry` as built, documented and reachable from nowhere. The Rivals
+tab has a **Declare** button and Recognition has *A morning at the factory*, which spends
+a preparation slot through the existing method rather than reimplementing morale for a
+fifth time.
+
+**What is deliberately NOT reproduced from the reference, stated rather than substituted
+quietly** — `reference/target/INDEX.md` asks for exactly this:
+- **The flags.** `85.png`'s x-axis and `88.png`'s driver column are national flags; this
+  game draws `nationPlateSvg`, three letters on the country's two colours. That decision
+  is already made and argued in `DriverPortrait.ts` and is not re-litigated here.
+- **The faces.** Every driver in the six frames is a likeness of a real person. Section 3
+  permits real names as data and no reproduced likeness, so the figure is `figureSvg` —
+  #22's body, the same one that stands on the podium. A real name sits beside a generated
+  face and the face approximates nobody.
+- **The overall's arithmetic**, for the reason under section 3 above.
+
+**`probe:people` went 3,615 -> 3,623 and that is not a regression — it is the same guard
+over four more files.** Sections 2 and 3 of that probe read every `.ts` under `src/` and
+assert two things about each; this branch adds four source files, so it adds eight
+checks. 0 failures either way, and the base was re-measured at 3,615 on this tree rather
+than quoted.
+
 ### Tooling
 - **`scripts/` is now typechecked.** `tsconfig.scripts.json` covers `scripts` and `audit`
   as a *separate* project — separate so `@types/node` cannot leak into `src/` and let
@@ -4266,7 +4394,7 @@ the broken and the fixed halo, which is exactly why `probe:halo` had to exist.
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | **Measured — #12, see §6.** The PENALTY half is not too high: 3.00 penalties on 3.00 of 20 cars at the player's own configuration, all from the stewards' bench, none on the driven car, and 0.002 sanctionable excursions a car-lap against a 0.075 bar. The CRASH half is over by a quarter (player in 1.50 contacts a race against a derived 1.20) and is the field's 22.50, i.e. #26. What dominates the player's race is neither: **7.00 SC/VSC deployments and 35.2% of it neutralised**, which nothing had ever counted and which closes when #26 does |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
-| Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
+| Career/story | Sponsors, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; so have the driver ratings model and #77's six management screens — see §6.** Rivalries are declarable from a screen now. What is left is the layer that TALKS to the player: sponsors as a system, and a press room whose answers have consequences |
 
 ### `probe:smoke` had never opened the front end it claimed to cover — issue #62
 
@@ -5041,8 +5169,17 @@ shared files and the run that matters passed. **Nobody is on this.**
   generates true statements about things that happened; nobody speaks to the player.
 - **A team-mate's contract can run out and be re-signed, but there is no wider transfer
   negotiation** — no offers to the player, no rival teams bidding for their seat.
-- `Career.spendPrepSlot` is reachable now, but the preparation screen is the only place
-  the narrative layer is touched by the player.
+- ~~`Career.spendPrepSlot` is reachable now, but the preparation screen is the only place
+  the narrative layer is touched by the player.~~ **`Career.declareRivalry` is reachable
+  too, as of #77** — Driver Details, Rivals, Declare — and Recognition spends a
+  preparation slot through `spendPrepSlot` rather than reimplementing it. What is still
+  true is that nothing SPEAKS to the player: `PressConference.onAnswer` and the `effects`
+  lists remain display-only.
+- **A driver market exists and is not a negotiation.** #77 built the market table, the
+  valuation, the acclaim figure and the buyout, and every one of them reads the ratings
+  model. What it does not do is bid: no rival team offers the player a seat, no agent
+  negotiates, and `buyoutUsd` is priced but nobody can pay it. The screen is honest about
+  this — there is no button that pretends otherwise.
 
 ### The swerving (#46): it is the INPUT PATH, not the gearbox (#45) and not the car
 Reported in the same message as #45 — *"additionally, the car is swerving a lot I thought

@@ -93,9 +93,12 @@ export function buildDriverMarket(parent: HTMLElement, opts: MarketOptions): voi
     head.appendChild(b);
   }
 
+  // The rows scroll inside the box; the cut and the pinned row do not. See
+  // `.dm-table` in `driver.css` for why.
+  const scroll = el('div', 'dm-scroll', table);
   for (const row of rows) {
     if (row.isPlayer) continue;
-    marketRow(table, row, career, row.driver.id === selected?.driver.id, opts);
+    marketRow(scroll, row, career, row.driver.id === selected?.driver.id, opts);
   }
 
   // THE PLAYER'S OWN ROW, PINNED UNDER A RED RULE. `88.png` does exactly this:
@@ -181,7 +184,8 @@ function marketCard(
 
   const attrs = el('div', 'dd-cmp-attrs', card);
   for (const k of ['exp', 'rac', 'awa', 'pac'] as RatingKey[]) {
-    const head = Math.max(0, row.caps[k] - row.ratings[k]);
+    // See `DriverDetails.compareCard` for why experience carries no chip.
+    const head = k === 'exp' ? 0 : Math.max(0, row.caps[k] - row.ratings[k]);
     const line = el('div', 'dd-cmp-attr' + (head > 0 ? ' gain' : ''), attrs);
     el('div', 'dd-cmp-attr-value', line, String(row.ratings[k]));
     el('div', 'dd-cmp-attr-name', line, title(RATING_CODE[k]));

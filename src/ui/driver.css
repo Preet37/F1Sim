@@ -743,8 +743,10 @@
 .dd-cmp-pair-fig { font-family: var(--font-data); font-size: 19px; font-weight: 700; color: var(--ink); }
 .dd-cmp-pair-label { font-size: 12px; color: var(--ink-2); }
 
-/* The radar. */
-.dd-radar { display: block; width: 100%; height: auto; }
+/* The radar. `87.png` keeps it compact with the four bars under it inside the
+   same panel; letting it take the full column width pushed every bar below the
+   fold on a 1080-high frame. */
+.dd-radar { display: block; width: 100%; max-width: 300px; height: auto; margin: 0 auto; }
 .dd-radar-web { fill: none; stroke: rgba(150, 180, 214, 0.22); stroke-width: 1; }
 .dd-radar-them { fill: none; stroke: var(--ink); stroke-width: 2; }
 .dd-radar-me { fill: none; stroke: var(--sig-red); stroke-width: 2.4; }
@@ -785,7 +787,16 @@
   border-radius: 6px;
   background: rgba(12, 16, 22, 0.86);
   overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* A FIXED BOX WITH THE ROWS SCROLLING INSIDE IT, which is what `88.png`
+     has — and the reason it has it is the two rows at the bottom: a red rule
+     and the player's own entry, pinned. With the table free to grow, a
+     twenty-two car championship pushed both off the fold and the one row the
+     player is looking for was the one they had to scroll to find. */
+  max-height: min(62vh, 640px);
 }
+.dm-scroll { overflow-y: auto; min-height: 0; }
 .dm-head,
 .dm-row {
   display: grid;
@@ -898,7 +909,12 @@
 
 .rv {
   position: relative;
-  min-height: 100%;
+  /* THE FIGURE IS FULL HEIGHT IN THE FRAME, which is the whole composition of
+     `86.png` — a driver standing the height of the picture with the panel
+     beside them. Sized off the viewport rather than off the content, because
+     the content is five rows and would leave the figure a third of the frame
+     tall in a sea of black. The first screenshot showed exactly that. */
+  min-height: 66vh;
   display: grid;
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
   gap: 18px;
@@ -910,12 +926,12 @@
   .rv-art { display: none; }
 }
 
-.rv-art { display: flex; align-items: flex-end; justify-content: center; min-height: 420px; }
+.rv-art { display: flex; align-items: flex-end; justify-content: center; min-height: 66vh; }
 .rv-art .person-figure {
   display: block;
   width: 100%;
   height: auto;
-  max-height: 560px;
+  max-height: 74vh;
   filter: drop-shadow(0 26px 34px rgba(0, 0, 0, 0.6));
 }
 
@@ -969,12 +985,16 @@
 .rv-rows { margin-top: 6px; }
 .rv-row {
   display: grid;
+  /* Three columns and a full-width track under all of them: `86.png` runs a
+     thin line the whole width of the row, not the width of the figures. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 92px;
+  grid-template-rows: auto auto;
   align-items: center;
-  gap: 14px;
+  gap: 4px 14px;
   padding: 10px 4px 8px;
   border-bottom: 1px solid var(--line);
 }
+.rv-row > .rv-track { grid-column: 1 / -1; margin-top: 4px; }
 .rv-code {
   font-family: var(--font-display);
   font-stretch: 112%;

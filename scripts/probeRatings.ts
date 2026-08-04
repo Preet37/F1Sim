@@ -65,8 +65,8 @@ import { raceSeats, type WorldDriver } from '../src/career/World';
 import { seasonComplete, simulateRound, type RoundResult } from '../src/career/Season';
 import {
   ACCOLADES, RATING_KEYS, RTG_WEIGHT, accoladeProgress, acclaimOf, buyoutUsd,
-  capsFor, emptyCareerRecord, experienceFromStarts, marketValueUsd, overallRtg,
-  ratingsFor, recognitionFor,
+  capsFor, emptyCareerRecord, experienceFromStarts, marketValueUsd, newContractGoal,
+  overallRtg, ratingsFor, recognitionFor,
   type DriverRatings, type RatingKey,
 } from '../src/career/DriverRatings';
 
@@ -273,6 +273,20 @@ function driveSeason(seed: number, opts: { place?: number; retire?: boolean; rou
     'the ratings history is not in round order, so the chart would zig-zag backwards');
   check(hist[hist.length - 1].rtg === w.rtg,
     `the last chart point (${hist[hist.length - 1]?.rtg}) is not the current rating (${w.rtg})`);
+
+  // A DRIVER CAREER HAS A TEAM-MATE, and three things read one: the racecraft
+  // term, the recognition split and the comparison screen's default opponent.
+  // `Career.teammate` returned null for every driver career there had ever
+  // been, so all three were dead and the recognition screen told a Formula 3
+  // rookie they did not have one. Found in a screenshot, not in the code.
+  const mate = winner.teammate();
+  check(mate !== null,
+    'a driver career has no team-mate, so the racecraft term and the recognition '
+    + 'split are both reading nothing');
+  check(mate === null || mate.teamId === winner.state.teamId,
+    'the team-mate is at a different team from the player');
+  check(winner.recognition() !== null,
+    'a driver career cannot see its recognition split');
   check(hist.every((s) => s.circuitId.length > 0),
     'a chart sample has no circuit, so the x-axis would have a blank flag on it');
 
@@ -509,6 +523,37 @@ section('5. market, accolades and recognition are total');
   check(goal.targetRtg > goal.retainRtg, 'the retain line is above the target');
   check(goal.targetRtg >= career.ratings().rtg,
     `a fresh contract targets ${goal.targetRtg} against a current ${career.ratings().rtg}`);
+
+  /**
+   * AND THE GOAL MUST NOT BE MET BY TURNING UP.
+   *
+   * The first screenshot of the finished Contracts screen showed a target of
+   * 60 beside a current of 62 — beaten by two points after THREE races,
+   * because the target was a flat `rtg + 1` from the reference frame and most
+   * of a rookie's first three races is the experience curve. A contract goal
+   * a player passes before the fourth round of their first season is not a
+   * goal, and no screenshot of it can be a picture of `85.png`.
+   *
+   * So: a rookie's target must survive a third of a season of winning, and a
+   * driver at their ceiling must still only be asked for one point.
+   */
+  {
+    const rookie = driveSeason(2468, { place: 1, rounds: 3 });
+    const g = rookie.contractGoal();
+    console.log(`after three wins from a standing start: target ${g.targetRtg}, `
+      + `current ${rookie.ratings().rtg}, asked for +${g.targetRtg - g.signedRtg}`);
+    check(g.targetRtg > rookie.ratings().rtg,
+      `a rookie's season target (${g.targetRtg}) was passed in three races `
+      + `(now ${rookie.ratings().rtg}) — the target is not a goal`);
+
+    // A driver with nothing left to give is asked for one point, which is the
+    // reference frame's own number.
+    const maxed = { exp: 100, rac: 90, awa: 90, pac: 90, foc: 90 } as Record<RatingKey, number>;
+    const tight = newContractGoal(90, 2026, maxed);
+    check(tight.targetRtg === 91,
+      `a driver at their ceiling is asked for +${tight.targetRtg - 90}; `
+      + 'reference/target/85.png asks for +1');
+  }
 }
 
 // ===========================================================================

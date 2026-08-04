@@ -1090,7 +1090,8 @@ export class Career {
    */
   resetContractGoal(): void {
     const r = this.ratingsState;
-    r.contract = newContractGoal(this.ratings().rtg, this.state.season.year);
+    r.contract = newContractGoal(
+      this.ratings().rtg, this.state.season.year, this.ratingCaps());
   }
 
   /**
@@ -1273,12 +1274,22 @@ export class Career {
 
   /** The second driver at the player's team, whoever it currently is. */
   teammate(): WorldDriver | null {
+    // ANY CAREER, NOT ONLY MY TEAM. This used to return `null` outright when
+    // `state.team` was null, i.e. for every driver career there has ever been
+    // — and a Formula 3 rookie has a team-mate, in the same car, which is the
+    // only fair comparison in motorsport. Three things read this and all three
+    // were dead: the racecraft term in `moveForRound`, the recognition split,
+    // and the comparison screen's default opponent. The recognition screen
+    // said "you do not have one at the moment" to somebody sitting next to one.
+    //
+    // My Team is unchanged by the generalisation: its player is in F1 at
+    // `state.teamId === team.teamId`, so the same filter finds the same driver.
     const t = this.state.team;
-    if (!t) return null;
-    const seats = this.state.world.tiers.F1.drivers.filter(
-      (d) => d.teamId === t.teamId && !d.reserve && !d.retired
+    const seats = this.state.world.tiers[this.state.tier].drivers.filter(
+      (d) => d.teamId === this.state.teamId && !d.reserve && !d.retired
         && d.id !== this.state.playerDriverId);
     const mate = seats[0] ?? null;
+    if (!t) return mate;
     // The stored id is a convenience for screens; the world is the truth, and
     // the transfer market can change it behind the player's back between
     // seasons. Resyncing here means the two can never disagree.

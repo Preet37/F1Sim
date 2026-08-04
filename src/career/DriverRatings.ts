@@ -356,15 +356,55 @@ export interface ContractGoal {
   seasonsAtTeam: number;
 }
 
-export const RETAIN_GAP = 7;
+/**
+ * How far below the rating at signing the seat comes into question.
+ *
+ * Measured off the frame rather than chosen: `85.png` reads 69 Target / 68
+ * Current / 62 Retain Seat, so the retain line is SIX below where the driver
+ * was when the contract was signed — not six below the target. Hanging it off
+ * the target instead put the line one point under a rookie whose target was
+ * six points away, which says a single bad weekend costs them the seat.
+ */
+export const RETAIN_GAP = 6;
 
-/** The goal a team sets a driver it has just signed. */
-export function newContractGoal(rtg: number, year: number): ContractGoal {
-  const target = Math.min(100, rtg + 1);
+/**
+ * The goal a team sets a driver it has just signed.
+ *
+ * THE TARGET SCALES WITH HEADROOM, and the first version did not. It was a
+ * flat `rtg + 1`, straight off the reference's `INCREASE RATING BY 1` — and
+ * the first screenshot of the finished screen showed the goal ALREADY BEATEN
+ * after three races, by two points, on a rookie. It was not the model moving
+ * too fast: most of a rookie's first three races is the experience curve, and
+ * that curve is right. It was the goal. A team does not ask a Formula 3 rookie
+ * with twenty-five points of headroom for the same improvement it asks of a
+ * thirty-four-year-old at their ceiling.
+ *
+ * So the ask is about a third of what the driver has left in them, floored at
+ * 1 and capped at 6. The reference's driver is at 68 with a target of 69 and
+ * is visibly near the top of their range, which is exactly what this produces
+ * for a driver with three points of headroom — so the frame's own number falls
+ * out of the rule rather than being the rule.
+ */
+export function newContractGoal(
+  rtg: number, year: number, caps?: Record<RatingKey, number>,
+): ContractGoal {
+  let ask = 1;
+  if (caps) {
+    // Headroom on the four attributes a driver can actually train. Experience
+    // is excluded: it is bought with race starts, not with effort, and a
+    // target built on it would ask a rookie to get older.
+    let head = 0;
+    for (const k of RATING_KEYS) {
+      if (k === 'exp') continue;
+      head += Math.max(0, caps[k] - Math.round(rtg));
+    }
+    ask = clamp(Math.round((head / 4) * 0.35), 1, 6);
+  }
+  const target = Math.min(100, rtg + ask);
   return {
     signedRtg: rtg,
     targetRtg: target,
-    retainRtg: Math.max(1, target - RETAIN_GAP),
+    retainRtg: Math.max(1, Math.round(rtg) - RETAIN_GAP),
     signedYear: year,
     seasonsAtTeam: 0,
   };
@@ -809,10 +849,17 @@ export function recognitionFor(opts: {
 export const ACCLAIM_MAX = 20;
 
 export function acclaimOf(d: Pick<WorldDriver, 'tier' | 'experience'>, ratings: DriverRatings): number {
-  const fame = (ratings.rtg - 55) / 45;            // 0 at 55 RTG, 1 at 100
+  // THE FLOOR IS 45 AND NOT 55, and the tier factors are not the first ones.
+  // The first version put the whole of a Formula 3 grid between 0 and 2, so
+  // the ACCLAIM column — which `88.png` sorts the table on — was a column of
+  // zeros with a dead bar beside it. Found in the first screenshot of the
+  // finished screen, not in the code. The 0.8 keeps the top of a Formula 1
+  // grid near the frame's own 11..15 rather than pinning it at 20.
+  const fame = (ratings.rtg - 45) / 50;
   const tenure = Math.min(1, startsOf(d) / 150);
-  const tier = d.tier === 'F1' ? 1 : d.tier === 'F2' ? 0.55 : 0.3;
-  return Math.round(clamp((fame * 0.62 + tenure * 0.38) * ACCLAIM_MAX * tier, 0, ACCLAIM_MAX));
+  const tier = d.tier === 'F1' ? 1 : d.tier === 'F2' ? 0.7 : 0.5;
+  return Math.round(
+    clamp((fame * 0.62 + tenure * 0.38) * ACCLAIM_MAX * tier * 0.8, 0, ACCLAIM_MAX));
 }
 
 /**
@@ -851,9 +898,12 @@ export function marketValueUsd(d: WorldDriver, ratings: DriverRatings): number {
   const fameScale = 0.55 + (acclaim / ACCLAIM_MAX) * 0.75;
   const age = d.age >= 34 ? 1 - (d.age - 33) * 0.09 : d.age <= 22 ? 1.06 : 1;
   const usd = rating * tierScale * fameScale * clamp(age, 0.3, 1.1);
-  // Rounded to $50k, because a driver market quoting $8,247,113 is a
-  // spreadsheet rather than a valuation.
-  return Math.max(0, Math.round(usd / 50_000) * 50_000);
+  // Rounded, because a driver market quoting $8,247,113 is a spreadsheet
+  // rather than a valuation — but FINER BELOW A MILLION. At a flat $50k a
+  // whole Formula 3 grid quantised onto four prices and the column stopped
+  // telling anybody anything.
+  const grain = usd >= 1e6 ? 50_000 : 10_000;
+  return Math.max(0, Math.round(usd / grain) * grain);
 }
 
 /** One row of the driver market, with everything the table and card print. */

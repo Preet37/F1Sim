@@ -108,12 +108,15 @@ export function buildRatingsReveal(parent: HTMLElement, spec: RevealSpec): HTMLE
     const at = Math.min(cap, levelToPoints(spec.now[k]));
     const points = el('div', 'rv-points', mid);
     points.innerHTML = '<b>' + group(at) + '</b> / ' + group(cap);
-    const track = el('div', 'rv-track', mid);
-    (el('i', '', track) as HTMLElement).style.width = ((at / cap) * 100).toFixed(1) + '%';
 
     const was = spec.previous ? spec.previous[k] : spec.now[k];
     const value = el('div', 'rv-value' + (spec.now[k] > was ? ' up' : ''), row);
     value.textContent = String(spec.now[k]);
+
+    // THE TRACK IS THE ROW'S, not the middle column's. `86.png` runs it the
+    // whole width under the code, the figures and the value alike.
+    const track = el('div', 'rv-track', row);
+    (el('i', '', track) as HTMLElement).style.width = ((at / cap) * 100).toFixed(1) + '%';
   }
 
   return wrap;

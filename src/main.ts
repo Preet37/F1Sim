@@ -1806,10 +1806,16 @@ class Game {
     if (!career) { this.showMenu(); return; }
     this.setScreen('ratings');
     const team = getTeam(career.state.teamId);
+    // THE CHASSIS TITLE IS THE DRIVER, NOT THE WORD "RATINGS".
+    //
+    // `86.png` carries the word once, outlined, over the chevron strip in the
+    // middle of the frame. Putting it in the page title as well printed it
+    // twice on one screen in two different faces, which the first screenshot
+    // made obvious and no amount of reading the code would have.
     const { body, actions } = this.page({
       tab: TIER_CAR[career.tier].shortName + ' · ' + career.season.year,
       where: 'Ratings',
-      title: 'Ratings',
+      title: career.state.player.firstName + ' ' + career.state.player.lastName,
       sub: 'What the last weekend did to you.',
       back: then ?? (() => this.showDriverDetails()),
     });

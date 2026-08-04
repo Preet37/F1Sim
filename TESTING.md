@@ -131,8 +131,48 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
   garage crew were torsos with no arms at all. **On a phone held sideways** the press
   room now sits beside the question instead of pushing the answers off the bottom.
 
-**Known and not built:** sponsors as a system, publicist/marketer/PA/manager/agencies, a
-transfer market, driver ratings. Tracked on #23 and #77.
+**Driver ratings, the market, contracts, accolades and recognition (#77).** New, and the
+whole of it hangs off two buttons on the career hub: **Driver Details** and **Driver
+Market**.
+
+- **Driver Details → Contracts.** Three figures — Target, Current, Retain Seat — and a
+  chart of your rating over the race weekends you have run, with the target line in green
+  and the retain line in amber across it. The chart is empty until you have raced at
+  least once; that is correct, not a bug.
+- **→ Accolades.** Five lifetime counters — race starts, top-ten finishes, podiums,
+  championship points, championship top fives — each with three tiers and each naming the
+  attribute it lifts. Click a card to read it.
+- **→ Rivals.** Everybody who has taken an interest, with the head-to-head and a heat
+  meter. **Declare** raises the heat and marks it, which is what the newsroom reads.
+  `Career.declareRivalry` had been built and reachable from nowhere.
+- **→ Recognition.** You against the other side of the garage, as a split percentage, with
+  the perks each threshold unlocks. *A morning at the factory* spends a preparation slot,
+  lifts every department's morale and counts toward the split.
+- **→ Driver Ratings Graph / Driver Rating Comparison.** All five attributes over the same
+  weekends; and a pentagon comparing you against anybody in the championship, with market
+  value, base salary and buyout for both.
+- **Driver Market.** The whole championship, sortable on any column, with a detail card
+  down the right. In My Team this is also where you sign the second car — the old Team HQ
+  driver market is **gone**, deliberately, because two markets would have disagreed about
+  what a driver is worth.
+- **The ratings reveal** fires between the podium and the paddock after a race, and is
+  also reachable from Driver Details → **Ratings**.
+
+**What to look for, because this is the part that would be a lie if it were broken:** the
+rating must MOVE. Race a season and watch it; win and PAC and RAC should climb, retire and
+AWA and FOC should fall, and the chart should show it. It is the same number the
+simulation races — there is no second copy of a driver anywhere.
+
+**Known not to be reproduced from the reference, and stated rather than substituted
+quietly:** the flags on the market table and the chart's x-axis are this game's
+three-letters-on-two-colours nation plate rather than drawn flags (an approximated flag
+is visibly the wrong flag — the argument is in `DriverPortrait.ts`), and every face is
+generated rather than a likeness. The overall RTG is this simulation's own weighting, not
+F1 Manager's; theirs cannot be reproduced from the three worked examples in the
+reference and guessing would have been fiction.
+
+**Known and not built:** sponsors as a system, publicist/marketer/PA/manager/agencies.
+Tracked on #23.
 
 ---
 
@@ -213,7 +253,8 @@ The probes are the CI. There is no hosted runner.
 npm run typecheck     # both projects, incl. scripts/
 npm run validate      # tracks, physics, race, qualifying, integrity, world, flags
 npm run regress       # lap counting, classification, session exit, career flow
-npm run probe:smoke   # 35 front-end screens, 32 required routes
+npm run probe:smoke   # 39 front-end screens; 39 required routes since #77
+npm run probe:ratings # the driver ratings model: does it move, does it predict
 ```
 
 **`npm run build` had been failing on `main`, and so had every probe that builds the site
