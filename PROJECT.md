@@ -857,6 +857,142 @@ every car on the grid that fairing is painted in the team's colours, so the surf
 drawn is paint over composite and 0.02 is right for both users of the swatch rather than a
 compromise between them.
 
+### Six texels of sun turned the whole frame to NaN, and only on some GPUs (#36, follow-up)
+
+`probe:assets` measured **35 ok / 0 failed** on the branch #85 was cut from and **32 ok / 3
+failed** on merged `main`, the same day, on the same machine. The three failures were the
+whole override half — *"the override CHANGED the render"*, *"0 px over 3 views"*, *"0 -> 0
+of 0 px"* — while the loader reported the file resolved, decoded and listed.
+
+**The difference was not in the diff and not in `main`.** It is `public/assets/hdri/`,
+which is gitignored and fetched by `scripts/fetchAssets.ts`: #85's branch had never run the
+fetcher and `main`'s working tree had. Reproduced by symlinking that one directory into a
+clean worktree — **35/35 without it, 32/3 with it, deterministic both ways.**
+
+**THE `0 px` WAS NEITHER OF THE TWO THINGS IT LOOKED LIKE.** The obvious reading is "the
+badge was not drawn"; the careful reading is "the badge was drawn and the comparison cannot
+see it", and #78 had just moved `EXPOSURE.day` from 1.35 to 0.333, which makes that a live
+hypothesis. **Both are wrong.** The diff is an exact per-channel equality test with no
+threshold in it at all, so it cannot miss a change; and the real answer was visible in the
+probe's own output all along:
+
+    top: f4cb2a36a4c1   hero: f4cb2a36a4c1   side: f4cb2a36a4c1
+
+**Three different camera stations, three different lenses, one hash.** The frame was blank.
+
+**What it is.** `EnvProbe.load` asks the Radiance decoder for `FloatType`, for the stated
+reason that `brightestAzimuth` scans the texels. `PMREMGenerator` filters into
+`HalfFloatType` targets — fixed inside three, not a parameter. So the source can carry
+values the target cannot, and Poly Haven's `partly_cloudy`, **the default daylight sky**,
+does:
+
+| capture | peak radiance | texels over 65504 |
+|---|---|---|
+| **partly_cloudy** (day, dry) | **73503.1** | **6** |
+| overcast (wet) | 61166.9 | 0 |
+| sunset (dusk) | 8352.6 | 0 |
+| night (unused) | 345.3 | 0 |
+
+Six texels of 8,388,608, all of them the core of the solar disc. They become `+Inf` in the
+half-float target; the blur multiplies an infinity by a zero weight; `Inf * 0` is `NaN`; the
+NaN propagates through every remaining mip, so **every roughness level of the environment
+map is NaN.** Every `MeshStandardMaterial` in the scene samples it and writes zero. The
+frame goes black **with 45 draw calls and 130,486 triangles issued, `glGetError` clean, no
+shader error and nothing on the console.**
+
+The diagnostic that separates this from a lost context, a leaked render target or a culled
+scene — all of which it resembles exactly — is that **`scene.environmentIntensity = 0` does
+NOT bring the picture back and `scene.environment = null` does.** `0 * NaN` is `NaN`. That
+asymmetry is what NaN looks like from outside a shader.
+
+**WHY NOBODY SAW IT, AND IT IS NOT THAT NOBODY LOOKED.** Whether `Inf * 0` yields `NaN` or
+is flushed to zero is a property of the DRIVER. Apple's Metal backend compiles with
+fast-math, which is licensed to assume no infinities exist; SwiftShader is IEEE-strict.
+Measured, same commit, same capture, same three views:
+
+| GPU | top | hero | side |
+|---|---|---|---|
+| real (headful, Metal/ANGLE) | 111/121/129 | 86/91/97 | 66/71/74 |
+| SwiftShader — **what every headless probe here uses** | 0/0/0 | 0/0/0 | 0/0/0 |
+
+So every frame a human has ever judged was rendered on the machine where the bug is
+invisible, and `probe:env` reported **6 ok / 0 failed** with the correct capture name
+throughout — it boots the real app **headful on the real GPU** and reads
+`environmentSource`, not pixels, so it could not have caught this even under a strict
+rasteriser. **This is a shipping defect and not a probe artefact: a browser game is not
+entitled to assume the driver has fast-math.**
+
+**Fixed by clamping the `FloatType` data to 65504 before PMREM.** Not a patch over the
+symptom: three's own `HalfFloatType` path already clamps (`DataUtils.toHalfFloat`), so this
+makes the two paths agree rather than inventing a rule. It touches six texels on one
+capture. **With the clamp, SwiftShader agrees with the real GPU to within one code value**
+— top and side exact, hero 85 vs 86.
+
+**AND THE PROBE COULD NOT SAY SO, WHICH IS THE SECOND HALF.** Every comparison in
+`probe:assets` is a difference — arm B against arm A, arm C against arm A — and a blank
+canvas satisfies all of them perfectly. The three §4 byte-identity assertions, which are the
+shippability guarantee the whole probe exists for, **went green on three identical black
+images.** §3.2. Two assertions added: the baseline arm carries a real picture (distinct
+colours and mean level, not a cleared buffer), and the three views are distinct images —
+the second needs no threshold at all.
+
+**Measured, on merged `main` with `public/assets/` present: 32 ok / 3 failed → 37 ok / 0
+failed** (the original 35, plus the two new). **Proved red two ways, and the contrast
+between them is the point.** Removing the clamp gives back the reported failure exactly —
+32 ok, the same three lines, the same `f4cb2a36a4c1` — *plus* the two new assertions naming
+the actual cause: `the baseline arm is a real picture, not a blank buffer (top 1c/0.0, hero
+1c/0.0, side 1c/0.0)`. `ASSETS_BREAK=root` gives 32 ok / 5 failed, the override half only,
+and **the two new assertions correctly stay green**, because a broken loader is not a blank
+frame.
+
+### The safety car's paint and the paddock's glazing (§7's two worst half-metals)
+
+Both are §6's *"painted bodywork at metalness 0.26"* in different clothes, and §7 had named
+them as the pair worth doing together. Neither file was held by anybody.
+
+| | was | now | why |
+|---|---|---|---|
+| `SafetyCarMesh.ts` body | 0.38 / **0.35**, `0xdfe3e8` | 0.38 / **0.02**, **`0xd8dce1`** | painted bodywork is a dielectric |
+| `Paddock.ts` glazing | 0.14 / **0.70**, `0x24404f` | 0.14 / **0.02**, **`0x11222b`** | soda-lime glass is n = 1.52, i.e. F0 = 0.040 neutral |
+| `Paddock.ts` garage monitors | as glazing, `0x0a1a26` | **`0x030a12`** | same merged bin, same BRDF, same rescale |
+| `Paddock.ts` pit-wall screens | as glazing, `0x0d2430` | **`0x041118`** | same |
+
+**Every roughness is unchanged.** This is a correction to the BRDF, not a restyle — the
+same standard #85 set on the wheel corner.
+
+**THE ALBEDOS MOVED, AND THE TWO MOVED FOR OPPOSITE REASONS, which is the part worth
+recording.** #85's table went TO metal, where the base colour becomes specular reflectance
+and leaving it puts a 30%-reflective nut where a dielectric used to be. These go the other
+way, so the correction inverts: dropping metalness *restores* deleted diffuse, and carrying
+the old base colour over would have brightened both surfaces in one commit.
+
+- **The safety car's paint is targeted on a measured reflectance.** At 0.35 the shader
+  deleted 35% of the diffuse and added it back as a lobe tinted with the paint's own hue —
+  F0 was **(0.284, 0.295, 0.308)** against a dielectric's neutral 0.04, i.e. the car was
+  drawn as a 30%-reflective coloured mirror. The base colour is now set so its brightest
+  channel lands on linear **0.75**, the visible reflectance of white automotive topcoat,
+  which is a ceiling as well as a target: nothing real reflects much more than that
+  diffusely.
+- **The glazing is targeted on holding its diffuse where it was**, and that difference is
+  deliberate. What its diffuse term stands for is the dark interior seen through a tint, and
+  that was already a defensible value; the safety car's was a white paint being drawn at
+  half the reflectance of white paint. At 0.70 the drawn diffuse was `linear x 0.30` and at
+  0.02 it is `linear x 0.98`, so every vertex colour feeding that material is scaled by
+  **0.306** — all four of them, including the garage monitors and the pit-wall screens,
+  which are in the same merged bin and would otherwise have tripled in lightness for free.
+  F0 goes from a **blue** 0.024–0.067 to a neutral **0.040**, which is not a choice: it is
+  Fresnel at normal incidence for n = 1.52, and it is what makes glazing read as glazing —
+  dark head-on, mirror at a glancing angle.
+
+**Measured, `npm run shoot:safetycar`, the flank box on the `side` view:** mean RGB
+**91.0 / 109.9 / 112.6 → 99.2 / 117.8 / 121.0**, +8.2 / +7.9 / +8.4 code values, channel
+spread 21.6 → 21.8. The pictures show it: the flank loses a mirror-like tonal wash down the
+body and becomes even painted white, and the green flash stops being washed out by the
+tinted specular. **The hue-tinting term is small here precisely because the paint is nearly
+white** — that is honest rather than disappointing, and it is why the case for the change is
+that a 30%-reflective body is wrong whatever colour it is, and that the safety car now
+shares one definition of paint with the twenty-two cars behind it.
+
 ### The front corner, and the two questions `probe:carrig` was not asking (issue #47)
 
 > *"phasing through the carbon and the wheel covers on the top are actually floating
@@ -3011,7 +3147,7 @@ five declared screen ids it does **not** reach and why: `intro` (deliberately sk
 stated rather than silently crossed. **The retirement flow is on the same list**: it needs an
 accident, and `probe:qualiretire` stages one.
 
-### Eighteen half-metals are still in the scene, audited and deliberately not touched (#36)
+### Sixteen half-metals are still in the scene — two of the eighteen are now fixed (#36)
 
 The metalness audit that produced §6's wheel-corner table covered **every material in
 `src/render/`** — 38 `MeshStandardMaterial` sites across twelve files. The car's own
@@ -3022,10 +3158,10 @@ and tinting that fraction of the specular with the surface's own hue.
 
 | file | material | roughness | metalness | what it should be |
 |---|---|---|---|---|
-| `Paddock.ts` | **glazing** | 0.14 | **0.70** | **0** — architectural glass is a dielectric. At 0.70 with roughness 0.14 the paddock's windows are tinted mirrors with 70% of their diffuse deleted. **The worst one on the list.** |
+| ~~`Paddock.ts` **glazing**~~ | ~~0.14 / **0.70**~~ | | **DONE** | **0.02.** Was the worst one on the list. See §6 |
+| ~~`SafetyCarMesh.ts` **body**~~ | ~~0.38 / **0.35**~~ | | **DONE** | **0.02.** §6's *"painted bodywork at metalness 0.26"* verbatim. See §6 |
 | `Paddock.ts` | structures | 0.78 | 0.10 | 0 (clad concrete/steel, painted) |
 | `Paddock.ts` | grandstands | 0.80 | 0.06 | 0 |
-| `SafetyCarMesh.ts` | **body** | 0.38 | **0.35** | **0** — this is §6's *"painted bodywork at metalness 0.26"* verbatim, on the one vehicle everybody is looking at under a neutralisation |
 | `SafetyCarMesh.ts` | wheels | 0.85 | 0.15 | 0 (rubber dominates the merged tyre+rim) |
 | `TrackMesh.ts` | gantry posts | 0.60 | 0.35 | 0 (painted steel) |
 | `TrackMesh.ts` | catch fence | 0.75 | 0.25 | 0 (PVC-coated wire — the colour `0x2f4a38` IS the coating) |
@@ -3041,14 +3177,79 @@ and tinting that fraction of the specular with the surface's own hue.
 | `PitBoxMarker.ts` | paint | 0.45–0.55 | 0.03–0.05 | floor; fine |
 | `ChamferKit.ts` | `structureMaterial` **default** | 0.72 | 0.12 | **unreachable** — all four callers pass an explicit value, so the default is dead. A documentation hazard rather than a rendering one, and the next caller who omits `opts` inherits a half-metal. |
 
-**Why none of them moved.** `TrackMesh.ts` and `SurfaceDetail.ts` are held by #48;
-`PitCrew.ts` belongs to the pit-stop work in flight; `Paddock.ts`, `SafetyCarMesh.ts`,
-`MarshalPost.ts` and `Wreckage.ts` are nobody's ground but are also not the car, and the
-brief for #36 was the car plus a loader. **Two of them are worth doing on their own and
-should be done together, because they are the same bug §6 already has a name for**: the
-safety car's paint at 0.35 and the paddock's glazing at 0.70. Both need the albedo checked
-at the same time — see §6 on why switching metalness without moving the base colour makes a
-correct change look like a regression. **Nobody is on this.**
+**The two worst are done** — the safety car's paint and the paddock's glazing, the pair
+this entry named as "worth doing on their own and should be done together". See §6.
+
+**WHO OWNS THE REST, RE-CHECKED 2026-08-03 RATHER THAN COPIED FORWARD — and the answer
+has changed, because every branch this entry was waiting on has since landed.** The
+original note read *"`TrackMesh.ts` and `SurfaceDetail.ts` are held by #48; `PitCrew.ts`
+belongs to the pit-stop work in flight"*. **#48 merged as PR #81 and the pit-stop
+choreography merged as `f07f6b8`.** So:
+
+| file | material | metalness | owner |
+|---|---|---|---|
+| `PitCrew.ts` | **tools** | **0.55** | **UNOWNED** — pit-stop work landed. The biggest one left, and the only one on the list that should go UP: a wheel gun and a jack really are metal, so this is the `#85` tyre-corner case and **the albedo has to rise with it** or it comes out darker than the dielectric it replaced |
+| `TrackMesh.ts` | **gantry posts** | **0.35** | **UNOWNED** — #48 landed |
+| `TrackMesh.ts` | **catch fence** | **0.25** | **UNOWNED** — #48 landed. The colour `0x2f4a38` IS the PVC coating |
+| `TrackMesh.ts` | gantry beam | 0.20 | **UNOWNED** — #48 landed |
+| `TrackMesh.ts` | buildings | 0.10 | **UNOWNED** — #48 landed |
+| `SurfaceDetail.ts` | asphalt / kerb / wall | 0.05 / 0.02 / 0.04 | **UNOWNED** — #48 landed. At the Fresnel floor; defensible, no work needed |
+| `MarshalPost.ts` | **post** | **0.20** | **UNOWNED**, and always was |
+| `Wreckage.ts` | **shards** | **0.18** | **UNOWNED**, and always was. Its own comment says *"lacquered carbon, not matte plastic"*, and lacquered carbon is 0.02 on this car |
+| `SafetyCarMesh.ts` | wheels | 0.15 | **UNOWNED** — deliberately left by this pass, which was scoped to the body |
+| `Paddock.ts` | structures / grandstands | 0.10 / 0.06 | **UNOWNED** — deliberately left by this pass |
+| `ChamferKit.ts` | `structureMaterial` default | 0.12 | **UNOWNED** — unreachable, a documentation hazard rather than a rendering one |
+
+**So every one of the sixteen is unowned.** Nothing is blocked on anybody. The three worth
+doing next, in order of how wrong they are: `PitCrew.ts` tools at 0.55, `TrackMesh.ts`
+gantry posts at 0.35, and `TrackMesh.ts` catch fence at 0.25. All of them need the albedo
+moved at the same time — see §6 on why switching metalness without moving the base colour
+makes a correct change look like a regression, and note that the direction of the albedo
+correction depends on which way the metalness goes.
+
+**And nothing in `scripts/` photographs the safety car, which is why its bodywork survived
+five audits.** `audit:circuits` shoots cars on the racing line, `audit:car` shoots the
+Formula 1 car in a garage rig, and `Renderer.syncSafetyCar` only draws the safety car while
+a neutralisation is running — so the one vehicle the whole field queues behind had no
+picture anywhere in this repository. `npm run shoot:safetycar` now exists and is
+deliberately small. **`audit:pitlane`'s five stations still do not frame the pit building's
+glazing band**, so the paddock correction was verified by arithmetic and on the garage
+monitors rather than on the windows themselves. Recorded rather than done.
+
+### `shoot:panels`: the rail is NINE, not zero, and this file said zero
+
+**Measured on merged `main` 2026-08-03: 9 rail + 2 mirror.** §4 and §6 both record the rail
+as **zero** since #17 — *"`rail: nothing overlaps anything, all viewports, all scenes` —
+zero, which is two better than `main`"*. It is not zero now. The two named are
+`phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px` and
+`phone/pit-choice: overlap .pitprompt x .hud-carstate by 138x12px`.
+
+**Confirmed pre-existing and not a branch regression**, by the only method that settles it:
+`git checkout 3f229b7 -- src/` on the `brand-override-repair` worktree and re-running gave
+**the same 9 + 2, the same two sentences**. So something merged into `main` after #17 put
+the rail back and nobody re-ran the harness — the same species of stale entry this file
+records for `validate:flags` and `probe:fieldsize`. The mirror count is unchanged at 2.
+**Nobody is on this.**
+
+### `audit:livery` had a BLACK FRAME in it on `main`, underneath the flake
+
+The entry below describes a `hero` shot that is not reproducible. That is real and is
+confirmed — three consecutive runs on the fixed tree gave three *different* `hero` hashes
+(`bcdf59e9`, `15aebc66`, `be1b1844`) — but it was hiding something worse.
+
+On merged `main` with `public/assets/` present, `audit:livery` reports **3 failures**, and
+`control--top` comes back as **`f4cb2a36a4c1`**. That is the blank-frame hash from the §6
+entry above: the captured sky's six overflowing texels turn the environment map to NaN part
+way through the run and the shot is **black**. An audit harness was writing black PNGs into
+`audit-out/` and reporting them as a livery difference.
+
+With the clamp: **3 failures → 1 or 2**, `control--top` stable at `bd0a466e`, and no black
+frame. What is left is the `hero` flake and one more thing the flake was covering:
+**`control--side` is stably mismatched at `6e0b172a50bd` against `audit:car`'s
+`47f6bbf0a014`** — the same pair on the fixed and the unfixed tree, four runs, so it is
+neither the flake nor the clamp. **A stable mismatch on one view is a real difference
+between the two harnesses and nobody has diagnosed it.** It is not a repaint: `top` is
+byte-identical. **Nobody is on this.**
 
 ### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
 

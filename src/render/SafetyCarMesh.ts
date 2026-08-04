@@ -58,7 +58,25 @@ import { chamferBox, chamferCylinder, PartsBin, structureMaterial } from './Cham
  * bodywork with a dark green flash, which no team in `src/data/teams.ts` uses.
  */
 export const SAFETY_CAR_LIVERY = {
-  body: 0xdfe3e8,
+  /**
+   * White automotive topcoat, at a MEASURED reflectance.
+   *
+   * `0xdfe3e8` until 2026-08-03, chosen against `metalness: 0.35` — see the
+   * body material below for why that was wrong. With the metalness corrected to
+   * the dielectric floor the base colour stops being 65% of a diffuse albedo
+   * and becomes all of one, so it had to be re-derived rather than carried
+   * over: leaving it would have raised the diffuse term by 1.51x in one commit,
+   * which is PROJECT.md section 6's *"blown out white plastic"* arriving by the
+   * back door of a correct change.
+   *
+   * Set so the brightest channel lands on linear **0.75**, the visible
+   * reflectance of white automotive topcoat. Nothing real reflects much more
+   * than that diffusely — fresh snow is 0.80-0.90 and white paint 0.75-0.85 —
+   * so it is a ceiling as well as a target. Linear (0.686, 0.714, 0.750),
+   * keeping the slight blue cast that makes it read as silver rather than as
+   * paper.
+   */
+  body: 0xd8dce1,
   accent: 0x14563a,
   glass: 0x11151c,
   trim: 0x1b1f26,
@@ -263,7 +281,33 @@ export function buildSafetyCar(quality: 'low' | 'high' = 'high'): SafetyCarVisua
 
   // --- The body, merged ----------------------------------------------------
   const body = bin.merge();
-  const bodyMat = structureMaterial({ roughness: 0.38, metalness: 0.35 });
+  /**
+   * PAINTED BODYWORK IS A DIELECTRIC. Metalness 0.35 until 2026-08-03.
+   *
+   * This is PROJECT.md section 6's *"painted bodywork at metalness 0.26"*
+   * verbatim — the defect that produced the "blown out white plastic" look
+   * across the whole Formula 1 car — sitting on the one vehicle every spectator
+   * is looking at directly, because a neutralisation puts it at the head of the
+   * field with twenty cars queued behind it and the broadcast camera on it.
+   *
+   * Metalness is a SWITCH between two BRDFs, not a gloss dial. At 0.35 the
+   * shader was deleting 35% of the paint's diffuse term and adding it back as a
+   * specular lobe TINTED WITH THE PAINT'S OWN HUE — F0 was (0.284, 0.295,
+   * 0.308) rather than a dielectric's neutral 0.04, i.e. this car was drawn as
+   * a 30%-reflective coloured mirror. Metallic-flake paint does not work that
+   * way either: the flakes are suspended in a clear dielectric binder and the
+   * surface you see is the binder.
+   *
+   * 0.02 rather than 0.0 is the Fresnel floor the rest of this project uses —
+   * `Livery.ts` paints `body` and `accent` at exactly 0.02 — so the safety car
+   * and the cars behind it now share one definition of paint.
+   *
+   * THE ALBEDO MOVED WITH IT, which is the half that is easy to skip: see
+   * `SAFETY_CAR_LIVERY.body`. **The roughness is deliberately unchanged.** How
+   * glossy this car is was decided separately and is not in question; this is a
+   * correction to the BRDF, not a restyle.
+   */
+  const bodyMat = structureMaterial({ roughness: 0.38, metalness: 0.02 });
   if (body) {
     const mesh = new THREE.Mesh(body, bodyMat);
     root.add(mesh);

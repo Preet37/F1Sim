@@ -303,6 +303,73 @@ async function main(): Promise<void> {
       'rebuilding the same car with no artwork is byte-identical to the previous build',
     );
 
+    // -----------------------------------------------------------------------
+    // THERE IS A CAR IN THE PICTURE AT ALL, and this is not paranoia — it is
+    // the assertion whose absence let a black frame report as a pass.
+    //
+    // Every comparison in this probe is a DIFFERENCE: arm B against arm A, and
+    // arm C against arm A. A blank canvas satisfies all of them perfectly. On
+    // 2026-08-03 that is exactly what happened: an infinity in the captured sky
+    // turned the whole environment map to NaN under the software rasteriser,
+    // every `MeshStandardMaterial` in the scene wrote zero, and the probe
+    // reported
+    //
+    //     top / hero / side: f4cb2a36a4c1 vs f4cb2a36a4c1
+    //     0 of 1024000 px changed  (x3)
+    //
+    // — three DIFFERENT camera angles hashing identically, which is impossible
+    // for a photograph of a car and is the tell nobody was reading. The three
+    // §4 byte-identity checks, which are the shippability guarantee this whole
+    // probe exists for, went green on three identical black images.
+    //
+    // So: the baseline arm must be a real picture before any difference taken
+    // against it means anything. Two independent ways of saying so, because a
+    // single one of them is a threshold somebody can talk themselves past.
+    const alive = await page.evaluate(async (ds: string[], names: string[]) => {
+      const out: { view: string; colours: number; mean: number }[] = [];
+      for (let n = 0; n < ds.length; n++) {
+        const img = await new Promise<HTMLImageElement>((r) => {
+          const i = new Image(); i.onload = () => r(i); i.src = ds[n];
+        });
+        const cv = document.createElement('canvas');
+        cv.width = img.width; cv.height = img.height;
+        const g = cv.getContext('2d')!;
+        g.drawImage(img, 0, 0);
+        const px = g.getImageData(0, 0, cv.width, cv.height).data;
+        const seen = new Set<number>();
+        let sum = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          sum += px[i] + px[i + 1] + px[i + 2];
+          if (seen.size < 4096) seen.add((px[i] << 16) | (px[i + 1] << 8) | px[i + 2]);
+        }
+        out.push({ view: names[n], colours: seen.size, mean: sum / (px.length / 4) / 3 });
+      }
+      return out;
+    }, VIEWS.map((v) => armNone.shots[v]), [...VIEWS]);
+
+    for (const a of alive) {
+      console.log(`  ${a.view.padEnd(5)} ${a.colours >= 4096 ? '4096+' : a.colours} distinct colours, `
+        + `mean level ${a.mean.toFixed(1)}`);
+    }
+    // A lit car on a lit ground plane is a photograph: thousands of distinct
+    // values. A cleared buffer is ONE. Two orders of magnitude of daylight
+    // between the two, so the bound is not delicate.
+    check(
+      alive.every((a) => a.colours >= 256 && a.mean > 4),
+      `the baseline arm is a real picture, not a blank buffer `
+      + `(${alive.map((a) => `${a.view} ${a.colours >= 4096 ? '4096+' : a.colours}c/${a.mean.toFixed(1)}`).join(', ')})`,
+    );
+    // And the three stations genuinely see different things. This is the one
+    // that needs no threshold at all: `top`, `hero` and `side` are three
+    // different camera positions and three different lenses, so equal hashes
+    // mean the renderer drew the same thing three times, which for this scene
+    // can only mean it drew nothing three times.
+    check(
+      new Set(VIEWS.map((v) => armNone.hashes[v])).size === VIEWS.length,
+      `the ${VIEWS.length} views are distinct images `
+      + `(${VIEWS.map((v) => armNone.hashes[v].slice(0, 8)).join(', ')})`,
+    );
+
     // ---------------------------------------------------------------------
     // §3 — drop a file in
     // ---------------------------------------------------------------------
