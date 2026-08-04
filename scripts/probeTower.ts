@@ -322,7 +322,7 @@ async function main(): Promise<void> {
       // glass in it — so the panel's budget is the band's foot, and a probe
       // that measured against the viewport would demand rows there is no room
       // for.
-      const floorPx = railFloorFor(r.viewport.h);
+      const floorPx = railFloorFor(r.viewport.h, r.viewport.w, r.mirrorTopPx);
       const railFloor = r.rail.pinned.length > 0
         ? r.rail.occupiedTop
         : r.rail.bottom - floorPx;
@@ -400,7 +400,7 @@ async function main(): Promise<void> {
     const r = await open({ kind: 'race', circuit: 'monza', seconds: 180, laps: 60,
       standingStart: false, pitLaneStart: false, cars });
     const railFloor = r.rail.pinned.length > 0 ? r.rail.occupiedTop
-      : r.rail.bottom - railFloorFor(r.viewport.h);
+      : r.rail.bottom - railFloorFor(r.viewport.h, r.viewport.w, 0);
     const unused = Math.round(railFloor - r.tower.bottom);
     console.log(`  ${cars} cars: ${r.shown} rows drawn, field ${r.field}, ` +
       `unused ${unused}px`);

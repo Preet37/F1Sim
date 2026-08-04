@@ -3369,18 +3369,42 @@ export const TOWER_RAIL_FLOOR_PX = RADIO_CARD_MIN_PX + RAIL_MASK_PX + 8;
  * Exported so `probe:tower` measures the panel against the same floor the
  * panel is laid out against, rather than against a second copy of it.
  */
-export function towerRailFloorPx(h: number): number {
-  return h <= 470 ? RAIL_MASK_PX + LIVE_CUE_PX : TOWER_RAIL_FLOOR_PX;
+export function towerRailFloorPx(h: number, w = 0, floorPx = 0): number {
+  if (h <= 470) return RAIL_MASK_PX + LIVE_CUE_PX;
+  // THE PORTRAIT CARD CANNOT BE SQUEEZED. Everywhere else `sizeRadioCard`
+  // shrinks the plate to `RADIO_CARD_MIN_PX` before `fitRail` evicts it, and
+  // that squeeze is the floor; in portrait the stylesheet asks for no fixed
+  // plate, so the card is as tall as its content — 214px, measured — and a
+  // rail budgeted at the squeezed size loses the whole feature. With the
+  // mirrors in shot the band is short enough that the card is parked anyway
+  // and the binding constraint is the gap readout below the rail, so the
+  // ordinary floor stands there.
+  if (w > 0 && w <= 620 && h > w && floorPx === 0) {
+    return PORTRAIT_CARD_PX + RAIL_MASK_PX + 8;
+  }
+  return TOWER_RAIL_FLOOR_PX;
 }
+
+/**
+ * The radio card's height in portrait, where it cannot be squeezed.
+ *
+ * Measured off the laid-out card by `shoot:panels` (`"box":[10,389,232,214]`).
+ * See the note in `towerFit`.
+ */
+const PORTRAIT_CARD_PX = 214;
 
 /**
  * One live cue — the neutralisation line or the pit line — in pixels.
  *
  * What a rail too short for a radio card still has to carry, because a cue is
- * an instruction and the card is atmosphere. Read off `.hud-neutral-cue` in
- * the compact layout.
+ * an instruction and the card is atmosphere. The NEUTRALISATION cue rather
+ * than the pit cue — 45 pixels against 30, the two numbers `sizeRadioCard`
+ * already cites — because a safety car is exactly when a short rail is asked
+ * to carry one: at 30 the cue was clipped out of the band by 3 to 6 pixels on
+ * a landscape phone, which `shoot:panels` reported and which is how this
+ * number was found.
  */
-const LIVE_CUE_PX = 30;
+const LIVE_CUE_PX = 45;
 
 /**
  * The flag band's own height, including the margin under it.
@@ -3491,7 +3515,7 @@ export function towerFit(
   // where the stylesheet does not draw one: a landscape phone has a 94-pixel
   // band and `sizeRadioCard` declines it there. Reserving a plate's worth of
   // room for a plate that will never be raised costs that phone five rows.
-  const reserved = 10 + chrome + towerRailFloorPx(h);
+  const reserved = 10 + chrome + towerRailFloorPx(h, w, floorPx);
   const fits = Math.floor((h - takenBelow - reserved) / rowH);
   // THE FLOOR IS THE MIRRORS. In the three cameras that have the car's own
   // glass in shot the bottom of the frame is not the HUD's to use — see

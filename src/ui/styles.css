@@ -2346,11 +2346,11 @@ canvas#view {
      race and the whole code cut off in qualifying. The timing panel beside it
      carries four figures and three sector tiles and gives up 24 pixels
      without losing anything. The pair still spans the same 352px it did. */
-  .hud-tower { width: 200px; max-width: 200px; }
+  .hud-tower { width: 192px; max-width: 192px; }
 
   .hud-timing {
-    width: 152px;
-    max-width: 152px;
+    width: 160px;
+    max-width: 160px;
     padding: 5px 6px 6px;
   }
   .timing-lap { font-size: 19px; }
@@ -2800,7 +2800,7 @@ canvas#view {
 @media (max-width: 900px), (max-height: 470px) {
   .hud-tower,
   .hud-tower.is-timed {
-    --tower-cols: 3px 17px 15px minmax(0, 1fr) 44px 10px 26px;
+    --tower-cols: 3px 17px 15px minmax(0, 1fr) 40px 10px 26px;
     width: 232px;
     padding: 6px 6px 5px;
   }
