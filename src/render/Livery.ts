@@ -167,32 +167,54 @@ const SWATCH_COLS = 6;
  * at v = 0.18 and `PANEL.airbox` begins at 0.20, and taking that 0.02 would have
  * moved the airbox's own parameterisation. A third row costs each cell a third
  * of its height — 85 by 31 pixels at 512, 85 by 15 at 256 — and every cell is a
- * flat fill sampled at its centre, so its size is not load-bearing. The five
- * unused cells in the last row are never sampled by anything.
+ * flat fill sampled at its centre, so its size is not load-bearing. The unused
+ * cells in the last row are never sampled by anything.
+ *
+ * The FOURTEENTH name (`wingpaint`, issue #8) took one of those five and the
+ * grid did not have to move again, which is the whole point of having grown it
+ * to a round number rather than to exactly what #34 needed.
  */
 const SWATCH_ROWS = 3;
 
 export type SwatchName =
-  | 'body' | 'accent' | 'carbon' | 'trim' | 'halo' | 'rim' | 'tyre'
+  | 'body' | 'accent' | 'carbon' | 'wingpaint' | 'trim' | 'halo' | 'rim' | 'tyre'
   | 'glass' | 'light' | 'helmet' | 'suit' | 'glove' | 'dark';
 
 /**
- * `halo` SITS IMMEDIATELY AFTER `trim`, AND THAT ADJACENCY IS LOAD-BEARING.
+ * TWO ADJACENCIES IN THIS LIST ARE LOAD-BEARING, and neither is alphabetical.
  *
- * The halo hoop is ONE tube carrying TWO swatches — the painted crown and the
- * dark fairing under it (see `flatSplit` in `CarMesh`) — so the triangles that
- * straddle the paint line have one vertex in each cell and the rasteriser
- * interpolates the UV between the two cell centres. Neighbouring cells in the
- * same row means that path crosses exactly one boundary between two flat fills:
- * a hard paint line with a texel of bilinear softening on it. Put the two cells
- * anywhere else on the sheet and the same interpolation sweeps through every
- * swatch in between, and the paint line acquires a band of tyre black and rim
- * silver in the middle of it.
+ * `halo` SITS IMMEDIATELY AFTER `trim` (issue #34). The halo hoop is ONE tube
+ * carrying TWO swatches — the painted crown and the dark fairing under it (see
+ * `flatSplit` in `CarMesh`) — so the triangles that straddle the paint line
+ * have one vertex in each cell and the rasteriser interpolates the UV between
+ * the two cell centres. Neighbouring cells in the same row means that path
+ * crosses exactly one boundary between two flat fills: a hard paint line with a
+ * texel of bilinear softening on it. Put the two cells anywhere else on the
+ * sheet and the same interpolation sweeps through every swatch in between, and
+ * the paint line acquires a band of tyre black and rim silver in the middle.
+ *
+ * `wingpaint` SITS IMMEDIATELY AFTER `carbon` (issue #8), for exactly the same
+ * reason and on the same kind of part. Both of its users are one shell carrying
+ * two swatches: the endplate's OUTER face is painted and its INNER face stays
+ * bare carbon, and each element's UPPER surface is painted and its underside
+ * stays bare carbon. `carbon` is the other half in both cases, so the two cells
+ * have to be neighbours.
+ *
+ * THIS IS ALSO WHY THE ELEMENTS DO NOT SIMPLY TAKE `body`, which is the colour
+ * `wingpaint` resolves to for nine teams of eleven. `body` is at index 0 and
+ * `carbon` at 2, so a triangle straddling an element's paint line would
+ * interpolate its UV straight through `accent` and the paint line would acquire
+ * a band of the team's flash colour down the middle of it.
+ *
+ * INSERTING IT AT INDEX 3 KEEPS `trim`+`halo` TOGETHER — they move from
+ * (3,4) to (4,5) and are still side by side in row 0. Nothing else in this list
+ * has a neighbour it depends on, and the grid is unchanged at 6x3: fourteen
+ * names in eighteen cells.
  */
 const SWATCH_ORDER: SwatchName[] = [
-  'body', 'accent', 'carbon', 'trim', 'halo', 'rim',
-  'tyre', 'glass', 'light', 'helmet', 'suit', 'glove',
-  'dark',
+  'body', 'accent', 'carbon', 'wingpaint', 'trim', 'halo',
+  'rim', 'tyre', 'glass', 'light', 'helmet', 'suit',
+  'glove', 'dark',
 ];
 
 function swatchRect(name: SwatchName): Rect {
@@ -268,6 +290,32 @@ export function haloPaintForTeam(colour: number, accent: number): {
     colour: paint,
     luminance: luminance(paint),
     bodyLuminance: luminance(colour),
+  };
+}
+
+/**
+ * The front wing endplate's paint for one team, in Node — issue #8.
+ *
+ * `haloPaintForTeam`'s sibling and it exists for the same reason: so
+ * `probe:frontwing` can print the paint rule for all eleven teams without
+ * holding a copy of it. A probe that re-implements the rule it is checking
+ * measures its own copy (PROJECT.md §3.2).
+ *
+ * `carbonLuminance` comes back too, because the question the probe actually
+ * asks is not "is this colour bright" but "is it brighter than the carbon it
+ * replaces" — a paint darker than the bare part it goes over is not a paint,
+ * which is the finding that put Cadillac on its gold accent for the halo.
+ */
+export function wingPaintForTeam(colour: number, accent: number): {
+  colour: number; luminance: number; bodyLuminance: number; carbonLuminance: number;
+} {
+  const flash = contrastFlash(colour, accent);
+  const paint = wingpaintColour(colour, flash);
+  return {
+    colour: paint,
+    luminance: luminance(paint),
+    bodyLuminance: luminance(colour),
+    carbonLuminance: luminance(WING_CARBON),
   };
 }
 
@@ -428,6 +476,78 @@ function haloColour(body: number, flash: number): number {
   if (luminance(flash) >= HALO_LUMA_FLOOR) return flash;
   // Both dark. Lift the body rather than invent a third colour: a car with two
   // near-black colours still has to have a hoop somebody can see.
+  return shade(body, 0.5);
+}
+
+/**
+ * `?wingUnpainted=1` — re-introduces issue #8 on purpose.
+ *
+ * The sibling of `?haloUnpainted=1` above and it exists for the same reason:
+ * with this set the `wingpaint` swatch returns the carbon the endplate used to
+ * take, in colour AND in surface, so the frame it draws is the frame `main`
+ * drew before this change — same geometry, same UVs, one texel of the atlas
+ * filled differently. `probe:frontwing` measures both arms.
+ */
+const UNPAINTED_WING = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('wingUnpainted') === '1';
+
+/**
+ * The floor a front wing endplate's paint has to clear, as relative luminance.
+ *
+ * ITS OWN CONSTANT AT THE SAME VALUE AS THE HALO'S, deliberately. The two rules
+ * answer the same question — "is this team colour light enough to be a paint
+ * over near-black carbon" — and they are the same number today because the part
+ * being covered is the same darkness. They are two constants rather than one so
+ * that a decision about the halo cannot silently repaint the front wing: #34's
+ * open question in §7 is whether to raise its floor to push Ferrari and Audi
+ * onto their accents, and that is a question about a 1.4m hoop next to the
+ * driver's head, not about a 660mm plate at the front axle.
+ */
+const WINGPAINT_LUMA_FLOOR = 0.15;
+
+/**
+ * The unpainted carbon of the wing, in one place.
+ *
+ * Named for the same reason `TRIM_HARDWARE` is: `?wingUnpainted=1` has to be
+ * able to hand the endplate exactly the value it used to take from `carbon`,
+ * and a literal repeated in two `case` arms is a literal that drifts.
+ */
+const WING_CARBON = 0x0f1115;
+
+/**
+ * The front wing endplate's paint — issue #8.
+ *
+ * WHAT THE ISSUE ACTUALLY SAYS, because the obvious reading of "the front wing
+ * reads heavy" is that it is too big and it is not: *"Dimensions are
+ * regulation-correct and measured against Appendix 1 — 1950mm span, 689mm
+ * chord, against a 1024mm rear wing assembly. The problem is mass, not size:
+ * three of four elements plus a 660x410mm endplate each side are near-black, so
+ * from above it is the largest dark object on the car. Painting the top flap
+ * helped. The honest fix is livery on the endplate outer face."* So no vertex
+ * moves here, exactly as none moved for the halo.
+ *
+ * READ OFF THE REFERENCE RATHER THAN CHOSEN, and the frame is
+ * `reference/target/90.png` — the Bahrain night still whose Aston Martin front
+ * wing fills the bottom-left corner at 660x244 pixels. Enlarged 7x around the
+ * left endplate it settles the same three questions `76.png` settled for the
+ * halo:
+ *
+ *   (a) the paint is the TEAM'S OWN COLOUR — the plate carries the car's green
+ *       with a white wordmark on it, not a third colour;
+ *   (b) it covers the OUTER FACE ONLY. The frame looks down on the wing from
+ *       above and inboard, so what it shows of the left plate is its INNER
+ *       face, and that face is bare near-black carbon over its whole area;
+ *   (c) the footplate, the flick, the strakes and the three lower ELEMENTS are
+ *       not painted by this. They are separate parts on `carbon` and they stay
+ *       there — the issue names the endplate and only the endplate.
+ *
+ * The accent fallback is the halo's, for the same reason: a team whose body
+ * colour is darker than the carbon it is covering has not been given a paint,
+ * it has been given a slightly different black.
+ */
+function wingpaintColour(body: number, flash: number): number {
+  if (luminance(body) >= WINGPAINT_LUMA_FLOOR) return body;
+  if (luminance(flash) >= WINGPAINT_LUMA_FLOOR) return flash;
   return shade(body, 0.5);
 }
 
@@ -1488,7 +1608,24 @@ function swatchColour(
   switch (name) {
     case 'body': return spec.colour;
     case 'accent': return flash;
-    case 'carbon': return 0x0f1115;
+    case 'carbon': return WING_CARBON;
+    /**
+     * The painted surfaces of the FRONT WING, and nothing else — issue #8.
+     *
+     * Exactly two things take it, both read off `reference/target/90.png` and
+     * both a split rather than a whole part (see `wingpaintColour`):
+     *
+     *   - the OUTER face of each endplate, the inner face staying carbon;
+     *   - the UPPER surface of elements 1-3, the undersides staying carbon.
+     *
+     * Everything else on the assembly is still `carbon` because the reference
+     * shows it as carbon: the footplate, the flick, the strakes, the
+     * nose-to-wing fairing and every underside. The diveplane keeps `accent`
+     * and element 4 keeps `body`, both of which were already right.
+     */
+    case 'wingpaint': return UNPAINTED_WING
+      ? WING_CARBON
+      : wingpaintColour(spec.colour, flash);
     /**
      * DELIBERATELY NOT THE DESIGN'S TRIM COLOUR.
      *
@@ -1704,6 +1841,18 @@ function buildSurfaceMap(size: number, finish: LiveryFinish): THREE.Texture {
     accent: [R.paint - 0.01, 0.02],
     // Clear-coated laminate. See the CARBON constant above.
     carbon: [0.40, 0.02],
+    /**
+     * The painted outer face of the front wing endplate — issue #8.
+     *
+     * The same argument as `halo` below: what is drawn is paint over composite,
+     * so it takes the body's own paint roughness and the 0.02 Fresnel floor,
+     * and a plate meeting the nose reads as the same finish. Under
+     * `?wingUnpainted=1` it takes `carbon`'s values instead, so the broken arm
+     * differs from the fixed one in COLOUR ALONE and the measurement cannot be
+     * picking up a gloss change — which is the trap `probe:halo`'s paired arm
+     * documented and repaints the surface map to avoid.
+     */
+    wingpaint: UNPAINTED_WING ? [0.40, 0.02] : [R.paint, 0.02],
     // Painted carbon suspension and the halo share this swatch.
     //
     // 0.02, NOT 0.10. This entry used to read "the halo is the metal one and it

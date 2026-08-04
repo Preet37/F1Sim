@@ -40,6 +40,15 @@ code. If the picture ever looks worse than you remember, check this setting firs
 | **Skid marks** | Lock a front under braking; then drive a normal lap | A lock-up leaves a black line. **An ordinary corner should leave nothing at all** — cars slide in every corner and none of that marks the road. |
 | **Rear lights** | Fit intermediates or wets, then brake hard | Three red lamps (one central, one in each rear-wing endplate pod). **Steady when merely on; they flash at 4Hz while you are braking**, because the MGU-K is recovering. On slicks in the dry they stay off however hard you brake — an F1 car has no brake light. |
 | **The halo** | Any onboard camera — `driver` or `cockpit`. Worth doing at night and in shadow, which is where it used to disappear | The **top of the hoop is painted in your team's colour**, the whole way round the arc, with the underside and the centre pillar black. That is what `reference/target/76.png` and `90.png` show and it is what makes the halo read as part of the car rather than as a black bar floating over the cockpit — which is what you were seeing when you asked *"the halo is also floating atp?"*. It was never actually detached: all 146 parts are measured as bolted, with no tolerance in the test. **A dark-liveried team gets a dark halo** — that is deliberate, and if it looks wrong on a particular car, say so; see §5. |
+| **The front wing** | **Not the chase camera** — see the note under this table. Use the `drone` camera, or look at your car in the garage, the paddock or the livery editor | Every **element's upper surface** is your team's colour with the slots between them black, and the **outer face of each endplate** is your colour too, with the inner face bare carbon. That is what `reference/target/90.png` shows. Before this it was the top flap alone on 1.35m² of near-black, which is what you meant by *"the front wing and the front is so big"* — the wing is exactly the regulation size, it was just the darkest thing on the car. |
+
+**Why the front wing is not a chase-camera check.** Measured, on a 1280×720 frame: from
+`chase` the whole front wing is **339 pixels — 0.037% of the picture** — and none of those
+pixels are on a surface the paint touches, because from directly behind a car what is in
+shot is the outboard tips edge-on and the undersides. From `drone` it is **20,138 pixels
+and 56% of them are paint**. So the wing's colour is a from-above, garage and paddock
+question, not a driving-view one. If it still looks like a black slab from any camera, say
+which camera.
 
 **Known and not yet fixed:** at **280 km/h on a straight** the car still wanders 2.6–3.3m
 on a keyboard where a wheel holds 0.02–0.11m. Undiagnosed, tracked on #46.
@@ -160,16 +169,23 @@ transfer market, driver ratings. Tracked on #23 and #77.
   (55.7mm → 3.8mm). If you still see the track lurching at Spa or COTA, that is a new
   fault and worth a recording.
 
+- **The race-control banner (#15) — FIXED, and worth looking at against
+  `reference/target/77.png` yourself, because that image is the specification.** Cause a
+  bulletin: go off the track, or stop on the racing line and wait for the double yellows.
+  What you should see, left to right: a **red block with crossed flags**, then a **black
+  block with the governing mark**, then the message on a **neutral near-black** ground with
+  the **flag state in red** on the first line or two and the facts under it in **white, one
+  per line**, then a **red block on the right with the bulletin's number in it in black**.
+  It should NOT open with the words `RACE CONTROL:` — the reference does not, and the mark
+  block is what tells you whose voice it is.
+  **A red flag, a yellow flag and a note are now three different graphics**: red, yellow and
+  a pale grey. They used to be identical — `.hud-control.tone-urgent` styled nothing at all,
+  so the most serious thing race control can say drew exactly like a track-limits note.
+
 **Known faults:** the radio writing pool is 41 exchanges — bigger than it was, not enough
-for a race distance (#61). **The FIA banner does not yet match the reference (#15), and
-here is exactly how**, measured against `reference/target/77.png`: the reference's strip
-has a **red** mark block on the left carrying two devices, a **red** headline naming the
-flag state, white instruction lines under it one per line, and a **red block on the right
-with the message number in it**. Ours has a navy mark block, no right-hand block, the
-whole message in white, and it opens every bulletin with the words `RACE CONTROL:`, which
-the reference never does. A critical bulletin is also drawn identically to an
-informational one — `.hud-control.tone-urgent` has no styling at all. **Not fixed**:
-`src/ui/Hud.ts` is held by another piece of work.
+for a race distance (#61). **A penalty banner** — the segmented one with the sentence set
+large across it — is unchanged, because `77.png` is a red-flag frame and has no penalty
+banner in it to copy. If you have a broadcast still of one, send it.
 
 ---
 
@@ -253,6 +269,8 @@ Useful individual probes:
 | `probe:graphics` | the quality setting reaches the GL context |
 | `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
 | `probe:halo` | the halo is painted in the car's own colour rather than the shared near-black — the same frame drawn twice, one texel of the livery apart, on 11 circuits × day/night × two onboard cameras and behind ten teams' cars |
+| `probe:frontwing` | the front wing is painted rather than near-black — the same idea as `probe:halo`, one texel apart, but judged on **colour** rather than brightness, because the wing sits in the car's own shadow and brightness there says more about the light than about the paint. It also prints what each camera can see, which is how the endplate-only version of this fix was caught being invisible |
+| `probe:hudstrip` | the race-control banner matches `reference/target/77.png` block by block — and a red flag, a yellow flag and a note are three different graphics |
 | `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |
 | `probe:people` | 42 principals, all different, all reachable — **and every limb of every body, measured off the drawing**: 3,615 checks (576 of them the pre-#22 ones). `PEOPLE_LEGACY=1 npm run probe:people` runs it against the body as it shipped before #22 and fails 276 of 1,471 |
@@ -279,7 +297,9 @@ run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (ident
 **Green as of 2026-08-04, and worth knowing because several were red for a long time:**
 `shoot:panels` **0 rail + 0 mirror** · `probe:banking` PASS *including between the mesh rows* ·
 `probe:grain` **132/0** · `probe:people` **3,615** · `probe:fieldsize` **0** · `probe:weather`
-**0** · `probe:smoke` **32/32 routes** · `validate:flags` PASS · `npm run build` PASS.
+**0** · `probe:smoke` **32/32 routes** · `validate:flags` PASS · `npm run build` PASS ·
+`probe:hudstrip` **46/0** (new, #15) · `probe:frontwing` (new, #8) · `probe:assets` **37/0**
+with the byte-identity guarantee intact · `probe:carrig` **146 parts in 1 cluster**.
 
 **`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
 stale and several of them are fixed:

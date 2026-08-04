@@ -305,6 +305,8 @@ Run `npm run` to list. The important ones:
 | `shoot:panels` | Measures HUD boxes; fails on overlap, and on the radio card not being on screen at all |
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
+| `probe:hudstrip` | **The race-control strip against `reference/target/77.png`, element by element.** Real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`; the reference is DECODED on every run by `scripts/lib/png.ts`, so no number in it is a constant somebody copied out of a picture. Where each of the four blocks sits as a fraction of the strip, the wording, the colour system by HUE (luma cannot separate a red headline from a white one), the ground, the numeral's polarity, and the type ratio, on three frame shapes. **§4 is a PAIRED ARM**: the same message at three severities in one page, asserting the RESOLVED colours differ — because grepping the stylesheet for `tone-urgent` tests the instrument. `HUDSTRIP_BREAK=prefix\|tone\|seq\|ground` puts one row of #15's table back. Issue #15 |
+| `probe:frontwing` | **Is the front wing PAINTED, and can anybody see it?** `probe:halo`'s paired arm on another part: the same frame twice, the `wingpaint` cell of the REAL atlas overwritten by the REAL `carbon` cell in colour and surface map, the replacement read out of that cell. **CHROMA is asserted and LUMA is reported** — the opposite lesson to #34's and it was forced by eleven failures, all of them luma on a part in shadow (`interlagos day drone` draws the wing at luma 5.8 against 2.9 unpainted: the paint doubles it and fails a 3-level absolute floor). Asserted on the painted surfaces, with the WHOLE assembly's lift printed beside it so a fix that lights up its own mask cannot hide. 11 circuits × day/night × 4 cameras, plus every team on one grid, and it **prints what each camera can actually see** — `chase` gets ~340px of front wing and 0 of it painted, which is the finding that made the pass paint the elements as well as the endplate. `WING_BREAK=1` (`?wingUnpainted=1`) takes the lift to 0.0 exactly. Issue #8 |
 | `probe:tower` | **The running order, after layout, in a real browser** — real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`. §1 every rival's lap time in a cell with pixels in it (#35); §2 the row count against the room the panel has, and that positions increment by exactly one (#17, #76); §3 fields of 18/20/22/24; §4 the five things the reference's row is, per row, drawn; **§5 the COPY — where each column sits as a fraction of the panel, against numbers measured off `reference/target/68.png` itself, plus the face, the size relationships, the compound's own colour, the header's wording, centring and weights, and the badge's shape (#76).** Writes `hud-out/tower/*.png` |
 | `probe:people` | **Two halves, and the second is not arithmetic.** §1–6: 42 principals, all named, all unique, none within a look distance. §Anatomy (#22): 40 figures × 5 poses, **measured off the drawn markup** — a hand overlaps its forearm, a forearm its upper arm, an upper arm the torso without being buried in it, a held object's grip is inside the hand, and every limb is a filled shape that measurably tapers. 3,615 checks. `PEOPLE_LEGACY=1` runs it against the body as it shipped at `5ac0a09` (**276 of 1,471 fail**); `PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five ways |
 | `shoot:people` | Contact sheet of the cast, the five poses (`SHOOT_PEOPLE=bodies`), the shipped body beside the rig at one scale (`compare`), plus the presser/podium/garage scenes |
@@ -4244,6 +4246,198 @@ themselves.**
 **146 parts in 1 cluster**, all bolted, unchanged — as predicted, it is green through both
 the broken and the fixed halo, which is exactly why `probe:halo` had to exist.
 
+### The race-control strip, element by element against `77.png` (issue #15)
+
+> *"this doesn't look good, I showed you an image of the FIA, you should replicate that
+> font and color and completely."*
+
+**Three passes had settled this by eye and each believed it had copied the reference** — a
+rounded card with a yellow edge, then a navy strip, then a navy strip with a prefix. §7
+carried the full difference list, measured by the #34 agent, who could not fix it because
+`Hud.ts` was held. The list is now done and there is a probe under it.
+
+**The reference, decoded rather than described.** `reference/target/77.png` is 1200×673 and
+the strip is x 336..863, y 53..137 — 528 × 84. Its edges are the hue and luma steps on a
+clean row above the type (y = 60) and a clean column inside the left block (x = 345), and
+every number below comes out of `scripts/lib/png.ts` on **every run of the probe**, not out
+of this file:
+
+| | `77.png` | ours, after |
+|---|---|---|
+| flag block | **0.095** of the strip's width, red `#d11b15`, device near-black ON it | 0.097 |
+| mark block | 0.097, black, roundel white | 0.097 (ends 0.193 vs 0.192) |
+| message | 0.710, ground `#1f1f21` — a NEUTRAL near-black | ends 0.903 vs 0.907, ground `#1f1f21` |
+| numeral block | 0.095, red `#d31b14` | 0.095, `#d21b14` |
+| headline | the flag state in that red, 2 lines, cap 0.149 of the strip | `#d21b14`, hue 2° against the reference's 3° |
+| instructions | `#ffffff`, ONE PER LINE, cap 0.131 | `#ffffff`, one element per field |
+| the prefix | none | none |
+
+**`.hud-control.tone-urgent` HAD NO STYLING AT ALL**, which is the one item on §7's list
+that is a defect rather than a styling gap: a red flag and a track-limits note were the same
+graphic. One custom property, `--strip`, now carries the tone into the flag block, the
+numeral block and the headline together — the reference's red for `urgent`, the signal
+palette for `warn` and `info`, which is what a broadcast does because the strip is the
+flag's colour.
+
+**THE NUMERAL IS NOT WHITE, AND THIS FILE SAID IT WAS.** §7's table and `TESTING.md` both
+recorded *"a large white numeral"*. The block's own histogram is **3,531px of red against
+62px of near-black**, and the brightest pixel anywhere in it is `#c32426`. The probe derives
+the direction from the frame on every run, so it cannot inherit that mistake. **§8's rule
+about re-running a number before quoting it applies to numbers read off a picture too.**
+
+**`probe:hudstrip`, and why it is a browser probe.** `probe:hudtext` checks what
+`raceControlCard` RETURNS and passed for the entire life of #15, because **not one of the
+seven differences is a difference in the words**. `shoot:panels` checks that the card
+overlaps nothing, and a card in the wrong colour overlaps nothing. Six sections, 46
+assertions, three frame shapes, on the model of `probe:tower` §5 against `68.png`.
+
+**§4 IS A PAIRED ARM, after `probe:halo`.** The obvious test for "does `tone-urgent` style
+anything" is to grep the stylesheet for the selector, and that tests the instrument: a
+selector can exist and resolve to the same computed value, a rule can be overridden by a
+media query, a custom property can fail to cascade into a child. So the probe raises **the
+same message at three severities in one page** and asserts the RESOLVED colours differ. On a
+build carrying #15 all three resolve to one string and the section is 0 for 3.
+
+**PROVED RED FOUR WAYS**, each putting one row of §7's table back in the page:
+
+| | failures | what it named |
+|---|---|---|
+| `HUDSTRIP_BREAK=prefix` | **1** | `the strip reads "RACE CONTROL: RED FLAG RACE SUSPENDED…"` |
+| `HUDSTRIP_BREAK=ground` | **1** | `the message ground is #0a1738 and the reference's is #1e1e20` |
+| `HUDSTRIP_BREAK=tone` | **8** | three colour rows plus all four paired-arm comparisons |
+| `HUDSTRIP_BREAK=seq` | **9** | the block, its edge, and every frame shape |
+
+**Two things the probe found that nobody had listed.** Two media queries padded
+`.hud-control` ITSELF rather than its body, which insets the four butted blocks from the
+plate's own edge — measured at **0.127 of the strip against the reference's 0.095** on a
+landscape phone, which is 9px of padding on a 284px strip. Invisible while the plate had
+exactly one child with its own padding; structural once it has four. And the instruction
+type there was **0.77 of the headline against the reference's 0.92** — the instructions had
+become a footnote on the one frame shape with the least room to read them on.
+
+**Green:** `probe:hudstrip` 46/0 · `probe:hudtext` PASS (and three new assertions in it:
+the split lines, no separator, no prefix) · `shoot:panels` **0 rail + 0 mirror**, unchanged
+· `typecheck` · `build`.
+
+### The front wing is PAINTED, and the fix the issue named was the smaller half (issue #8)
+
+> *"the front wing and the front is so big versus the back wing is super tiny."*
+
+**AND IT IS NOT BIG.** `probe:carrig` and the Appendix 1 block in `CarMesh.ts` both say so:
+1950mm of span and 689mm of chord are the regulation numbers and the plate's outer skin sits
+at 975mm, which is the wing's own limit. The issue's second paragraph is the real complaint
+— *"The problem is mass, not size: three of four elements plus a 660×410mm endplate each
+side are near-black, so from above it is the largest dark object on the car."*
+
+**One swatch, no vertex moved**, which is #34's method exactly. `wingpaint` is inserted
+after `carbon` in `SWATCH_ORDER` and the grid stays 6×3 — the third row #34 added had five
+free cells and this took one, which is the whole point of having grown it to a round number.
+**Two adjacencies in that list are now load-bearing**: `trim`+`halo` (they move from indices
+3,4 to 4,5 and are still neighbours in row 0) and `carbon`+`wingpaint`, for the same reason
+— both users of `wingpaint` are one shell carrying two swatches, so triangles straddle the
+paint line and the rasteriser interpolates between the two cell centres.
+
+**It is also why the elements do not simply take `body`**, which is what `wingpaint` resolves
+to for nine teams of eleven: `body` is at index 0 and `carbon` at 2, so a straddling triangle
+would interpolate straight through `accent` and every element's paint line would acquire a
+band of the team's flash colour down the middle of it.
+
+**What it paints, read off `reference/target/90.png`** — the Bahrain night frame whose Aston
+front wing fills the bottom-left corner at 660×244 pixels, enlarged 3× and 7×:
+
+- **the OUTER face of each endplate**, the inner face staying carbon. The frame looks down on
+  the wing from above and inboard, so what it shows of the left plate is precisely the face
+  that is NOT painted, and it is bare near-black over its whole area.
+- **the UPPER surface of elements 1–3**, the undersides and slot gaps staying carbon. Every
+  element's upper surface in that frame is the car's own green.
+- **not** the footplate, the flick, the strakes or the nose-to-wing fairing. Element 4 keeps
+  `body` and the diveplane keeps `accent`; both were already right.
+
+`setFlatUVSplitX` is the endplate's half — `setFlatUVSplit`'s sibling, split about the car's
+CENTRELINE instead of the horizon. It is a second function rather than a parameter because
+"outward" has no absolute meaning in x: it is −x on the left plate and +x on the right, so
+the caller has to name the side. The floor is on |n·x̂| rather than a sign test, so the
+wrapped edge of the plate stays carbon — a sign test paints up to a zero-width line and puts
+a hard colour seam on the plate's own silhouette.
+
+**THE ISSUE'S OWN SUGGESTED FIX IS NOT ENOUGH, AND MEASURING IT IS WHAT SHOWED THAT.** This
+file and the issue both said *"the honest fix is livery on the endplate outer face"*. That
+was done first, and then `probe:frontwing` measured how much of that face a player ever sees,
+on a 1280×720 frame:
+
+| camera | front wing in frame | of it, painted |
+|---|---|---|
+| `chase` — the player's DEFAULT | **339px, 0.037% of the frame** | **0** |
+| `tv` | 152px | 0 |
+| `trackside` | 130px | 40.6% |
+| `drone` | **20,138px, 2.19%** | **55.8%** |
+
+The outer face points sideways at the front axle and almost every lens in this game is
+behind or beside the car. **A fix nobody can see is not a fix.** What a player looks down on
+is the elements — which is what the issue actually says, *"from above"* — so the elements are
+painted too, and `drone` is where the pass is measured because `drone` is the elevated lens.
+
+**The metric is a PAIRED ARM**: the same frame twice in one session, the `wingpaint` cell of
+the REAL atlas overwritten by the REAL `carbon` cell in colour map AND surface map, the
+replacement read out of that cell rather than restated. **The bound is 3 display levels and
+it has never been moved.** What moved twice is *what is measured*, and a measurement forced
+it both times.
+
+**THE INSTRUMENT WAS WRONG FIRST, and the break arm is what found it.** `Renderer.render`
+calls `director.update` every frame and `drone`, `tv` and `trackside` are all time-based, so
+the eight settling frames between the two reads MOVED THE LENS. On the broken arm, where the
+true lift is zero by construction, luma came back **4.1..5.7 instead of 0** — most of the
+way to the fixed arm's 6.6. Chroma was clean at −4.2..+2.6, because a small camera move
+changes shading far more than it changes hue. **The fix is to freeze the director for the
+pair, not to raise the luma bar to 6** (§3.3). With it frozen the broken arm reads **0.0
+exactly** on every row and every channel.
+
+**AND THEN THE FIRST FULL SWEEP FAILED ELEVEN ASSERTIONS, EVERY ONE OF THEM A LUMA FIGURE
+ON A PART IN SHADOW.** The row that settles it: `interlagos day drone` draws **23,279 pixels
+of front wing at a mean luma of 5.8, against 2.9 with the paint taken away** — the paint
+DOUBLES the brightness of the part and fails a three-level absolute floor, because three
+levels out of 255 is a large fraction of five. `probe:halo` never meets this, because a halo
+is up in the light against the sky and a front wing is at ground level inside the car's own
+shadow.
+
+**So CHROMA is asserted and LUMA is reported, and that is a measurement rather than a
+loosened bound.** What changed is that a NEUTRAL — carbon `#0f1115`, chroma 6 — became a
+team's HUE. Whether that raises chroma depends only on whether a hue arrived, which is the
+thing under test; whether it raises luma depends on how light that team's colour is and how
+much light is on the part, and **#34 already established by measurement that a dark livery
+legitimately produces dark paint** — which is exactly why `probe:halo` reports Kestrel at
+15.5 and Brava at 8.1 as residuals rather than failures. A luma bar here would be a bar on
+the roster and on the lighting. **This is the mirror image of #34's own finding**: that pass
+learnt luma is blind to hue and could not see a paint that was there; this one learnt luma
+is confounded by exposure and calls a paint that IS there absent. Both times the answer was
+to measure the channel carrying the signal.
+
+**And it asserts on the PAINTED SURFACES**, which is the region `probe:halo` asserts on too
+— its crown, not the whole car. The whole assembly's lift and the fraction of it that is
+paint are printed beside every row, so a fix that lit up its own mask and left the object as
+dark as it was is still visible to a reader.
+
+**The run that ships.** 11 circuits × day/night × 4 cameras: **34 of 88 rows measured**, the
+other 54 having too little of the wing or of the paint in frame and every one of them named.
+**Chroma lift 22.2 .. 139.6, median 74.5**; luma lift 2.9 .. 46.5, median 19.5, reported.
+All eleven teams on one grid from `drone`: **35.2–58.2% of the wing's visible pixels are now
+paint**, chroma lift **10.6 .. 111.6**.
+
+**PROVED RED.** `WING_BREAK=1` is `?wingUnpainted=1` — the real `swatchColour` path, not the
+probe's own repaint — and it takes every measured row and all eleven team rows to **0.0
+exactly**, exit 1.
+
+**Regression set.** `probe:carrig` **146 parts in 1 cluster**, unchanged — as with the halo
+it is green through both the painted and the unpainted wing, which is exactly why a new
+probe was needed. `probe:assets` **37 ok / 0 failed**, byte-identity intact: the swatch loop
+still runs AFTER `stampBrand`, so a supplied `livery.png` cannot recolour a wishbone, a
+visor or now a wing element. `probe:halo` **44 ok / 0 failed plus 8 ok / 0 failed across
+teams** — the target number, and it matters here because `wingpaint` moves the `halo` cell
+from index 4 to 5; the `trim`+`halo` adjacency is preserved and the probe reads
+`swatchUV('halo')` at run time, so it followed. `audit:livery` **OK**, all three control
+shots sha-matching `audit:car` (`00553a7f` / `293f4f18` / `6beb73e6`) — which is a flake
+that did not fire rather than a fix, and §7's warm-up defect is still there.
+
 ---
 
 ---
@@ -4257,7 +4451,7 @@ the broken and the fixed halo, which is exactly why `probe:halo` had to exist.
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
-| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6. So has the mirror keep-out (#49/#50/#31): `MIRROR_PANES` re-derived against a camera that rides the car, `probe:framing` 113 → 5, `shoot:panels` 9+2 → 0+0.** The FIA banner (#15) is **measured against `77.png` and listed, not fixed** — see §7, "The race-control strip against `77.png`". It needed `Hud.ts`, which #49/#50/#31 held; that hold is released |
+| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6. So has the mirror keep-out (#49/#50/#31): `MIRROR_PANES` re-derived against a camera that rides the car, `probe:framing` 113 → 5, `shoot:panels` 9+2 → 0+0.** The FIA banner (#15) has **LANDED** — see §6, "The race-control strip, element by element": no prefix, the flag state in the reference's red, the numeral block, and `tone-urgent` styled at last, with `probe:hudstrip` measuring it against a `77.png` that is decoded on every run. What remains on that panel is the DECISION variant, which `77.png` carries no example of |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) is CLOSED — re-measured on merged `main` in all three axes, see §6. The world juddering vertically (#54) landed with it.** The halo's paint, the other half of #34, has landed too |
@@ -4823,8 +5017,12 @@ shared files and the run that matters passed. **Nobody is on this.**
 - ~~The safety car is drawn from stepped state in all three axes.~~ **Fixed by #10** —
   `SafetyCar` carries the render pair and `probe:neutral` measures it on eleven circuits.
   §6.
-- **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
-  1.35m² of near-black carbon. Livery on the endplate is the honest fix.
+- ~~**The front wing still reads heavy**~~ — **PAINTED, #8. See §6.** Dimensions were never
+  the problem and `probe:carrig` is unchanged at 146 parts in 1 cluster. What this line
+  called "the honest fix" — livery on the endplate — turned out to be **half** of it and
+  the smaller half: `probe:frontwing` measured the endplate's outer face at **0 pixels from
+  `chase`, 0 from `tv`** on a 1280×720 frame. The elements' upper surfaces are painted too,
+  which is what `90.png` shows and what a player actually looks down on.
 - ~~`validate:flags` — safety-car form-up.~~ **Passes. See §4** — it had already been passing
   before #10 started and nobody had re-run it.
 - **`validate:race` fails one assertion, and it is pre-existing: `monaco: fastest lap 152%
@@ -5130,31 +5328,41 @@ project's whole livery system lives in. **Nobody is on this**, and whoever takes
 note that `probe:carrig` will stay green through both the broken and the fixed version,
 because it is not a geometry question.
 
-### The race-control strip against `77.png`, listed rather than fixed (issue #15)
+### ~~The race-control strip against `77.png`, listed rather than fixed~~ — DONE (issue #15)
 
-**Not done, and `src/ui/Hud.ts` is why**: it is held for #49/#50/#31 (the mirror keep-outs)
-and this is a markup change, not a stylesheet one. Read against `reference/target/77.png`,
-which is a red-flag frame, so that the next person does not have to derive the list again.
-`probe:hudtext` prints what ours currently says:
-`race control banner: "FER INCIDENT" / "SECTOR 2 · CAR OFF TRACK · YELLOW FLAG"`.
+**Done. See §6, "The race-control strip, element by element".** Every row of the table
+below is fixed and `probe:hudstrip` measures it against `77.png`, decoding the reference on
+every run rather than trusting the numbers in this file. The original list is kept because
+it is a good example of a defect being fully characterised by one agent and fixed by
+another, and because **one row of it was wrong**: the numeral is BLACK on the red block, not
+white. The block histograms 3,531px of red against 62px of near-black ink and its brightest
+pixel is `#c32426`. §4's rule about re-running a number before quoting it applies to numbers
+read off a picture too.
 
-| | `77.png` | ours (`pushControlCard`, `.hud-control`) |
+| | `77.png` | ours BEFORE (`pushControlCard`, `.hud-control`) |
 |---|---|---|
 | left mark block | **red**, carrying TWO devices — crossed flags and the roundel | `#061029` near-black navy, 38px, one 22×22 device |
 | body ground | near-black | navy `#0a1738` |
 | headline | the flag state, **red**, heavy, uppercase, wrapping to two lines | `RACE CONTROL: ` in bold then the text, **white**, one line |
 | the prefix | **there is none** — the reference opens on the message | every bulletin opens `RACE CONTROL:` |
 | instructions | white, lighter, uppercase, **one per line** (`DO NOT EXCEED DELTA PACE` / `- NO OVERTAKING`) | one `.control-detail` line, fields joined with ` · ` |
-| right block | **red**, a large white numeral — the message's number in the sequence | **absent** |
+| right block | **red**, a large ~~white~~ **BLACK** numeral — the message's number in the sequence | **absent** |
 | severity | a red flag is red | **nothing.** `grep 'hud-control.tone'` over `styles.css` returns NOTHING: `tone-urgent`, `tone-warn` and `tone-info` are set on the element by `pushControlCard` and styled only for `.hud-alert`, `.hud-radiocard` and `.strat-card`. A critical bulletin is drawn exactly like an informational one |
 
-The strip's SHAPE is already right — squared corners, horizontal, mark block then message,
-which a previous pass did against the same reference. What is left is the colour system,
-the wording and the right-hand block. **The work also needs a measurement, and the model
-for it exists**: `probe:tower` §5 measures where each column of the running order sits as a
-fraction of the panel against numbers taken off `68.png` itself. A `probe:hudstrip` doing
-the same against `77.png` is what would stop this being settled by eye for a fourth time.
-**Nobody is on this**, and it should not be started until `Hud.ts` is free.
+**What is NOT done**, and neither is a defect of this work:
+
+- **The DECISION variant is untouched.** `pushControlCard`'s `is-penalty` branch keeps its
+  segmented form — badge, sentence in red, driver, `!` end cap — because `77.png` is a
+  red-flag frame and carries no penalty banner, so there is nothing to measure it against.
+  It shares the strip's mark block and its red, so the two read as one system, and that is
+  as far as the reference supports going. **Nobody is on it.**
+- **The strip's own width is ours, not the reference's.** `77.png`'s strip is 528 of 1200
+  frame pixels — 44% of the frame width — and `.hud-controls` is `min(420px, 100vw - 720px)`,
+  which on a 1400px desktop is 30%. The reference's 44% would put the strip through the
+  running order on the left and the sector panel on the right, both of which this HUD has
+  and that broadcast frame arranges differently. `probe:hudstrip` measures every block as a
+  fraction of the STRIP for exactly this reason, and the strip's fraction of the FRAME is
+  reported and not asserted.
 
 ### The halo is painted, but a dark livery still gets a dark halo (issue #34)
 
