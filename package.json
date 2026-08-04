@@ -39,6 +39,7 @@
     "probe:attrition": "tsx scripts/probeAttrition.ts",
     "probe:neutral": "tsx scripts/probeNeutralisation.ts",
     "probe:damage": "tsx scripts/probeDamage.ts",
+    "probe:cascade": "tsx scripts/probeDamageCascade.ts",
     "probe:recovery": "tsx scripts/probeRecovery.ts",
     "probe:neutralplayer": "tsx scripts/probeNeutralPlayer.ts",
     "probe:neutralsteer": "tsx scripts/probeNeutralSteering.ts",

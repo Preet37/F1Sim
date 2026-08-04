@@ -275,6 +275,8 @@ Run `npm run` to list. The important ones:
 | `diag:brakingzone` | One braking zone step by step: pedal, deceleration used, deceleration available, traction limit |
 | `diag:cornerexit` | **Is the AI traction-limited at the RIGHT NUMBER?** The 150m past every local minimum of the solver's own speed profile — its apexes — on all eleven circuits. Recovers `tractionLimitFraction`'s own denominator out of its return value and compares it with the force `step()` really delivers, and reports how much of the rear grip circle the tyre is actually spending. Node-only. Issue #1 |
 | `diag:attrition` | **Why a full-distance race loses eleven cars — issue #26's third attempt.** The state of every car that retires at three moments: when it stops, twenty seconds earlier, and at `lastRacing` (the last sample with the car on the road above 15 m/s, so nothing about the excursion leaks into it). Tyres, damage, fuel, whether anybody touched it, whether the race was neutralised — plus retirements, contacts and the field's worst component by tenth of the race. **Reports; `probe:racelog` judges.** Node-only |
+| `diag:attrition` | **Why a full-distance race loses eleven cars — issue #26's third attempt.** The state of every car that retires at three moments: when it stops, twenty seconds earlier, and at `lastRacing` (the last sample with the car on the road above 15 m/s, so nothing about the excursion leaks into it). Tyres, damage, fuel, whether anybody touched it, whether the race was neutralised — plus retirements, contacts and the field's worst component by tenth of the race. **And, since the cascade work, the four instruments that told the correlation which way round it ran:** a per-cause damage ledger (contact / barrier / wear, from `DamageSource`), the speed each car actually had on the step it was retired, an excursion count with its rejoin rate, and **an exposure-weighted excursion rate by health band** — the dose–response that a threshold artefact cannot fake. **Reports; `probe:racelog` and `probe:cascade` judge.** Node-only |
+| `probe:cascade` | **Does ordinary racing contact eventually destroy the car? — #26's third cause, judged.** `diag:attrition` reports and this judges, the same split `probe:racelog` and that diagnostic already have. Four sections, every one asserting a floor as well as a ceiling: the ratchet ladder (twenty contacts at the severity a real race produces must not walk a part to its structural floor, and a write-off must still take it there); what that costs `baseMu`, against the 0.90 the AI's own `commitmentScale` leaves itself; a car crawling out of the run-off at the speed 13 of 19 beached cars were actually doing is not retired, one that has stopped still is, and one that never rejoins is still ended; and two full-distance races counting how many cars are ground under 0.50, the health band where the excursion rate goes ×3.8. `CASCADE_BREAK=ratchet` restores the pre-fix damage model — 12 failures — and does NOT reach §4, which needs the engine changed. **§4 is currently red at 5.5 against a bar of 4 and the bar was not moved.** Node-only |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
 | `probe:finish` | **The end of a race, both ways round.** §1–3: the field is timed across the Line one car at a time rather than stamped at one instant, and the backmarkers get a window. §4, since #44: and NOBODY RACES AFTER IT — no lap counted, no lap time set, no retirement, and no finisher stamped in a batch instead of timed at the Line. Five races, two of them at a distance where cars are a lap down, because a car that is never lapped cannot exercise the batch test |
 | `probe:neutral` | **Rewritten by #10.** The standstill (car-seconds under the engine's own stranded threshold, on clear road, under a neutralisation, at FULL distance), how much of a race is neutralised, and that the safety car is drawn from an interpolated pose on all eleven circuits. It used to be forty minutes of compute that could not report a failure |
@@ -424,15 +426,27 @@ Run `npm run` to list. The important ones:
   fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
   own job with its own measurement, and it is listed here rather than done badly.
   **Nobody is on this.**
-- `probe:racelog` at FULL distance — **2 failures, `11.50 cars retire per race` and
-  `22.50 car-to-car contacts a race`,** re-measured at #26's own configuration on merged
-  `main` at `8cde5ae` on 2026-08-03. **The contacts figure was written here as 21.00 and is
-  stale by a merge** — see the §8 note on quoting counts. Both were failing before #10 at
-  20.00 and 26.50; the fuel fix removed the artefact on top of them and what is underneath is
-  issue #26, whose third cause is now measured in §7. Byte-identical before and after the #44
-  fix, so cars racing past the flag is not part of it. See §7.
-- `validate:race` — **1 failure, `monaco: fastest lap 152% of reference`,** and it is
-  pre-existing: identical on a clean `main`. See §7.
+- `probe:racelog` at FULL distance — **2 failures on the `damage-cascade` branch, `6.75 cars
+  retire per race` and `13.88 car-to-car contacts a race`; THREE on merged `main` at
+  `ae6c981`, at 10.13, 26.88 and a player-contact bar of 3.00 against 1.20.** **This entry
+  had said 11.50 and 22.50 and BOTH were stale — that is the third time a count here has
+  been wrong by a merge — and the third failure had never been recorded at all.** The
+  player's bar is #12's crash half and it now passes. Byte-identical before and after the
+  #44 fix, so cars racing past the flag is not part of it. See §6, "The damage cascade", and
+  §7.
+- `validate:race` — **2 failures, not 1: `monaco: fastest lap 150% of reference` AND
+  `cota: fastest lap 145% of reference`,** both #1 and both pre-existing on a pristine `main`
+  measured 2026-08-04. **This entry had recorded only Monaco.** On the `damage-cascade`
+  branch it is still 2, with COTA's changed in character — its pace bar passes there now and
+  what fails is `cota: 187.9s spread between fastest and slowest car`, which is attributable
+  to the damage-model change (measured by disabling the stranded change and reproducing it
+  byte for byte) and is not isolated further. See §6 and TESTING.md.
+- `probe:cascade` — **1 of 4 sections, §4 at `5.5 of 20 cars a race ground under 0.50`
+  against a bar of 4.** New with the `damage-cascade` branch, red on the branch that
+  introduced it, and the bar was NOT moved to fix that. See §6.
+- `probe:blockage` — **1 failure, `monaco [held]: 2 cars got past a car standing on the
+  racing line in 90s (1.3/min, floor 2.5)`.** Pre-existing and identical on a pristine
+  `main`, measured 2026-08-04; never previously recorded here.
 - ~~`probe:fieldsize`~~ — **PASSES. Fixed by the `race-lifecycle-fixes` branch, issue #44.**
   It was **16 failures** on merged `main` at `8cde5ae` on 2026-08-03, not the 14 this entry
   had said and not the 23 it said before that — **the count has now been wrong here three
@@ -529,6 +543,143 @@ Preserved verbatim because the phrasing carries information a summary loses.
 ## 6. What has been done — with the measurement that proves it
 
 Ordered by impact. Each of these was verified on merged `main`.
+
+### The damage cascade — #26's third cause, closed at two of its three links (#26, #12)
+
+**The direction of the arrow was measured before anything was changed, because "20 of 26
+retiring cars were already broken" is a correlation and the fix is different for each of
+its two readings.** `diag:attrition` gained three instruments for it — a per-cause damage
+ledger (`DamageSource` in `DamageModel.ts`: every loss booked against contact, the barrier
+or wear), an excursion counter, and an exposure-weighted excursion rate by health band.
+
+**Re-baselined first, and BOTH headline numbers in this file were stale.** `probe:racelog`
+at `RACELOG_LAPS=full` on merged `main` at `ae6c981`, 4 circuits × 2 seeds:
+**10.13 retirements and 26.88 contacts a race**, not the 11.50 / 22.50 recorded here and in
+the issue. It also failed a THIRD bar nobody had recorded: **the player is in 3.00 contacts
+a race against a derived share of 1.20**, which is #12's crash half.
+
+**What the instruments said, at #26's own configuration (Silverstone, F3, P18, medium, 2
+seeds, full distance):**
+
+| | |
+|---|---|
+| the field's damage ledger | **72% car-to-car contact** (56.7 health-units a race over 113.5 damaging impacts), 27% barrier, 1% wear |
+| excursions a race | **183.5**, of which 94% rejoined — the 6% that did not are the beachings |
+| contacts under a neutralisation | **1.00 of 44.00 (2%)** — the safety-car loop does NOT generate contacts, so the arrow runs one way |
+| beached cars still MOVING when retired | **13 of 19**, at 0.7–1.9 m/s; only 3 were at a standstill |
+
+**And the dose–response, which is what a correlation has to survive.** Excursions per 1000
+car-seconds ON the road, by the car's worst component — five bands, monotone, which a
+threshold artefact cannot produce:
+
+| worst part | rate | |
+|---|---|---|
+| ≥ 0.95 | 0.86 | ×1.0 |
+| 0.85–0.95 | 1.23 | ×1.4 |
+| 0.70–0.85 | 1.36 | ×1.6 |
+| 0.50–0.70 | 1.60 | ×1.9 |
+| **< 0.50** | **3.29** | **×3.8** — 35% of all excursions on 16% of the exposure |
+
+So contact breaks the car, a broken car leaves the road, and **the knee is below 0.50**.
+That is where the leverage was applied, and it is why it was not applied to the contact
+rate in `src/ai/`: excursions are essentially zero for the first three tenths of a race and
+121 of 162 fall in tenths four to six. The field can drive. It stops being able to once it
+is broken.
+
+**Three changes, all in the two links this named.**
+
+1. **An impact can only do so much damage, however many times it is repeated.** The linear
+   term took `rate * w` off whatever was LEFT, every time, with no reference to how hard
+   the hit was — a ratchet, so a sequence of ordinary touches walked a component to
+   `COMPONENT_FLOORS`, which is the last value before a car cannot corner at all. Measured:
+   the field's worst component fell 0.94 → 0.50 and its minimum was 0.10, the front wing's
+   floor exactly. A non-terminal impact may now wear a component to `1 - s * w` and no
+   further — **derived, being the loss the model's own linear term would produce at
+   `rate = 1`**, so it is the model's worst case for a single hit of that severity. A
+   `writeOff` bypasses it entirely, and `probe:damage`'s three-hits-to-strip-a-wing ladder
+   is untouched: a 0.8 hit still bottoms the front wing at 0.20, under the 0.30 detach.
+2. **A sidepod rub no longer bends all four corners of the suspension.** The side zone put
+   **0.6** on `suspFL`/`suspRL` — the largest weight on an unrepairable component anywhere
+   in the table, and larger than the **0.35** a square nose-first impact puts on the same
+   corner, which cannot be right in either direction. It mattered because `applyTo` weights
+   the worst corner and because a stop replaces the nose and the sidepod panels and cannot
+   touch a suspension corner. Twenty ordinary side contacts left `baseMu` at **88.3%** of
+   pristine against the **0.90** the AI's own `commitmentScale` leaves itself — the car was
+   asking every corner for more grip than it had. At 0.35 the same twenty leave **93.2%**.
+3. **A car that is going somewhere has not stopped.** `checkStranded` retired an off-road
+   car that had been under `STRANDED_SPEED_MS` = 2.5 m/s for nine seconds and never asked
+   whether it was moving — so **13 of 19 beached cars were written off while crawling out
+   under their own power at 0.7–1.9 m/s.** The timer now resets when the car has covered
+   its own length (`CONTACT_GAP_M`), bounded by `BEACHED_ABANDON_S`. Off the road only: the
+   on-track rule and `probe:blockage`'s ground are untouched.
+
+**What it did.** `probe:racelog`, `RACELOG_LAPS=full`, 4 circuits × 2 seeds, before and
+after on the same seeds:
+
+| | before | after | bar |
+|---|---|---|---|
+| cars retired a race | 10.13 | **6.75** | 3.0 |
+| car-to-car contacts a race | 26.88 | **13.88** | 12.0 |
+| **the player's own contacts** | 3.00 | **0.25** | 1.20 — **passes** |
+| the player carries a badge | 13% | **0%** | 20% |
+| failures | 3 | **2** | |
+
+and underneath it, `diag:attrition` at #26's configuration:
+
+| | before | after |
+|---|---|---|
+| retirements a race | 13.00 | **7.50** |
+| contacts a race | 44.00 | **20.50** |
+| `Beached in the gravel` | 9.50 | **2.00** |
+| retirements already under 0.70 while racing | 20 of 26 | **7 of 15** |
+| retirements already under **0.40** | **15 of 26** | **0 of 15** |
+| health lost to contact | 56.7 over 113.5 impacts | **31.0 over 68.0** |
+| excursions rejoined | 94% | **98%** |
+
+**`probe:stewards` went from failing to passing without its threshold being touched** —
+9.7 penalties implied for a Grand Prix on clean `main` (bar 8), **2.7** after. Fewer
+contacts is fewer incidents on the stewards' bench, which is #12's complaint measured from
+the other end.
+
+**What did NOT happen, and it was predicted the other way.** Neutralisations did not fall
+with contacts: **23.9% → 31.3%** of the race, on a flat deployment count (5.50 → 5.38).
+The beachings that vanished were push-recoveries; what is left is `Accident` and
+`Accident damage`, which are craned and swept, so the race is interrupted slightly less
+often and for longer each time. **The excursion count did not fall either** — 183.5 → 205.0.
+Both bars moved because excursions stopped becoming retirements and damage stopped
+compounding, not because the field stopped leaving the road.
+
+**The probe, and it goes red in both directions.** `probe:cascade`
+(`scripts/probeDamageCascade.ts`) judges the mechanism where `probe:racelog` judges the
+race. Four sections, every one asserting a floor as well as a ceiling, because a field of
+indestructible cars is a worse simulation than a field that eats itself: the ratchet ladder
+and what it costs `baseMu`; that a write-off still destroys a car and that contact still
+hurts; that a crawling car survives, a stopped car is still retired, and a car that
+pottters about off the road for ever is still ended; and one full-distance race counting
+how many cars are ground under 0.50. **`CASCADE_BREAK=ratchet` restores the pre-fix damage
+model and takes it to 12 failures**; disabling the progress test takes section 3 red on its
+own.
+
+**Section 4 of that probe is RED on this branch and the bar was not moved.** 5.5 of 20 cars
+a race are still ground under 0.50 on a component while racing, against a bar of 4 derived
+from the sport. The first version of it read 5 against the 4 on ONE seed — one car either
+side of a decision — and the response was to make the MEASUREMENT better (two seeds and a
+mean, the same two `probe:racelog` and `diag:attrition` use at this configuration) rather
+than the bar looser. It then read 5.5. That is the honest state: the cascade no longer
+converts damage into retirements — 2 of 15 retirements were in that band, against 15 of 26
+under 0.40 before — but the field still grinds a quarter of itself into it.
+
+**One number in this was got wrong and `validate:race` caught it, which is worth keeping.**
+The first backstop on the progress test was `RECOVERY_BACKSTOP_S` (210s) — an existing
+constant of roughly the right kind, reached for because it was existing. It answers a
+different question: how long before the MARSHALS are finished, not how long a DRIVER may
+take. A car spent three minutes shuffling around the COTA run-off and finished the race,
+and `validate:race` read it back immediately as `cota: 187.9s spread between fastest and
+slowest car`. 187.9 is 210 minus a lap. `BEACHED_ABANDON_S` is now derived from the two
+numbers the test is built out of — the deepest a car can be and still be pushed rather than
+craned (`RECOVERY_CRANE_OFFROAD_M`), over the slowest speed that still counts as progress
+(`CONTACT_GAP_M / BEACHED_RETIRE_S`) — which is 19 seconds. **An existing constant is not
+automatically the derived one.**
 
 ### Rendering: the single biggest fix
 The dynamic resolution scaler dropped below 60fps and could only climb above **68fps**,
@@ -4977,7 +5128,7 @@ that did not fire rather than a fix, and §7's warm-up defect is still there.
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**. **Bodies below the neck have landed too — issue #22, see §6**: a rig, five poses, hands, legs, held objects, and 3,016 new checks in `probe:people` that read the drawn polygons back. What is still missing is the press room's **consequences** — `onAnswer` and the `effects` lists are display-only and nothing in the career reads an answer back. That is the publicist/agencies layer and it is not built |
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
-| Crash & penalty rate | **Measured — #12, see §6.** The PENALTY half is not too high: 3.00 penalties on 3.00 of 20 cars at the player's own configuration, all from the stewards' bench, none on the driven car, and 0.002 sanctionable excursions a car-lap against a 0.075 bar. The CRASH half is over by a quarter (player in 1.50 contacts a race against a derived 1.20) and is the field's 22.50, i.e. #26. What dominates the player's race is neither: **7.00 SC/VSC deployments and 35.2% of it neutralised**, which nothing had ever counted and which closes when #26 does |
+| Crash & penalty rate | **#12's crash half is CLOSED and its penalty half was never open — see §6, "The damage cascade".** Re-measured on merged `main` at `ae6c981`, the player was in **3.00 contacts a race** against a derived bar of 1.20 (not the 1.50 recorded here, which was stale) and carried a badge in 13% of races against a 20% bar. After the cascade work: **0.25 contacts and 0% badges — both pass.** `probe:stewards` went from 9.7 penalties implied for a Grand Prix to 2.7, against a bar of 8, with no threshold touched. **The penalty half was never the problem and this file said so; what was wrong is that it said "all from the stewards' bench, none from pit lane" and that is false — 10 of 23 penalties at full distance are `Speeding in the pit lane` drive-throughs, 1.25 a race, which nobody has looked at.** What still dominates the player's race is neither: **5.38 SC/VSC deployments and 31.3% of it neutralised**, and that does NOT close when #26 does — the cascade work halved the retirements and the neutralised share went up |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
 | Career/story | Sponsors, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; so have the driver ratings model and #77's six management screens — see §6.** Rivalries are declarable from a screen now. What is left is the layer that TALKS to the player: sponsors as a system, and a press room whose answers have consequences |
 
@@ -5289,8 +5440,47 @@ shared files and the run that matters passed. **Nobody is on this.**
   .RACE_PACE_VS_REFERENCE` is still 1.50 and is still the one named constant that comes down
   when the pace item does. `validate:race`'s Monaco assertion now reads **150%** — it said
   152% here for a while and nobody had re-run it, so check it rather than quoting it.
-- **#26 — the third cause, named and measured. Still open, and the fix is not in this
-  branch's ground.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
+- **#26 — the cascade is closed at two of its three links, and the issue STAYS OPEN. What is
+  left is not the cascade.** See §6 for the full before/after. `probe:racelog` at
+  `RACELOG_LAPS=full` on the `damage-cascade` branch, 4 circuits × 2 seeds:
+  **6.75 retirements (bar 3.0) and 13.88 contacts (bar 12.0)**, from 10.13 and 26.88 on
+  merged `main` at `ae6c981`. Two failures, from three: **the player's own contact bar now
+  passes**, 3.00 → 0.25 against a derived 1.20, which is #12's crash half.
+
+  **What is left, and it is a DIFFERENT problem with its own measurement.** The cascade was
+  contact → permanent damage → a car that cannot hold the road → an excursion nobody was
+  near. Retirements already under 0.40 on a component went **15 of 26 → 0 of 15**, and
+  `Beached in the gravel` went **9.50 → 2.00 a race**. But:
+
+  | | |
+  |---|---|
+  | excursions a race | **183.5 → 205.0** — the field leaves the road exactly as often |
+  | of which rejoined | 94% → **98%** |
+  | retirements that were an undamaged car on good tyres with nobody near it | 4 of 26 → **8 of 15** |
+
+  So **more than half of what remains is a car that simply left the road while healthy**,
+  which is not this issue's mechanism at all — it is AI path-tracking and commitment, #1 and
+  #30's ground, and it was deliberately not entered. The healthy band still leaves the road
+  at 0.62–0.65 per 1000 car-seconds, which over a Grand Prix is around a hundred excursions
+  a race before anything is damaged at all. **Nobody should attack the retirement bar again
+  from the damage model; the next move is the excursion rate.**
+
+  **And the contact bar is now within 16% of its bound** (13.88 against 12.0). The locations
+  say where: `straight @600m` 1.5 a race, `straight @3900m` 1.4, `straight @2900m` 1.1 —
+  **contacts on STRAIGHTS, not into corners**, and 0.00 of them on the opening lap. Two cars
+  running side by side down a straight have `RACING_ROOM_M` = 0.55m of margin beyond
+  contact, and the controller's own lateral wander is not obviously smaller than that. That
+  is a specific, cheap thing to measure next and it was not measured here.
+
+  **Neutralisations did NOT fall with contacts, and that was predicted the other way.**
+  23.9% → **31.3%** of the race neutralised on a flat deployment count (5.50 → 5.38). The
+  beachings that vanished were push-recoveries; the retirements that remain are `Accident`
+  and `Accident damage`, which need a crane and a debris sweep. So the race is interrupted
+  slightly less often and for noticeably longer. §5 of TESTING.md carries this as a
+  user-visible fault and it does not close with #26 after all.
+
+- **#26 — the third cause, named and measured. Superseded by the entry above; kept because
+  its refutations still stand.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
   F3, P18, medium, 2 seeds) measured on merged `main` at `8cde5ae`: **11.50 retirements and
   22.50 contacts a race**, against bars of 3.0 and 12.0. (The 21.00 contacts this file and
   the issue both quote is stale by one merge — **run it before quoting it**.) The cause

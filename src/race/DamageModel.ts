@@ -58,6 +58,24 @@ export const COMPONENT_NAMES: Record<ComponentId, string> = {
 export type ImpactZone = 'front' | 'rear' | 'left' | 'right' | 'floor';
 
 /**
+ * WHAT took the health off — the ledger, not the physics.
+ *
+ * Issue #26 was closed twice on a mechanism that turned out to be wrong, and
+ * the third diagnosis ("a damage cascade") arrived as a CORRELATION: 20 of 26
+ * retiring cars were already carrying a component below 0.70 the last time
+ * they were racing. A correlation has two directions and the fix is different
+ * for each of them. If a car is broken by RACING CONTACT and then cannot hold
+ * the road, the leverage is on the contact rate. If it is broken by the
+ * BARRIER during excursions it was going to have anyway, the damage is a
+ * symptom and cutting the contact rate moves nothing.
+ *
+ * So every loss is booked against its cause and the diagnostic prints the
+ * split. Costs one addition per component per event; nothing reads it in the
+ * game.
+ */
+export type DamageSource = 'contact' | 'solid' | 'wear';
+
+/**
  * The four pieces of bodywork that can leave the car whole.
  *
  * Distinct from `ComponentId`, which is what the damage model tracks: the front
@@ -112,6 +130,18 @@ export class CarDamage {
   anyDamage = false;
 
   /**
+   * Total health lost, by cause, over the session. Diagnostic only.
+   *
+   * Never reset by `repair()`: this is the ledger of what happened to the car,
+   * not its current condition, and a stop that refits a nose does not un-hit
+   * the barrier. `reset()` clears it because that is a new session.
+   */
+  readonly lostBy: Record<DamageSource, number> = { contact: 0, solid: 0, wear: 0 };
+
+  /** How many separate impacts of each kind the car has taken. */
+  readonly hitsBy: Record<DamageSource, number> = { contact: 0, solid: 0, wear: 0 };
+
+  /**
    * Health lost since the spec was last rebuilt.
    *
    * `applyTo` allocates a new spec object, and wear accrues on every one of the
@@ -139,18 +169,37 @@ export class CarDamage {
    * @returns the components that crossed into a visibly worse state, so race
    *          control can report the specific failure rather than "damage"
    */
-  applyImpact(zone: ImpactZone, severity: number, writeOff = false): ComponentId[] {
+  applyImpact(
+    zone: ImpactZone, severity: number, writeOff = false, source: DamageSource = 'contact',
+  ): ComponentId[] {
     const s = clamp01(severity);
     if (s <= 0.001) return [];
+    this.hitsBy[source]++;
 
     // Spread per zone. A front impact destroys wing endplates first; a side
     // impact takes the sidepod and the suspension on that side; anything hard
     // enough shakes the gearbox and the power unit a little regardless.
+    //
+    // THE SIDE ZONE'S SUSPENSION WEIGHT WAS 0.6 AND IT WAS THE LARGEST SINGLE
+    // WEIGHT ON AN UNREPAIRABLE COMPONENT ANYWHERE IN THIS TABLE — larger than
+    // the 0.35 a square nose-first impact puts on the same corner, which cannot
+    // be right in either direction. A nose-first hit loads the front uprights
+    // through the wheels and the pushrods; a sidepod-to-sidepod rub loads the
+    // bodywork and reaches the suspension only through whatever the wheels did,
+    // which is less. It mattered because `applyTo` weights the WORST corner
+    // (`0.2 * suspMin`) and because a pit stop replaces the nose and the sidepod
+    // panels and cannot touch a suspension corner — so this one number turned
+    // every side rub into a permanent mechanical-grip penalty for the rest of
+    // the race. Measured: twenty ordinary side contacts left `baseMu` at 88.3%
+    // of pristine, against the 0.90 the AI's own `commitmentScale` leaves
+    // itself, so the car was asking a corner for more grip than it had on every
+    // lap. At the front zone's 0.35 the same twenty leave it at 93.2%.
+    // Issue #26.
     const spread: Partial<Record<ComponentId, number>> =
       zone === 'front' ? { frontWingL: 1.0, frontWingR: 1.0, suspFL: 0.35, suspFR: 0.35, floor: 0.2 }
       : zone === 'rear' ? { rearWing: 1.0, suspRL: 0.4, suspRR: 0.4, gearbox: 0.3, engine: 0.15 }
-      : zone === 'left' ? { sidepodL: 1.0, suspFL: 0.6, suspRL: 0.6, frontWingL: 0.5, floor: 0.3 }
-      : zone === 'right' ? { sidepodR: 1.0, suspFR: 0.6, suspRR: 0.6, frontWingR: 0.5, floor: 0.3 }
+      : zone === 'left' ? { sidepodL: 1.0, suspFL: 0.35, suspRL: 0.35, frontWingL: 0.5, floor: 0.3 }
+      : zone === 'right' ? { sidepodR: 1.0, suspFR: 0.35, suspRR: 0.35, frontWingR: 0.5, floor: 0.3 }
       : { floor: 1.0, sidepodL: 0.2, sidepodR: 0.2 };
 
     // How much of a component a full-weight hit takes off.
@@ -188,12 +237,51 @@ export class CarDamage {
       if (!w) continue;
       const before = this.health[id];
       const loss = rate * w;
-      const after = clamp(before - loss, FLOORS[id], 1);
+      // WHAT ONE IMPACT MAY EVENTUALLY DO, however many times it is repeated —
+      // issue #26's third cause, and the link this closes.
+      //
+      // The linear term above is a RATCHET: it takes `rate * w` off whatever is
+      // left, every time, with no reference to how hard the hit was. So a
+      // sequence of ordinary racing touches walks a component all the way to
+      // `COMPONENT_FLOORS[id]` — and `COMPONENT_FLOORS` is not a survivable condition, it is the
+      // last value before the car cannot corner at all. Measured on merged
+      // `main` at issue #26's own configuration: the field's worst component
+      // falls 0.94 -> 0.50 over a Grand Prix and its minimum is 0.10, which is
+      // the front wing's floor exactly; 72% of all the health the field loses
+      // is car-to-car contact, over 113.5 damaging impacts a race; and the rate
+      // at which a car leaves the road rises monotonically with how broken it
+      // is — x1.0, x1.4, x1.6, x1.9 and x3.8 per car-second on the road as the
+      // worst component falls through 0.95, 0.85, 0.70 and 0.50. Eleven cars a
+      // race then end up in the gravel with nobody near them.
+      //
+      // The missing statement is that damage is a function of the ENERGY of the
+      // impact and not only of what is still intact. A 25 km/h wheel rub does
+      // not become a broken upright because it is the fourth one: each hit
+      // finds the part further back from the edge, less exposed and better
+      // supported, and the same blow does progressively less. So a
+      // non-terminal impact may wear a component down to the damage ONE such
+      // impact would do at full rate — `1 - s * w` — and no further.
+      //
+      // Derived, not chosen: `s * w` is exactly the loss the linear term would
+      // produce with `rate = 1`, so the bound is the model's own worst case for
+      // a single hit of this severity on this component. It leaves the
+      // three-hits-to-strip-a-wing ladder that `probe:damage` asserts intact —
+      // a 0.8 hit still bottoms the front wing at 0.20, under the 0.30 detach
+      // threshold — while a race of 0.5 and 0.6 severity touches can no longer
+      // walk a suspension corner to 0.25.
+      //
+      // `writeOff` bypasses it entirely. An impact the engine has already
+      // judged terminal is not racing contact and must still destroy the car,
+      // which is the other half of this and is asserted in both directions by
+      // `probe:cascade` and `probe:damage`.
+      const bound = writeOff ? COMPONENT_FLOORS[id] : Math.max(COMPONENT_FLOORS[id], 1 - s * w);
+      const after = clamp(before - loss, Math.min(bound, before), 1);
       this.health[id] = after;
       // Report only when a component crosses a threshold, so a graze does not
       // spam the radio.
       if (bandOf(before) !== bandOf(after)) broken.push(id);
       this.pendingChange += before - after;
+      this.lostBy[source] += before - after;
     }
     this.anyDamage = true;
     return broken;
@@ -233,10 +321,11 @@ export class CarDamage {
   private wear(id: ComponentId, amount: number): void {
     if (amount <= 0) return;
     const before = this.health[id];
-    this.health[id] = clamp(before - amount, FLOORS[id], 1);
+    this.health[id] = clamp(before - amount, COMPONENT_FLOORS[id], 1);
     if (this.health[id] < before) {
       this.anyDamage = true;
       this.pendingChange += before - this.health[id];
+      this.lostBy.wear += before - this.health[id];
     }
   }
 
@@ -315,6 +404,8 @@ export class CarDamage {
     for (const id of COMPONENT_IDS) this.health[id] = 1;
     this.anyDamage = false;
     this.pendingChange = 0;
+    this.lostBy.contact = 0; this.lostBy.solid = 0; this.lostBy.wear = 0;
+    this.hitsBy.contact = 0; this.hitsBy.solid = 0; this.hitsBy.wear = 0;
   }
 }
 
@@ -326,7 +417,7 @@ export class CarDamage {
  * someone with it; the race engine retires a car long before this matters, and
  * these floors exist so the few frames in between stay survivable.
  */
-const FLOORS: Record<ComponentId, number> = {
+export const COMPONENT_FLOORS: Record<ComponentId, number> = {
   frontWingL: 0.1, frontWingR: 0.1, rearWing: 0.15, floor: 0.2,
   sidepodL: 0.1, sidepodR: 0.1,
   suspFL: 0.25, suspFR: 0.25, suspRL: 0.25, suspRR: 0.25,

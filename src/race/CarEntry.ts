@@ -365,6 +365,42 @@ export class CarEntry {
    * perception sweep tells the cars behind there is something to go round.
    */
   stuckTimer = 0;
+  /**
+   * Where the car was when `stuckTimer` last started running, world x/z.
+   *
+   * A car that is MOVING has not stopped, whatever the speedometer says, and
+   * `stuckTimer` alone could not tell the difference: it accumulates on any
+   * step under `STRANDED_SPEED_MS`, so a car crawling out of a gravel trap at
+   * 1.5 m/s ran the timer out and was retired having covered thirteen metres
+   * under its own power. Measured on merged `main` at issue #26's own
+   * configuration: of nineteen `Beached in the gravel` retirements, THIRTEEN
+   * were still moving between 0.7 and 1.9 m/s on the step they were retired
+   * and only three were within a whisker of a standstill. See
+   * `RaceEngine.checkStranded`.
+   */
+  stuckAnchorX = 0;
+  stuckAnchorZ = 0;
+  /**
+   * True once the anchor above holds this episode's starting position.
+   *
+   * A flag rather than a sentinel coordinate, because (0, 0) is a real place on
+   * every circuit and because `stuckTimer` is written from outside the engine —
+   * `probe:blockage` sets it directly to stage a car that has been standing on
+   * the racing line — so "the timer is running" is not the same fact as "the
+   * anchor is current".
+   */
+  stuckAnchorSet = false;
+  /**
+   * Seconds since this car last dropped below racing speed off the road,
+   * whether or not it has been making progress since.
+   *
+   * The backstop on the progress test above. Without it a car that shuffles a
+   * few metres every few seconds resets `stuckTimer` for ever, holds a yellow
+   * flag and keeps the race neutralised — which is the failure mode issue #28
+   * spent a whole branch on. Reset only when the car is properly racing again:
+   * on the racing surface AND above `STRANDED_SPEED_MS`.
+   */
+  strandedTotalS = 0;
   /** Seconds since retiring, before marshals clear the car. */
   recoveryTimer = 0;
   /** True once serviced during the current pit-lane visit. */
