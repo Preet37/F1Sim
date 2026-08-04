@@ -3726,7 +3726,7 @@ shared files and the run that matters passed. **Nobody is on this.**
   explicitly calibrated on the dry draw. It needs the schedule calibrated with it, against a
   stated target for how often a Grand Prix should be wet. `probe:weather` **§3c prints both
   columns on every run** and says so; the mechanism is written out on the line itself in
-  `Weather.ts`. **Nobody is on this.**
+  `Weather.ts`. **Issue #97. Nobody is on it.**
 - **`probe:stewards` IS RED ON `main` AND THIS FILE HAS NEVER SAID SO** — and the number
   it quotes for the bench, in the entry above and in issue #26, is stale. Measured
   2026-08-03 on a clean `main` (the branch's `TrackSpline` copied out, `git checkout --`,
