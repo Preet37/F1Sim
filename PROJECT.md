@@ -226,6 +226,33 @@ docs/CAREER_MODE.md       Career design document
 reference/                GITIGNORED. Extracted reference frames (see §9)
 ```
 
+### Which probes to run — scope the set, never the standard
+
+Settled 2026-08-03 after six concurrent agents put 24 probes on one machine and took
+the load average to 209. The user's position, in their own words: *"i will not compromise
+on the rendering or the quality or the concept or anything at all."*
+
+**The standard is absolute and is what actually protects quality:**
+1. A probe must be able to **fail** — break the feature and watch it go red, every time.
+2. Verify on **merged `main`**, not on the branch.
+3. **No tolerance ever moves** to make something pass.
+
+Those three caught everything real today. What did *not* protect quality was running the
+whole suite on every branch: a 55-race sweep on a CSS change finds nothing and queues
+ahead of the probe that would have found something. Nearly every probe here drives
+headless Chrome under software rendering — `probe:racesweep` is 20+ minutes and an hour
+on a busy box, `probe:framing` is 11 circuits × 2 aspects × 3 modes.
+
+**So: run the probes your change can plausibly break, plus any probe that has ever caught
+this class of bug before, plus the one you wrote for the fix itself.** Then say in the PR
+which you ran and which you deliberately did not — an unrun probe named is fine, an unrun
+probe implied is not.
+
+**And re-run before quoting.** Several "known-failing" numbers in this file have been
+stale by a factor of four (`shoot:panels` said 2 rail, was 9 — a de-duplicated list read
+as a count) or entirely wrong (`validate:flags` had been passing for days). A number
+nobody has re-measured is a rumour.
+
 ### The probes — this is the project's immune system
 
 Run `npm run` to list. The important ones:
