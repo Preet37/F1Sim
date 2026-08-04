@@ -3067,6 +3067,19 @@ builds. **The pose was fixed, not the bar** (§3.3).
   `(orientation: landscape) and (max-height: 520px)`. The room takes 42% of the width;
   the question and three answers fit in the other 58%.
 
+**What it costs, measured rather than assumed.** The body markup per figure went from
+**~1.2KB to ~36KB** (`seated` 1,183 → 24,467; `standing` 590 → 35,649; `raised` 1,222 →
+36,067 bytes), and a whole figure including its head defs is ~37KB, built in **2.5–3.5ms**
+in node. So a three-person press room is about 78KB of inline SVG and the garage about
+150KB, painted **once**, with no filter, no animation, no timer and no second GL context —
+`probe:menucost`'s subject is untouched. That is a thirty-fold increase and it is
+deliberate: a limb is a sampled polygon rather than a stroke precisely so that what the
+probe measures is what the renderer fills. **The single biggest line item is that every
+limb's `clipPath` carries a second copy of its own polygon**; `<clipPath><use href="#id"/>`
+would roughly halve the whole figure, and it is **recorded rather than done** because
+`<use>` inside `<clipPath>` has a history of misbehaving in iOS Safari, which this game
+ships to.
+
 **Two things the new sheet is for.** `SHOOT_PEOPLE=bodies` is five poses, the extremes of
 build and height, and ten crew at the 62px the garage actually draws them at.
 `SHOOT_PEOPLE=compare` is the shipped body beside the rig at one scale, drawn from the
