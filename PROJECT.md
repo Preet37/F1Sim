@@ -6829,6 +6829,15 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   before it is believed, and any *green* one is equally suspect if it was a sweep that
   should have taken minutes and returned instantly.
 
+  **And there is a third case neither caveat covers — a green that took far LONGER than it
+  should.** The #22 agent's `probe:smoke` took three attempts: the first died on a 120s
+  navigation timeout at load 268–448, after 305 seconds on the first-run flow alone. The
+  one that passed ran **2307s against the 665s §7 records for this probe** — three and a
+  half times as long — booting Chrome 32 cold times and opening **32 of 32 required
+  routes** with zero throws. That is not a suspect green: a timeout-flavoured false pass
+  returns *early*, not late. **Read the wall clock and the work done, not just the exit
+  code.**
+
   Also: the machine is not yours alone. On this box the user's own Chrome accounted for
   **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
   of the load. Check `uptime` before quoting any number, and say plainly when a
@@ -6928,13 +6937,44 @@ camera targets are derived from the car's own geometry rather than measured from
 
 ## 10. If you are picking this up cold
 
-1. Read this file. Then `docs/CAREER_MODE.md`.
+1. Read this file. Then **`TESTING.md`** — it carries every known-failing number, and those
+   are re-measured rather than carried forward. Then `docs/CAREER_MODE.md`.
 2. `git log --oneline -30` and `npm run` to see the probe list.
 3. Check what is running: `git worktree list` and `git branch -a`.
 4. Start the dev server and **look at the game** before changing anything.
 5. Before claiming anything is fixed, run the probe that proves it, on merged `main`.
 6. The user is testing continuously. Expect screenshots. Treat them as bug reports from a
    reliable reporter, because that is what they have been.
+7. **Do not hand them things to try piecemeal.** Their standing instruction: *"finish
+   everything up first though and I will test it out once you've shipped the final product
+   and i don't want to test it out if you haven't shipped it completely."*
+
+### Where it stands as of 2026-08-04
+
+`main` is clean, pushed, `typecheck` and `build` both pass. **55 issues closed, 42 PRs
+merged**, every one re-verified on merged `main` rather than trusted from its branch.
+
+**Four bugs open**, all with their mechanism already measured — read the issue before
+re-deriving anything:
+- **#26 / #12 residual** — retirements 6.75 against a bar of 3.0. More than half of what
+  remains (8 of 15) is a *healthy* car that simply left the road, i.e. #1/#30's
+  path-tracking, not damage.
+- **#66** — `car.s` over-runs. The cause is **the ruler**: `dist[i] = i·lengthM/count` is
+  uniform and `easeCentrelineKinks()` moves nodes without recomputing it. Monaco's
+  tightest gap is 2.247m carrying 3.001m of `s`. Constructor work.
+- **#103** — `throttleShare` is a constant where the physics wants an ERS-aware function.
+  The old limit was correct in exactly one of eight ERS states.
+- **#105** — a wet Spa produces **59 contacts against a dry 3**. Latent, exposed by #97
+  making rain reachable for the first time. Nothing had ever been wet.
+
+**Six features open:** #14 UI standard · #20 first run/profiles · #23 the career world
+(sponsors, press, rivalries, agencies — `spendPrepSlot` and `declareRivalry` exist and are
+unreachable) · #24's paddock and crew faces · #61 radio writing pool · #67 the over-wheel
+winglet · #76's remaining artwork (the slot resolves; only the files are missing).
+
+**The reference set is the visual specification** and lives in `reference/target/` with an
+`INDEX.md` — 24 images the user supplied, with *"every image that I attached, i want that
+to that quality."* Open them with the Read tool; do not work from a description.
 
 ---
 
