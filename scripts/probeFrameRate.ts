@@ -118,6 +118,7 @@ import { RaceEngine, type SessionConfig } from '../src/race/RaceEngine';
 import { CameraDirector, type CameraMode } from '../src/render/CameraDirector';
 import { updateRenderPoses } from '../src/render/RenderPose';
 import { CIRCUITS } from '../src/data/tracks/circuits';
+import { TrackSpline } from '../src/track/TrackSpline';
 
 /** The ceiling `SimClock` enforces. Not exported, so restated here. */
 const MAX_STEPS_PER_FRAME = 8;
@@ -1306,6 +1307,18 @@ function runWorldSmoothness(
 ): {
   rows: Map<CameraMode, { interp: WorldResult; stepped: WorldResult }>;
   shakeFrames: number; jumpFrames: number; worstJump: number; worstJumpS: number;
+  /** Of `jumpFrames`, how many the node ruler alone accounts for — see below. */
+  rulerFrames: number;
+  /** Of `jumpFrames`, how many the ENVELOPE's own instrument error accounts for. */
+  envFrames: number;
+  /** Of `jumpFrames`, how many survive both allowances. */
+  unexplainedFrames: number;
+  /** Of `jumpFrames`, how many are `s` moving TOO FAR rather than too slowly. */
+  overFrames: number;
+  /** Of the UNDERSHOOT frames, how many the car's own sideways slip accounts for. */
+  slipFrames: number;
+  /** `uniform / |p[j] - p[i]|` at the worst jump: what `s` claims per metre driven. */
+  worstJumpRuler: number;
   geometry: { spacingM: number; maxSlope: number; maxKink: number };
 } {
   const engine = new RaceEngine(def, WORLD_CONFIG);
@@ -1339,11 +1352,54 @@ function runWorldSmoothness(
   let jumpFrames = 0;
   let worstJumpS = 0;
   let worstJump = 0;
+  let rulerFrames = 0;
+  let envFrames = 0;
+  let unexplainedFrames = 0;
+  let overFrames = 0;
+  let slipFrames = 0;
+  let worstJumpRuler = 1;
+  /**
+   * Curvature where the car actually is, not at the node it is nearest.
+   *
+   * The envelope above reads `curvature[indexAt(s)]` — one node's value, held
+   * flat across three metres of road — and evaluates it at the END of the frame.
+   * On a corner entry the curvature ramps hard between adjacent nodes and the
+   * car is five metres off the centreline, so `1 - |lateral*k|` can be several
+   * per cent out either way, which on a 1.6m frame is tens of millimetres. That
+   * is the size of everything this section still counts outside Monaco. This
+   * interpolates, so the second diagnostic column can say how much of the count
+   * is the BOUND rather than the simulation.
+   */
+  const curvatureAt = (s: number): number => {
+    const f = (((s % track.length) + track.length) % track.length) / track.length * track.count;
+    const i = Math.floor(f) % track.count;
+    const j = (i + 1) % track.count;
+    const t = f - Math.floor(f);
+    return track.curvature[i] * (1 - t) + track.curvature[j] * t;
+  };
+  /**
+   * THE RULER `s` IS MEASURED ON — issue #66's actual cause, and it is not the
+   * projection.
+   *
+   * `TrackSpline`'s constructor writes `dist[i] = i * def.lengthM / count`: a
+   * perfectly uniform ruler, every node exactly 3.00m of `s` from the last one.
+   * `easeCentrelineKinks()` then MOVES nodes — up to 10.4m at Monaco's hairpin,
+   * by its own comment — and `dist` is never recomputed. So where the easing
+   * pulled two nodes together, the car drives the real gap and `s` advances the
+   * uniform figure, and the ratio between them is how much further `s` goes than
+   * the car does. Measured on the calendar: Monaco's tightest gap is 2.247m
+   * carrying 3.001m of `s`, which is **+33.6%**, at s=330m — and the worst
+   * projection jump this section has ever recorded at Monaco is +0.11m at
+   * s=328m. COTA is 2.792m at s=3428m against a jump at s=3429m. Monza 2.928m
+   * at s=618m against a jump at s=615m.
+   */
+  const uniformM = track.dist[1] - track.dist[0];
   const fromDistance = car.totalDistance;
   while (nowMs < WORLD_LAP_CAP_S * 1000 && car.totalDistance - fromDistance < track.length) {
     nowMs += periodMs;
     const steps = clock.advance(nowMs);
     const x0 = car.physics.position.x, z0 = car.physics.position.y, s0 = car.s;
+    const lat0 = car.lateral;
     for (let i = 0; i < steps; i++) engine.step();
 
     // DID THE PROJECTION JUMP? — see the note below `WORLD_D2_BOUND_M`.
@@ -1367,10 +1423,54 @@ function runWorldSmoothness(
     // The 20mm slack covers a step's worth of the car sliding sideways, which
     // adds plan distance that is not advance along the lap.
     const jumped = ds > plan / bend + 0.02 || ds < plan * bend - 0.02;
+    // What the ruler alone would produce here: the node the car is on claims
+    // `uniformM` of `s` for however far apart its two ends actually are.
+    const ni = track.indexAt(car.s);
+    const nj = (ni + 1) % track.count;
+    const gapM = Math.hypot(track.px[nj] - track.px[ni], track.pz[nj] - track.pz[ni]);
+    const ruler = gapM > 1e-6 ? uniformM / gapM : 1;
+    // The envelope evaluated over the WHOLE frame rather than at its last
+    // instant: `1 - |lateral*k|` is an instantaneous relation, and the version
+    // above samples it once, at the end, off a node-snapped curvature. The
+    // correct bound for an interval uses the extreme the interval reaches.
+    const bendInterval = Math.max(0.2, 1 - Math.max(
+      Math.abs(car.lateral * curvatureAt(car.s)), Math.abs(lat0 * curvatureAt(s0)),
+    ));
     if (jumped) {
       jumpFrames++;
-      const over = ds - plan / bend;
-      if (over > worstJump) { worstJump = over; worstJumpS = car.s; }
+      // Accounted for by the ruler if the same envelope, widened by nothing
+      // except the node's own claimed-vs-real length, contains `ds`. Both of
+      // these are a DIAGNOSIS and not a tolerance: `jumpFrames` above is
+      // unchanged and is still the number this section reports and PROJECT.md
+      // quotes. Nothing here can make a frame stop being counted.
+      const byRuler = ds <= plan * ruler / bend + 0.02 && ds >= plan * bend / ruler - 0.02;
+      const byEnvelope = ds <= plan / bendInterval + 0.02 && ds >= plan * bendInterval - 0.02;
+      const byBoth = ds <= plan * ruler / bendInterval + 0.02 &&
+        ds >= plan * bendInterval / ruler - 0.02;
+      if (byRuler) rulerFrames++;
+      if (byEnvelope) envFrames++;
+      // WHICH WAY. Issue #66 is `s` advancing FURTHER than the car travels, and
+      // only the over-run is that. The under-run is the opposite sign and has a
+      // different cause: `plan` is the distance the car moved THROUGH THE WORLD,
+      // and a car that is sliding sideways covers ground that buys no advance
+      // along the lap at all, so `ds < plan * bend` is what a car does in every
+      // corner. The probe allows 20mm for it flat; a car slipping at 1 m/s at
+      // 50fps needs exactly 20mm, and F1 cars slip a great deal more than that.
+      const over = ds > plan / bend + 0.02;
+      let bySlip = false;
+      if (over) overFrames++;
+      else {
+        // The sideways component of the frame's own travel, from the car's own
+        // lateral change — subtract it from `plan` and see whether the floor is
+        // still violated.
+        const dLat = car.lateral - lat0;
+        const along = Math.sqrt(Math.max(0, plan * plan - dLat * dLat));
+        bySlip = ds >= along * bendInterval - 0.02;
+        if (bySlip) slipFrames++;
+      }
+      if (!byBoth && !bySlip) unexplainedFrames++;
+      const excess = ds - plan / bend;
+      if (excess > worstJump) { worstJump = excess; worstJumpS = car.s; worstJumpRuler = ruler; }
     }
 
     updateRenderPoses(engine.cars, track.length, clock.interpolationAlpha);
@@ -1421,7 +1521,11 @@ function runWorldSmoothness(
     prevSlope = slope;
   }
 
-  return { rows, shakeFrames, jumpFrames, worstJump, worstJumpS, geometry: { spacingM, maxSlope, maxKink } };
+  return {
+    rows, shakeFrames, jumpFrames, worstJump, worstJumpS, rulerFrames, envFrames,
+    unexplainedFrames, overFrames, slipFrames, worstJumpRuler,
+    geometry: { spacingM, maxSlope, maxKink },
+  };
 }
 
 console.log(
@@ -1442,9 +1546,47 @@ const projectionJumps: string[] = [];
 /** The stored road, per circuit — the geometry the bound is derived from. */
 const geometryRows: string[] = [];
 
+/** The ruler, per circuit: what `dist` claims a node is worth against what it is. */
+const rulerRows: string[] = [];
+let rulerJumpTotal = 0;
+let envJumpTotal = 0;
+let unexplainedTotal = 0;
+let overTotal = 0;
+let slipTotal = 0;
+let jumpTotal = 0;
+
 for (const def of CIRCUITS) {
+  {
+    // Measured once per circuit, off the built spline, independent of any race.
+    const t = new TrackSpline(def);
+    const uniform = t.dist[1] - t.dist[0];
+    let min = Infinity, worst = 0, worstAt = 0, sq = 0;
+    for (let i = 0; i < t.count; i++) {
+      const j = (i + 1) % t.count;
+      const g = Math.hypot(t.px[j] - t.px[i], t.pz[j] - t.pz[i]);
+      if (g < min) min = g;
+      const err = uniform / g - 1;
+      sq += err * err;
+      if (Math.abs(err) > Math.abs(worst)) { worst = err; worstAt = t.dist[i]; }
+    }
+    rulerRows.push(
+      padr(def.id, 13) + pad(uniform.toFixed(3) + 'm', 10) + pad(min.toFixed(3) + 'm', 11) +
+      pad((100 * Math.sqrt(sq / t.count)).toFixed(2) + '%', 10) +
+      pad((worst >= 0 ? '+' : '') + (100 * worst).toFixed(1) + '%', 11) +
+      `  s=${worstAt.toFixed(0)}m`,
+    );
+  }
   for (const fps of WORLD_RATES) {
-    const { rows, shakeFrames, jumpFrames, worstJump, worstJumpS, geometry } = runWorldSmoothness(def, fps);
+    const {
+      rows, shakeFrames, jumpFrames, worstJump, worstJumpS, rulerFrames, envFrames,
+      unexplainedFrames, overFrames, slipFrames, worstJumpRuler, geometry,
+    } = runWorldSmoothness(def, fps);
+    jumpTotal += jumpFrames;
+    rulerJumpTotal += rulerFrames;
+    envJumpTotal += envFrames;
+    unexplainedTotal += unexplainedFrames;
+    overTotal += overFrames;
+    slipTotal += slipFrames;
     if (fps === WORLD_RATES[0]) {
       geometryRows.push(
         padr(def.id, 13) + pad(geometry.spacingM.toFixed(2) + 'm', 9) +
@@ -1456,7 +1598,11 @@ for (const def of CIRCUITS) {
     if (jumpFrames > 0) {
       projectionJumps.push(
         `${def.id} @${fps}fps: ${jumpFrames} frames where \`s\` advanced past what the car ` +
-        `travelled, worst +${worstJump.toFixed(2)}m at s=${worstJumpS.toFixed(0)}m`,
+        `travelled, worst +${worstJump.toFixed(2)}m at s=${worstJumpS.toFixed(0)}m ` +
+        `(the ruler there claims ${((worstJumpRuler - 1) * 100).toFixed(1)}% more \`s\` than the ` +
+        `road has; of ${jumpFrames}: ${overFrames} are \`s\` running AHEAD, ${rulerFrames} the ` +
+        `ruler accounts for, ${envFrames} the envelope's node-snapping does, ${slipFrames} of the ` +
+        `${jumpFrames - overFrames} under-runs are the car sliding)`,
       );
     }
     for (const mode of WORLD_MODES) {
@@ -1508,6 +1654,44 @@ if (projectionJumps.length > 0) {
     projectionJumps.join('\n    '),
   );
 }
+
+console.log(
+  '\n  WHY — ISSUE #66, AND IT IS NOT `project()`. `TrackSpline`\'s constructor writes\n' +
+  '  `dist[i] = i * def.lengthM / count`, a perfectly uniform ruler, and then\n' +
+  '  `easeCentrelineKinks()` MOVES nodes — up to 10.4m at Monaco by its own comment — without\n' +
+  '  recomputing it. Where the easing pulled two nodes together the car drives the real gap\n' +
+  '  and `s` advances the uniform figure. `project()` itself is exact to first order and its\n' +
+  '  own second-order error is 0.016*k^2*h^3, which is under a millimetre at 3m nodes on any\n' +
+  '  radius on the calendar — a thousand times too small to be what this section counts.\n',
+);
+console.log(
+  '  ' + padr('circuit', 13) + pad('dist/node', 10) + pad('min gap', 11) +
+  pad('rms err', 10) + pad('worst', 11) + '  at',
+);
+for (const row of rulerRows) console.log('  ' + row);
+console.log(
+  `\n  ATTRIBUTION of all ${jumpTotal} jump frames, and the first line is the one that matters:\n` +
+  `    ${overTotal} are \`s\` running AHEAD of the car, which is what issue #66 is about. The\n` +
+  `      other ${jumpTotal - overTotal} are the opposite sign — \`s\` advancing LESS than\n` +
+  '      `plan * (1 - |lateral*k|)` — and that is not a projection defect at all: `plan` is\n' +
+  '      how far the car moved THROUGH THE WORLD, and a car sliding sideways covers ground\n' +
+  '      that buys no advance along the lap. The probe allows a flat 20mm for it, which is\n' +
+  '      exactly 1 m/s of slip at 50fps, and an F1 car in a corner slips a great deal more.\n' +
+  `      ${slipTotal} of those ${jumpTotal - overTotal} are inside the floor once the frame's own\n` +
+  '      lateral movement is taken out of `plan`.\n' +
+  `    ${rulerJumpTotal} the RULER accounts for — the node claiming more \`s\` than the road has.\n` +
+  `    ${envJumpTotal} this ENVELOPE's own instrument accounts for: \`1 - |lateral*k|\` is an\n` +
+  '      instantaneous relation and it is sampled once, at the END of the frame, off a\n' +
+  '      curvature held flat across a whole node. Re-evaluated with the curvature\n' +
+  '      INTERPOLATED and over the interval rather than at its last instant, that many\n' +
+  '      frames are inside a correctly derived bound.\n' +
+  `    ${unexplainedTotal} are outside ALL THREE allowances, and nobody has a mechanism for those.\n` +
+  '  NOT ASSERTED, and NO TOLERANCE WAS MOVED — the count above is the count it has always\n' +
+  '  been, and nothing here can make a frame stop being counted. The ruler fix is to re-space\n' +
+  '  the centreline after the easing, or to make `dist` the polyline\'s own cumulative length,\n' +
+  '  which breaks every `(s / length) * count` lookup in `TrackSpline`. Both are constructor\n' +
+  '  work, neither is `project()`, and neither is done. Issue #66.',
+);
 
 if (blindRows.length > 0) {
   console.log(

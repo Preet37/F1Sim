@@ -99,6 +99,88 @@ interface WeatherEvent {
 const EVENT_LEAD_MIN_S = 210;
 const EVENT_LEAD_MAX_S = 900;
 
+/**
+ * The rate below which a dying shower is called dry, 0..1.
+ *
+ * The intent is right and it is kept: rain that is stopping should stop, not
+ * asymptote toward zero for the rest of the afternoon leaving a HUD that reads
+ * DRIZZLE over a track nobody can see water on. What was wrong was that the
+ * floor was applied UNCONDITIONALLY — see the block in `update` — so it also
+ * caught rain on its way UP, and at `PHYSICS_DT` rain on its way up never gets
+ * above it in one step. It is now applied only while the sky is clearing.
+ */
+const RAIN_FLOOR = 0.01;
+
+/**
+ * HOW OFTEN IT RAINS, and the two numbers that set it — issue #97.
+ *
+ * ---------------------------------------------------------------------------
+ * THE TARGET, AND WHERE IT COMES FROM
+ * ---------------------------------------------------------------------------
+ * A Grand Prix is wet **about one weekend in seven**. Counted off the published
+ * F1 race classifications for 2022-2024 — 68 races — the ones in which any car
+ * ran a wet-weather tyre (intermediate or full wet) during the race itself are
+ * Monaco, Singapore and Japan in 2022; Monaco and the Netherlands in 2023; and
+ * Canada, Great Britain and Brazil in 2024. Eight or nine of 68, depending on
+ * whether a two-lap intermediate stint at the very end of a drying race counts,
+ * which is 12-13%. Widening it to "the race was materially affected by rain"
+ * adds two or three more and takes it to about 17%. So the honest figure is a
+ * BAND — **one race in six to one race in eight** — and this model is
+ * calibrated to the middle of it rather than to a false precision.
+ *
+ * A "wet race" in the regulations is a declaration by the Race Director (2026
+ * Sporting Regulations Art. B7.2.1; 2025 Art. 41.1), not a measurement, and it
+ * is made for the START of a race — so it is the wrong instrument for "did this
+ * session see rain" and is deliberately not what is counted above.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THE MODEL DID BEFORE, MEASURED — and it is worse than issue #97 says
+ * ---------------------------------------------------------------------------
+ * With the floor corrected and the schedule left exactly as it was, the real
+ * `Weather` stepped at the real `PHYSICS_DT` over 11 circuits x 60 seeds x 90
+ * minutes puts **650 of 660 sessions** into rain — 98.5% — with the track damp
+ * or worse for 54-65% of every session on the calendar, including Jeddah, whose
+ * `rainChance` is 0.01 and which comes out at 97.5%. The 78% in the issue was
+ * measured at 1 Hz, where the floor still catches about half the events on their
+ * way up and therefore flatters the schedule. The schedule on its own is very
+ * nearly a 100% calendar. `probe:weather` §3c reproduces both numbers.
+ *
+ * The cause is compounding. `rollNextIntensity` re-rolled a FLAT 0.35 every
+ * time an event landed, and events land every `EVENT_LEAD_MIN_S`..MAX (mean
+ * 555s), so a 90-minute session gets about ten independent rolls:
+ * `1 - 0.65^9.7 = 99.4%`, and the circuit's own climate never entered into it
+ * after the first roll.
+ *
+ * ---------------------------------------------------------------------------
+ * THE FIX: BOTH ROLLS ARE THE CIRCUIT'S OWN CLIMATE, SCALED
+ * ---------------------------------------------------------------------------
+ * `def.rainChance` is the per-circuit climate figure the game already shows the
+ * player as "Rain risk" on the briefing and the strategy screen, so it is the
+ * right quantity for both rolls and using anything else would put the number on
+ * screen at odds with the sky. It is a RELATIVE weight here, not a probability:
+ * the calendar mean is 0.257, and a calendar that ran a quarter of its races wet
+ * would be as wrong in the other direction.
+ *
+ *   onset   `rainChance * RAIN_ONSET_SCALE`   once, in the constructor — the
+ *           session that is already going to rain when it starts.
+ *   arrival `rainChance * RAIN_ARRIVAL_SCALE` per scheduled event, so a long
+ *           session is more likely to see rain than a short one, which is
+ *           correct and is why a wet Sunday can follow a dry Saturday.
+ *
+ * Neither changes the NUMBER or the ORDER of draws taken from `rng` — both were
+ * already single `chance()` calls in these two places — so the stream stays
+ * aligned with itself and a seed still means what it meant. What the seeds
+ * ANSWER changes, of course, and that is the point; see the PR for every probe
+ * number that moved.
+ *
+ * The two scales are not independently meaningful and are not tuned by taste:
+ * they were fitted together against the measurement above, and the run that
+ * fits them is the one `probe:weather` §3c now performs and ASSERTS on every
+ * run. If either is edited, that section is the thing that has to stay green.
+ */
+const RAIN_ONSET_SCALE = 0.30;
+const RAIN_ARRIVAL_SCALE = 0.030;
+
 export class Weather {
   /**
    * Mean water depth on the racing line, 0 dry .. 1 standing water.
@@ -163,9 +245,19 @@ export class Weather {
   private rampRate = 0.02;
   /** How many cars are circulating, for the drying model. */
   private trafficCars = 0;
+  /**
+   * This circuit's own climate, kept because the SCHEDULE needs it too.
+   *
+   * The constructor's onset roll is not the only place rain can start — see
+   * `RAIN_ARRIVAL_SCALE`. Before #97 the recurring roll was a flat 0.35 and the
+   * circuit was consulted exactly once, which is why Jeddah rained as often as
+   * Spa.
+   */
+  private readonly rainChance: number;
 
   constructor(def: TrackDefinition, seed: number, track?: TrackSpline) {
     this.rng = new Rng(seed ^ 0x5bf03635);
+    this.rainChance = def.rainChance;
     this.airTempC = def.baseAirTempC + this.rng.range(-3, 3);
     this.trackTempC = def.baseTrackTempC + this.rng.range(-4, 4);
     this.baseTrackTempC = this.trackTempC;
@@ -187,7 +279,9 @@ export class Weather {
     // So the draw stays, and it is put to work as the lead time on the first
     // event, which is what it was always morally for.
     const firstLead = this.rng.range(300, 1400);
-    if (this.rng.chance(def.rainChance)) {
+    // ONE draw, in the place it has always been taken — only the probability
+    // moved. See `RAIN_ONSET_SCALE`.
+    if (this.rng.chance(def.rainChance * RAIN_ONSET_SCALE)) {
       // A session that rolls rain STARTS with it arriving, exactly as the old
       // model did — it set `targetWetness` in the constructor and the track was
       // soaked inside a minute. Preserving that is the other half of keeping a
@@ -214,9 +308,13 @@ export class Weather {
     const wet = this.targetRain > 0.1 || this.rainRate > 0.1;
     // The same two branches the old `update` had: rain that is falling either
     // clears or changes intensity, and a dry sky occasionally clouds over.
+    //
+    // THE DRY BRANCH IS THE CIRCUIT'S OWN CLIMATE NOW, not a flat 0.35 — see
+    // `RAIN_ARRIVAL_SCALE`. Still exactly one `chance()` draw, in the same
+    // place, so the stream is undisturbed.
     const intensity = wet
       ? (this.rng.chance(0.55) ? 0 : this.rng.range(0.2, 1))
-      : (this.rng.chance(0.35) ? this.rng.range(0.3, 0.9) : 0);
+      : (this.rng.chance(this.rainChance * RAIN_ARRIVAL_SCALE) ? this.rng.range(0.3, 0.9) : 0);
     this.next.intensity = intensity;
     // A shower comes on in under a minute; a front takes several. Faster
     // transitions for heavier rain, which is what a squall line does.
@@ -252,41 +350,41 @@ export class Weather {
       this.rollNextIntensity();
     }
     this.rainRate = damp(this.rainRate, this.targetRain, this.rampRate, dt);
-    // IT NEVER RAINS AT THE RATE THE GAME ACTUALLY STEPS AT. THIS LINE IS WHY,
-    // IT IS NOT FIXED HERE, AND SEE PROJECT.md §7 BEFORE TOUCHING IT.
+    // FOR TWO MONTHS THIS LINE MEANT IT COULD NEVER RAIN — issue #97, fixed.
+    // `&& this.targetRain < RAIN_FLOOR` is the whole fix and it is worth
+    // knowing what it was doing without it.
     //
     // `damp` is `current + (target - current) * (1 - exp(-rate * dt))`. Starting
     // from a dry sky, one step moves `rainRate` from 0 by
     // `targetRain * (1 - exp(-rampRate * dt))`; `rampRate` is 1/35..1/110, so at
-    // `PHYSICS_DT` that is at most 0.00024 — and the floor below then puts it
-    // straight back to zero. Every step. Forever. `rainRate` cannot leave zero.
+    // `PHYSICS_DT` that is at most 0.00024 — and an UNCONDITIONAL floor then put
+    // it straight back to zero. Every step. Forever. `rainRate` could not leave
+    // zero, and the measurement was 0 of 440 circuit-and-seed sessions reaching
+    // even damp at `PHYSICS_DT`, against 343 of 440 at 1 Hz.
     //
-    // Measured over 11 circuits x 40 seeds x 90 minutes: stepped at 1Hz, 343 of
-    // 440 sessions reach damp or worse and the wettest gets to 0.848; stepped at
-    // `PHYSICS_DT`, which is what `RaceEngine.step` passes, **0 of 440 and the
-    // wettest gets to 0.0000.** Every race this game has ever simulated has been
-    // dry. Nothing catches it because every weather probe and the URL parameter
-    // in `main.ts` all reach the road through `forceRain`, which assigns
-    // `rainRate` directly and skips the ramp — so the one path the player is on
-    // is the one path nothing tests. `probeStrategy` has a comment recording
-    // that its Silverstone race "went dry" with the rewrite and attributing it
-    // to a shifted random stream; it went dry because they all did.
+    // The floor was catching rain on the way UP as well as on the way down,
+    // which it was never meant to: it exists so that a dying drizzle snaps to
+    // dry instead of asymptoting for the rest of the afternoon. Gating it on
+    // the TARGET says exactly that and nothing more — the sky is clearing, so
+    // call it clear.
     //
-    // WHY IT IS NOT A ONE-LINE FIX, and the reason it is reported rather than
-    // patched on the #42 branch. The floor is right in intent — a dying drizzle
-    // should snap to dry rather than asymptote — so the correction is to apply
-    // it only while the sky is CLEARING (`targetRain` below the floor too).
-    // But the 1Hz column above is what the model does with the floor out of the
-    // way, and **78% of sessions wet is not a calendar**: a real season runs
-    // perhaps one race in five in the wet. The event schedule rolls a fresh
-    // chance every 210-900s and compounds `def.rainChance` into something far
-    // larger over a race distance, and that has never been measured because the
-    // floor has been hiding it. Landing the floor alone would take the game from
-    // no weather to weather in three races out of four and re-baseline every
-    // seeded race in the repository at the same time. It needs the schedule
-    // calibrated with it, against a stated target for how often a Grand Prix is
-    // wet, and that is its own piece of work.
-    if (this.rainRate < 0.01) this.rainRate = 0;
+    // WHY NOTHING CAUGHT IT, because this is the shape of defect that matters
+    // more than the defect (PROJECT.md §3.2). Every weather probe and the `?wet=`
+    // URL parameter in `main.ts` reach the road through `forceRain`, which
+    // assigns `rainRate` directly and skips the ramp — so the one path a player
+    // is ever on was the one path nothing exercised, and a probe suite that was
+    // otherwise green had never once asked the sky to rain by itself.
+    // `probeStrategy` carries a comment recording that its Silverstone race
+    // "went dry" when the model was rewritten and attributing it to a shifted
+    // random stream; it went dry because they all did. `probe:weather` §3c now
+    // ASSERTS the by-itself path, at `PHYSICS_DT`, in both directions.
+    //
+    // THE FLOOR ALONE WOULD HAVE BEEN A DIFFERENT BUG. Fixed on its own it puts
+    // 132 of 132 sessions into rain and leaves the track damp for well over half
+    // of every session on the calendar. The schedule is calibrated with it — see
+    // `RAIN_ONSET_SCALE` and `RAIN_ARRIVAL_SCALE` above, and the wet-weekend
+    // rate they are fitted to.
+    if (this.rainRate < RAIN_FLOOR && this.targetRain < RAIN_FLOOR) this.rainRate = 0;
 
     // --- The road ----------------------------------------------------------
     this.surface.update(dt, this.rainRate, this.trackTempC, this.trafficCars);

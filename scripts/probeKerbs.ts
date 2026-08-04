@@ -166,14 +166,65 @@ const ALIAS_CEILING_DEG = 1.5;
  * the road beside it in reality, which is the whole reason its profile carries
  * 0.15 against the asphalt's 0.42.
  *
- * Paint's number is printed anyway rather than hidden, and it is not
- * flattering: #48 took it from about 1.8 degrees to 0.66, which is under the
- * visibility floor. Whether a white line should read as a film or as painted
- * aggregate is a LOOK question and needs a look review, which is why this
- * exempts it and says so instead of quietly moving the bound. See PROJECT.md
- * §7.
+ * PAINT'S EXEMPTION IS NOW A DECISION RATHER THAN AN OPEN QUESTION — issue #86,
+ * closed. This entry used to say that whether a white line should read as a film
+ * or as painted aggregate "is a LOOK question and needs a look review". The
+ * review was done the way this project is supposed to do them: against the
+ * user's own reference frames, with a number.
+ *
+ * MEASURED OFF `reference/target/90.png` — Bahrain at night, the frame INDEX.md
+ * names as the kerb and surface target. Relative high-frequency luma modulation
+ * (RMS of luma minus a sigma-2 Gaussian of luma, over the patch's own mean, so a
+ * white surface and a dark one are comparable), on colour-classified regions
+ * eroded by more than the blur radius so no measurement contains a paint/asphalt
+ * boundary:
+ *
+ *   near asphalt, same distance band as the kerb   5.62%   (79,599 px)
+ *   mid asphalt, further up the straight           3.92%   (10,214 px)
+ *   kerb WHITE paint                               2.83%   (16,288 px)
+ *   kerb RED paint                                 1.80%   (22,266 px)
+ *
+ * So in the specification, painted kerb blocks carry **0.32 to 0.50 of the
+ * asphalt's fine relief**, and the 0.50 is the generous end because the white
+ * mask also contains the fluted drainage grooves cut into the kerb, which are
+ * geometry rather than surface. Ours measures **0.66 / 1.86 = 0.355**, inside
+ * that range and nearer the red blocks than the white. **The paint is right as
+ * it is, #48 did not take anything from it that the reference frame has, and
+ * the answer to the look question is that a white line IS a smooth film.**
+ *
+ * `76.png`'s own white lines could not be measured: at that frame's resolution
+ * the edge line and the grid markings are a few pixels across, so every pixel of
+ * them is within the blur radius of their own edge. Reported rather than
+ * fudged — 90.png's kerb blocks are hundreds of pixels wide and are the right
+ * instrument.
+ *
+ * THE EXEMPTION IS THEREFORE FROM THE FLOOR AND NOT FROM MEASUREMENT. Paint now
+ * carries a CEILING instead, `PAINT_RELIEF_CEILING`, which is the property the
+ * reference actually shows and which the floor could never have expressed.
  */
 const RELIEF_FLOORED = new Set(['asphalt', 'kerb', 'runoff', 'grass']);
+
+/**
+ * How much of the asphalt's retained relief `paint` may carry — issue #86's
+ * decision, as a bound.
+ *
+ * 0.50, read off `reference/target/90.png` and not off our own output: it is the
+ * ratio the reference's WHITE kerb blocks measure against the asphalt beside
+ * them at the same distance (2.83% / 5.62%), and it is the most generous of the
+ * three paint samples in that frame — the red blocks are 0.32 and the white ones
+ * are inflated by the kerb's fluted grooves.
+ *
+ * WHY A CEILING AND NOT A FLOOR, and this is the part that matters. #86 was
+ * opened because a low pass might have flattened a surface that needs relief,
+ * and for the kerb, the grass and the run-off that is what `RELIEF_FLOOR_DEG`
+ * guards. For PAINT the finding went the other way: smooth is correct, so the
+ * thing worth guarding is that nobody later "fixes" the 0.66 by winding
+ * `paint.normalStrength` back up until a white line reads as aggregate. Raise it
+ * past 0.21 — half the asphalt's 0.42 — and this goes red.
+ *
+ * NEVER RAISE THIS TO FIT — PROJECT.md §3.3. It came off the specification.
+ */
+const PAINT_RELIEF_CEILING = 0.50;
 
 /** Separable Gaussian blur with wrapping edges, on a two-channel field. */
 function blurWrapped(
@@ -253,6 +304,8 @@ function rmsMag(fx: Float64Array, fy: Float64Array): number {
     Math.max(0, mm / mmPerTexel / 5.336);
 
   const reliefFailures: string[] = [];
+  /** Retained slope per surface, so the paint/asphalt ratio can be asserted. */
+  const keptDeg = new Map<string, number>();
   for (const [name, profile] of Object.entries(SURFACES)) {
     const strength = profile.normalStrength;
     const mmPerTexel = 1000 / (profile.scaleA * SIZE);
@@ -265,6 +318,7 @@ function rmsMag(fx: Float64Array, fy: Float64Array): number {
     const coarse = deg(rmsMag(kx, ky));
     const kept = deg(rmsMag(ax, ay));
     const fine = deg(rmsMag(fineX, fineY));
+    keptDeg.set(name, kept);
 
     // A surface that declares no bump at all is not a failure — the wall says so
     // in its own profile, and a planar projection on a vertical face is
@@ -295,9 +349,35 @@ function rmsMag(fx: Float64Array, fy: Float64Array): number {
     );
   }
 
+  // --- PAINT IS A FILM, AND THAT IS NOW ASSERTED — issue #86, closed --------
+  //
+  // See `PAINT_RELIEF_CEILING`: the bound is the ratio the user's own reference
+  // frame shows between painted kerb blocks and the asphalt beside them, so this
+  // is the specification and not a ring drawn round our output.
+  {
+    const paint = keptDeg.get('paint') ?? 0;
+    const asphalt = keptDeg.get('asphalt') ?? 0;
+    const ratio = asphalt > 0 ? paint / asphalt : Infinity;
+    console.log(
+      `\npaint vs asphalt: ${paint.toFixed(2)}deg / ${asphalt.toFixed(2)}deg = ${ratio.toFixed(3)}, ` +
+      `ceiling ${PAINT_RELIEF_CEILING.toFixed(2)}`,
+    );
+    console.log(
+      '  measured off reference/target/90.png: the reference\'s own painted kerb blocks carry\n' +
+      '  0.32 (red) to 0.50 (white) of the asphalt beside them at the same distance. Track paint\n' +
+      '  is a thermoplastic FILM and the reference agrees; #86\'s look question is answered.',
+    );
+    if (ratio > PAINT_RELIEF_CEILING) {
+      reliefFailures.push(
+        `paint: relief is ${ratio.toFixed(3)} of the asphalt's, ceiling ${PAINT_RELIEF_CEILING.toFixed(2)} — ` +
+        'a white line is a smooth film and this one is reading as aggregate (issue #86)',
+      );
+    }
+  }
+
   console.log(
-    `\nbounds: kept >= ${RELIEF_FLOOR_DEG.toFixed(2)}deg, fine <= ${ALIAS_CEILING_DEG.toFixed(2)}deg. ` +
-    'The FLOOR is the half that matters: a surface',
+    `\nbounds: kept >= ${RELIEF_FLOOR_DEG.toFixed(2)}deg, fine <= ${ALIAS_CEILING_DEG.toFixed(2)}deg, ` +
+    `paint <= ${PAINT_RELIEF_CEILING.toFixed(2)} x asphalt. The FLOOR is the half that matters: a surface`,
   );
   console.log('flattened to a plane passes any "is it noisy" test, which is why there are two.');
   console.log('This measures the MAP. What a frame DRAWS of it is `probe:grain`, and `probe:grain`');

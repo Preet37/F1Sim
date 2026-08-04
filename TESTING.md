@@ -125,10 +125,16 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
     with both knees at exactly the same height. If they still look like a row of copies,
     say so — that is the whole of *"the people are like legos"* and it is what #24 is for.
 
-8. **Race in the rain — and you have to ask for it: `http://localhost:5173/?wet=0.9`.**
-   **It does not rain by itself. Ever.** That is a real fault found while fixing the one
-   below, it is measured (0 of 440 circuit-and-seed sessions get even damp), and it is on
-   the list in §5 — so do not go hunting for a wet seed.
+8. **Race in the rain. It rains by itself now (#97) — but not often, on purpose.**
+   Until 2026-08-04 it had **never** rained in this game, on any seed, at any circuit: a rate
+   limiter snapped the rainfall back to zero faster than it could build at the rate the game
+   steps at. That is fixed, and the schedule behind it is calibrated to a real season:
+   **about one session in seven sees meaningful rain** (measured 14.55% over 2,200
+   circuit-and-seed sessions), weighted by circuit — **Interlagos and Suzuka 24%, Spa 21.5%,
+   Zandvoort 20%, Monaco 9.5%, Bahrain 0.5%, Jeddah 1.0%.** So a wet race is something you
+   should occasionally *be surprised by* rather than something you can order, and if you want
+   one on demand you still want the URL below.
+   **To see the wet model on purpose: `http://localhost:5173/?wet=0.9`.**
    With `?wet=` set, watch where the cars put themselves through a corner. The field should
    stop using the dark, rubbered-in groove and run **wider — a later apex, roughly two and a
    half metres off the dry line at a tight corner** — because rubber under water is slick and
@@ -256,6 +262,7 @@ Do not spend time reporting these; they are on the list with measurements.
 
 | | issue |
 |---|---|
+| **A WET RACE IS A BLOODBATH.** New, and only visible because it can now rain at all: an eleven-lap wet race at Spa loses **6 cars of 20**, has **59 car-to-car contacts** against 3 in the dry, needs **5 safety cars**, and put the driven car in the gravel. The wet grip model, the AI's wet pace and the wet racing line are all being used in anger for the first time. **If you get a wet race and it feels like a demolition derby, that is this — do not report it separately** | **#26** |
 | Leaderboard: the row is **0.104 of the panel's width tall against the reference's 0.171**, because 20 rows at the reference's spacing needs 725px of board and a 900px screen with a radio rail has ~580. A straight trade against showing all 20 cars — **your call** | **#76** |
 | Leaderboard: the type is **Titillium Web**, not Formula One's own face (proprietary), and the mark reads **`F1SIM`**, not the F1 logo (trademark) | **#76** |
 | Leaderboard: a **race** board shows gaps and no lap-time column, because that is what the reference shows. Whether a race should also show lap times is **your call** | **#35** |
@@ -264,12 +271,12 @@ Do not spend time reporting these; they are on the list with measurements.
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | ~~Every car sits level on a road that is not level~~ — **fixed**. Was up to 409mm of tyre under the asphalt at Monaco, 396mm at Zandvoort, 341mm at Spa; now 80 / 34 / 27mm, and 10 of 11 circuits are within 5.3mm of what the road MESH itself allows | **#71** |
 | **The drawn road is up to 113mm away from the surface cars are placed on, between node rows.** A corner's road quad fans and is not planar, so its diagonal split lifts or drops the drawn triangles in between. Worst at Suzuka, Monaco, Zandvoort and COTA. This is what is left of #71 and it is a road-mesh job, not a car one | filed under **#71** |
-| **IT NEVER RAINS.** Not on any seed, at any circuit, in any session — measured 0 of 440 circuit×seed sessions reaching even "Damp". A rate limiter in the weather model snaps the rainfall back to zero faster than it can build at the rate the game steps at, so the sky is permanently dry. Every weather probe passes because they all force the rain on directly, which is the one thing the game itself never does. **Do not spend time trying to get a wet race** — you cannot, and the fix needs the how-often-does-it-rain schedule calibrated at the same time, or three races in four would be wet | **#97** |
-| The rain that *is* there works, and you can see all of it: **`?wet=0.9`** on the dev-server URL forces standing water before the lights go out, and everything downstream — spray, the wet line, the crossover, the pit wall's call — is live from there | |
+| ~~**IT NEVER RAINS.**~~ — **fixed**. It had never rained on any seed at any circuit (0 of 440 sessions reaching even "Damp"); the floor in the weather model caught rain on the way *up* as well as on the way down. Fixing it alone would have put **98.5% of sessions in the rain**, so the schedule was calibrated with it: **14.55% now, one session in 6.9**, weighted by circuit. Two loose ends, both in the front end and neither fixed: the **`Simulate Race`** button still rolls the raw `rainChance` (25.7% calendar mean, 11 points wetter than a driven session), and the **`Rain risk` percentage** the briefing prints is that same raw weight, so it reads about 3× high | **#97** |
+| The rain also works on demand: **`?wet=0.9`** on the dev-server URL forces standing water before the lights go out, and everything downstream — spray, the wet line, the crossover, the pit wall's call — is live from there | |
 | **A full-distance race is interrupted seven times.** Measured at 52 laps, Silverstone, F3, P18, medium: **7 safety-car or VSC periods and 35% of the race neutralised.** Real F1 averages well under one a race. It is downstream of the cars retiring, so it closes when that does | **#26** |
 | ~~The drawn road is up to 113mm away from the surface cars are placed on, between node rows~~ — **fixed**. Was 85.7mm at Spa, 82.7 at COTA, 78.7 at Monaco, 56.8 at Zandvoort; now 1.5 / 1.4 / 1.6 / 0.7mm on all eleven circuits, and `probe:banking` can see between the node rows at all, which it could not before | filed under **#71** |
 | ~~Suzuka's crossover draws two roads 0.159m apart and neither leg is a bridge~~ — **fixed**. The two legs are 7.92m apart now, which is what the real overpass has. It did not move the lap-time solver at all | **#37** |
-| **A white line carries almost no surface relief** — 0.66° of facet slope against the asphalt's 1.86°, because #48's band limit is shared by every surface and paint's own strength is a quarter of the road's. Whether a white line should look like a smooth film or like painted aggregate is **your call**, and it needs looking at rather than measuring | **#86** |
+| ~~**A white line carries almost no surface relief**~~ — **decided, and it is correct.** Ours is 0.66° of facet slope against the asphalt's 1.86°, a ratio of 0.357. Measured off your own `reference/target/90.png`, the painted kerb blocks in that frame carry **0.32–0.50** of the asphalt beside them — so a white line really is a smooth film there too, and the paint stays as it is. It is now guarded by a **ceiling** rather than left exempt: wind the paint's bump up toward the road's and `probe:kerbs` goes red. **If it still looks wrong to you in motion, say so** — this was measured on a still frame, and the half that is not built is `probe:grain` masked to the kerb instead of the road | **#86** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace off the solved reference lap. **Re-measured 2026-08-04: the sweep's mean is 1.335 and 10 of 55 races fail** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is **1.176**. That last number went the WRONG WAY on purpose: the corner-exit defect it was chasing turned out to have been silently absorbed by the AI's throttle constant, and re-deriving that constant honestly costs solo pace and buys race stability. The full trade is in PROJECT.md §7 | **#1** |
 | ~~The racing line can still read GREEN while the car is past its grip, on four circuits~~ — **fixed, and it was never the display**. `probe:racingline`'s own colour classifier had a hole between green 0.35 and 0.45, right in the middle of the amber-to-red ramp, and resolved it as GREEN — so a road drawn a deep orange (1.00, 0.41) was scored as "you are fine". The probe's driver then acted on that and drove into the corner it went on to blame the overlay for. 4 failures → **0**, with a sweep proving **0 band edges moved**. **If the line ever looks green to YOU while the car is sliding, that is a new fault and worth a recording** | **#30** |
@@ -357,12 +364,31 @@ climbing Beau Rivage — band questions, neither loosened) ·
 ~~`probe:racingline` **4**~~ **now 0** — the four were a hole in the probe's own colour
 classifier, not the display; see §5 ·
 `probe:racesweep` **10 of 55**, five of them `monaco: fastest lap ~149% of reference` and
-three of them Spa (#1) · `validate:race` **3** — Monaco 150%, Spa 154% and an 81.1s Spa
+three of them Spa (#1) · `validate:race` **3** (the cause is a single `throttleShare` where the physics wants an ERS-aware function — **#103**) — Monaco 150%, Spa 154% and an 81.1s Spa
 spread, against **2** on clean `main` (Monaco 150%, COTA 145%): **Spa is a knowing cost of
 the throttle-share change, explained in PROJECT.md §7** ·
 `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
 run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (identical on clean
 `main`, never previously recorded) · `probe:grade` **4 of 16**.
+`probe:racingline` **4** (#46 — green still asks 103–107% of the car's grip; it was **28.7%**
+before #1's work, and what remains is the *colouring* rule) ·
+`probe:racesweep` **11 of 55** and `validate:race` **2** — `monaco: fastest lap 150%` **and
+`cota: 145%`** (#1) · `probe:racelog` **at `RACELOG_LAPS=full`**, and **since #97 at quarter
+distance too** — see below · `probe:stewards` **1** at 9.7 penalties against a bar of 8
+(identical on clean `main`, never previously recorded) · `probe:grade` **4 of 16**.
+
+**Two numbers in the paragraph above were stale and are corrected here**, which is §4's rule
+again: `validate:race` was written down as **1** failure and measures **2** on `main` today
+(Austin joined Monaco), and `probe:racesweep`'s mean lap/reference was written as **1.3131**
+and measures **1.3284**. Both re-run on this tree on 2026-08-04 before being quoted.
+
+**`probe:racelog` is NEWLY red at quarter distance, and it is the rain (#97).** Eight races;
+exactly one of them — Spa, seed 20260729 — now rains, and that one race goes from 0
+retirements to **6 of 20**, from 3 car-to-car contacts to **59**, and from 0 safety cars to
+**5**. The eight-race mean goes 8.63 → **15.63** contacts against a bar of 12.0. **The bar
+was not moved.** It had never been possible to see this because no race in this project had
+ever been wet. **A wet race is currently a bloodbath and that is the next piece of work** —
+it is the AI and the tyre model, not the weather.
 
 **Nothing above was loosened to get there** — `probe:racesweep`'s `ratio > 1.45`,
 `offTrack > 90` and `spread > 70` are untouched, and `probe:racingline`'s colour bands were
@@ -393,6 +419,11 @@ which is the same species of stale number §8 keeps a list of.
 **0** · `probe:smoke` **32/32 routes** · `validate:flags` PASS · `npm run build` PASS ·
 `probe:hudstrip` **46/0** (new, #15) · `probe:frontwing` (new, #8) · `probe:assets` **37/0**
 with the byte-identity guarantee intact · `probe:carrig` **146 parts in 1 cluster**.
+`probe:grain` **132/0** · `probe:kerbs` PASS *including the new paint ceiling* ·
+`probe:people` **3,615** · `probe:fieldsize` **0** · `probe:weather` **0** *and §3c asserts
+now* · `probe:framerate` PASS · `probe:strategy` PASS · `probe:attrition` PASS ·
+`validate:tracks` PASS · `validate:world` PASS · `probe:smoke` **32/32 routes** ·
+`validate:flags` PASS · `npm run build` PASS.
 
 **`probe:racesweep`, re-baselined on `main` 2026-08-03 and AGAIN on `ae6c981` 2026-08-04** —
 the numbers in issue #30 are stale and several of them are fixed:
