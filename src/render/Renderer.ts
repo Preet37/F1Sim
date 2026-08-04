@@ -16,10 +16,10 @@ import { EnvProbe } from './EnvProbe';
 import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
 import {
-  AUTO_DEMOTE_MS, AUTO_PROMOTE_AFTER_S, AUTO_PROMOTE_MS, AUTO_VERDICT_S,
-  DEFAULT_GRAPHICS, applyOverrides, readDeviceSignals, resolveGraphics,
-  tierAbove, tierBelow,
-  type DeviceSignals, type GraphicsSettings, type QualityTier, type ResolvedGraphics,
+  AutoTierPolicy, DEFAULT_GRAPHICS, applyOverrides, readDeviceSignals, resolveGraphics,
+  tierNoticeFor,
+  type AutoTierMove, type DeviceSignals, type GraphicsSettings, type QualityTier,
+  type ResolvedGraphics, type TierNotice,
 } from './QualityTiers';
 import { RacingLine, capabilityOf } from './RacingLine';
 import { buildPitBoxMarker, type PitBoxMarker } from './PitBoxMarker';
@@ -320,6 +320,9 @@ export class Renderer {
     this.features = resolveGraphics(this.tierPref, this.prefs, this.signals);
     this.quality = this.features.tier;
     this.builtDetail = this.features.detail;
+    // The tier we start on is the one a demotion is measured against, so the
+    // policy has to be told it rather than assuming `high`.
+    this.autoTier = new AutoTierPolicy(this.features.tier);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: opts.canvas,
@@ -490,13 +493,14 @@ export class Renderer {
     this.tierPref = tier;
     this.prefs = { ...prefs };
     const next = resolveGraphics(tier, this.prefs, this.signals);
-    // A change made by hand clears the adaptive pass's latch, so a tier it
-    // had given up on can be tried again. Switching back to `auto` restarts
-    // from detection rather than from whatever the pass had measured — the
-    // measurement is better information, but it was taken under the tier the
-    // player has just changed, and carrying it forward would mean `auto` did
-    // something different depending on what you had it set to first.
-    this.autoLatchedCeiling = null;
+    // A change made by hand clears everything the adaptive pass had concluded,
+    // including the latch, so a tier it had given up on can be tried again.
+    // Switching back to `auto` restarts from detection rather than from
+    // whatever the pass had measured — the measurement is better information,
+    // but it was taken under the tier the player has just changed, and
+    // carrying it forward would mean `auto` did something different depending
+    // on what you had it set to first.
+    this.autoTier.playerChose(next.tier);
     this.applyResolved(next);
     return {
       needsReload: this.renderer.getContext().getContextAttributes()?.antialias !== next.msaa,
@@ -1180,85 +1184,141 @@ export class Renderer {
     this.climbCeiling = Math.min(MAX_SCALE, this.features.maxResolutionScale);
     this.lastClimbAt = -1e9;
     this.lastDropAt = -1e9;
-    this.comfortableFor = 0;
-    this.lastTierMoveAt = -1e9;
+    // The timers go; the demotion counts and the latch STAY. Those describe the
+    // device, which has not changed between one session load and the next, and
+    // forgetting them would hand a machine that genuinely cannot hold a tier
+    // the promote-and-fall-back stall again at every session start.
+    this.autoTier.resetWindows();
   }
 
-  /** Seconds the frame budget has been comfortable AT the scaler's ceiling. */
-  private comfortableFor = 0;
-  private lastTierMoveAt = -1e9;
   /**
-   * A tier the adaptive pass tried and had to give back. Never retried.
+   * THE ADAPTIVE TIER DECISION. Lives in `QualityTiers.ts`, not here.
    *
-   * Unlike the resolution scaler's `climbCeiling`, this does NOT relax. A
-   * resolution that failed once may succeed later because the machine got less
-   * busy; a tier that failed cost the player a stall to find out — shadows
-   * recompile every material — and doing that to them every twenty-five
-   * seconds for the rest of the race would be worse than the tier they lost.
+   * `readonly` and public for the same reason `RenderPose.ts` is a module of
+   * its own: so `probe:autotier` can drive **the real rule** rather than a
+   * reimplementation of it. Everything below is glue — it reads the scaler's
+   * state, asks the policy, and applies whatever comes back. There is no
+   * second copy of a threshold or of the latch in this file, deliberately; the
+   * previous version had the whole decision inline and issue #73 is what that
+   * cost.
    */
-  private autoLatchedCeiling: QualityTier | null = null;
+  readonly autoTier: AutoTierPolicy;
+
+  /**
+   * Told when the adaptive pass moves the tier and the player should know.
+   *
+   * Null means the renderer shows its own one-line banner — see
+   * `presentTierNotice`. A front end that would rather put it in the HUD's own
+   * notice column can take it over by assigning here; nothing else changes.
+   */
+  onTierNotice: ((n: TierNotice) => void) | null = null;
 
   /**
    * MEASURES THE DEVICE AND MOVES THE TIER. The other half of `auto`.
    *
-   * This exists because detection is a dead end. `hardwareConcurrency` is
-   * clamped on iOS and `deviceMemory` is absent there, so no static rule can
-   * separate a 2026 phone from a 2015 one — see the module note in
-   * `QualityTiers.ts`. What CAN be separated is a device that is holding its
-   * frame budget from one that is not, and the renderer already computes that
-   * every frame for the resolution scaler.
+   * Two gates before the policy is consulted, and both matter:
    *
-   * The promotion test is deliberately conservative and has three parts,
-   * because a false promotion is expensive:
-   *
-   *   1. The frame cost is under `AUTO_PROMOTE_MS`, and
-   *   2. the resolution scaler is AT its ceiling — a device that is short of
-   *      frames spends its time below the ceiling, so this is what stops a
-   *      machine that only looks fast because it is rendering a quarter of the
-   *      pixels from asking for the post chain as well, and
-   *   3. both have been true continuously for `AUTO_PROMOTE_AFTER_S`.
-   *
-   * Demotion is the mirror image and is latched. Resolution moves first in
-   * both directions: `AUTO_DEMOTE_MS` sits above the scaler's `DROP_MS`, so a
-   * device in trouble gives up pixels before it gives up the picture.
+   *   - `features.adaptive` is false whenever the player has STATED a tier on
+   *     the Video tab (`resolveGraphics` sets it from `tier === 'auto'`), so
+   *     **auto can never overrule a choice made by hand.** Issue #73 asked for
+   *     that to be verified rather than assumed; `probe:autotier` §5 asserts
+   *     it against the live GL context.
+   *   - the two facts the policy needs about the resolution scaler are derived
+   *     HERE, from the scaler's own state, so the ordering "pixels first, then
+   *     the picture" cannot drift out of step with the scaler itself.
    */
   private updateAutoTier(dt: number, med: number): void {
     if (!this.features.adaptive) return;
-    if (this.sessionTime - this.lastTierMoveAt < AUTO_VERDICT_S) return;
-
-    const atCeiling = this.resolutionScale >= Math.min(this.climbCeiling, MAX_SCALE) - 1e-6;
-
-    if (med > AUTO_DEMOTE_MS && this.resolutionScale <= MIN_SCALE + 1e-6) {
-      const down = tierBelow(this.features.tier);
-      if (!down) return;
-      // What failed is the tier we are LEAVING, and it is never tried again.
-      this.autoLatchedCeiling = this.features.tier;
-      this.moveTier(down);
-      return;
-    }
-
-    if (med < AUTO_PROMOTE_MS && atCeiling) {
-      this.comfortableFor += dt;
-    } else {
-      this.comfortableFor = 0;
-      return;
-    }
-    if (this.comfortableFor < AUTO_PROMOTE_AFTER_S) return;
-
-    const up = tierAbove(this.features.tier);
-    if (!up || up === this.autoLatchedCeiling) return;
-    // A promotion that would turn the shadow map on recompiles every material
-    // in the scene, which is a stall of a few hundred milliseconds. It is
-    // taken once, on a device that has just proved it has eight seconds of
-    // headroom, and it is never taken twice because of the latch above.
-    this.moveTier(up);
+    const move = this.autoTier.update(this.features.tier, {
+      dt,
+      costMs: med,
+      atMinScale: this.resolutionScale <= MIN_SCALE + 1e-6,
+      atCeiling: this.resolutionScale >= Math.min(this.climbCeiling, MAX_SCALE) - 1e-6,
+    });
+    if (move) this.moveTier(move);
   }
 
-  private moveTier(t: QualityTier): void {
-    this.comfortableFor = 0;
-    this.lastTierMoveAt = this.sessionTime;
-    this.applyResolved(applyOverrides(t, this.features.detectedTier, true, this.prefs));
+  /**
+   * Drives the adaptive tier pass with a stated frame cost.
+   *
+   * The real path — the real policy, the real `moveTier`, the real GL changes,
+   * the real notice — with the one number the frame loop would have computed
+   * supplied instead of measured. This is how `probe:autotier` puts a load
+   * spike on the renderer without needing a machine that is genuinely in
+   * trouble, which is not a thing a probe can arrange and certainly not a
+   * thing it can arrange REPEATABLY. Set `resolutionScale` to say where the
+   * scaler had got to; everything else is derived as it is in a live frame.
+   */
+  feedFrameCost(dt: number, costMs: number): void {
+    this.updateAutoTier(dt, costMs);
+  }
+
+  private moveTier(m: AutoTierMove): void {
+    this.applyResolved(applyOverrides(m.to, this.features.detectedTier, true, this.prefs));
+    // The frames either side of a tier change describe two different pictures.
     this.resetFrameWindow();
+    const notice = tierNoticeFor(m);
+    if (!notice) return;
+    if (this.onTierNotice) this.onTierNotice(notice);
+    else this.presentTierNotice(notice);
+  }
+
+  private tierNoticeEl: HTMLElement | null = null;
+  private tierNoticeTimer = 0;
+
+  /**
+   * The default presenter: one line, bottom centre, for eight seconds.
+   *
+   * Self-contained on purpose — its own element, its own inline styles, no
+   * class in `styles.css` and nothing inside `.hud-notices`. The HUD's notice
+   * column is a bounded band whose contents are measured by `shoot:panels`,
+   * and a renderer-owned message appearing in it would be a layout failure
+   * somebody else has to explain. `pointer-events: none` so it can never eat a
+   * touch on the pit button underneath it.
+   *
+   * It names the route rather than offering a button, because the route works
+   * today: the pause menu is one press away and the Video tab is in it. A
+   * button here would have to reach into the app shell's screen router, which
+   * is a different file with a different owner.
+   */
+  private presentTierNotice(n: TierNotice): void {
+    if (typeof document === 'undefined') return;
+    const host = this.canvas.parentElement ?? document.body;
+    if (!this.tierNoticeEl) {
+      const el = document.createElement('div');
+      el.className = 'render-tier-notice';
+      el.setAttribute('role', 'status');
+      el.style.cssText = [
+        'position:fixed', 'left:50%', 'transform:translateX(-50%)',
+        'bottom:calc(64px + env(safe-area-inset-bottom, 0px))',
+        'z-index:60', 'pointer-events:none', 'max-width:min(420px, 86vw)',
+        'padding:9px 14px', 'border-radius:9px', 'text-align:center',
+        'background:rgba(8,10,15,0.86)', 'border:1px solid rgba(255,255,255,0.14)',
+        'box-shadow:0 6px 22px rgba(0,0,0,0.45)',
+        'font:600 12px/1.35 system-ui, -apple-system, sans-serif',
+        'letter-spacing:0.02em', 'color:#e8ecf3',
+        'transition:opacity 220ms ease', 'opacity:0',
+      ].join(';');
+      host.appendChild(el);
+      this.tierNoticeEl = el;
+    }
+    const el = this.tierNoticeEl;
+    el.textContent = '';
+    const line = document.createElement('div');
+    line.textContent = n.text;
+    el.appendChild(line);
+    if (n.hint) {
+      const hint = document.createElement('div');
+      hint.textContent = n.hint;
+      hint.style.cssText = 'margin-top:3px;font-weight:500;font-size:10.5px;color:#9aa4b4';
+      el.appendChild(hint);
+    }
+    el.style.opacity = '1';
+    if (this.tierNoticeTimer) clearTimeout(this.tierNoticeTimer);
+    this.tierNoticeTimer = setTimeout(() => {
+      if (this.tierNoticeEl) this.tierNoticeEl.style.opacity = '0';
+      this.tierNoticeTimer = 0;
+    }, 8000) as unknown as number;
   }
 
   /**
@@ -2056,6 +2116,9 @@ export class Renderer {
     }
     this.envProbe.dispose();
     this.renderer.dispose();
+    if (this.tierNoticeTimer) { clearTimeout(this.tierNoticeTimer); this.tierNoticeTimer = 0; }
+    this.tierNoticeEl?.remove();
+    this.tierNoticeEl = null;
   }
 
   /** Triangles in the scene last frame, for the diagnostics overlay. */
