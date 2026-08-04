@@ -2550,29 +2550,33 @@ confined to that one function, because there is no way to fix this from `Weather
 `TrackSurface` measures distance from `lineOffset` correctly and the water field is
 correct; only the destination was wrong.
 
-**Why this is bigger than a wet-weather cosmetic, and it is the link to #12.** The
-whole point of the feature is that the rubbered line is the WORST place to be in the
-rain. That half worked: `surfaceGripAt` was taking up to **17% of the surface grip away
-on the groove**, on every wet lap the game has ever run. What did not work was the
-escape. **The field was being penalised for being on the racing line and had nowhere to
-go**, because the only alternative line the AI can steer to was inside the same groove.
-And the sessions this matters in are not rare — measured on the two probes that judge
-racing behaviour, on their own default seeds:
+**How much of a race this changes, and the answer is NONE OF IT, for a reason that is
+the larger finding.** The obvious next question was whether the wet line mattered to the
+races `probe:racelog` and `probe:stewards` judge. Stepping a standalone `Weather` at 1 Hz
+said yes, loudly — Silverstone seed 20260729 reaching 0.768 line water and 90% of the
+race damp. **Then the fixed and unfixed `probe:racelog` full-distance runs came back
+BYTE-IDENTICAL**, which cannot happen if the AI is steering to a different line, and
+`probe:stewards` came back byte-identical too. Instrumenting the real `RaceEngine` settled
+it: **peak line wetness 0.0000, 0.0% of steps damp, peak `lineAvoidance` offered to any
+car 0.0000, on both seeds.** The standalone reading was an artefact of the step size, and
+chasing that discrepancy is what found the item at the top of §7: **at `PHYSICS_DT` it
+never rains, on any seed, at any circuit.**
 
-| | rain |
-|---|---|
-| `probe:stewards` calendar sweep, seed 20260729 | **9 of 11 circuits damp or worse for 99% of the session** |
-| `probe:racelog` full distance, Silverstone, seed 20260729 | peak line water **0.768**, **90% of the race** damp or worse |
-| `probe:racelog` full distance, Silverstone, seed 20268648 | peak line water **0.800**, **44% of the race** damp or worse |
+So the honest scope of this fix is: **the model is now correct and the feature is now
+reachable, and nothing in a race changes today because the sky never opens.** The two are
+one piece of work and this branch did the half it was asked for. When the rain floor is
+fixed, this is what stops the whole field being pinned to a strip of road with 17% less
+grip and no alternative — which is the state it would have arrived in.
 
-So the configuration issue #12 and #26 are both measured at — 52 laps, Silverstone, F3,
-P18, medium — is a **wet Grand Prix on both of its seeds**, and nothing in either issue
-said so.
+**What DOES work today, and it is the path the player and every screenshot uses:**
+`?wet=0.8` in `main.ts` and `Weather.forceRain` in the probes both set the road wet
+directly, and everything downstream of that — spray, the water field, the crossover, the
+pit wall's call, and now the wet line — is live and measured.
 
 **Proved it goes red.** With the sign put back and nothing else changed, `probe:weather`
-returns to the two original failures **and** the twenty-two new assertions in §5b go red
-with the direction named: all eleven circuits print `APEX`, ten of them
-`onLine(wet) = 1.000`.
+exits 1 with **24 failures**: the two original ones, **and** the twenty-two new assertions
+in §5b, which name the direction rather than the symptom — all eleven circuits print
+`APEX`, ten of them `onLine(wet) = 1.000`, Monza 0.527.
 
 **Two probe defects found on the way, both of the "a probe a broken feature passes" kind
 (§3.2), and both fixed by adding rather than by relaxing — no threshold in this probe was
@@ -2582,13 +2586,82 @@ touched.**
   circuit's tightest corner, that the wet line is on the far side of the dry line **from
   the apex** — read off the dry line's own offset, so it does not depend on the curvature
   sign convention that caused the bug — and that `onLineFraction` there is ~0.
-- **§6 passed a completely dead feature.** It measured `|lateral − dryLine|` and read
-  1.048m dry against 1.527m soaked, comfortably over its bar, on a build where
-  `wetLineOffset` was read by nothing that steered. A soaked car simply **tracks worse**,
-  and sliding off the line and aiming off the line are the same number once you have taken
-  an absolute value. §6 now also reports the **paired, per-node, signed** move — the same
-  corners in both arms, projected onto the direction the wet line lies in — which is zero
-  for a field that is only sliding.
+- **§6 passed a feature that was doing nothing, and the replacement for it was BUILT,
+  MEASURED AND REMOVED.** §6 reads `|lateral − dryLine|`: 1.048m dry against 1.527m
+  soaked, comfortably over its bar, on a build whose calendar mean `lineAvoidance` was
+  0.0714 and whose two grip numbers were identical at ten of eleven tightest corners. A
+  soaked car simply **tracks worse**, and sliding off the line and aiming off the line are
+  the same number once an absolute value has been taken.
+  The obvious fix — bucket the samples by track node and take the **paired signed** move,
+  the same corners in both arms, projected onto the direction the wet line lies in — was
+  written, run on both builds, and reads **+1.077m broken against −0.660m fixed.** Exactly
+  backwards. The confound: a soaked field is much slower, and a slow car takes a **tighter**
+  line than the dry racing line, which uses the whole corridor — the field sits about
+  **0.7–1.1m nearer the apex when soaked** whatever the wet line is doing, and that swamps
+  the shift the avoidance model produces. A measurement that ranks a broken build above a
+  working one is worse than no measurement, so it was deleted rather than shipped, and the
+  reasoning is recorded in `probeWeather.ts` above `runFor` so nobody rebuilds it.
+  **§5b is the guard, and it is a better one:** it asserts the geometry directly and goes
+  red in twenty-two places on the broken build.
+  **What that confound also says, and it is an open item rather than a fixed one:** the
+  wet-line move the AI actually makes is smaller than the effect of it simply going slower.
+  §7.
+
+### The crash and penalty rate, as the player feels it (#12)
+
+*"there are too many accidents happened and way too many penalties being given out...
+real f1 drivers don't crash that much they are a lot more careful but very competitive."*
+
+Measured the way the issue asks for — **not** as a field average and **not** at the
+harness's calibration difficulty, but one full-distance race at the configuration a new
+player is actually given: **52 laps, Silverstone, F3, P18 on the grid, AI on medium, two
+seeds.** `probe:racelog` at `RACELOG_LAPS=full`.
+
+**The three player-side columns were already being computed and printed in the per-race
+line, and nothing judged them.** That is the shape of half the defects in this project's
+history, so they are asserted now, and **both bars are DERIVED from the field bars that
+were already there rather than chosen**: a contact has two cars in it, so
+`MAX_CONTACTS_PER_RACE` spread evenly over twenty cars is 2 × 12 / 20 = **1.20 a car**; and
+`MAX_PENALISED_CARS_PER_RACE` of twenty carrying a badge is a 4/20 = **20%** chance that the
+one carrying it is yours. If the field is inside its bound and one car in it is not, the
+contacts and the badges are landing on one car — which is the report, and which no field
+average can show.
+
+| what the player sees, per race | measured | bar | |
+|---|---|---|---|
+| contacts they were in | **1.50** | 1.20 | **over** |
+| penalties against them | **0.00** | — | |
+| races they finish carrying a badge | **0%** | 20% | inside |
+| races they retire from | **50%** | — | #26 |
+| **safety car / VSC deployments** | **7.00** | — | **see below** |
+| **share of the race neutralised** | **35.2%** | — | **see below** |
+
+**The penalty half of #12 is answered, and the answer is that it is not too high.** Across
+the whole field the race produces **3.00 penalties on 3.00 of twenty cars**, which is the
+sport's own 1–3, and **every one of them came from the stewards' bench**: zero from track
+limits, zero from the pit lane, zero from the safety-car delta, zero from the tyre rule.
+The ladder that produced the 128-a-race Monza flood issues nothing at all now —
+**2.0 sanctionable excursions a race, 0.002 a car-lap against a 0.075 bar, thirty-seven
+times inside it.** And the driven car took **no penalty in either race**. Whatever the
+player saw, it is not being reproduced at the configuration they play, and the honest
+reading is that #16's safety-car delta fix and #2's ladder work already closed it.
+
+**The crash half is real but small, and it is not a driving-standards problem.** 1.50
+contacts a race against a 1.20 share is 25% over, on two races; the field number it comes
+out of is **22.50 contacts a race against a bar of 12**, which is #26's second failing bar
+and is being worked separately. None of them are on the opening lap (**0.00 of 22.50**) —
+they are spread round the lap, worst at Woodcote (4.0) and Copse (3.5) — and the retirement
+table underneath is **7.00 beached, 2.00 accident, 2.00 accident damage**. A field that
+beaches seven times a race and touches each other twenty-two times is not a stewarding
+problem and nothing in `Stewards.ts` or `DrivingStandards.ts` reaches it.
+
+**What actually dominates the player's afternoon is neither, and nothing had ever counted
+it: SEVEN safety-car or VSC deployments in one Grand Prix, and 35.2% of the race
+neutralised.** A third of the race spent in a queue. Real Formula One averages well under
+one safety car a race. It is downstream of the 11.50 retirements — every recovery is a
+neutralisation — so it closes when #26 does, but it is very likely the thing the report was
+actually describing, and it is now a column in `probe:racelog` instead of a thing nobody
+measured.
 
 ### The pit wall and the pit request — one latch, two bugs (issue #32)
 `PitWall.boxRequested` is a **latch**: it stands from the driver's "yes" on the radio until
@@ -3323,7 +3396,7 @@ anything.
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
-| Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
+| Crash & penalty rate | **Measured — #12, see §6.** The PENALTY half is not too high: 3.00 penalties on 3.00 of 20 cars at the player's own configuration, all from the stewards' bench, none on the driven car, and 0.002 sanctionable excursions a car-lap against a 0.075 bar. The CRASH half is over by a quarter (player in 1.50 contacts a race against a derived 1.20) and is the field's 22.50, i.e. #26. What dominates the player's race is neither: **7.00 SC/VSC deployments and 35.2% of it neutralised**, which nothing had ever counted and which closes when #26 does |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
@@ -3599,6 +3672,13 @@ shared files and the run that matters passed. **Nobody is on this.**
   .RACE_PACE_VS_REFERENCE` is still 1.50 and is still the one named constant that comes down
   when the pace item does. `validate:race`'s Monaco assertion now reads **150%** — it said
   152% here for a while and nobody had re-run it, so check it rather than quoting it.
+- **#26, re-measured 2026-08-03 on the `weather-and-penalties` branch and unchanged:**
+  `probe:racelog` at `RACELOG_LAPS=full`, Silverstone, F3, P18, medium, 2 seeds reads
+  **11.50 retired, 22.50 contacts** (the entry below says 21.00 — two races, so treat the
+  difference as noise) and now also **7.00 SC/VSC deployments and 35.2% of the race
+  neutralised**, which is new instrumentation and is the largest thing in the player's race.
+  The two failing bars are unchanged. A third failing bar has been added and it is the
+  player's own: **1.50 contacts a race against a derived share of 1.20.** See §6, #12.
 - **#26 is not closed by #10 and the honest position is that it is now MEASURABLE rather
   than answered.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
   F3, P18, medium, 2 seeds): retirements **20.00 → 11.50** a race, contacts **26.50 →
@@ -3609,6 +3689,72 @@ shared files and the run that matters passed. **Nobody is on this.**
   (`11.50 cars retire per race — a Grand Prix loses one or two`, `21.00 car-to-car contacts
   a race`) and **that is the live part of #26.** The player still retires from 100% of
   full-distance races, now by beaching rather than by stopping.
+- **IT HAS NEVER RAINED IN THIS GAME. NOT ONCE, ON ANY SEED, AT ANY CIRCUIT.** Found while
+  working #42, in `Weather.ts`, and it is the layer underneath it. `Weather.update` damps
+  `rainRate` toward its target and then snaps anything under 0.01 to zero. `damp` is
+  `current + (target − current) × (1 − exp(−rate·dt))`, and `rampRate` is 1/35 to 1/110, so
+  **one step at `PHYSICS_DT` moves `rainRate` from zero by at most 0.00024** — and the floor
+  puts it straight back. Every step. `rainRate` cannot leave zero.
+  **Measured, 11 circuits × 40 seeds × 90 minutes:**
+
+  | stepped at | sessions reaching damp or worse | wettest any of them got |
+  |---|---|---|
+  | 1 Hz | 343 of 440 (**78.0%**) | 0.848 |
+  | **`PHYSICS_DT`, which is what `RaceEngine.step` passes** | **0 of 440 (0.0%)** | **0.0000** |
+
+  Confirmed end to end on the configuration #12 and #26 are measured at — a full-distance
+  Silverstone race through the real `RaceEngine`: **peak line wetness 0.0000, 0.0% of steps
+  damp, peak `lineAvoidance` offered to any car 0.0000.**
+  **Nothing catches it because every weather probe, and the `?wet=` parameter in `main.ts`,
+  reach the road through `Weather.forceRain`** — which assigns `rainRate` directly and skips
+  the ramp. That is correct for a probe (its own comment explains why: a probe that hunts for
+  a seed that rains is measuring the seed) and it means **the one path the player is on is
+  the one path nothing exercises.** §3.2, in its purest form.
+  **There is already a note in the tree that saw this and explained it away.**
+  `probeStrategy.ts` records that its Silverstone race "went dry" when the weather model was
+  rewritten and attributes it to a shifted random stream — then re-calibrates an assertion
+  around the dry draw. It went dry because they all did.
+  **NOT FIXED ON THE #42 BRANCH, deliberately, and the reason is the first column.** The
+  floor's intent is right — a dying drizzle should snap to dry rather than asymptote — so the
+  correction is to apply it only while the sky is CLEARING. But 78% of sessions wet is not a
+  calendar; a real season runs about one race in five in the wet. The event schedule rolls a
+  fresh chance every 210–900s and compounds `def.rainChance` into something far larger over a
+  race distance, and **that has never been measured because the floor has been hiding it.**
+  Landing the floor alone takes the game from no weather to weather in three races out of
+  four *and* re-baselines every seeded race in the repository in the same commit — including
+  `probe:racelog`, `probe:racesweep`, `validate:race` and `probe:strategy`, one of which is
+  explicitly calibrated on the dry draw. It needs the schedule calibrated with it, against a
+  stated target for how often a Grand Prix should be wet. `probe:weather` **§3c prints both
+  columns on every run** and says so; the mechanism is written out on the line itself in
+  `Weather.ts`. **Nobody is on this.**
+- **`probe:stewards` IS RED ON `main` AND THIS FILE HAS NEVER SAID SO** — and the number
+  it quotes for the bench, in the entry above and in issue #26, is stale. Measured
+  2026-08-03 on a clean `main` (the branch's `TrackSpline` copied out, `git checkout --`,
+  run, restored) and again on the `weather-and-penalties` branch: **identical output, one
+  failure, `even the optimistic end of the full-distance estimate is 9.7 penalties`**
+  against a `gpHi <= 8` bar. The sweep reads 46 incidents noted, 39 no further action, 0
+  positions ordered back, **7 penalties over 11 races** (5 forcing another driver off the
+  track, 2 causing a collision), 5 distinct cars, **0 against the driven car**, and
+  **6.5 implied for a 57-lap Grand Prix (3.4–9.7) on 5 events.** #26 records that figure as
+  **2.9**. **That is the fourth probe in this project found red without anybody noticing**,
+  after `probe:fieldsize`, `shoot:frontend` and `validate:race`. **Do not raise the bar.**
+  The estimator is what fails, and the probe's own comment predicts this: it extrapolates
+  from a handful of events over 44 race-laps and it says out loud that the figure "can read
+  3.0 one week and 0.4 the next with nothing having changed". The DIRECT measurement at the
+  distance the player plays contradicts it — see the #12 entry below — so the honest
+  reading is an unstable estimator rather than a bench that has started over-penalising, and
+  the way to settle it is the probe's own prescription, `STEWARDS_LAPS=20
+  STEWARDS_SEEDS=1,2,3`.
+- **`Stewards.FIELD_STEER` is written on every sample, exposed on `Snapshot.steer`, and
+  read by NOTHING.** `grep -n "FIELD_STEER\|\.steer" src/race/Stewards.ts` returns the
+  write, the read into the snapshot, and the constant. Third instance of this shape in the
+  project after `TIER_INFO.carPace` and `alongsideLeft`/`alongsideRight`. It is not
+  harmless dead weight: it is exactly the evidence that would separate a driver who
+  **steered** into the space beside them from one who **slid** into it, and
+  `scanForCrowding` — which produces 5 of the 7 penalties in a season sweep — currently
+  cannot tell those apart, because it tests lateral displacement only. Whether that is
+  actually over-firing is **not established** and was not investigated far enough to say.
+  **Nobody is on this.**
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.

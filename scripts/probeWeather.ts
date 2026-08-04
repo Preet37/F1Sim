@@ -395,6 +395,63 @@ console.log('\n=== 3b. the crossover, driven ===\n');
 }
 
 // ===========================================================================
+// 3c. Does it ever rain at the rate the game steps at? REPORTED, NOT ASSERTED
+// ===========================================================================
+//
+// Every other section of this probe reaches the road through `forceRain`, which
+// assigns `rainRate` directly. That is deliberate and it is documented on
+// `forceRain` itself — a probe that waits for a seed that happens to rain at the
+// right moment is measuring the seed. The consequence, found while working #42,
+// is that the ONE path a player is ever on — the sky raining by itself, stepped
+// at `PHYSICS_DT` — is the one path nothing in this repository exercises.
+//
+// It does not work. `Weather.update` damps `rainRate` toward its target and then
+// snaps anything under 0.01 to zero; from a dry sky one 120Hz step moves it by
+// at most 0.00024, so the floor puts it back every time and the rain can never
+// start. See the block above that line in `Weather.ts`.
+//
+// REPORTED RATHER THAN ASSERTED, and that is a deliberate choice with precedent
+// in §1 of this same probe. The fix is not the floor on its own: with the floor
+// out of the way the schedule runs 78% of sessions wet, which is not a calendar,
+// and correcting both together re-baselines every seeded race in the repository.
+// Asserting it here would take `probe:weather` red for a defect this branch is
+// not fixing and would bury the two #42 assertions that are the point of it. It
+// prints, loudly, on every run instead. PROJECT.md §7 carries it.
+
+console.log('\n=== 3c. does it rain by itself, at the rate the game steps at? ===\n');
+
+{
+  const SEEDS = 12;
+  const SESSION_S = 5400;
+  console.log('  step        sessions reaching damp or worse      wettest');
+  for (const [label, dt] of [['1Hz', 1], ['PHYSICS_DT', PHYSICS_DT]] as [string, number][]) {
+    let rained = 0, total = 0, peakAll = 0;
+    for (const def of CIRCUITS) {
+      const track = new TrackSpline(def);
+      for (let s = 0; s < SEEDS; s++) {
+        const w = new Weather(def, 1000 + s * 7919, track);
+        let peak = 0;
+        for (let t = 0; t < SESSION_S; t += dt) {
+          w.setTraffic(20);
+          w.update(dt);
+          if (w.wetness > peak) peak = w.wetness;
+        }
+        total++;
+        if (peak > 0.05) rained++;
+        if (peak > peakAll) peakAll = peak;
+      }
+    }
+    console.log(`  ${label.padEnd(12)}${String(rained).padStart(5)} of ${total}` +
+      `  (${((rained / total) * 100).toFixed(1)}%)`.padEnd(24) + `${peakAll.toFixed(4)}`);
+  }
+  console.log('');
+  console.log('  NOT ASSERTED. `PHYSICS_DT` is the step `RaceEngine.step` passes, so the second');
+  console.log('  row is what the player gets: it has never rained in this game. The floor in');
+  console.log('  `Weather.update` is why; the schedule behind it is why fixing the floor alone');
+  console.log('  would be wrong. PROJECT.md §7, and see the comment on the line itself.');
+}
+
+// ===========================================================================
 // 4. The track dries, and it dries on the line first
 // ===========================================================================
 
@@ -618,26 +675,42 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
   const def = CIRCUITS.find((c) => c.id === 'silverstone')!;
 
   /**
-   * Mean |lateral - dryLine| over the field, once they are up to speed — plus,
-   * added by #42, WHERE each node's cars sat, so the two runs can be paired.
+   * Mean |lateral - dryLine| over the field, once they are up to speed.
    *
-   * `dev` and its assertion below are untouched. What is added is `perNode`,
-   * bucketed by track node so the comparison can be made over the same corners
-   * in both weathers: a soaked field is slower and reaches fewer of them in the
-   * same five minutes, so an unpaired signed average is an average over a
-   * different stretch of road in each arm, and it reads as a move that is
-   * really a change of sample.
+   * THIS TEST PASSED A COMPLETELY DEAD FEATURE and it is left exactly as it was,
+   * with a note rather than a replacement. On the tree #42 was filed against the
+   * AI never left the dry groove in any meaningful way — the calendar mean
+   * `lineAvoidance` at full soak was 0.0714 and the two grip numbers §5 compares
+   * were identical at the tightest corner of ten of the eleven circuits — and
+   * this section still read 1.048m dry against 1.527m soaked and passed
+   * comfortably. A soaked car simply TRACKS WORSE, and sliding off the line and
+   * aiming off the line are the same number once an absolute value has been
+   * taken.
+   *
+   * AN ATTEMPT TO SEPARATE THEM WAS BUILT HERE AND REMOVED, and the reason is
+   * worth more than the attempt. Bucketing the samples by track node and taking
+   * the PAIRED signed move — the same corners in both arms, projected onto the
+   * direction the wet line lies in — reads **+1.077m on the broken build and
+   * −0.660m on the fixed one**, i.e. exactly backwards. The confound is that a
+   * soaked field is much slower and a slow car takes a TIGHTER line than the dry
+   * racing line, which uses the whole corridor: the field sits about 0.7–1.1m
+   * nearer the apex when soaked whatever the wet line is doing, and that swamps
+   * the shift the avoidance model produces. A measurement that ranks a broken
+   * build above a working one is worse than no measurement, so it is not here.
+   *
+   * The guard that DOES discriminate is §5b, which asserts the geometry
+   * directly at every circuit's tightest corner and goes red in twenty-two
+   * places on the broken build. Whether twenty AI drivers reach hard enough for
+   * a line that is now genuinely faster is a question about
+   * `AIVehicleController.updateLineAvoidance`, and it is open — see PROJECT.md §7.
    */
-  const runFor = (wet: number): {
-    dev: number; laps: number; perNode: Map<number, { sum: number; n: number }>;
-  } => {
+  const runFor = (wet: number): { dev: number; laps: number } => {
     const config: SessionConfig = {
       kind: 'race', name: 'GP', durationS: 0, laps: 10,
       playerIndex: -1, standingStart: false, pitLaneStart: false, seed: 33,
     };
     const engine = new RaceEngine(def, config);
     engine.weather.forceRain(wet, true);
-    const perNode = new Map<number, { sum: number; n: number }>();
     let sum = 0, n = 0;
     const steps = Math.round(300 / PHYSICS_DT);
     for (let i = 0; i < steps && !engine.over; i++) {
@@ -648,17 +721,13 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
         for (const car of engine.cars) {
           if (car.retired || car.inPitLane || car.physics.speedMs < 20) continue;
           const idx = engine.track.indexAt(car.s);
-          const off = car.lateral - engine.track.lineOffset[idx];
-          sum += Math.abs(off);
+          sum += Math.abs(car.lateral - engine.track.lineOffset[idx]);
           n++;
-          const b = perNode.get(idx) ?? { sum: 0, n: 0 };
-          b.sum += off; b.n++;
-          perNode.set(idx, b);
         }
       }
     }
     const laps = Math.max(...engine.cars.map((c) => c.lap));
-    return { dev: n > 0 ? sum / n : 0, laps, perNode };
+    return { dev: n > 0 ? sum / n : 0, laps };
   };
 
   const dry = runFor(0);
@@ -671,44 +740,8 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
     'the cars are not moving off the racing line in the wet');
   check(soaked.laps > 0,
     'nobody completed a lap on a soaked circuit — the wet model has made the game undriveable');
-
-  // --- ...and WHICH WAY. Added by #42. -------------------------------------
-  //
-  // THE DEVIATION TEST ABOVE PASSED A COMPLETELY DEAD FEATURE, which is why
-  // this is here rather than trusted to it. On the tree #42 was filed against
-  // the AI never once left the dry groove: `TrackSurface.lineAvoidance`
-  // returned 0 at every node of every circuit, so `TrackSpline.lineOffsetAt`
-  // took its early return and `wetLineOffset` was read by nothing at all. This
-  // section still measured 1.048m dry against 1.527m soaked and still passed,
-  // because a soaked car TRACKS WORSE — sliding off the line and aiming off the
-  // line are the same number to a test that takes an absolute value first.
-  //
-  // Sliding is symmetric about the line; aiming is not. So the paired
-  // difference between the two arms, projected onto the direction the wet line
-  // lies in, is near zero for a field that is only sliding and large for one
-  // that has moved, whatever either arm's magnitude is.
-  {
-    const track = new TrackSpline(def);
-    let toward = 0, nodes = 0;
-    for (const [idx, wetBucket] of soaked.perNode) {
-      const dryBucket = dry.perNode.get(idx);
-      if (!dryBucket) continue;
-      // Only where the wet line is somewhere else. On a straight the two
-      // coincide and there is no side to be on.
-      const toWet = track.wetLineOffset[idx] - track.lineOffset[idx];
-      if (Math.abs(toWet) < 0.5) continue;
-      toward += (wetBucket.sum / wetBucket.n - dryBucket.sum / dryBucket.n) * Math.sign(toWet);
-      nodes++;
-    }
-    toward /= Math.max(1, nodes);
-    console.log(`  and of that move, ${toward.toFixed(3)}m is toward the wet line ` +
-      `(paired over ${nodes} corner nodes both runs visited)`);
-    check(nodes >= 50,
-      `only ${nodes} corner nodes were visited in both runs — too few to pair on`);
-    check(toward > 0.25,
-      `soaked, the field moves ${toward.toFixed(2)}m toward the wet line — it is further off ` +
-      'the groove but not preferentially on the side the grip is, so it is sliding, not moving');
-  }
+  console.log('  (this test cannot tell aiming from sliding, and it passed a dead feature.');
+  console.log('   The guard that can is §5b. See the note above `runFor`.)');
 }
 
 // ===========================================================================

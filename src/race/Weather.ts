@@ -252,6 +252,40 @@ export class Weather {
       this.rollNextIntensity();
     }
     this.rainRate = damp(this.rainRate, this.targetRain, this.rampRate, dt);
+    // IT NEVER RAINS AT THE RATE THE GAME ACTUALLY STEPS AT. THIS LINE IS WHY,
+    // IT IS NOT FIXED HERE, AND SEE PROJECT.md §7 BEFORE TOUCHING IT.
+    //
+    // `damp` is `current + (target - current) * (1 - exp(-rate * dt))`. Starting
+    // from a dry sky, one step moves `rainRate` from 0 by
+    // `targetRain * (1 - exp(-rampRate * dt))`; `rampRate` is 1/35..1/110, so at
+    // `PHYSICS_DT` that is at most 0.00024 — and the floor below then puts it
+    // straight back to zero. Every step. Forever. `rainRate` cannot leave zero.
+    //
+    // Measured over 11 circuits x 40 seeds x 90 minutes: stepped at 1Hz, 343 of
+    // 440 sessions reach damp or worse and the wettest gets to 0.848; stepped at
+    // `PHYSICS_DT`, which is what `RaceEngine.step` passes, **0 of 440 and the
+    // wettest gets to 0.0000.** Every race this game has ever simulated has been
+    // dry. Nothing catches it because every weather probe and the URL parameter
+    // in `main.ts` all reach the road through `forceRain`, which assigns
+    // `rainRate` directly and skips the ramp — so the one path the player is on
+    // is the one path nothing tests. `probeStrategy` has a comment recording
+    // that its Silverstone race "went dry" with the rewrite and attributing it
+    // to a shifted random stream; it went dry because they all did.
+    //
+    // WHY IT IS NOT A ONE-LINE FIX, and the reason it is reported rather than
+    // patched on the #42 branch. The floor is right in intent — a dying drizzle
+    // should snap to dry rather than asymptote — so the correction is to apply
+    // it only while the sky is CLEARING (`targetRain` below the floor too).
+    // But the 1Hz column above is what the model does with the floor out of the
+    // way, and **78% of sessions wet is not a calendar**: a real season runs
+    // perhaps one race in five in the wet. The event schedule rolls a fresh
+    // chance every 210-900s and compounds `def.rainChance` into something far
+    // larger over a race distance, and that has never been measured because the
+    // floor has been hiding it. Landing the floor alone would take the game from
+    // no weather to weather in three races out of four and re-baseline every
+    // seeded race in the repository at the same time. It needs the schedule
+    // calibrated with it, against a stated target for how often a Grand Prix is
+    // wet, and that is its own piece of work.
     if (this.rainRate < 0.01) this.rainRate = 0;
 
     // --- The road ----------------------------------------------------------

@@ -1317,8 +1317,10 @@ export class TrackSpline {
       // against 0.830. One value used for both sides, exactly as it looked.
       //
       // Do not re-derive this direction from `lineCurvature`'s sign without
-      // re-reading `signedCurvature`; section 5 of `probe:weather` now asserts
-      // the direction itself, on all eleven circuits, for that reason.
+      // re-reading `signedCurvature`; section 5b of `probe:weather` now asserts
+      // the direction itself, on all eleven circuits, for that reason — and it
+      // reads the apex side off the dry line's own offset rather than off the
+      // curvature, so it cannot inherit this mistake.
       const dir = k > 0 ? -1 : k < 0 ? 1 : 0;
       // How much shift is worth taking. On a straight the rubber band is wide
       // and shallow and there is nothing to gain from a specific line, so the
