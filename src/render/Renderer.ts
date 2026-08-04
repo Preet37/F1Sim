@@ -822,6 +822,9 @@ export class Renderer {
         compound: car.compound,
         // Per TEAM, not per car: a team's two cars run the same rear wing.
         actuation: actuationForTeam(car.team.id),
+        // The key to `public/brand/<team-id>/` — the badge, sponsor and livery
+        // asset slots (issue #36). Absent artwork, this changes nothing.
+        team: car.team.id,
       });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);

@@ -91,22 +91,44 @@ These have all been decided. Do not re-litigate them without the user.
   only permissively licensed ones — CC0, public domain, or explicitly licensed for this
   use. Record the licence and source of anything added.
 
-  **How this is MEANT to be implemented — and is NOT. See issue #36.** The agreed design is
-  that every branded slot — team badge, sponsor decal, driver portrait — is an *asset slot*
-  backed by a generated placeholder, loaded from `public/brand/<team-id>/` if a file is
-  present and falling back to the generated mark if not. The user could then drop real
-  artwork in themselves and it would appear immediately with no code change, and removing
-  the directory would return the game to a shippable state.
+  **How this is implemented, as of issue #36 — and this paragraph was a LIE until then, so
+  read the history under it before trusting it again.** Every branded slot is an *asset
+  slot* backed by a generated placeholder:
 
-  **None of that exists.** Verified 2026-08-03: `grep -rn "public/brand" src scripts audit`
-  returns nothing and `public/` contains only `textures/`. There is no loader and no
-  fallback path. This paragraph asserted the mechanism as fact for long enough that a code
-  review had to discover otherwise, so it is corrected here rather than quietly fixed.
-  What is genuinely true today is the *generated* geometric marks (`MARK_DEVICES` in
-  `src/render/LiveryDesign.ts`, carrying an explicit non-infringement comment) and the
-  fictional `SPONSORS` set in `src/render/Livery.ts`. Those are real; the swap boundary is
-  not. Until #36 lands, the only working IP boundary in this project is
-  `src/data/roster/` — which does hold, and which is why §3 keeps insisting on it.
+  | | |
+  |---|---|
+  | Loader | `src/render/BrandAssets.ts` |
+  | Team-scoped | `public/brand/<team-id>/<slot>.png` → `.webp` → `.svg`, first hit wins |
+  | Slots | `badge`, `sponsor`, `portrait`, `livery` |
+  | Shared | `public/brand/shared/<slot>.…` for `material`, `lut`, `envmap` — not team-scoped |
+  | Team id | the id from `src/data/roster/`, so artwork swaps on the same boundary names do |
+  | Fallback | `MARK_DEVICES` (`LiveryDesign.ts`) and `SPONSORS` (`Livery.ts`) |
+  | Ignored | `public/brand/` is in `.gitignore`, so third-party artwork cannot be committed |
+  | Probe | `npm run probe:assets` |
+
+  **The guarantee, and it is measured rather than asserted: deleting `public/brand/`
+  returns the game to BYTE-IDENTICAL rendering.** `probe:assets` renders one team three
+  times in one GL context — no file, file present, file removed — and sha256s all three:
+  the middle arm differs, the third is identical to the first on every view. Every override
+  is a branch that is not taken, never a different code path, which is why that holds by
+  construction.
+
+  **One request, ever, and it cannot 404.** A slot with no file costs ZERO network requests
+  and produces ZERO console output. The loader makes exactly one request that could miss —
+  `/brand/manifest.json` — and the Vite plugin in `vite.config.ts` answers it with 200 and
+  `{"files":[]}` when the directory does not exist. The rejected alternative was probing
+  `badge.png`/`.webp`/`.svg` directly, which is 264 guaranteed 404s on a build carrying no
+  artwork, all of them written to the console, which five harnesses in `scripts/` read as a
+  failure signal.
+
+  **What this paragraph used to say, and why that is worth keeping.** Until 2026-08-03 it
+  described all of the above as *"How this is implemented in practice"* and none of it
+  existed: `grep -rn "public/brand" src scripts audit` returned nothing and `public/`
+  contained only `textures/`. It had asserted the mechanism as fact for long enough that a
+  code review had to discover otherwise, and #8 and the livery editor were both written
+  against it. **A design document that describes an intention in the present tense is how a
+  project acquires load-bearing fiction.** The generated marks and the fictional sponsor
+  set were always real; only the override half was missing, and now it is not.
 - The user asked for archive clips of past champions in the intro. The agreed substitute is in-engine cinematography, which is
   what the real F1 games mostly use anyway. They confirmed: *"yeah render the game scenes
   like rendered in engine yourself."*
@@ -236,6 +258,7 @@ Run `npm run` to list. The important ones:
 | `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
 | `probe:news` | Every headline checked against `simulateRound`'s own result, 100 career-years |
 | `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
+| `probe:assets` | **The asset slots, and the shippability guarantee.** Resolution order in Node with no browser; then one team built three times in ONE GL context — no file, a badge dropped into `public/brand/`, the file removed again — sha256'd on three views. The middle arm must differ and the third must be BYTE-IDENTICAL to the first. Also: a slot with no file costs zero requests and zero console output, and a second build issues nothing. `ASSETS_BREAK=root` points the loader at a directory with no manifest and proves the override half can go red. Issue #36 |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
@@ -651,6 +674,177 @@ failed** unchanged.
   problem.
 - Front wing endplate was 25mm too far out (placed at the 1000mm *bodywork* limit; the
   wing's own limit is 975).
+
+### The asset slot loader, and the shippability guarantee (issue #36)
+
+The mechanism §3 described as existing, and which did not. `grep -rn "public/brand" src
+scripts audit` returned nothing; `public/` held one directory, `textures/`. The generated
+marks were always real; the override half was missing, and #8 and the livery editor had
+both been written against a boundary that was not there.
+
+**The contract, in one table.** `src/render/BrandAssets.ts`:
+
+| | |
+|---|---|
+| Team-scoped | `public/brand/<team-id>/<slot>.png` → `.webp` → `.svg`, first hit wins |
+| Slots | `badge`, `sponsor`, `portrait`, `livery` |
+| Shared | `public/brand/shared/<slot>.…` — `material`, `lut`, `envmap` |
+| Team id | the id in `src/data/roster/` — same boundary the names already swap on |
+| Falls back to | `MARK_DEVICES` (`LiveryDesign.ts`), `SPONSORS` (`Livery.ts`) |
+| Ignored | `public/brand/` is in `.gitignore` |
+
+- **`badge` replaces the generated device rather than sitting on it**, at the same three
+  stations, and it shows even for a team whose `mark` is `-1` — the default, and what every
+  car on the real grid has — because a user who has put `ferrari/badge.png` on disk has
+  chosen a mark. `sponsor` replaces the 115mm title wordmark on the sidepod and nothing
+  else; the small print stays generated, because a flank carrying one graphic and no small
+  print reads emptier than one carrying none. `livery` is a whole replacement atlas, laid
+  over the painted panels and UNDER the badge, so a community livery still gets the team's
+  badge stamped where the game puts badges. The twelve flat swatches are repainted after
+  all three and are deliberately out of reach: they are not graphics, they are the single
+  texel a wishbone, a tyre and a visor pin their UVs to.
+
+- **DELETING `public/brand/` RETURNS THE RENDER TO BYTE-IDENTICAL, and that is measured.**
+  `probe:assets` builds one team three times in ONE GL context — no file, file dropped in,
+  file removed — and sha256s three views of each. Separate page loads would have left "and
+  the two contexts agreed" as an unstated premise, which is the class of hidden assumption
+  §3.2 exists to catch. **35 ok / 0 failed.** The middle arm moves 1047 pixels across the
+  three views, in a bounding box on the engine cover and the flank; **0 of those 1047
+  carried the badge's hue before and 146 do after**; and the third arm is
+  `5f21ed39e05c / 44d258083e0b / a3ea642d3f06` against the first arm's identical three.
+
+- **Proved it can go red.** `ASSETS_BREAK=root` points the loader at a directory with no
+  manifest and no artwork while the badge is on disk: **30 ok / 5 failed, exit 1**, and the
+  five are exactly the override half — the slot resolves to nothing, the manifest is empty,
+  the render does not change, 0 px move, and nothing carries the badge's hue. **The
+  byte-identity assertions stay green**, which is the right answer rather than a weakness: a
+  loader that finds nothing IS the shipped state, and a break that turned the shippability
+  guarantee red would mean the probe was measuring the loader rather than the guarantee.
+
+- **A slot with no file costs ZERO network requests and produces ZERO console output.** The
+  loader makes exactly one request that can miss, `/brand/manifest.json`, and the Vite
+  plugin in `vite.config.ts` answers it 200 with `{"files":[]}` when the directory is not
+  there — so the shipped game makes one request that succeeds and none that fail. The
+  rejected design was probing the three extensions directly: Chrome writes every failed
+  subresource load to the console, five harnesses in `scripts/` read `page.on('console')`
+  as a failure signal, and 22 teams × 4 slots × 3 extensions is **264 guaranteed 404s** on a
+  build carrying no artwork at all. Asking for the same slot twice issues nothing: the
+  negative answer is cached for the life of the page and is never retried.
+
+- **The painter is synchronous and the network is not, and the resolution is a repaint
+  rather than a rebuild.** A slot that arrives after the first frame is composited into the
+  canvas the livery was already painted into and the texture is re-uploaded
+  (`Livery.ts` holds ONE process-wide `onBrandChange`). Rebuilding instead would mean a new
+  `CanvasTexture`, a new material and a new mesh per car — a scene-graph edit mid-session.
+  Nothing here measures, sizes or reflows anything, so there is no layout shift by
+  construction.
+
+- **The rest of the suite, on the merged tree, at load 11–45:** `typecheck` both projects,
+  `vite build` (which emits `dist/brand/manifest.json`), `probe:carrig` clean at 141 parts
+  in 1 cluster, `probe:graphics` **72 ok / 0 failed**, `probe:sharpness` clean on every
+  circuit at `high+post+shadow+msaa`, `shoot:panels` at the **2 rail + 2 mirror** §4 records
+  — confirmed, not added to — `audit:livery` OK, and `probe:smoke` **PASS** with 35 distinct
+  screens and **32 of 32 required routes**.
+
+- **`portrait` and the shared slots RESOLVE but nothing CONSUMES them yet, and that is a
+  gap rather than an omission.** `probe:assets` §1 asserts all four team slots and all three
+  shared ones resolve to the right paths, and `brandUrl(team, 'portrait')` returns a usable
+  URL — but `src/ui/DriverPortrait.ts` draws the PLAYER's helmet from a helmet design and
+  knows nothing about a team id, so there is no correct place to hang a team-scoped portrait
+  on it without deciding what a driver-scoped slot should look like first. Left explicit:
+  the badge, the sponsor decal and the replacement livery are wired end to end and
+  photographed; the portrait and the shared material/LUT/envmap slots are resolvable and
+  unused.
+
+- **Two things the probe found that were not the loader.** (a) `CarMesh` loads the
+  carbon-weave normal map with an asynchronous `TextureLoader` that nothing in `buildCar`
+  waits for, so the FIRST car built in a page is drawn without it and every one after is
+  drawn with it — two builds of the identical car are not identical, and a byte-identity
+  assertion anchored on the first build would have been measuring texture arrival. The
+  probe warms up.
+
+- **(b) A FILE DROPPED INTO `public/` IS INVISIBLE TO A DEV SERVER STARTED WITH
+  `watch: null`, and the answer it gives instead is `index.html` with a 200.** Vite keeps an
+  in-memory Set of the files in `public/` scanned once at server start and its static
+  middleware `next()`s past anything not in it, the Set being kept current by the file
+  watcher — and every harness in `scripts/` creates its server with `watch: null`. The
+  request then falls through to the SPA html fallback, which accepts `Accept: */*`, and
+  `fetch` sends exactly that. **Measured: `element text/html 1509B
+  /brand/__probe__/badge.png`.**
+
+  This is worth its own entry because of how long it took to see, and the reason it took
+  that long is §3.1 in a new costume. Through an `<img>` the whole failure arrives as a
+  **single `onerror` on a 200 response**, and the harness's own `page.on('response')` showed
+  `200`. Two implementations of `decode()` were rewritten against it; a manual `fetch` in
+  the page reported `image/png`, 6508 bytes, a valid PNG signature, and a `new Image()` that
+  loaded fine — which made it look like a race, and then like the load-average artefact §8
+  records, and it was neither. **One bit of failure information is not a diagnosis.** It
+  became obvious in one run the moment the decoder was asked to say WHY: `createImageBitmap`
+  rejects with `InvalidStateError` and the fallback path reports the blob's own
+  `Content-Type`, and `text/html` names the bug immediately.
+
+  Two things landed from it. `decode()` fetches first and hands the bytes to
+  `createImageBitmap` — bytes in hand, a real rejection message, no dependence on the DOM —
+  falling back to an `<img>` over an object URL only for SVG, which has no intrinsic size
+  and which `createImageBitmap` refuses. And the Vite plugin **serves the artwork as well as
+  the manifest**, which is not a workaround: `public/brand/` is the one directory in this
+  project whose entire purpose is that a file appears the moment it is dropped in, and a
+  cache refreshed only by a watcher is the wrong mechanism for that.
+
+### Materials: the wheel corner's table contradicted its own comment (issue #36)
+
+§6 above records painted bodywork at **metalness 0.26** as the "blown out white plastic"
+look, and the fix as understanding that metalness is a SWITCH between two BRDFs and not a
+gloss dial. **The same defect was still sitting in three other places, one of them behind a
+comment that describes the correct physics in full and is followed by a table that does not
+implement it.**
+
+`TyreTexture.ts` says, verbatim, that a current wheel cover is "a mandated aerodynamic
+fairing, moulded in carbon composite … a DIELECTRIC", that carbon-carbon discs are "not
+remotely metallic", and that "the only genuinely metallic things on the corner are the
+centre-lock nut and the caliper". Underneath it: cover **0.10**, spokes **0.25**, discs
+**0.05**, and the two named metals at **0.55** and **0.60**.
+
+| part | was | now | why |
+|---|---|---|---|
+| `rimFace` cover | 0.10 | **0.02** | moulded composite fairing — the file already says so |
+| `rimSpoke` | 0.25 | **0.02** | same part |
+| `rimLip` ring | 0.40, `#6e747c` | **1.0, `#b9bec4`** | machined/anodised aluminium, reflectance ~0.72 |
+| `hub` nut | 0.60, `#4a4f57` | **1.0, `#b0b4b8`** | steel, reflectance ~0.69 |
+| `caliper` | 0.55, `#57402c` | **1.0, `#9d7c46`** | bronze anodising, ~0.62/0.49/0.27 |
+| `disc`/`discFace` | 0.05 | **0.02** | carbon-carbon |
+| `inner` well | 0.10 | **0.02** | coated composite |
+| `Livery` `trim` swatch | 0.10 | **0.02** | see below |
+| `Livery` carbon weave map | 0.05 | **0.02** | dry laminate and resin are both dielectrics |
+| `CockpitMesh` `accent` | 0.20 | **0.02** | painted trim in the team's colour |
+
+**What it looks like, at real on-screen size.** `audit:car` before and after, `rimClose` and
+`steer--wheelFront`: the centre-lock nut goes from a flat blue-grey blob to a machined
+hexagon with a specular highlight, and the rim's outer ring from a faint blue line to a
+brushed machined band that catches the floodlights at night. **The cover itself is
+unchanged in character** — still a dark composite fairing, no chrome — which is the part
+that mattered, because the whole reason those numbers existed was a report of wheels
+reading as blue mirrors. At `hero` distance the change is not visible at all. `cost.md` is
+**identical**: same draw calls, same triangles, same vertices, on all fourteen passes.
+
+**THE ALBEDOS HAD TO MOVE WITH THE METALNESS, and that is the part that is easy to get
+wrong.** Under metalness 1 the base colour stops being a diffuse albedo and becomes the
+specular reflectance at normal incidence. Switching `hub` to metal while leaving it at
+`#4a4f57` would have produced a **30%-reflective centre nut — darker than the dielectric it
+replaced**, which is how a physically correct change comes out looking like a regression.
+The three new colours are measured reflectances, not picks. **Every roughness is unchanged**:
+this is a correction to the BRDF, not a restyle, and how glossy each part is was decided
+separately and is not in question.
+
+**The `trim` swatch is the one that was an argument rather than a mistake**, and it is worth
+recording why it still moved. Its comment read *"the halo is the metal one and it is 30mm of
+the car; the wishbones are not"* and it split the difference at 0.10 — which is exactly what
+the paragraph above the table forbids: a half-metal is not a weighted average of two
+materials, it is a third material that does not exist. It is also the wrong minority to have
+optimised for. A regulation halo is titanium **under a bonded aerodynamic fairing**, and on
+every car on the grid that fairing is painted in the team's colours, so the surface being
+drawn is paint over composite and 0.02 is right for both users of the swatch rather than a
+compromise between them.
 
 ### The front corner, and the two questions `probe:carrig` was not asking (issue #47)
 
@@ -2301,6 +2495,69 @@ five declared screen ids it does **not** reach and why: `intro` (deliberately sk
 stated rather than silently crossed. **The retirement flow is on the same list**: it needs an
 accident, and `probe:qualiretire` stages one.
 
+### Eighteen half-metals are still in the scene, audited and deliberately not touched (#36)
+
+The metalness audit that produced §6's wheel-corner table covered **every material in
+`src/render/`** — 38 `MeshStandardMaterial` sites across twelve files. The car's own
+materials are fixed. **The world's are not, and every one of them is listed here so that
+nobody has to re-derive the list.** Metalness is a switch: anything strictly between about
+0.05 and 0.95 is a material that does not exist, deleting that fraction of the diffuse term
+and tinting that fraction of the specular with the surface's own hue.
+
+| file | material | roughness | metalness | what it should be |
+|---|---|---|---|---|
+| `Paddock.ts` | **glazing** | 0.14 | **0.70** | **0** — architectural glass is a dielectric. At 0.70 with roughness 0.14 the paddock's windows are tinted mirrors with 70% of their diffuse deleted. **The worst one on the list.** |
+| `Paddock.ts` | structures | 0.78 | 0.10 | 0 (clad concrete/steel, painted) |
+| `Paddock.ts` | grandstands | 0.80 | 0.06 | 0 |
+| `SafetyCarMesh.ts` | **body** | 0.38 | **0.35** | **0** — this is §6's *"painted bodywork at metalness 0.26"* verbatim, on the one vehicle everybody is looking at under a neutralisation |
+| `SafetyCarMesh.ts` | wheels | 0.85 | 0.15 | 0 (rubber dominates the merged tyre+rim) |
+| `TrackMesh.ts` | gantry posts | 0.60 | 0.35 | 0 (painted steel) |
+| `TrackMesh.ts` | catch fence | 0.75 | 0.25 | 0 (PVC-coated wire — the colour `0x2f4a38` IS the coating) |
+| `TrackMesh.ts` | gantry beam | 0.50 | 0.20 | 0 |
+| `TrackMesh.ts` | buildings | 0.70 | 0.10 | 0 |
+| `TrackMesh.ts` | stands, billboards, marker boards | 0.55–0.75 | 0.05 | at the Fresnel floor; defensible |
+| `MarshalPost.ts` | post | 0.85 | 0.20 | 0 (painted steel) |
+| `PitCrew.ts` | **tools** | 0.34 | **0.55** | **1** — a wheel gun and a jack really are metal, and the albedo would have to rise with it |
+| `PitCrew.ts` | kit | 0.62 | 0.04 | floor; fine |
+| `Wreckage.ts` | shards | 0.38 | 0.18 | 0 — its own comment says *"lacquered carbon, not matte plastic"*, and lacquered carbon is 0.02 on this car |
+| `SurfaceDetail.ts` | asphalt | 0.58 | 0.05 | floor; defensible |
+| `SurfaceDetail.ts` | kerb, wall | 0.55/0.80 | 0.02/0.04 | floor; fine |
+| `PitBoxMarker.ts` | paint | 0.45–0.55 | 0.03–0.05 | floor; fine |
+| `ChamferKit.ts` | `structureMaterial` **default** | 0.72 | 0.12 | **unreachable** — all four callers pass an explicit value, so the default is dead. A documentation hazard rather than a rendering one, and the next caller who omits `opts` inherits a half-metal. |
+
+**Why none of them moved.** `TrackMesh.ts` and `SurfaceDetail.ts` are held by #48;
+`PitCrew.ts` belongs to the pit-stop work in flight; `Paddock.ts`, `SafetyCarMesh.ts`,
+`MarshalPost.ts` and `Wreckage.ts` are nobody's ground but are also not the car, and the
+brief for #36 was the car plus a loader. **Two of them are worth doing on their own and
+should be done together, because they are the same bug §6 already has a name for**: the
+safety car's paint at 0.35 and the paddock's glazing at 0.70. Both need the albedo checked
+at the same time — see §6 on why switching metalness without moving the base colour makes a
+correct change look like a regression. **Nobody is on this.**
+
+### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
+
+Found while running the regression set for #36, and it is a probe defect rather than a
+rendering one. `audit:livery` asserts that its `control` build — no design, identical
+options to `audit:car`'s `day-high` — is BYTE-IDENTICAL to `audit:car`'s shot, on `hero`,
+`side` and `top`. On one run it failed on `hero` alone:
+`bcdf59e974d3 vs 15aebc66fcb0`, with `side` and `top` byte-identical.
+
+**Three measurements say it is not a repaint.** (a) A material change moves every view; two
+of three were identical. (b) The difference image is **the whole car body with the ground
+plane and the contact shadow untouched**, which is the signature of an asset the shell's
+material takes and the ground's does not — the detail normal map — rather than of a
+constant. 147,204 px, mean delta 39. (c) **It did not reproduce**: an immediate re-run gave
+`control--hero == 15aebc66`, and a direct test of `audit/car.html` (build, shoot `hero`,
+wait 4s, shoot again, rebuild, shoot again) returns `15aebc66` all three times.
+
+So the first shot a page takes can differ from every shot after it, under load, and neither
+harness warms up. `probe:assets` does warm up, for exactly this reason and having found it
+independently: `CarMesh` starts the carbon-weave `TextureLoader` inside `buildCar` and
+nothing waits for it. **The risk is that `audit:livery`'s one real assertion — the guarantee
+that the existing 2026 grid has not been repainted — reads as a false alarm often enough to
+be ignored.** The fix is a warm-up build in both harnesses; not done here because both are
+shared files and the run that matters passed. **Nobody is on this.**
+
 ### Measured, deferred, and still true
 - **The tier-demotion notice tells the player the route to the Video tab; it does not offer
   a button.** The renderer owns a self-contained banner (issue #73, §6) that reads *"Set it
@@ -2845,6 +3102,17 @@ measurement passes every version of it that is wrong.
   **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
   of the load. Check `uptime` before quoting any number, and say plainly when a
   measurement was skipped rather than quoting one taken under load.
+- **Blaming the load for something that was a real bug.** The list above is right and the
+  rule is right, and on 2026-08-03 it also swallowed a genuine defect for two rewrites.
+  *"The asset-loader probe hit a 200 response carrying a valid PNG and an `onerror`"* is on
+  that list as a load artefact. **It was not.** Vite scans `public/` once at server start
+  and its static middleware skips anything not in that Set; every harness in `scripts/`
+  passes `watch: null`, so **a file written into `public/` while such a server is running is
+  invisible to it and the SPA html fallback answers with `index.html`, 200,
+  `Content-Type: text/html`.** Any probe that creates a file under `public/` at runtime has
+  this, and it presents as a corrupt asset. Fixed for `public/brand/` by serving it from the
+  plugin (see §6, issue #36). **A symptom that matches the load excuse is not evidence for
+  it — make the failing component say WHY before accepting the environment as the cause.**
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).

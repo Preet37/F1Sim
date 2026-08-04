@@ -370,6 +370,16 @@ export interface CarOptions {
   compound?: CompoundId;
   /** Which rear-wing actuation this team runs. See `ACTUATION`. */
   actuation?: ActuationId;
+  /**
+   * The team's id, forwarded to the livery painter and used for nothing else
+   * here.
+   *
+   * It is the key to `public/brand/<team-id>/` — the asset slots for the badge,
+   * the sponsor decal and a replacement livery (issue #36). Absent, the car is
+   * painted from the generated marks exactly as it was before slots existed,
+   * which is what every probe and both audit harnesses get.
+   */
+  team?: string;
 }
 
 // --- Active aero, and how teams differ ------------------------------------
@@ -3733,11 +3743,11 @@ function material(key: string, make: () => THREE.Material): THREE.Material {
  */
 function shellMaterial(
   colour: number, accent: number, number: number, code: string, size: number,
-  detail: boolean,
+  detail: boolean, team: string,
 ): THREE.Material {
-  const key = `shell:${colour}:${accent}:${number}:${code}:${size}:${detail ? 'd' : ''}`;
+  const key = `shell:${colour}:${accent}:${number}:${code}:${size}:${detail ? 'd' : ''}:${team}`;
   return material(key, () => {
-    const livery = buildLivery({ colour, accent, number, code }, size);
+    const livery = buildLivery({ colour, accent, number, code, team }, size);
     const mat = new THREE.MeshStandardMaterial({
       map: livery.map,
       roughnessMap: livery.surface,
@@ -3806,7 +3816,7 @@ export function buildCar(
   // afford either, for a surface break-up nobody sees on a phone screen.
   const shellMat = shellMaterial(
     bodyColour, accentColour, opts.number ?? 0, opts.code ?? '', t.texture,
-    quality === 'high',
+    quality === 'high', opts.team ?? '',
   );
   const shadowMat = material('shadow', () => new THREE.MeshBasicMaterial({
     color: 0x000000,
