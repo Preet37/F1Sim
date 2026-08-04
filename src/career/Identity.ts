@@ -141,6 +141,10 @@ export interface Nation {
 export const NATIONS: readonly Nation[] = [
   { name: 'Argentina', code: 'ARG', colours: [0x75aadb, 0xffffff] },
   { name: 'Australia', code: 'AUS', colours: [0x00843d, 0xffcd00] },
+  // Bahrain is on the calendar and was not on this list, so #77's contract
+  // chart drew the `FIA` fallback plate under a Bahrain grand prix. Every
+  // country in `src/data/tracks/circuits.ts` is here now.
+  { name: 'Bahrain', code: 'BHR', colours: [0xce1126, 0xffffff] },
   { name: 'Austria', code: 'AUT', colours: [0xed2939, 0xffffff] },
   { name: 'Belgium', code: 'BEL', colours: [0xfdda24, 0x000000] },
   { name: 'Brazil', code: 'BRA', colours: [0x009c3b, 0xffdf00] },
@@ -167,6 +171,11 @@ export const NATIONS: readonly Nation[] = [
   { name: 'Portugal', code: 'POR', colours: [0x006600, 0xff0000] },
   { name: 'Saudi Arabia', code: 'KSA', colours: [0x006c35, 0xffffff] },
   { name: 'South Africa', code: 'RSA', colours: [0x007a4d, 0xffb612] },
+  // Every nationality that appears in `src/data/roster/` is here. Singapore
+  // and Sri Lanka were missing and two Formula 3 drivers drew the `FIA`
+  // fallback plate on #77's market table because of it.
+  { name: 'Singapore', code: 'SGP', colours: [0xed2939, 0xffffff] },
+  { name: 'Sri Lanka', code: 'SRI', colours: [0x8d2029, 0xffb700] },
   { name: 'Spain', code: 'ESP', colours: [0xaa151b, 0xf1bf00] },
   { name: 'Sweden', code: 'SWE', colours: [0x006aa7, 0xfecc00] },
   { name: 'Switzerland', code: 'SUI', colours: [0xd52b1e, 0xffffff] },

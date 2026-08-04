@@ -6,6 +6,7 @@ import type {
   DepartmentId, DepartmentState, Ledger, UpgradeProject,
 } from './MyTeam';
 import type { RoundResult, SeasonState, SeasonSummary } from './Season';
+import type { RatingsState } from './DriverRatings';
 
 /**
  * Everything a career is, in one serialisable object.
@@ -53,8 +54,15 @@ export const SAVE_VERSION = 2;
  *    a three-colour livery and cap penalties. A driver career has `team: null`
  *    and is entirely unaffected; a My Team career written by a build before this
  *    one never existed, because My Team did not.
+ * 6: `CareerState.ratings` — the driver ratings model (issue #77). Additive and
+ *    entirely recoverable: a career written before it existed is given a
+ *    contract goal at its current rating and an empty history, which is exactly
+ *    what a driver who has just signed has. The one thing that genuinely cannot
+ *    be reconstructed is the per-race lifetime counters the accolades read, and
+ *    `SaveCodec.backfill` says so by seeding `starts` from the seasons already
+ *    in `history` rather than pretending to know how many podiums there were.
  */
-export const SAVE_MINOR = 5;
+export const SAVE_MINOR = 6;
 
 /** The player, as a driver. Mirrors `WorldDriver` because they are one. */
 export interface PlayerProfile {
@@ -239,6 +247,22 @@ export interface CareerState {
 
   /** Preparation slots left before the next round. */
   prepSlotsLeft: number;
+
+  /**
+   * The driver ratings model's HISTORY — see `src/career/DriverRatings.ts`.
+   *
+   * NOT THE RATINGS THEMSELVES. Those are a pure projection of the player's
+   * `WorldDriver` record and are recomputed on every read, precisely so that
+   * a stored copy can never disagree with the driver who goes racing. What is
+   * here is the four things a projection genuinely cannot recover: the rating
+   * at the last reveal (so a delta can be shown), the rating after each past
+   * weekend (so the contract chart has a line), the goal the team set at
+   * signing, and the lifetime counters the accolades count.
+   *
+   * Additive, so a career written before #77 simply gets a fresh goal at its
+   * current rating and an empty chart.
+   */
+  ratings?: RatingsState;
 
   /**
    * The weekend the player is part-way through, if any.

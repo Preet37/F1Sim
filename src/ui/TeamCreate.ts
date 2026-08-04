@@ -14,6 +14,7 @@ import {
 } from '../career/MyTeam';
 import { DEFAULT_LIVERY_DESIGN, drawMark, type LiveryDesign } from '../render/LiveryDesign';
 import type { WorldDriver } from '../career/World';
+import { ratingsFor } from '../career/DriverRatings';
 
 /**
  * FOUNDING THE TEAM.
@@ -211,7 +212,7 @@ export function buildTeamCreate(
   section(panel, 'The second car',
     'A real driver in this world. They qualify on merit, race the same physics '
     + 'and score constructors’ points. Their salary is outside the cap.');
-  const driverBoard = timingBoard(panel, ['#', 'Free agent', 'Pace', 'Exp', 'Asking']);
+  const driverBoard = timingBoard(panel, ['#', 'Free agent', 'RTG', 'Exp', 'Asking']);
   const driverRows: { id: string; row: HTMLElement }[] = [];
   for (const [i, d] of agents.entries()) {
     const n = splitName(d.firstName + ' ' + d.lastName);
@@ -222,9 +223,10 @@ export function buildTeamCreate(
       first: n.first, last: n.last,
       note: d.nationality + ' · age ' + d.age + ' · '
         + (d.experience === 0 ? 'a rookie' : d.experience + ' seasons'),
+      // The driver's RATING, from the one model that decides what one is.
       figs: [
-        { text: (d.skill * 100).toFixed(0), cls: d.skill > 0.78 ? 'best' : '' },
-        { text: String(d.experience) },
+        { text: String(ratingsFor(d).rtg), cls: ratingsFor(d).rtg >= 78 ? 'best' : '' },
+        { text: String(ratingsFor(d).exp) },
       ],
       tag: { text: '$' + money(d.salaryUsd) },
       index: i,

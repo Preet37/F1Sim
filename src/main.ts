@@ -43,7 +43,26 @@ import { playerIndexIn } from './career/Seat';
 import { buildCareerCreate, type CreatedIdentity } from './ui/CareerCreate';
 import { buildTeamCreate, type TeamCreateHandle } from './ui/TeamCreate';
 import { buildLiveryEditor, type LiveryEditorHandle } from './ui/LiveryEditor';
-import { capGauge, driverMarket, engineDeal, mountTeamHQ } from './ui/TeamHQ';
+import { capGauge, engineDeal, mountTeamHQ } from './ui/TeamHQ';
+import { buildDriverDetails, type DetailTab } from './ui/DriverDetails';
+import { buildDriverMarket } from './ui/DriverMarketScreen';
+import { buildRatingsReveal } from './ui/RatingsReveal';
+import type { MarketSort } from './career/DriverRatings';
+
+/** The sub-tab labels, in the reference's own order. See `DriverDetails.ts`. */
+const DETAIL_TAB_LABEL: Record<DetailTab, string> = {
+  contracts: 'Contracts',
+  accolades: 'Accolades',
+  rivals: 'Rivals',
+  recognition: 'Recognition',
+  graph: 'Driver Ratings Graph',
+  comparison: 'Driver Rating Comparison',
+};
+
+const MARKET_SORT_LABEL: Record<MarketSort, string> = {
+  acclaim: 'Acclaim', value: 'Market value', rating: 'Rating',
+  name: 'Driver', team: 'Team',
+};
 import { decisionList, newsFeed } from './ui/Briefing';
 import { buildPreparation } from './ui/Preparation';
 import { clearLiveryDesigns, registerLiveryDesign } from './render/Livery';
@@ -116,6 +135,12 @@ type Screen =
   | 'garage'
   | 'event'
   | 'standings'
+  // The three screens of issue #77. Every one is a view onto
+  // `src/career/DriverRatings.ts`, and every one is in `probe:smoke`'s
+  // required set — which is what stops them going the way of the podium.
+  | 'driver-details'
+  | 'driver-market'
+  | 'ratings'
   | 'settings'
   | 'controller'
   | 'drivers'
@@ -1649,28 +1674,174 @@ class Game {
     this.button('Back to the factory', actions, () => this.showTeamHQ(), 'btn primary');
   }
 
-  /** Who could drive the second car. Real drivers, in this save's world. */
+  // =======================================================================
+  // Issue #77 — the driver, as the management screens see them
+  // =======================================================================
+  //
+  // Three screens, all reading `src/career/DriverRatings.ts` and none of them
+  // computing a rating of their own. Held on the shell rather than inside the
+  // screens because the shell rebuilds a page from scratch on every change —
+  // that is how a tab repaints — and a tab held inside the screen would snap
+  // back to the first one every time anybody pressed anything. The settings
+  // screen has carried `settingsTab` for exactly this reason since it existed.
+
+  private detailTab: DetailTab = 'contracts';
+  /** Whether this weekend's reveal has already been shown. See `afterRace`. */
+  private ratingsShown = false;
+  private marketSort: MarketSort = 'acclaim';
+  private marketSelected: string | null = null;
+  private compareTo: string | null = null;
+
+  /**
+   * Driver Details — `reference/target/83.png` and `85.png`.
+   *
+   * ONE SCREEN ID, SIX HEADINGS, which is the pattern `settings` (eight tabs)
+   * and `team-hq` (four rooms) already use. `probe:smoke` identifies a screen
+   * by its id PLUS the headings it prints plus its set of buttons, so the six
+   * sub-tabs are six distinct screens to the walk and each one is named in the
+   * required set — the alternative is six routes that all pass by falling back
+   * to Contracts, which is the exact bug #62 fixed.
+   */
+  private showDriverDetails(tab?: DetailTab): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    if (tab) this.detailTab = tab;
+    this.setScreen('driver-details');
+
+    const label = DETAIL_TAB_LABEL[this.detailTab];
+    const { body, actions } = this.page({
+      tab: TIER_CAR[career.tier].shortName + ' · ' + career.season.year,
+      where: 'Driver Details',
+      title: label,
+      sub: career.state.player.firstName + ' ' + career.state.player.lastName
+        + ' · ' + career.teamNameOf(career.state.teamId),
+      back: () => this.showCareerHub(),
+      meta: [
+        ['RTG', String(career.ratings().rtg)],
+        ['Starts', String(career.starts())],
+      ],
+      rule: {
+        parts: [
+          Math.max(0, career.round), 1,
+          Math.max(0, career.calendar.length - career.round - 1),
+        ],
+        at: 1,
+      },
+    });
+
+    buildDriverDetails(body, {
+      career,
+      tab: this.detailTab,
+      compareTo: this.compareTo,
+      onTab: (t) => this.showDriverDetails(t),
+      onCompareTo: (id) => { this.compareTo = id; this.showDriverDetails('comparison'); },
+      onChange: () => this.profiles.saveCareer(this.careerId, career.state),
+      routes: {
+        overview: () => this.showCareerHub(),
+        standings: () => this.showStandings(),
+        vehicle: () => this.showSetup(career.currentCircuitId,
+          () => this.showDriverDetails()),
+        factory: career.myTeam ? () => this.showTeamHQ() : null,
+        market: () => this.showDriverMarket(),
+      },
+    });
+
+    this.button('Ratings', actions, () => this.showRatings(), 'btn ghost');
+    this.button('Driver Market', actions, () => this.showDriverMarket(), 'btn ghost');
+    this.spacer(actions);
+    this.button('Back to the hub', actions, () => this.showCareerHub(), 'btn primary');
+  }
+
+  /**
+   * The driver market — `reference/target/88.png`.
+   *
+   * ONE MARKET. `TeamHQ.driverMarket` used to be a second one, printing
+   * `skill × 100` under a column headed "Pace"; see the note where it was.
+   */
   private showDriverMarket(): void {
     const career = this.career;
-    if (!career?.myTeam) { this.showCareerHub(); return; }
-    this.setScreen('team-hq');
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('driver-market');
     const { body, actions } = this.page({
-      tab: career.myTeam.name,
-      where: 'Driver market',
-      title: 'The second car',
-      sub: 'They race the same physics you do, and they score for the team.',
-      back: () => this.showTeamHQ(),
+      tab: career.myTeam?.name ?? TIER_CAR[career.tier].shortName,
+      where: 'Driver Market',
+      title: 'Driver Market',
+      sub: career.myTeam
+        ? 'Every driver in your championship, and whoever could drive your second car.'
+        : 'Every driver in your championship, and what the paddock thinks they are worth.',
+      back: () => (career.myTeam ? this.showTeamHQ() : this.showDriverDetails()),
+      meta: [['Sorted by', MARKET_SORT_LABEL[this.marketSort]]],
     });
-    capGauge(body, career);
-    driverMarket(body, {
+    if (career.myTeam) capGauge(body, career);
+    buildDriverMarket(body, {
       career,
+      sort: this.marketSort,
+      selected: this.marketSelected,
+      onSort: (s) => { this.marketSort = s; this.showDriverMarket(); },
+      onSelect: (id) => { this.marketSelected = id; this.showDriverMarket(); },
+      onCompare: (id) => { this.compareTo = id; this.showDriverDetails('comparison'); },
       onChange: () => {
         this.profiles.saveCareer(this.careerId, career.state);
         this.showDriverMarket();
       },
     });
+    this.button('Driver Details', actions, () => this.showDriverDetails(), 'btn ghost');
     this.spacer(actions);
-    this.button('Back to the factory', actions, () => this.showTeamHQ(), 'btn primary');
+    this.button(career.myTeam ? 'Back to the factory' : 'Back to the hub', actions,
+      () => (career.myTeam ? this.showTeamHQ() : this.showCareerHub()), 'btn primary');
+  }
+
+  /**
+   * The ratings reveal — `reference/target/86.png`.
+   *
+   * A SET-PIECE, not a page: the same kind of thing as the podium, and shown
+   * in the same place — after a round, on the way back to the hub. It is also
+   * reachable from Driver Details on demand, and that is deliberate rather
+   * than incidental: a screen whose only route is "finish a race" is a screen
+   * `probe:smoke` cannot walk, and issues #13 and #38 are the record of what
+   * happens to those.
+   */
+  private showRatings(then?: () => void): void {
+    const career = this.career;
+    if (!career) { this.showMenu(); return; }
+    this.setScreen('ratings');
+    const team = getTeam(career.state.teamId);
+    // THE CHASSIS TITLE IS THE DRIVER, NOT THE WORD "RATINGS".
+    //
+    // `86.png` carries the word once, outlined, over the chevron strip in the
+    // middle of the frame. Putting it in the page title as well printed it
+    // twice on one screen in two different faces, which the first screenshot
+    // made obvious and no amount of reading the code would have.
+    const { body, actions } = this.page({
+      tab: TIER_CAR[career.tier].shortName + ' · ' + career.season.year,
+      where: 'Ratings',
+      title: career.state.player.firstName + ' ' + career.state.player.lastName,
+      sub: 'What the last weekend did to you.',
+      back: then ?? (() => this.showDriverDetails()),
+    });
+
+    const reveal = career.ratingsReveal();
+    buildRatingsReveal(body, {
+      ...reveal,
+      firstName: career.state.player.firstName,
+      lastName: career.state.player.lastName,
+      driverId: career.state.playerDriverId,
+      teamName: team.name,
+      colour: hexColour(team.colour),
+      accent: hexColour(team.accent),
+      round: career.round,
+      rounds: career.calendar.length,
+    });
+
+    // Marking it seen is what makes the NEXT reveal a delta. Done on the way
+    // out rather than on the way in, so a player who opens it and leaves has
+    // still seen it — and so the deltas on screen are the ones being read.
+    this.spacer(actions);
+    this.button('Advance', actions, () => {
+      career.markRatingsRevealed();
+      this.profiles.saveCareer(this.careerId, career.state);
+      if (then) then(); else this.showDriverDetails();
+    }, 'btn primary');
   }
 
   /**
@@ -1963,6 +2134,8 @@ class Game {
       if (career.myTeam) {
         this.button('Team HQ', actions, () => this.showTeamHQ(), 'btn ghost');
       }
+      this.button('Driver Details', actions, () => this.showDriverDetails(), 'btn ghost');
+      this.button('Driver Market', actions, () => this.showDriverMarket(), 'btn ghost');
       this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
       this.spacer(actions);
       this.button('End Season', actions, () => {
@@ -2014,6 +2187,15 @@ class Game {
     if (career.myTeam) {
       this.button('Team HQ', actions, () => this.showTeamHQ(), 'btn ghost');
     }
+    // ISSUE #77's THREE SCREENS, ON THE HUB.
+    //
+    // Both buttons are on the hub for a driver career as well as a My Team
+    // one, because a driver's rating and what the paddock thinks they are
+    // worth is the whole subject of a driver career. The reveal hangs off
+    // Driver Details rather than the hub — it is a moment, not a destination —
+    // and `probe:smoke` reaches it through that route.
+    this.button('Driver Details', actions, () => this.showDriverDetails(), 'btn ghost');
+    this.button('Driver Market', actions, () => this.showDriverMarket(), 'btn ghost');
     this.button('Standings', actions, () => this.showStandings(), 'btn ghost');
     this.button('Practice Only', actions, () => {
       this.weekend = [this.sessionConfig('practice', 'Practice', circuit.id, 600, 0)];
@@ -5777,6 +5959,23 @@ class Game {
     if (!career) { this.showMenu(); return; }
 
     if (career.state.endedReason) { this.showCareerOver(); return; }
+
+    // THE RATINGS REVEAL, on the way back from the race — `86.png`.
+    //
+    // Between the podium and the paddock, which is where the reference puts it
+    // and where it belongs: the weekend has just moved five numbers and this
+    // is the screen that says by how much. It is shown once per weekend and
+    // then handed on, so nothing on the way to the hub is skipped.
+    if (!this.ratingsShown && career.ratingsState.history.length > 0) {
+      this.ratingsShown = true;
+      this.showRatings(() => {
+        career.markRatingsRevealed();
+        this.profiles.saveCareer(this.careerId, career.state);
+        this.afterRace(result);
+      });
+      return;
+    }
+    this.ratingsShown = false;
 
     const me = career.state.playerDriverId;
     const myIndex = result.order.indexOf(me);

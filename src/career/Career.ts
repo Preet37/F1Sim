@@ -36,6 +36,14 @@ import {
   offSeasonStories, openDecisions, roundDebrief,
   type Decision, type Story,
 } from './Newsroom';
+import {
+  ACCOLADES, HISTORY_LIMIT, RATING_KEYS, accoladeProgress, applyMove, buildMarket,
+  capsFor, emptyRatingsState, levelToPoints, moveForRound, newContractGoal,
+  ratingsFor, recognitionFor, recordRoundInRecord, recordSeasonInRecord, sortMarket,
+  type AccoladeProgress, type ContractGoal, type DriverRatings, type MarketEntry,
+  type MarketSort, type RatingKey, type RatingMove, type RatingsState,
+  type RecognitionSplit,
+} from './DriverRatings';
 
 /** A project that reached the end of its schedule, and whether it passed QC. */
 export interface ProjectDelivery {
@@ -230,6 +238,9 @@ export class Career {
       },
       team: null,
       prepSlotsLeft: 2,
+      // Placeholder — replaced below, once the player's record is in the world
+      // and there is a rating to set a contract goal against.
+      ratings: emptyRatingsState(0, world.season),
     };
 
     // Take a seat by displacing the weakest driver at that team, who becomes a
@@ -242,6 +253,7 @@ export class Career {
     const career = new Career(state);
     career.state.season = startSeason(world);
     career.seedRivalries(rng);
+    career.resetContractGoal();
     return career;
   }
 
@@ -404,6 +416,7 @@ export class Career {
       },
       team: myTeam,
       prepSlotsLeft: 2,
+      ratings: emptyRatingsState(0, world.season),
     };
 
     // The second car, signed into the world as a real entrant.
@@ -424,6 +437,10 @@ export class Career {
     career.state.season = startSeason(world);
     career.seedRivalries(rng);
     career.beginTeamSeason();
+    // An owner-driver picked themselves, which is what the academy line on the
+    // recognition screen means: nobody else in the garage chose that seat.
+    career.resetContractGoal();
+    career.state.ratings!.recognition.academyChoice = true;
     return career;
   }
 
@@ -523,9 +540,13 @@ export class Career {
     // comparison and there is nothing to compare against afterwards.
     const positionBefore = this.championshipPosition;
 
+    const pointsBefore = this.standing().points;
+
     recordRound(this.state.season, this.state.tier, result);
     this.advanceOtherTiers();
     this.updateRivalries(result);
+    // THE RATINGS MOVE HERE, and only here. See `applyRoundToRatings`.
+    this.applyRoundToRatings(result, this.standing().points - pointsBefore);
     this.state.prepSlotsLeft = this.prepSlotsForNextRound();
     // The factory runs on the same clock as the championship.
     const deliveries = this.advanceFactory();
@@ -696,6 +717,20 @@ export class Career {
       promoted,
     };
     s.history.push(summary);
+
+    // --- The ratings model's own year-end ----------------------------------
+    //
+    // Two counters and one contract. `recordSeasonInRecord` is what makes the
+    // `Championship Top 5` accolade a real count rather than a label, and the
+    // contract is either renewed against the new seat or ages by a year at the
+    // same one — which is what `Years with Team` on the recognition screen is.
+    const ratings = this.ratingsState;
+    recordSeasonInRecord(ratings.record, myPosition);
+    if (promoted) {
+      this.resetContractGoal();
+    } else {
+      ratings.contract.seasonsAtTeam++;
+    }
 
     // Age the player alongside everybody else.
     s.player.age++;
@@ -984,6 +1019,233 @@ export class Career {
   }
 
   // =======================================================================
+  // Driver ratings — issue #77
+  // =======================================================================
+  //
+  // EVERY SCREEN READS THESE. None of them recomputes a rating from a driver
+  // attribute, and `probe:ratings` §6 greps `src/ui/` to prove it. The model
+  // itself is `src/career/DriverRatings.ts`; what is here is the wiring
+  // between it and the career it describes.
+
+  /** The stored half of the model. Always present — the codec backfills it. */
+  get ratingsState(): RatingsState {
+    this.state.ratings ??= emptyRatingsState(0, this.state.season.year);
+    return this.state.ratings;
+  }
+
+  /**
+   * The player as a driver record, WITHOUT the pressure penalty.
+   *
+   * `playerAsWorldDriver` bakes the pressure erosion into `consistency`,
+   * correctly, because that is the record the simulation races. The ratings
+   * model must not read that one, for two separate reasons and the second is
+   * the serious one:
+   *
+   *   · It applies pressure itself, to FOC, so reading the pre-eroded record
+   *     would count the same penalty twice.
+   *   · `applyRoundToRatings` writes the moved record BACK to the profile. Do
+   *     that through the eroded copy and the penalty is re-applied and stored
+   *     on every single round. `probe:ratings` §4 measured it: 340 weekends of
+   *     winning finished with FOC at **17**, from a start of 64, on a driver
+   *     who had done nothing wrong. A mirror written back into its own source
+   *     is the same species of bug as `narrative.departmentMorale`.
+   */
+  private playerRaw(): WorldDriver {
+    return { ...playerAsWorldDriver(this.state), consistency: this.state.player.consistency };
+  }
+
+  /** The player's ratings, right now. */
+  ratings(): DriverRatings {
+    return ratingsFor(this.playerRaw(), {
+      pressure: this.state.narrative.pressure,
+      starts: this.ratingsState.record.starts,
+    });
+  }
+
+  /** Anybody's ratings, right now. The one entry point for the AI's numbers. */
+  ratingsOf(driverId: string): DriverRatings | null {
+    if (driverId === this.state.playerDriverId) return this.ratings();
+    const d = findDriver(this.state.world, driverId);
+    return d ? ratingsFor(d) : null;
+  }
+
+  /** The ceiling on each of the player's attributes. */
+  ratingCaps(): Record<RatingKey, number> {
+    return capsFor(this.playerRaw(), this.state.seed);
+  }
+
+  /** Race starts, exactly counted. */
+  starts(): number { return this.ratingsState.record.starts; }
+
+  /** The team's expectation of this contract. */
+  contractGoal(): ContractGoal { return this.ratingsState.contract; }
+
+  /**
+   * Sets a fresh goal against the rating the player is on today.
+   *
+   * Called at creation and on every move of team, because a target set against
+   * the rating a Formula 3 rookie carried is not a target a Formula 1 seat
+   * would set. `seasonsAtTeam` resets with it: recognition is loyalty to THIS
+   * garage, not tenure in the sport.
+   */
+  resetContractGoal(): void {
+    const r = this.ratingsState;
+    r.contract = newContractGoal(
+      this.ratings().rtg, this.state.season.year, this.ratingCaps());
+  }
+
+  /**
+   * One race weekend, folded into the model.
+   *
+   * The order matters and is the whole of the method: the counters move first
+   * (so `starts` is right when experience is computed), then the pure move is
+   * computed against the driver as they were, then it is applied and capped,
+   * then the sample is appended. Doing the sample before the move would draw a
+   * chart of the driver who turned up rather than the one who left.
+   */
+  private applyRoundToRatings(result: RoundResult, pointsScored: number): void {
+    const s = this.state;
+    const r = this.ratingsState;
+    if (result.order.indexOf(s.playerDriverId) < 0) return;
+
+    recordRoundInRecord(r.record, result, s.playerDriverId, pointsScored);
+
+    const me = this.playerRaw();
+    const mate = this.teammate();
+    const move = moveForRound(me, {
+      world: s.world,
+      season: s.season,
+      tier: s.tier,
+      driverId: s.playerDriverId,
+      result,
+      teammateId: mate?.id,
+      pressure: s.narrative.pressure,
+      starts: r.record.starts,
+    });
+
+    // The move lands on the PROFILE, which is authoritative, and is then
+    // mirrored into the world by `syncPlayerIntoWorld`. Writing it to the world
+    // record instead would be overwritten by the very next sync — this project
+    // has shipped that exact bug as `narrative.departmentMorale` (§6, prep
+    // slots), a mirror nothing consulted.
+    const before: WorldDriver = { ...me };
+    applyMove(before, move, s.seed);
+    for (const key of ['skill', 'racecraft', 'consistency', 'tyreManagement',
+      'wetSkill', 'aggression'] as const) {
+      s.player[key] = before[key];
+    }
+    this.syncPlayerIntoWorld();
+
+    r.history.push(move.sample);
+    if (r.history.length > HISTORY_LIMIT) {
+      r.history.splice(0, r.history.length - HISTORY_LIMIT);
+    }
+    this.lastRatingMove = move;
+  }
+
+  /** What the last weekend did, for the debrief and the reveal screen. */
+  lastRatingMove: RatingMove | null = null;
+
+  /**
+   * The reveal, as the screen shows it: now, then, and the change.
+   *
+   * `86.png` prints a delta beside every attribute and a running progress
+   * figure under it. Both come from here rather than from the screen, so the
+   * "+8,171" and the bar cannot disagree about which two numbers they are the
+   * difference between.
+   */
+  ratingsReveal(): {
+    now: DriverRatings;
+    previous: DriverRatings | null;
+    caps: Record<RatingKey, number>;
+    deltaPoints: Record<RatingKey, number>;
+  } {
+    const now = this.ratings();
+    const previous = this.ratingsState.lastRevealed;
+    const caps = this.ratingCaps();
+    const deltaPoints = {} as Record<RatingKey, number>;
+    for (const k of RATING_KEYS) {
+      const was = previous ? previous[k] : 0;
+      deltaPoints[k] = levelToPoints(now[k]) - levelToPoints(was);
+    }
+    return { now, previous, caps, deltaPoints };
+  }
+
+  /** Marks the reveal as seen, so the next one shows the change since this. */
+  markRatingsRevealed(): void {
+    this.ratingsState.lastRevealed = this.ratings();
+  }
+
+  /** Every accolade with its tier and its count. */
+  accolades(): AccoladeProgress[] {
+    const rec = this.ratingsState.record;
+    return ACCOLADES.map((a) => accoladeProgress(a, rec));
+  }
+
+  /**
+   * The recognition split against the other car.
+   *
+   * Null when there is no other car — a Formula 3 team the player has joined
+   * always has one, but a career mid-transfer briefly does not, and a screen
+   * that divides by a missing team-mate is a screen that prints NaN%.
+   */
+  recognition(): (RecognitionSplit & { teammate: WorldDriver }) | null {
+    const mate = this.teammate();
+    if (!mate) return null;
+    const r = this.ratingsState;
+    return {
+      ...recognitionFor({
+        mine: this.ratings(),
+        theirs: ratingsFor(mate),
+        seasonsAtTeam: r.contract.seasonsAtTeam,
+        contractYears: this.state.contractYears,
+        meetings: r.recognition.meetings,
+        academyChoice: r.recognition.academyChoice,
+      }),
+      teammate: mate,
+    };
+  }
+
+  /**
+   * A meeting with the principal, bought with a preparation slot.
+   *
+   * REACHES `spendPrepSlot` RATHER THAN REIMPLEMENTING IT. §7 records that
+   * method as fully built and unreachable; a second morale path here would
+   * have been a fifth derivation of a fact that already has one. The slot is
+   * spent as a factory day — which is what a meeting in the factory is — and
+   * the meeting is counted on top, because recognition is what the meeting
+   * buys and morale is what the day buys.
+   */
+  takeMeeting(): { ok: boolean; reason: string } {
+    if (this.state.prepSlotsLeft <= 0) {
+      return { ok: false, reason: 'No preparation slots left before the next round.' };
+    }
+    this.spendPrepSlot('factory');
+    this.ratingsState.recognition.meetings++;
+    return { ok: true, reason: 'A morning at the factory, and they noticed.' };
+  }
+
+  /**
+   * The driver market, as `88.png` draws it.
+   *
+   * The player's own tier, so a Formula 3 driver looks at Formula 3 and a
+   * Formula 1 one looks at Formula 1. Reads the ratings model — market value
+   * and acclaim are both functions of the rating, which is why the model had
+   * to exist before this screen could.
+   */
+  market(sort: MarketSort = 'acclaim'): MarketEntry[] {
+    return sortMarket(buildMarket({
+      world: this.state.world,
+      tier: this.state.tier,
+      playerDriverId: this.state.playerDriverId,
+      playerStarts: this.ratingsState.record.starts,
+      pressure: this.state.narrative.pressure,
+      seed: this.state.seed,
+      teamName: (id) => this.teamNameOf(id),
+    }), sort);
+  }
+
+  // =======================================================================
   // My Team — the money and the factory
   // =======================================================================
 
@@ -1012,12 +1274,22 @@ export class Career {
 
   /** The second driver at the player's team, whoever it currently is. */
   teammate(): WorldDriver | null {
+    // ANY CAREER, NOT ONLY MY TEAM. This used to return `null` outright when
+    // `state.team` was null, i.e. for every driver career there has ever been
+    // — and a Formula 3 rookie has a team-mate, in the same car, which is the
+    // only fair comparison in motorsport. Three things read this and all three
+    // were dead: the racecraft term in `moveForRound`, the recognition split,
+    // and the comparison screen's default opponent. The recognition screen
+    // said "you do not have one at the moment" to somebody sitting next to one.
+    //
+    // My Team is unchanged by the generalisation: its player is in F1 at
+    // `state.teamId === team.teamId`, so the same filter finds the same driver.
     const t = this.state.team;
-    if (!t) return null;
-    const seats = this.state.world.tiers.F1.drivers.filter(
-      (d) => d.teamId === t.teamId && !d.reserve && !d.retired
+    const seats = this.state.world.tiers[this.state.tier].drivers.filter(
+      (d) => d.teamId === this.state.teamId && !d.reserve && !d.retired
         && d.id !== this.state.playerDriverId);
     const mate = seats[0] ?? null;
+    if (!t) return mate;
     // The stored id is a convenience for screens; the world is the truth, and
     // the transfer market can change it behind the player's back between
     // seasons. Resyncing here means the two can never disagree.

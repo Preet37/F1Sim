@@ -337,11 +337,54 @@ const REQUIRED: Route[] = [
     name: 'Engine deal', path: ['Continue', 'Team HQ', 'Engine deal'],
     screen: 'team-hq', expect: 'Engine deal',
   },
-  {
-    name: 'Driver market', path: ['Continue', 'Team HQ', 'Driver market'],
-    screen: 'team-hq', expect: 'The second car',
-  },
   { name: 'Race weekend briefing', path: ['Continue', 'Race Weekend'], screen: 'briefing' },
+
+  // ---------------------------------------------------------------------
+  // ISSUE #77 — the driver, as the management screens see them
+  // ---------------------------------------------------------------------
+  //
+  // Nine routes for three screen ids, and the reason there are nine is the
+  // reason there are eight settings routes: `driver-details` is ONE shell id
+  // carrying six sub-tabs, and a required route that only checked the id would
+  // pass with all six collapsed onto Contracts. `expect` is the sub-tab's own
+  // heading, which `showDriverDetails` puts in `.page-title`.
+  //
+  // Every one of these is a view onto `src/career/DriverRatings.ts`. They are
+  // in this list on the day they were written rather than after somebody
+  // noticed they had gone — which is the whole of what #13, #38 and #62 cost.
+  //
+  // `Driver market` MOVED. It used to be `team-hq` / "The second car", the My
+  // Team signing board. There is one market now, at its own screen id, doing
+  // both jobs — see the note where `TeamHQ.driverMarket` was.
+  { name: 'Driver market', path: ['Continue', 'Driver Market'], screen: 'driver-market' },
+  {
+    name: 'Driver details — Contracts', path: ['Continue', 'Driver Details'],
+    screen: 'driver-details', expect: 'Contracts',
+  },
+  {
+    name: 'Driver details — Accolades', path: ['Continue', 'Driver Details', 'Accolades'],
+    screen: 'driver-details', expect: 'Accolades',
+  },
+  {
+    name: 'Driver details — Rivals', path: ['Continue', 'Driver Details', 'Rivals'],
+    screen: 'driver-details', expect: 'Rivals',
+  },
+  {
+    name: 'Driver details — Recognition',
+    path: ['Continue', 'Driver Details', 'Recognition'],
+    screen: 'driver-details', expect: 'Recognition',
+  },
+  {
+    name: 'Driver details — Ratings graph',
+    path: ['Continue', 'Driver Details', 'Driver Ratings Graph'],
+    screen: 'driver-details', expect: 'Driver Ratings Graph',
+  },
+  {
+    name: 'Driver details — Comparison',
+    path: ['Continue', 'Driver Details', 'Driver Rating Comparison'],
+    screen: 'driver-details', expect: 'Driver Rating Comparison',
+  },
+  { name: 'Ratings reveal', path: ['Continue', 'Driver Details', 'Ratings'], screen: 'ratings' },
 
   // ---------------------------------------------------------------------
   // THE FOUR SET-PIECES — issues #13 and #38, and the reason they are here

@@ -1,5 +1,8 @@
-import { SAVE_MINOR, SAVE_VERSION, type CareerState } from './CareerState';
+import { SAVE_MINOR, SAVE_VERSION, playerAsWorldDriver, type CareerState } from './CareerState';
 import { defaultDepartments, emptyLedger, type Ledger } from './MyTeam';
+import {
+  RETAIN_GAP, emptyCareerRecord, emptyRatingsState, newContractGoal, ratingsFor,
+} from './DriverRatings';
 
 /**
  * Reading and writing a career, across versions of the game.
@@ -45,7 +48,7 @@ const KNOWN_KEYS = new Set<string>([
   'player', 'playerDriverId', 'tier', 'teamId', 'contractYears',
   'seasonsInTier', 'endedReason',
   'world', 'season', 'history', 'narrative', 'team', 'prepSlotsLeft',
-  'weekendInProgress',
+  'weekendInProgress', 'ratings',
   'unknown',
 ]);
 
@@ -282,6 +285,72 @@ function backfill(state: CareerState): void {
     t.liveryMark ??= 0;
     t.baseCountry ??= '';
   }
+
+  backfillRatings(state);
+}
+
+/**
+ * THE RATINGS BLOCK, defended the same way the My Team block is and for the
+ * same reason (issue #77).
+ *
+ * Every field in here is read by a screen that prints it as a figure or draws
+ * it as a bar. `history` missing is a chart calling `.length` on `undefined`;
+ * `record` missing one counter is an accolade whose progress bar is `NaN%`
+ * wide, which CSS silently drops to zero — so the screen would say "0 of 100
+ * race starts" to somebody with eighty-six of them and never throw. That is
+ * the same class of silent failure as the ledger line that turned a cost cap
+ * into `NaN` and stopped it binding.
+ *
+ * `contract` is seeded from the CURRENT rating rather than from a stored one,
+ * because a career from before this existed genuinely has no signing rating,
+ * and inventing a target it has already missed would open the mode on a
+ * contract the player is failing through no act of theirs.
+ *
+ * Proved red by deleting the per-field loop below: `probe:save` reports
+ * `a missing lifetime counter came back undefined, which is NaN in an
+ * accolade`. Deleting the whole function takes it to four failures.
+ */
+function backfillRatings(state: CareerState): void {
+  const seasons = Array.isArray(state.history) ? state.history.length : 0;
+  const year = state.season?.year ?? new Date().getFullYear();
+
+  // The rating a pre-#77 career is worth right now. Computed from the player's
+  // own profile through the same projection every screen uses — there is no
+  // second formula here.
+  const current = (): number => {
+    try {
+      return ratingsFor(playerAsWorldDriver(state)).rtg;
+    } catch {
+      return 50;
+    }
+  };
+
+  state.ratings ??= emptyRatingsState(current(), year);
+  const r = state.ratings;
+  r.lastRevealed ??= null;
+  r.history ??= [];
+  r.contract ??= newContractGoal(current(), year);
+  r.contract.signedRtg ??= current();
+  r.contract.targetRtg ??= Math.min(100, r.contract.signedRtg + 1);
+  r.contract.retainRtg ??= Math.max(1, r.contract.signedRtg - RETAIN_GAP);
+  r.contract.signedYear ??= year;
+  r.contract.seasonsAtTeam ??= 0;
+
+  r.record ??= emptyCareerRecord();
+  const blank = emptyCareerRecord();
+  for (const key of Object.keys(blank) as (keyof typeof blank)[]) {
+    r.record[key] ??= 0;
+  }
+  // The one honest reconstruction available: a career with N closed seasons
+  // behind it has started at least a season's worth of races per season. It is
+  // stated as a floor rather than as a count, and nothing else is guessed.
+  if (r.record.starts === 0 && seasons > 0) {
+    r.record.starts = seasons * 20;
+  }
+
+  r.recognition ??= { academyChoice: false, meetings: 0 };
+  r.recognition.academyChoice ??= false;
+  r.recognition.meetings ??= 0;
 }
 
 /** True when a decoded save needs its world rebuilt — a version 1 career. */

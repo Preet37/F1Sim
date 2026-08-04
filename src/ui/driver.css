@@ -1,0 +1,1069 @@
+/*
+ * DRIVER DETAILS, THE DRIVER MARKET AND THE RATINGS REVEAL — issue #77.
+ *
+ * ===========================================================================
+ * WHAT THIS IS COPIED FROM, AND HOW CLOSELY
+ * ===========================================================================
+ *
+ * Six frames in `reference/target/`, and PROJECT.md §2 records the standing
+ * instruction on them: *"if I'm giving you images that I want you to take a
+ * look at, it means that I want you to replicate that as closely as you can"*,
+ * and on this set specifically *"every image that I attached, i want that to
+ * that quality, the way that is, the way it looks."*
+ *
+ *   `83.png`  Driver Details -> Accolades. Tab bar, sub-tabs, RACE STARTS
+ *             86/100 | TIER 1, five tier cards, the driver full height right.
+ *   `84.png`  Recognition. Two drivers head to head, a split percentage bar,
+ *             rating chips, a perk ladder with its unlock thresholds.
+ *   `85.png`  Contracts. 69 Target / 68 Current / 62 Retain Seat, and a rating
+ *             line over race weekends with a green TARGET and an amber RETAIN
+ *             SEAT rule across it.
+ *   `86.png`  The ratings reveal. 99 RTG, then EXP / RAC / AWA / PAC / FOC.
+ *   `87.png`  Driver Market compare. A pentagon over AWA / PAC / EXP / RAC,
+ *             per-attribute bars with deltas, value, salary, buyout.
+ *   `88.png`  Driver Market table. Sortable, acclaim, value, rating, the
+ *             selected row inverted, a detail card down the right.
+ *
+ * THE STRUCTURE, THE ORDER, THE WORDING AND THE COLOUR MEANINGS ARE COPIED.
+ * The colours themselves come from this game's own five signals, declared on
+ * `:root` in `styles.css` and never redefined here, because the reference's
+ * green means "target met" and this game's `--sig-green` already means
+ * "improvement, go" — using a second green for the same idea is how a palette
+ * stops meaning anything. `--sig-red` is the active tab; `--sig-yellow` is the
+ * retain line; `--sig-green` is a gain.
+ *
+ * THE TWO THINGS THAT ARE DELIBERATELY NOT COPIED, both stated rather than
+ * substituted quietly (`reference/target/INDEX.md` asks for exactly this):
+ *
+ *   1. THE FLAGS. `85.png`'s x-axis and `88.png`'s driver column are national
+ *      flags. This game draws `nationPlateSvg` instead — three letters on the
+ *      country's two colours — and that decision is already made and argued in
+ *      `DriverPortrait.ts`: half the flags on a Formula 1 grid have a canton, a
+ *      cross or a coat of arms in them, and an approximated flag is worse than
+ *      no flag because it is visibly the wrong flag.
+ *   2. THE FACES. Every driver in the reference is a likeness of a real person.
+ *      PROJECT.md §3 permits real NAMES as data and no reproduced likeness, so
+ *      the figure beside these panels is `figureSvg` — the same generated body
+ *      and face that stands on the podium. A real name sits beside a generated
+ *      face and the face approximates nobody.
+ *
+ * A SEPARATE STYLESHEET for the same reason `career.css` and `myteam.css` are:
+ * `styles.css` is six thousand lines and belongs to the HUD. Nothing below
+ * overrides an existing selector.
+ */
+
+/* ==========================================================================
+   THE TAB BAR AND THE SUB-TABS
+
+   `83.png` and `85.png` both open with two rows: six main tabs in heavy
+   uppercase with the active one solid red, then a strip of sub-tabs in a
+   red-tinted bar. Both are skewed parallelograms — the shape is the house
+   device of the whole reference set and it is the first thing that reads.
+   ========================================================================== */
+
+.dd-tabs,
+.dd-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dd-tabs { margin-bottom: 4px; }
+
+.dd-tab {
+  appearance: none;
+  border: 0;
+  background: rgba(24, 30, 39, 0.9);
+  color: var(--ink-2);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  padding: 9px 20px;
+  cursor: pointer;
+  transform: skewX(-12deg);
+  transition: background 120ms ease, color 120ms ease;
+}
+.dd-tab > span { display: block; transform: skewX(12deg); }
+.dd-tab:hover { color: var(--ink); background: rgba(38, 46, 58, 0.95); }
+.dd-tab:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.dd-tab.on {
+  background: var(--sig-red);
+  color: #fff;
+}
+.dd-tab.is-locked {
+  color: var(--ink-3);
+  cursor: not-allowed;
+  background: rgba(18, 22, 28, 0.75);
+}
+
+.dd-subtabs {
+  background: linear-gradient(90deg, rgba(150, 18, 30, 0.55), rgba(90, 14, 22, 0.18));
+  padding: 0 2px 0 0;
+  transform: skewX(-12deg);
+  width: max-content;
+  max-width: 100%;
+}
+.dd-subtab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #e8dfe2;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 18px;
+  cursor: pointer;
+}
+.dd-subtab > span { display: block; transform: skewX(12deg); }
+.dd-subtab:hover { color: #fff; background: rgba(200, 30, 44, 0.35); }
+.dd-subtab:focus-visible { outline: 2px solid var(--sig-white); outline-offset: -2px; }
+.dd-subtab.on { background: var(--sig-red); color: #fff; font-weight: 700; }
+
+/* ==========================================================================
+   THE PAGE: CONTENT LEFT, DRIVER RIGHT
+
+   Every one of the six frames stands the driver full height down the right of
+   the frame with the interface to the left of them. `#22` is what made that
+   possible — `figureSvg` frames off the rig, so the same call draws a figure
+   at 200px in a market card and at 620px down the side of this page.
+   ========================================================================== */
+
+.dd-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 20px;
+  align-items: stretch;
+  margin-top: 14px;
+}
+.dd-stage.no-figure { grid-template-columns: minmax(0, 1fr); }
+.dd-main { min-width: 0; }
+
+.dd-figure {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 380px;
+  /* A pool of the key light behind them, so the figure stands in the room
+     rather than being cut out of it. Same device as `.dcard`. */
+  background:
+    radial-gradient(58% 46% at 50% 82%, rgba(var(--key), 0.10), transparent 70%);
+}
+.dd-figure .person-figure {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 620px;
+  filter: drop-shadow(0 22px 30px rgba(0, 0, 0, 0.55));
+}
+.dd-figure-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  text-align: center;
+  font-family: var(--font-display);
+  font-stretch: 112%;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+@media (max-width: 900px) {
+  .dd-stage { grid-template-columns: minmax(0, 1fr); }
+  .dd-figure { display: none; }
+}
+
+/* ==========================================================================
+   PANELS
+   ========================================================================== */
+
+.dd-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(24, 31, 41, 0.92), rgba(14, 19, 26, 0.92));
+  box-shadow: var(--plate-lift);
+  padding: 16px 18px;
+}
+.dd-panel + .dd-panel { margin-top: 14px; }
+
+.dd-panel-title {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink);
+  text-align: center;
+}
+.dd-panel-sub {
+  margin-top: 4px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.dd-why {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+.dd-why b { color: var(--ink-2); font-weight: 700; }
+
+/* ==========================================================================
+   CONTRACTS — `85.png`
+   ========================================================================== */
+
+.dd-contract {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 820px) {
+  .dd-contract { grid-template-columns: minmax(0, 1fr); }
+}
+
+.dd-goal-head {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.dd-goal-title {
+  margin-top: 2px;
+  font-family: var(--font-display);
+  font-stretch: 112%;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.dd-goal-note {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* The three figures. A block of colour carrying the number, then the word —
+   exactly the reference's arrangement, and the colours are this game's. */
+.dd-goal-rows { margin-top: 14px; display: grid; gap: 8px; }
+.dd-goal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dd-goal-fig {
+  min-width: 54px;
+  padding: 5px 8px;
+  text-align: center;
+  font-family: var(--font-data);
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--ink);
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+.dd-goal-row.target .dd-goal-fig {
+  background: linear-gradient(180deg, rgba(0, 217, 95, 0.30), rgba(0, 217, 95, 0.10));
+  border-color: var(--sig-green);
+}
+.dd-goal-row.current .dd-goal-fig {
+  background: rgba(160, 176, 196, 0.14);
+  border-color: var(--sig-white);
+}
+.dd-goal-row.retain .dd-goal-fig {
+  background: linear-gradient(180deg, rgba(255, 210, 31, 0.26), rgba(255, 210, 31, 0.08));
+  border-color: var(--sig-yellow);
+}
+.dd-goal-label { font-size: 15px; font-weight: 600; color: var(--ink); }
+
+.dd-goal-rows + .dd-goal-head { margin-top: 20px; }
+
+/* The left rail of destinations under "Contract Information". */
+.dd-rail { margin-top: 10px; display: grid; gap: 6px; }
+.dd-rail-item {
+  appearance: none;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: linear-gradient(180deg, rgba(52, 62, 76, 0.85), rgba(30, 37, 47, 0.85));
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  padding: 13px 15px;
+  cursor: pointer;
+}
+.dd-rail-item:hover { border-color: var(--line-2); background: rgba(64, 76, 92, 0.9); }
+.dd-rail-item:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.dd-rail-item.on { border-color: var(--sig-white); }
+.dd-rail-item:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+  background: rgba(22, 27, 34, 0.7);
+}
+
+/* ==========================================================================
+   THE CHART
+
+   One element for both charts on this screen: the contract line (`85.png`) and
+   the five-attribute ratings graph. SVG, drawn from the ratings history, with
+   the axis labels the reference prints — DRIVER RATING up the left, RACE
+   WEEKEND along the bottom, and the two dashed rules named in place.
+   ========================================================================== */
+
+.dd-chart { margin-top: 12px; }
+.dd-chart svg { display: block; width: 100%; height: auto; }
+.dd-chart-grid { stroke: rgba(150, 180, 214, 0.16); stroke-width: 1; }
+.dd-chart-frame { fill: rgba(8, 11, 16, 0.55); stroke: rgba(150, 180, 214, 0.22); }
+.dd-chart-line { fill: none; stroke: var(--sig-white); stroke-width: 2.2; stroke-linejoin: round; }
+.dd-chart-target { stroke: var(--sig-green); stroke-width: 2.4; stroke-dasharray: 12 8; }
+.dd-chart-retain { stroke: var(--sig-yellow); stroke-width: 2.4; stroke-dasharray: 12 8; }
+.dd-chart-rulelabel {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  fill: var(--ink);
+}
+.dd-chart-tick {
+  font-family: var(--font-data);
+  font-size: 12px;
+  fill: var(--ink-2);
+}
+.dd-chart-axis {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  fill: var(--ink);
+  text-transform: uppercase;
+}
+.dd-chart-empty {
+  padding: 34px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+/* The x-axis: a nation plate per weekend with its three letters underneath,
+   which is what `85.png` does with flags. */
+.dd-chart-x {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 0 6px;
+}
+.dd-chart-x-item { text-align: center; min-width: 0; }
+.dd-chart-x-item .natplate { width: 26px; margin: 0 auto; }
+.dd-chart-x-code {
+  margin-top: 3px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+.dd-chart-xlabel {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+/* The five-attribute graph's legend. */
+.dd-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; justify-content: center; }
+.dd-legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.dd-legend-swatch { width: 16px; height: 3px; border-radius: 2px; background: var(--c, var(--ink-2)); }
+
+/* ==========================================================================
+   ACCOLADES — `83.png`
+   ========================================================================== */
+
+.dd-acc-head { display: flex; align-items: center; gap: 12px; }
+.dd-acc-glyph { width: 46px; height: 46px; flex: none; }
+.dd-acc-name {
+  font-family: var(--font-display);
+  font-stretch: 118%;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--ink);
+  line-height: 1;
+}
+.dd-acc-count {
+  margin-top: 8px;
+  font-family: var(--font-data);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+.dd-acc-note { margin-top: 4px; font-size: 14px; color: var(--ink-2); }
+
+/* The "Complete this Accolade to enhance your: Exp | Experience" block, which
+   in the reference sits to the right of the count behind a green rule. */
+.dd-acc-enhance {
+  margin-top: 12px;
+  border-left: 2px solid var(--sig-green);
+  padding-left: 14px;
+}
+.dd-acc-enhance-head { font-size: 14px; color: var(--ink-2); }
+.dd-acc-enhance-what {
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--sig-green);
+}
+.dd-acc-enhance-what i { font-style: normal; font-weight: 500; opacity: 0.82; }
+
+/* The row of tier cards. Green fills from the bottom by how far through the
+   tier the counter is — the reference's own device, and the reason a card is
+   readable from across the room before any of its figures are. */
+.dd-acc-cards {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.dd-acc-card {
+  appearance: none;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(90, 160, 220, 0.35);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(20, 34, 50, 0.95), rgba(12, 20, 30, 0.95));
+  padding: 0 0 12px;
+  cursor: pointer;
+  text-align: center;
+  color: var(--ink);
+}
+.dd-acc-card:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.dd-acc-card.on { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink) inset; }
+.dd-acc-card-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, rgba(0, 190, 80, 0.85), rgba(0, 120, 52, 0.9));
+  pointer-events: none;
+}
+.dd-acc-card-art {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 118px;
+  padding: 14px 0 6px;
+}
+.dd-acc-card-art svg { display: block; width: 74px; height: 74px; margin: 0 auto; }
+.dd-acc-card-name {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 8px;
+  line-height: 1.25;
+}
+.dd-acc-card-tier {
+  position: relative;
+  margin-top: 8px;
+  font-family: var(--font-data);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+}
+.dd-acc-card-fig {
+  position: relative;
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--ink);
+}
+.dd-acc-card.done .dd-acc-card-tier { color: var(--sig-green); }
+
+/* ==========================================================================
+   RECOGNITION — `84.png`
+   ========================================================================== */
+
+.dd-rec-heads {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 800;
+}
+.dd-rec-heads .mine { text-align: left; color: var(--ink); }
+.dd-rec-heads .theirs { text-align: right; color: var(--ink-2); }
+
+/* The split bar. One element, two segments, the percentage inside each. */
+.dd-rec-bar {
+  display: flex;
+  margin-top: 6px;
+  height: 66px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.dd-rec-seg {
+  display: flex;
+  align-items: center;
+  min-width: 54px;
+  font-family: var(--font-data);
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--ink);
+  padding: 0 14px;
+}
+.dd-rec-seg sup { font-size: 16px; vertical-align: super; opacity: 0.8; }
+.dd-rec-seg.mine {
+  justify-content: flex-start;
+  background: linear-gradient(90deg, rgba(122, 66, 200, 0.55), rgba(88, 44, 156, 0.35));
+  border-right: 2px solid var(--ink);
+}
+.dd-rec-seg.theirs {
+  justify-content: flex-end;
+  background: linear-gradient(90deg, rgba(52, 60, 74, 0.6), rgba(34, 40, 50, 0.6));
+  color: var(--ink-2);
+}
+
+/* The rating chips under each end of the bar. */
+.dd-rec-chips { display: flex; justify-content: space-between; margin-top: 6px; gap: 8px; }
+.dd-rec-chipset { display: flex; gap: 6px; }
+.dd-rec-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 3px 10px;
+  background: rgba(20, 26, 34, 0.85);
+}
+.dd-rec-chip b { font-family: var(--font-data); font-size: 15px; font-weight: 700; color: var(--ink); }
+.dd-rec-chip span { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink-2); }
+
+.dd-rec-bonus {
+  margin: 14px auto 0;
+  width: max-content;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 4px 18px;
+  font-size: 14px;
+  color: var(--ink);
+  background: rgba(28, 34, 44, 0.9);
+}
+
+/* The perk ladder. */
+.dd-perks { margin-top: 12px; border: 1px dashed var(--line-2); border-radius: 6px; padding: 12px; }
+.dd-perk-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--ink-2);
+  padding: 0 4px 6px;
+}
+.dd-perk {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 8px 6px 12px;
+  margin-top: 5px;
+  background: rgba(18, 23, 30, 0.8);
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.dd-perk.on {
+  border-color: var(--sig-green);
+  color: var(--ink);
+  background: linear-gradient(90deg, rgba(0, 160, 70, 0.22), rgba(0, 120, 52, 0.10));
+}
+.dd-perk-at {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-data);
+  font-size: 14px;
+  font-weight: 700;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 2px 8px;
+  color: var(--ink-2);
+}
+.dd-perk.on .dd-perk-at { border-color: var(--sig-green); color: var(--sig-green); }
+
+.dd-rec-breakdown {
+  margin: 12px auto 0;
+  width: max-content;
+  min-width: 260px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 10px 16px;
+}
+.dd-rec-breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 28px;
+  font-size: 13px;
+  color: var(--ink-2);
+  padding: 2px 0;
+}
+.dd-rec-breakdown-row b { font-family: var(--font-data); font-weight: 600; color: var(--ink); }
+
+/* ==========================================================================
+   RIVALS
+   ========================================================================== */
+
+.dd-rival {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--heat, var(--ink-3));
+  border-radius: 6px;
+  background: rgba(18, 23, 30, 0.85);
+  padding: 10px 14px;
+  margin-top: 8px;
+}
+.dd-rival-name { font-size: 15px; font-weight: 700; color: var(--ink); }
+.dd-rival-note { margin-top: 2px; font-size: 12px; color: var(--ink-2); }
+.dd-rival-meter { margin-top: 6px; height: 4px; border-radius: 2px; background: rgba(150, 180, 214, 0.16); }
+.dd-rival-meter span { display: block; height: 100%; border-radius: 2px; background: var(--heat, var(--ink-3)); }
+.dd-rival-h2h { font-family: var(--font-data); font-size: 15px; color: var(--ink); text-align: right; }
+.dd-rival-h2h i { display: block; font-style: normal; font-size: 11px; color: var(--ink-3); letter-spacing: 0.08em; }
+
+/* ==========================================================================
+   THE COMPARISON — `87.png`
+   ========================================================================== */
+
+.dd-compare {
+  display: grid;
+  grid-template-columns: 1fr minmax(0, 1.15fr) 1fr;
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 980px) { .dd-compare { grid-template-columns: minmax(0, 1fr); } }
+
+.dd-cmp-card {
+  border: 1px solid var(--edge, var(--line-2));
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(20, 26, 34, 0.95), rgba(12, 16, 22, 0.95));
+  padding: 14px;
+}
+.dd-cmp-first { font-size: 15px; color: var(--ink-2); }
+.dd-cmp-last {
+  font-family: var(--font-display);
+  font-stretch: 116%;
+  font-size: 26px;
+  overflow-wrap: anywhere;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--ink);
+  line-height: 1.05;
+}
+.dd-cmp-nat { display: flex; align-items: center; gap: 8px; }
+.dd-cmp-nat .natplate { width: 34px; flex: none; }
+.dd-cmp-rating {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-data);
+  font-size: 25px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.dd-cmp-rating span {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+  margin-left: 6px;
+}
+.dd-cmp-attrs { margin-top: 10px; display: grid; gap: 4px; }
+.dd-cmp-attr {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border-radius: 3px;
+  padding: 4px 8px;
+  background: rgba(30, 38, 48, 0.7);
+}
+.dd-cmp-attr.gain {
+  background: linear-gradient(90deg, rgba(0, 170, 74, 0.42), rgba(0, 120, 52, 0.18));
+}
+.dd-cmp-attr-delta {
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sig-green);
+  min-width: 26px;
+}
+.dd-cmp-attr-name { font-size: 14px; color: var(--ink); }
+.dd-cmp-attr-value { font-family: var(--font-data); font-size: 17px; font-weight: 700; color: var(--ink); }
+.dd-cmp-foc {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--sig-green);
+  border-radius: 3px;
+  padding: 4px 8px;
+  background: linear-gradient(90deg, rgba(0, 170, 74, 0.16), rgba(0, 190, 80, 0.55));
+}
+.dd-cmp-money { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dd-cmp-value {
+  font-family: var(--font-data);
+  font-size: 25px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.dd-cmp-value span { font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--ink-2); margin-left: 6px; }
+.dd-cmp-pair { display: flex; gap: 22px; margin-top: 10px; }
+.dd-cmp-pair-fig { font-family: var(--font-data); font-size: 19px; font-weight: 700; color: var(--ink); }
+.dd-cmp-pair-label { font-size: 12px; color: var(--ink-2); }
+
+/* The radar. `87.png` keeps it compact with the four bars under it inside the
+   same panel; letting it take the full column width pushed every bar below the
+   fold on a 1080-high frame. */
+.dd-radar { display: block; width: 100%; max-width: 300px; height: auto; margin: 0 auto; }
+.dd-radar-web { fill: none; stroke: rgba(150, 180, 214, 0.22); stroke-width: 1; }
+.dd-radar-them { fill: none; stroke: var(--ink); stroke-width: 2; }
+.dd-radar-me { fill: none; stroke: var(--sig-red); stroke-width: 2.4; }
+.dd-radar-label {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  fill: var(--ink);
+}
+
+/* The per-attribute bars in the middle column. */
+.dd-bars { margin-top: 12px; }
+.dd-bar-row { margin-top: 12px; }
+.dd-bar-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.dd-bar-name { font-size: 17px; color: var(--ink); }
+.dd-bar-figs { font-family: var(--font-data); font-size: 17px; font-weight: 700; color: var(--ink); }
+.dd-bar-delta { font-family: var(--font-data); font-size: 14px; color: var(--sig-green); margin-left: 8px; }
+.dd-bar-delta.down { color: var(--sig-red); }
+.dd-bar-track { margin-top: 5px; height: 5px; border-radius: 3px; background: rgba(150, 180, 214, 0.14); overflow: hidden; }
+.dd-bar-track i { display: block; height: 100%; background: var(--ink); }
+.dd-bar-track i.over { background: var(--sig-green); }
+
+/* ==========================================================================
+   THE DRIVER MARKET TABLE — `88.png`
+   ========================================================================== */
+
+.dm-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 980px) { .dm-stage { grid-template-columns: minmax(0, 1fr); } }
+
+.dm-table {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(12, 16, 22, 0.86);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* A FIXED BOX WITH THE ROWS SCROLLING INSIDE IT, which is what `88.png`
+     has — and the reason it has it is the two rows at the bottom: a red rule
+     and the player's own entry, pinned. With the table free to grow, a
+     twenty-two car championship pushed both off the fold and the one row the
+     player is looking for was the one they had to scroll to find. */
+  max-height: min(62vh, 640px);
+}
+.dm-scroll { overflow-y: auto; min-height: 0; }
+.dm-head,
+.dm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(0, 1.6fr) 118px 108px 62px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+}
+.dm-head {
+  border-bottom: 1px solid var(--line-2);
+  background: rgba(20, 26, 34, 0.9);
+}
+.dm-col {
+  appearance: none;
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.dm-col:hover { color: var(--ink); }
+.dm-col:focus-visible { outline: 2px solid var(--sig-white); outline-offset: 2px; }
+.dm-col.on { color: var(--ink); }
+.dm-col.on::after { content: ' ▾'; color: var(--sig-red); }
+.dm-col.num { text-align: right; }
+
+.dm-row {
+  border-top: 1px solid rgba(150, 180, 214, 0.07);
+  cursor: pointer;
+  background: none;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  text-align: left;
+  width: 100%;
+  appearance: none;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+.dm-row:hover { background: rgba(150, 180, 214, 0.06); }
+.dm-row:focus-visible { outline: 2px solid var(--sig-white); outline-offset: -2px; }
+/* The selected row is INVERTED in the reference — white plate, dark type — and
+   it is the single loudest thing on the screen, which is right, because it is
+   the row the card on the right is about. */
+.dm-row.on { background: var(--ink); color: #0c1016; }
+.dm-row.on .dm-team-name,
+.dm-row.on .dm-acclaim-fig,
+.dm-row.on .dm-value { color: #0c1016; }
+.dm-row.me { border-top: 2px solid var(--sig-red); }
+
+.dm-driver { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.dm-driver .natplate { width: 26px; flex: none; }
+.dm-driver-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-driver-name b { font-weight: 700; text-transform: uppercase; }
+.dm-team { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dm-team-flash { width: 3px; height: 16px; border-radius: 1px; background: var(--team, var(--ink-3)); flex: none; }
+.dm-team-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dm-acclaim { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.dm-acclaim-fig { font-family: var(--font-data); font-size: 14px; color: var(--ink); }
+/* A stepped bar rather than a smooth one: the reference's acclaim meter is
+   drawn as a run of skewed blocks, and the count of lit blocks is readable
+   without reading the number. */
+.dm-acclaim-bar { display: flex; gap: 2px; }
+.dm-acclaim-bar i {
+  display: block;
+  width: 7px;
+  height: 10px;
+  transform: skewX(-18deg);
+  background: rgba(150, 180, 214, 0.18);
+}
+.dm-acclaim-bar i.on { background: var(--ink); }
+.dm-row.on .dm-acclaim-bar i { background: rgba(12, 16, 22, 0.2); }
+.dm-row.on .dm-acclaim-bar i.on { background: #0c1016; }
+
+.dm-value { font-family: var(--font-data); font-size: 14px; text-align: right; color: var(--ink); }
+.dm-rating { font-family: var(--font-data); font-size: 16px; font-weight: 700; text-align: right; }
+
+.dm-cut { height: 2px; background: var(--sig-red); }
+
+/* --------------------------------------------------------------------------
+   THE TABLE ON A PHONE
+
+   The five columns of `88.png` are a 1920-wide layout and they do not fit in
+   390. Laid into that width the fixed columns overran the row: the DRIVER and
+   TEAM headings were printed on top of each other and the name column measured
+   ZERO, so every driver on the board was a flag and nothing else. That is the
+   timing tower's own defect (#76, `.hud-tower.is-timed` laying the desktop
+   template into a 176px panel) in a second place, found the same way — by
+   photographing it.
+
+   So the phone drops the two columns that are not the point. TEAM goes because
+   the flash of team colour beside the name already carries it, and the ACCLAIM
+   BAR goes while its figure stays, because five 7px blocks are 45px this
+   layout does not have. Nothing is truncated and nothing overlaps.
+   -------------------------------------------------------------------------- */
+@media (max-width: 620px) {
+  /* FOUR CELLS, FOUR COLUMNS. Hiding TEAM from the row and the header leaves
+     Driver / Acclaim / Value / Rating — and a three-column track for four
+     cells wraps, which is what the second screenshot showed: the RATING
+     heading on its own line and every figure under its own row. */
+  .dm-head,
+  .dm-row {
+    grid-template-columns: minmax(0, 1fr) 26px 58px 38px;
+    gap: 7px;
+    padding: 8px 8px;
+  }
+  .dm-head .dm-col:nth-child(2),
+  .dm-row .dm-team { display: none; }
+  .dm-acclaim-bar { display: none; }
+  .dm-col { font-size: 10px; letter-spacing: 0.06em; }
+  .dm-head .dm-col:nth-child(3) { text-align: right; }
+  .dm-driver-name { font-size: 13px; }
+  .dm-value,
+  .dm-rating { font-size: 13px; }
+  .dm-table { max-height: min(52vh, 460px); }
+  .dm-card .dd-cmp-last { font-size: 21px; }
+}
+
+/* The detail card down the right. */
+.dm-card {
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(20, 26, 34, 0.95), rgba(11, 15, 20, 0.95));
+  padding: 14px;
+}
+.dm-card .dd-figure { min-height: 260px; margin-top: 8px; }
+.dm-card .dd-figure .person-figure { max-height: 320px; }
+.dm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dm-reason { margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.dm-reason.ok { color: var(--sig-green); }
+
+/* ==========================================================================
+   THE RATINGS REVEAL — `86.png`
+
+   The one set-piece in this issue. It is not a page in the chassis: it is a
+   full-frame moment, the same kind of thing as the podium, and it is laid out
+   the way the reference lays it out — figure hard left, an outlined title over
+   a row of chevrons, and the five attributes stacked down the right with the
+   value in a size nothing else on the screen comes near.
+   ========================================================================== */
+
+.rv {
+  position: relative;
+  /* THE FIGURE IS FULL HEIGHT IN THE FRAME, which is the whole composition of
+     `86.png` — a driver standing the height of the picture with the panel
+     beside them. Sized off the viewport rather than off the content, because
+     the content is five rows and would leave the figure a third of the frame
+     tall in a sea of black. The first screenshot showed exactly that. */
+  min-height: 66vh;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  gap: 18px;
+  align-items: center;
+  padding: 8px 4px 0;
+}
+@media (max-width: 860px) {
+  .rv { grid-template-columns: minmax(0, 1fr); }
+  .rv-art { display: none; }
+}
+
+.rv-art { display: flex; align-items: flex-end; justify-content: center; min-height: 66vh; }
+.rv-art .person-figure {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 74vh;
+  filter: drop-shadow(0 26px 34px rgba(0, 0, 0, 0.6));
+}
+
+.rv-title {
+  text-align: center;
+  font-family: var(--font-display);
+  font-stretch: 124%;
+  font-size: 54px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: transparent;
+  -webkit-text-stroke: 1.5px rgba(220, 232, 246, 0.55);
+  line-height: 1;
+}
+.rv-chevrons { display: flex; justify-content: center; gap: 6px; margin-bottom: 8px; }
+.rv-chevrons i {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-right: 3px solid var(--ink-3);
+  border-top: 3px solid var(--ink-3);
+  transform: rotate(45deg);
+}
+.rv-chevrons i.on { border-color: var(--ink); }
+
+.rv-overall {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 18px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--sig-green);
+}
+.rv-overall-fig {
+  font-family: var(--font-data);
+  font-size: 64px;
+  font-weight: 700;
+  line-height: 0.9;
+  color: var(--ink);
+}
+.rv-overall-code {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+.rv-overall-name { font-size: 13px; color: var(--ink-2); }
+
+.rv-rows { margin-top: 6px; }
+.rv-row {
+  display: grid;
+  /* Three columns and a full-width track under all of them: `86.png` runs a
+     thin line the whole width of the row, not the width of the figures. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) 92px;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 10px 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.rv-row > .rv-track { grid-column: 1 / -1; margin-top: 4px; }
+.rv-code {
+  font-family: var(--font-display);
+  font-stretch: 112%;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+  line-height: 1;
+}
+.rv-name { font-size: 13px; color: var(--ink-2); margin-top: 2px; }
+.rv-mid { text-align: right; }
+.rv-delta {
+  font-family: var(--font-data);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--sig-green);
+}
+.rv-delta.none { color: var(--ink-2); }
+.rv-delta.down { color: var(--sig-red); }
+.rv-points { font-family: var(--font-data); font-size: 13px; color: var(--ink-2); margin-top: 2px; }
+.rv-points b { color: var(--ink); font-weight: 700; }
+.rv-track { margin-top: 6px; height: 3px; border-radius: 2px; background: rgba(150, 180, 214, 0.16); overflow: hidden; }
+.rv-track i { display: block; height: 100%; background: var(--sig-green); }
+.rv-value {
+  font-family: var(--font-data);
+  font-size: 44px;
+  font-weight: 700;
+  text-align: right;
+  color: var(--ink);
+  line-height: 0.95;
+}
+.rv-value.up { color: var(--sig-green); }

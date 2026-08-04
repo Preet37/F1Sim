@@ -1,4 +1,5 @@
 import { TEAMS, DRIVERS, type Team, type Driver } from '../data/teams';
+import { ratingsFor } from '../career/DriverRatings';
 
 /**
  * The paddock: every team, their car, their drivers and what the car is
@@ -266,7 +267,11 @@ export function buildPaddock(parent: HTMLElement, opts: PaddockOptions = {}): Pa
       code.style.color = isLight(team.colour) ? '#080b10' : '#fff';
       (row.querySelector('.sc-dname') as HTMLElement).textContent = d.firstName + ' ' + d.lastName;
       (row.querySelector('.sc-nat') as HTMLElement).textContent = d.nationality;
-      (row.querySelector('.sc-skill') as HTMLElement).textContent = String(Math.round(d.skill * 100));
+      // THE RATING, not `skill * 100`. This line used to invent its own
+      // number out of a raw driver attribute — one of the four sites
+      // `probe:ratings` §6 found, three of which printed a different
+      // arithmetic under the same heading. See `src/career/DriverRatings.ts`.
+      (row.querySelector('.sc-skill') as HTMLElement).textContent = String(ratingsFor(d).rtg);
     });
 
     stripButtons.forEach((b, i) => {

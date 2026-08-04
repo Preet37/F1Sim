@@ -342,6 +342,119 @@ function roundTrips(state: CareerState, where: string): CareerState | null {
 }
 
 // ---------------------------------------------------------------------------
+// 3c. THE RATINGS BLOCK round-trips, field for field — issue #77
+// ---------------------------------------------------------------------------
+//
+// WHY IT NEEDS ITS OWN CASE, and it is the same argument the My Team block
+// needed. `state.ratings` is four things a projection cannot recover: the
+// rating at the last reveal, the rating after each past weekend, the goal the
+// team set at signing, and the lifetime counters the accolades count. Every
+// one of them is silent when it goes:
+//
+//   · `history` missing is a contract chart calling `.length` on `undefined`.
+//   · one missing counter in `record` is an accolade bar of `NaN%` width,
+//     which CSS quietly draws at zero — so the screen tells somebody with 86
+//     race starts that they have none, and never throws.
+//   · `contract` missing is a career opening on a target it has already
+//     missed, through no act of the player's.
+//
+// Checked NAME BY NAME rather than by comparing objects, because the failure
+// mode is one field and "the objects differ" is not a report anybody can act
+// on.
+
+{
+  const career = Career.create({
+    firstName: 'Nadia', lastName: 'Ferreira', nationality: 'Portugal', seed: 7707,
+  });
+  const rng = new Rng(23);
+  // Race a season, so there is a history, a set of counters and a moved rating
+  // to lose rather than an empty block that round-trips by being empty.
+  let guard = 0;
+  while (!seasonComplete(career.world, career.season, career.tier)) {
+    career.recordPlayerRound(simulateRound(career.world, career.season, career.tier, rng));
+    if (++guard > 40) break;
+  }
+  career.markRatingsRevealed();
+  career.takeMeeting();
+
+  const a = career.ratingsState;
+  check(a.history.length > 0, 'the probe raced a season and recorded no ratings history');
+  check(a.record.starts > 0, 'the probe raced a season and recorded no race starts');
+
+  const back = roundTrips(career.state, 'a career with ratings');
+  if (back) {
+    const b = back.ratings;
+    check(b !== undefined, 'the ratings block did not survive a round trip at all');
+    if (b) {
+      const same = (name: string, x: unknown, y: unknown): void =>
+        check(JSON.stringify(x) === JSON.stringify(y),
+          `RatingsState.${name} did not survive a round trip: `
+          + `${JSON.stringify(x)} -> ${JSON.stringify(y)}`);
+
+      same('lastRevealed', a.lastRevealed, b.lastRevealed);
+      same('history', a.history, b.history);
+      same('contract', a.contract, b.contract);
+      same('record', a.record, b.record);
+      same('recognition', a.recognition, b.recognition);
+
+      // Every lifetime counter by name. One of them is one accolade.
+      for (const key of Object.keys(a.record) as (keyof typeof a.record)[]) {
+        check(b.record?.[key] === a.record[key],
+          `record.${key} was ${a.record[key]} and came back ${b.record?.[key]}`);
+      }
+      // And every field of the goal, because the retain line decides whether
+      // a career says the seat is at risk.
+      for (const key of Object.keys(a.contract) as (keyof typeof a.contract)[]) {
+        check(b.contract?.[key] === a.contract[key],
+          `contract.${key} was ${a.contract[key]} and came back ${b.contract?.[key]}`);
+      }
+      console.log(`ratings: ${a.history.length} chart samples, `
+        + `${Object.keys(a.record).length} lifetime counters, `
+        + `target ${a.contract.targetRtg} / retain ${a.contract.retainRtg}, all survived`);
+    }
+  }
+
+  // A save written before the model existed. It must LOAD, and it must load
+  // with a goal it can meet — not one it has already failed.
+  const raw = JSON.parse(encode(career.state)) as Record<string, unknown>;
+  delete raw.ratings;
+  const old = decode(JSON.stringify(raw));
+  check(old.ok, 'a career written before the ratings model existed was refused');
+  if (old.ok) {
+    const r = old.state.ratings;
+    check(r !== undefined, 'backfill did not give a pre-#77 career a ratings block');
+    check(Array.isArray(r?.history) && r.history.length === 0,
+      'backfill invented a rating history a pre-#77 career never had');
+    check(Number.isFinite(r?.contract.targetRtg), 'a backfilled contract target is NaN');
+    check(Number.isFinite(r?.contract.retainRtg), 'a backfilled retain line is NaN');
+    for (const key of Object.keys(a.record) as (keyof typeof a.record)[]) {
+      check(Number.isFinite(r?.record[key]),
+        `backfill left record.${key} as ${r?.record[key]}, which draws a bar of NaN% width`);
+    }
+    const revived = new Career(old.state);
+    check(revived.contractGoal().targetRtg >= revived.ratings().rtg,
+      'a pre-#77 career opened on a contract it had already failed');
+    check(revived.accolades().every((p) => Number.isFinite(p.fraction)),
+      'a pre-#77 career draws an accolade bar of NaN% width');
+  }
+
+  // And a save with the block PRESENT but a counter missing — the shape a
+  // build one minor version behind writes.
+  const partial = JSON.parse(encode(career.state)) as Record<string, unknown>;
+  const block = partial.ratings as Record<string, Record<string, unknown>>;
+  delete block.record.podiums;
+  delete block.contract.retainRtg;
+  const patched = decode(JSON.stringify(partial));
+  check(patched.ok, 'a career missing one ratings field was refused');
+  if (patched.ok) {
+    check(patched.state.ratings?.record.podiums === 0,
+      'a missing lifetime counter came back undefined, which is NaN in an accolade');
+    check(Number.isFinite(patched.state.ratings?.contract.retainRtg),
+      'a missing retain line came back undefined, so the seat-at-risk rule stops binding');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 4. Garbage is refused, distinguishably
 // ---------------------------------------------------------------------------
 
