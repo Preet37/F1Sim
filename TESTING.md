@@ -181,11 +181,17 @@ stale and several of them are fixed:
 | races failing | 13 / 55 | **11 / 55** |
 | mean lap/reference | 1.3662 | **1.3131** |
 | Monaco fastest | 151–175% | **148–150%** |
-| Monaco off-track | 107–123 | **under the 90 bar on every seed** |
+| Monaco off-track | 107–123 | **mean 27.0, worst 28** |
 | Silverstone | failed 2 seeds | **passes all five** |
 
 Nothing in this branch made those move — #10 (fuel), #4 (centreline easing) and the
 `aeroBalanceFront` change did, and nobody had re-run the sweep afterwards.
+
+**But the excursions did not go away, they MOVED**, and only the new per-circuit table shows
+it: COTA worst **91**, Spa **89**, Silverstone **84** — all on the 90 bar, none of them named
+in #30. Monaco was the circuit that happened to be over the line first, not the general case.
+Measured at `f40b641`; **PR #89 has since landed in `src/race/` and this has not been re-run
+against it.**
 
 **`probe:grade` needs shots first**, and it takes a tag:
 
