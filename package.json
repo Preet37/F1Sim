@@ -32,6 +32,7 @@
     "diag:aipace": "tsx scripts/diagAiPace.ts",
     "diag:paceprofile": "tsx scripts/diagPaceProfile.ts",
     "diag:brakingzone": "tsx scripts/diagBrakingZone.ts",
+    "diag:cornerexit": "tsx scripts/diagCornerExit.ts",
     "diag:attrition": "tsx scripts/diagRaceAttrition.ts",
     "probe:turnin": "tsx scripts/probeTurnIn.ts",
     "probe:brakebalance": "tsx scripts/probeBrakeBalance.ts",

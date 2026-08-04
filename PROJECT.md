@@ -273,6 +273,7 @@ Run `npm run` to list. The important ones:
 | `diag:aipace` | **The pace gap, attributed.** REF / ACHV / SOLO / RACE per circuit, so "1.43× reference" stops being one number. ACHV is the floor and REF is not reachable |
 | `diag:paceprofile` | Where on the lap the time goes, split into "the AI asked for less" and "the AI asked and did not get it" — off the controller's own published target, not a copy of it |
 | `diag:brakingzone` | One braking zone step by step: pedal, deceleration used, deceleration available, traction limit |
+| `diag:cornerexit` | **Is the AI traction-limited at the RIGHT NUMBER?** The 150m past every local minimum of the solver's own speed profile — its apexes — on all eleven circuits. Recovers `tractionLimitFraction`'s own denominator out of its return value and compares it with the force `step()` really delivers, and reports how much of the rear grip circle the tyre is actually spending. Node-only. Issue #1 |
 | `diag:attrition` | **Why a full-distance race loses eleven cars — issue #26's third attempt.** The state of every car that retires at three moments: when it stops, twenty seconds earlier, and at `lastRacing` (the last sample with the car on the road above 15 m/s, so nothing about the excursion leaks into it). Tyres, damage, fuel, whether anybody touched it, whether the race was neutralised — plus retirements, contacts and the field's worst component by tenth of the race. **Reports; `probe:racelog` judges.** Node-only |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
 | `probe:finish` | **The end of a race, both ways round.** §1–3: the field is timed across the Line one car at a time rather than stamped at one instant, and the backmarkers get a window. §4, since #44: and NOBODY RACES AFTER IT — no lap counted, no lap time set, no retirement, and no finisher stamped in a batch instead of timed at the Line. Five races, two of them at a distance where cars are a lap down, because a car that is never lapped cannot exercise the batch test |
@@ -5407,7 +5408,10 @@ measurement passes every version of it that is wrong.
   `baseMu * tyre`, which is 28.7% more grip than the vehicle model produces; that is
   corrected. **The residual is still live and the probe now names four circuits rather than
   three**, because it also stopped flying a car that could brake 28% harder than a real one.
-  **Nobody is on the residual.**
+  ~~**Nobody is on the residual.**~~ **CLOSED, and it was never the display** — the four were
+  a hole in the probe's own colour classifier, which scored a road drawn (1.00, 0.41) as
+  GREEN and then flew its driver into the corner on the strength of it. 4 → 0, with a sweep
+  proving no band edge moved. See §6, "The four green lies".
 
 ### The AI pace gap is three deficits, and only one of them is the AI (issues #1 and #30)
 
@@ -5415,17 +5419,26 @@ measurement passes every version of it that is wrong.
 parts that can be attributed, and two of the three parts are not in `src/ai/` at all.
 
 **First, the number itself had moved and nobody had re-run it.** Re-baselined on merged
-`main` (3f229b7), 55 races, 11 circuits × 5 seeds:
+`main` (3f229b7), 55 races, 11 circuits × 5 seeds — **and re-baselined AGAIN on `ae6c981`
+(2026-08-04), because the count held at 11/55 while the mean did not:**
 
-| | issue #30 as filed | `main`, 2026-08-03 |
-|---|---|---|
-| races failing | 13 / 55 | **11 / 55** |
-| mean lap/reference | 1.3662 | **1.3131** |
-| Monaco fastest | 151–175% | **148–150%** |
-| Monaco off-track | 107–123 | **mean 27.0, worst 28** |
-| Silverstone | 152%, 171% | **passes on all five seeds** |
-| mean off-track | — | 40.65 |
-| mean retirements | — | 0.84 |
+| | issue #30 as filed | `main`, 2026-08-03 | `main` `ae6c981`, 2026-08-04 |
+|---|---|---|---|
+| races failing | 13 / 55 | **11 / 55** | **11 / 55** |
+| mean lap/reference | 1.3662 | **1.3131** | **1.3284** |
+| Monaco fastest | 151–175% | **148–150%** | **148–150%** |
+| Monaco off-track | 107–123 | **mean 27.0, worst 28** | **mean 27.0, worst 28** |
+| Silverstone | 152%, 171% | **passes on all five seeds** | **1 of 5 fails, at 160%** |
+| mean off-track | — | 40.65 | 39.89 |
+| mean retirements | — | 0.84 | 0.62 |
+
+**Read that third column as the warning it is.** The headline count is identical and three of
+the rows underneath it are not: the mean is 1.5 points worse, Silverstone has come back on
+one seed, and the failure list has picked up three SPREAD failures (Spa 177.9s, Suzuka
+150.7s, COTA 103.8s) that the 2026-08-03 run did not have. **A count that has not moved is
+not evidence that nothing has moved** — this is the `probe:fieldsize` lesson in §8 with a
+different probe, and it is why the 2026-08-03 table's own warning about PR #89 not having
+been re-run against it was the right instinct.
 
 So **the off-track half of #30 is gone** and **Silverstone is gone**, both from work that
 landed the same day and neither claimed by anybody: #10 (fuel), #4 (centreline easing) and
@@ -5476,12 +5489,16 @@ per seed. They agree — but note that Monaco's mean is the only one on the cale
 **Third, and this is the finding: the reference lap is not reachable, and nothing had ever
 checked.** `scripts/diagAiPace.ts`, all eleven circuits:
 
-| | mean | what it is |
-|---|---|---|
-| ACHV / REF | **1.0745** | the floor. Nobody can drive faster than this. |
-| SOLO / ACHV | **1.1658** | the controller — the only part `src/ai/` owns |
-| SOLO / REF | 1.2531 | one car, empty circuit |
-| RACE / REF | 1.3131 | twenty cars, from the sweep |
+| | mean | what it is | on this branch |
+|---|---|---|---|
+| ACHV / REF | **1.0745** | the floor. Nobody can drive faster than this. | 1.0745, unchanged |
+| SOLO / ACHV | **1.1658** | the controller — the only part `src/ai/` owns | **1.1761** |
+| SOLO / REF | 1.2531 | one car, empty circuit | 1.2642 |
+| RACE / REF | 1.3131 | twenty cars, from the sweep | 1.3351 |
+
+The 2026-08-04 control run on `ae6c981` reproduces the first column's SOLO/ACHV as **1.1659**,
+so that figure is still good. **The fourth column is worse on purpose and the reason is
+below** — see "Where it actually goes is corner exit and the traction limit".
 
 `REFERENCE_CAR.mu` is 1.86, fitted by `npm run calibrate` against real pole times through a
 **point-mass closed form**. `VehicleSpec.baseMu` is 1.70 and is a **magic-formula
@@ -5557,11 +5574,60 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
 - **The braking-zone deficit is a symptom, not a cause.** `scripts/diagBrakingZone.ts` traces
   it: the car is slow in the braking zones because it arrives slow, and its pedal application
   is correct for the speed it is doing. Do not go and make the AI brake later.
-- **Where it actually goes is corner exit and the traction limit**, and that is where the
-  next agent should start. `tractionLimitFraction` reads 0.10–0.55 through a whole Silverstone
-  corner exit and the AI's throttle tracks it exactly, which is physically right in itself —
-  but it means the AI is traction-limited for most of every exit and never recovers the
-  speed on the following straight (STRAIGHT bin 0.87–0.94 of reference). **Nobody is on it.**
+- ~~**Where it actually goes is corner exit and the traction limit**, and that is where the
+  next agent should start.~~ **FOLLOWED, AND IT DID NOT PAY. This is the important entry on
+  the page and it is a negative result.**
+
+  The lead was right and there was a real defect at the end of it:
+  `tractionLimitFraction`'s denominator was re-derived rather than shared, credited the car
+  with full `ersPowerW` whatever the deployment mode was doing, and measured **1.088× the
+  force the drivetrain really makes** over corner exits on all eleven circuits. That is
+  fixed, asserted by `probe:envelope` §2, and described in §6.
+
+  **It bought no lap time, because `AI_TUNING.throttleShare` had already spent it.** The
+  error was not a constant: it was 1.212 in `harvest`, 1.084 in `balanced`, 1.025 in `push`
+  and 0.998 in `overtake`, so a nominal share of 1.03 was a real throttle discipline
+  wandering between 0.85 and 1.03 of the axle's true limit **as a side effect of which ERS
+  mode the car was in**. Correcting the denominator leaves 1.03 meaning what it says, and the
+  field 3% past its traction limit costs races:
+
+  | | `main` | fixed denominator, share 1.03 | fixed denominator, share **0.95** |
+  |---|---|---|---|
+  | races failing | 11 / 55 | **14 / 55** | **10 / 55** |
+  | mean lap/reference | 1.3284 | 1.3382 | 1.3351 |
+  | worst off-track, Spa | 73 | **96, 106** (over the bar) | 70 |
+  | mean retirements | 0.62 | 1.02 | 0.73 |
+  | mean spread | 30.98 | 32.92 | **26.40** |
+  | **mean SOLO/ACHV** | **1.1659** | **1.1599** | **1.1761** |
+
+  0.95 ships, because it is below `main` on the suite's own arbiter and cuts spread by 15%.
+
+  **It is not free and Spa pays for it.** `spa` goes 1.309 → **1.501** lap/ref and supplies
+  three of the ten remaining sweep failures, and `validate:race` goes **2 failures → 3** —
+  `main` fails Monaco 150% and COTA 145%, this branch fails Monaco 150%, Spa 154% and an
+  81.1s Spa spread. **The mechanism is known and it is the same coupling**: 0.95 is *more*
+  aggressive than `main` was while harvesting (0.85 → 0.95) and *less* while attacking
+  (1.032 → 0.95), and Spa is the circuit with the most overtaking and the longest
+  accelerations out of medium-speed corners. That is the strongest single piece of evidence
+  for making the share ERS-aware rather than flat, which is the follow-up below.
+
+  **And SOLO/ACHV goes the WRONG WAY, and #1's 16.6% is not reduced by any of this.**
+  Interpolating the two measured points puts share 1.00 at SOLO/ACHV 1.166 and roughly
+  12/55 — which is `main` on both axes. **The pace/stability trade along that constant is
+  close to flat, and `main` was already sitting near the efficient point *because* the ERS
+  coupling was doing a crude version of it.**
+
+  Two things follow, and the next agent should have both before starting:
+  - **`tuneAI.ts throttle` cannot choose this value and will tell you it can.** It flies ONE
+    car and reports 11/11 clean, **zero** excursions, monotonically faster, at every value
+    from 0.85 to 1.10. The whole cost is in traffic. This is #1 and #30 being different
+    problems, stated by the instrument that gets it wrong.
+  - **The coupling that was removed was accidentally the right SHAPE** — more throttle while
+    deploying onto a straight, less under a neutralisation. Making that explicit, as a share
+    that varies with ERS mode or with whether the corner is opening out, is the first thing
+    to try. It is new behaviour in `src/ai/AIVehicleController.ts` and needs its own sweep
+    budget: about 25 minutes of wall clock per candidate value, and a single car cannot
+    stand in for it.
 
 `probe:grade` went from **6 ok / 10 failed** to ****12 ok / 4 failed**** against
 `reference/target/`. What is left is not tuning, and the measurements say what it is.
