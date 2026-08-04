@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import {
-  CREW_INSTANCES_PER_FIGURE, CREW_PARTS, CREW_DETAIL_HIGH, CREW_DETAIL_LOW,
-  POSTURES, blendPosture, crewPartGeometries, crewToolGeometries, makeCrewJoints,
+  CREW_INSTANCES_PER_FIGURE, CREW_PARTS, CREW_PART_COUNT, CREW_SLOT_PARTS,
+  CREW_DETAIL_HIGH, CREW_DETAIL_LOW,
+  POSTURES, blendPosture, crewBuild, crewPartColours, crewPartGeometries,
+  crewToolGeometries, makeCrewJoints, makeCrewPartColours,
   makePosture, poseCrew, writeCrewMatrices,
-  type CrewJoints, type CrewPartId, type Posture,
+  type CrewBuild, type CrewJoints, type CrewPartId, type Posture,
 } from './CrewFigure';
 import {
   PIT_CREW, WHEEL_CORNERS,
@@ -45,12 +47,20 @@ import type { CarEntry } from '../race/CarEntry';
  * WHAT IT COSTS
  * ===========================================================================
  *
- * Five instanced meshes for the people — thigh, shin, torso, upper arm,
- * forearm; see `CrewFigure` for why those five — and three more for the guns,
- * the wheels and the jacks. Eight draw calls for the entire working crew, one
- * material for the lot, and 189 matrices written per frame only while a car is
- * actually in its box. Team colour is per-instance (`setColorAt`), which is
- * what lets one geometry serve any team with no rebuild.
+ * Six instanced meshes for the people — thigh, shin, torso, head, upper arm,
+ * forearm; see `CrewFigure` for why those six — and three more for the guns,
+ * the wheels and the jacks. Nine draw calls for the entire working crew, one
+ * material for the lot, and 210 matrices written per frame only while a car is
+ * actually in its box.
+ *
+ * TWENTY-ONE DIFFERENT PEOPLE COST THE SAME AS TWENTY-ONE IDENTICAL ONES, which
+ * is the only reason #24's "the people are like legos" could be answered at all
+ * at this budget. Stature and girth ride in the per-part instance MATRIX, which
+ * was already being written every frame; kit rides in the per-part instance
+ * COLOUR, which was already being written once per team; and the kneeling side
+ * is one number in the pose. No extra geometry, no extra material, no extra
+ * draw call — the sixth mesh is the helmet coming out of the torso so that a
+ * heavier person does not also get a bigger head.
  */
 
 export interface PitCrewScene {
@@ -91,7 +101,6 @@ const _fig = new THREE.Matrix4();
 const _box = new THREE.Matrix4();
 const _tool = new THREE.Matrix4();
 const _pos = new THREE.Vector3();
-const _colour = new THREE.Color();
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 
 const smooth = (t: number): number => {
@@ -117,15 +126,25 @@ interface Member {
   mats: THREE.Matrix4[];
   /** Per-figure phase, so nobody breathes in time with anybody else. */
   phase: number;
+  /**
+   * WHO THIS PERSON IS: their stature, their girth, which knee they go down on,
+   * how their arms hang, and what their kit is made of.
+   *
+   * Seeded off the station index and nothing else, so the twenty-one people at
+   * a garage are the same twenty-one people on every stop of the weekend —
+   * which is what makes them people rather than a randomiser. Every team's crew
+   * is built the same way and coloured differently, which is what a crew is.
+   */
+  build: CrewBuild;
 }
 
-/** How many of each part one figure has, and where it starts in its nine. */
-const PER_FIGURE: Record<CrewPartId, number> = {
-  thigh: 2, shin: 2, torso: 1, upperArm: 2, forearm: 2,
-};
-const SLOT_BASE: Record<CrewPartId, number> = {
-  thigh: 0, shin: 2, torso: 4, upperArm: 5, forearm: 7,
-};
+/** How many of each part one figure has, and where it starts in its ten. */
+const PER_FIGURE = CREW_PART_COUNT;
+const SLOT_BASE: Record<CrewPartId, number> = (() => {
+  const out = {} as Record<CrewPartId, number>;
+  for (const id of CREW_PARTS) out[id] = CREW_SLOT_PARTS.indexOf(id);
+  return out;
+})();
 
 export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
   const root = new THREE.Group();
@@ -157,8 +176,10 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
     joints: makeCrewJoints(),
     mats: Array.from({ length: CREW_INSTANCES_PER_FIGURE }, () => new THREE.Matrix4()),
     phase: (i * 0.6180339) % 1,
+    build: crewBuild(i + 1),
   }));
   const n = members.length;
+  const partColours = makeCrewPartColours();
 
   // --- The people ---------------------------------------------------------
   //
@@ -409,8 +430,8 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
         blendPosture(a, b, k, blend);
         blend.crouch += idle * 0.022;
         blend.spineLean += idle * 0.016;
-        poseCrew(blend, m.joints);
-        writeCrewMatrices(m.joints, m.mats);
+        poseCrew(blend, m.joints, m.build);
+        writeCrewMatrices(m.joints, m.mats, m.build);
 
         // The stations are authored in the GARAGE FRAME: +x is towards the
         // garages, whichever side of the car that turns out to be. `outward`
@@ -505,14 +526,30 @@ export function buildPitCrew(quality: 'low' | 'high'): PitCrewScene {
       wheels.instanceMatrix.needsUpdate = true;
       jacks.instanceMatrix.needsUpdate = true;
 
-      // Team colour, once per team rather than once per frame.
+      // Team colour, once per team rather than once per frame — and one colour
+      // PER PART PER PERSON rather than one for the lot.
+      //
+      // It used to write `car.team.colour` into all 189 instance slots, which is
+      // why twenty-one people came out as twenty-one silhouettes of one flat
+      // colour: the baked vertex weight can only darken or lighten a hue, never
+      // change it, so the boots, the gloves and the visor were all the team's
+      // colour too. This writes what each person is actually wearing. Same call
+      // count, same upload, same frequency — it is the same loop with a
+      // different value in it.
       if (colouredFor !== car.team.id) {
         colouredFor = car.team.id;
-        _colour.set(car.team.colour);
+        for (let i = 0; i < n; i++) {
+          crewPartColours(car.team.colour, members[i].build, partColours);
+          for (const id of CREW_PARTS) {
+            const base = SLOT_BASE[id];
+            for (let q = 0; q < PER_FIGURE[id]; q++) {
+              limbs[id].setColorAt(i * PER_FIGURE[id] + q, partColours[base + q]);
+            }
+          }
+        }
         for (const id of CREW_PARTS) {
-          const mesh = limbs[id];
-          for (let k = 0; k < mesh.count; k++) mesh.setColorAt(k, _colour);
-          if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+          const c = limbs[id].instanceColor;
+          if (c) c.needsUpdate = true;
         }
       }
 

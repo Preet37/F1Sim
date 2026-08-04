@@ -3,7 +3,7 @@ import {
   PartsBin, chamferBox, chamferCylinder, quadXY, rand, structureMaterial,
 } from './ChamferKit';
 import {
-  CREW_DETAIL_HIGH, CREW_DETAIL_LOW, POSTURES, mergeCrewFigure,
+  CREW_DETAIL_HIGH, CREW_DETAIL_LOW, POSTURES, crewBuild, mergeCrewFigure,
   type CrewDetail, type PostureName,
 } from './CrewFigure';
 import { buildGrandstandGeometry, grandstandPreset } from './Grandstands';
@@ -273,7 +273,12 @@ function crewGeometry(overalls: number, pose: PostureName, seed = 0): THREE.Buff
   p.armPitch += (rand(seed * 1.7 + 3) - 0.5) * 0.3;
   p.armSpread += (rand(seed * 2.3 + 11) - 0.5) * 0.12;
   p.stance += (rand(seed * 0.9 + 5) - 0.5) * 0.2;
-  return mergeCrewFigure(p, overalls, D.crew);
+  // ...and a scatter in the PERSON, which is a different thing and is the half
+  // that was missing (#24). Scattering the pose alone gives ten identical
+  // bodies standing slightly differently — the same build, the same height and
+  // the same flat colour, which is what "lego people" actually describes. The
+  // build carries stature, girth, the kneeling side and the kit.
+  return mergeCrewFigure(p, overalls, D.crew, crewBuild(seed + 1));
 }
 
 /** A stack of tyres, as they sit at the back of every garage. */

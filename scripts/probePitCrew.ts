@@ -52,6 +52,13 @@ import {
   PIT_CREW, PIT_CREW_SIZE, PIT_CREW_TIME_ELITE_S, PIT_CREW_TIME_POOR_S,
   WHEEL_CORNERS, makePitStopProgress, pitStopProgress, resolvePitStop,
 } from '../src/race/PitStopChoreography';
+import {
+  CREW_BUILD_STOCK, CREW_DETAIL_HIGH, POSTURES, crewBuild, mergeCrewFigure,
+  type CrewBuild, type Posture, type PostureName,
+} from '../src/render/CrewFigure';
+import {
+  drawCrewFigure, figureSignature, fromGeometry, measureFigure,
+} from './lib/crewGeom';
 
 const failures: string[] = [];
 function fail(msg: string): void { failures.push(msg); }
@@ -254,9 +261,14 @@ interface Visit {
   /** Did it come round and complete a stop on a later lap? */
   completedLater: boolean;
   penalties: string[];
+  /** Every penalty the car was carrying has been discharged. */
+  penaltiesServed: boolean;
 }
 
-function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'race'): Visit {
+function runVisit(
+  circuitId: string, approach: Approach, kind: SessionKind = 'race',
+  owedPenalty = false,
+): Visit {
   const def = getCircuit(circuitId);
   const config: SessionConfig = {
     kind,
@@ -285,6 +297,17 @@ function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'ra
   player.placeOnTrack(track, startS, track.lineOffset[i0], track.targetSpeed[i0]);
   engine.requestPit(player, true);
 
+  // A drive-through the driver has already been given, on top of the stop they
+  // have asked for. See `driveThroughDoesNotEatTheStop` below for why this is a
+  // separate arm and not a variation on an approach.
+  if (owedPenalty) {
+    player.penalties.push({
+      kind: 'drive-through',
+      reason: 'Staged by probe:pitcrew',
+      lap: player.lap, timeS: 0, served: false,
+    });
+  }
+
   const driver = new PitDriver(player, track, approach);
   const c = engine.playerControls;
 
@@ -302,6 +325,7 @@ function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'ra
     outsideWallM: 0,
     completedLater: false,
     penalties: [],
+    penaltiesServed: true,
   };
 
   let wasInLane = false;
@@ -391,6 +415,7 @@ function runVisit(circuitId: string, approach: Approach, kind: SessionKind = 'ra
     r.stationaryS = stationary;
     r.stillOwed = player.pitRequested;
   }
+  r.penaltiesServed = player.penalties.every((p) => p.served);
   return r;
 }
 
@@ -463,6 +488,71 @@ function checkVisit(r: Visit): void {
   const speeding = r.penalties.filter((p) => /speeding/i.test(p));
   if (speeding.length > 0) {
     fail(tag + ': pit lane speeding penalty — ' + speeding[0]);
+  }
+}
+
+// ===========================================================================
+// A drive-through does not eat the stop you asked for
+// ===========================================================================
+
+/**
+ * The driver has called for tyres AND has a drive-through outstanding.
+ *
+ * WHY THIS IS ITS OWN SECTION AND NOT A SIXTH APPROACH, and it is the more
+ * useful half of the finding. The exit path used to clear `pitRequested` on
+ * `served || car.pitTransitOnly`, and a pending drive-through forces
+ * `pitTransitOnly` on the NEXT visit whatever the driver came in for — so
+ * serving the penalty silently discharged the stop as well. Reverting that
+ * clause alone, with everything else on this branch left fixed, **this probe
+ * still passed**: nothing in the approach sweep issues a penalty any more, so
+ * there was no drive-through to make `pitTransitOnly` true and the defect was
+ * unreachable.
+ *
+ * That is §3.2 exactly — a probe that a broken feature passes is worse than no
+ * probe — and the answer is to stage the state rather than to hope a scenario
+ * wanders into it. The penalty is pushed onto the car directly, which is what
+ * the stewards do, and then:
+ *
+ *   1. the first visit is a TRANSIT: no service, and the penalty discharged;
+ *   2. the driver is STILL OWED the stop when they leave the lane;
+ *   3. and they get it on the next visit.
+ *
+ * A player reaches this by picking up a penalty for anything at all while a
+ * stop is called. On a two-stop strategy the old behaviour was a two-compound
+ * disqualification at the flag for a stop they had asked for and been quietly
+ * refused — the same sentence this whole file was written for.
+ */
+function driveThroughDoesNotEatTheStop(): void {
+  console.log('  circuit       served on the retry   still owed after the transit   penalty');
+  for (const id of ['bahrain', 'monza', 'monaco']) {
+    const r = runVisit(id, 'onmarks', 'race', true);
+    console.log(
+      '  ' + r.circuit.padEnd(12) +
+      '  ' + (r.completedLater ? 'yes' : 'NO ').padStart(17) +
+      '  ' + (r.stillOwed ? 'yes' : 'NO ').padStart(28) +
+      '  ' + (r.penaltiesServed ? 'served' : 'STILL OUTSTANDING'));
+
+    const tag = r.circuit + ' / drive-through + tyre stop';
+    if (!r.entered) {
+      fail(tag + ': the car never got into the pit lane.');
+      continue;
+    }
+    if (r.serviced) {
+      fail(tag + ': the crew worked on a car serving a drive-through. ' +
+        'Art. B1.9.5c — a drive-through is served by driving THROUGH.');
+    }
+    if (!r.stillOwed) {
+      fail(tag + ': serving the drive-through cleared the tyre stop the driver had ' +
+        'asked for and not yet had. A transit discharges the PENALTY, not the STOP — ' +
+        'on a two-stop strategy this is a two-compound disqualification at the flag.');
+    }
+    if (!r.completedLater) {
+      fail(tag + ': the car never got its stop after serving the penalty.');
+    }
+    if (!r.penaltiesServed) {
+      fail(tag + ': the car transited the pit lane and the drive-through is still ' +
+        'outstanding. The transit IS the penalty.');
+    }
   }
 }
 
@@ -910,6 +1000,221 @@ function penaltyHold(): void {
   void rng;
 }
 
+// ===========================================================================
+// What a crew member is made of  (issue #24)
+// ===========================================================================
+
+/**
+ *   "the whole pitstop system needs to be a little revamped and re-rendered,
+ *    the people are like legos, not how a pitstop really works."
+ *
+ * The pit-stop work before this one rebuilt the TORSO — three chamfered boxes
+ * became oval sections with ball shoulders and a wrapped visor — and said, in
+ * its own report, that it had not answered the complaint: *"all 21 are an
+ * identical build in flat team colour"*, with per-person variety and one-knee-
+ * down poses explicitly not done. This section is the measurement of that
+ * sentence, and it is measured off the DRAWN TRIANGLES, never off the rig. See
+ * the note at the top of `scripts/lib/crewGeom.ts` for why that distinction is
+ * the whole design.
+ *
+ * `CREW_LEGACY=1` runs it against the figure exactly as it shipped: the stock
+ * build for all twenty-one, and every posture's `kneel` and `asymArm` forced to
+ * zero, which together IS the old `poseCrew` — one build, one flat colour, and
+ * a pose mirrored about x = 0. Nothing test-only is left in `src/` for it; the
+ * old figure is reproduced by feeding the new one its own neutral inputs.
+ */
+const CREW_LEGACY = process.env.CREW_LEGACY === '1';
+
+/** The postures the choreography actually puts the twenty-one crew into. */
+const WORKING_POSTURES: PostureName[] = ['ready', 'gun', 'fit', 'carry', 'jack', 'stand'];
+
+/** The postures a person is meant to be down on one knee in. */
+const KNEELING_POSTURES: PostureName[] = ['ready', 'gun'];
+
+/**
+ * How far apart the two legs' material has to sit before it counts as one knee
+ * down, metres.
+ *
+ * Not a tolerance on an existing measurement — it is the definition of the
+ * thing being counted. A knee on the ground and a foot on the ground put one
+ * leg's mass at ankle height and the other's spread up to a raised knee, and
+ * eight centimetres of difference in the mean is well below what that produces
+ * and well above the couple of millimetres that anything short of a real kneel
+ * can reach.
+ */
+const KNEEL_DROP_M = 0.08;
+
+/** McLaren papaya — a real team colour off the roster's own palette. */
+const TEAM_COLOUR = 0xff8000;
+
+function posture(name: PostureName): Posture {
+  const p: Posture = { ...POSTURES[name] };
+  if (CREW_LEGACY) { p.kneel = 0; p.asymArm = 0; }
+  return p;
+}
+
+function buildFor(i: number): CrewBuild {
+  return CREW_LEGACY ? CREW_BUILD_STOCK : crewBuild(i + 1);
+}
+
+function crewAnatomy(): void {
+  const n = PIT_CREW_SIZE;
+
+  // ---- 1. Twenty-one people, or one person twenty-one times ---------------
+  //
+  // Stature is measured STANDING, because the bounding box of a crouching
+  // figure is how low the crouch is and not how tall the person is — the first
+  // version of this measured `ready` and reported a crew of 1.38m adults.
+  // Everything else is measured in `ready`, which is the posture the whole crew
+  // is in while the car comes down the lane and the shot the player gets time
+  // to look at.
+  const ready = posture('ready');
+  const stand = posture('stand');
+  const m = [];
+  const heights: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const b = buildFor(i);
+    m.push(measureFigure(drawCrewFigure(ready, b, CREW_DETAIL_HIGH, TEAM_COLOUR)));
+    heights.push(measureFigure(drawCrewFigure(stand, b, CREW_DETAIL_HIGH, TEAM_COLOUR)).heightM);
+  }
+  const areas = m.map((x) => x.areaM2);
+  const signatures = new Set(m.map(figureSignature));
+  const hSpread = Math.max(...heights) - Math.min(...heights);
+  const aRatio = Math.max(...areas) / Math.min(...areas);
+
+  console.log('  distinct figures on screen   ' + signatures.size + ' of ' + n);
+  console.log('  stature, standing            ' +
+    Math.min(...heights).toFixed(2) + '-' + Math.max(...heights).toFixed(2) +
+    'm  (spread ' + (hSpread * 100).toFixed(1) + 'cm)');
+  console.log('  drawn surface per figure     ' +
+    Math.min(...areas).toFixed(2) + '-' + Math.max(...areas).toFixed(2) +
+    'm2  (ratio ' + aRatio.toFixed(2) + ')');
+
+  if (signatures.size < 12) {
+    fail('the twenty-one crew draw as ' + signatures.size + ' distinct figures. ' +
+      'A pit crew is twenty-one people, and a row of identical figures is what ' +
+      '"the people are like legos" describes — the giveaway is not that a piece ' +
+      'is blocky, it is that every piece is the same piece.');
+  }
+  if (hSpread < 0.10) {
+    fail('the tallest crew member is ' + (hSpread * 100).toFixed(1) +
+      'cm taller than the shortest. Adult stature spans about 22cm across the ' +
+      '5th to 95th percentile and `reference/target/89.png` shows two people ' +
+      'in race kit who are visibly not the same height.');
+  }
+  if (aRatio < 1.12) {
+    fail('the heaviest crew member draws ' + aRatio.toFixed(2) +
+      'x the surface of the lightest. They are all the same build.');
+  }
+
+  // ---- 2. Somebody is down on one knee ------------------------------------
+  //
+  // The asymmetry numbers are the ones that cannot be argued with: a pose
+  // mirrored about x = 0 scores EXACTLY zero on both of them, on every figure,
+  // in every posture, for ever.
+  console.log('  posture   asym z    asym y   leg aft  L / R    one-knee figures');
+  for (const name of WORKING_POSTURES) {
+    const p = posture(name);
+    let worstZ = 0;
+    let worstY = 0;
+    let kneeling = 0;
+    let sideL = 0;
+    let sideR = 0;
+    let legSample: [number, number] = [0, 0];
+    for (let i = 0; i < n; i++) {
+      const a = measureFigure(drawCrewFigure(p, buildFor(i), CREW_DETAIL_HIGH, TEAM_COLOUR));
+      worstZ = Math.max(worstZ, a.asymZM);
+      worstY = Math.max(worstY, a.asymYM);
+      const drop = Math.abs(a.legAftM[0] - a.legAftM[1]);
+      if (drop >= KNEEL_DROP_M) {
+        kneeling++;
+        if (a.legAftM[0] < a.legAftM[1]) sideL++; else sideR++;
+      }
+      if (i === 0) legSample = a.legAftM;
+    }
+    console.log('  ' + name.padEnd(9) +
+      worstZ.toFixed(3) + 'm  ' + worstY.toFixed(3) + 'm   ' +
+      legSample[0].toFixed(2) + ' / ' + legSample[1].toFixed(2) + 'm       ' +
+      kneeling + ' of ' + n + (kneeling > 0 ? '  (' + sideL + ' left, ' + sideR + ' right)' : ''));
+
+    if (worstZ < 0.02 && worstY < 0.02) {
+      fail('every crew figure in the "' + name + '" posture is MIRROR-SYMMETRIC — ' +
+        'left/right disagreement ' + worstZ.toFixed(3) + 'm fore-aft and ' +
+        worstY.toFixed(3) + 'm in height, on all ' + n + '. Nobody stands like ' +
+        'that, and a whole crew standing like it is the second half of "lego people".');
+    }
+    if (KNEELING_POSTURES.includes(name)) {
+      if (kneeling < n) {
+        fail('only ' + kneeling + ' of ' + n + ' crew are down on one knee in the "' +
+          name + '" posture — the two legs\' material sits within ' +
+          (KNEEL_DROP_M * 100).toFixed(0) + 'cm of the same height on the rest. Every ' +
+          'reference photograph of a crew set and waiting has them on one knee, and ' +
+          'this posture\'s own comment already said "often on one knee".');
+      }
+      if (sideL === 0 || sideR === 0) {
+        fail('all ' + kneeling + ' kneeling crew in "' + name + '" are down on the ' +
+          'SAME knee. Which knee is a property of the person, not of the job.');
+      }
+    }
+  }
+
+  // ---- 3. The kit is not one flat colour ----------------------------------
+  //
+  // Chromaticity, not colour. The per-vertex weight multiplies the instance
+  // colour, so a figure drawn from one instance colour is one HUE at five
+  // brightnesses however many weights it carries — boots, gloves, visor and all
+  // in the team's own colour, which is not a thing any team's kit does.
+  const chromas = m.map((x) => x.chromas);
+  const palettes = new Set(m.map((x) => x.bandChroma));
+  const median = [...chromas].sort((a, b) => a - b)[Math.floor(n / 2)];
+  console.log('  chromaticities per figure    ' +
+    Math.min(...chromas) + '-' + Math.max(...chromas) + ' (median ' + median + ')' +
+    ', ' + palettes.size + ' distinct colour layouts across the crew');
+  if (median < 2) {
+    fail('the median crew member is drawn in ' + median +
+      ' chromaticity — every part of them, boots and gloves and visor included, ' +
+      'is the team colour at a different brightness. That is a silhouette, not a kit.');
+  }
+  if (palettes.size < 4) {
+    fail('the whole crew draws ' + palettes.size + ' distinct colour layout(s) — the ' +
+      'same colours in the same places on everybody. Real kit varies person to ' +
+      'person, on the sleeves, the lower legs and the helmet, and ' +
+      '`reference/target/89.png` is two people in one paddock in visibly ' +
+      'different suits.');
+  }
+
+  // ---- 4. The two paths still describe the same person --------------------
+  //
+  // `CrewFigure`'s opening note: "A change to the proportions changes both,
+  // which is the whole point." Asserted rather than asserted-in-a-comment. The
+  // paddock's merged figure and the pit lane's instanced one are built from the
+  // same parts, the same matrices and the same colours, so for one (posture,
+  // build) they have to measure the same.
+  let worstDelta = 0;
+  for (let i = 0; i < n; i += 4) {
+    const b = buildFor(i);
+    const inst = measureFigure(drawCrewFigure(ready, b, CREW_DETAIL_HIGH, TEAM_COLOUR));
+    const merged = mergeCrewFigure(ready, TEAM_COLOUR, CREW_DETAIL_HIGH, b);
+    const stat = measureFigure(fromGeometry(merged));
+    merged.dispose();
+    worstDelta = Math.max(
+      worstDelta,
+      Math.abs(inst.heightM - stat.heightM),
+      Math.abs(inst.areaM2 - stat.areaM2),
+      Math.abs(inst.asymZM - stat.asymZM),
+    );
+    if (inst.bandChroma !== stat.bandChroma) {
+      fail('the paddock draws crew member ' + i + ' in a different colour layout from ' +
+        'the pit lane: ' + stat.bandChroma + ' against ' + inst.bandChroma);
+    }
+  }
+  console.log('  merged vs instanced figure   worst difference ' + worstDelta.toFixed(4));
+  if (worstDelta > 0.005) {
+    fail('the paddock\'s merged figure and the pit lane\'s instanced one differ by ' +
+      worstDelta.toFixed(4) + '. They are meant to be the same person built two ways.');
+  }
+}
+
 function main(): void {
   console.log('\n=== PIT STOP ===\n');
 
@@ -926,6 +1231,17 @@ function main(): void {
     if (n !== 3) fail('corner ' + corner + ' has ' + n + ' people on it; it is three.');
   }
 
+  // ---- What a crew member is made of (issue #24) --------------------------
+  console.log('\nWhat a crew member is made of' +
+    (CREW_LEGACY ? '  [CREW_LEGACY=1 — the figure as it shipped]' : '') + ':');
+  crewAnatomy();
+  // The anatomy section is pure geometry in node and runs in about a second;
+  // the rest of this file drives the engine round three circuits and takes ten
+  // minutes. `CREW_ONLY=1` is for iterating on the figure without paying for
+  // that, and it is not a way to run less of the probe — it exits 1 on failure
+  // exactly as the full run does.
+  if (process.env.CREW_ONLY === '1') { report(); return; }
+
   // ---- Arriving at the box ------------------------------------------------
   console.log('\nArriving at the box:');
   const approaches: Approach[] = ['onmarks', 'short', 'long', 'waylong', 'nobrake'];
@@ -936,6 +1252,10 @@ function main(): void {
       checkVisit(r);
     }
   }
+
+  // ---- A drive-through does not eat the stop you asked for ----------------
+  console.log('\nA drive-through, on a driver who has also called for tyres:');
+  driveThroughDoesNotEatTheStop();
 
   // ---- Every session kind -------------------------------------------------
   //
@@ -1095,6 +1415,10 @@ function main(): void {
       'A disaster stop has to be possible.');
   }
 
+  report();
+}
+
+function report(): void {
   console.log('');
   if (failures.length === 0) {
     console.log('PASS — the pit stop is a pit stop.\n');

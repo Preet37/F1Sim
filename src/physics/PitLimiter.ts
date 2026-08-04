@@ -118,9 +118,24 @@ export const PIT_LIMITER_MAX_DECEL_G = 1;
  */
 export const PIT_ENTRY_RESCUE_M = 50;
 
+/**
+ * The speed the limiter actually holds, m/s, from the posted limit alone.
+ *
+ * Takes the number rather than the `PitLane` because `VehiclePhysics` — the
+ * FIRST of the three pieces the note at the top of this file says have to agree
+ * exactly — only ever has the number. It was the one that did not read this
+ * rule: it capped the car at the posted limit itself, so the player's automatic
+ * limiter sat on 80.0 with race control's tolerance at 80.5, while the AI aimed
+ * at 78 and had two and a half km/h in hand. Half a km/h of margin is not a
+ * margin; it is a control loop being asked not to overshoot.
+ */
+export function pitLimiterSetpointFromKph(speedLimitKph: number): number {
+  return Math.max(speedLimitKph - PIT_LIMIT_MARGIN_KPH, 5) / 3.6;
+}
+
 /** The speed the limiter actually holds, m/s. */
 export function pitLimiterSetpointMs(pit: PitLane): number {
-  return Math.max(pit.speedLimitKph - PIT_LIMIT_MARGIN_KPH, 5) / 3.6;
+  return pitLimiterSetpointFromKph(pit.speedLimitKph);
 }
 
 /** The speed to cross the entry line at, m/s. */

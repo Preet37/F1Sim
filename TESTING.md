@@ -104,6 +104,27 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
 9. **Stop on the racing line and wait.** Race control should raise double yellows naming
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
+10. **Miss your pit box on purpose.** Press `PIT`, come down the lane, and do not brake.
+    You should sail past the box, be told *"<your code> overshot the box — round again"*
+    and then *"No stop — you are still due in. Box again next lap."*, and **still owe the
+    stop**: come round, stop on the marks, and get your tyres. Two things
+    that used to go wrong here are fixed. You should **not** collect a drive-through for
+    speeding while the automatic limiter is holding you at the limit — the limiter now
+    sits 2 km/h under the posted number the way the AI always has, and race control now
+    judges how fast you are going *down the lane* rather than the magnitude of your
+    velocity, which a sliding car makes bigger without going anywhere faster. And if you
+    **do** pick up a drive-through for something, serving it must not cancel your stop:
+    you should be told *"Penalty served — you are still due in for tyres"* and be able to
+    box again next lap. Before this, that second visit ate the stop silently, and on a
+    two-stop strategy you were disqualified at the flag for a stop you had asked for.
+11. **Watch a stop from the pit lane.** Chase or drone camera as you come in. **The crew
+    should be twenty-one different people**: different heights and builds, some down on
+    their left knee and some on their right, some with charcoal sleeves and some in the
+    team's colour, helmets in three different colours. Before this they were the same
+    person twenty-one times, all in one flat team colour down to the boots and the visor,
+    with both knees at exactly the same height. If they still look like a row of copies,
+    say so — that is the whole of *"the people are like legos"* and it is what #24 is for.
+
 8. **Race in the rain. It rains by itself now (#97) — but not often, on purpose.**
    Until 2026-08-04 it had **never** rained in this game, on any seed, at any circuit: a rate
    limiter snapped the rainfall back to zero faster than it could build at the rate the game
@@ -268,7 +289,11 @@ Do not spend time reporting these; they are on the list with measurements.
 | Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
 | Career screens (ratings, market, accolades) not built | **#77** |
 | Podium/press bodies: **the head does not turn with the body**, so a panel of three all face the camera from the neck down; there is no applause pose — the one written for it draws folded arms and is named `folded` for that reason; nothing is animated. The three defects that were on this line — a stick arm, armless crew, hands hidden by the desk — are **fixed** | **#22** |
-| The **3D pit crew** in the pit lane is a different rendering path and #22 did not touch it | **#24** |
+| ~~The **3D pit crew** in the pit lane is a different rendering path and #22 did not touch it~~ — **done separately**. The twenty-one crew were **one figure drawn twenty-one times**: 0.0cm between the tallest and the shortest, identical build, identical flat team colour on every part of them including the boots and the visor, and **0 of 21** down on one knee. Now 17.7cm of stature spread, 1.36× between the heaviest and the lightest, 16 different kits, and **21 of 21** on one knee — 11 on the left, 10 on the right | **#24** |
+| **The pit crew's kit is a team colour plus a charcoal and an off-white, and nothing else** — no sponsor blocks, no numbers, no second team colour. `reference/target/89.png` has all three. The wordmarks are an IP question (PROJECT.md §3); the rest is just not built | **#24** |
+| **Nobody in the pit crew turns their head.** The helmet is its own part now, which is what turning it would need, and it is not wired to anything | **#24** |
+| **The crew figure is 1.66m to the top of the helmet where its own source comment says 1.78m.** Found by measuring it. Not corrected, because the crew's stations, their reach to the hubs and the jack handle's length are all authored against the smaller figure — it is a re-authoring job, not a constant | **#24** |
+| **The paddock is unchanged and was deliberately cut from #24.** The garages have team-coloured kerbs and pier faces and nothing else in them: no equipment on the floor, no signage over the opening, no real depth. The crew standing in the bays and on the pit wall ARE all different people now, which came free with the pit-crew work | **#24** |
 
 ---
 
@@ -330,6 +355,7 @@ Useful individual probes:
 | `probe:banking` | cars stand on the asphalt that is DRAWN — and, since the road-surface work, **between** the mesh's node rows as well as on them, which is where an 85mm error had been hiding behind a probe reporting 0.000m |
 | `probe:kerbs` | how much of a lap is kerbed — and that every surface which claims to have relief still HAS it: the band limit that fixed the road's speckle is shared by the kerbs, the grass and the run-off, and nothing measured them until now |
 | `probe:people` | 42 principals, all different, all reachable |
+| `probe:pitcrew` | the stop you asked for still happens if you miss the box, the pit lane cannot penalise you for a speed its own limiter is holding you at — **and what a crew member is made of, measured off the drawn triangles**: twenty-one different builds, one knee down, a kit that is not one flat colour. `CREW_LEGACY=1` runs it against the figure as it shipped and fails 11; `CREW_ONLY=1` runs the anatomy alone in about a second instead of the ten minutes the engine sections take |
 | `probe:envelope` | the car does what the lap-time solver and the racing line say it will |
 | `probe:racesweep` | 55 races. **Slow — 20+ minutes, and an hour on a busy machine** |
 | `probe:qualiretire` | a crash in qualifying does not take the screen |
@@ -372,6 +398,17 @@ it is the AI and the tyre model, not the weather.
 **Nothing above was loosened to get there** — `probe:racesweep`'s `ratio > 1.45`,
 `offTrack > 90` and `spread > 70` are untouched, and `probe:racingline`'s colour bands were
 proved not to have moved by a sweep of every colour the ramp can draw.
+
+**`probe:pitcrew` was RED on `main` and this list had never recorded it — the fifth time
+that has happened in this project.** Measured on merged `main` at `0c39917` on 2026-08-04:
+**2 failures**, both `Monza / nobrake`, and issue #24 had them written down as **6** against
+a different approach. **Fixed** — see PROJECT.md §6, "A missed pit box was unrecoverable".
+The substantive one was a real gameplay defect: serving a drive-through penalty silently
+wiped a tyre stop you had asked for and not yet had. It is **0** now, and the probe carries
+two new sections: an anatomy section that fails **11** checks against the crew figure as it
+shipped, and a staged drive-through section that the recovery fix had no failing test
+without. With all three fixes reverted the probe reads **8**, so `main` was carrying four
+times the defect anybody had counted.
 
 **Two more that this list had never recorded, both confirmed identical on clean `main` by a
 controlled run on 2026-08-04** — so they are pre-existing and neither is a regression:

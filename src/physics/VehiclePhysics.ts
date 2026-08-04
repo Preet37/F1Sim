@@ -2,7 +2,7 @@ import { Vec2, clamp, clamp01, damp, MS_TO_KPH, wrapAngle } from '../core/MathUt
 import { TireState } from './TireModel';
 import type { CompoundId } from '../data/tires';
 import type { VehicleSpec } from './VehicleSpec';
-import { PIT_LIMITER_MAX_DECEL_G } from './PitLimiter';
+import { PIT_LIMITER_MAX_DECEL_G, pitLimiterSetpointFromKph } from './PitLimiter';
 
 /**
  * Vehicle dynamics.
@@ -1210,7 +1210,16 @@ export class VehiclePhysics {
     // is what makes that case work without a second copy of everything below.
     if (c.pitLimiter || c.speedLimitMs > 0) {
       // The circuit's own limit, not a constant. See `pitSpeedLimitKph`.
-      let limitMs = c.pitLimiter ? this.pitSpeedLimitKph / 3.6 : Infinity;
+      //
+      // ...and the SETPOINT, not the posted limit. `PitLimiter.ts` names this
+      // file as the first of the three pieces that have to agree about the pit
+      // lane limit, and it was the one that did not read the rule: capping at
+      // the posted number itself left the player's automatic limiter sitting on
+      // 80.0 with race control's tolerance at 80.5, while every AI car aimed at
+      // 78 through `pitLimiterSetpointMs` and had two and a half km/h in hand.
+      // Nothing changes for the AI — its own target is already below this cap —
+      // so this only gives the player the margin the AI always had.
+      let limitMs = c.pitLimiter ? pitLimiterSetpointFromKph(this.pitSpeedLimitKph) : Infinity;
       if (c.speedLimitMs > 0 && c.speedLimitMs < limitMs) limitMs = c.speedLimitMs;
       if (vx > limitMs) {
         driveForce = 0;

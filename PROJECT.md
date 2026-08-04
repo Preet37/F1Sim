@@ -457,6 +457,17 @@ Run `npm run` to list. The important ones:
   180 seconds. See §6, "A race that did not know it had ended". Now **0 failures**, with the
   finisher counts at 20/22/24 cars byte-identical to before, so nothing else moved.
 
+- ~~`probe:pitcrew`~~ — **was RED on `main` and NOTHING RECORDED IT, which is the fifth time
+  that has happened in this project.** Issue #24 had it written down as **6** failures;
+  merged `main` at `0c39917` measured **2**, both `Monza / nobrake`, and the issue's own
+  quote put the speeding penalty on `waylong`, which passes. **Fixed — 0.** The substantive
+  one was a gameplay defect: serving a drive-through silently discharged a tyre stop the
+  driver had asked for and not yet had. See §6, "A missed pit box was unrecoverable". The
+  probe now also carries an anatomy section that fails **11** against the crew figure as it
+  shipped, and a staged drive-through section without which the recovery fix has no failing
+  test at all — with all three fixes reverted the probe reads **8**, so `main` was carrying
+  four times the defect anybody had counted.
+
 **Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
 engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
 an agent sent to that call site would have found working code.** The probe builds a race
@@ -3159,6 +3170,180 @@ suspicious of, not pleased about.
   alongside the mirror / ahead at the apex), leaving the track and gaining an advantage,
   causing a collision. Give-the-position-back as a remedy. Penalties served in the box with
   the crew standing off, or added at the flag and re-sorting the classification.
+
+### A missed pit box was unrecoverable, and the crew were twenty-one copies of one man (#24)
+
+Three things were asked for and two landed. **The paddock was cut and is named as cut**, at
+the bottom of this section and again in §7.
+
+**First: `probe:pitcrew` was RED on `main` and it is not in `TESTING.md`'s list — the fifth
+time that has happened here.** Issue #24 recorded **six** failures. Re-measured on merged
+`main` at `0c39917` on 2026-08-04, before anything was touched: **two**, and the issue's own
+quote attributed the speeding penalty to `waylong` when it belongs to `nobrake`.
+
+```
+* Monza / nobrake: the car never got its stop on a later lap. A missed box has to be
+                   recoverable by coming round again.
+* Monza / nobrake: pit lane speeding penalty — drive-through: Speeding in the pit lane (80.6 km/h)
+```
+
+Twelve of the eighteen "arriving at the box" rows that were failing when #24 was filed had
+been fixed by intervening merges and nobody re-ran it. **§8's rule again: a number that is
+known to drift must be re-run before it is quoted.**
+
+**They are two independent defects that chain, and the chain is the gameplay bug.** Traced
+step by step at Monza rather than reasoned about:
+
+```
+PENALTY at step 2315: Speeding in the pit lane (80.6 km/h)
+   visit 1  |v|=80.56  vx=79.85  slip=7.63deg   limiter=true
+worst in lane   |v|=86.86  vx=80.09  slip=22.76deg  limiter=true
+visits=2  pitStops=0  pitRequested=false  penalties=drive-through/served
+```
+
+- **The limiter and race control were not measuring the same speed.** `VehiclePhysics` caps
+  the car's LONGITUDINAL speed; `RaceControlManager` judged the MAGNITUDE of its velocity.
+  With 22.8 degrees of sideslip those differ by 6.8 km/h, and the drive-through was issued
+  with the car doing 79.85 km/h down a lane limited to 80. A pit lane speed limit is a limit
+  on how fast you go down the pit lane — it is measured between two loops in the road — so
+  race control now judges forward speed. `PitLimiter.ts` already stated the principle this
+  restores: *"if the game presses the button, the game owes the driver an entry that is not
+  an instant penalty."*
+- **And the player's automatic limiter had half a km/h of margin where the AI had two and a
+  half.** `PitLimiter.ts` opens by naming three pieces of the simulation that "have to agree
+  about it exactly", and `VehiclePhysics` — the first one named — was the one that did not
+  read the rule: it capped at the posted limit itself while `AIVehicleController` targeted
+  `pitLimiterSetpointMs`, two km/h under. The physics cap is now the setpoint. **Nothing
+  changes for the AI**, whose own target is already below the cap; it only gives the player
+  the margin the AI always had. Measured in the probe's own table: `nobrake` past the box
+  reads **78 km/h at Monza where it read 80**, and **58 at Monaco where it read 60**.
+- **Then: serving a drive-through discharged the tyre stop the driver still owed.** This is
+  the substantive one and it is reachable without ever overshooting anything. The pit-exit
+  path cleared `pitRequested` on `served || car.pitTransitOnly`, and a pending drive-through
+  forces `pitTransitOnly` on the NEXT visit whatever the driver came in for. So: pick up a
+  penalty while a stop is called, come round again as the code's own comment promises you
+  can, and the second visit is spent serving the penalty and then wipes the stop you never
+  got — no tyres, no message, and on a two-stop strategy the two-compound disqualification
+  that the same block of code exists to prevent. **A transit discharges the PENALTY, not the
+  STOP.** The clause is now `served` alone; the player is told *"Penalty served — you are
+  still due in for tyres"*; and the pit wall's latch is deliberately still not cleared,
+  because the car still owes a stop.
+
+**`probe:pitcrew` 2 → 0. And the break verification found a hole in the probe, which is the
+more useful half of this.**
+
+Each fix was reverted on its own with the other two left in place, and **two of the three
+runs came back GREEN**:
+
+| reverted, alone | `probe:pitcrew` | |
+|---|---|---|
+| the physics cap back to the posted limit | **FAIL 1** — `Monza / nobrake: pit lane speeding penalty — drive-through: Speeding in the pit lane (80.6 km/h)` | the speeding half, reproduced exactly |
+| the magnitude test in `checkPitLaneSpeed` | **PASS** | the setpoint alone absorbs it: the car holds 78 and never reaches the 80.5 bar |
+| the recovery clause (`served \|\| car.pitTransitOnly`) | **PASS** | **the defect is UNREACHABLE** — nothing in the approach sweep issues a penalty any more, so `pitTransitOnly` is never true |
+| **all three** | **FAIL 8** | `main`'s own two exactly, plus the six the new staged section adds |
+
+**Two things follow and both are §3.2.**
+
+**The speeding half is belt and braces, and the probe only proves one of the two.** The
+margin is what the measurement demands: reverting it puts the drive-through straight back.
+The forward-speed change passes on its own here and is kept anyway, because the diagnostic
+shows the two quantities diverging by **6.8 km/h in the lane** (vx 80.09 against `speedKph`
+86.86) and no setpoint can bound a gap that is not a speed the limiter controls. That is
+stated as a judgement rather than as a measurement, which is what it is.
+
+**The recovery fix had no failing test at all**, and that is the more useful finding. It is
+only reachable through a penalty, and the same branch that fixes the speeding removes the
+penalty — so reverting it alone left the probe green while the defect was still in the code.
+So `probe:pitcrew` gained a section that **stages** the state rather than hoping a scenario
+wanders into it: a drive-through pushed onto the car directly, on a driver who has also
+called for tyres, on three circuits, asserting that the transit discharges the penalty, that
+the driver is still owed the stop, and that they get it on the next visit. Reverting the
+recovery clause against that section goes red — **6 failures**, two on each of Bahrain, Monza and Monaco: *"serving the drive-through cleared the tyre stop the driver had asked for and not yet had"* and *"the car never got its stop after serving the penalty"*. **A probe that a broken feature
+passes is worse than no probe, and this one was, until it was asked properly.**
+
+**Second: "the people are like legos", and this time it was measured before it was
+changed.** The previous pit-stop agent rebuilt the TORSO — three chamfered boxes became
+oval sections with ball shoulders and a wrapped visor — and reported in its own words that
+this did not answer the complaint: *"all 21 are an identical build in flat team colour"*,
+with per-person variety and one-knee-down poses explicitly not done. §7 carried a note
+saying the line **may** already be stale and that **nobody had measured it**. It is measured
+now.
+
+`scripts/lib/crewGeom.ts` composes the same three things `PitCrew.update` composes every
+frame — `crewPartGeometries`, `writeCrewMatrices`, `crewPartColours` — into the triangle
+soup one figure puts on screen, and measures **that and nothing else**. It is not allowed to
+ask the rig: comparing `CrewBuild` records would be asking the randomiser whether it is
+random, which is the trap that took `probe:myteam` invariant 7 and `audit:livery`'s control
+shot, and which #22 avoided in the 2D path by parsing the drawn polygons back out of the
+markup.
+
+**What a crew figure WAS, off its own triangles** (`CREW_LEGACY=1 npm run probe:pitcrew`,
+which feeds all twenty-one the stock build and zeroes the two new pose fields — that
+combination *is* the shipped figure):
+
+| | shipped | now |
+|---|---|---|
+| distinct figures on screen | **1 of 21** | **21 of 21** |
+| stature, standing | 1.66–1.66m, **spread 0.0cm** | 1.56–1.74m, **spread 17.7cm** |
+| drawn surface per figure | 3.06–3.06 m², **ratio 1.00** | 2.58–3.51 m², **ratio 1.36** |
+| down on one knee, `ready` | **0 of 21** | **21 of 21** (11 left, 10 right) |
+| down on one knee, `gun` | **0 of 21** | **21 of 21** (11 left, 10 right) |
+| left/right disagreement, `ready` | 0.060m | 0.513m |
+| left/right disagreement, `stand` | 0.009m | 0.139m |
+| chromaticities per figure | **1** (median) | 1–3 (median 2) |
+| distinct colour layouts across the crew | **1** | **16** |
+
+**11 anatomy checks fail on the shipped figure and 0 fail now.**
+
+**Why "1 chromaticity" is the whole of the flat-colour complaint.** `vertexColors`
+multiplies the baked per-vertex weight by the per-instance colour, and `PitCrew` wrote
+`car.team.colour` into all 189 instance slots. A weight can only ever make a hue darker or
+lighter, so five weights of one colour are five brightnesses of ONE hue — the boots, the
+gloves and the visor were the team's colour too. That is a silhouette, not a kit. The
+instance colour is now written **per part per person**, which is the same loop at the same
+frequency with a different value in it.
+
+**Three things carry a person, and none of them cost anything:**
+- **stature and girth ride in the per-part instance MATRIX**, which was already written
+  every frame. Stature scales the SKELETON, so a taller person's shoulders are further
+  apart and their hands reach further; girth is a scale in each part's OWN frame, so it
+  composes as T·R·S and cannot shear a limb.
+- **kit rides in the per-part instance COLOUR**, already written once per team.
+- **the kneeling side is one number in the pose.**
+
+The one added cost is a **sixth instanced mesh**: the helmet came out of the torso, because
+the torso's instance scale is how a heavier person is drawn and with the helmet inside it a
+heavier person also got a bigger head — twelve per cent of a head is visible across a pit
+lane. Nine draw calls for the whole working crew, up from eight.
+
+**The kneel is SOLVED, and the first attempt at it failed in a way worth keeping.** A
+posture asks for a magnitude (`kneel`), the person supplies the side, and `poseCrew` puts
+the knee on the ground: the thigh's angle follows from `cos(hipPitch) = (hipY − kneeY) /
+thigh` and the shin then runs back along the floor. The first version left the hips where
+they were and asked the thigh to reach — `ready` sits with its hips 0.65m up and a thigh is
+0.44m long, so the solver clamped on all twenty-one and left every knee 10cm in the air.
+**The hips come down to the knee, not the other way round**; the support leg is then
+re-solved so its foot is still flat on the ground.
+
+**The measurement took two wrong instruments before it took a right one, and both are
+recorded in the source.** Looking for the forward-most low point per side assumed the knee
+is the front of a bent leg — true, except that a kneeling shin points BACKWARD. Mean leg
+height then failed for a subtler reason: a folded leg and a standing leg have almost the
+same mean height (0.238m against 0.248m) and merely have it in different places. What a
+viewer actually sees is that one shin is lying along the floor pointing behind the figure,
+which is a fore-aft measurement at ankle height and nothing else.
+
+**Both figure paths are asserted to be the same person.** `CrewFigure`'s opening note has
+always claimed *"a change to the proportions changes both, which is the whole point"* about
+the merged (paddock) and instanced (pit lane) builds, and nothing checked it. The probe
+builds one (posture, build) both ways and compares height, surface, asymmetry and colour
+layout: **worst difference 0.0000**.
+
+**Third: the paddock was CUT.** #24's third part — the garages having team-coloured kerbs
+and pier faces and nothing more — is not done, and it is not started. The one thing it got
+for free is that `Paddock.crewGeometry` now scatters the PERSON as well as the pose, so the
+mechanics in the bays and the engineers on the pit wall are no longer one body at ten
+slightly different angles. Everything else about the paddock is in §7, unchanged.
 
 ### A car stopped on the racing line — the worst bug in the simulation (#28)
 `RaceEngine.checkBeached` was the **only** thing in the engine that ever cleared a
@@ -6544,14 +6729,40 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   "the AI will not pass a stationary car" family as #28, in the pit lane, and
   `probe:hudtext` has a comment about it that predates this measurement. **Nobody is on
   this**, and it belongs to the AI rather than to the HUD.
-- The pit crew currently reads as blocky figures — the exact thing the user rejected
-  ("forget about the lego people"). **Still here, and deliberately not removed.** The
-  `people-graphics` work is 2D SVG for UI screens; the pit crew is 3D, in
-  `src/render/CrewFigure.ts` and `src/render/PitCrew.ts`, and was neither touched nor
-  photographed by it. Reading the source, the crew limbs are `CapsuleGeometry` and
-  chamfered boxes rather than plain boxes, and the one `BoxGeometry` in `PitCrew.ts` is
-  the light gantry's head, not a person's — so the line **may** already be stale. Nobody
-  has measured it. `probe:pitcrew` and the pit-stop work own that question.
+- ~~The pit crew currently reads as blocky figures — the exact thing the user rejected
+  ("forget about the lego people"). Nobody has measured it.~~ **MEASURED, and fixed —
+  issue #24, see §6.** The old entry was right to be suspicious of itself: the limbs were
+  already capsules and the torso had already been rebuilt as oval sections, and the
+  complaint was still true for a different reason. Off the drawn triangles, the twenty-one
+  crew were **1 distinct figure of 21**, at **0.0cm of stature spread**, a **1.00× surface
+  ratio**, **0 of 21** down on one knee and **1 colour layout** across the whole crew.
+  They are now 21 of 21, 17.7cm, 1.36×, 21 of 21 (11 left knees, 10 right) and 16 layouts;
+  `CREW_LEGACY=1 npm run probe:pitcrew` still fails **11** anatomy checks against the
+  shipped figure, which is what stops it coming back.
+  **What is honestly NOT done in the 3D crew:**
+  - **Nobody's head turns.** The helmet is its own instanced part now, which is what a
+    shoulder-line rotation would need, and it is not wired to one. Same gap as the 2D
+    body's below, and now the same one sentence away from being closable.
+  - **The figure draws 1.66m to the top of the helmet, standing, where `BONE`'s own
+    comment says "A 1.78m figure".** Found by the new probe and reported rather than
+    corrected: the crew stations, the hub reach, the jack handle's length and the wheel
+    height are all authored against the smaller figure, so scaling it is a re-authoring
+    job across `PitStopChoreography` and `PitCrew`, not a constant. The build spread is
+    centred on what the geometry actually is.
+  - **The kit's variety is a team colour plus two neutrals.** No sponsor blocks, no
+    numbers, no per-team second colour. `reference/target/89.png` has all three, and §3's
+    IP boundary is why the wordmarks in it are not reproduced — but the geometric
+    variation is not blocked by that and is simply not done.
+- **The PADDOCK is the third part of #24 and it was CUT.** Stated here rather than left to
+  be discovered. The previous pit-stop agent named it the least complete item and nothing
+  in this pass changed that: the frozen hundred-and-ten crew are gone, the garages have
+  team-coloured kerbs and pier faces, and there is nothing else in a bay — no equipment on
+  the floor, no team signage above the opening, no depth into the garage that reads as a
+  garage rather than as a recess. The one thing it did get, free, is that
+  `Paddock.crewGeometry` now scatters the PERSON as well as the pose, so the mechanics in
+  the bays and the engineers on the pit wall stand are twenty-odd different people instead
+  of one body at slightly different angles — that came with `CrewFigure` and cost nothing.
+  **Nobody is on the rest of it, and #24 is left open for it.**
 - ~~**`PressConference.ts` and `GarageScene.ts` are unreachable.**~~ **Routed — issue #38,
   closed.** Both have a screen id, a route and a button; `probe:smoke`'s required set holds
   them. See §6. **What #38 asked for and did NOT get: consequences.** The press room's
@@ -6579,7 +6790,11 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
     photograph of a podium.
   - **The 3D pit crew (`src/render/CrewFigure.ts`, `PitCrew.ts`) is untouched by all of
     this and is a different rendering path** — see the entry above. #22's work is 2D SVG
-    for UI screens and it does not reach the pit lane.
+    for UI screens and it does not reach the pit lane. **The 3D path was done separately
+    under #24** (§6) and it shares nothing with this one but the idea: a rig, a pose, and
+    a probe that reads the drawing rather than the rig. The two were checked for reuse and
+    there is none — `Body.ts` emits SVG polygons for a 2D scene and `CrewFigure.ts` emits
+    `BufferGeometry` for an instanced 3D one.
 
 ---
 
