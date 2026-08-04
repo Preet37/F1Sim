@@ -425,7 +425,7 @@ function lowPassWrapped(field: Float32Array, size: number, sigma: number): Float
  *  B — the middle octaves. Its half-value contour is a meandering curve of about
  *      the right wander for a paving joint or a crack.
  */
-function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTexture } {
+export function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTexture } {
   const height = new Float32Array(size * size);
   const blob = new Float32Array(size * size);
   const mid = new Float32Array(size * size);

@@ -1839,20 +1839,95 @@ export class TrackSpline {
   /**
    * Projects a world position into track space.
    * Writes `s` (distance along lap) and `lateral` (+left, metres) into `out`.
+   *
+   * ---------------------------------------------------------------------
+   * WHY THIS IS A BLEND OF TWO NODES AND NOT ONE NODE — issue #66
+   * ---------------------------------------------------------------------
+   *
+   * This used to take the NEAREST node and read `s` off that node's own
+   * tangent line: `dist[i] + (P - p[i]) . t[i]`. Every term of that is
+   * continuous in `P` except the choice of `i`, and `i` steps. So the moment
+   * the car crossed the perpendicular bisector between two nodes, `s` jumped
+   * by the amount the two node frames disagreed about where the car was.
+   *
+   * The jump is not small and it is not noise. For a car `w` metres off the
+   * centreline on a bend of curvature `k`, with nodes `h` apart, the two
+   * estimates differ by `h*(k*h)^2/6 + 2*w*sin(k*h/2)` — dominated by
+   * `w * k * h`, which at Monza's Ascari is over a metre. Measured by
+   * `probe:framerate`'s WORLD SMOOTHNESS section on the shipped build: 602
+   * frames of one 50fps lap at Monza with `s` outside what the car's own
+   * travel allows, worst +1.30m; 453 at the Red Bull Ring, 678 at Suzuka, 595
+   * at Bahrain. Every circuit, including the flat ones, hundreds of times a
+   * lap. **Everything that reads a height, a sector, a gap, a marshal post or
+   * a flag off `s` inherits it.**
+   *
+   * THE FIX IS THE SEGMENT, NOT THE NODE. The car sits between the
+   * perpendiculars through node `i` and node `i+1`; both nodes have an opinion
+   * about `s`, and the two are blended by where the car is between them:
+   *
+   *   a0 = (P - p[i])   . t[i]      >= 0
+   *   a1 = (P - p[i+1]) . t[i+1]    <= 0
+   *   u  = a0 / (a0 - a1)
+   *   s  = (1-u) * (dist[i] + a0) + u * (dist[i+1] + a1)
+   *
+   * `u` is 0 exactly where `a0` is 0 and 1 exactly where `a1` is 0, which are
+   * precisely the two places the segment choice changes — so `s` is CONTINUOUS
+   * across every node on the lap, by construction and not by luck. And on a
+   * circular arc it is exact to first order in the curvature: the two estimates
+   * are `u*h*(1 - w*k)` and `h - (1-u)*h*(1 - w*k)`, and the blend of them is
+   * `u*h`, which is the arc length the projection is supposed to report. So
+   * `ds` per metre travelled comes out at `1/(1 - w*k)` — the geometric answer,
+   * and the middle of the envelope the probe checks against.
+   *
+   * NOT the nearest point on the polyline, which is the obvious alternative and
+   * is worse: on the OUTSIDE of a corner the nearest point sticks at the node
+   * for the whole wedge between the two segments, so `s` stalls while the car
+   * drives. At Monaco's hairpin that wedge is nineteen degrees and a car five
+   * metres out covers 1.65m of ground across it for no advance at all — the
+   * same defect with the sign reversed.
+   *
+   * `lateral` is blended the same way and for the same reason. It has to come
+   * from the same foot of the perpendicular that `s` does, or the pair (s,
+   * lateral) is not a position.
    */
   project(x: number, z: number, hint: number, out: TrackProjection): number {
-    const i = this.nearestIndex(x, z, hint);
-    const dx = x - this.px[i];
-    const dz = z - this.pz[i];
+    const i0 = this.nearestIndex(x, z, hint);
 
-    const along = dx * this.tx[i] + dz * this.tz[i];
-    const lateral = dx * this.nx[i] + dz * this.nz[i];
+    /** Signed advance past node `n`'s own perpendicular. */
+    const advance = (n: number): number =>
+      (x - this.px[n]) * this.tx[n] + (z - this.pz[n]) * this.tz[n];
+
+    // The segment the car is on: the one whose first node it is past and whose
+    // second node it is not. The nearest node is one end of it or the other.
+    let i = i0;
+    if (advance(i0) < 0) i = (i0 - 1 + this.count) % this.count;
+    const j = (i + 1) % this.count;
+
+    const a0 = advance(i);
+    const a1 = advance(j);
+    // Clamped for the one place the two perpendiculars cross: inside the centre
+    // of curvature, which is 9.2m from the centreline at the tightest node on
+    // the calendar and therefore off the far side of any road. The clamp is a
+    // guard, not a mechanism.
+    const den = a0 - a1;
+    const u = den > 1e-9 ? Math.min(1, Math.max(0, a0 / den)) : 0;
+    const g = 1 - u;
+
+    const s0 = this.dist[i] + a0;
+    let s1 = this.dist[j] + a1;
+    // The lap closes: node `j` can be node 0 with `dist` back at zero.
+    if (j === 0) s1 += this.length;
+
+    const l0 = (x - this.px[i]) * this.nx[i] + (z - this.pz[i]) * this.nz[i];
+    const l1 = (x - this.px[j]) * this.nx[j] + (z - this.pz[j]) * this.nz[j];
 
     out.index = i;
-    out.s = wrapDistance(this.dist[i] + along, this.length);
-    out.lateral = lateral;
-    out.width = this.width[i];
-    out.heading = Math.atan2(this.tx[i], this.tz[i]);
+    out.s = wrapDistance(s0 * g + s1 * u, this.length);
+    out.lateral = l0 * g + l1 * u;
+    out.width = this.width[i] * g + this.width[j] * u;
+    out.heading = Math.atan2(
+      this.tx[i] * g + this.tx[j] * u, this.tz[i] * g + this.tz[j] * u,
+    );
     return i;
   }
 

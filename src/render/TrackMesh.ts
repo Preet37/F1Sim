@@ -661,6 +661,24 @@ class StripBuilder {
     this.triUpN(ax, ay, az, cx, cy, cz, dx, dy, dz, n, colour);
   }
 
+  /**
+   * ONE up-facing triangle carrying a normal supplied by the caller.
+   *
+   * `quadUp`'s single triangle. It exists because the road is no longer swept
+   * as quads across its width: two node rows carrying different numbers of
+   * vertices are zipped together (see `sweepRoadSpan`), and a zip is a run of
+   * triangles rather than a run of quads.
+   */
+  triUpNormal(
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    n: readonly number[],
+    colour: THREE.Color,
+  ): void {
+    this.triUpN(ax, ay, az, bx, by, bz, cx, cy, cz, n, colour);
+  }
+
   private triUpN(
     ax: number, ay: number, az: number,
     bx: number, by: number, bz: number,
@@ -1379,6 +1397,158 @@ export function buildTrackMeshes(
     return l > 1e-9 ? [nx2 / l, ny2 / l, nz2 / l] : [0, 1, 0];
   };
 
+  /**
+   * How far the drawn road may leave `bankedCarGroundY` between two node rows.
+   *
+   * `probe:banking` §2's bound is 2mm, and this is the number the sweep is
+   * asked to hold so that the bound is met rather than approached. A little
+   * under it deliberately: `roadLanes` rounds a continuous estimate up to a
+   * whole number of columns, and the estimate is first order.
+   */
+  const ROAD_LANE_TARGET_M = 0.0015;
+
+  /**
+   * Cap on columns across the road, per span.
+   *
+   * A span needing more than this is a hairpin with a gradient on it, and
+   * there are single figures of them on the calendar. The cap costs Monaco's
+   * s=336 span — a 9.2m centreline radius on a 10m road, the tightest on the
+   * calendar — a residue rather than exactness, and it stops one pathological
+   * node turning into thousands of triangles.
+   */
+  const ROAD_LANE_MAX = 64;
+
+  /**
+   * COLUMNS EACH NODE ROW OF THE ROAD CARRIES — issue #71's road half.
+   *
+   * The road was one quad per node across its FULL width. A quad whose two
+   * node rows fan is not planar: take the corners
+   *
+   *   A = c0 + v0*n0   B = c1 + v0*n1   C = c1 + v1*n1   D = c0 + v1*n0
+   *
+   * and C sits off the plane of A, B, D by, to first order,
+   *
+   *   |v1 - v0| * | d(tan bank) - fan * gradient |
+   *
+   * — the lateral span of the quad, times the change in cross-slope across it,
+   * plus the angle the frame turns through times how steeply the road climbs.
+   * So it is exactly zero on a straight, exactly zero on the flat, and worst
+   * where a tight corner has a gradient on it: measured on the drawn triangles,
+   * 88.9mm at Spa's La Source, 85.9mm at Monaco's Loews, 83.7mm at COTA's turn
+   * 1 and 57.5mm at the Red Bull Ring — against a mesh whose VERTICES are on
+   * the placement rule to the last bit, which is why `probe:banking` reported
+   * 0.000m for as long as it only sampled vertex rows.
+   *
+   * The deviation is LINEAR in the lateral span, so splitting the sweep into
+   * `n` columns divides it by `n`. That is the whole fix, and it is the same
+   * thing the sweep already does along the road for the same reason (see the
+   * per-node sub-quads above): a ribbon has two directions and it was only
+   * being tessellated in one of them.
+   *
+   * ADAPTIVE, because a uniform split would be waste almost everywhere: both
+   * factors are zero on a straight and zero on the flat, and most of every lap
+   * is one or the other.
+   *
+   * THE COUNT BELONGS TO THE NODE ROW AND NOT TO THE SPAN, and that is not a
+   * detail. Two neighbouring spans meet along a row; if each chose its own
+   * number of columns, the row would carry two different chains of vertices
+   * that are collinear in double precision and NOT collinear once rounded into
+   * a Float32 attribute. That is a T-junction, it opens cracks of about 60
+   * microns down every node row of the road, and a crack in the middle of the
+   * asphalt shows the ground through it — the "weird black lines" this project
+   * has already fixed once. Measured with a per-span count: 386 of 19,000
+   * vertex-row rays at the racing offset found no triangle at all. So the count
+   * is per ROW, both spans meeting there use it, and the two rows of a span are
+   * zipped rather than quadded. See `sweepRoadSpan`.
+   */
+  const roadLaneAt = (() => {
+    /** Columns the span from node `i` to node `i+1` needs on its own account. */
+    const need = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const j = (i + 1) % count;
+      const width = Math.max(track.width[i], track.width[j]);
+      // The angle the road's own frame turns through over the span.
+      const fan = Math.abs(Math.atan2(
+        track.nx[i] * track.nz[j] - track.nz[i] * track.nx[j],
+        track.nx[i] * track.nx[j] + track.nz[i] * track.nz[j],
+      ));
+      const run = Math.hypot(track.px[j] - track.px[i], track.pz[j] - track.pz[i]);
+      const grade = run > 1e-6 ? Math.abs(track.elevation[j] - track.elevation[i]) / run : 0;
+      const dBank = Math.abs(
+        (track.banking[j] !== 0 ? Math.tan(track.banking[j]) : 0)
+        - (track.banking[i] !== 0 ? Math.tan(track.banking[i]) : 0),
+      );
+      const twist = width * (fan * grade + dBank);
+      need[i] = twist > ROAD_LANE_TARGET_M
+        ? Math.min(ROAD_LANE_MAX, Math.ceil(twist / ROAD_LANE_TARGET_M))
+        : 1;
+    }
+    // A row serves the span on either side of it, so it has to satisfy the
+    // hungrier of the two.
+    const rows = new Int32Array(count);
+    for (let i = 0; i < count; i++) rows[i] = Math.max(need[(i - 1 + count) % count], need[i]);
+    return rows;
+  })();
+
+  /**
+   * Columns at the node row a swept station sits on.
+   *
+   * Every station the ROAD is swept at is a node — `frameLerp(a, b, k / step)`
+   * with a span of `step` lands exactly on `a + k` — so this is a lookup and
+   * not an interpolation. The kerb, the run-off and the verge sweep at
+   * fractional stations and none of them goes through here.
+   */
+  const laneRowAt = (node: number): number => roadLaneAt[((node % count) + count) % count];
+
+  /**
+   * Sweeps one span of the road, zipping two node rows that may carry
+   * different numbers of vertices.
+   *
+   * The two rows are walked together and a triangle emitted against whichever
+   * one has the nearer next vertex — the standard merge of two chains. Three
+   * properties matter and all three are why it is a zip rather than a grid:
+   *
+   *  - every vertex of a row is shared EXACTLY with the span on its other
+   *    side, because the row's vertex set is the row's own property. No
+   *    T-junctions, no cracks;
+   *  - the outer boundary is untouched. The first and last vertex of every row
+   *    are still the road edge at exactly `+/- halfWidth`, and the strip's two
+   *    boundary edges are still the chords between them, so the white lines,
+   *    the kerbs and the run-off meet the road exactly where they always did;
+   *  - with one column on both rows it emits the same two triangles, in the
+   *    same order, with the same winding, as the quad it replaced. That is the
+   *    78-97% of a lap where the road is straight or flat, and it is
+   *    byte-identical there.
+   */
+  const sweepRoadSpan = (
+    s0: ReturnType<typeof frameLerp>, s1: ReturnType<typeof frameLerp>,
+    nA: number, nB: number, rn: readonly number[], colour: THREE.Color,
+  ): void => {
+    let p = 0, q = 0;
+    let a = framePt(s0, -s0.hw, Y_ROAD);
+    let b = framePt(s1, -s1.hw, Y_ROAD);
+    while (p < nA || q < nB) {
+      // Strictly `<`, so a tie advances B. That is what makes the one-column
+      // case emit the old quad's own diagonal rather than the other one.
+      const takeA = q >= nB || (p < nA && (-1 + (2 * (p + 1)) / nA) < (-1 + (2 * (q + 1)) / nB));
+      if (takeA) {
+        p++;
+        const next = framePt(s0, (-1 + (2 * p) / nA) * s0.hw, Y_ROAD);
+        road.triUpNormal(
+          a[0], a[1], a[2], next[0], next[1], next[2], b[0], b[1], b[2], rn, colour,
+        );
+        a = next;
+      } else {
+        q++;
+        const next = framePt(s1, (-1 + (2 * q) / nB) * s1.hw, Y_ROAD);
+        road.triUpNormal(
+          a[0], a[1], a[2], next[0], next[1], next[2], b[0], b[1], b[2], rn, colour,
+        );
+        b = next;
+      }
+    }
+  };
+
   /** Sweeps the kerb section from node `a` to node `b` on one side. */
   const sweepKerb = (a: number, b: number, sign: 1 | -1): void => {
     const colourA = ((a / step) & 1) === 0 ? 0 : 1;
@@ -1524,13 +1694,10 @@ export function buildTrackMeshes(
       // wrong.
       const rn = surfaceNormal(s0, s1);
 
-      const r00 = framePt(s0, -s0.hw, Y_ROAD), r01 = framePt(s1, -s1.hw, Y_ROAD);
-      const r11 = framePt(s1, s1.hw, Y_ROAD), r10 = framePt(s0, s0.hw, Y_ROAD);
-      road.quadUp(
-        r00[0], r00[1], r00[2], r01[0], r01[1], r01[2],
-        r11[0], r11[1], r11[2], r10[0], r10[1], r10[2],
-        rn, shade,
-      );
+      // ACROSS the width as well as along it — see `roadLaneAt`. One column on
+      // both rows is the old single quad, byte for byte, and one column is what
+      // comes back everywhere the road is straight or flat.
+      sweepRoadSpan(s0, s1, laneRowAt(a + k), laneRowAt(a + k + 1), rn, shade);
 
       // --- White lines at the track edge ----------------------------------
       //
