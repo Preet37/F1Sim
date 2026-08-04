@@ -13,6 +13,7 @@ import {
   isPaddockGround,
   pitLaneGeometry,
   PIT_BAY_PITCH_M,
+  PIT_GARAGE_DEPTH_M,
   PIT_WALL_HEIGHT_M,
 } from '../track/PitGeometry';
 import { buildKeepOutField, CAR_REACH_M } from '../track/WorldObstacles';
@@ -75,8 +76,14 @@ export interface PaddockScene {
  * in it.
  */
 const BAY_PITCH = PIT_BAY_PITCH_M;
-/** Depth of a garage box from the opening to the back wall, metres. */
-const BAY_DEPTH = 12.4;
+/**
+ * Depth of a garage box from the opening to the back wall, metres.
+ *
+ * Shared with the pit lane's plan, because the race engine parks a car that
+ * takes no further part in a qualifying segment inside this bay and has to
+ * agree with the buildings about how deep it is.
+ */
+const BAY_DEPTH = PIT_GARAGE_DEPTH_M;
 /** Height of the garage opening's soffit, metres. */
 const BAY_CLEAR = 4.4;
 /** Ground-floor height of the pit building, metres. */

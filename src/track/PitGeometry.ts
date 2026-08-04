@@ -75,6 +75,28 @@ export const PIT_EXIT_MERGE_M = 170;
 export const PIT_APRON_DEPTH_M = 3.3;
 export const PIT_APRON_HEIGHT_M = 0.12;
 
+/**
+ * Depth of a garage bay, from the frontage to its back wall.
+ *
+ * Lives here rather than in the paddock that draws it for the same reason
+ * `LANE_HALF_M` does: the headless simulation needs it. A car that takes no
+ * further part in a qualifying segment is parked in its garage (Art. B2.4.3 —
+ * it is classified on the lap it set in the period it ran and takes no part in
+ * the next one), and "in its garage" has to mean the same distance behind the
+ * frontage to the engine as it does to the buildings, or the car is drawn
+ * standing in a wall.
+ */
+export const PIT_GARAGE_DEPTH_M = 12.4;
+/**
+ * How far behind the garage frontage a parked car's centre stands.
+ *
+ * Far enough that the whole car — 2.85m of it either side of the centre, which
+ * is the reach of the collision discs — is inside the bay with the opening in
+ * front of it, and far enough short of `PIT_GARAGE_DEPTH_M` that it is not in
+ * the back wall.
+ */
+export const PIT_GARAGE_PARK_INSET_M = 4.5;
+
 /** Spacing between pit boxes: one per car, two per team garage. */
 export const PIT_GARAGE_SPACING_M = 11;
 /** Boxes painted. A Formula 1 pit lane has one per car. */
