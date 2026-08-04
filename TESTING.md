@@ -49,8 +49,10 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
    *Known fault, #74: Q2 is currently running 20 and can show you P20.*
 2. **You start from the pit lane**, under pit-lane rules, never from a standing start on
    an empty track.
-3. **Timing tower** should list the whole field.
-   *Known fault, #76/#17: it currently shows P1 then jumps to P7–P20.*
+3. **Timing tower** should list the whole field, contiguously — no gap between P1 and P7.
+   On a 1280×800 laptop in the driver's eye it used to draw **4 rows of 20**; it now draws
+   8 there, 20 in chase, and 22/24 on a bigger grid. The styling is not the broadcast
+   board yet (#76), but the *rows* are all there.
 4. **Crash deliberately.** The session should NOT take over the screen — you get a radio
    message, `CONTINUE` in the corner, and the session keeps running behind it.
 5. **Press `Skip to the result`.** The other cars must still have real times. Retiring
@@ -101,10 +103,10 @@ Do not spend time reporting these; they are on the list with measurements.
 
 | | issue |
 |---|---|
-| Leaderboard is not the broadcast board yet | **#76** |
+| Leaderboard rows are all there now, but the *styling* is not the broadcast board yet — header, type, livery bar, leader's red cell | **#76** |
 | Q2 runs 20 cars | **#74** |
 | Cars phase through each other in the pit lane | **#75** |
-| Near-field asphalt reads as static | **#48** |
+| **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | Every car sits level on a road that is not level — up to 434mm of tyre under the asphalt at Monaco | **#71** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | Safety car has no vehicle; cars stop dead under a VSC on clear track | **#10** |
