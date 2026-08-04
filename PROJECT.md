@@ -3476,7 +3476,7 @@ parts that can be attributed, and two of the three parts are not in `src/ai/` at
 | races failing | 13 / 55 | **11 / 55** |
 | mean lap/reference | 1.3662 | **1.3131** |
 | Monaco fastest | 151–175% | **148–150%** |
-| Monaco off-track | 107–123 | **under the 90 bar on every seed** |
+| Monaco off-track | 107–123 | **mean 27.0, worst 28** |
 | Silverstone | 152%, 171% | **passes on all five seeds** |
 | mean off-track | — | 40.65 |
 | mean retirements | — | 0.84 |
@@ -3492,6 +3492,40 @@ the `aeroBalanceFront` 0.435 → 0.40 change, whose own comment in `VehicleSpec.
 failing"* and *"Monaco is fine"* were the same output — and the difference between them is
 the entire question #30 asks. A sweep whose only per-circuit reporting is its own assertions
 can tell you something is broken and can never tell you whether it improved.
+
+**The table, measured at `f40b641`** — and it is stamped with the commit deliberately,
+because **PR #89 has since landed in `src/race/` and this has NOT been re-run against it**:
+
+```
+  circuit        lap/ref  worst   off-track  worst   spread  retire  finish
+  bahrain        1.283  1.290       32.2     36     18.7    0.20   19.80
+  jeddah         1.312  1.361       26.8     29     67.1    1.40   18.60
+  monaco         1.490  1.501       27.0     28     32.3    0.80   19.20
+  silverstone    1.312  1.388       57.6     84     20.0    0.40   19.60
+  redbullring    1.259  1.263       40.0     47     17.2    0.00   20.00
+  spa            1.315  1.335       56.4     89     96.2    1.60   18.40
+  zandvoort      1.311  1.317       34.8     40     24.2    0.40   19.60
+  monza          1.252  1.419       44.0     51     31.0    1.00   19.00
+  suzuka         1.258  1.303       40.6     60     55.7    1.40   19.00
+  cota           1.347  1.395       56.2     91     41.5    2.00   18.00
+  interlagos     1.307  1.313       31.6     35     14.1    0.00   20.00
+```
+
+**Two things in it that the failure list could never have shown, and both matter.**
+
+- **Monaco's excursions are 27.0 mean / 28 worst, against the 107–123 the issue was filed
+  on.** That is not "under the bar", it is a quarter of what it was, and it is the number
+  that says the off-track half of #30 is genuinely fixed rather than marginally passing.
+- **THE EXCURSIONS DID NOT GO AWAY, THEY MOVED.** COTA is at **91 worst** (the one
+  off-track failure in the sweep), Spa at **89** and Silverstone at **84** — all three
+  sitting on the 90 bar, none of them named in #30, and none of them visible in any run
+  before this table existed. Monaco was never the general case; it was the circuit that
+  happened to be over the line first. **Nobody is on this.**
+
+**Monaco's `lap/ref` reads 1.490 here and its failures read 148–150%, and both are right.**
+The column is the mean over five seeds of the FASTEST lap in the field; the failure line is
+per seed. They agree — but note that Monaco's mean is the only one on the calendar above
+1.45, so it is the only circuit failing pace on every seed rather than on some.
 
 **Third, and this is the finding: the reference lap is not reachable, and nothing had ever
 checked.** `scripts/diagAiPace.ts`, all eleven circuits:
@@ -3759,6 +3793,17 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
 - Deleting a branch one commit before its tip.
+- **An agent switched the shared `/Users/preet/Desktop/f1` checkout off `main`, and the
+  next two merges went to the wrong branch.** On 2026-08-03 the AI-pace agent's worktree
+  was somehow bound to the main checkout; it pushed one commit straight to `main` (docs
+  only, and it disclosed this unprompted, which is the only reason it was caught quickly)
+  and left `HEAD` on its own branch. **The next merge — PR #89, a nine-file engine
+  change — landed on `ai-pace` instead of `main`, and `git push origin main` cheerfully
+  reported "Everything up-to-date".** That is the tell: a push that claims nothing to do
+  right after a merge that reported eight files changed. Recovered by re-merging onto
+  `main` and deleting the stray branch.
+  **Rule: `git rev-parse --abbrev-ref HEAD` before every merge, and read the branch name
+  in the `git push` output rather than the word "main" in the command you typed.**
 - **Writing "this does NOT close #N" in a commit message closes #N.** GitHub's keyword
   parser reads `close #35` straight out of a sentence asserting the opposite, and it does
   not care about the negation in front of it. On 2026-08-03 this silently closed **two
