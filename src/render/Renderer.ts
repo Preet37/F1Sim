@@ -105,16 +105,31 @@ const RAIN_LIGHT_HZ = 2;
  *
  * `npm run probe:grade` is the instrument and `scripts/lib/gradeModel.ts` is
  * how the value was chosen: the display pipeline is inverted on a real shot,
- * the exposure swept, and the pipeline re-applied. At 0.50 Zandvoort lands at a
- * median of 95 with 0.0% clipped and 6.3% in shadow. It is set from the
- * Zandvoort frame rather than the Monza one because the user named 76.png "the
- * best image"; Monza still comes out at 141 against 71.png's 89 and that
- * residual is recorded rather than averaged away. See PROJECT.md section 7.
+ * the exposure swept, and the pipeline re-applied.
+ *
+ * IT WAS FITTED TWICE, AND THE SECOND FIT IS WHY IT IS THIS LOW. Against the
+ * generated environment probe the answer was 0.50. Then the captured sky landed
+ * (`EnvProbe.ts`) and the same frame came back at a median of 136 rather than
+ * the predicted 95, because a photographed sky delivers substantially more
+ * ambient light than a 256x128 analytic one — which is a real result about the
+ * HDRI and not an error in the model. Re-swept on a shot that HAD the capture
+ * in it, the answer is 0.333.
+ *
+ * MEASURED, shipped, with `GRADES.day` on top: Zandvoort's world band lands at
+ * a median of 123 against `76.png`'s 81, RMS contrast 54.5 against 57.1,
+ * saturation 0.255 against 0.253, white balance -16.9 against -17.0, 1st
+ * percentile 1 against 1, 13.1% in shadow against 6.1%, and 0.1% clipped
+ * against 4.4% before. It is set from the Zandvoort frame rather than the Monza
+ * one because the user named `76.png` "the best image"; **Monza still comes out
+ * at 139 against `71.png`'s 89, and that residual is recorded rather than
+ * averaged away** — the two circuits differ by 50 code values under identical
+ * settings while the two reference frames differ by 8, and nobody has diagnosed
+ * why. See PROJECT.md section 7.
  *
  * Dusk is moved with it and NOT measured — no circuit uses `dusk`, so there is
  * nothing to shoot and no reference frame for it. Night is unchanged, because
- * the night gap measured as a scene problem rather than an exposure one: see
- * `GRADES.night` in `PostFX.ts`.
+ * the night gap measured as a scene problem rather than an exposure one: the
+ * sky and the light rig in `applyAmbience`, and `GRADES.night` in `PostFX.ts`.
  */
 const EXPOSURE = { day: 0.333, dusk: 0.37, night: 1.7 };
 

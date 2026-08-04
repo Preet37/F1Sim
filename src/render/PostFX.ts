@@ -186,34 +186,43 @@ const GRADES: Record<'day' | 'dusk' | 'night' | 'off', Grade> = {
   off: { balance: [1, 1, 1], contrast: 1, pivot: 0.18, toe: 0, toeRange: 0.06, saturation: 1 },
   /**
    * Fitted against `reference/target/76.png` — the frame the user named "the
-   * best image" — with `EXPOSURE.day` held at its new measured value of 0.50.
-   * The four numbers, reference against fit, on the world band above the halo:
+   * best image" — with `EXPOSURE.day` at its measured value of 0.333.
    *
-   *            reference   before   after
-   *   p50           82       166      95
-   *   rms         57.2      46.9    46.9
-   *   saturation 0.254     0.154   0.254
-   *   warmth     -17.2      -8.4   -15.3
-   *   p1             1        46      11
-   *   shadow      6.1%      0.1%    6.3%
-   *   clipped     1.2%      4.4%    0.0%
+   * MEASURED ON THE SHIPPED BUILD, `npm run probe:grade`, world band above the
+   * halo, at the resolution the real scaler settled on:
+   *
+   *             reference   before    after
+   *   p50            81       166      123
+   *   rms          57.1      47.0     54.5
+   *   saturation  0.253     0.153    0.255
+   *   warmth      -17.0      -8.4    -16.9
+   *   p1              1        46        1
+   *   shadow       6.1%      0.1%    13.1%
+   *   clipped      1.1%      4.4%     0.1%
+   *
+   * Four of those land: saturation to within 0.002, white balance to within
+   * 0.1, contrast to within 2.6, and the black point exactly. The median is
+   * still 42 high and that residual is the scene's dynamic range rather than
+   * this grade's — see PROJECT.md section 7, which has the sweep showing that
+   * every exposure trades the median against the spread.
    *
    * BALANCE IS LEFT AT UNITY DELIBERATELY, and it is the one term that was not
    * fitted. The optimiser wanted [1.149, 1.000, 0.931] — a warm push — and it
    * wanted it because the two daylight reference frames DISAGREE about white
-   * balance: `76.png` reads -17.2 and `71.png` reads +0.9, so the least-squares
+   * balance: `76.png` reads -17.0 and `71.png` reads +1.1, so the least-squares
    * answer is a compromise that is wrong for both. The reference set does not
-   * define a daylight white balance, so this does not invent one. Our own frame
-   * lands at -15.3 against 76's -17.2 without any balance term at all, which is
-   * near enough that adding one would be tuning to noise.
+   * define a daylight white balance, so this does not invent one, and the frame
+   * lands at -16.9 against -17.0 with no balance term at all.
    *
-   * SATURATION IS 1.0, WHICH IS THE OPPOSITE OF THE BRIEF. The look was
-   * described as "slightly desaturated". Measured, our daylight frame was at
-   * 0.154 against the reference's 0.254 — we were 40% UNDER, not over — and
-   * essentially all of the recovery comes from the exposure cut, because HSV
-   * saturation collapses as pixels approach white and 4.4% of the frame was
-   * clipped. Pulling saturation as well would have taken it back to where it
-   * started.
+   * SATURATION MOVES THE OPPOSITE WAY FROM THE BRIEF, and the 0.82 here does
+   * not contradict that — read it with the before/after column, not on its own.
+   * The look was described as "slightly desaturated"; measured, our daylight
+   * frame was at 0.153 against the reference's 0.253, i.e. **40% UNDER**. The
+   * exposure cut and the contrast term both push HSV saturation UP — the first
+   * because saturation collapses as pixels approach white and 4.4% of the frame
+   * was clipped, the second because a power curve pushes the channels apart —
+   * and together they overshoot to about 0.30. This term is the brake that puts
+   * it back on 0.253. The net movement is still 0.153 -> 0.255, upward.
    */
   day: {
     balance: [1, 1, 1],
@@ -251,6 +260,15 @@ const GRADES: Record<'day' | 'dusk' | 'night' | 'off', Grade> = {
    * light-source geometry; both are fixed in `Renderer.applyAmbience` and
    * `FloodlightTowers.ts`, and this grade only does the last few per cent on
    * top of them. See PROJECT.md section 6.
+   *
+   * MEASURED ON THE SHIPPED BUILD, with the sky and the rig corrected under it,
+   * all eight assertions passing where three did before:
+   *
+   *                road ref   before   after     sky ref   before   after
+   *   p50               107       57      83         106       29     113
+   *   rms              48.8     45.0    54.6        30.6     27.3    22.0
+   *   saturation      0.126    0.212   0.173       0.060    0.670   0.061
+   *   warmth           +6.4    +14.7   +12.1        +3.0    -33.4    +2.1
    */
   night: {
     balance: [1, 1, 1],
