@@ -2083,6 +2083,17 @@ measurement passes every version of it that is wrong.
   a measurement of this machine's contention, not of the renderer, and must not be quoted as
   a frame time. **Nothing else was measured**: no viewport sweep, no phone geometry, no
   whole-frame before/after, and no second circuit.
+- **`probe:graphics` DID NOT COMPLETE, on either of two attempts, and this is the
+  load-fragility §7 already records rather than anything about the change.** The first run
+  reached **52 ok / 0 failed** and then died on a puppeteer navigation —
+  `Execution context was destroyed, most likely because of a navigation` — at load average
+  205. A second run at load 95 reached **34 ok / 0 failed** and was still crawling through
+  its cold page loads when the work was handed over. **Zero failures in either, and every
+  section it did reach passed**, including the three-tier GL configuration table and all
+  three of the per-switch overrides. The change it is being asked about adds uniforms to an
+  existing pass and allocates no new one, so there is no mechanism by which it should move —
+  but 52 of 67 is not 67, and the run should be repeated on a quiet machine before the branch
+  is merged. Same species as the `regress:exit` and `probe:qualiretire` entries below.
 
 ### Reported by the user and not yet addressed
 - Lap times of cars that have completed a lap should show even when the player has not
