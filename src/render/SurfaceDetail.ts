@@ -29,8 +29,10 @@ import type { TrackSpline } from '../track/TrackSpline';
  * run at a low strength and no normal perturbation, where the stretch does not
  * read.
  *
- * Everything is generated at runtime. Two 256px textures cost about a
- * millisecond to build and nothing to download.
+ * Everything is generated at runtime. Two 256px textures cost a few
+ * milliseconds to build — the separable low pass the normal map is band-limited
+ * with is the bulk of it, at 256*256*23*2 multiply-adds, and it runs once per
+ * session — and nothing to download.
  */
 
 /** Per-surface detail tuning. */
@@ -131,6 +133,13 @@ export const SURFACES: Record<string, SurfaceProfile> = {
     // facets either catches a floodlight or does not, and the road boils.
     // Under a floodlit night sky, where the sheen is most of what the surface
     // is, it boils hard.
+    //
+    // THE DIAGNOSIS ABOVE WAS RIGHT AND THE REMEDY WAS NOT. Trimming this
+    // number and the aggregate frequency moved the tint and left the derivative
+    // where it was, because slope goes as amp/period and the period never
+    // changed. It came back as issue #48 and the near field measured 11.3x the
+    // mid-distance; see THE BUMP BAND LIMIT below for the mechanism and the
+    // fix, which is in the map rather than in this number. 0.42 is unchanged.
     roughnessVariation: 0.16,
     // 0.58 rather than 0.62. Asphalt is rough, but it is not chalk: a wide,
     // low-frequency sheen sweeps across it wherever a light source is roughly
@@ -240,6 +249,161 @@ export const SURFACES: Record<string, SurfaceProfile> = {
   },
 };
 
+/* ---------------------------------------------------------------------------
+ * THE BUMP BAND LIMIT — issue #48.
+ *
+ * The report is a Bahrain night frame whose far and mid-distance asphalt reads
+ * smooth and correct and whose near field — the bottom third — is dense
+ * high-frequency speckle, with a visible transition band across it. Measured
+ * with `probe:grain` (mean absolute Laplacian of luma, road pixels only, banded
+ * over the road's own extent in the frame), the near-field asphalt carried
+ * **11.3x** the high-frequency energy of the mid-distance at Bahrain by night
+ * and 6.0x by day, on the `low` tier the reporter's phone was pinned to. The
+ * profile far -> near was 2.1 1.5 1.6 2.2 12.2 17.9: flat, then a cliff.
+ *
+ * IT IS THE NORMAL MAP AND NOTHING ELSE. Bisected by measurement, not argued:
+ * setting `asphalt.normalStrength` to zero takes 11.32 -> 0.88 and 6.04 -> 0.73
+ * and flattens the whole profile. Zeroing the aggregate bump instead moves the
+ * number by 0.02, so it is not the fine stones — it is the base band. The other
+ * three suspects in the issue are all clear: anisotropy is already 16 on both
+ * maps and on the fence, kerb and marker textures; there is no negative mip
+ * bias anywhere in `src/`; and the procedural threshold terms are already
+ * widened by their own `fwidth`.
+ *
+ * WHY IT COULD ONLY EVER HAVE ALIASED. The height field's finest octave has a
+ * four-texel period in a 256-texel tile, and the asphalt tiles that map at
+ * `scaleA` = 1.4 cycles per metre — so that octave is an **11mm** bump. A
+ * central difference is a high-pass filter: an octave contributes to the SLOPE
+ * in proportion to amp/period, so that band carried 59% of the map's gradient
+ * energy while carrying 35% of its contrast. From a camera 0.77m above the road
+ * the along-view footprint of one pixel is z^2/h times the pixel angle, which
+ * at the cockpit's 40 degrees over 1396 rows is 6.5e-4 * z^2 metres: 2.8mm at
+ * 2m, 5.9mm at 3m, 23mm at 6m. An 11mm feature is therefore under two pixels
+ * from three metres out and never more than four pixels anywhere the road is on
+ * screen. Mip-mapping averages the NORMALS, which is the wrong average — the
+ * right one would widen the specular lobe to cover the range of normals in the
+ * footprint — so each sub-pixel facet either mirrors a floodlight or misses it,
+ * every frame, at random. `detailResolve` was the guard against exactly this
+ * and it did its job in the only direction it was pointed: it fades a band out
+ * with DISTANCE, so beyond ~4m the bump is gone (which is why the mid-distance
+ * measures 1.5 and reads as a flat plane), and inside ~2m it is at full
+ * strength (which is why the near field measures 17.9). The transition band the
+ * user can see IS that smoothstep.
+ *
+ * So the amplitude was never the free variable. An 11mm bump cannot be drawn on
+ * this road at any strength; the relief has to move to a wavelength the road can
+ * carry. The normal map is therefore differentiated from a LOW-PASSED copy of
+ * the height field. The R channel — the tint, the roughness break-up, the
+ * aggregate contrast stretch — is untouched, because a mip chain filters colour
+ * correctly and colour was never the problem.
+ *
+ * WHAT WAS TRIED AND REJECTED, because it is the obvious idea and it is wrong:
+ * restoring the map's original RMS SLOPE after the low pass, so the surface
+ * keeps the same distribution of facet angles at a longer wavelength. It was
+ * implemented and measured. The near/mid ratio at Bahrain by night came down
+ * only to 3.74 — still a cliff, still failing — and the road photographs as
+ * coarse gravel or hammered metal rather than as asphalt, because a 13-degree
+ * mean slope at 45mm is a genuinely rough surface where the same slope at 11mm
+ * is a fine one. Real asphalt is self-affine: its slope falls with wavelength,
+ * and inventing slope back is inventing a road. The gain therefore stays at the
+ * 2.4 it always was — the surviving bands keep their own amplitudes, mean slope
+ * falls from 13.3 to 4.1 degrees and the worst facet from 40.7 to 12.1 — and the
+ * measured result is 1.43 with the road still reading as a surface rather than
+ * as a plane.
+ *
+ * THE SECOND HALF is `detailResolve`'s ramp, which was `smoothstep(0.25, 0.85)`
+ * on cycles per pixel. Nyquist is 0.5, so that ramp drew a band at full strength
+ * down to four pixels per cycle and at HALF strength at 1.8 pixels per cycle —
+ * below the sampling limit — which is why the coarser map still measured 7.5 in
+ * the middle distance until the ramp was corrected. It is `smoothstep(0.08,
+ * 0.25)` now: full strength only while a band spans twelve pixels or more, gone
+ * by four. Combined with the coarser map that leaves every surface's relief
+ * reaching almost exactly as far as it did before — grass fades out at 6.6m
+ * against 6.1m — so this is a change of CONTENT, not of extent.
+ */
+
+/**
+ * Gaussian sigma, in texels, applied to the height field before the normal map
+ * is differentiated from it.
+ *
+ * A Gaussian attenuates a sinusoid of period P by exp(-2*pi^2*sigma^2/P^2). At
+ * 3.4 texels that is 0.000 at P=4, 0.026 at P=8, 0.404 at P=16 and 0.799 at
+ * P=32 — so the 11mm and 22mm bands are gone and the 45mm and 89mm bands are
+ * substantially kept.
+ *
+ * 3.4 is the SMALLEST sigma that makes the band the map claims to carry the band
+ * it actually carries, and that is what fixes it rather than taste. Slope
+ * contribution goes as amp/period, so P=8 starts out 5.4x heavier than P=16: at
+ * sigma 2.6 the survivors are P=8 0.0069 against P=16 0.0054 and the map is
+ * still an eight-texel map wearing a sixteen-texel label, which `detailResolve`
+ * would then draw at Nyquist. At 3.4 it is 0.0012 against 0.0035 — P=16 leads
+ * 2.9 to 1 — so 16 cycles per tile is an honest description of the map.
+ */
+const BUMP_SIGMA_TEXELS = 3.4;
+
+/**
+ * Cycles per tile of the finest band the normal map still carries after the low
+ * pass above. Was effectively 64 — the four-texel octave.
+ *
+ * The shader needs this number rather than 64, because `detailResolve` fades a
+ * band out on ITS OWN frequency, and a band limit is only worth anything if the
+ * fade is told about it.
+ */
+const NORMAL_CYCLES_PER_TILE = 16;
+
+/**
+ * Gain on the low-passed field's central difference.
+ *
+ * 2.4, not 4, and NOT scaled up to make up for the low pass — see the block
+ * above for the measurement that rejected that. A central difference over a
+ * normalised field times four produces slopes past 60 degrees on the steepest
+ * cells, and a 60-degree facet either mirrors a floodlight into the camera or
+ * misses it entirely; there is no middle, and real asphalt has no such facets.
+ */
+const NORMAL_GAIN = 2.4;
+
+/**
+ * Separable Gaussian blur with wrapping edges.
+ *
+ * Wrapping is not optional: the whole point of the noise generator is that the
+ * lattice wraps modulo each octave's period, and a blur that clamped at the
+ * edges would put a seam back into a map built specifically not to have one.
+ * Runs once, at texture build time, on a 256px field.
+ */
+function lowPassWrapped(field: Float32Array, size: number, sigma: number): Float32Array {
+  const radius = Math.max(1, Math.ceil(sigma * 3));
+  const kernel = new Float32Array(radius * 2 + 1);
+  let sum = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const w = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel[i + radius] = w;
+    sum += w;
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= sum;
+
+  const tmp = new Float32Array(size * size);
+  const out = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let acc = 0;
+      for (let k = -radius; k <= radius; k++) {
+        acc += kernel[k + radius] * field[y * size + ((x + k + size) % size)];
+      }
+      tmp[y * size + x] = acc;
+    }
+  }
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let acc = 0;
+      for (let k = -radius; k <= radius; k++) {
+        acc += kernel[k + radius] * tmp[((y + k + size) % size) * size + x];
+      }
+      out[y * size + x] = acc;
+    }
+  }
+  return out;
+}
+
 /**
  * Seamless multi-octave value noise, plus the normal map derived from it.
  *
@@ -252,7 +416,9 @@ export const SURFACES: Record<string, SurfaceProfile> = {
  * three different smoothnesses and three lookups would cost three times as much
  * as three channels of one:
  *
- *  R — every octave. Fine grain, and the field the normal map is derived from.
+ *  R — every octave. Fine grain. The normal map is derived from a LOW-PASSED
+ *      copy of this field rather than from the field itself; see the block
+ *      above on issue #48.
  *  G — the two coarsest octaves only. Smooth, large blobs. Thresholding this is
  *      what gives patch repairs a clean boundary; thresholding R gives a mess of
  *      camouflage, because R still has quarter-metre detail in it at any scale.
@@ -274,12 +440,20 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
   //
   // The finest octave carries 0.34 rather than 0.5 of the total, with the
   // difference handed to the eight-pixel band. That octave is the one the
-  // normal map is differentiated from and it has a four-pixel period, so it is
-  // the finest thing the texture can express — and on a road tiled several
-  // times per metre it lands below one screen pixel at any useful range. Energy
-  // there cannot be resolved; it can only alias. Moving it one octave coarser
-  // keeps the same overall contrast in the colour, where it is wanted, and
-  // takes it out of the derivative, where it was only ever sparkle.
+  // normal map used to be differentiated from and it has a four-pixel period,
+  // so it is the finest thing the texture can express — and on a road tiled
+  // several times per metre it lands below one screen pixel at any useful
+  // range. Energy there cannot be resolved; it can only alias.
+  //
+  // ISSUE #48: reducing its amplitude was not enough and could not have been.
+  // The weights below are amplitudes of the HEIGHT field, and a central
+  // difference is a high-pass filter — an octave's contribution to the SLOPE
+  // goes as amp/period, so the four-texel band was carrying 0.34/4 = 59% of the
+  // whole map's gradient energy while carrying 35% of its contrast. Trimming
+  // the amplitude moved the tint and left the derivative almost exactly where
+  // it was. The colour band and the bump band therefore have to be separated,
+  // which is what `bumpHeight` below does: the octaves stay as they are for the
+  // R channel, and the normal map is differentiated from a low-passed copy.
   const octaves = [
     { period: 4, amp: 0.34, blob: 0, mid: 0 },
     { period: 8, amp: 0.38, blob: 0, mid: 0.18 },
@@ -330,6 +504,12 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
   normalise(blob);
   normalise(mid);
 
+  // The field the NORMAL map is differentiated from: the same height field,
+  // low-passed so that nothing survives which the road cannot resolve. See
+  // `BUMP_SIGMA_TEXELS` and `NORMAL_CYCLES_PER_TILE`. Separable and wrapping,
+  // so the normal map still tiles exactly.
+  const bumpHeight = lowPassWrapped(height, size, BUMP_SIGMA_TEXELS);
+
   const grainData = new Uint8Array(size * size * 4);
   const normalData = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {
@@ -343,17 +523,18 @@ function makeGrain(size = 256): { grain: THREE.DataTexture; normal: THREE.DataTe
       grainData[o + 3] = 255;
 
       // Central differences with wrapping indices, so the normal map tiles too.
+      // Taken over `bumpHeight`, NOT over `height`: see issue #48 above. The R
+      // channel written just above is still the full field, so the tint, the
+      // roughness break-up and the aggregate stretch are all untouched — only
+      // the derivative changed, because only the derivative was aliasing.
       const xm = (x - 1 + size) % size, xp = (x + 1) % size;
       const ym = (y - 1 + size) % size, yp = (y + 1) % size;
-      const dx = height[y * size + xp] - height[y * size + xm];
-      const dy = height[yp * size + x] - height[ym * size + x];
-      // Tangent-space normal of the height field, packed to 0..255.
-      //
-      // Gain 2.4, not 4. A central difference over a normalised field times
-      // four produces slopes past 60 degrees on the steepest cells, and a
-      // 60-degree facet either mirrors a floodlight into the camera or misses
-      // it entirely — there is no middle. Real asphalt has no such facets.
-      let nx = -dx * 2.4, ny = -dy * 2.4, nz = 1;
+      const dx = bumpHeight[y * size + xp] - bumpHeight[y * size + xm];
+      const dy = bumpHeight[yp * size + x] - bumpHeight[ym * size + x];
+      // Tangent-space normal of the height field, packed to 0..255. See
+      // `NORMAL_GAIN` for why the gain is what it is and why the low pass is
+      // deliberately NOT compensated for.
+      let nx = -dx * NORMAL_GAIN, ny = -dy * NORMAL_GAIN, nz = 1;
       const len = Math.hypot(nx, ny, nz);
       nx /= len; ny /= len; nz /= len;
       normalData[o] = Math.round((nx * 0.5 + 0.5) * 255);
@@ -892,12 +1073,23 @@ export class SurfaceDetail {
            *
            * \`fwidth\` of the projected world position is the footprint in
            * metres. Multiplied by the band's frequency it gives cycles per
-           * pixel, and past about half a cycle per pixel the band is fading
-           * out because nothing else can be done with it honestly.
+           * pixel, and past some fraction of a cycle per pixel the band is
+           * fading out because nothing else can be done with it honestly.
+           *
+           * THAT FRACTION WAS WRONG UNTIL ISSUE #48, and it was wrong in the
+           * unsafe direction. The ramp ran 0.25 to 0.85 cycles per pixel:
+           * Nyquist is 0.5, so a band was drawn at FULL strength down to four
+           * pixels per cycle and at half strength at 1.8 pixels per cycle,
+           * which is past the point at which the pixel grid can represent it
+           * at all. A specular normal needs far more headroom than an albedo
+           * does, because the shading is a sharply non-linear function of the
+           * normal and its output carries frequencies the input does not.
+           * 0.08 to 0.25 is full strength only while a band spans twelve
+           * pixels or more, and nothing at all by four.
            */
           float detailResolve(float cyclesPerMetre) {
             float footprintM = max(fwidth(vDetailPos.x), fwidth(vDetailPos.z));
-            return 1.0 - smoothstep(0.25, 0.85, footprintM * cyclesPerMetre);
+            return 1.0 - smoothstep(0.08, 0.25, footprintM * cyclesPerMetre);
           }
         `)
         // After the base colour is established, darken it by the two octaves.
@@ -921,6 +1113,14 @@ export class SurfaceDetail {
           // below. Computed here rather than in the normal block because the
           // roughness stage runs first and has to know about it too.
           float resolveA = detailResolve(uScale.x * 64.0);
+          // The NORMAL map's finest band is coarser than the colour map's, and
+          // since issue #48 it is coarser by construction rather than by hope:
+          // the derivative is taken over a low-passed copy of the field, so
+          // nothing finer than NORMAL_CYCLES_PER_TILE survives to be drawn.
+          // Two resolves rather than one because the two maps genuinely have
+          // different band limits, and using the colour band's limit for the
+          // bump is what left the mid-distance road with no relief at all.
+          float resolveN = detailResolve(uScale.x * ${f(NORMAL_CYCLES_PER_TILE)});
           // The shared world-space map coordinate. Hoisted out of the rubber
           // block because the pooling map is sampled with it too, and because
           // a surface with no rubber can still be under water.
@@ -961,9 +1161,12 @@ export class SurfaceDetail {
           // are simply too small to draw, and a surface whose bumps have been
           // averaged away without a matching widening of the specular lobe
           // comes back as polished sheet rather than as distant asphalt.
+          // The swing follows the COLOUR band it is computed from (resolveA);
+          // the compensation follows the BUMP band it is compensating for
+          // (resolveN), which since #48 fades out at a different range.
           roughnessFactor = clamp(
             roughnessFactor + (dFine - 0.5) * uRoughVar * resolveA
-              + (1.0 - resolveA) * uRoughVar * 0.5
+              + (1.0 - resolveN) * uRoughVar * 0.5
               - rub * 0.26 + sdPatch * 0.07,
             0.04, 1.0);
           // A film of water is a smooth dielectric sitting on top of whatever
@@ -982,7 +1185,7 @@ export class SurfaceDetail {
           #include <normal_fragment_maps>
           if (uNormalStrength > 0.0) {
             vec3 bumpA = texture2D(uGrainNormal, vDetailPos.xz * uScale.x).xyz * 2.0 - 1.0;
-            vec3 bump = vec3(bumpA.x, 0.0, bumpA.y) * uNormalStrength * resolveA;
+            vec3 bump = vec3(bumpA.x, 0.0, bumpA.y) * uNormalStrength * resolveN;
             ${aggregate <= 0 ? '' : /* glsl */`
               // The stones themselves. A second, much finer bump is what makes
               // a close camera see a surface with a texture instead of a tinted
@@ -993,7 +1196,7 @@ export class SurfaceDetail {
               // normal perturbation anywhere in the scene, applied at the
               // highest tiling frequency, so it is the first thing to drop
               // below a pixel and the single largest contributor to sparkle.
-              float resolveB = detailResolve(${f((profile.aggregateScale ?? 5.5) * 64)});
+              float resolveB = detailResolve(${f((profile.aggregateScale ?? 5.5) * NORMAL_CYCLES_PER_TILE)});
               bump += vec3(bumpB.x, 0.0, bumpB.y) * ${f(aggregate * 0.3)} * resolveB;
             `}
             // Rubber fills the surface texture in. Where the band is heaviest

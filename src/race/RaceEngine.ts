@@ -37,6 +37,8 @@ import {
 import {
   NEUTRAL_COMMITMENT, UNLAP_PACE_MULT, neutralisedLimit, neutralisedPlan, queueHoldMs,
 } from '../physics/NeutralisedLimiter';
+import { fuelPaceScale, raceFuelLoadL } from '../physics/FuelPlan';
+import { BASE_F1_SPEC } from '../physics/VehicleSpec';
 import {
   makePitStopProgress, pitStopProgress, resolvePitStop,
   type PitStopProgress, type PitStopResult,
@@ -641,10 +643,26 @@ export class RaceEngine {
     this.weather = new Weather(def, config.seed, this.track);
 
     const field = entries ?? DRIVERS;
-    // Race fuel: enough for the distance plus a small margin. Qualifying runs
-    // light, which is why a Q3 lap is several seconds faster than a race lap.
+    // Race fuel: enough for the race that is actually run.
+    //
+    // IT USED TO BE `min(110, raceLaps x lengthKm x 0.33 + 4)` — filled per
+    // KILOMETRE and emptied per SECOND, because `peakFuelBurnLps` is litres a
+    // second. Those two agree at exactly one lap time and the field does not
+    // run it, so every full-distance race put twenty cars on the road with
+    // three quarters of the fuel they needed. Measured at Silverstone, F3:
+    // 105.1 L loaded, 2.980 L a lap, dry on lap 35 of 52, and 155.0 L required.
+    // Every one of those cars then coasted to a halt on the racing surface and
+    // was retired `Stopped on track`, which is issue #26's 10.5 retirements a
+    // race and the reason its retirement counts were not measuring attrition.
+    // Full derivation and the instrumented trace: `physics/FuelPlan.ts`.
+    //
+    // THE DISTANCE STILL COMES FROM THE SESSION and not from `def.raceLaps`.
+    // A quarter-distance race was being fuelled for a full one, which is a
+    // hundred kilos of ballast nobody asked for and a slower car than the
+    // player is entitled to.
+    const raceLaps = config.laps || def.raceLaps;
     const fuelL = config.kind === 'race'
-      ? Math.min(110, def.raceLaps * (def.lengthM / 1000) * 0.33 + 4)
+      ? raceFuelLoadL(raceLaps, this.track.referenceLapTime, BASE_F1_SPEC.fuelCapacityL)
       : 40;
 
     for (let i = 0; i < field.length; i++) {
@@ -2289,6 +2307,19 @@ export class RaceEngine {
       wi, this.track.wetLineOffset[wi],
     );
     p.blendRemainingM = car.blendRemainingM;
+    // The fuel instruction, from the same running average `fileTeamRadio` uses
+    // to decide whether to say anything about it on the radio — so the number
+    // the driver is given and the number the engineer talks about cannot
+    // disagree, which is the rule `PitLimiter` and `NeutralisedLimiter` are
+    // both built on.
+    const totalLaps = this.config.laps || this.track.def.raceLaps;
+    p.fuelPaceScale = this.config.kind === 'race' && car.lap > 0
+      ? fuelPaceScale(
+        car.physics.fuelRemaining,
+        (car.setup.fuelLoadL - car.physics.fuelRemaining) / car.lap,
+        Math.max(0, totalLaps - car.lap),
+      )
+      : 1;
     p.pitThisLap = this.shouldPit(car);
 
     // Distance to this car's own box, once it is committed to the lane and
@@ -4188,6 +4219,24 @@ export class RaceEngine {
 
     const offRoad = Math.abs(car.lateral) > this.track.halfWidthAt(car.s) + STRANDED_OFFROAD_M;
     if (car.stuckTimer <= (offRoad ? BEACHED_RETIRE_S : STOPPED_ON_TRACK_RETIRE_S)) return;
+
+    // AN EMPTY TANK IS NOT "STOPPED ON TRACK", AND CALLING IT THAT COST THE
+    // PROJECT AN ISSUE. `Stopped on track` is a driver's car that has come to
+    // rest for a reason nobody can name; running dry is a car that has run out
+    // of a consumable, which is a mechanical retirement and is classified as
+    // one by `probe:attrition`'s own rule. It matters because issue #26 read
+    // ten and a half `Stopped on track` retirements a race as evidence of a
+    // path-tracking failure, then as evidence of a neutralised-limiter stall,
+    // and every one of them was this. A retirement the simulation cannot name
+    // is a retirement somebody will mis-attribute. See `physics/FuelPlan.ts`.
+    if (car.physics.fuelRemaining <= 0.02) {
+      car.retire('Out of fuel', this.time);
+      this.raceControl.log(
+        car.driver.code + ' is out — out of fuel', 'critical', this.time, car.index,
+        { feed: 'either' },
+      );
+      return;
+    }
 
     // Intact, but the site decides the method and `Recovery` reads the site. In
     // particular this does not claim the car has been recovered on the step it

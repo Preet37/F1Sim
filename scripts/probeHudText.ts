@@ -25,7 +25,7 @@ import {
   fastestLap, lapClock, messageRoute, pitCall, pitReason, principalOf, raceControlCard,
   pitCueText, radioExchange, relayed, repairableInBox, replyExchange,
   radioTurnSpec, setRadioVariantSeed, standingsCells,
-  teamLine, towerFit, towerWindow, weatherReadout,
+  teamLine, towerFit, towerWindow, weatherReadout, TOWER_RAIL_FLOOR_PX,
   type RadioTurn,
 } from '../src/ui/Hud';
 import { COMPONENT_IDS } from '../src/race/DamageModel';
@@ -73,25 +73,27 @@ for (let i = 0; i < standings.length; i++) {
   check(cells.tyre.length > 0, `row ${i}: no compound`);
 
   if (i === 0) {
-    // The leader's cell names the COLUMN. Every other row in it is a figure,
-    // so a word there reads as the heading it is — and restating "leader" beside
-    // a position that already says 1 is the panel saying it twice.
-    check(cells.gap === 'Interval', `leader gap should read Interval, got ${cells.gap}`);
-  } else if (!car.retired && !car.disqualified) {
+    // `Leader`, in the reference board's own word — issue #76, "copy this!!!
+    // don't change shit from it". This used to assert `Interval`, which is a
+    // column heading standing in a row of figures.
+    check(cells.gap === 'Leader', `leader gap should read Leader, got ${cells.gap}`);
+  } else if (!car.retired && !car.disqualified && !car.inPitLane && !car.onOutLap) {
     const lapsBehind = ahead ? car.lapsDown - ahead.lapsDown : 0;
     if (lapsBehind > 0) {
       sawLapped = true;
       check(/LAPS?$/.test(cells.gap),
         `a car ${lapsBehind} lap(s) down must be reported as laps, not as ${cells.gap}`);
     } else {
-      check(/^[+-]/.test(cells.gap) || cells.gap === '—',
+      check(/^[+-]/.test(cells.gap) || cells.gap === 'NO TIME',
         `row ${i}: interval ${cells.gap} is not a signed gap`);
     }
   }
   // `Out`, not `DNF`. The row is already dimmed and already at the foot of the
   // order; three capitals of jargon on top of that is the third statement of the
   // same fact.
-  if (car.retired) check(cells.gap === 'Out', `a retired car must read Out, got ${cells.gap}`);
+  if (car.retired && !car.inPitLane) {
+    check(cells.gap === 'Out', `a retired car must read Out, got ${cells.gap}`);
+  }
 }
 console.log(`running order: ${standings.length} rows, lapped car present: ${sawLapped}`);
 
@@ -149,6 +151,9 @@ console.log(`running order: ${standings.length} rows, lapped car present: ${sawL
   // have no gap. That must not be contagious.
   const mine = standingsCells(idle, me, null, quickest);
   check(mine.best === '—', `a driver with no lap shows a best of "${mine.best}"`);
+  // And the gap column says so in words rather than with an em dash — #76.
+  check(['NO TIME', 'Out Lap', 'IN PIT', 'Out'].includes(mine.gap),
+    `a driver with no lap shows a gap of "${mine.gap}"`);
   console.log(`idle player: ${shown} of ${idle.cars.length - 1} rivals' times shown ` +
     'while the player has none');
 
@@ -191,23 +196,32 @@ if (fastest) {
  * tower is the tallest thing on the left rail and the one most able to do it,
  * so the arithmetic it is sized by is asserted rather than eyeballed.
  */
-const VIEWPORTS: [string, number, number, number][] = [
-  // name, width, height, px of rail that must be left below the panel.
-  //
-  // The clearance is not a guess. It is what the rail beneath the tower has to
-  // carry, and it came DOWN in the pass that moved the tyre, fuel and weather
-  // panels into the right-hand car column: what is left below the running
-  // order is the radio card (198px), the two live cues (30 each), the gaps
-  // between them, and the rail's own bottom offset clear of the mirror band.
-  ['desktop 1400x900', 1400, 900, 366],
-  ['wide desktop 1920x1080', 1920, 1080, 366],
-  ['laptop 1280x800', 1280, 800, 366],
-  ['landscape phone 844x390', 844, 390, 174],
-  ['landscape phone 740x360', 740, 360, 144],
-  ['portrait phone 390x844', 390, 844, 300],
+const VIEWPORTS: [string, number, number][] = [
+  ['desktop 1400x900', 1400, 900],
+  ['wide desktop 1920x1080', 1920, 1080],
+  ['laptop 1280x800', 1280, 800],
+  ['landscape phone 844x390', 844, 390],
+  ['landscape phone 740x360', 740, 360],
+  ['portrait phone 390x844', 390, 844],
 ];
 
-for (const [name, w, h, clearance] of VIEWPORTS) {
+// WHAT THE RAIL BELOW THE TOWER KEEPS, and this number came DOWN from 366 in
+// the pass that fixed issue #17. It used to be the rail's WORST case — a
+// full-size radio plate at 198px with two live cues under it — reserved on
+// every frame of every session whether or not anybody was transmitting, and
+// `probe:tower` measured what that cost: four rows of twenty on a 1280x800
+// laptop in the driver's eye, with 221 pixels of empty rail underneath.
+//
+// It is now the rail's FLOOR, imported from the HUD rather than restated here:
+// the smallest radio card `sizeRadioCard` will draw before `fitRail` throws it
+// away instead, plus the rail's own top mask, plus the gap under the panel.
+// Everything above that floor the rail borrows from the running order when it
+// has something to say and hands back when it does not — which is exactly what
+// `sizeRadioCard` was built to do, and `shoot:panels` is what asserts that a
+// card raised in the band that is left is on screen and legible.
+const RAIL_CLEARANCE = TOWER_RAIL_FLOOR_PX;
+
+for (const [name, w, h] of VIEWPORTS) {
   const fit = towerFit(w, h);
   const rowH = fit.compact ? 17 : 20;
   // Header, flag band, column rule, the fastest-lap strip along the foot, the
@@ -215,11 +229,15 @@ for (const [name, w, h, clearance] of VIEWPORTS) {
   // the circuit name and the column rule, which is where the difference between
   // the two comes from.
   //
-  // MEASURED WITH THE FLAG BAND OUT, which is the tallest the panel ever is.
-  // A budget written for the quiet frame is a budget that overflows on the one
-  // frame the driver most needs the panel to be readable.
-  const chrome = fit.compact ? 76 : 118;
+  // MEASURED WITH THE FLAG BAND OUT, which is the tallest the panel ever is,
+  // and measured on the laid-out panel by `probe:tower` rather than added up
+  // from the stylesheet: 148 on a desktop and 86 compact, against 109 and 55
+  // with the band away. These two numbers were 118 and 76 and were wrong in
+  // the dangerous direction — a budget written for the quiet frame is a budget
+  // that overruns on the one frame the driver most needs the panel.
+  const chrome = fit.compact ? 86 : 148;
   const bottom = 10 + chrome + fit.rows * rowH + 5;
+  const clearance = RAIL_CLEARANCE;
 
   check(fit.rows >= 4, `${name}: ${fit.rows} rows is not a running order`);
   check(bottom <= h - clearance,
@@ -238,10 +256,14 @@ check(towerFit(1400, 900).rows >= 20,
 // 2b. The window, with the player at the back of a field of wrecks
 // ---------------------------------------------------------------------------
 //
-// "why can I only see like 4 cars on the leaderboard, where is everyone and all
-//  the cars?" — reported from a screenshot showing P1, a break, and P14 to P20,
-// of which six were marked `Out`. The player was eighteenth. This is that exact
-// situation: twenty cars, the six behind the player retired, eight rows.
+// "also the leader board has 1st place and then 7-20th why not how the whole
+//  fucking leaderboard bro"
+//
+// THE BOARD DOES NOT SKIP. The window used to drop retired cars out of the
+// middle of the order and pin the leader above what was left, which is how a
+// board came to read P1 and then P7 to P20 with five cars missing between two
+// rows drawn touching. Same scenario as before — twenty cars, the six behind
+// the player retired, eight rows — and now the assertion is contiguity.
 
 {
   const field = Array.from({ length: 20 }, (_, i) => ({ retired: i >= 14 }));
@@ -249,11 +271,12 @@ check(towerFit(1400, 900).rows >= 20,
   const win = towerWindow(field, 8, me);
   check(win.rows.length === 8, `the window drew ${win.rows.length} of 8 rows`);
   check(win.rows.includes(me), 'the window does not contain the player');
-  check(win.pinLeader && win.rows[0] === 0, 'the leader is not pinned above the window');
-  // The whole point: a scarce row does not go to a car that cannot be raced.
-  const wrecks = win.rows.filter((i) => field[i].retired && i !== me).length;
-  check(wrecks === 0,
-    `${wrecks} of 8 rows went to retired cars while the player was racing`);
+  check(!win.pinLeader, 'the leader is pinned above a run it is not part of');
+  // CONTIGUOUS, with no hole anywhere in it. This is the whole of #76's
+  // row-count half, and it is one comparison.
+  const holes = win.rows.filter((r, i) => i > 0 && r !== win.rows[i - 1] + 1);
+  check(holes.length === 0,
+    `the board skips ${holes.length} place(s): ${win.rows.map((i) => i + 1).join(', ')}`);
   // And most of what is shown is the road ahead rather than the road behind.
   const ahead = win.rows.filter((i) => i < me).length;
   check(ahead >= 5, `only ${ahead} of the 8 rows are cars the player can catch`);

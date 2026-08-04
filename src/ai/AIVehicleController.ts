@@ -244,6 +244,22 @@ export interface AIPerception {
    * racing line when the rain arrives and drift back onto it as it dries.
    */
   lineAvoidance: number;
+  /**
+   * How hard this driver has to save fuel, 1 = not at all.
+   *
+   * From `FuelPlan.fuelPaceScale`, which is where the whole argument lives.
+   * The short version: the tank is emptied per second and was filled per
+   * kilometre, and the failure mode of getting that wrong is not a slow car —
+   * `VehiclePhysics.step` makes no drive force at all on an empty tank, so the
+   * car simply coasts to a halt on the racing surface with the throttle open.
+   * Measured on `main`: sixteen of twenty cars retired that way in one
+   * full-distance race.
+   *
+   * It is a lift-and-coast instruction, which is a real and extremely common
+   * one, and this codebase already puts it on the team radio (`RaceEngineer`
+   * files a `fuel` note when the margin goes negative). Nothing listened to it.
+   */
+  fuelPaceScale: number;
 }
 
 export function createPerception(): AIPerception {
@@ -257,6 +273,7 @@ export function createPerception(): AIPerception {
     queueAheadSpeedMs: 0, mustUnlap: false,
     holdRacingLine: false, holdUntilLine: false,
     pitThisLap: false, pitBoxAheadM: -1, wetness: 0, lineAvoidance: 0,
+    fuelPaceScale: 1,
   };
 }
 
@@ -1589,6 +1606,17 @@ export class AIVehicleController {
     if (Math.abs(lateral) > halfW * 0.88) {
       targetSpeed *= lerp(1, 0.85, clamp01((Math.abs(lateral) / halfW - 0.88) / 0.16));
     }
+
+    // --- Fuel ---------------------------------------------------------------
+    // Lift and coast. A pace scale rather than a throttle cap, because the
+    // saving comes from arriving at the braking point slower and not from
+    // feathering the pedal on the straight, and because a pace scale composes
+    // with every bound below it — a car saving fuel behind a safety car is
+    // already under the neutralised limit and this changes nothing.
+    //
+    // It is 1 for almost every car in almost every race. When it is not, the
+    // alternative is not a slow car, it is a stopped one: see `FuelPlan.ts`.
+    targetSpeed *= p.fuelPaceScale;
 
     // --- Yellow flags ------------------------------------------------------
     // Two different instructions, so two different lifts.

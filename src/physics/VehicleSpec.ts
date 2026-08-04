@@ -281,7 +281,37 @@ export const BASE_F1_SPEC: VehicleSpec = {
   // how much retardation is on offer. Overdoing it still locks and flat-spots.
   maxBrakeForceN: 52_000,
 
-  peakFuelBurnLps: 0.048,
+  /**
+   * Peak fuel burn, litres per second.
+   *
+   * THIS IS A REGULATION AND IT WAS 30% OVER IT. FIA Technical Regulations
+   * Art. 5.1.4 — "fuel mass flow must not exceed 100kg/h" — and 100 kg/h at the
+   * `fuelDensity` above is 0.0370 L/s. It was 0.048, which is 129.6 kg/h: a
+   * power unit that could not be homologated, running a flow limiter that does
+   * not exist.
+   *
+   * The thermodynamics agree, which is the check worth doing on a number like
+   * this. 0.02778 kg/s of a fuel with a lower heating value around 42 MJ/kg is
+   * 1167 kW into the engine, and `icePowerW` is 560 kW out of it — 48% thermal
+   * efficiency, which is what a modern Formula 1 hybrid is quoted at. At 0.048
+   * the same arithmetic gives 37%, which is a road car.
+   *
+   * WHAT IT COST. Nothing in performance — this constant is read in exactly one
+   * place, `VehiclePhysics.step`'s `burn`, and never in the force or power path
+   * — and everything in reliability. It made a race cost 2.980 litres a lap
+   * against a tank filled with 105.1, so the field ran dry on lap 35 of 52,
+   * coasted to a halt on the racing surface and was retired for stopping on
+   * track: twenty of twenty cars, at two circuits, at full distance. See
+   * `physics/FuelPlan.ts` for the whole chain and issue #26 for what it was
+   * mistaken for.
+   *
+   * The 2026 power unit's own limit is lower still — the ICE moves to an energy
+   * flow cap of about 3000 MJ/h, near 70 kg/h — but it comes with a 400 kW ICE
+   * and a 350 kW MGU-K, and `icePowerW`/`ersPowerW` above model the 560/120
+   * generation. The flow limit and the engine it feeds have to be the same
+   * generation, so this is Art. 5.1.4's.
+   */
+  peakFuelBurnLps: 0.0370,
 
   batteryCapacityJ: 4_000_000,
   maxHarvestW: 200_000,

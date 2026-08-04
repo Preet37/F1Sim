@@ -1107,8 +1107,15 @@ export function buildCockpit(accentColour: number, suitColour: number): CockpitV
     normalMap: gloveNormal,
     normalScale: new THREE.Vector2(0.85, 0.85),
   }));
+  // Painted trim in the team's colour: the wheel's accent bands and the tub's
+  // coloured edges. A DIELECTRIC — metalness 0.02, the same Fresnel floor the
+  // bodywork uses in `Livery.ts`, not the 0.20 this carried. Twenty per cent
+  // metal deletes a fifth of the diffuse and tints a fifth of the specular with
+  // the team's own hue, which at `envMapIntensity: 0.9` inside a cockpit lit by
+  // a sun disc at 220x sky radiance is precisely the recipe PROJECT.md §6
+  // records as "blown out white plastic". Roughness is untouched.
   const accent = mat(new THREE.MeshStandardMaterial({
-    color: accentColour, metalness: 0.2, roughness: 0.5, envMapIntensity: 0.9,
+    color: accentColour, metalness: 0.02, roughness: 0.5, envMapIntensity: 0.9,
   }));
   // The race suit, for the arms. Nomex like the gloves, so it takes the same
   // relief map — at 0.3m from the lens a flat surface at roughness 0.8 is

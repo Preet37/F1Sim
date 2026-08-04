@@ -77,20 +77,49 @@ const SWATCHES: WheelSwatch[] = [
  * moulded in carbon composite and finished satin dark grey — a DIELECTRIC. The
  * only genuinely metallic things on the corner are the centre-lock nut and the
  * caliper, and both are small.
+ *
+ * AND THEN THE TABLE DID NOT SAY THAT. The paragraph above is the one this file
+ * has carried since the blue-mirror fix, and every value under it was a
+ * half-metal anyway: the cover a "dielectric" at 0.10, the spokes at 0.25, the
+ * carbon-carbon disc — which the comment calls "not remotely metallic" — at
+ * 0.05, and the two parts the comment names as the only real metals at 0.55 and
+ * 0.60, which is neither. Metalness is a SWITCH between two different BRDFs, not
+ * a dial: 0.60 deletes 60% of the diffuse term and tints 60% of the specular
+ * with the base colour, and no material behaves that way. This is exactly the
+ * defect §6 of PROJECT.md records on painted bodywork at 0.26, one component
+ * over, and it survived the fix that named it.
+ *
+ * SO THE TABLE NOW SAYS WHAT THE PARAGRAPH SAYS. Everything moulded, coated or
+ * carbon goes to the 0.02 Fresnel floor `Livery.ts` already uses; the three
+ * genuine metals go to 1.0.
+ *
+ * THE ALBEDOS MOVED WITH THEM, AND THEY HAD TO. Under metalness 1 the base
+ * colour stops being a diffuse albedo and becomes the specular REFLECTANCE at
+ * normal incidence, so leaving `hub` at #4a4f57 while switching it to metal
+ * would have made a 30%-reflective centre nut — darker than the dielectric it
+ * replaced, not brighter. The three new values are measured reflectances rather
+ * than picked: anodised aluminium ~0.72 (#b9bec4), machined steel ~0.69
+ * (#b0b4b8), and the bronze anodising an F1 caliper carries ~0.62/0.49/0.27
+ * (#9d7c46). Roughness is UNCHANGED on every row: this is a correction to the
+ * BRDF, not a restyle, and the gloss of each part was decided separately and is
+ * not in question.
  */
 const SWATCH_LOOK: Record<WheelSwatch, { colour: string; rough: number; metal: number }> = {
   // The wheel face on a current car is a moulded composite cover, not chrome.
-  rimFace: { colour: '#232529', rough: 0.62, metal: 0.10 },
-  rimSpoke: { colour: '#3c4149', rough: 0.44, metal: 0.25 },
+  rimFace: { colour: '#232529', rough: 0.62, metal: 0.02 },
+  rimSpoke: { colour: '#3c4149', rough: 0.44, metal: 0.02 },
   // The machined ring between the cover and the bead. Still the brightest thing
-  // on the corner, but a brushed one rather than a mirror.
-  rimLip: { colour: '#6e747c', rough: 0.42, metal: 0.40 },
-  hub: { colour: '#4a4f57', rough: 0.34, metal: 0.60 },
+  // on the corner, but a brushed one rather than a mirror — which at metalness
+  // 1 is what roughness 0.42 says, and it says it honestly now.
+  rimLip: { colour: '#b9bec4', rough: 0.42, metal: 1.0 },
+  // The centre-lock nut and flange. Steel.
+  hub: { colour: '#b0b4b8', rough: 0.34, metal: 1.0 },
   // Carbon-carbon brake discs are matte grey-black and not remotely metallic.
-  disc: { colour: '#2e2b28', rough: 0.72, metal: 0.05 },
-  discFace: { colour: '#3a3632', rough: 0.66, metal: 0.05 },
-  caliper: { colour: '#57402c', rough: 0.45, metal: 0.55 },
-  inner: { colour: '#101216', rough: 0.80, metal: 0.10 },
+  disc: { colour: '#2e2b28', rough: 0.72, metal: 0.02 },
+  discFace: { colour: '#3a3632', rough: 0.66, metal: 0.02 },
+  // Anodised aluminium. The other one the comment above names as a real metal.
+  caliper: { colour: '#9d7c46', rough: 0.45, metal: 1.0 },
+  inner: { colour: '#101216', rough: 0.80, metal: 0.02 },
 };
 
 /** UV of the centre of a swatch cell, for `setFlatUV`. */

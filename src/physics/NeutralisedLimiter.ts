@@ -140,9 +140,47 @@ export function neutralisedLimit(
   return scratch;
 }
 
-/** Applies a limit to a speed the car would otherwise have carried, m/s. */
+/**
+ * The slowest a neutralisation may ask a car to go, m/s.
+ *
+ * A NEUTRALISATION IS A SPEED LIMIT AND A LIMIT CANNOT STOP A CAR. Both
+ * articles are written as minimum TIMES through a marshalling sector — "drivers
+ * must stay above the minimum time set by the FIA ECU" (Art. 55.7 and 56.5 /
+ * B5.13.2b and B5.12.2b) — which is a ceiling on pace and contains no sentence
+ * that could bring a car to rest. Under the safety car the other operative
+ * instruction points the same way: close up to within ten car lengths of the
+ * car in front (Art. 55.7 / B5.13.2b), which is an instruction to keep moving.
+ *
+ * IT IS A GUARD RATHER THAN A FIX, and that distinction is worth being honest
+ * about. The standstill issue #26 measured is NOT this: it is an empty fuel
+ * tank, and `physics/FuelPlan.ts` carries the instrumented trace that settles
+ * it. But `scale` multiplies the speed the car would otherwise carry, and that
+ * quantity is the car's OWN live grip-limited cornering speed — so a car whose
+ * grip has collapsed is neutralised twice over, and the product can pass under
+ * `RaceEngine.STRANDED_SPEED_MS`, at which point the AI's own `CRAWL_MS` clause
+ * reads it as an instruction to stop and race control retires the car twelve
+ * seconds later. Nothing was measured doing that on `main`, and nothing should
+ * be able to.
+ *
+ * 8 m/s is 29 km/h, which is about what a safety car does through the Monaco
+ * hairpin and is 3.2x the threshold the engine treats as "this car has stopped
+ * racing". The floor is never allowed above what the car could otherwise carry
+ * (see `applyNeutralisedLimit`), so it can only ever RELAX a neutralisation and
+ * can never ask a car for speed its grip does not have.
+ */
+export const NEUTRAL_FLOOR_MS = 8;
+
+/**
+ * Applies a limit to a speed the car would otherwise have carried, m/s.
+ *
+ * @param speedMs what the car would carry here with no neutralisation
+ */
 export function applyNeutralisedLimit(speedMs: number, limit: NeutralisedLimit): number {
-  return Math.min(speedMs * limit.scale, limit.capMs);
+  const limited = Math.min(speedMs * limit.scale, limit.capMs);
+  // Bounded above by `speedMs` so this is a floor under the NEUTRALISATION and
+  // not under the car: a car that can only do 3 m/s here still only does 3.
+  const floor = Math.min(speedMs, NEUTRAL_FLOOR_MS);
+  return limited > floor ? limited : floor;
 }
 
 /**

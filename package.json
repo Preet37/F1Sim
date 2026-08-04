@@ -55,6 +55,7 @@
     "probe:carrig": "tsx scripts/probeCarRig.ts",
     "probe:crashrest": "tsx scripts/probeCrashRest.ts",
     "probe:hudtext": "tsx scripts/probeHudText.ts",
+    "probe:tower": "tsx scripts/probeTower.ts",
     "probe:radio": "tsx scripts/probeRadio.ts",
     "probe:strategy": "tsx scripts/probeStrategy.ts",
     "probe:weather": "tsx scripts/probeWeather.ts",
@@ -69,6 +70,7 @@
     "probe:graphics": "tsx scripts/probeGraphics.ts",
     "probe:autotier": "tsx scripts/probeAutoTier.ts",
     "probe:sharpness": "tsx scripts/probeSharpness.ts",
+    "probe:grain": "tsx scripts/probeGrain.ts",
     "probe:kerbs": "tsx scripts/probeKerbs.ts",
     "probe:rideheight": "tsx scripts/probeRideHeight.ts",
     "probe:activeaero": "tsx scripts/probeActiveAero.ts",
@@ -104,7 +106,8 @@
     "probe:qualiretire": "node scripts/probeQualiRetire.mjs",
     "probe:people": "tsx scripts/probePeople.ts",
     "probe:grade": "tsx scripts/probeGrade.ts",
-    "probe:env": "tsx scripts/probeEnv.ts"
+    "probe:env": "tsx scripts/probeEnv.ts",
+    "probe:assets": "tsx scripts/probeAssets.ts"
   },
   "dependencies": {
     "three": "^0.185.1"

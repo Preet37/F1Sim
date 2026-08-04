@@ -91,22 +91,44 @@ These have all been decided. Do not re-litigate them without the user.
   only permissively licensed ones — CC0, public domain, or explicitly licensed for this
   use. Record the licence and source of anything added.
 
-  **How this is MEANT to be implemented — and is NOT. See issue #36.** The agreed design is
-  that every branded slot — team badge, sponsor decal, driver portrait — is an *asset slot*
-  backed by a generated placeholder, loaded from `public/brand/<team-id>/` if a file is
-  present and falling back to the generated mark if not. The user could then drop real
-  artwork in themselves and it would appear immediately with no code change, and removing
-  the directory would return the game to a shippable state.
+  **How this is implemented, as of issue #36 — and this paragraph was a LIE until then, so
+  read the history under it before trusting it again.** Every branded slot is an *asset
+  slot* backed by a generated placeholder:
 
-  **None of that exists.** Verified 2026-08-03: `grep -rn "public/brand" src scripts audit`
-  returns nothing and `public/` contains only `textures/`. There is no loader and no
-  fallback path. This paragraph asserted the mechanism as fact for long enough that a code
-  review had to discover otherwise, so it is corrected here rather than quietly fixed.
-  What is genuinely true today is the *generated* geometric marks (`MARK_DEVICES` in
-  `src/render/LiveryDesign.ts`, carrying an explicit non-infringement comment) and the
-  fictional `SPONSORS` set in `src/render/Livery.ts`. Those are real; the swap boundary is
-  not. Until #36 lands, the only working IP boundary in this project is
-  `src/data/roster/` — which does hold, and which is why §3 keeps insisting on it.
+  | | |
+  |---|---|
+  | Loader | `src/render/BrandAssets.ts` |
+  | Team-scoped | `public/brand/<team-id>/<slot>.png` → `.webp` → `.svg`, first hit wins |
+  | Slots | `badge`, `sponsor`, `portrait`, `livery` |
+  | Shared | `public/brand/shared/<slot>.…` for `material`, `lut`, `envmap` — not team-scoped |
+  | Team id | the id from `src/data/roster/`, so artwork swaps on the same boundary names do |
+  | Fallback | `MARK_DEVICES` (`LiveryDesign.ts`) and `SPONSORS` (`Livery.ts`) |
+  | Ignored | `public/brand/` is in `.gitignore`, so third-party artwork cannot be committed |
+  | Probe | `npm run probe:assets` |
+
+  **The guarantee, and it is measured rather than asserted: deleting `public/brand/`
+  returns the game to BYTE-IDENTICAL rendering.** `probe:assets` renders one team three
+  times in one GL context — no file, file present, file removed — and sha256s all three:
+  the middle arm differs, the third is identical to the first on every view. Every override
+  is a branch that is not taken, never a different code path, which is why that holds by
+  construction.
+
+  **One request, ever, and it cannot 404.** A slot with no file costs ZERO network requests
+  and produces ZERO console output. The loader makes exactly one request that could miss —
+  `/brand/manifest.json` — and the Vite plugin in `vite.config.ts` answers it with 200 and
+  `{"files":[]}` when the directory does not exist. The rejected alternative was probing
+  `badge.png`/`.webp`/`.svg` directly, which is 264 guaranteed 404s on a build carrying no
+  artwork, all of them written to the console, which five harnesses in `scripts/` read as a
+  failure signal.
+
+  **What this paragraph used to say, and why that is worth keeping.** Until 2026-08-03 it
+  described all of the above as *"How this is implemented in practice"* and none of it
+  existed: `grep -rn "public/brand" src scripts audit` returned nothing and `public/`
+  contained only `textures/`. It had asserted the mechanism as fact for long enough that a
+  code review had to discover otherwise, and #8 and the livery editor were both written
+  against it. **A design document that describes an intention in the present tense is how a
+  project acquires load-bearing fiction.** The generated marks and the fictional sponsor
+  set were always real; only the override half was missing, and now it is not.
 - The user asked for archive clips of past champions in the intro. The agreed substitute is in-engine cinematography, which is
   what the real F1 games mostly use anyway. They confirmed: *"yeah render the game scenes
   like rendered in engine yourself."*
@@ -146,6 +168,8 @@ src/
     VehicleSpec.ts        TeamPerformance — THE channel between career and simulation
     PitLimiter.ts         Shared pit-lane speed limiting
     NeutralisedLimiter.ts SC/VSC speed limiting, sibling of PitLimiter
+    FuelPlan.ts           How much fuel a race needs, and what a driver does
+                          when it is not enough. Third of the same family
   race/
     RaceEngine.ts         The simulation. Steps cars, resolves contact, owns sessions
     CarEntry.ts           Per-car state
@@ -211,12 +235,14 @@ Run `npm run` to list. The important ones:
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
 | `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
 | `probe:autotier` | **Does the picture come back?** Drives the real `AutoTierPolicy` off synthetic frame costs — a load spike at minimum resolution, then the load removed — and asserts the tier *returns*, in node and again through the real `Renderer` in a browser reading `shadowMap.enabled` and the composer. Also: a transient is absorbed, repeated failure still latches, and a tier chosen in Settings survives five minutes of trouble untouched. **Not load sensitive** — every frame cost is stated, not measured. Issue #73 |
+| `probe:grain` | **High-frequency energy ON THE ROAD, by depth.** Mean absolute Laplacian of luma — #29's metric — but masked to the mesh named `ROAD_MESH_NAME` by a second, occlusion-correct render of the same frame, banded over the road's own extent so band 0 is always the most distant asphalt and band 5 the nearest, and shot at the scale the resolution scaler settled on. 11 circuits × day/night × 3 tiers × 2 cameras, and it **asserts**. `GRAIN_VIEWPORT=390x844x2` measures at a phone's pixel count |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
 | `probe:shoulders` | Shoulder geometry, divot count by raycast |
 | `probe:traffic` | Contacts per car-lap |
 | `probe:blockage` | A car stopped ON the racing line does not stop the race |
+| `probe:neutral` | **Rewritten by #10.** The standstill (car-seconds under the engine's own stranded threshold, on clear road, under a neutralisation, at FULL distance), how much of a race is neutralised, and that the safety car is drawn from an interpolated pose on all eleven circuits. It used to be forty minutes of compute that could not report a failure |
 | `probe:stewards` | Staged incident scenarios + verdict distribution |
 | `probe:strategy` | Strategist honesty; plan reaching the car |
 | `probe:pitstop` | The stop you asked for is the stop you get — and the wall cannot overrule the PIT button in either direction |
@@ -232,6 +258,7 @@ Run `npm run` to list. The important ones:
 | `probe:myteam` | 10 My Team careers × 10 seasons: cap, books, factory reaching `TeamPerformance` |
 | `probe:news` | Every headline checked against `simulateRound`'s own result, 100 career-years |
 | `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
+| `probe:assets` | **The asset slots, and the shippability guarantee.** Resolution order in Node with no browser; then one team built three times in ONE GL context — no file, a badge dropped into `public/brand/`, the file removed again — sha256'd on three views. The middle arm must differ and the third must be BYTE-IDENTICAL to the first. Also: a slot with no file costs zero requests and zero console output, and a second build issues nothing. `ASSETS_BREAK=root` points the loader at a directory with no manifest and proves the override half can go red. Issue #36 |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
@@ -263,7 +290,16 @@ Run `npm run` to list. The important ones:
   "call site that never fires" diagnosis was wrong and that code works. Issue #28 supplied
   the correct explanation (the probe parked its own car), and #21 supplied the missing
   half, which was content: 13 authored exchanges became 41.
-- `validate:flags` — safety-car form-up, three failures, stable numbers.
+- ~~`validate:flags`~~ — **PASSES on merged `main`, and it had already been passing before
+  the safety-car work of issue #10 started.** Run on a clean `main` on 2026-08-03: exit 0,
+  `Flag compliance validated`, zero failures. Issue #6's three failures (219m median form-up
+  gap, x1.36 safety car lap ratio) were fixed by the `safetyCarPaceMs` rewrite that is
+  already merged — its own comment quotes the 219m — and **nobody re-ran the probe
+  afterwards**, so this file carried it as the project's last known-failing probe for
+  longer than it was true. Today: median form-up gap **34.4m against a 56m limit**, safety
+  car lap **x1.65** a green lap (bar 1.45–2.20), green shown **100m from the Line**, 3 of 3
+  lapped cars unlapped, 0 illegal passes, 0 delta penalties. Proved it can still fail — see
+  §6. **Check a known-failing entry by running it before quoting it.**
 - `shoot:panels` — **2 rail + 2 mirror layout failures**, down from 5 + 2. The two radio-card
   failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
   hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
@@ -299,11 +335,18 @@ Run `npm run` to list. The important ones:
   fine and the stopwatch is not. `shootFrontEnd.ts` was NOT rewritten for it: that is its
   own job with its own measurement, and it is listed here rather than done badly.
   **Nobody is on this.**
-- `probe:fieldsize` — **23 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
+- `probe:racelog` at FULL distance — **2 failures, `11.50 cars retire per race` and
+  `21.00 car-to-car contacts a race`.** Both were failing before #10 at 20.00 and 26.50; the
+  fuel fix removed the artefact on top of them and what is underneath is issue #26. See §7.
+- `validate:race` — **1 failure, `monaco: fastest lap 152% of reference`,** and it is
+  pre-existing: identical on a clean `main`. See §7.
+- `probe:fieldsize` — **14 failures, all "X completed 8 laps of a 6-lap race"**. Cars keep
   racing past the chequered flag. Confirmed **pre-existing on `main`** and not a branch
-  regression on 2026-08-03: clean `main` and `main` merged with `career-myteam` produce
-  **byte-identical** failure lists. Everything structural in the probe still passes at 20,
-  22 and 24 cars. Issue #44.
+  regression: on 2026-08-03 clean `main` extracted to a scratch tree and the
+  `timing-tower-truth` branch produced **the same 14 lines in the same order**. This
+  entry used to say 23; the count came down with some other merge and nobody re-measured
+  it, so **check it rather than quoting it**. Everything structural in the probe still
+  passes at 20, 22 and 24 cars. Issue #44.
 
 **Corrected record — `probe:hudtext` (#5).** This file used to say the failure was "an
 engine call site that never fires (`RaceEngine.ts` ~2525)". **That diagnosis was wrong and
@@ -632,6 +675,177 @@ failed** unchanged.
 - Front wing endplate was 25mm too far out (placed at the 1000mm *bodywork* limit; the
   wing's own limit is 975).
 
+### The asset slot loader, and the shippability guarantee (issue #36)
+
+The mechanism §3 described as existing, and which did not. `grep -rn "public/brand" src
+scripts audit` returned nothing; `public/` held one directory, `textures/`. The generated
+marks were always real; the override half was missing, and #8 and the livery editor had
+both been written against a boundary that was not there.
+
+**The contract, in one table.** `src/render/BrandAssets.ts`:
+
+| | |
+|---|---|
+| Team-scoped | `public/brand/<team-id>/<slot>.png` → `.webp` → `.svg`, first hit wins |
+| Slots | `badge`, `sponsor`, `portrait`, `livery` |
+| Shared | `public/brand/shared/<slot>.…` — `material`, `lut`, `envmap` |
+| Team id | the id in `src/data/roster/` — same boundary the names already swap on |
+| Falls back to | `MARK_DEVICES` (`LiveryDesign.ts`), `SPONSORS` (`Livery.ts`) |
+| Ignored | `public/brand/` is in `.gitignore` |
+
+- **`badge` replaces the generated device rather than sitting on it**, at the same three
+  stations, and it shows even for a team whose `mark` is `-1` — the default, and what every
+  car on the real grid has — because a user who has put `ferrari/badge.png` on disk has
+  chosen a mark. `sponsor` replaces the 115mm title wordmark on the sidepod and nothing
+  else; the small print stays generated, because a flank carrying one graphic and no small
+  print reads emptier than one carrying none. `livery` is a whole replacement atlas, laid
+  over the painted panels and UNDER the badge, so a community livery still gets the team's
+  badge stamped where the game puts badges. The twelve flat swatches are repainted after
+  all three and are deliberately out of reach: they are not graphics, they are the single
+  texel a wishbone, a tyre and a visor pin their UVs to.
+
+- **DELETING `public/brand/` RETURNS THE RENDER TO BYTE-IDENTICAL, and that is measured.**
+  `probe:assets` builds one team three times in ONE GL context — no file, file dropped in,
+  file removed — and sha256s three views of each. Separate page loads would have left "and
+  the two contexts agreed" as an unstated premise, which is the class of hidden assumption
+  §3.2 exists to catch. **35 ok / 0 failed.** The middle arm moves 1047 pixels across the
+  three views, in a bounding box on the engine cover and the flank; **0 of those 1047
+  carried the badge's hue before and 146 do after**; and the third arm is
+  `5f21ed39e05c / 44d258083e0b / a3ea642d3f06` against the first arm's identical three.
+
+- **Proved it can go red.** `ASSETS_BREAK=root` points the loader at a directory with no
+  manifest and no artwork while the badge is on disk: **30 ok / 5 failed, exit 1**, and the
+  five are exactly the override half — the slot resolves to nothing, the manifest is empty,
+  the render does not change, 0 px move, and nothing carries the badge's hue. **The
+  byte-identity assertions stay green**, which is the right answer rather than a weakness: a
+  loader that finds nothing IS the shipped state, and a break that turned the shippability
+  guarantee red would mean the probe was measuring the loader rather than the guarantee.
+
+- **A slot with no file costs ZERO network requests and produces ZERO console output.** The
+  loader makes exactly one request that can miss, `/brand/manifest.json`, and the Vite
+  plugin in `vite.config.ts` answers it 200 with `{"files":[]}` when the directory is not
+  there — so the shipped game makes one request that succeeds and none that fail. The
+  rejected design was probing the three extensions directly: Chrome writes every failed
+  subresource load to the console, five harnesses in `scripts/` read `page.on('console')`
+  as a failure signal, and 22 teams × 4 slots × 3 extensions is **264 guaranteed 404s** on a
+  build carrying no artwork at all. Asking for the same slot twice issues nothing: the
+  negative answer is cached for the life of the page and is never retried.
+
+- **The painter is synchronous and the network is not, and the resolution is a repaint
+  rather than a rebuild.** A slot that arrives after the first frame is composited into the
+  canvas the livery was already painted into and the texture is re-uploaded
+  (`Livery.ts` holds ONE process-wide `onBrandChange`). Rebuilding instead would mean a new
+  `CanvasTexture`, a new material and a new mesh per car — a scene-graph edit mid-session.
+  Nothing here measures, sizes or reflows anything, so there is no layout shift by
+  construction.
+
+- **The rest of the suite, on the merged tree, at load 11–45:** `typecheck` both projects,
+  `vite build` (which emits `dist/brand/manifest.json`), `probe:carrig` clean at 141 parts
+  in 1 cluster, `probe:graphics` **72 ok / 0 failed**, `probe:sharpness` clean on every
+  circuit at `high+post+shadow+msaa`, `shoot:panels` at the **2 rail + 2 mirror** §4 records
+  — confirmed, not added to — `audit:livery` OK, and `probe:smoke` **PASS** with 35 distinct
+  screens and **32 of 32 required routes**.
+
+- **`portrait` and the shared slots RESOLVE but nothing CONSUMES them yet, and that is a
+  gap rather than an omission.** `probe:assets` §1 asserts all four team slots and all three
+  shared ones resolve to the right paths, and `brandUrl(team, 'portrait')` returns a usable
+  URL — but `src/ui/DriverPortrait.ts` draws the PLAYER's helmet from a helmet design and
+  knows nothing about a team id, so there is no correct place to hang a team-scoped portrait
+  on it without deciding what a driver-scoped slot should look like first. Left explicit:
+  the badge, the sponsor decal and the replacement livery are wired end to end and
+  photographed; the portrait and the shared material/LUT/envmap slots are resolvable and
+  unused.
+
+- **Two things the probe found that were not the loader.** (a) `CarMesh` loads the
+  carbon-weave normal map with an asynchronous `TextureLoader` that nothing in `buildCar`
+  waits for, so the FIRST car built in a page is drawn without it and every one after is
+  drawn with it — two builds of the identical car are not identical, and a byte-identity
+  assertion anchored on the first build would have been measuring texture arrival. The
+  probe warms up.
+
+- **(b) A FILE DROPPED INTO `public/` IS INVISIBLE TO A DEV SERVER STARTED WITH
+  `watch: null`, and the answer it gives instead is `index.html` with a 200.** Vite keeps an
+  in-memory Set of the files in `public/` scanned once at server start and its static
+  middleware `next()`s past anything not in it, the Set being kept current by the file
+  watcher — and every harness in `scripts/` creates its server with `watch: null`. The
+  request then falls through to the SPA html fallback, which accepts `Accept: */*`, and
+  `fetch` sends exactly that. **Measured: `element text/html 1509B
+  /brand/__probe__/badge.png`.**
+
+  This is worth its own entry because of how long it took to see, and the reason it took
+  that long is §3.1 in a new costume. Through an `<img>` the whole failure arrives as a
+  **single `onerror` on a 200 response**, and the harness's own `page.on('response')` showed
+  `200`. Two implementations of `decode()` were rewritten against it; a manual `fetch` in
+  the page reported `image/png`, 6508 bytes, a valid PNG signature, and a `new Image()` that
+  loaded fine — which made it look like a race, and then like the load-average artefact §8
+  records, and it was neither. **One bit of failure information is not a diagnosis.** It
+  became obvious in one run the moment the decoder was asked to say WHY: `createImageBitmap`
+  rejects with `InvalidStateError` and the fallback path reports the blob's own
+  `Content-Type`, and `text/html` names the bug immediately.
+
+  Two things landed from it. `decode()` fetches first and hands the bytes to
+  `createImageBitmap` — bytes in hand, a real rejection message, no dependence on the DOM —
+  falling back to an `<img>` over an object URL only for SVG, which has no intrinsic size
+  and which `createImageBitmap` refuses. And the Vite plugin **serves the artwork as well as
+  the manifest**, which is not a workaround: `public/brand/` is the one directory in this
+  project whose entire purpose is that a file appears the moment it is dropped in, and a
+  cache refreshed only by a watcher is the wrong mechanism for that.
+
+### Materials: the wheel corner's table contradicted its own comment (issue #36)
+
+§6 above records painted bodywork at **metalness 0.26** as the "blown out white plastic"
+look, and the fix as understanding that metalness is a SWITCH between two BRDFs and not a
+gloss dial. **The same defect was still sitting in three other places, one of them behind a
+comment that describes the correct physics in full and is followed by a table that does not
+implement it.**
+
+`TyreTexture.ts` says, verbatim, that a current wheel cover is "a mandated aerodynamic
+fairing, moulded in carbon composite … a DIELECTRIC", that carbon-carbon discs are "not
+remotely metallic", and that "the only genuinely metallic things on the corner are the
+centre-lock nut and the caliper". Underneath it: cover **0.10**, spokes **0.25**, discs
+**0.05**, and the two named metals at **0.55** and **0.60**.
+
+| part | was | now | why |
+|---|---|---|---|
+| `rimFace` cover | 0.10 | **0.02** | moulded composite fairing — the file already says so |
+| `rimSpoke` | 0.25 | **0.02** | same part |
+| `rimLip` ring | 0.40, `#6e747c` | **1.0, `#b9bec4`** | machined/anodised aluminium, reflectance ~0.72 |
+| `hub` nut | 0.60, `#4a4f57` | **1.0, `#b0b4b8`** | steel, reflectance ~0.69 |
+| `caliper` | 0.55, `#57402c` | **1.0, `#9d7c46`** | bronze anodising, ~0.62/0.49/0.27 |
+| `disc`/`discFace` | 0.05 | **0.02** | carbon-carbon |
+| `inner` well | 0.10 | **0.02** | coated composite |
+| `Livery` `trim` swatch | 0.10 | **0.02** | see below |
+| `Livery` carbon weave map | 0.05 | **0.02** | dry laminate and resin are both dielectrics |
+| `CockpitMesh` `accent` | 0.20 | **0.02** | painted trim in the team's colour |
+
+**What it looks like, at real on-screen size.** `audit:car` before and after, `rimClose` and
+`steer--wheelFront`: the centre-lock nut goes from a flat blue-grey blob to a machined
+hexagon with a specular highlight, and the rim's outer ring from a faint blue line to a
+brushed machined band that catches the floodlights at night. **The cover itself is
+unchanged in character** — still a dark composite fairing, no chrome — which is the part
+that mattered, because the whole reason those numbers existed was a report of wheels
+reading as blue mirrors. At `hero` distance the change is not visible at all. `cost.md` is
+**identical**: same draw calls, same triangles, same vertices, on all fourteen passes.
+
+**THE ALBEDOS HAD TO MOVE WITH THE METALNESS, and that is the part that is easy to get
+wrong.** Under metalness 1 the base colour stops being a diffuse albedo and becomes the
+specular reflectance at normal incidence. Switching `hub` to metal while leaving it at
+`#4a4f57` would have produced a **30%-reflective centre nut — darker than the dielectric it
+replaced**, which is how a physically correct change comes out looking like a regression.
+The three new colours are measured reflectances, not picks. **Every roughness is unchanged**:
+this is a correction to the BRDF, not a restyle, and how glossy each part is was decided
+separately and is not in question.
+
+**The `trim` swatch is the one that was an argument rather than a mistake**, and it is worth
+recording why it still moved. Its comment read *"the halo is the metal one and it is 30mm of
+the car; the wishbones are not"* and it split the difference at 0.10 — which is exactly what
+the paragraph above the table forbids: a half-metal is not a weighted average of two
+materials, it is a third material that does not exist. It is also the wrong minority to have
+optimised for. A regulation halo is titanium **under a bonded aerodynamic fairing**, and on
+every car on the grid that fairing is painted in the team's colours, so the surface being
+drawn is paint over composite and 0.02 is right for both users of the swatch rather than a
+compromise between them.
+
 ### The front corner, and the two questions `probe:carrig` was not asking (issue #47)
 
 > *"phasing through the carbon and the wheel covers on the top are actually floating
@@ -758,6 +972,152 @@ section load-bearing rather than decorative.
 - Reverse-camera jitter: slip angle measured against the car's nose, so a reversing car
   sat on ±π and the sign flipped every time the wheel moved — a **66° lurch per frame.**
 
+### The near field was the one place the road's relief could not be drawn, and the only place it was (issue #48)
+
+> *"the ground is different why is that? some fps shit i think like that would need to be
+> fixed no?"* — a Bahrain night frame, HUD reading 60fps.
+
+**They were right that something was wrong and wrong about what it was**, which is the
+usual shape. The frame rate is fine; the SURFACE changes character with distance. Far and
+mid-distance asphalt reads smooth and correct, the bottom third is dense high-frequency
+speckle, and there is a visible band between the two. This is the unfinished half of
+*"all of the other maps still have the weird black lines and grainy maps"* (§5): the black
+seams were found and fixed, the graininess never was.
+
+**`probe:grain` is the instrument, and it exists because `probe:sharpness` could not be
+it.** #29 gave that probe a grain metric — mean absolute Laplacian of luma in six bands —
+but it prints and exits 0 whatever the numbers say, and it measures the WHOLE FRAME, which
+mixes the sky, the barriers and the car into a figure that is supposed to describe the
+road. The new probe keeps the metric so the tables can be read together and changes three
+things: the support is the asphalt only, masked by a second occlusion-correct render of
+the same frame with `ROAD_MESH_NAME` emissive-white and everything else black and then
+eroded by two pixels; the bands span the ROAD's own vertical extent, so band 0 is always
+the most distant asphalt on screen and band 5 the nearest whatever the circuit and camera;
+and it is shot at the resolution the scaler settled on. **11 circuits × day and night ×
+`low`/`medium`/`high` × cockpit and chase = 132 configurations, and it asserts.**
+
+**On the build the screenshot came from.** Bahrain, `low` — the tier every phone was
+pinned to before #29 — cockpit, road pixels only, far → near:
+
+| | band 0 | 1 | 2 | 3 | 4 | 5 | near−mid |
+|---|---|---|---|---|---|---|---|
+| night, before | 2.1 | 1.5 | 1.6 | 2.2 | **12.4** | **18.0** | **+16.4** |
+| night, after | 2.1 | 1.5 | 1.6 | 1.8 | 2.7 | 2.2 | **+0.6** |
+| day, before | 1.5 | 2.0 | 2.2 | 2.7 | **10.3** | **13.4** | **+11.2** |
+| day, after | 1.5 | 2.0 | 2.2 | 2.3 | 2.8 | 2.2 | **+0.0** |
+
+Flat, then a cliff — and the cliff is where the user drew the band. **Across all 132
+configurations: 26 red before, 0 after.** They are not evenly spread, and that is the
+"check every map" lesson again in reverse — the worst circuit on the calendar is not the
+one the screenshot came from. Suzuka `low` by night measured **24.2** in the near band
+against 1.3 in the middle distance, an excess of **22.9**; Bahrain's worst is 16.4 and
+Silverstone's 6.6. Verified on `main` merged into the branch (`7911adb`).
+
+**IT IS THE NORMAL MAP AND NOTHING ELSE, bisected rather than argued.** Setting
+`asphalt.normalStrength` to zero takes those two ratios from 11.32 and 6.04 to 0.88 and
+0.73 and flattens the whole profile; zeroing the aggregate bump instead moves them by 0.02.
+The issue's other three candidates are all clear: **anisotropy is already 16** on both
+detail maps and on the fence, kerb and marker textures, there is **no negative mip bias
+anywhere in `src/`**, and every procedural threshold is already widened by its own
+`fwidth`.
+
+**Why it could only ever have aliased, and why two earlier passes at it did not work.**
+The height field's finest octave has a four-texel period in a 256-texel tile and the
+asphalt tiles that map at 1.4 cycles per metre, so it is an **11mm bump**. A central
+difference is a high-pass filter and an octave's contribution to SLOPE goes as `amp/period`
+— so that band carried **59% of the map's gradient energy on 35% of its contrast**. Both
+earlier passes trimmed its AMPLITUDE, which moved the tint and left the derivative where it
+was. From a camera 0.77m above the road the along-view pixel footprint is `6.5e-4 · z²`
+metres — 2.8mm at 2m, 5.9mm at 3m, 23mm at 6m — so an 11mm feature is **under two pixels
+from three metres out and never more than four pixels anywhere the road is on screen**.
+Mip-mapping averages the normals, which is the wrong average, and the specular lobe does
+not follow. `detailResolve` was the guard and it did its job in the only direction it was
+pointed: it fades a band out with DISTANCE, so beyond ~4m the bump is gone — which is why
+the mid-distance measures 1.5 and reads as a flat plane — and inside ~2m it is at full
+strength. **The transition band is that smoothstep.**
+
+Two changes, both in the map rather than in a strength:
+
+- **The normal map is differentiated from a low-passed copy of the height field**
+  (separable, wrapping, σ = 3.4 texels). The R channel is untouched, so the tint, the
+  roughness break-up and the aggregate stretch are exactly as they were — a mip chain
+  filters colour correctly and colour was never the problem. **3.4 is the smallest σ that
+  leaves the 16-texel band dominant**, i.e. that makes the band the map claims to carry the
+  band it actually carries; at 2.6 the eight-texel residual still leads it.
+- **`detailResolve`'s ramp was `smoothstep(0.25, 0.85)` cycles per pixel. Nyquist is 0.5**,
+  so it drew a band at full strength down to four pixels per cycle and at HALF strength at
+  1.8 — past the point the pixel grid can represent it at all. Now `smoothstep(0.08, 0.25)`:
+  full only while a band spans twelve pixels, gone by four. With the coarser map this leaves
+  every surface's relief reaching as far as it did before (grass fades at 6.6m against 6.1m),
+  so it is a change of CONTENT, not of extent.
+
+**Rejected, and recorded because it is the obvious idea:** restoring the map's original RMS
+slope after the low pass, so the surface keeps its facet-angle distribution at a longer
+wavelength. Implemented and measured — the ratio only came down to **3.74** and the road
+photographs as gravel, because a 13° mean slope at 45mm is a rough surface where the same
+slope at 11mm is a fine one. Real asphalt is self-affine; its slope falls with wavelength
+and inventing it back is inventing a road. The gain stays at 2.4: mean slope **13.3° → 4.1°**,
+worst facet **40.7° → 12.1°**.
+
+**The probe's own bound had to change shape, and that is a finding too.** Written as a
+ratio at 1.60 it failed three of the 132 rows *on the fixed build*, all Suzuka by night —
+2.18 from bands of 1.23 and 2.68. Nothing there is boiling: Suzuka's mid-distance asphalt
+is the cleanest on the calendar (1.2, against Bahrain's 1.6 and Monza's 5.9) and a ratio
+with a tiny denominator reports the denominator. **Not a case for relaxing the bound; a
+case for the bound being the wrong shape.** The Laplacian is in display levels and "how
+much more speckle the near field carries" is a subtraction. Both rules are differences now:
+near−mid ≤ **4.0** levels (worst on the fixed build **2.42**, on the shipped bug **22.9**)
+and no two adjacent depth bands more than **5.0** apart (worst on the fixed build **3.48**,
+on the shipped bug **15.1**, on the rejected intermediate build **6.1**). The second rule
+exists because the first is two numbers and cannot see a defect that lifts the whole
+profile — an intermediate build that moved the aliasing from the bottom of the frame to the
+middle passes it with a *negative* excess.
+
+**Proved it goes red, three ways, and the third is why there are two rules.** Reverting the
+whole change gives back the shipped numbers on all eleven circuits (**26 of 132 rows red**).
+Keeping the corrected ramp but putting the fine octaves back into the map is **worse than
+the original** — Bahrain night `low` cockpit `2.1 1.5 1.6 5.3 19.9 20.7`, an excess of
+**19.1** — because a fade told the map carries 16 cycles per tile when it carries 64 holds
+an 11mm band at strength further out than the old fade did; that is the band limit and the
+fade being one mechanism rather than two. Keeping the band limit but restoring the
+past-Nyquist ramp gives `1.4 2.0 7.7 7.2 4.5 2.6`, whose near−mid is **−5.06 — a pass on
+the first rule** — and the step rule catches it at **5.64**.
+
+**And the instrument was checked for repeatability rather than assumed to have it**, because
+two one-off runs of the reverted build produced weaker numbers than the sweep did and that
+had to be resolved before any of the above could be quoted. Three independent runs of the
+same configuration, fresh browser each time, Bahrain night `low` cockpit: the fixed build
+gives an excess of **0.68, 0.64, 0.67** and the broken build **16.41, 16.52, 16.49**. The
+bands agree to a tenth. The two odd runs did not reproduce in six attempts and were not
+chased further; they are recorded here rather than deleted.
+
+**`probe:sharpness` did not move, and proving that needed care.** Sharpness and grain pull
+in opposite directions and §6 records the 5.4–11.3× that was hard-won, so the road being
+band-limited is exactly the kind of change that could quietly give it back. Measured with
+`measureSharpness.py` on the same eleven cockpit frames before and after — **but the shots
+are taken at whatever the resolution scaler settles on, and it did not settle on the same
+figure twice.** Where it landed within 0.02 (Bahrain 0.86, Interlagos 0.94, Monaco 0.86)
+the change is **hf −3.7%, grad +0.6%** — nothing. Where it drifted, the metric moves with
+it and not with the change: Spa 0.90 → 0.99 reads **hf +64.8%** and Red Bull Ring
+0.85 → 1.00 reads **+56.9%**, which is the resolution scale and is an accidental
+demonstration of exactly the trap §6 records. Only the scale-matched rows mean anything.
+
+**The photographed asphalt material does not fix this and would make it worse.** `main`
+now carries ambientCG **Asphalt033** (CC0, 2K, colour/normal/roughness/AO/displacement) and
+the obvious hypothesis is that a real material with a real mip chain behaves correctly at
+grazing angles by construction. Measured, on the file: its normal map carries an **RMS
+slope of 18.2°**, and **93% of that slope energy is at wavelengths under 4mm** — only
+**1.1%** survives above 16mm. It is a photograph of a surface whose relief is genuinely
+millimetre-scale, and millimetre-scale relief is precisely what #48 is about. Binding it
+unfiltered would reintroduce the reported artefact at greater amplitude; binding it through
+the same band limit keeps about a hundredth of it, which the procedural coarse bands
+already provide. The conclusion is robust to tiling: to get 90% of its slope into the band
+this road can draw you would have to stretch one tile over about **5.8m**, at which point
+it is not asphalt texture. **Its COLOUR and ROUGHNESS maps are a different story** — those
+mip-filter correctly and are pure gain — and binding them is a real job (a loader, an asset
+slot, 12MB of JPEG, a look review) that belongs with #36. Left as a follow-up, deliberately.
+See §7.
+
 ### The world juddering vertically — the half of the render pose #9 did not carry (issue #54)
 
 > *"also not sure if you see this jittering happening for the track like there are lags
@@ -804,7 +1164,17 @@ viewpoint instead of cancelling in screen space the way it does for the car bein
   Rouge, also the steepest road at **18.7%**), worth 9.2mm in a 50fps frame at 80 m/s;
   Zandvoort's 18° banking against the projection's own per-node lateral kink measures
   12.3mm. The bound is **20mm**, and the artefact it is there to catch is 124mm.
-- **Proved it can go red, twice.** Pointing the camera's `carY` back at `car.s`/`car.lateral`:
+- **Two of those numbers went DOWN and both are the rail being paid what it is owed.**
+Portrait chase is 17 rather than 20 because the radio card in portrait has no fixed
+plate and cannot be squeezed — it is as tall as its content, 214px measured — so the
+floor there is the card rather than the squeeze. A landscape phone is 8 rather than 9
+because the cue a short rail has to carry under a safety car is the neutralisation cue at
+45px, not the pit cue at 30. Both were found by `shoot:panels`, which on the first version
+of this work went from **2 rail failures to 107**, then 30, then 8, and finally to
+**`rail: nothing overlaps anything, all viewports, all scenes` — zero, which is two
+better than `main`.** The mirror failures stay at the pre-existing 2.
+
+**Proved it can go red, twice.** Pointing the camera's `carY` back at `car.s`/`car.lateral`:
   **24 of 44 rows red**, the interpolated column collapsing exactly onto the stepped one —
   *"spa driver 50fps: the camera's height moves 123.8mm of second difference at s=866m,
   bound 20mm"*. Restoring the old camera floor: **3 rows red at Zandvoort**, 52.4mm.
@@ -1306,7 +1676,17 @@ unable to upshift or downshift. Two independent latches, either of which alone w
   "top speed ≥ 300 km/h" bar would have **passed the bug** — the rpm clamp means a car held
   in 4th still crawls to 300.1 km/h in thirty seconds — so the bar is a reference run driven
   in the same process, not a number.
-- **Proved it can go red, twice.** Restoring the original early-return latch in
+- **Two of those numbers went DOWN and both are the rail being paid what it is owed.**
+Portrait chase is 17 rather than 20 because the radio card in portrait has no fixed
+plate and cannot be squeezed — it is as tall as its content, 214px measured — so the
+floor there is the card rather than the squeeze. A landscape phone is 8 rather than 9
+because the cue a short rail has to carry under a safety car is the neutralisation cue at
+45px, not the pit cue at 30. Both were found by `shoot:panels`, which on the first version
+of this work went from **2 rail failures to 107**, then 30, then 8, and finally to
+**`rail: nothing overlaps anything, all viewports, all scenes` — zero, which is two
+better than `main`.** The mirror failures stay at the pre-existing 2.
+
+**Proved it can go red, twice.** Restoring the original early-return latch in
   `VehiclePhysics`: 6 of 25 red, §1 back to *"finished in gear 4, expected 8"* and
   *"26.42s stranded"*. Deleting `input.enabled = inSession` from `main.ts`: 1 red on the
   wiring check — added precisely because everything else in §7 tests the gate and nothing
@@ -1597,6 +1977,114 @@ limiter stall in §7, which this work found and localised but did not cause and 
 now disproved: at full distance the dominant mode is cars stopping dead behind a
 neutralisation on an empty track.
 
+**And that localisation was wrong too. The cars were running out of fuel — issue #10.**
+See the section below.
+
+### The standstill was an empty fuel tank, not the neutralised limiter (#10, #26)
+
+Two issues in a row localised this to the wrong subsystem, and the correction is worth as
+much as the fix. #26 said the field was "spinning off slowly and getting stuck"; #28
+disproved that and said the cause was "in the neutralised limiter, not in recovery"; both
+were reasoning from *where the cars stopped* rather than from *why they stopped*. The
+instrumented trace settles it in one line — the state of a car doing 0.05 m/s under a VSC
+at the #26 configuration:
+
+```
+vsc ai=FOLLOW thr=0.20 brk=0.00 gear=1 rpm=4000 trac=0.20
+gripF=0.807 gripR=0.807 wearF=0.99 corner=29.3 line=39.9 cap=50 scale=0.50
+```
+
+The tyres are at 0.807 grip and 0.99 wear, the car's own cornering limit is 29.3 m/s, the
+neutralised limit is asking for about 20 m/s, **the brake is at zero and the driver has the
+throttle open.** Nothing is braking the car. `VehiclePhysics.step` makes no drive force at
+all below 0.01 L of fuel, and an empty tank reproduces the trace on the bench: 20% throttle
+from 3 m/s in first gear decays to 0.76 m/s in eight seconds and keeps going.
+
+**Two defects, either of which alone would have been survivable.**
+
+- **`peakFuelBurnLps` was 0.048 L/s, which is 129.6 kg/h against the 100 kg/h of FIA
+  Technical Regulations Art. 5.1.4** — a power unit that could not be homologated, running
+  a flow limiter that does not exist. The thermodynamics say the same thing: 0.02778 kg/s
+  of fuel at ~42 MJ/kg is 1167 kW in against `icePowerW`'s 560 kW out, i.e. 48% thermal
+  efficiency, which is what a modern F1 hybrid is quoted at; at 0.048 the same arithmetic
+  gives 37%, which is a road car. The constant is read in exactly one place — the `burn`
+  line — and never in the force or power path, so this cost nothing in performance and
+  everything in reliability.
+- **The tank was filled per KILOMETRE and is emptied per SECOND.** `raceLaps × lengthKm ×
+  0.33 + 4` agrees with a per-second burn at exactly one lap time and the field does not
+  run it: the AI is 1.4–1.6× the solved reference lap (§7's oldest open item) and a
+  neutralisation adds seconds without adding metres. It also used the CHAMPIONSHIP distance
+  whatever the session was, so a five-lap harness race started with a full Grand Prix of
+  fuel — about eighty kilos of ballast on a car whose lap time the same harness measured.
+
+**Measured by the rewritten `probe:neutral`, full distance, F3, medium, on `main` and after:**
+
+| | Silverstone 52 laps | Monza 53 laps |
+|---|---|---|
+| fuel loaded | 105.1 → **131.0 L** | 105.3 → **123.5 L** |
+| burnt | 2.85 → **2.16 L/lap** | 2.63 → **2.05 L/lap** |
+| **tanks emptied** | **14 → 0** | **9 → 0** |
+| **retired** | **20 of 20 → 11** | **20 of 20 → 13** |
+| stalled under a neutralisation, clear road | 12 → **0** | 8 → **0** |
+| car-seconds under 2.5 m/s, clear road, neutralised | 119 → **1** | 86 → **3** |
+| car-seconds stationary, clear road, neutralised | 67 → **0** | 46 → **0** |
+
+Mean a race across both: crawl **103 → 2** car-seconds, stationary **56 → 0**, stall
+retirements **10.00 → 0.00**, tanks emptied **11.50 → 0.00**.
+
+**Twenty of twenty cars retired from a full-distance race, at two circuits, and the
+simulation called it `Stopped on track`.** That is issue #26's 10.5 retirements a race, and
+it is why full-distance retirement counts have not been measuring attrition since #28
+landed.
+
+What landed:
+- **`src/physics/FuelPlan.ts`** — the third member of the `PitLimiter` / `NeutralisedLimiter`
+  family, and here for the same reason both of those are: several parts of the simulation
+  have to agree about a limit the car is under. It owns the race fuel load, derived from the
+  race's expected DURATION and the burn model rather than from a litres-per-kilometre
+  constant, and `fuelPaceScale` — lift and coast, which is the single most common
+  instruction on a team radio and which this codebase **already broadcast** (`RaceEngineer`
+  files a `fuel` note when the margin goes negative) with nothing at all listening to it.
+  The scale is linear in the shortfall because that is the burn model's own arithmetic: a
+  lap at fraction `k` of pace takes `1/k` as long at a throttle that falls as `k²`, so the
+  litres per lap fall as `k`.
+- **An empty tank is retired as `Out of fuel`**, not `Stopped on track`. `probe:attrition`'s
+  own classifier files it under MECH, which is correct. A retirement the simulation cannot
+  name is a retirement somebody will mis-attribute, and this one was mis-attributed twice.
+- **A floor in `NeutralisedLimiter`**, and it is honestly a guard rather than the fix: a
+  neutralisation is a speed LIMIT and both articles are minimum TIMES (Art. 55.7 and 56.5 /
+  B5.13.2b and B5.12.2b), so nothing in them can bring a car to rest. `scale` multiplies the
+  car's own live grip-limited speed, so a car whose grip collapsed would be neutralised
+  twice and could pass under `STRANDED_SPEED_MS`. Nothing was measured doing that; nothing
+  should be able to.
+
+**`probe:neutral` was rewritten because it could not report a failure.** §4 recorded it as
+"40+ minutes of compute that cannot report a failure" and that was exact — it printed a
+table and exited 0 whatever the table said. It now runs at FULL DISTANCE, which is not an
+optimisation but the whole point: the old fuel load used the championship distance whatever
+the session was, so **every probe in this repository that runs five or fourteen laps was
+structurally incapable of seeing this**, and `probe:racelog` at full distance — the one that
+could — read it as thirteen beachings and a path-tracking failure.
+
+### The safety car is drawn from an interpolated pose (#54, second half)
+
+`Renderer.syncSafetyCar` read `sc.s`/`sc.lateral` — raw 120Hz solver state — and **all three
+of its drawn axes hang off that pair**, X and Z through `toWorld` and Y through
+`bankedCarGroundY`. So the one vehicle everybody is looking at under a neutralisation was a
+staircase while the twenty cars around it were smooth. #54 could not reach it because
+`SafetyCar` is race-side code and listed it in §7; this is that entry closed.
+
+`SafetyCar` now carries `prevS`/`prevLateral`/`renderS`/`renderLateral`, written in
+`advance()` on the same step the plan pose is, and `updateSafetyCarPose` in
+**`src/render/RenderPose.ts`** — the same module and the same rule the racing cars use —
+fills the render pair. Measured by `probe:neutral`'s new third section, the real `SafetyCar`
+on the real spline at 50 and 85 fps, worst per-frame second difference of its DRAWN height,
+stepped → interpolated: **Spa 55.7mm → 3.8mm, COTA 44.9 → 2.4, Monaco 36.7 → 3.1, Red Bull
+Ring 22.1 → 0.8, Interlagos 18.6 → 1.0, Zandvoort 11.9 → 1.1, Suzuka 8.0 → 0.4**, against
+the same 20mm bound `probe:framerate` derives from the 3.00m node spacing. Bahrain, Jeddah,
+Silverstone and Monza were already inside the bound stepped and stay inside it — they are
+the flat ones, exactly as #54 found for the cars.
+
 ### AI
 - `alongsideLeft`/`alongsideRight` were computed every step and **read by nothing.**
   Following distance was in *seconds* — at 80m/s a 0.6s preference is 48m and the car needs
@@ -1730,6 +2218,90 @@ controls (found: [])"* and *"every car that was still running set a time (0 of
   the routes are now held by `probe:smoke`'s required set.** See "Built, correct, and
   nobody could get to it" below. This entry stood in this file for months as a note; the
   thing that changed is that it is an assertion.
+
+### The timing tower: four cars of twenty, and a board that skipped (issues #17, #76)
+
+> *"why can I only see like 4 cars on the leaderboard, where is everyone and all the cars?"*
+> *"also the leader board has 1st place and then 7-20th why not how the whole fucking
+> leaderboard bro"*
+
+Two mechanisms, both measured after LAYOUT, which is why nothing in this project had
+caught either. Every existing check of this panel is a check of a pure function:
+`probe:hudtext` asserts what `standingsCells` returns and `towerFit` can answer "twenty
+rows" while the panel draws four, because the row count a player sees is decided after
+the mirror band, the pit sheet and the media queries have had their say. **`probe:tower`
+is a browser probe** — the real `Hud` over a real `RaceEngine` with the game's own
+stylesheet, read with `getBoundingClientRect`.
+
+**THE ROW COUNT WAS A RESERVATION, NOT A CAP.** `towerFit` subtracted the rail's WORST
+case — a full-size radio plate and two live cues, 366px — on every frame of every
+session, whether or not anybody was transmitting, and the mirror band came off on top of
+that. Measured on the build the report came from, twenty cars in the field:
+
+| viewport / camera | before | after |
+|---|---|---|
+| desktop 1400×900, chase | 20 | 20 |
+| desktop 1400×900, cockpit | 9 | 15 |
+| desktop 1920×1080, chase | 20 | 20 |
+| desktop 1400×900, driver's eye | **5** | 11 |
+| laptop 1280×800, chase | 15 | **20** |
+| laptop 1280×800, cockpit | 5 | 11 |
+| laptop 1280×800, driver's eye | **4** | 8 |
+| portrait phone 390×844, chase | 12 | **17** |
+| portrait phone 390×844, driver's eye | 12 | 8 (and the rail is intact) |
+| landscape phone 844×390, chase | 7 | 8 |
+| field of 22 / 24 cars, desktop | 20 / 20 | **22 / 24** |
+
+The reservation is the rail's FLOOR now (`TOWER_RAIL_FLOOR_PX` — the smallest radio card
+`sizeRadioCard` will draw before `fitRail` throws it away instead, plus the mask, plus the
+gap), the panel's own chrome is MEASURED rather than modelled (the constant was wrong by up
+to 9px, which is a car), and the rail's foot is derived per breakpoint from the same
+conditions the media queries use. **That last one is a correction rather than a
+preference**: reading the rail off the document gives the same numbers a frame late,
+because the tower is laid out before the rail it is budgeted against, and one stale frame
+sized a twenty-row tower against the chase camera's rail and drew it under a mirror band —
+**19 new `shoot:panels` failures, every one in portrait with the glass in shot.**
+
+**AND THE BOARD SKIPPED.** `towerWindow` dropped retired cars out of the middle of the
+order and then pinned the leader above a window that had scrolled off them, so a board
+could read P1, a rule, and P7–P20 with five cars gone from between two rows drawn
+touching. Both halves were defensible alone. Both are gone: the rows are contiguous, and
+`probe:tower` asserts the positions increment by exactly one.
+
+**The row is the reference's row** (`reference/target/68.png`, annotated by the user in
+`67.png`): position, team mark, three-letter code, gap, compound letter. `Leader` in
+italic where the panel used to print `Interval` — a column heading standing in a row of
+figures. `NO TIME` where it printed an em dash, which is the typography of an empty cell
+rather than a statement about a car; `Out Lap`; and a `P` marker at the right-hand edge
+for a car in the pit lane, which is how `69.png` marks eleven cars sitting in their
+garages. **The figure is the gap to the LEADER**, not the interval to the car ahead —
+the user's own annotation says *"the time between each driver from the leader"*, and the
+column had been the other one, which is why it read +0.070, +1.704, +0.526 down the page
+instead of increasing.
+
+**A phone was laying the desktop template into a 176px panel.** `.hud-tower.is-timed`
+outranks a media query on `.hud-tower`, so a portrait phone in qualifying put 220px of
+fixed columns into a 164px row: **the row overran the panel by 61px and the driver-code
+column measured ZERO** — every code on the board cut off entirely. In a race, on the
+compact template, the code column was 11px and 20px of every code was cut. The panel is
+200px in portrait now (the timing panel beside it gives up 24 and the pair spans the same
+352 it did) and the code column measures 37.
+
+**Two of those numbers went DOWN and both are the rail being paid what it is owed.**
+Portrait chase is 17 rather than 20 because the radio card in portrait has no fixed
+plate and cannot be squeezed — it is as tall as its content, 214px measured — so the
+floor there is the card rather than the squeeze. A landscape phone is 8 rather than 9
+because the cue a short rail has to carry under a safety car is the neutralisation cue at
+45px, not the pit cue at 30. Both were found by `shoot:panels`, which on the first version
+of this work went from **2 rail failures to 107**, then 30, then 8, and finally to
+**`rail: nothing overlaps anything, all viewports, all scenes` — zero, which is two
+better than `main`.** The mirror failures stay at the pre-existing 2.
+
+**Proved it can go red, twice.** (a) Restoring `reserved = compact ? 260 : 500` and the
+12/20 row ceilings: **11 failures**, naming *"laptop 1280x800/driver: 4 of 20 cars on the
+board with 182px of unused rail beneath it"* and *"field of 22 produced 20 rows"*.
+(b) Restoring the session-kind gate on the lap-time column: **8 failures**, *"17 of 17
+drawn rows withhold a time that was set — OKO set 154.567, cell "2:34.567" at 0px wide"*.
 
 ### The team radio — one radio, one switch, one voice (issue #21)
 
@@ -2044,9 +2616,10 @@ against every threshold and so stops binding silently rather than throwing.
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
+| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
-| Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
+| Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
 | Race authenticity | Sparks/skid marks/brake lights/DRS flaps, remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
@@ -2120,6 +2693,69 @@ five declared screen ids it does **not** reach and why: `intro` (deliberately sk
 stated rather than silently crossed. **The retirement flow is on the same list**: it needs an
 accident, and `probe:qualiretire` stages one.
 
+### Eighteen half-metals are still in the scene, audited and deliberately not touched (#36)
+
+The metalness audit that produced §6's wheel-corner table covered **every material in
+`src/render/`** — 38 `MeshStandardMaterial` sites across twelve files. The car's own
+materials are fixed. **The world's are not, and every one of them is listed here so that
+nobody has to re-derive the list.** Metalness is a switch: anything strictly between about
+0.05 and 0.95 is a material that does not exist, deleting that fraction of the diffuse term
+and tinting that fraction of the specular with the surface's own hue.
+
+| file | material | roughness | metalness | what it should be |
+|---|---|---|---|---|
+| `Paddock.ts` | **glazing** | 0.14 | **0.70** | **0** — architectural glass is a dielectric. At 0.70 with roughness 0.14 the paddock's windows are tinted mirrors with 70% of their diffuse deleted. **The worst one on the list.** |
+| `Paddock.ts` | structures | 0.78 | 0.10 | 0 (clad concrete/steel, painted) |
+| `Paddock.ts` | grandstands | 0.80 | 0.06 | 0 |
+| `SafetyCarMesh.ts` | **body** | 0.38 | **0.35** | **0** — this is §6's *"painted bodywork at metalness 0.26"* verbatim, on the one vehicle everybody is looking at under a neutralisation |
+| `SafetyCarMesh.ts` | wheels | 0.85 | 0.15 | 0 (rubber dominates the merged tyre+rim) |
+| `TrackMesh.ts` | gantry posts | 0.60 | 0.35 | 0 (painted steel) |
+| `TrackMesh.ts` | catch fence | 0.75 | 0.25 | 0 (PVC-coated wire — the colour `0x2f4a38` IS the coating) |
+| `TrackMesh.ts` | gantry beam | 0.50 | 0.20 | 0 |
+| `TrackMesh.ts` | buildings | 0.70 | 0.10 | 0 |
+| `TrackMesh.ts` | stands, billboards, marker boards | 0.55–0.75 | 0.05 | at the Fresnel floor; defensible |
+| `MarshalPost.ts` | post | 0.85 | 0.20 | 0 (painted steel) |
+| `PitCrew.ts` | **tools** | 0.34 | **0.55** | **1** — a wheel gun and a jack really are metal, and the albedo would have to rise with it |
+| `PitCrew.ts` | kit | 0.62 | 0.04 | floor; fine |
+| `Wreckage.ts` | shards | 0.38 | 0.18 | 0 — its own comment says *"lacquered carbon, not matte plastic"*, and lacquered carbon is 0.02 on this car |
+| `SurfaceDetail.ts` | asphalt | 0.58 | 0.05 | floor; defensible |
+| `SurfaceDetail.ts` | kerb, wall | 0.55/0.80 | 0.02/0.04 | floor; fine |
+| `PitBoxMarker.ts` | paint | 0.45–0.55 | 0.03–0.05 | floor; fine |
+| `ChamferKit.ts` | `structureMaterial` **default** | 0.72 | 0.12 | **unreachable** — all four callers pass an explicit value, so the default is dead. A documentation hazard rather than a rendering one, and the next caller who omits `opts` inherits a half-metal. |
+
+**Why none of them moved.** `TrackMesh.ts` and `SurfaceDetail.ts` are held by #48;
+`PitCrew.ts` belongs to the pit-stop work in flight; `Paddock.ts`, `SafetyCarMesh.ts`,
+`MarshalPost.ts` and `Wreckage.ts` are nobody's ground but are also not the car, and the
+brief for #36 was the car plus a loader. **Two of them are worth doing on their own and
+should be done together, because they are the same bug §6 already has a name for**: the
+safety car's paint at 0.35 and the paddock's glazing at 0.70. Both need the albedo checked
+at the same time — see §6 on why switching metalness without moving the base colour makes a
+correct change look like a regression. **Nobody is on this.**
+
+### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
+
+Found while running the regression set for #36, and it is a probe defect rather than a
+rendering one. `audit:livery` asserts that its `control` build — no design, identical
+options to `audit:car`'s `day-high` — is BYTE-IDENTICAL to `audit:car`'s shot, on `hero`,
+`side` and `top`. On one run it failed on `hero` alone:
+`bcdf59e974d3 vs 15aebc66fcb0`, with `side` and `top` byte-identical.
+
+**Three measurements say it is not a repaint.** (a) A material change moves every view; two
+of three were identical. (b) The difference image is **the whole car body with the ground
+plane and the contact shadow untouched**, which is the signature of an asset the shell's
+material takes and the ground's does not — the detail normal map — rather than of a
+constant. 147,204 px, mean delta 39. (c) **It did not reproduce**: an immediate re-run gave
+`control--hero == 15aebc66`, and a direct test of `audit/car.html` (build, shoot `hero`,
+wait 4s, shoot again, rebuild, shoot again) returns `15aebc66` all three times.
+
+So the first shot a page takes can differ from every shot after it, under load, and neither
+harness warms up. `probe:assets` does warm up, for exactly this reason and having found it
+independently: `CarMesh` starts the carbon-weave `TextureLoader` inside `buildCar` and
+nothing waits for it. **The risk is that `audit:livery`'s one real assertion — the guarantee
+that the existing 2026 grid has not been repainted — reads as a false alarm often enough to
+be ignored.** The fix is a warm-up build in both harnesses; not done here because both are
+shared files and the run that matters passed. **Nobody is on this.**
+
 ### Measured, deferred, and still true
 - **The tier-demotion notice tells the player the route to the Video tab; it does not offer
   a button.** The renderer owns a self-contained banner (issue #73, §6) that reads *"Set it
@@ -2135,6 +2771,28 @@ accident, and `probe:qualiretire` stages one.
   cooled down — stays reduced for the rest of the page load. A thermal-recovery relax, on
   the model of the resolution scaler's `CEILING_RELAX_S`, is the obvious extension and is
   **not built**. Nobody has measured how often that case actually occurs.
+
+- **The photographed asphalt is bound to nothing, and its NORMAL map should stay that way.**
+  `public/assets/materials/asphalt/` holds ambientCG Asphalt033 (CC0, 2K, five maps) and
+  `grep -rn "assets/materials" src/` returns nothing: no loader exists yet. Measured while
+  working #48, the material's normal map carries an RMS slope of **18.2°** with **93% of
+  that energy below 4mm** and 1.1% above 16mm — it is the exact defect #48 is about, at
+  greater amplitude, and no mip chain fixes it because mip-mapping averages normals and the
+  specular lobe does not follow. **Its colour and roughness maps are worth having** and
+  would be pure gain: they mip-filter correctly, they are real aggregate rather than value
+  noise, and the road's albedo is the half of the surface that was never the problem. What
+  stops it being done here is scope — it needs the asset-slot loader (#36) so that deleting
+  the directory is still byte-identical, a decision about 12MB of JPEG on a page that
+  currently downloads nothing, and a look review of a road whose colour has been tuned by
+  hand for a year. **Nobody has bound it and nobody has looked at it in the engine.**
+- **The low pass in `SurfaceDetail.makeGrain` is shared by every surface, and only the road
+  was measured.** Grass, run-off, kerbs and walls read the same normal map, so their mean
+  facet slope fell 13.3° → 4.1° with the asphalt's. For grass and run-off that is very
+  probably right — both are seen at grazing angles constantly and `runoff`'s own comment
+  already records it sparkling — and grass at roughness 0.97 has almost no specular lobe to
+  alias, so it could afford more bump than the road can. **`probe:grain` masks to
+  `ROAD_MESH_NAME` and says nothing about any of them.** The verges were eyeballed in
+  `audit:circuits` and looked right; that is not a measurement and is not claimed as one.
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
   established the first half by measurement (§6). The second half is the reason `medium`
   exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple
@@ -2165,7 +2823,22 @@ accident, and `probe:qualiretire` stages one.
   *multiplicative*, so it inflates both arms and therefore the delta. Ratios survive it.
   **Anyone re-deriving a budget from a number in this document should re-measure at load
   under 8 first.**
-- **AI pace ~1.43× reference.** The oldest open item in the project.
+- **AI pace ~1.43× reference.** The oldest open item in the project, and since #10 it is
+  load-bearing in a second place: `FuelPlan.RACE_PACE_VS_REFERENCE` is 1.50 because the
+  field takes half as long again as the solved lap, and a race that takes longer burns more
+  fuel for the same distance. It is one named constant in one file so that closing the pace
+  item can take it down. `validate:race`'s `monaco: fastest lap 152% of reference` is the
+  same item failing an assertion.
+- **#26 is not closed by #10 and the honest position is that it is now MEASURABLE rather
+  than answered.** `probe:racelog` at the issue's own configuration (52 laps, Silverstone,
+  F3, P18, medium, 2 seeds): retirements **20.00 → 11.50** a race, contacts **26.50 →
+  21.00**, and **`Stopped on track` has gone from 10.50 a race to zero** — it does not
+  appear in the cause table at all. What is left is 6.50 beached, 3.50 accident and 1.50
+  accident damage, which is the question #26 was originally asking and could not be asked
+  while the fuel artefact was on top of it. The probe still fails its own two headline bars
+  (`11.50 cars retire per race — a Grand Prix loses one or two`, `21.00 car-to-car contacts
+  a race`) and **that is the live part of #26.** The player still retires from 100% of
+  full-distance races, now by beaching rather than by stopping.
 - **Stewards under-detect**: 0.4–1.6 penalties per race against a real 1–3. Cause located —
   most contact never reaches a guideline; braking-zone incidents need the subjective limbs of
   the rules, which are deliberately not modelled.
@@ -2229,15 +2902,21 @@ accident, and `probe:qualiretire` stages one.
   this that ignored the containment line reported errors of **1.5m at Spa and 5.1m at
   Monaco**; those laterals are behind the barriers and no car can be there, and the numbers
   are recorded here only so nobody re-derives them and files a bug that is not one.
-- **The safety car is drawn from stepped state in all three axes.** `Renderer.syncSafetyCar`
-  takes its position from `toWorld(sc.s, sc.lateral)` and its height from
-  `bankedCarGroundY(sc.s, sc.lateral)`, none of which is interpolated — so under a
-  neutralisation the one vehicle everybody is looking at is the one still juddering. It
-  needs a `prevS`/`prevLateral` on `SafetyCar` itself, which is race-side code the
-  in-flight safety-car work owns; #54 deliberately did not reach into it.
+- ~~The safety car is drawn from stepped state in all three axes.~~ **Fixed by #10** —
+  `SafetyCar` carries the render pair and `probe:neutral` measures it on eleven circuits.
+  §6.
 - **The front wing still reads heavy** — dimensions are regulation-correct; the problem is
   1.35m² of near-black carbon. Livery on the endplate is the honest fix.
-- `validate:flags` — safety-car form-up.
+- ~~`validate:flags` — safety-car form-up.~~ **Passes. See §4** — it had already been passing
+  before #10 started and nobody had re-run it.
+- **`validate:race` fails one assertion, and it is pre-existing: `monaco: fastest lap 152%
+  of reference — AI is far too slow`, bar 145%.** Measured on a clean export of `main` on
+  2026-08-03 (152%) and on the #10 branch (150%), so the branch improves it slightly and
+  neither passes. This is the AI-pace item above wearing a different hat, and it had **not
+  previously been recorded as known-failing** — the second probe in two days found red
+  without anybody noticing (the first was `probe:fieldsize`, #44). The Spa spread assertion
+  that §7 warns about is NOT the one failing: it read +25.4s on `main` and +38.0s on the
+  branch against a 70s bar. **Do not raise the 145% bar.**
 - **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
   rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
   than off it. §6 says the fast line moving off the dry groove is the headline of the
@@ -2345,9 +3024,16 @@ accident, and `probe:qualiretire` stages one.
   of wall clock and the whole probe is minutes. **It is a `.mjs` of the same lineage as
   `regress:exit` was, so assume it has the same two defects — a watching dev server and
   fixed sleeps — until somebody looks.** Same for `regress:career`. **Nobody is on this.**
-- **`probe:fieldsize`: 23 cars finish 8 laps of a 6-lap race.** Pre-existing on `main`,
+- **`probe:fieldsize`: cars finish 8 laps of a 6-lap race — 14 of them.** Pre-existing on `main`,
   measured against a clean export of `main` on 2026-08-03 and byte-identical there. Not
-  previously recorded as known-failing, so it went red without anybody noticing. Issue #44.
+  previously recorded as known-failing, so it went red without anybody noticing.
+  **The count is 14, not 23** — re-measured the same way on 2026-08-03 from the
+  `timing-tower-truth` branch and from a clean `main` export, same 14 lines in the same
+  order. Issue #44. **Measured again on this branch: still all one species, and the count
+  moves with any change to how a race runs** — 14 on the base this branch was cut from, 14
+  with the #74/#75 fix in, and **13** with the #83 pit-lane perception fix in, twice over
+  and byte-identical both times. Nothing new appears; the set of cars that runs past the
+  flag shifts. Do not read the count as a score.
 - **`eliminatedInPhase` is wrong for everybody knocked out more than one segment ago.**
   `RaceEngine` writes `car.eliminatedInPhase = (config.qualifyingPhase ?? 1) - 1` for every
   non-participant, so in the **Q3** engine all ten already-out cars report `2` — including
@@ -2414,17 +3100,15 @@ Two candidates were eliminated by measurement; the third is now located and **un
   rear slip 1.39°, peak yaw 0.4385 rad/s. Pinned in 4th: **7.572m**, 1.59°, 0.4797 rad/s —
   a **0.872×** lateral excursion ratio. The stranded car yaws about 9% harder and wanders
   **less**, not more. #45 is not what the player was feeling when they said "swerving".
-- **Cars come to a standstill under a VSC on completely clear track.** Found while fixing
-  #28 and *not* caused by it. At the #26 configuration (52 laps, Silverstone, F3, medium)
-  on pre-#28 `main`, cars spent **3458 car-seconds stationary with nothing within 60m in
-  front of them while the race was neutralised**, in a race that was 38% neutralised and
-  took 14457 simulated seconds — four hours for a ninety-minute Grand Prix. The simulation
-  counted every one of those cars as still running. #28's retirement drops that to **144
-  car-seconds, 26% neutralised, 8438s**, because the stalled cars are now recovered — but
-  it recovers them by *retiring* them, so what used to be an invisible stall is now 10.5
-  retirements a race. **The cause is in the neutralised limiter, not in the recovery**, and
-  it belongs with the safety-car work already in flight. Until it is fixed, full-distance
-  retirement counts are measuring this and not attrition.
+- ~~**Cars come to a standstill under a VSC on completely clear track**, and the cause is in
+  the neutralised limiter.~~ **The standstill is real and the localisation was wrong twice
+  over: the cars were running out of fuel.** Fixed by #10; the trace, the two defects and
+  the before/after are in §6. It is worth keeping the wrong answers on the record, because
+  both were reached by careful people from real measurements: #26 read thirteen beachings
+  and inferred a path-tracking failure, #28 disproved that and inferred a neutralised-limiter
+  stall, and both were reasoning from *where the cars stopped* rather than from *why*. The
+  question that settled it in one line was "what are the controls doing" — brake at zero,
+  throttle open, and the car slowing down.
 - **`validate:race` Spa spread is a one-seed sample of a high-variance quantity.** The
   assertion is `slowestCarBest - fastestLap < 70s` on seed 20260729, and at Spa that is
   dominated by how much of a five-lap race happens to be neutralised. Measured over five
@@ -2557,21 +3241,45 @@ measurement passes every version of it that is wrong.
   a measurement of this machine's contention, not of the renderer, and must not be quoted as
   a frame time. **Nothing else was measured**: no viewport sweep, no phone geometry, no
   whole-frame before/after, and no second circuit.
-- **`probe:graphics` DID NOT COMPLETE, on either of two attempts, and this is the
-  load-fragility §7 already records rather than anything about the change.** The first run
-  reached **52 ok / 0 failed** and then died on a puppeteer navigation —
-  `Execution context was destroyed, most likely because of a navigation` — at load average
-  205. A second run at load 72-110 reached **50 of its 67 checks, 0 failed**, and was still
-  crawling through its cold page loads when the work was handed over. **Zero failures in either, and every
-  section it did reach passed**, including the three-tier GL configuration table and all
-  three of the per-switch overrides. The change it is being asked about adds uniforms to an
-  existing pass and allocates no new one, so there is no mechanism by which it should move —
-  but 52 of 67 is not 67, and the run should be repeated on a quiet machine before the branch
-  is merged. Same species as the `regress:exit` and `probe:qualiretire` entries below.
+- **`probe:graphics` PASSES: 72 ok / 0 failed** — but it took two attempts, and the first one
+  is the load-fragility §7 already records rather than anything about the change. That run
+  reached 52 ok / 0 failed and then died on a puppeteer navigation
+  (`Execution context was destroyed, most likely because of a navigation`) at load average
+  205; re-run at load 72-110 it completed clean. **Note the count: §6 above says "67 checks"
+  and the probe now runs 72**, so that figure is stale by five rather than anything having
+  regressed. Its section 6, the eleven-circuit sweep, is skipped by default and needs
+  `GFX_CIRCUITS=1`; it was not run.
 
 ### Reported by the user and not yet addressed
-- Lap times of cars that have completed a lap should show even when the player has not
-  completed theirs. *"why are you waiting on me to display their times?"*
+- **Lap times of cars that have completed a lap, in a RACE. Issue #35, still open, and
+  now with a number on it.** *"why are you waiting on me to display their times?"* The
+  LTCS half is answered and measured: `probe:tower` puts the player in their garage with
+  zero laps while nineteen rivals run, and **19 of 19 rivals' times are drawn** on a
+  practice and a qualifying board on a desktop. The RACE half is not, and it is a
+  conflict between two of the user's own instructions rather than a bug nobody has
+  found: measured at Monza with the player retired on the grid, **17 rivals had set a
+  time and 17 of 17 race rows drew a cell 0px wide with the right string inside it** —
+  and the race board in `reference/target/68.png`, which the user said *"copy this!!!
+  don't change shit from it"* about, has no lap-time column in it at all. A column was
+  built, measured and taken back out. **The user has to arbitrate**; `probe:tower` §1
+  prints the number every run under `REPORTED (#35, open)`.
+- **The visual copy of the reference board is NOT done — issue #76.** What landed is the
+  structure: every row, contiguous, with the reference's five elements and its wording
+  (§6). What has not: the two-line header (`F1 RACE` over `LAP 3/57` centred — ours is
+  one line reading `F1SIM MONZA … LAP 1/57`), the type (the reference is F1's own
+  proprietary face; `public/assets/fonts/titillium/` is on disk and unused by this
+  panel), the row scale and spacing, the livery bar down the left of each row that the
+  reference does not have, and the filled red cell behind the leader's position number.
+  Side-by-side pictures are in the PR; the board's own portraits are written to
+  `hud-out/tower/` by `probe:tower` every run.
+- **A stationary player in the first garage stops the entire field leaving the pit lane.**
+  Found while building `probe:tower`'s scenario and measured on its own: an idle player at
+  index 0 in practice or qualifying at Monza leaves **0 of 20 cars out of the pit lane
+  after fifteen minutes**, in both session kinds; moving the player to the last box lets
+  the other nineteen out and 19 of them set times inside five minutes. This is the same
+  "the AI will not pass a stationary car" family as #28, in the pit lane, and
+  `probe:hudtext` has a comment about it that predates this measurement. **Nobody is on
+  this**, and it belongs to the AI rather than to the HUD.
 - The pit crew currently reads as blocky figures — the exact thing the user rejected
   ("forget about the lego people"). **Still here, and deliberately not removed.** The
   `people-graphics` work is 2D SVG for UI screens; the pit crew is 3D, in
@@ -2629,6 +3337,17 @@ measurement passes every version of it that is wrong.
   **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
   of the load. Check `uptime` before quoting any number, and say plainly when a
   measurement was skipped rather than quoting one taken under load.
+- **Blaming the load for something that was a real bug.** The list above is right and the
+  rule is right, and on 2026-08-03 it also swallowed a genuine defect for two rewrites.
+  *"The asset-loader probe hit a 200 response carrying a valid PNG and an `onerror`"* is on
+  that list as a load artefact. **It was not.** Vite scans `public/` once at server start
+  and its static middleware skips anything not in that Set; every harness in `scripts/`
+  passes `watch: null`, so **a file written into `public/` while such a server is running is
+  invisible to it and the SPA html fallback answers with `index.html`, 200,
+  `Content-Type: text/html`.** Any probe that creates a file under `public/` at runtime has
+  this, and it presents as a corrupt asset. Fixed for `public/brand/` by serving it from the
+  plugin (see §6, issue #36). **A symptom that matches the load excuse is not evidence for
+  it — make the failing component say WHY before accepting the environment as the cause.**
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
