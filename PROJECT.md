@@ -3103,7 +3103,9 @@ Correcting `capabilityOf` corrects the car the probe FLIES as well as the ribbon
 at, and the flown car had been braking 28% harder than a real one, which was flattering the
 display. Controlled run, same fixed probe with the correction switched off: Monaco 1.042,
 Zandvoort 1.032, COTA 1.032 — the three §7 has always recorded. With it on: Bahrain 1.049,
-Monaco 1.066, COTA 1.031, Interlagos 1.028, and Zandvoort and Silverstone now pass. **The
+Monaco 1.066, COTA 1.031, Interlagos 1.028, and **Zandvoort goes from 1.032 GREEN to 0.921
+AMBER** — the only circuit that moves from failing to passing. (Silverstone is 0.964 → 0.981
+and was passing either way; do not read it as a gain.) **The
 load column is not comparable between the two runs** — its denominator changed meaning — so
 what is comparable is the colour at the moment of exceedance, and on an honest car four
 circuits still read GREEN past the limit. That residual is a real, live bug and it is in the
