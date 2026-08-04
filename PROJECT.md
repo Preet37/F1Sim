@@ -259,6 +259,7 @@ Run `npm run` to list. The important ones:
 | `probe:news` | Every headline checked against `simulateRound`'s own result, 100 career-years |
 | `audit:livery` | Six pattern families on the real car — and sha256s the control shot against `audit:car` |
 | `probe:assets` | **The asset slots, and the shippability guarantee.** Resolution order in Node with no browser; then one team built three times in ONE GL context — no file, a badge dropped into `public/brand/`, the file removed again — sha256'd on three views. The middle arm must differ and the third must be BYTE-IDENTICAL to the first. Also: a slot with no file costs zero requests and zero console output, and a second build issues nothing. `ASSETS_BREAK=root` points the loader at a directory with no manifest and proves the override half can go red. Issue #36 |
+| `probe:effects` | **What fires, and what the car was doing at the time.** Sparks, rubber, the purple, the three rear lamps and whether the four wing actuations reach the GRID. Every section asserts BOTH directions — the effect fires when it should AND does not when it should not — because "sparks were drawn" is truer on the build #11 was reported against than on the fixed one. `EffectsDirector.frame` publishes the emission counts beside the physics that caused them. 11 circuits. `FX_BREAK=chroma|blur|teams|flash`, `FX_CIRCUITS=` |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
 | `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
@@ -2408,6 +2409,124 @@ against every threshold and so stops binding silently rather than throwing.
   item in §7 is closed, check the probe named in it can still fail** — a fix that lands with a
   tautological probe is a fix nothing is holding.
 
+### The effects on and around the car — issues #11, #34, #19
+
+Four separate defects, one subsystem, and **the thing that found three of them was building
+the measurement first**. §3.1 and §3.2 both, in one piece of work: every one of the four had
+already been "fixed" in a comment, and the comments were describing intentions.
+
+**`probe:effects` — 96 checks, five sections.** It exists because the complaint in #11 is
+*"sparks don't fly until like the car is braking so idk why they are CONSTANTLY flying"*
+and *"f1 cars don't leave marks unless they lock up"*. Both are claims about an effect
+firing WHEN IT SHOULD NOT, and a probe that asserts "sparks were drawn" passes **more
+comfortably on the broken build than on the fixed one** — the broken build drew them on
+every straight of every lap. So `EffectsDirector` now publishes, per car per frame, the
+emission counts AND the physics state that was supposed to have caused them (`FxFrame`),
+and every section asserts in both directions.
+
+**1. Sparks were still constant on three circuits, and the trigger was measuring the wrong
+thing.** Moving the trigger onto `plankLoad` (already on `main`) took the duty cycle from
+"every frame above 160 km/h" to 1.2–15.4% of a lap, and on eight circuits that was the end
+of it. `probe:effects` found the other three:
+
+| | longest unbroken shower | duty | duty above 200 km/h | sparks/lap |
+|---|---|---|---|---|
+| Suzuka, before | **10.35s** | 0.154 | 0.440 | 1018.8 |
+| Zandvoort, before | 7.45s | 0.120 | 0.421 | 750.2 |
+| COTA, before | 6.13s | 0.028 | 0.114 | 222.8 |
+| Suzuka, after | **3.40s** | 0.111 | 0.317 | 688.8 |
+| Zandvoort, after | 3.38s | 0.105 | 0.368 | 595.2 |
+| Bahrain, before / after | 0.03s / 0.12s | 0.027 / 0.026 | 0.083 / 0.079 | 166.8 / 157.4 |
+
+A ten-second unbroken shower is a car with a permanent flame under it, and *"they are
+constantly flying"* was still literally true at Suzuka. **The cause was not a bug in
+`plankLoad`.** Measured over three laps (`scripts/diagPlank.ts`): the plank is in contact
+for **23.1% of a Suzuka lap with a non-zero median load of 0.50**, against **7.2% and
+0.107 at Monza**. Suzuka's esses genuinely hold a 2026 car's floor down for seconds at a
+time and the ride-height model is right about that.
+
+What was wrong was treating CONTACT as the thing that strikes a spark. It is not: a skid
+block already down under steady load is *polishing* the road — that is what the
+mirror-smooth strip through a fast corner is — and the sparks come off it as it BITES. So
+the trigger is now the load's rise above its own 1.4s mean, not its level. A steady drag
+settles to 15% of the load and falls under the gate; a strike from 0.2 to 1.0 gives 0.83
+and throws everything the emitter has. **The time constant is the whole number**: at 0.3s
+it tracks the strike itself and the longest shower on the entire calendar collapsed to
+**0.02s — a single frame**, a strobe rather than a shower. At 1.4s the variation the esses
+work on still reads as a bite and a genuinely constant load washes out inside three
+seconds. It is applied as `1 - exp(-dt/tau)`, so it is the same at 30 and 144fps.
+The emission RATE went 90 → 200 with it and is labelled as what it is: a look parameter
+that says how much, never whether.
+
+**2. Rubber. Already correct, and now measured rather than asserted.** Field-wide, three
+laps, twenty cars, eleven circuits: **26.9–56.6 quads per car-lap**, **zero quads laid by
+any tyre that was neither locked nor spinning**, and — the assertion the broken build
+cannot pass — **the quietest car in every field of twenty laid 0.0 quads a lap**, i.e.
+somebody gets round without marking. Against a broken build painting continuously at
+`4 × length / 0.28m`, which is about **60,000 quads a lap at Spa**. And the other
+direction, because "does not fire" is satisfied perfectly by a deleted emitter: a staged
+full-brake stop from 200 km/h through the real physics produces **peak lock-up 1.000 and
+544 quads**.
+
+**3. The purple, measured off the shader rather than off a screenshot.** Both terms that
+made it are gone on `main` and this is what holds them there: **0 single-channel fetches of
+the frame buffer** in the grade shader (a chromatic split is the only reason anything ever
+reads one channel of a frame), and the radial blur's worst-case tap spacing is **1.36 px on
+a 1920px frame** against a 3 px bar — taps that far apart merge into a smear; the artefact
+was **9.3 px**, which is eight copies of a car. `FX_BREAK=chroma` and `FX_BREAK=blur`
+re-introduce each from the probe side.
+
+**4. #19's brake light does not exist and must not be built.** *"Brake lights do not
+respond to braking."* They cannot: the phrase "brake light" appears nowhere in the 2025 or
+2026 Technical or Sporting Regulations, and reference `90.png` — Bahrain at night, on
+slicks — has no lamp lit on either car in the frame. What the report is actually looking at
+is real, though, and it was **backwards in the code**: `Renderer.syncCars` lit the lamps
+from the tyre and applied a free-running 2Hz sine **whenever they were on**, so a wet lap
+pulsed for its whole length and braking did nothing. The real unit is the other way round —
+steady when switched on, flashing while the MGU-K is recovering, which happens under
+braking. `ersHarvestW` was being computed every physics step and **read by nothing**.
+
+`src/render/RearLight.ts` now owns the rule, with no THREE and no renderer state so the
+probe drives the real thing: on for intermediate or wet tyres (**Sporting B1.5.5(a)**, 2025
+Art. 26.11), on when the Race Director declares low visibility (reference `77.png`; Event
+Notes, not an article, and said so), steady at level 1, flashing at 4Hz above a third of
+MGU-K peak. Measured: **0 rising edges a second when merely on** (it was 2 a second), **4
+when flashing**, dry-and-braking **off**, recovered wreck **off**.
+
+**5. Three rain lights were plain red quads AND two of them were genuinely floating — the
+two halves of #34 are the same object.** The endplate pair were `PlaneGeometry(0.072,
+0.030)` at x = ±0.414, z = −2.428. The endplate they are supposed to be inside has a
+half-width of **0.010** at its last station: a **20mm-thick plate carrying a 72mm lens**,
+so 26mm of it hung in clear air on each side, **8mm behind the trailing edge, touching
+nothing**. C14.3.3 puts them within the endplate BODY. They are 30 × 50 × 14mm lenses now,
+recessed 4mm proud of a **rain-light pod** lofted out of the plate's trailing edge; the
+central one is 56 × 24 × 12mm recessed into the crash-structure moulding with 8mm of carbon
+bezel round it. Depth comes from `roundedBar`; the falloff is **vertex colour**, so one
+material still switches all three — one circuit, as on the car — and no shader is involved.
+
+**And `probe:carrig` could not see any of it.** The lenses were built inside `buildCar` and
+existed nowhere else, which is exactly the blind spot issue #47 lost the over-wheel cover
+in. `REAR_LAMPS` is now one table read by both `buildCar` and `carPartsForProbe`, so the rig
+probe holds them to the same rule as everything else: **146 parts, all intersecting the
+part they are bolted to, 1 cluster** (was 141).
+
+**6. Per-team wing actuation was built, probed, and reached nobody.** *"Ferrari opens up
+differently than Mercedes does which is different than Red Bull etc."* Four archetypes
+existed with the 2026 articles sourced against them, and `probe:activeaero` measured all
+four. `TEAM_ACTUATION` was keyed on `apex`, `scuderia-rosso`, `meridian`, `albion`,
+`aurora`, `vantage`, `northstar`, `lumen`, `kestrel`, `brava` — **the fictional grid this
+project carried before the real roster landed in `src/data/roster/`** — so
+`actuationForTeam('ferrari')` matched nothing and fell through to `?? 'central'`, **eleven
+times out of eleven**. Every car on the grid ran the same wing.
+
+`probe:activeaero` could not catch it because it iterates `ACTUATION`: that answers "are
+there four solutions", not "does any car run one". `probe:effects` §5 asks
+`actuationForTeam` for every id in the real roster: **11 teams, 4 distinct solutions,
+largest group 3**, and every archetype has at least one team. `FX_BREAK=teams` forces the
+old answer and takes the section red.
+
+---
+
 ---
 
 ## 7. What is still wrong — the honest list
@@ -2422,7 +2541,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
-| Race authenticity | Sparks/skid marks/brake lights/DRS flaps, remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
+| Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
 | People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
@@ -2878,6 +2997,57 @@ Two candidates were eliminated by measurement; the third is now located and **un
   after.** An intermediate build of #28 failed it at +118s on the sampled seed while being
   better on the mean; the landed build reads +25.4s. **If it ever goes red, do not raise
   the bar** — make it a distribution.
+
+### The halo IS attached, and what is wrong with it is paint (issue #34)
+
+*"The halo seems to be partially off."* Established rather than guessed, which is what the
+issue asked for. **It is geometrically attached and there is no gap to close**:
+`probe:carrig`'s bolted-joint section is a volumetric test with no tolerance in it —
+"genuine joints measure zero" — and the hoop, the pillar, the pillar root and both mounts
+are all inside it at **146 parts in 1 cluster**. The driver's-eye frame in
+`audit-out/car/now/day-high--driverEye.png` shows the hoop as one continuous arc.
+
+What makes it read as detached is that it has **no silhouette against a dark background**.
+The halo is painted from the `trim` swatch: `0x1e222a`, luma 34/255, roughness 0.42,
+metalness 0.02 — near-black, deliberately, because that swatch is shared with the painted
+suspension and driving it from the design's trim colour turned every wishbone into a white
+rod (the reasoning is in `Livery.ts` and it is right about the wishbones). Against a night
+sky, a dark grandstand or a shaded pit straight the tube has nothing to separate it from
+what is behind it and segments of it disappear.
+
+Both reference frames disagree with that. **`76.png`** — the Zandvoort onboard the user
+called *"the best image"* — has a Mercedes halo with a **bright teal top edge running the
+whole way round the hoop**, and **`90.png`**'s Aston has the halo in the car's own green.
+Every real car paints it, and that painted top edge is precisely what makes it read as part
+of the body rather than as a black arc floating over the cockpit.
+
+**Deliberately not fixed here.** The change is a swatch assignment — a halo swatch split
+out of `trim`, or the halo taking `body`/`accent` — and `src/render/Livery.ts` plus
+`CarMesh.ts`'s **materials** were held by another agent for the brand-override repair while
+this was in flight. Touching them would have been a merge conflict on the file this
+project's whole livery system lives in. **Nobody is on this**, and whoever takes it should
+note that `probe:carrig` will stay green through both the broken and the fixed version,
+because it is not a geometry question.
+
+### Sparks at Suzuka and Zandvoort are still a 3.4-second shower
+
+`probe:effects` bounds the longest unbroken shower at 4.0s and the two worst circuits now
+measure **3.40s** and **3.38s**, down from 10.35s and 7.45s. That is inside the bar with
+0.6s of room and it is not comfortable. The remaining length is real contact — the plank is
+down for 23.1% of a Suzuka lap at a non-zero median load of 0.50 — so shortening it further
+means either a claim about the ride-height model, which is `src/physics/` and was not
+touched here, or tuning `PLANK_MEAN_TAU_S` until the number is prettier, which is the thing
+§3.3 forbids. **Reported with the measurement rather than tuned away.**
+
+### #19 asked for a brake light and there is no such part
+
+Recorded here because the next person to read the issue will have the same instinct. A
+Formula 1 car has no brake light; the phrase appears in neither regulation set; and the
+reference night frame `90.png` shows two cars on slicks under floodlights with nothing lit
+on either. What landed instead is the mechanism a viewer is actually looking at — the rear
+lamp flashing under MGU-K recovery, which happens under braking — plus the brake-disc glow
+that was already there. **If the user wants a literal brake light anyway, that is a
+deliberate departure from the regulations and they should be the one to ask for it.**
 
 ### The car has no over-wheel winglet, and putting one back needs the corner redesigned
 Issue #47 closed by **removing** the 2022-style blade above each front tyre rather than

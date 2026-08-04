@@ -8,6 +8,7 @@ import {
   buildLivery, disposeLiveryCache, suitColour, swatchUV, PANEL,
   type PanelName, type SwatchName,
 } from './Livery';
+import { clamp01 } from '../core/MathUtils';
 import { buildDriverParts } from './DriverMesh';
 import {
   BODY_PART_IDS as DAMAGE_BODY_PART_IDS, type BodyPartId as DamageBodyPartId,
@@ -276,8 +277,13 @@ export interface CarVisual {
    * wet-weather tyres". See `setRainLight`.
    */
   rainLights: THREE.Mesh[];
-  /** Switches all three rear lights. `flashPhase` is 0..1, for the pulse. */
-  setRainLight(on: boolean, flashPhase: number): void;
+  /**
+   * Switches all three rear lights. `brightness` is 0..1.
+   *
+   * WHEN the lamp is on, and when it flashes, is decided by `RearLight.ts` —
+   * not here and not by the caller. See that file for the articles.
+   */
+  setRainLight(on: boolean, brightness: number): void;
   /** The bodywork that can be knocked off, by name. */
   bodyParts: Record<BodyPartId, BodyPart>;
   /** Rolling radius, so the renderer knows the wheel's resting height. */
@@ -503,11 +509,45 @@ export const ACTUATION: Record<ActuationId, Actuation> = {
 };
 
 /**
- * Which team runs which. Ten teams over four solutions, which is roughly how a
- * real grid distributes when a rule opens up: a couple of distinct extremes and
- * a cluster in the middle.
+ * Which team runs which. Eleven teams over four solutions, which is roughly how
+ * a real grid distributes when a rule opens up: a couple of distinct extremes
+ * and a cluster in the middle.
+ *
+ * THIS TABLE WAS KEYED ON TEAM IDS THAT NO LONGER EXIST, AND SO IT REACHED
+ * NOBODY. Issue #19 is *"Ferrari opens up differently than Mercedes does which
+ * is different than Red Bull etc."*, the four archetypes above were built for
+ * it, `probe:activeaero` measured all four — and every car on the grid ran
+ * `central`, because the keys here were `apex`, `scuderia-rosso`, `meridian`,
+ * `albion`, `aurora`, `vantage`, `northstar`, `lumen`, `kestrel` and `brava`,
+ * the fictional grid this project carried before the real roster landed in
+ * `src/data/roster/`. `actuationForTeam('ferrari')` matched nothing and fell
+ * through to the `?? 'central'` default, eleven times out of eleven.
+ *
+ * The probe could not catch it because it iterated `ACTUATION` — the four
+ * archetypes — rather than asking what the GRID runs. That is PROJECT.md §3.2
+ * exactly: a probe a broken feature passes. `probe:effects` §5 now asks
+ * `actuationForTeam` for every id in the real roster and counts the distinct
+ * answers.
+ *
+ * The fictional ids are kept below the real ones. A save made against the old
+ * grid, or a My Team career whose custom id happens to match, still resolves
+ * rather than silently reverting to the default — which is the failure this
+ * table just spent its whole life demonstrating.
  */
 const TEAM_ACTUATION: Record<string, ActuationId> = {
+  // The 2026 grid, from `src/data/roster/f1-2026.ts`.
+  'red-bull': 'trailing',
+  'ferrari': 'forward',
+  'mercedes': 'central',
+  'mclaren': 'trailing',
+  'aston-martin': 'leading',
+  'alpine': 'central',
+  'williams': 'forward',
+  'racing-bulls': 'leading',
+  'haas': 'central',
+  'audi': 'trailing',
+  'cadillac': 'forward',
+  // The pre-roster fictional grid, kept so old saves resolve.
   'apex': 'trailing',
   'scuderia-rosso': 'forward',
   'meridian': 'central',
@@ -523,6 +563,16 @@ const TEAM_ACTUATION: Record<string, ActuationId> = {
 /** The actuation a team runs, defaulting to the mid-grid solution. */
 export function actuationForTeam(teamId: string): ActuationId {
   return TEAM_ACTUATION[teamId] ?? 'central';
+}
+
+/**
+ * Every team id this table names, for `probe:effects`.
+ *
+ * Exported so the probe can assert against the table's own keys rather than
+ * against a second copy of them — the copy is what would drift.
+ */
+export function actuationTeamIds(): string[] {
+  return Object.keys(TEAM_ACTUATION);
 }
 
 // --- Principal dimensions, in metres, from the current technical regulations --
@@ -654,6 +704,40 @@ const LOD_NEAR_M = 34;
  */
 const RAIN_LIGHT_OFF_RGB: readonly [number, number, number] = [0.16, 0.020, 0.016];
 const RAIN_LIGHT_OFF = new THREE.Color(...RAIN_LIGHT_OFF_RGB);
+
+/**
+ * The three rear lamps: lens size, and where each one sits in the car's frame.
+ *
+ * ONE TABLE, read by `buildCar` — which draws them — and by
+ * `carPartsForProbe` — which hands them to `probe:carrig`. That matters more
+ * than it looks. Until this existed the lenses were built inside `buildCar` and
+ * nowhere else, which put them in the same blind spot issue #47 lost the
+ * over-wheel cover in: **`probe:carrig` could not see them**, so three parts
+ * bolted to nothing sat on the back of every car on the grid and the probe that
+ * exists to catch exactly that reported 141 parts in 1 cluster. The two
+ * endplate lenses were genuinely floating — 72mm quads on a plate 20mm thick,
+ * 8mm behind its trailing edge — and that is the second half of issue #34,
+ * *"the front tire cover thing seems to be floatng"*, on a different part.
+ *
+ * They are in the parts list now and the rig probe holds them to the same rule
+ * as everything else: a part must INTERSECT the part it is bolted to.
+ *
+ * Regulation bands, both asserted by `probe:effects` §4:
+ *   C14.3.2  central lamp centre between Z=295 and Z=305 above the reference
+ *            plane — y 0.330 to 0.340 in this frame.
+ *   C14.3.3  the outer pair "in its entirety between Z=700 and Z=870" — y
+ *            0.735 to 0.905.
+ */
+export const REAR_LAMPS: readonly {
+  name: string; w: number; h: number; d: number; x: number; y: number; z: number;
+}[] = [
+  // Central, recessed 1mm proud of the crash-structure moulding's rear face at
+  // z = -2.315. 56 x 24mm on a 72 x 100mm moulding: 8mm of bezel across.
+  { name: 'rain light lens C', w: 0.056, h: 0.024, d: 0.012, x: 0, y: 0.335, z: -2.310 },
+  // The endplate pair, recessed 4mm proud of their pods' rear cap at z = -2.44.
+  { name: 'rain light lens L', w: 0.030, h: 0.050, d: 0.014, x: -0.410, y: 0.786, z: -2.437 },
+  { name: 'rain light lens R', w: 0.030, h: 0.050, d: 0.014, x: 0.410, y: 0.786, z: -2.437 },
+];
 
 const TYRE_R = 0.36;
 /**
@@ -1446,6 +1530,54 @@ const POD_X = 0.548;
  * you how big it is. Built as a two-station loft so it shares the superellipse
  * profile the rest of the bodywork uses: `r` sets the corner radius.
  */
+/**
+ * A rear-light LENS: a rounded solid with a brightness falloff baked into it.
+ *
+ * Issue #34: *"the three rain lights are plain red quads with no housing, no
+ * lens, no depth and no emissive falloff."* Every clause of that was literally
+ * true — they were `THREE.PlaneGeometry`, one flat colour, drawn on a
+ * `MeshBasicMaterial` that is by definition unshaded. A flat quad of constant
+ * colour has no way to look like anything but a sticker, at any brightness,
+ * because there is no term in it that varies over the part.
+ *
+ * Two things fix that and neither of them is a shader.
+ *
+ * DEPTH. `roundedBar` gives the lens a 12-14mm body with a radius on every
+ * edge, so it has a silhouette from three-quarter angles, a rim that catches
+ * the sky differently from its face, and something to be recessed INTO — which
+ * is what the housings above now exist for.
+ *
+ * FALLOFF, as VERTEX COLOUR. An LED array behind a moulded lens is brightest
+ * where the emitters are and falls off into the rim, and the rim is a piece of
+ * red plastic in shadow rather than a light source. That is a per-vertex
+ * quantity and it costs nothing: the material multiplies its colour by it, so
+ * `setRainLight` still drives one colour on one material for all three lamps —
+ * one circuit, as it is on the car — and the shape of the glow rides on the
+ * geometry.
+ *
+ * The alternative was an emissive map or a custom shader for a part that is
+ * 30mm across. This is 24 extra floats per lens.
+ */
+function lensGeometry(w: number, h: number, d: number, t: Tiers): THREE.BufferGeometry {
+  const geo = roundedBar(w, h, d, Math.min(w, h) * 0.30, t);
+  const pos = geo.getAttribute('position');
+  const col = new Float32Array(pos.count * 3);
+  const halfW = w * 0.5, halfH = h * 0.5;
+  for (let i = 0; i < pos.count; i++) {
+    // The visible face is the one pointing rearward, at z = -d/2: everything
+    // else is inside a housing or edge-on to the viewer.
+    const face = clamp01((-pos.getZ(i) - d * 0.18) / (d * 0.32));
+    // Radial, on the face. Normalised to the lens's own aspect so a tall narrow
+    // endplate lamp falls off the same way across as it does up.
+    const r = Math.hypot(pos.getX(i) / halfW, pos.getY(i) / halfH);
+    const rim = 1 - 0.55 * clamp01((r - 0.30) / 0.70);
+    const v = 0.22 + 0.78 * face * rim;
+    col[i * 3] = v; col[i * 3 + 1] = v; col[i * 3 + 2] = v;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return geo;
+}
+
 function roundedBar(
   w: number, h: number, d: number, r: number, t: Tiers,
 ): THREE.BufferGeometry {
@@ -2346,6 +2478,38 @@ function buildShellParts(
         section(-2.14, 0.023, 0.878, 0.932, 0.80, { xc: s * 0.458 }),
         section(-2.22, 0.017, 0.886, 0.922, 0.90, { xc: s * 0.458 }),
       ], Math.max(6, t.detail - 6)), 'trim');
+
+      // --- The endplate rain-light pod ------------------------------------
+      //
+      // "THE BREAK LIGHTS LOOK RETARDED" — issue #34, and it was right about
+      // these two in a way the report could not have known the size of.
+      //
+      // The two side lamps were 72mm-wide flat quads at x = ±0.414, z = -2.428.
+      // The endplate they are supposed to be INSIDE has a half-width of 0.010
+      // at its last station: it is a TWENTY-MILLIMETRE-THICK plate, and a 72mm
+      // lens on it stood 26mm proud on each side, in clear air, 8mm behind the
+      // trailing edge. That is not a light that reads as flat, it is a light
+      // that reads as floating, and the two complaints in #34 turn out to be
+      // the same object.
+      //
+      // C14.3.3 requires the two further lights to be fitted "one on each side
+      // of the car", within the rear wing endplate body, lying "in its entirety
+      // between Z=700 and Z=870" — y 0.735 to 0.905 in this frame. So the lamp
+      // has to be small, and what carries it on a real car is a fairing swelling
+      // out of the plate's trailing edge around the lamp and its loom.
+      //
+      // This is that pod. It grows from the plate's own 0.010 half-width at
+      // z = -2.34 to 0.022 at -2.40 and closes to 0.019 at -2.44, and its
+      // centreline follows the plate's rolled tip inboard the way the plate's
+      // own last three stations do. The lens is recessed into its rear face —
+      // see `rainLightLens` in `buildCar` — so there is a bezel of carbon all
+      // the way round it and the lamp has something to be mounted in.
+      p.tag(`rain light pod ${s < 0 ? 'L' : 'R'}`);
+      p.flat(small([
+        section(-2.34, 0.011, 0.735, 0.835, 0.55, { xc: s * 0.448 }),
+        section(-2.40, 0.022, 0.740, 0.832, 0.62, { xc: s * 0.424 }),
+        section(-2.44, 0.019, 0.748, 0.824, 0.80, { xc: s * 0.410 }),
+      ], Math.max(6, t.detail - 6)), 'carbon');
     }
 
     // Swan-neck pylons: a PAIR, mounted on top of the main plane the way every
@@ -3612,6 +3776,16 @@ export function carPartsForProbe(quality: CarTier): CarPart[] {
   );
   out.push({ name: 'DRS flap', bucket: 'flap', geometry: flap, offset: null });
 
+  // The three rear lamps, which are separate switchable meshes rather than
+  // shell geometry and so were invisible to this probe entirely. Built from the
+  // same `REAR_LAMPS` table `buildCar` places them from — see its comment for
+  // what that blind spot was hiding.
+  for (const lamp of REAR_LAMPS) {
+    const lens = lensGeometry(lamp.w, lamp.h, lamp.d, t);
+    lens.translate(lamp.x, lamp.y, lamp.z);
+    out.push({ name: lamp.name, bucket: 'lamp', geometry: lens, offset: null });
+  }
+
   // The wheels and the parts that steer with them, at their hubs.
   for (const [x, z, rear] of [
     [-FRONT_HUB_X, FRONT_AXLE_Z, false], [FRONT_HUB_X, FRONT_AXLE_Z, false],
@@ -4072,44 +4246,28 @@ export function buildCar(
   // Unlit, because a rain light in the spray is the brightest thing in the
   // frame and a lit material would have it dim in its own shadow.
   const rainLights: THREE.Mesh[] = [];
+  // ONE material for all three lamps — they are one circuit on a real car and
+  // `setRainLight` switches it once rather than three times. It is opaque now:
+  // the lens is a solid, and a transparent solid with `depthWrite: false` sorts
+  // its own back faces in front of its front faces from half the angles it is
+  // seen from. An unlit lens is a piece of red plastic, which is opaque.
+  //
+  // `vertexColors` is what carries the falloff — see `lensGeometry`.
   const rainLightMat = new THREE.MeshBasicMaterial({
     color: RAIN_LIGHT_OFF,
-    transparent: true,
-    opacity: 0.95,
-    depthWrite: false,
+    vertexColors: true,
   });
-  // One lens geometry for all three, disposed with the car. See `dispose`.
-  const rainLightLens = new THREE.PlaneGeometry(0.072, 0.030);
-  {
-    // The central lens sits on the crash structure at Z=300 -> y 0.300, on the
-    // same station as the shell's moulding so the two are one object to look at.
-    const lens = rainLightLens;
-    const centre = new THREE.Mesh(lens, rainLightMat);
-    centre.position.set(0, 0.335, -2.316);
-    centre.rotation.y = Math.PI;
-    root.add(centre);
-    rainLights.push(centre);
-    // The pair, on the endplates' TRAILING EDGE.
-    //
-    // Placed against the endplate loft rather than guessed: its last station is
-    // at z = -2.42 with its centreline pulled in to `xc - s*0.082`, which is
-    // 0.414, and it spans y 0.520 to 0.900 there. A first pass put these at
-    // z = -2.052 — 27cm forward of the trailing edge, which is INSIDE the
-    // plate, and the photographs showed no lights at all.
-    //
-    // The height is regulated and this is the middle of the band: C14.3.3(d)
-    // requires the light to lie "in its entirety between Z=700 and Z=870",
-    // which is y 0.735 to 0.905 in this frame. A 30mm lens centred at 0.785
-    // spans 0.770 to 0.800, comfortably inside. C14.3.3(c) additionally
-    // requires the lens normal within 5 degrees of the X axis; here it is
-    // exactly along it.
-    for (const side of [-1, 1]) {
-      const m = new THREE.Mesh(lens, rainLightMat);
-      m.position.set(side * 0.414, 0.785, -2.428);
-      m.rotation.y = Math.PI;
-      root.add(m);
-      rainLights.push(m);
-    }
+  // One geometry per distinct lens SIZE, so the two endplate lamps share, and
+  // both are disposed with the car. See `dispose`.
+  const lensCache = new Map<string, THREE.BufferGeometry>();
+  for (const lamp of REAR_LAMPS) {
+    const key = `${lamp.w}:${lamp.h}:${lamp.d}`;
+    let geo = lensCache.get(key);
+    if (!geo) { geo = lensGeometry(lamp.w, lamp.h, lamp.d, t); lensCache.set(key, geo); }
+    const m = new THREE.Mesh(geo, rainLightMat);
+    m.position.set(lamp.x, lamp.y, lamp.z);
+    root.add(m);
+    rainLights.push(m);
   }
 
   let detail: CarTier = quality;
@@ -4145,17 +4303,18 @@ export function buildCar(
     brakeGlow,
     actuation: act,
     rainLights,
-    setRainLight(on: boolean, flashPhase: number): void {
+    setRainLight(on: boolean, brightness: number): void {
       // One material, three lenses — they are one circuit on a real car too.
       //
-      // FLASHING is a property of the light unit, not of the regulations: the
-      // rear light is a Standard Supply Component (C14.3.4) whose specification
-      // lives in FIA-F1-DOC-025 and is not published, and the words "flash" and
-      // "flashing" appear nowhere in the Technical or Sporting Regulations in
-      // connection with it. So this is modelled on what the units visibly do on
-      // track rather than cited to an article, and it is deliberately a slow
-      // pulse between bright and half rather than a hard blink.
-      const level = on ? 0.55 + 0.45 * flashPhase : 0;
+      // WHEN it is on and WHEN it flashes are not decided here: that rule, and
+      // the articles behind it, live in `RearLight.ts` so `probe:effects` can
+      // drive the real thing. This end just paints what it is handed.
+      //
+      // The second argument used to be a free-running 2Hz sine phase and this
+      // line used to be `on ? 0.55 + 0.45 * phase : 0` — i.e. the lamp pulsed
+      // for as long as it was lit and had no other state. It is a brightness
+      // now, 0..1, and it is 1 when the lamp is merely on.
+      const level = on ? clamp01(brightness) : 0;
       // 2.2, not 3.4. The first pass drove red to 3.7, which is far enough past
       // the tone mapper's shoulder that the lens clipped to white and the lights
       // photographed as pale pink bars — a blown highlight rather than a red
@@ -4168,7 +4327,6 @@ export function buildCar(
         RAIN_LIGHT_OFF_RGB[1] + level * 0.07,
         RAIN_LIGHT_OFF_RGB[2] + level * 0.05,
       );
-      rainLightMat.opacity = on ? 1 : 0.95;
     },
     onboardHidden,
     shadow,
@@ -4206,7 +4364,7 @@ export function buildCar(
       // counts live geometries across a session teardown and caught this the
       // moment it was added, which is exactly what it is for.
       rainLightMat.dispose();
-      rainLightLens.dispose();
+      for (const g of lensCache.values()) g.dispose();
       // The band materials are shared across the whole field and owned by
       // TyreTexture's cache, so they are emphatically NOT disposed here.
     },

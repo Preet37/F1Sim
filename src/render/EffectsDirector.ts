@@ -46,10 +46,95 @@ const SMOKE_SLIP_FULL = 11;
  * the point at which the rear is genuinely lit up.
  */
 const WHEELSPIN_MARK_THRESHOLD = 0.12;
+/**
+ * Filtered plank BITE above which sparks are struck. See the sparks block.
+ *
+ * Not a taste setting: under a steady plank load L the bite term settles at
+ * 0.15L, and Suzuka's measured non-zero median load is 0.50, so 0.075 is what a
+ * car dragging its floor round the esses produces. 0.08 sits just above that
+ * and just below anything that arrives faster than the 0.3s average can track.
+ */
+const SPARK_STRIKE_GATE = 0.08;
+/**
+ * Time constant of the plank-load average the bite is measured against, s.
+ *
+ * This is the number that decides what counts as "steady". Too fast and it
+ * tracks the strike itself, so nothing is ever above it and the shower becomes
+ * a one-frame strobe — measured at 0.3s, where the longest shower on the whole
+ * calendar was 0.02s, i.e. a single frame. Too slow and a car that has been
+ * grinding for ten seconds is still measured against the load it had before it
+ * started. 1.4s sits between the two: load variation over the half-second the
+ * esses at Suzuka work on still reads as a bite, and a genuinely constant load
+ * washes out inside three seconds.
+ *
+ * Applied as `1 - exp(-dt/tau)` rather than as a per-frame coefficient, so the
+ * effect is the same at 30 and at 144fps. `probe:framerate` exists because
+ * things in this renderer have been frame-rate dependent before.
+ */
+const PLANK_MEAN_TAU_S = 1.4;
+/**
+ * Spark particles a second at full strike intensity.
+ *
+ * Raised from 90 with the move to the bite trigger, and the two belong
+ * together: sparks now fire in bursts rather than continuously, so a burst has
+ * to be a burst. This is a LOOK parameter and is labelled as one — it says how
+ * much, never whether.
+ */
+const SPARK_RATE = 200;
 /** Beyond this distance from the camera, a car emits nothing. */
 const CULL_DISTANCE = 145;
 /** Within this distance, a car emits at full rate. */
 const FULL_RATE_DISTANCE = 45;
+
+/**
+ * WHAT FIRED, THIS FRAME, PER CAR — the measurement `probe:effects` reads.
+ *
+ * Issue #11 is not "an effect looks wrong", it is *"sparks don't fly until like
+ * the car is braking so idk why they are constantly flying"* and *"f1 cars
+ * don't leave marks unless they lock up"*. Both are claims about WHEN an
+ * emitter fires against WHAT THE CAR WAS DOING at the time, and neither can be
+ * settled from a screenshot or from a count of particles alone: a probe that
+ * asserted "sparks were drawn" would have passed on the build the report was
+ * written against, which fired them on every straight of every lap.
+ *
+ * So the trigger conditions are published alongside the counts, on the same
+ * frame, and the probe correlates them. That is the whole reason this exists.
+ * It is written unconditionally — there is no debug flag — because a
+ * measurement that is only taken when you ask for it is a measurement of a
+ * different build. The cost is nine numbers per car per frame.
+ */
+export interface FxFrame {
+  /** Particles emitted this frame. */
+  sparks: number;
+  smoke: number;
+  spray: number;
+  dust: number;
+  /** Rubber QUADS actually stamped into the ribbon, not marks reported. */
+  rubber: number;
+  // --- and the state that was supposed to have caused them ---------------
+  /** `plankLoad`: the skid blocks are on the road. Zero unless they are. */
+  plankLoad: number;
+  /** Seconds since this car's plank last touched the road at all. */
+  sinceGroundedS: number;
+  /** Brake pedal, 0..1. */
+  brake: number;
+  /** m/s. */
+  speed: number;
+  /** The larger of the two axles' lock-up, 0..1. */
+  lockup: number;
+  /** Throttle in excess of the traction limit, 0..1. */
+  wheelSpin: number;
+  /** Whether the car was emitting at all this frame (on track, in range). */
+  live: boolean;
+}
+
+function blankFrame(): FxFrame {
+  return {
+    sparks: 0, smoke: 0, spray: 0, dust: 0, rubber: 0,
+    plankLoad: 0, sinceGroundedS: 1e6, brake: 0, speed: 0,
+    lockup: 0, wheelSpin: 0, live: false,
+  };
+}
 
 /** Per-car accumulators, so emission rates survive across frames. */
 interface CarFx {
@@ -61,6 +146,10 @@ interface CarFx {
   lastGear: number;
   /** Low-passed vertical load, for detecting the floor grounding out. */
   compression: number;
+  /** Seconds since the plank last touched the road. See `FxFrame`. */
+  sinceGroundedS: number;
+  /** ~0.3s mean of `plankLoad`, so a STRIKE can be told from a steady drag. */
+  plankSlow: number;
 }
 
 export class EffectsDirector {
@@ -70,6 +159,14 @@ export class EffectsDirector {
   private skids: SkidMarks | null = null;
   private readonly fx: CarFx[] = [];
   private readonly quality: 'low' | 'high';
+
+  /**
+   * This frame's emissions and triggers, one entry per car. See `FxFrame`.
+   *
+   * Rewritten in place every `update`, so it is only valid until the next one.
+   * `probe:effects` reads it immediately after the call it belongs to.
+   */
+  readonly frame: FxFrame[] = [];
 
   /**
    * What is falling, and what is lying, refreshed EVERY FRAME.
@@ -128,11 +225,13 @@ export class EffectsDirector {
     this.root.add(this.skids.mesh);
 
     this.fx.length = 0;
+    this.frame.length = 0;
     for (let i = 0; i < engine.cars.length; i++) {
       this.fx.push({
         smokeBudget: 0, dustBudget: 0, sprayBudget: 0, sparkBudget: 0,
-        lastGear: 1, compression: 0,
+        lastGear: 1, compression: 0, sinceGroundedS: 1e6, plankSlow: 0,
       });
+      this.frame.push(blankFrame());
     }
     this.particles.clear();
   }
@@ -173,7 +272,21 @@ export class EffectsDirector {
     for (let i = 0; i < engine.cars.length; i++) {
       const car = engine.cars[i];
       const fx = this.fx[i];
-      if (!fx) continue;
+      const tel = this.frame[i];
+      if (!fx || !tel) continue;
+      // Zeroed for EVERY car, every frame, before anything can `continue` past
+      // it. A stale count carried over from the last frame is indistinguishable
+      // from an emission that happened this one.
+      tel.sparks = 0; tel.smoke = 0; tel.spray = 0; tel.dust = 0; tel.rubber = 0;
+      tel.live = false;
+      const p0 = car.physics;
+      tel.plankLoad = p0.plankLoad;
+      tel.brake = car.appliedControls.brake;
+      tel.speed = p0.speedMs;
+      tel.lockup = Math.max(p0.frontLockup, p0.rearLockup);
+      tel.wheelSpin = p0.wheelSpin;
+      fx.sinceGroundedS = p0.plankLoad > 0 ? 0 : fx.sinceGroundedS + dt;
+      tel.sinceGroundedS = fx.sinceGroundedS;
       if (car.retired && car.recovered) continue;
 
       // The DRAWN pose, not the solver's last step. Smoke leaves the contact
@@ -200,7 +313,8 @@ export class EffectsDirector {
       // road throws more spray, which is both true and a useful signal to the
       // driver behind about where the water is.
       const localWet = surface.waterAt(track.indexAt(car.renderS), car.renderLateral);
-      this.updateCar(dt, car, fx, x, y, z, lod, localWet);
+      tel.live = true;
+      this.updateCar(dt, car, fx, x, y, z, lod, localWet, tel);
     }
 
     this.particles.flush();
@@ -210,6 +324,7 @@ export class EffectsDirector {
   private updateCar(
     dt: number, car: CarEntry, fx: CarFx,
     x: number, y: number, z: number, lod: number, localWet: number,
+    tel: FxFrame,
   ): void {
     const p = car.physics;
     const spec = p.spec;
@@ -295,7 +410,9 @@ export class EffectsDirector {
         const markOpacity = markAmount > 0 && onTrack && p.surface !== 'pitlane'
           ? markAmount * (1 - localWet * 0.85) * clamp01(speed / 6)
           : 0;
-        this.skids?.report(id, wx, wz, rightX, rightZ, spec.tireRadiusM * 0.62, markOpacity, y);
+        if (this.skids?.report(id, wx, wz, rightX, rightZ, spec.tireRadiusM * 0.62, markOpacity, y)) {
+          tel.rubber++;
+        }
 
         // --- Smoke ---
         if (smokeAmount > 0.02 && onTrack && speed > 2) {
@@ -311,6 +428,7 @@ export class EffectsDirector {
             const n = Math.min(3, Math.floor(fx.smokeBudget));
             fx.smokeBudget -= n;
             this.particles.emitTyreSmoke(wx, y, wz, vx, vz, smokeAmount, n);
+            tel.smoke += n;
           }
         }
       }
@@ -329,6 +447,7 @@ export class EffectsDirector {
           x - fwdX * rear, y, z - fwdZ * rear,
           vx, vz, surface, intensity, n,
         );
+        tel.dust += n;
       }
     }
 
@@ -374,6 +493,7 @@ export class EffectsDirector {
               z - fwdZ * rear + rightZ * halfTrack * side,
               vx, vz, speed, localWet, count,
             );
+            tel.spray += count;
           }
         }
       }
@@ -406,15 +526,50 @@ export class EffectsDirector {
     // are struck by metal grinding along the road, so a car resting its floor
     // on the ground in the pit lane does not make any. It is a plain ramp from
     // 30 m/s rather than a term that can fire on its own.
-    const grinding = p.plankLoad * clamp01((speed - 30) / 25);
+    //
+    // AND IT WAS STILL NOT ENOUGH, WHICH IS WHY `probe:effects` EXISTS. Moving
+    // the trigger onto `plankLoad` took the duty cycle from "every frame above
+    // 160 km/h" down to 1.2–15.4 per cent of a lap, and on eight circuits that
+    // is the end of it. On the other three it is not, and the probe is what
+    // found it: the longest UNBROKEN shower measured **10.35s at Suzuka**, 7.45s
+    // at Zandvoort and 6.13s at COTA. A shower ten seconds long is a car with a
+    // permanent flame under it, and the original report — *"they are constantly
+    // flying"* — is still literally true at Suzuka on that build.
+    //
+    // The cause is not a bug in `plankLoad`. Measured over three laps
+    // (`scripts/diagPlank.ts`): the plank is in contact for 23.1% of a Suzuka
+    // lap with a NON-ZERO MEDIAN LOAD OF 0.50, against 7.2% and 0.107 at Monza.
+    // Suzuka's esses genuinely hold a 2026 car's floor on the road for seconds
+    // at a time, and the ride-height model is right about that.
+    //
+    // What was wrong was treating CONTACT as the thing that strikes a spark. It
+    // is not. A skid block already down and steadily loaded is POLISHING the
+    // road — that is what the mirror-smooth strip down the middle of a fast
+    // corner is — and the sparks come off it as it BITES: the load spiking over
+    // a bump, a crest, a kerb, the nose dropping under the brakes. That is why
+    // real sparks arrive in gusts rather than as a blowtorch.
+    //
+    // So the trigger is the load's rise above its own recent average, not its
+    // level. `plankSlow` is a ~0.3s mean of the load; `bite` is how far above it
+    // the current load stands. A steady drag settles to 15% of the load and
+    // falls under the gate; a genuine strike from 0.2 to 1.0 gives 0.83 and
+    // throws everything the emitter has.
+    fx.plankSlow += (p.plankLoad - fx.plankSlow) * (1 - Math.exp(-dt / PLANK_MEAN_TAU_S));
+    const bite = Math.max(0, p.plankLoad - fx.plankSlow * 0.85);
+    const grinding = bite * clamp01((speed - 30) / 25);
     // Lightly low-passed, so the shower has some persistence over a crest
     // rather than switching off between two steps. Much shorter than the old
     // 0.86/0.14 filter, which took 13 frames to decay and smeared every strike
     // into the next one.
     fx.compression = fx.compression * 0.72 + grinding * 0.28;
 
-    if (fx.compression > 0.02 && onTrack) {
-      fx.sparkBudget += fx.compression * 90 * lod * dt;
+    // 0.08, not 0.02. Under a STEADY load L the bite settles at 0.15L, so this
+    // is the line between a car dragging its floor along a fast corner and one
+    // striking it: at Suzuka's non-zero median load of 0.50 a steady drag
+    // produces 0.075 and stops, and anything that arrives faster than the 0.3s
+    // average can follow it does not.
+    if (fx.compression > SPARK_STRIKE_GATE && onTrack) {
+      fx.sparkBudget += fx.compression * SPARK_RATE * lod * dt;
       if (fx.sparkBudget >= 1) {
         const n = Math.min(6, Math.floor(fx.sparkBudget));
         fx.sparkBudget -= n;
@@ -426,6 +581,7 @@ export class EffectsDirector {
           x + fwdX * along, y, z + fwdZ * along,
           vx, vz, fx.compression, n,
         );
+        tel.sparks += n;
       }
     }
 

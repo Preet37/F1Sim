@@ -12,6 +12,7 @@ import { corneringPitch, corneringRoll, groundLift, wreckLean } from './CarAttit
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
+import { rearLightState, rearLightLevel } from './RearLight';
 import { EnvProbe } from './EnvProbe';
 import { setSurfaceWetness } from './SurfaceDetail';
 import { PostFX } from './PostFX';
@@ -61,15 +62,7 @@ import { PART_DETACH_HEALTH, PART_REPAIR_HEALTH } from '../race/DamageModel';
 /** Suspension health below which a corner starts visibly folding up. */
 const SUSPENSION_BEND_HEALTH = 0.62;
 
-/**
- * Rain-light pulse rate, Hz.
- *
- * NOT a regulation figure. The rear light is a Standard Supply Component
- * (Art. C14.3.4) specified in FIA-F1-DOC-025, which is not published, and
- * neither the Technical nor the Sporting Regulations say anything about a
- * flashing mode. 2Hz is what the units visibly do on track.
- */
-const RAIN_LIGHT_HZ = 2;
+// The rear lights' rate, threshold and articles all live in `RearLight.ts`.
 
 /**
  * Tone-mapping exposure, by time of day.
@@ -365,8 +358,6 @@ export class Renderer {
   // Hoisted scratch.
   private readonly tmpColour = new THREE.Color();
   private wheelSpin = 0;
-  /** 0..1 pulse for the rain lights, recomputed once per frame. */
-  private rainLightPhase = 1;
 
   constructor(opts: RendererOptions) {
     this.canvas = opts.canvas;
@@ -1983,9 +1974,9 @@ export class Renderer {
     // One shared wheel-spin phase: individual wheel speeds are indistinguishable
     // at speed and this avoids twenty separate integrations.
     this.wheelSpin += dt;
-    // The rain lights' pulse. Shared across the field on purpose — twenty units
-    // of one part number, all driven the same way, do not pulse out of phase.
-    this.rainLightPhase = 0.5 + 0.5 * Math.sin(this.wheelSpin * RAIN_LIGHT_HZ * Math.PI * 2);
+    // `wheelSpin` doubles as the wall clock the rear lights flash against.
+    // Shared across the field on purpose — twenty units of one part number, all
+    // switched by the same rule, do not flash out of phase with each other.
 
     for (let i = 0; i < engine.cars.length; i++) {
       const car = engine.cars[i];
@@ -2204,35 +2195,26 @@ export class Renderer {
 
       // --- Rear lights --------------------------------------------------------
       //
-      // "WHEN THE CAR BRAKES THE BRAKE LIGHT SHOULD GO ON RIGHT?"
+      // "BRAKE LIGHTS DO NOT RESPOND TO BRAKING" — issue #19.
       //
-      // No — and this is worth being exact about, because the intuition is
-      // reasonable and the answer is not. A Formula 1 car has NO BRAKE LIGHT.
-      // The phrase "brake light" does not occur anywhere in the 2025 or 2026
-      // Technical or Sporting Regulations. The light on the back of the car is
-      // a RAIN LIGHT, and it has one mandatory-illumination rule:
+      // They cannot: a Formula 1 car has no brake light and never has. The rule
+      // that decides what these three lamps do, and the articles behind it,
+      // live in `RearLight.ts` — with no THREE and no renderer state, so
+      // `probe:effects` drives the real rule instead of a copy. Read that file
+      // before changing anything here.
       //
-      //   2026 Sporting Art. B1.5.5(a), and 2025 Sporting Art. 26.11 before it:
-      //   the lights described in Art. C14.3 "must be illuminated at all times
-      //   when using intermediate or wet-weather tyres".
-      //
-      // That is the whole rule. There is no regulation requiring it in the pit
-      // lane, on an in-lap, or during recovery — those live in the Race
-      // Director's Event Notes, which are per-event documents and not part of
-      // the regulations. And contrary to a widely repeated claim, no regulation
-      // has ever tied it to electric-only running or energy recovery: the 2014
-      // regulations that introduced "electric mode" (Art. 5.19) do not mention
-      // the rear light, and no edition since has either.
-      //
-      // So the light follows the TYRE, which is exactly what a driver looking
-      // in their mirrors uses it for: three red lights ahead in the spray mean
-      // there is a car there, not that it is slowing down.
-      //
-      // What a viewer actually sees under braking on a real car is the BRAKE
-      // DISCS glowing, which is the block below and which this game already
-      // had. That is the honest version of the effect being asked for.
-      const wetTyre = car.compound === 'intermediate' || car.compound === 'wet';
-      v.setRainLight(wetTyre, this.rainLightPhase);
+      // The short version: mandatory on intermediate or wet tyres (Sporting
+      // B1.5.5(a)), on when the Race Director declares low visibility, STEADY
+      // when merely on, and FLASHING while the MGU-K is recovering — which
+      // happens under braking, and is the thing the issue is actually looking
+      // at. `ersHarvestW` was being computed every step and read by nothing.
+      const lit = rearLightState({
+        wetTyre: car.compound === 'intermediate' || car.compound === 'wet',
+        lowVisibility: engine.raceControl.lowVisibility,
+        harvestFrac: clamp01(p.ersHarvestW / Math.max(1, p.spec.maxHarvestW)),
+        running: !(car.retired && car.recovered),
+      });
+      v.setRainLight(lit.on, rearLightLevel(lit, this.wheelSpin));
 
       // Brake glow from braking effort. Cheap and reads brilliantly at night.
       //
