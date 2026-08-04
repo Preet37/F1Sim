@@ -929,8 +929,22 @@ console.log(`channels: ${toControl} to race control, ${toTeam} to the team, ` +
     `the incident banner reads "${banner.headline}"`);
   check(banner.detail === 'SECTOR 2 · CAR OFF TRACK · YELLOW FLAG',
     `the incident detail reads "${banner.detail}"`);
+  // ONE FACT PER LINE — issue #15. `reference/target/77.png` sets the
+  // instructions on their own lines and the strip draws one element each, so
+  // the joined `detail` above is now the accessible summary and `details` is
+  // what is DRAWN. Asserted here as well as in `probe:hudstrip` because the
+  // split is a property of this pure function and belongs where the rest of
+  // the wording is checked; the strip's colour and geometry are that probe's.
+  check(banner.details.join('|') === 'SECTOR 2|CAR OFF TRACK|YELLOW FLAG',
+    `the incident's instruction lines are ${JSON.stringify(banner.details)}`);
+  check(banner.details.every((d) => !d.includes('·')),
+    'an instruction line still carries the joined-string separator');
+  check(!/RACE CONTROL/i.test(banner.headline),
+    `the banner's headline reads "${banner.headline}" — the reference opens on the ` +
+    'message and has no `RACE CONTROL:` prefix (#15)');
   check(banner.penalty.length === 0, 'a note was drawn as a decision');
-  console.log(`race control banner: "${banner.headline}" / "${banner.detail}"`);
+  console.log(`race control banner: "${banner.headline}" / ` +
+    `${JSON.stringify(banner.details)}`);
 }
 
 // Race control's two states: NOTED, and then DECIDED. A note is a banner of

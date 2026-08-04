@@ -1561,53 +1561,116 @@ canvas#view {
       replicate that font and color and completely."
 
    What was here was a dark ROUNDED card with a yellow bar down its left
-   edge and three stacked blocks in it — the shape of a notification. The
-   reference is a horizontal strip:
+   edge and three stacked blocks in it — the shape of a notification. Then a
+   navy strip with `RACE CONTROL:` opening every message, which was closer
+   and was still not the reference. THE REFERENCE IS `reference/target/77.png`
+   AND IT IS MEASURED, not described:
 
-     ┌──────┬─────────────────────────────────────────────┐
-     │  ⬤   │ RACE CONTROL: TURN 8 INCIDENT INVOLVING …   │
-     │ mark │ NOTED - IMPEDING                            │
-     └──────┴─────────────────────────────────────────────┘
+     ┌──────┬──────┬─────────────────────────────────────┬──────┐
+     │ ⚑⚑   │  ⬤   │ RED FLAG RACE SUSPENDED, CARS TO    │      │
+     │      │      │ LINE UP IN PIT LANE                 │  2   │
+     │      │      │ DO NOT EXCEED DELTA PACE            │      │
+     │      │      │ - NO OVERTAKING                     │      │
+     └──────┴──────┴─────────────────────────────────────┴──────┘
+      red     black   near-black                           red
 
-   Squared corners everywhere — no radius on the plate, none on the mark
-   block. A darker navy block at the left carrying the governing body's
-   mark, then the message. `RACE CONTROL:` bold and the incident CONTINUING
-   ON THE SAME LINE, with the facts smaller beneath. White on navy,
-   condensed, tight, uppercase. No accent bar of any colour: the tone is
-   carried by the words, which is how an official notice works.
+   77.png is 1200x673; the strip is x 336..863, y 53..137 — 528 x 84 — with
+   its edges taken as the hue step on a clean row at y = 60. Every number
+   below is a fraction of that 528:
 
-   The mark is the game's own device, not the FIA roundel — see
-   `governingMarkSvg`. */
+     flag block   0.095   red        #d11b15, device near-black ON it
+     mark block   0.097   black      roundel white
+     body         0.710   #1f1f21    NOT a navy — near-black, neutral
+     numeral      0.095   red        #d31b14, numeral near-BLACK on it
+     headline     red, cap 12.5px = 0.149 of the strip's height
+     instruction  #ffffff, cap 11px = 0.131, ONE PER LINE
+
+   THE PREFIX IS GONE. The reference opens on the message; the mark block is
+   what says whose voice it is. THE HEADLINE IS THE FLAG'S COLOUR, not white.
+   AND THE TONE NOW DRAWS: `.hud-control.tone-urgent` matched nothing in this
+   file at all, so a red flag and a track-limits note were the same graphic.
+   One custom property, `--strip`, carries the tone into the flag block, the
+   numeral block and the headline together.
+
+   The two marks are the game's own devices, not the FIA roundel and not a
+   national flag — see `governingMarkSvg` and `flagDeviceSvg`. */
 .hud-control {
   display: flex;
   align-items: stretch;
   padding: 0;
   border-radius: 0;
-  /* The reference navy, and it is a NAVY rather than the neutral near-black
-     everything else in this HUD is plated on. That difference is most of
-     what identifies the strip at a glance. */
-  background: #0a1738;
+  /* The reference's body ground, sampled at three points across it (#20201d,
+     #222124, #1c1d24). It is a NEUTRAL near-black. This drew #0a1738 — a
+     navy, chosen off a lower-resolution read of the same still — and against
+     the reference the navy is the single most visible error on the strip. */
+  background: #1f1f21;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: var(--plate-lift);
   transform: translateX(0);
   opacity: 1;
   overflow: hidden;
   transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.16, 0.9, 0.3, 1);
+  /* The tone, as ONE property. `tone-info` is the default because a bulletin
+     with no severity is a note, and a note in the reference's system is the
+     quiet end of the same graphic rather than a different one. */
+  --strip: #c8ccd4;
+  --strip-ink: #101114;
 }
-/* The mark block: a darker panel at the left, square, the full height of the
-   strip. */
-.control-badge {
-  flex: 0 0 auto;
+/* THE SEVERITY, WHICH IS THE DEFECT. A `tone-urgent` selector did not exist
+   in this file. `--sig-red` is #ff2d3c and the reference's is #d21b14 — the
+   strip takes the reference's, because this is the one element in the HUD
+   the user has handed a frame of. Caution and information are the signal
+   palette, which is what the flag they stand for is. */
+.hud-control.tone-urgent { --strip: #d21b14; --strip-ink: #0d0505; }
+.hud-control.tone-warn   { --strip: var(--sig-yellow); --strip-ink: #16130a; }
+.hud-control.tone-info   { --strip: #c8ccd4; --strip-ink: #101114; }
+
+/* The flag block: the tone's own colour, the device dark ON it. 0.095 of the
+   strip, which is what the reference measures, expressed as a fraction so it
+   holds at every width this strip is drawn at. */
+.control-flag {
+  flex: 0 0 9.5%;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  padding: 0 8px;
-  background: #061029;
+  min-width: 26px;
+  background: var(--strip);
+  color: var(--strip-ink);
+}
+.control-flag svg { display: block; width: 62%; height: auto; max-height: 22px; }
+/* The mark block: black, square, the full height of the strip — the darkest
+   thing on it, which is where the reference puts the roundel. */
+.control-badge {
+  flex: 0 0 9.7%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  background: #0b0b0d;
   color: #fff;
 }
-.control-badge svg { display: block; width: 22px; height: 22px; }
-.control-body { flex: 1 1 auto; min-width: 0; padding: 7px 11px 8px; }
+.control-badge svg { display: block; width: 60%; height: auto; max-height: 21px; }
+.control-body { flex: 1 1 auto; min-width: 0; padding: 6px 10px 7px; }
+/* The numeral block. The message's number in the session's run of bulletins,
+   near-black on the tone's colour — the reference's block histograms 3,531px
+   of red against 62px of near-black ink, and its brightest pixel is #c32426,
+   so this is NOT a white numeral however often it has been written down as
+   one. */
+.control-seq {
+  flex: 0 0 9.5%;
+  min-width: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--strip);
+  color: var(--strip-ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 800;
+  font-stretch: 92%;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 /* It drops in from above rather than sliding in from the left. The rail's
    cards come from the edge they live on; the noticeboard's come down from the
    top of the frame, which is where a broadcast banner comes from and is the
@@ -1619,32 +1682,43 @@ canvas#view {
 .hud-alerts .hud-control.entering { transform: translateX(-30px); }
 .hud-alerts .hud-control.leaving { transform: translateX(-16px); }
 
-/* One line, opening bold and running straight on. The chip that used to sit
-   above this is gone: the reference sets `RACE CONTROL:` as the first words
-   of the sentence, not as a label over it, and that is most of why the strip
-   reads as an announcement rather than as a card with a title. */
+/* THE FLAG STATE, IN THE FLAG'S OWN COLOUR, and allowed to wrap.
+   `77.png`'s headline runs to two lines and that is the reference's own
+   setting, not an overflow — `RED FLAG RACE SUSPENDED, CARS TO / LINE UP IN
+   PIT LANE`. It used to open `RACE CONTROL:` in a bolder weight and be
+   white; both are gone. The prefix went because the reference has none, and
+   the white went because the reference colours this line with the state it
+   is announcing, which is the whole reason it reads as urgent from across a
+   room. */
 .control-headline {
   font-family: var(--font-display);
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 800;
   font-stretch: 88%;
   letter-spacing: 0.015em;
-  line-height: 1.16;
-  color: #fff;
+  /* 19/12.5 in the reference, measured between the two headline bands at
+     y = 64 and y = 83. */
+  line-height: 1.2;
+  color: var(--strip);
   text-transform: uppercase;
 }
-.control-label { font-weight: 900; }
+/* THE INSTRUCTIONS, WHITE AND ONE PER LINE. They were one `.control-detail`
+   with the fields joined by ` · ` at 72% white — a caption. The reference
+   sets each on its own line in full white under the headline, at 0.88 of its
+   size (cap 11 against 12.5). */
 .control-detail {
-  margin-top: 3px;
+  margin-top: 2px;
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   font-stretch: 88%;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.72);
+  letter-spacing: 0.03em;
+  color: #fff;
   text-transform: uppercase;
-  line-height: 1.25;
+  /* 18/11 in the reference, between the bands at y = 103 and y = 121. */
+  line-height: 1.24;
 }
+.control-detail + .control-detail { margin-top: 0; }
 
 /* --- A decision, rather than a note -----------------------------------
    Race control has two states and a broadcast draws them differently. The
@@ -2602,8 +2676,17 @@ canvas#view {
     gap: 6px;
   }
   .hud-alert { padding: 7px 10px 8px 8px; gap: 8px; }
-  .hud-control { padding: 7px 10px 8px; }
+  /* THE PADDING GOES ON THE BODY, NOT ON THE STRIP. Both of these rules used
+     to pad `.hud-control` itself, which insets the four butted blocks from
+     the plate's own edge — so the flag block, the mark block and the numeral
+     block stop being flush and the strip stops being the reference's strip.
+     Invisible while the plate had exactly one child with its own padding;
+     structural now. */
+  .hud-control { padding: 0; }
+  .control-body { padding: 6px 9px 7px; }
   .control-headline { font-size: 11.5px; }
+  .control-detail { font-size: 10px; }
+  .control-seq { font-size: 13px; }
   .alert-portrait { width: 32px; height: 32px; }
   .alert-line { font-size: 11.5px; }
   /* Portrait keeps the square — the rail's band here is the full height
@@ -2800,16 +2883,27 @@ canvas#view {
   .hud-alert .alert-portrait { display: none; }
   .hud-alert .alert-role { display: none; }
   .hud-alert .alert-chip { display: none; }
-  .hud-control { padding: 6px 9px 7px; }
+  /* THE PADDING GOES ON THE BODY. See the note on the same pair of rules in
+     the portrait query above: padding the plate insets the four butted blocks
+     from its edge, and `probe:hudstrip` §5 measured exactly that here — the
+     flag block ending at 0.127 of the strip against the reference's 0.095,
+     which is 9px of padding on a 284px strip. */
+  .hud-control { padding: 0; }
+  .control-body { padding: 5px 8px 6px; }
   .control-headline { font-size: 11px; }
   .control-detail {
-    font-size: 8.5px;
-    margin-top: 3px;
+    /* 10 against an 11px headline is 0.91, which is the reference's own
+       11-against-12.5. It was 8.5, and 8.5/11 = 0.77 — the instructions had
+       become a footnote on the one frame shape with the least room to read
+       them on. */
+    font-size: 10px;
+    margin-top: 2px;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  .control-seq { font-size: 12px; }
   .alert-name { font-size: 9px; }
   .alert-who { margin-bottom: 2px; }
   .alert-line {

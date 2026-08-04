@@ -265,6 +265,18 @@ export class Hud {
   private controlStack!: HTMLElement;
   /** Bulletins on the noticeboard, oldest first. */
   private controlCards: HTMLElement[] = [];
+  /**
+   * How many bulletins race control has filed this session.
+   *
+   * `reference/target/77.png` ends its strip in a coloured block carrying a
+   * numeral — the message's own number in the session's run of bulletins, which
+   * is how a broadcast lets a viewer who looked away know they missed one, and
+   * how race control's own timing feed indexes them. Nothing upstream carries
+   * it: `RaceControlMessage` has a `time` and no ordinal, so the counter lives
+   * here rather than being invented in `RaceControlManager` for one graphic.
+   * It counts bulletins DRAWN, which is what the number on screen means.
+   */
+  private controlSeq = 0;
   /** Cards on screen, oldest first. */
   private alertCards: HTMLElement[] = [];
   /** The pit advice the pop-up last spoke, so it speaks once per change. */
@@ -2109,23 +2121,60 @@ export class Hud {
    * three stacked blocks in a rounded rectangle, which is the shape of a
    * notification and not of an official notice.
    *
-   * The real thing is a HORIZONTAL STRIP across the top of the picture:
+   * The real thing is a HORIZONTAL STRIP across the top of the picture, and
+   * `reference/target/77.png` — a red-flag frame — is the specification. Four
+   * butted blocks, squared corners, nothing rounded anywhere:
    *
-   *     ┌──────┬──────────────────────────────────────────────────┐
-   *     │ ⬤    │ RACE CONTROL: TURN 8 INCIDENT INVOLVING CARS      │
-   *     │ mark │ 44 (HAM) AND 1 (VER)                              │
-   *     │      │ NOTED - IMPEDING                                  │
-   *     └──────┴──────────────────────────────────────────────────┘
+   *     ┌──────┬──────┬─────────────────────────────────────┬──────┐
+   *     │ ⚑⚑   │  ⬤   │ RED FLAG RACE SUSPENDED, CARS TO    │      │
+   *     │ flag │ mark │ LINE UP IN PIT LANE                 │  2   │
+   *     │      │      │ DO NOT EXCEED DELTA PACE            │      │
+   *     │      │      │ - NO OVERTAKING                     │      │
+   *     └──────┴──────┴─────────────────────────────────────┴──────┘
+   *      red     black   near-black                           red
    *
-   * Squared corners, no rounding anywhere. A darker navy block on the left
-   * carrying the governing body's mark, then the message area. `RACE CONTROL:`
-   * in bold and the incident CONTINUING ON THE SAME LINE — not a chip above it
-   * — with the facts on a smaller second line. White on navy, condensed, tight,
-   * uppercase, and no accent bar of any colour.
+   * MEASURED OFF THE FRAME RATHER THAN DESCRIBED FROM IT. 77.png is 1200x673
+   * and the strip is x 336..863, y 53..137 — 528 x 84. Its edges are the luma
+   * and hue steps on a clean row above the type (y = 60) and a clean column
+   * inside the left block (x = 345). That gives every number this draws to:
+   *
+   *   flag block   x 336..386   0.095 of the strip's width
+   *   mark block   x 387..438   0.097
+   *   body         x 439..813   0.710
+   *   numeral      x 814..863   0.095
+   *   red          #d11b15 in the left block, #d31b14 in the right,
+   *                #d51a10 in the headline — one red, sampled three times
+   *   body ground  #1f1f21, near-black and NOT the navy this used to draw
+   *   headline     that same red, cap height 12.5px = 0.149 of the strip
+   *   instructions #ffffff, cap 11px = 0.131, ONE PER LINE
+   *   numeral      near-BLACK on the red. §7 and TESTING.md both recorded it
+   *                as white; the block's own histogram is 3,531px of red and
+   *                62px of #000-ish, and the brightest pixel in it is #c32426.
+   *
+   * FOUR THINGS THIS USED TO GET WRONG, all of them listed in §7 by the agent
+   * who measured them and could not fix them because this file was held:
+   *
+   *  1. `RACE CONTROL:` opened every bulletin. THE REFERENCE HAS NO PREFIX —
+   *     it opens on the message. The mark block is what says whose voice it
+   *     is, which is the whole reason a broadcast draws one.
+   *  2. The headline was white. The reference colours it with the FLAG STATE.
+   *  3. There was no right-hand block at all.
+   *  4. `.hud-control.tone-urgent` had NO STYLING WHATSOEVER, so a red flag
+   *     drew identically to a track-limits note. That is the one item on the
+   *     list that is a defect rather than a styling gap, and it is the reason
+   *     `probe:hudstrip` measures the two tones as a PAIR — the same message
+   *     at two severities, in one page, differing only in `severity` — rather
+   *     than grepping the stylesheet for a selector.
+   *
+   * The tone drives the flag block, the numeral block and the headline, all
+   * three from one custom property. Red is the reference's own; the caution
+   * and information tones take the signal palette this HUD already uses, which
+   * is the same rule a broadcast follows — the strip is the flag's colour.
    *
    * THE MARK IS THIS GAME'S OWN. The FIA roundel is a trademark and is not
    * reproduced; `governingMarkSvg` draws the game's own governing-body device
-   * in the same position at the same weight, which is the substitution the
+   * in the same position at the same weight, and `flagDeviceSvg` does the same
+   * for the crossed flags on the coloured block, which is the substitution the
    * whole of this repo's signage already makes.
    *
    * The DECISION variant keeps its segmented form — a penalty has changed the
@@ -2160,21 +2209,21 @@ export class Hud {
       return;
     }
 
-    // A NOTE. The official strip: the mark block, then one run of text that
-    // opens `RACE CONTROL:` in bold and carries straight on into the incident.
+    // A NOTE. The official strip, in the reference's own four blocks.
     card.className = 'hud-control tone-' + c.tone + ' entering';
+    const flag = this.el('control-flag', card);
+    flag.appendChild(flagDeviceSvg());
     const badge = this.el('control-badge', card);
     badge.appendChild(governingMarkSvg());
     const body = this.el('control-body', card);
-    const line = this.el('control-headline', body);
-    // Two elements rather than an interpolated string, so nothing that came out
-    // of a roster or a save is ever written as markup.
-    const label = document.createElement('b');
-    label.className = 'control-label';
-    label.textContent = 'RACE CONTROL: ';
-    line.appendChild(label);
-    line.appendChild(document.createTextNode(c.headline));
-    if (c.detail) this.el('control-detail', body, c.detail);
+    // `textContent`, never markup: the headline is built out of a roster's
+    // driver codes and a circuit's corner names, and neither is ours.
+    this.el('control-headline', body, c.headline);
+    // ONE FIELD PER LINE. They used to be joined with ` · ` into a single
+    // run, which is a caption; the reference sets `DO NOT EXCEED DELTA PACE`
+    // and `- NO OVERTAKING` on their own lines, which is an instruction each.
+    for (const d of c.details) this.el('control-detail', body, d);
+    this.el('control-seq', card, String(++this.controlSeq));
     this.mountControl(card);
   }
 
@@ -4346,7 +4395,24 @@ export function raceControlCard(
   m: RaceControlMessage, numbers?: ReadonlyMap<string, number>,
 ): {
   headline: string;
+  /**
+   * The facts, joined with ` · `.
+   *
+   * Kept beside `details` rather than replaced by it because it is what the
+   * text harnesses read and what an accessible one-line summary of the strip
+   * is. Nothing DRAWS it any more — see `details`.
+   */
   detail: string;
+  /**
+   * The facts, ONE PER LINE, which is how `reference/target/77.png` sets them.
+   *
+   * The same fields as `detail` and in the same order; the strip stacks them
+   * because the reference does — `DO NOT EXCEED DELTA PACE` over `- NO
+   * OVERTAKING`, not the two run together behind a middle dot. Two elements
+   * rather than one string with newlines in it, so a field that is empty
+   * takes no line and CSS decides the leading.
+   */
+  details: string[];
   tone: AlertTone;
   /**
    * The two lines of a DECISION, or empty for a note.
@@ -4364,13 +4430,16 @@ export function raceControlCard(
     m.severity === 'critical' ? 'urgent' : m.severity === 'warning' ? 'warn' : 'info';
   const n = m.notice;
   if (!n || n.parties.length === 0) {
+    const status = n ? n.status : '';
     return {
       headline: (n ? n.offence : m.text).toUpperCase(),
-      detail: n ? n.status : '',
+      detail: status,
+      details: status.length > 0 ? [status] : [],
       tone,
       penalty: [],
     };
   }
+  const details = [n.where, n.offence, n.status].filter((s) => s.length > 0);
   return {
     // THE OFFICIAL WORDING, which names a car by its NUMBER with the code in
     // brackets: `TURN 8 INCIDENT INVOLVING CARS 44 (HAM) AND 1 (VER)`. Race
@@ -4381,7 +4450,8 @@ export function raceControlCard(
     // Falls back to the bare codes when the caller has no number table, which
     // is what every existing test and the panel harness pass.
     headline: officialParties(n, numbers),
-    detail: [n.where, n.offence, n.status].filter((s) => s.length > 0).join(' · '),
+    detail: details.join(' · '),
+    details,
     tone,
     penalty: isDecision(n.status) ? twoLines(n.status) : [],
   };
@@ -5649,8 +5719,8 @@ export function stopwatchSvg(): SVGSVGElement {
  * this sport is made of, in geometry nobody owns. It is the same substitution
  * every other badge in this repo makes, including the team marks beside it.
  *
- * White on the strip's navy, because the strip is white on navy throughout and
- * a mark in a second colour would be the one thing on it asking for attention.
+ * White on the strip's black block, which is where `77.png` puts it: the
+ * roundel there is white on near-black, beside — not on — the coloured block.
  */
 export function governingMarkSvg(): SVGSVGElement {
   const NS = 'http://www.w3.org/2000/svg';
@@ -5682,6 +5752,42 @@ export function governingMarkSvg(): SVGSVGElement {
   }
   add('rect', { x: '16.9', y: '5.6', width: String(s), height: String(s), fill: 'currentColor' });
   add('rect', { x: '20.0', y: '8.7', width: String(s), height: String(s), fill: 'currentColor' });
+  return svg;
+}
+
+/**
+ * The crossed flags, for the coloured block at the head of the strip.
+ *
+ * `reference/target/77.png` carries TWO devices, not one: crossed marshalling
+ * flags on the red block, then the roundel on the black one beside it. The
+ * pair is what makes the strip read as a flag notice at a glance — the roundel
+ * says who is speaking, the flags say what about.
+ *
+ * NOTHING IS REPRODUCED HERE. Two flags on staffs at 30 degrees is the
+ * marshalling signal itself, which no one owns; the reference's own device is
+ * the same two shapes. Drawn in `currentColor` so the block's own tone paints
+ * it, and dark rather than light because on 77.png the flags are near-black
+ * (#1a0d11 at their darkest) ON the red, not white on it.
+ */
+export function flagDeviceSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 32 32');
+  svg.setAttribute('aria-label', 'Flag');
+  const add = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.appendChild(e);
+  };
+  // The two staffs, crossing below the middle exactly as the reference's do.
+  add('path', {
+    d: 'M8.4 27.4 L20.6 6.6 M23.6 27.4 L11.4 6.6',
+    stroke: 'currentColor', 'stroke-width': '2.2', 'stroke-linecap': 'round', fill: 'none',
+  });
+  // The two banners, each hanging off the top of its own staff and away from
+  // the crossing, which is what gives the device its width.
+  add('path', { d: 'M20.6 6.6 L20.6 16.2 L4.4 12.6 L4.4 3.0 Z', fill: 'currentColor' });
+  add('path', { d: 'M11.4 6.6 L11.4 16.2 L27.6 12.6 L27.6 3.0 Z', fill: 'currentColor' });
   return svg;
 }
 
