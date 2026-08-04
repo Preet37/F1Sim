@@ -3565,12 +3565,30 @@ way through the run and the shot is **black**. An audit harness was writing blac
 `audit-out/` and reporting them as a livery difference.
 
 With the clamp: **3 failures → 1 or 2**, `control--top` stable at `bd0a466e`, and no black
-frame. What is left is the `hero` flake and one more thing the flake was covering:
-**`control--side` is stably mismatched at `6e0b172a50bd` against `audit:car`'s
-`47f6bbf0a014`** — the same pair on the fixed and the unfixed tree, four runs, so it is
-neither the flake nor the clamp. **A stable mismatch on one view is a real difference
-between the two harnesses and nobody has diagnosed it.** It is not a repaint: `top` is
-byte-identical. **Nobody is on this.**
+frame.
+
+**RE-MEASURED 2026-08-03 AND THIS ENTRY WAS WRONG ABOUT WHICH VIEW.** It said
+*"`control--side` is stably mismatched at `6e0b172a50bd` against `audit:car`'s
+`47f6bbf0a014`"*. On merged `main` today, with `src/` checked out at `8cde5ae` into a
+worktree and both harnesses re-run: **`control--side` MATCHES** at `6deaddd7`, `top`
+matches at `7ba58340`, and the **one** failure is **`control--hero`**, `b27ff0d1798b`
+against `c4ba2fb1a3b9`. Same shape on the `halo-paint-and-banner` branch, three consecutive
+runs, all identical: side matches at `1332b92e`, top at `cad1ea19`, hero mismatched at
+`05d1a4e88b58` against `98183f99a09a`. So:
+
+- **The stable mismatch is `hero`, not `side`.** Whatever fixed `side` is somewhere in the
+  merges since this was written and nobody re-ran the harness — the same species of stale
+  entry this file records for `validate:flags`, `probe:fieldsize` and `shoot:panels`.
+- **`hero` is now STABLE rather than flaky**, which contradicts the entry below it as well:
+  three consecutive runs on one tree give one hash, not three. Either the flake is gone or
+  it needs load to appear, and these runs were taken at load 55–330, so it is not simply
+  "under load".
+- **1 failure on both trees, and the paint work moved every hash without moving the
+  pattern**, which is what a change to the swatch grid should do: both harnesses read the
+  same `Livery.ts`, so a layout change moves them together.
+
+**Still nobody's, and still undiagnosed — but it is one view and the name of that view has
+changed.** Check it by running it, and if it says `side` again, that is new information.
 
 ### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
 
