@@ -6,9 +6,13 @@ import {
 } from './CarMesh';
 import { MIRROR_FAR, MIRROR_STRIDE_HIGH, MIRROR_STRIDE_LOW } from './CockpitMesh';
 import { Wreckage } from './Wreckage';
-import { buildTrackMeshes, bankedCarGroundY, type TrackMeshes } from './TrackMesh';
+import {
+  buildTrackMeshes, bankedCarGroundY, roadPoseUnderCar, type TrackMeshes,
+} from './TrackMesh';
 import { updateRenderPoses, updateSafetyCarPose } from './RenderPose';
-import { corneringPitch, corneringRoll, groundLift, wreckLean } from './CarAttitude';
+import {
+  corneringPitch, corneringRoll, groundLift, newSurfacePose, wreckLean,
+} from './CarAttitude';
 import { buildPaddock, type PaddockScene } from './Paddock';
 import { CameraDirector, isOnboardMode } from './CameraDirector';
 import { EffectsDirector } from './EffectsDirector';
@@ -300,6 +304,25 @@ export class Renderer {
    * nobody can prove is working, which is how this one stayed broken.
    */
   readonly carVisuals: CarVisual[] = [];
+  /**
+   * The damped body lean, per car, kept OUT of the car root's own rotation.
+   *
+   * Two things are written onto that rotation and only one of them is damped.
+   * The road's attitude must track the surface exactly (`surfaceAttitude`); the
+   * lean under load is a body on springs and is damped at 8/s. Reading the
+   * previous frame's total back off `root.rotation` — which is what this used
+   * to do, when the total WAS the lean — would put the road through the same
+   * filter and drag the car through the asphalt at the foot of every gradient.
+   *
+   * Index-parallel with `carVisuals` and `engine.cars`, and grown in
+   * `buildCars` alongside them. Held here rather than on `CarVisual` because
+   * that interface belongs to `CarMesh`, which knows nothing about where a car
+   * is standing. Issue #71.
+   */
+  private leanRoll: number[] = [];
+  private leanPitch: number[] = [];
+  /** Scratch for the road's attitude under the car currently being placed. */
+  private readonly carSurfacePose = newSurfacePose();
   /**
    * The safety car.
    *
@@ -819,6 +842,8 @@ export class Renderer {
       });
       this.scene.add(visual.root);
       this.carVisuals.push(visual);
+      this.leanRoll.push(0);
+      this.leanPitch.push(0);
     }
 
     this.racingLine = new RacingLine(engine.track);
@@ -1228,6 +1253,8 @@ export class Renderer {
       v.dispose();
     }
     this.carVisuals.length = 0;
+    this.leanRoll.length = 0;
+    this.leanPitch.length = 0;
   }
 
   /** Handles a viewport change. */
@@ -2047,7 +2074,6 @@ export class Renderer {
         y += engine.pitStopOf(car).progress.jack * PIT_JACK_LIFT_M;
       }
       v.root.position.set(car.renderX, y, car.renderZ);
-      v.root.rotation.y = car.renderHeading;
 
       // Geometry LOD, from the camera's position at the END of the previous
       // frame — the director has not moved it yet this frame. A frame of lag on
@@ -2056,15 +2082,54 @@ export class Renderer {
       // one loop.
       v.updateDetail(this.director.camera.position.distanceTo(v.root.position));
 
-      // Body roll and pitch from the actual accelerations, which is what makes
-      // the car look loaded up rather than sliding around on rails.
+      // THE ROAD'S OWN ATTITUDE — issue #71, and it is the larger half of
+      // *"one the wheels are in the ground not sure how thats possible"*.
+      //
+      // The origin above is placed correctly (`bankedCarGroundY`, held to 2mm
+      // against the drawn triangles on eleven circuits by `probe:banking`) and
+      // the car used to be drawn HORIZONTAL on top of it, with its attitude
+      // coming from its own accelerations and from nothing at all about the
+      // surface under it. A car is a rigid body 3.6m long and 1.9m wide, so
+      // being right at one point is not being right: on any gradient the
+      // downhill axle went under the asphalt and on any banking the low-side
+      // tyre did. Raycast against the drawn road, worst on the lap, with no
+      // lean at all — Monaco 434mm, Zandvoort 396mm, Spa 341mm, Monza 15mm.
+      // Monza is 15mm because Monza is flat, which is PROJECT.md section 3.5
+      // in one line.
+      //
+      // Read at the car's own four corners rather than as a surface normal at
+      // a point — see `roadPoseUnderCar`. `CameraDirector.update` computes the
+      // identical thing from the identical function, because the eye rides the
+      // car and the two must not disagree.
+      const surf = roadPoseUnderCar(
+        track, car.renderS, car.renderLateral, car.renderHeading, this.carSurfacePose,
+      );
+      // And onto the plane rather than through it, where the road is curved
+      // vertically — see `roadPoseUnderCar`. Tens of millimetres, on top of a
+      // placement rule that is otherwise right to 2mm, and every contact point
+      // was on the wrong side of it. `CameraDirector` adds the same term to the
+      // eye's own height for the same reason it uses `bankedCarGroundY`: 20mm
+      // of disagreement between the eye and the chassis moves the halo three
+      // per cent of a frame height.
+      v.root.position.y += surf.lift;
+
+      // Body roll and pitch from the actual accelerations, ON TOP of that,
+      // which is what makes the car look loaded up rather than sliding around
+      // on rails. A DEVIATION FROM THE ROAD PLANE, not from the horizontal:
+      // the two are 313mm apart at the edge of a tyre on Zandvoort's banking.
       //
       // A wreck has no accelerations, so both terms fall to zero and it would
-      // sit dead level and square to the road — which is the one attitude a
-      // car that has just been in an accident is never in. It gets a settled
-      // lean instead, picked from its own index so it is stable for the session
-      // rather than jittering, and eased into over about a second so the car
-      // slumps as it comes to rest instead of snapping into the pose.
+      // sit dead level ON THE ROAD — which is the one attitude a car that has
+      // just been in an accident is never in. It gets a settled lean instead,
+      // picked from its own index so it is stable for the session rather than
+      // jittering, and eased into over about a second so the car slumps as it
+      // comes to rest instead of snapping into the pose.
+      //
+      // The lean is damped and kept in its OWN state rather than read back off
+      // the root. The road is not damped and must not be — a filtered surface
+      // lags at the foot of every gradient and puts the car through the
+      // asphalt for as long as it takes to catch up — so the two cannot share
+      // one accumulator.
       let roll = corneringRoll(p.lateralG);
       let pitch = corneringPitch(p.longitudinalG);
       if (car.retired) {
@@ -2072,8 +2137,23 @@ export class Renderer {
         roll = lean.roll;
         pitch = lean.pitch;
       }
-      v.root.rotation.z = damp(v.root.rotation.z, roll, 8, dt);
-      v.root.rotation.x = damp(v.root.rotation.x, pitch, 8, dt);
+      this.leanRoll[i] = damp(this.leanRoll[i], roll, 8, dt);
+      this.leanPitch[i] = damp(this.leanPitch[i], pitch, 8, dt);
+
+      // 'YXZ' — yaw, then pitch about the CAR's lateral axis, then roll.
+      //
+      // It was three's default 'XYZ', which is `RX * RY * RZ`: the yaw is
+      // applied FIRST and the pitch is then taken about the WORLD x axis, so a
+      // car heading along +x received its braking pitch as pure ROLL and a car
+      // heading along +z received it correctly. `CameraDirector` builds the
+      // same Euler and both were wrong together, which is why it never showed
+      // up as a mismatch. Issue #71.
+      v.root.rotation.set(
+        surf.pitch + this.leanPitch[i],
+        car.renderHeading,
+        surf.roll + this.leanRoll[i],
+        'YXZ',
+      );
 
       // AND THE LEAN HAS TO STAND ON SOMETHING — issue #58, *"one the wheels
       // are in the ground not sure how thats possible"*. The rotation above is
@@ -2084,18 +2164,25 @@ export class Renderer {
       // further 81mm. Measured against the DRAWN asphalt by `probe:crashrest`:
       // a wreck at Monza was 174mm into the road, which is half a tyre.
       //
-      // ONLY FOR A WRECK, and the omission is deliberate. A running car's roll
-      // and pitch model the BODY moving on its suspension while the tyres stay
-      // planted, and this rig cannot express that — `Renderer` places the whole
-      // visual at one height and nothing moves the body relative to the wheels
-      // (see `CarMesh.frontCornerForProbe`). Lifting the whole car under
-      // braking would draw it hopping off the road, which is a worse artefact
-      // than the one it fixes, and it is transient in a way a wreck's lean is
-      // not. The wreck's lean is a settled pose on a stationary car, and a
-      // stationary car stands on the ground. Recorded in PROJECT.md section 7.
+      // Measured against the ROAD PLANE, which is what the two gradients are
+      // for. The surface half of the rotation is not an error to be paid off —
+      // it is what puts the tyres on the road — and a lift taken against the
+      // horizontal would launch every car on a banked corner.
+      //
+      // ONLY FOR A WRECK, and the omission is deliberate and unchanged by #71.
+      // A running car's roll and pitch model the BODY moving on its suspension
+      // while the tyres stay planted, and this rig cannot express that —
+      // `Renderer` places the whole visual at one height and nothing moves the
+      // body relative to the wheels (see `CarMesh.frontCornerForProbe`).
+      // Lifting the whole car under braking would draw it hopping off the road,
+      // which is a worse artefact than the one it fixes, and it is transient in
+      // a way a wreck's lean is not. The wreck's lean is a settled pose on a
+      // stationary car, and a stationary car stands on the ground. Recorded in
+      // PROJECT.md section 7.
       if (car.retired) {
         v.root.position.y += groundLift(
           v.root.rotation.x, v.root.rotation.y, v.root.rotation.z,
+          surf.gradX, surf.gradZ,
         );
       }
 

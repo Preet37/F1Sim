@@ -25,6 +25,8 @@ import {
 } from './Terrain';
 import type { SceneryItem, WorldModel } from '../track/WorldObstacles';
 import type { TrackSpline } from '../track/TrackSpline';
+import { Vec2 } from '../core/MathUtils';
+import { CONTACT_POINTS, surfaceAttitude, type SurfacePose } from './CarAttitude';
 
 /**
  * Builds the circuit's geometry once, at session load.
@@ -220,6 +222,221 @@ export function bankedCarGroundY(track: TrackSpline, s: number, lateral: number)
     bankHeight(bank, lateral, track.widthAt(s) * 0.5),
   );
 }
+
+/** Scratch for `roadPoseUnderCar`. Reused so a frame allocates nothing. */
+const groundProbe = new Vec2();
+/**
+ * Largest correction `roadPoseUnderCar`'s refinement step may apply, metres.
+ *
+ * Half a wheelbase. The step is a refinement of an estimate that is already
+ * right to second order, so on any road that is not a hairpin it is single
+ * millimetres; the cap is there so that the one place the estimate is poor
+ * cannot turn one Newton step into the divergent inverse it replaced.
+ */
+const SAMPLE_STEP_CAP_M = 0.9;
+const patchDX = new Float64Array(CONTACT_POINTS.length);
+const patchDY = new Float64Array(CONTACT_POINTS.length);
+const patchDZ = new Float64Array(CONTACT_POINTS.length);
+
+/**
+ * THE ATTITUDE THE DRAWN ROAD PUTS A CAR AT — issue #71.
+ *
+ * `bankedCarGroundY` answers where the car's ORIGIN goes, which is #3 and which
+ * `probe:banking` holds to 2mm on eleven circuits. A car is a rigid body 3.6m
+ * long and 1.9m wide, so being right at one point is not being right: drawn
+ * level with the world on Spa's 18.7 per cent gradient it buries an axle 337mm,
+ * and on Zandvoort's 18 degrees of banking it buries a tyre 313mm.
+ *
+ * This reads the SAME surface at the car's own EIGHT CONTACT PATCHES, fits the
+ * plane through them by least squares, and hands it to
+ * `CarAttitude.surfaceAttitude` — the shared rule `Renderer.syncCars` and
+ * `CameraDirector` both go through. It lives here rather than in `CarAttitude`
+ * because the surface is this file's business and nothing else's;
+ * `CarAttitude` stays free of three and of the track model, which is what lets
+ * a probe drive the angle rule on its own.
+ *
+ * Eight and not four. Sampling at the axle and tyre-centre lines was the first
+ * version and it is not enough: the road is a curved surface and a car is a
+ * flat plate, so a plane pinned through two pairs of points can still leave the
+ * corners of the plate anywhere. The eight points a car actually stands on are
+ * both the question that was asked and the least total error available to a
+ * rigid body.
+ *
+ * FORWARD ONLY, AND THAT IS THE WHOLE DESIGN. The obvious implementation asks
+ * "what is the road doing at the world point 1.8m ahead of the car", which
+ * needs the world -> (s, lateral) inverse. That inverse is a fixed point whose
+ * contraction factor is `|1 - lateral * curvature|`, and at a hairpin apex that
+ * is close to zero: measured, a two-step version of it was wrong by 277mm at
+ * Monaco s=336 — the tightest span on the calendar — 122mm at Spa and 98mm at
+ * COTA, which is the same order as the defect it was there to correct. So
+ * nothing is inverted. The samples are placed in TRACK space, where the map is a
+ * straight evaluation, corrected for the arc against the chord and for the
+ * interpolated road heading, and then pushed onto the patch's true world
+ * position by ONE CLAMPED REFINEMENT STEP — a refinement of an estimate that is
+ * already right to second order, which is a different thing from a solver
+ * started at nothing.
+ *
+ * AND THE FIT IS NOT ENOUGH ON ITS OWN — see `lift`. Any plane through a curved
+ * surface has the surface on both sides of it.
+ *
+ * @param heading the car's own drawn heading, radians. Not the track's: a car
+ *                crossing the road at a slip angle is pitched by the slope
+ *                along ITS nose, not along the centreline's.
+ * @param patches optional, `3 * CONTACT_POINTS.length` long: receives the world
+ *                (x, y, z) this function read the surface at, per contact
+ *                patch. `probe:crashrest` takes it so that it can raycast the
+ *                drawn triangles AT THE POINTS THIS SAMPLED and so measure the
+ *                mesh's own departure from the placement rule separately from
+ *                the attitude's — without restating this function's sampling,
+ *                which is the whole reason the rule lives in one place.
+ */
+export function roadPoseUnderCar(
+  track: TrackSpline, s: number, lateral: number, heading: number, out: SurfacePose,
+  patches?: Float64Array,
+): SurfacePose {
+  // The contact patches, in TRACK space. `delta` is how far the car is turned
+  // out of the road's own direction, so a car running straight samples straight
+  // along the lap and a car at an angle samples across it.
+  //
+  // THE ROAD'S HEADING IS INTERPOLATED HERE, not `track.headingAt`, which snaps
+  // to a node. Nodes are 3.00m apart and Monaco's tightest span turns fifty
+  // degrees across one of them, so a snapped heading is up to twenty-five
+  // degrees out exactly where the sampling has to be most careful.
+  const count = track.count;
+  const w = ((s % track.length) + track.length) % track.length;
+  const f = (w / track.length) * count;
+  const i0 = Math.floor(f) % count;
+  const i1 = (i0 + 1) % count;
+  const ft = f - Math.floor(f), fg = 1 - ft;
+  let frameNX = track.nx[i0] * fg + track.nx[i1] * ft;
+  let frameNZ = track.nz[i0] * fg + track.nz[i1] * ft;
+  const nLen = Math.hypot(frameNX, frameNZ) || 1;
+  frameNX /= nLen; frameNZ /= nLen;
+  // `nx`/`nz` are the tangent turned a quarter turn, so the tangent back out of
+  // them is (-nz, nx) and the heading is `atan2(tx, tz)`.
+  const delta = heading - Math.atan2(-frameNZ, frameNX);
+  const cd = Math.cos(delta), sd = Math.sin(delta);
+
+  // ARC AGAINST CHORD. A metre of travel at `lateral` metres off the centreline
+  // is `1 + lateral * curvature` metres of the CENTRELINE's own arc length, and
+  // at Monaco's hairpin that factor reaches 1.5. Without it the front axle is
+  // sampled a third of a metre from where it is, which on a twelve per cent
+  // grade is 40mm of height — the same order as the whole defect. Positive
+  // curvature is a RIGHT turn and `lateral` is the car's LEFT, so the outside
+  // of the corner gets the longer arc, which is the sign below.
+  const kappa = track.curvature[i0] * fg + track.curvature[i1] * ft;
+  const arc = 1 + lateral * kappa;
+  const alongScale = Math.abs(arc) > 0.2 ? 1 / arc : 1;
+
+  const rootY = bankedCarGroundY(track, s, lateral);
+  track.toWorld(s, lateral, groundProbe);
+  const x0 = groundProbe.x, z0 = groundProbe.y;
+
+  // The contact patch's world position is EXACTLY known — it is a rigid offset
+  // from the car — and the whole difficulty is that the surface can only be
+  // asked in track space. `sh`/`ch` turn the car's own frame into world.
+  const sh = Math.sin(heading), ch = Math.cos(heading);
+
+  const n = CONTACT_POINTS.length;
+  let mx = 0, my = 0, mz = 0;
+  for (let k = 0; k < n; k++) {
+    const [lx, lz] = CONTACT_POINTS[k];
+    // Car frame -> track frame. The car's +x is its LEFT, which is +lateral
+    // when the car is square to the road.
+    let ss = s + (lz * cd - lx * sd) * alongScale;
+    let ll = lateral + lx * cd + lz * sd;
+
+    // ONE CORRECTION STEP, against where the patch actually is. Everything
+    // above is first order in the offset, and at Monaco's hairpin — a 9.2m
+    // radius on a 10m-wide road — first order is not enough: the arc's own
+    // sagitta over the 1.8m to an axle is 176mm of lateral, and the outboard
+    // arm swings with it. So the estimate is compared against the patch's true
+    // world position and pushed onto it in the track frame there.
+    //
+    // A REFINEMENT AND NOT A SOLVER, deliberately. The world -> track fixed
+    // point contracts by `|1 - lateral * curvature|`, which a hairpin drives
+    // toward zero — a two-step version of it, used as the whole mapping, was
+    // wrong by 277mm at this very node. Started from an estimate that is
+    // already right to second order it is a strict improvement, and the step is
+    // clamped to half a wheelbase so that it cannot become the divergent thing
+    // it replaced.
+    const targetX = x0 + lx * ch + lz * sh;
+    const targetZ = z0 - lx * sh + lz * ch;
+    track.toWorld(ss, ll, groundProbe);
+    {
+      const ex = targetX - groundProbe.x, ez = targetZ - groundProbe.y;
+      const fw = ((ss % track.length) + track.length) % track.length;
+      const ff = (fw / track.length) * count;
+      const j0 = Math.floor(ff) % count;
+      const j1 = (j0 + 1) % count;
+      const jt = ff - Math.floor(ff), jg = 1 - jt;
+      let jnx = track.nx[j0] * jg + track.nx[j1] * jt;
+      let jnz = track.nz[j0] * jg + track.nz[j1] * jt;
+      const jl = Math.hypot(jnx, jnz) || 1;
+      jnx /= jl; jnz /= jl;
+      const along = ex * -jnz + ez * jnx;
+      const across = ex * jnx + ez * jnz;
+      const CAP = SAMPLE_STEP_CAP_M;
+      ss += Math.max(-CAP, Math.min(CAP, along));
+      ll += Math.max(-CAP, Math.min(CAP, across));
+      track.toWorld(ss, ll, groundProbe);
+    }
+
+    patchDX[k] = groundProbe.x - x0;
+    patchDZ[k] = groundProbe.y - z0;
+    const y = bankedCarGroundY(track, ss, ll);
+    if (patches) {
+      patches[k * 3] = groundProbe.x;
+      patches[k * 3 + 1] = y;
+      patches[k * 3 + 2] = groundProbe.y;
+    }
+    patchDY[k] = y - rootY;
+    mx += patchDX[k]; my += patchDY[k]; mz += patchDZ[k];
+  }
+  mx /= n; my /= n; mz /= n;
+
+  // Least-squares plane y = a*dx + b*dz + c through the eight, solved on the
+  // centred coordinates so `c` drops out.
+  let sxx = 0, sxz = 0, szz = 0, sxy = 0, szy = 0;
+  for (let k = 0; k < n; k++) {
+    const dx = patchDX[k] - mx, dz = patchDZ[k] - mz, dy = patchDY[k] - my;
+    sxx += dx * dx; sxz += dx * dz; szz += dz * dz;
+    sxy += dx * dy; szy += dz * dy;
+  }
+  const det = sxx * szz - sxz * sxz;
+  let gradX = 0, gradZ = 0;
+  if (Math.abs(det) > 1e-9) {
+    gradX = (szz * sxy - sxz * szy) / det;
+    gradZ = (sxx * szy - sxz * sxy) / det;
+  }
+  surfaceAttitude(gradX, gradZ, heading, out);
+
+  // AND THE CAR HAS TO STAND ON TOP OF THE PLANE, NOT THROUGH IT.
+  //
+  // The origin is placed at `bankedCarGroundY` — issue #3, and `probe:banking`
+  // holds that to 2mm — and the plane is pinned through it. Wherever the road
+  // has vertical curvature, a plane pinned through the MIDDLE of a 3.6m car
+  // runs below the surface at both ends: measured on the drawn triangles, 42mm
+  // at Spa on the drop out of La Source, 59mm at COTA's turn 1 climb and 39mm
+  // at Zandvoort. Every contact point was under the asphalt, which is the
+  // reported bug in miniature and not a rounding error.
+  //
+  // So the origin rises by the deepest of the eight, and a car in a compression
+  // rides on its axles with its middle clear — which is what a car in a
+  // compression does. Over a CREST the residuals are the other sign and the
+  // lift is zero: a rigid plate on a crest teeters on its middle and its axles
+  // hang, and that is also what a car does. It is clamped rather than signed
+  // for exactly that reason; a signed correction would push the middle of the
+  // car through the road over every brow on the calendar.
+  let lift = 0;
+  for (let k = 0; k < n; k++) {
+    const over = patchDY[k] - (gradX * patchDX[k] + gradZ * patchDZ[k]);
+    if (over > lift) lift = over;
+  }
+  out.lift = lift;
+  return out;
+}
+
 const Y_LINE = 0.035;
 const Y_KERB = 0.055;
 

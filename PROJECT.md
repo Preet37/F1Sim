@@ -266,7 +266,7 @@ Run `npm run` to list. The important ones:
 | `probe:effects` | **What fires, and what the car was doing at the time.** Sparks, rubber, the purple, the three rear lamps and whether the four wing actuations reach the GRID. Every section asserts BOTH directions — the effect fires when it should AND does not when it should not — because "sparks were drawn" is truer on the build #11 was reported against than on the fixed one. `EffectsDirector.frame` publishes the emission counts beside the physics that caused them. 11 circuits. `FX_BREAK=chroma|blur|teams|flash`, `FX_CIRCUITS=` |
 | `validate:world` | Nothing built on the racing surface |
 | `probe:banking` | Cars stand on the DRAWN asphalt: raycasts the road mesh on 11 circuits, checks the drawn cross-slope against the surveyed banking, and forbids the flat `carGroundY` outside `TrackMesh.ts` |
-| `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing level, and the gear readout for a stopped car is `N` and stays `N`. Issue #58 |
+| `probe:crashrest` | A car that has crashed comes to rest: the drawn pose of a car the engine has frozen does not move (real `SimClock`, real `updateRenderPoses`, 50 and 85fps), no tyre of a wreck is deeper into the drawn asphalt than the same car standing on the road, and the gear readout for a stopped car is `N` and stays `N` (#58). **And since #71, §4: a RUNNING car lies ON the road** — all eight contact patches raycast against the drawn triangles on **all eleven circuits**, at the racing offset and hard against each white line, with the road mesh's own departure from the placement rule measured in the same run so the bound is derived rather than chosen. §4b reads the source of `Renderer` **and** `CameraDirector`, which used to carry a copy of the same rule |
 | `probe:curvature` | Surveyed vs authored curvature, and the inner edge of the ribbon still advancing at every node — nothing folded |
 | `probe:grade` | **The in-race picture against `reference/target/`.** Median luma, RMS contrast, HSV saturation and mean(R)-mean(B) over a stated region, ours against the user's own frames, off `probe:sharpness` shots taken at the scale the real scaler settled on. Bars are the reference frame plus a tolerance. Issue #78 |
 | `probe:env` | **What is actually lighting the scene**, in a real browser: the captured sky is fetched from a gitignored directory and falls back silently by design, and a light mast that cannot be placed clear of the circuit is not placed — so both can be false while everything still looks fine. Reports `environmentSource` and the mast count |
@@ -323,10 +323,19 @@ Run `npm run` to list. The important ones:
   (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
   work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
   says the grip difference driving that is currently zero.
-- `probe:framing` — **56 failures, and they are new**, introduced deliberately by correcting
-  the probe's own settling time. 54 are the HUD's `MIRROR_PANES` keep-out, 1 is a real
-  cockpit-camera framing defect at Suzuka, 1 is a pane-width band at Monaco. Full breakdown
-  in §7. **This is a probe that got stricter, not a feature that broke.**
+- `probe:framing` — **113 failures, and this entry has been wrong twice.** It said 56; merged
+  `main` measured **51** on 2026-08-03, so the count had already come down with some other
+  merge and nobody re-ran it. It is now 113 and **+49 of the difference is a second
+  instrument correction, not a feature**: the probe placed its car at
+  `track.elevationAt(car.s)` while `CameraDirector` places every eye relative to
+  `bankedCarGroundY`, so it had been projecting the halo and the mirror panes onto a car
+  **20mm below the one the camera was looking at**, on every circuit, since that line was
+  written — and 20mm moves the halo three per cent of a frame height by the camera's own
+  note. `main` with the instrument corrected measures **100**. The remaining **+13 is
+  #71**, thirteen of its seventeen new rows at Monaco, whose onboard rig now pitches with an
+  11-degree road. The bulk of all three counts is the HUD's `MIRROR_PANES` keep-out, whose
+  rectangles were calibrated against the 20mm-low car. Full breakdown in §6 under #71.
+  **This is a probe that got stricter twice, not a feature that broke.**
 - ~~`shoot:frontend`~~ — **was red on `main` and nobody had recorded it, and the cause was
   not the front end.** It exited 1 on every run with three identical lines, one per
   viewport: `console Failed to load resource: the server responded with a status of 404`.
@@ -1424,6 +1433,149 @@ red at 164.2mm**. Deleting the renderer's call to it: **2 of 4 §2b wiring check
 
 `probe:banking`, `probe:carrig`, `probe:rideheight`, `probe:recovery`, `probe:blockage`,
 `probe:gearbox` and `validate:world` are all unchanged and passing.
+
+### Every car was drawn LEVEL WITH THE WORLD, on a road that is neither (issue #71)
+
+> *"one the wheels are in the ground not sure how thats possible"* — the larger half of the
+> same sentence #58 answered, and a different population: every car, all the time.
+
+`Renderer.syncCars` set the car root's `rotation.y` from the heading and its
+`rotation.x`/`rotation.z` from the car's **own accelerations**, and from **nothing at all
+about the surface under it.** The origin was placed correctly — `bankedCarGroundY`, which
+`probe:banking` holds to 2mm on eleven circuits (#3) — and the car was then drawn
+**horizontal**, so on any gradient the downhill axle went under the asphalt and on any
+banking the low-side tyre did. This is **#3 one level up**: the placement rule is right *at
+the origin*, and a car is a rigid body 3.6m long and 1.9m wide, so being right at one point
+is not being right.
+
+Raycast against the drawn `road-asphalt` triangles under the eight contact points, **with
+no lean at all**, worst on the lap:
+
+| circuit | before | after | | circuit | before | after |
+|---|---|---|---|---|---|---|
+| **Monaco** | **408.7mm** | **79.7mm** | | Red Bull Ring | 254.4mm | 8.6mm |
+| **Zandvoort** | **396.3mm** | **34.4mm** | | Interlagos | 112.4mm | 3.4mm |
+| **Spa** | **341.4mm** | **27.3mm** | | Suzuka | 62.4mm | 34.3mm |
+| **COTA** | **295.0mm** | **46.5mm** | | Bahrain | 19.2mm | 2.4mm |
+| Monza | 16.0mm | 2.7mm | | Silverstone | 12.7mm | 0.5mm |
+| | | | | Jeddah | 3.4mm | 0.4mm |
+
+**Monza is 16mm because Monza is flat**, which is PROJECT.md §3.5 in one line: a check
+written at Monza reports this as fine, and a check written at Jeddah reports it as perfect.
+Eleven circuits or nothing.
+
+**What landed.**
+
+- **`TrackMesh.roadPoseUnderCar`** reads the drawn surface at the car's **own eight contact
+  patches** and fits the plane through them by least squares; **`CarAttitude.surfaceAttitude`**
+  turns that plane into a pitch and a roll. The split is deliberate and is the same one
+  `RenderPose.ts` makes: the surface belongs to `TrackMesh`, and `CarAttitude` stays free of
+  three and of the track model, so a probe can drive the angle rule with nothing loaded.
+  **`Renderer.syncCars` and `CameraDirector.update` both call the one function**, which is
+  what retires the line-for-line copy of `rigRoll`/`rigPitch` the camera used to carry.
+- **FORWARD ONLY, and that is the whole design.** The obvious implementation asks what the
+  road is doing at the world point 1.8m ahead of the car, which needs the world → (s,
+  lateral) inverse. That inverse is a fixed point whose contraction factor is
+  `|1 − lateral·κ|`, and a hairpin drives it toward zero: **measured, a two-step version of
+  it was wrong by 277mm at Monaco s=336, 122mm at Spa and 98mm at COTA** — the same order as
+  the defect it was there to correct. So nothing is inverted. The samples are placed in
+  TRACK space, where the map is a straight evaluation, corrected for **arc against chord**
+  (`1 + lateral·κ`, which reaches 1.5 at Monaco) and for the **interpolated** road heading
+  rather than `headingAt`'s node-snapped one (25° out at Monaco's tightest span), and then
+  pushed onto the patch's true world position by **one clamped refinement step**. A
+  refinement, not a solver, and the cap says so.
+- **The lift.** A plane pinned through the middle of a 3.6m car runs *below* a road with
+  vertical curvature at both ends: every one of the eight contact points was under the
+  asphalt by **42mm at Spa's drop out of La Source, 59mm at COTA's turn 1 climb, 39mm at
+  Zandvoort.** The origin now rises by the deepest of the eight, so a car in a compression
+  rides on its axles with its middle clear. **Clamped at zero, deliberately**: over a crest
+  the residuals are the other sign and a rigid plate teeters on its middle with its axles
+  hanging, which is what a car does; a signed correction would push the middle of every car
+  through the road over every brow on the calendar.
+- **The Euler order was `'XYZ'` and it is now `'YXZ'`.** `RX · RY · RZ` applies the yaw
+  first and takes the pitch about the WORLD x axis, so a car heading along +x received its
+  braking pitch as pure **roll** and a car heading along +z received it correctly.
+  `CameraDirector` built the identical Euler in the identical order, so the two were wrong
+  together and it had never shown up as a mismatch. **`probe:framing` was already right** —
+  its `toWorld` applies `Euler(pitch, 0, roll, 'XYZ')` to the car-local vector and *then*
+  the yaw by hand, which is `Ry·Rx·Rz`, i.e. `'YXZ'` — so the probe had been describing a
+  car the renderer was not drawing. Its own comment claiming otherwise is corrected.
+  A second, smaller half of the same defect: the camera's **orientation** was already
+  `'YXZ'` while the **eye offset** it is rotated by was `'XYZ'`, so those two disagreed with
+  each other inside one function.
+- **Reconciled with #58 rather than overriding it.** #58 applied `groundLift` to **wrecks
+  only**, on the stated grounds that *"a running car's roll models the BODY moving on its
+  suspension while the tyres stay planted, and this rig cannot express that"*. That decision
+  stands untouched. What changed is that the two attitudes are now **different things**: the
+  road's is exact, undamped and applies to every car, and the lean under load is a deviation
+  **from the road plane** rather than from the horizontal, damped at 8/s in its own
+  accumulator (`Renderer.leanRoll`, `CameraDirector.leanRoll`) so that the road is never put
+  through the filter. `groundLift` takes the plane's gradient as an argument for exactly
+  that reason — measured against the horizontal it would fling a car into the air on every
+  banked corner. **The wreck lean's own cost fell from 11.8–12.9mm to 0.0–0.6mm** on the
+  four circuits `probe:crashrest` §2 stages an accident on, because a lean measured against
+  the right plane is a smaller lean.
+
+**`probe:crashrest` gained §4 and §4b, on all eleven circuits.** §4 places a car with **no
+lean at all** at the racing offset and hard against each white line, every 8 nodes, and
+raycasts all eight contact points against the drawn triangles. §4b reads the source of
+**both** consumers, because §4 computes the root pose itself and would stay green with the
+renderer's call deleted — the tautology §3.2 exists to prevent, and the same shape of check
+as §2b and as `probe:banking`'s call-site rule.
+
+**Proved red twice.** Making `surfaceAttitude` return level — which is exactly the shipped
+build — takes it from **48 ok / 1 failed to 39 ok / 10 failed**, and the numbers are the
+issue's own: **Zandvoort 396.3mm, Spa 341.4mm, Monaco 408.7mm**, with §2's level-baseline
+column reading **396 / 341 / 398 / 14mm** against the issue's 396 / 341 / 434 / 15. **Only
+Jeddah stays green, because Jeddah is flat and level.** Restoring `'XYZ'` in both consumers:
+**46 ok / 3 failed**, with §4 unchanged and both §4b order checks red — which is what makes
+§4b load-bearing rather than decorative.
+
+**`probe:framing` moved, and the movement decomposes cleanly into a part that is this
+work's and a much larger part that is not.** Three runs, same machine, same day:
+
+| | failures |
+|---|---|
+| merged `main`, the instrument as it stood | **51** |
+| merged `main`, instrument corrected | **100** |
+| **this branch, instrument corrected** | **113** |
+
+**PROJECT.md said 56 and merged `main` measures 51** — the count came down with some other
+merge and nobody re-ran it. §4's own note about checking a known-failing entry before
+quoting it, again.
+
+**The instrument correction is +49 of the +62 and it is pre-existing.** `probe:framing`
+placed its car at `engine.track.elevationAt(car.s)` while `CameraDirector` places every eye
+relative to `bankedCarGroundY(...)` — so the car it projected the halo, the rim and the
+mirror panes onto stood **`ROAD_SURFACE_Y` = 20mm below the car the camera was looking at**,
+on every circuit, since the day that line was written. `CameraDirector`'s own note says 20mm
+of eye-to-chassis disagreement moves the halo three per cent of a frame height, which is
+exactly the scale of the 49. The `MIRROR_PANES` keep-out rectangles in `Hud.ts` were
+therefore calibrated against a car 20mm low. **That is the HUD work's to resolve**
+(`src/ui/Hud.ts` is #17/#35's ground and was not touched); the probe now measures the car
+the renderer draws, which is the only version of it that can be believed. It also uses the
+DRAWN pose — `renderX`/`renderZ`/`renderHeading` — rather than the solver's last step, for
+the same reason.
+
+**This work's own +13 is the road, and it is the feature.** Seventeen new, eight gone, and
+**thirteen of the seventeen are Monaco** — whose car at 30 seconds is on the Beau Rivage
+climb, so its onboard rig now pitches with an 11-degree road instead of a 3.4-degree load
+lean. `monaco phone cockpit: horizon at N% of frame height` is the honest signature of that:
+the horizon IS lower in the view from a car going up a hill. The other four are mirror panes
+at Suzuka and Zandvoort. The eight that went away are mostly Red Bull Ring. Nothing in the
+`MIRROR_PANES` band is this branch's to move, and nothing in it was moved.
+
+`probe:cameras` **PASS on all eleven circuits**, `probe:carrig`, `probe:rideheight`,
+`validate:world` and `audit:car` all unchanged and green, and **`probe:banking` is
+0.000m** — #3 is closed and has not moved.
+
+**What is left, and it is not the attitude.** §4's bound is the road mesh's own departure
+from `bankedCarGroundY`, measured in the same run at the same points, plus 10mm — because no
+placement rule can beat that floor, and the floor is **not zero**. Ten of eleven circuits
+are inside **5.3mm** of it. Monaco's s=336 is 43.6mm over, and that node is a **9.2m
+centreline radius on a 10m-wide road**, the tightest span on the calendar and the one this
+file already names as the fold margin's worst case. See §7 for the mesh defect itself, which
+is a real finding of this work and is **not** fixed here.
 
 ### The in-race picture, measured against the reference frames (issue #78)
 
@@ -3380,39 +3532,30 @@ shared files and the run that matters passed. **Nobody is on this.**
   that reads a height, a sector, a gap or a marshal post off `s` inherits it. The probe
   **excludes those frames from both of its columns and prints them** rather than swallowing
   them, so the exclusion is visible and the count is the measurement. **Nobody is on this.**
-- **EVERY CAR IS DRAWN LEVEL WITH THE WORLD, on a road that is neither flat nor level.
-  Issue #71.** Found by `probe:crashrest` while measuring #58, and it is much the larger
-  half of *"the wheels are in the ground"*. `Renderer.syncCars` sets the car root's
-  `rotation.y` from the heading and its `rotation.x`/`rotation.z` from the car's own
-  accelerations — **and from nothing about the surface under it.** The origin is placed
-  correctly (`bankedCarGroundY`; `probe:banking` holds it to 2mm on eleven circuits) and the
-  car is then drawn horizontal, so on any gradient the downhill axle goes under the asphalt
-  and on any banking the low-side tyre does. It is pure geometry: a 3.6m wheelbase on Spa's
-  18.7% gradient buries an axle **1.8 × 0.187 = 337mm**, and a 1.925m track on Zandvoort's
-  18° buries a tyre **0.9625 × tan(18°) = 313mm**. Raycast against the drawn triangles at
-  the racing offset, worst on the lap, with **no lean at all**: **Monaco 434mm, Zandvoort
-  396mm, Spa 341mm, Monza 15mm** (Monza is flat, which is why a Monza-only check would
-  report this as fine). This is #3 one level up — the placement rule is right *at the
-  origin* and the car is rigid, so being right at one point is not being right.
-  **Not fixed here, and the reason is contention rather than difficulty:** the fix is to
-  give the car the road's own attitude, and `CameraDirector` carries a line-for-line copy of
-  the same two expressions (`rigRoll`/`rigPitch`, with a comment saying the two must not
-  disagree), the cockpit eye offset is rotated by them, and `probe:framing` — 56 known
-  failures, owned by the HUD work — is laid out against where that puts the halo. It is one
-  shared rule in `src/render/CarAttitude.ts` plus one line in each consumer, and it should
-  be done with `probe:framing` and `probe:cameras` watching. **Nobody is on this.**
-- **The car's pitch is applied about the WORLD x axis, so half the circuit gets it as
-  roll.** `Renderer` writes the three angles onto an `Object3D`, whose Euler order is the
-  default `'XYZ'` — that is `RX · RY · RZ`, so the yaw is applied *before* the pitch and the
-  pitch axis is therefore world-x rather than the car's own lateral axis. A car heading
-  along +x receives its braking pitch as pure roll; a car heading along +z receives it
-  correctly. `CameraDirector.updateCockpit` builds the identical Euler in the identical
-  order, so the camera and the car agree with each other and both are wrong together, which
-  is why it has never shown as a mismatch. The correct order is `'YXZ'`. `CarAttitude
-  .groundLift` deliberately computes against the rotation that is *actually applied* rather
-  than the one that was meant, so #58's fix is exact either way — but the underlying
-  ordering is still wrong. Same file boundary and same reviewers as the item above; **filed
-  with it under #71. Nobody is on this.**
+- ~~EVERY CAR IS DRAWN LEVEL WITH THE WORLD~~ and ~~the pitch is applied about the WORLD x
+  axis~~ — **both fixed by #71**, see §6. What is LEFT of them is one span and it is a road
+  mesh defect rather than an attitude one: **Monaco s=336, where the centreline radius is
+  9.2m on a 10m-wide road** — the tightest span on the calendar, and the one §6 already
+  names as the fold margin's worst case. A rigid 3.6m car placed square to the centreline
+  there is **43.6mm deeper into the drawn asphalt than the road mesh's own departure from
+  the placement rule accounts for**, and `probe:crashrest` §4 fails on it. Ten of eleven
+  circuits are inside 5.3mm. **Nobody is on the remaining span.**
+- **THE DRAWN ROAD IS NOT THE SURFACE CARS ARE PLACED ON, between node rows — up to 113mm,
+  and `probe:banking` structurally cannot see it.** Found by #71, and it is the single
+  biggest thing that work turned up that it did not go looking for. The road is swept as
+  ONE quad across its full width per node; a quad whose two node rows FAN — every corner —
+  is not planar, so the diagonal it is split on puts the drawn triangles off
+  `bankedCarGroundY` everywhere except at the four corners. Measured at the eight points a
+  car's contact patches read, on all eleven circuits: **Suzuka 113.5mm, Monaco 51.6mm,
+  Zandvoort 45.2mm, COTA 45.9mm, Red Bull Ring 35.4mm, Spa 30.8mm, Interlagos 12.8mm,
+  Bahrain 2.7mm, Monza 2.9mm, Silverstone 0.8mm, Jeddah 0.4mm.** `probe:banking` reports
+  **0.000m** and is not wrong — it raycasts at `px[i] + nx[i] * lat`, which is a mesh VERTEX
+  ROW, where the quad's corners are exact by construction. It has never sampled between
+  them. This is the floor below which no placement rule built on `bankedCarGroundY` can go,
+  which is why `probe:crashrest` §4's bound is that floor plus 10mm, measured in the same
+  run. The fix is in the road sweep — sub-divide across the width where the node rows fan,
+  the way the sweep already sub-divides along it — and it belongs with #4's family, not with
+  #71. **Nobody is on this.**
 - **A car standing OFF the road is placed on the road's plane, and mostly that is fine.**
   Checked while working #58 because it was the obvious candidate for "a crashed car is on a
   different placement path", and **it is not**: the run-off strip is swept at

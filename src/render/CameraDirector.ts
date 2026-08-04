@@ -4,7 +4,8 @@ import {
   DRIVER_EYE_PITCH, DRIVER_EYE_X, DRIVER_EYE_Y, DRIVER_EYE_Z,
   EYE_PITCH, EYE_X, EYE_Y, EYE_Z,
 } from './CockpitMesh';
-import { bankedCarGroundY } from './TrackMesh';
+import { bankedCarGroundY, roadPoseUnderCar } from './TrackMesh';
+import { newSurfacePose } from './CarAttitude';
 import { nominalBarrierOffset, OBSTACLE_HEIGHT_M } from '../track/WorldObstacles';
 import type { CarEntry } from '../race/CarEntry';
 import type { TrackSpline } from '../track/TrackSpline';
@@ -316,6 +317,20 @@ export class CameraDirector {
   private rigRoll = 0;
   private rigPitch = 0;
   /**
+   * The damped BODY LEAN alone, kept apart from the total in `rigRoll`.
+   *
+   * The chassis attitude is two things added together: the road's, which is
+   * exact and undamped, and the body's on its suspension, which is damped at
+   * 8/s. `rigRoll`/`rigPitch` carry the sum because that is what the eye rides
+   * and what `probe:framing` has to project the halo through; these carry the
+   * half that has an accumulator. Same split, same reasons, and the same
+   * 8/s, as `Renderer.leanRoll`. Issue #71.
+   */
+  private leanRoll = 0;
+  private leanPitch = 0;
+  /** Scratch for the road's attitude under the car being followed. */
+  private readonly surfacePose = newSurfacePose();
+  /**
    * Driver's-eye rig: how far the head has fallen away from the chassis.
    *
    * A neck, in three numbers. `headLean` is a roll, `headShiftX` and
@@ -409,10 +424,28 @@ export class CameraDirector {
     // A probe that projects the halo through a rolled camera onto a car it has
     // assumed is level measures up to 5.7 degrees of roll that is not in the
     // picture, and 5.7 degrees at the edge of a wide frame is several per cent
-    // of frame width. These are the same numbers `Renderer.syncCars` applies to
-    // the car root, at the same damping rate, so the two cannot disagree.
-    this.rigRoll = damp(this.rigRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
-    this.rigPitch = damp(this.rigPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
+    // of frame width.
+    //
+    // TWO TERMS, and this used to be one. The road under the car is neither
+    // flat nor level, and until issue #71 nothing here or in `Renderer.syncCars`
+    // knew that: both took the whole attitude from the car's own accelerations,
+    // so the driver's eye rode a car that was drawn horizontal on an 18.7 per
+    // cent gradient. `roadPoseUnderCar` is the shared rule, called from the same
+    // module by both, so that this file is no longer a line-for-line copy of
+    // two expressions in another one — which is what the comment that used to
+    // stand here was worried about, correctly.
+    //
+    // The ROAD's half is not damped. It is geometry and it does not lag; a
+    // filtered surface drags the car through the asphalt at the foot of every
+    // gradient for as long as it takes to catch up. Only the LEAN has an
+    // accumulator, at the same 8/s `Renderer` uses.
+    const surf = roadPoseUnderCar(
+      track, car.renderS, car.renderLateral, heading, this.surfacePose,
+    );
+    this.leanRoll = damp(this.leanRoll, clamp(-p.lateralG * 0.016, -0.06, 0.06), 8, dt);
+    this.leanPitch = damp(this.leanPitch, clamp(p.longitudinalG * 0.012, -0.05, 0.05), 8, dt);
+    this.rigRoll = surf.roll + this.leanRoll;
+    this.rigPitch = surf.pitch + this.leanPitch;
 
     // The car's own origin, which is the DRAWN road surface and not the bare
     // elevation the simulation carries — see `carGroundY`. Every camera below
@@ -435,7 +468,12 @@ export class CameraDirector {
     // the plan error cancels in screen space for the car being followed and
     // this one does not, because it moves the eye. `probe:framerate`, section
     // WORLD SMOOTHNESS, measures exactly this line.
-    const carY = bankedCarGroundY(track, car.renderS, car.renderLateral);
+    // AND THE CURVATURE LIFT WITH IT — issue #71. `Renderer.syncCars` raises the
+    // car root onto the plane its own contact patches span, so an eye that took
+    // the bare `bankedCarGroundY` would sit tens of millimetres inside the tub
+    // through every compression on the calendar. Same term, same call, same
+    // reason as the line above.
+    const carY = bankedCarGroundY(track, car.renderS, car.renderLateral) + surf.lift;
 
     // Reversing: the useful view is the one the car is going towards.
     //
@@ -991,7 +1029,7 @@ export class CameraDirector {
       DRIVER_EYE_Y,
       DRIVER_EYE_Z + this.headShiftZ,
     );
-    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'XYZ');
+    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'YXZ');
     this.eye.applyEuler(this.carEuler);
     this.camera.position.set(
       car.renderX + this.eye.x,
@@ -1069,7 +1107,7 @@ export class CameraDirector {
     // were floating rather than bolted down; the rotation angles were already
     // right, it was the position that was wrong.
     this.eye.set(EYE_X, EYE_Y, EYE_Z);
-    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'XYZ');
+    this.carEuler.set(this.rigPitch, car.renderHeading, this.rigRoll, 'YXZ');
     this.eye.applyEuler(this.carEuler);
     this.camera.position.set(
       car.renderX + this.eye.x,
@@ -1206,8 +1244,16 @@ export class CameraDirector {
    * The attitude the CAR is lying at: roll and pitch, radians.
    *
    * Exposed for `probe:framing`, which has to put the halo, the wheel and the
-   * mirror panes where they actually are before it projects them. Same values,
-   * same damping, as `Renderer.syncCars` puts on the car root.
+   * mirror panes where they actually are before it projects them. The same
+   * numbers `Renderer.syncCars` puts on the car root, because since issue #71
+   * both come out of one call to `CarAttitude.surfaceAttitude` plus one lean
+   * damped at the same rate — rather than out of two copies of two expressions
+   * in two files, which is how this pair could have drifted apart.
+   *
+   * THE ROAD IS IN HERE NOW. Up to 10.6 degrees of pitch at Spa and 18 of roll
+   * at Zandvoort, against the 2.9 and 3.4 the load lean can reach. A consumer
+   * that projects car-local geometry through these is projecting it onto a car
+   * lying on the road, which is where the car is.
    */
   get chassisRoll(): number {
     return this.rigRoll;
