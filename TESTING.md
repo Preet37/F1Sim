@@ -331,7 +331,7 @@ climbing Beau Rivage — band questions, neither loosened) ·
 ~~`probe:racingline` **4**~~ **now 0** — the four were a hole in the probe's own colour
 classifier, not the display; see §5 ·
 `probe:racesweep` **10 of 55**, five of them `monaco: fastest lap ~149% of reference` and
-three of them Spa (#1) · `validate:race` **3** — Monaco 150%, Spa 154% and an 81.1s Spa
+three of them Spa (#1) · `validate:race` **3** (the cause is a single `throttleShare` where the physics wants an ERS-aware function — **#103**) — Monaco 150%, Spa 154% and an 81.1s Spa
 spread, against **2** on clean `main` (Monaco 150%, COTA 145%): **Spa is a knowing cost of
 the throttle-share change, explained in PROJECT.md §7** ·
 `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
