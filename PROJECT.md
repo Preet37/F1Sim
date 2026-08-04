@@ -211,6 +211,7 @@ Run `npm run` to list. The important ones:
 | `probe:renderperf` | Real GPU, headful Chrome, actual resolution and frame time. `PERF_PAIR=` toggles a factor inside one session so contention cancels; `PERF_VIEWPORT=390x844x2` measures at the pixel count a phone draws rather than a desktop's |
 | `probe:graphics` | The graphics setting reaches the GL context: tiers, the four switches, the Settings screen, and persistence. Reads `getContextAttributes()`, not the settings object |
 | `probe:autotier` | **Does the picture come back?** Drives the real `AutoTierPolicy` off synthetic frame costs — a load spike at minimum resolution, then the load removed — and asserts the tier *returns*, in node and again through the real `Renderer` in a browser reading `shadowMap.enabled` and the composer. Also: a transient is absorbed, repeated failure still latches, and a tier chosen in Settings survives five minutes of trouble untouched. **Not load sensitive** — every frame cost is stated, not measured. Issue #73 |
+| `probe:grain` | **High-frequency energy ON THE ROAD, by depth.** Mean absolute Laplacian of luma — #29's metric — but masked to the mesh named `ROAD_MESH_NAME` by a second, occlusion-correct render of the same frame, banded over the road's own extent so band 0 is always the most distant asphalt and band 5 the nearest, and shot at the scale the resolution scaler settled on. 11 circuits × day/night × 3 tiers × 2 cameras, and it **asserts**. `GRAIN_VIEWPORT=390x844x2` measures at a phone's pixel count |
 | `probe:framing` | Halo/mirror/wheel positions in frame, 11 circuits × 2 aspects |
 | `probe:carrig` | Every car part **bolted** — intersecting, not merely within 10mm; wheels at y=0; no member crossing bodywork in mid-span; the steered corner clear of the chassis at 13 angles across the lock |
 | `probe:framerate` | The car behaves the same at every frame rate — and the world is DRAWN smoothly at rates that do not divide 120: the camera's own height, real rig, real engine, a full lap of all eleven circuits |
@@ -759,6 +760,152 @@ section load-bearing rather than decorative.
   settled for two seconds. **This made the probe stricter, not looser** — see §7.
 - Reverse-camera jitter: slip angle measured against the car's nose, so a reversing car
   sat on ±π and the sign flipped every time the wheel moved — a **66° lurch per frame.**
+
+### The near field was the one place the road's relief could not be drawn, and the only place it was (issue #48)
+
+> *"the ground is different why is that? some fps shit i think like that would need to be
+> fixed no?"* — a Bahrain night frame, HUD reading 60fps.
+
+**They were right that something was wrong and wrong about what it was**, which is the
+usual shape. The frame rate is fine; the SURFACE changes character with distance. Far and
+mid-distance asphalt reads smooth and correct, the bottom third is dense high-frequency
+speckle, and there is a visible band between the two. This is the unfinished half of
+*"all of the other maps still have the weird black lines and grainy maps"* (§5): the black
+seams were found and fixed, the graininess never was.
+
+**`probe:grain` is the instrument, and it exists because `probe:sharpness` could not be
+it.** #29 gave that probe a grain metric — mean absolute Laplacian of luma in six bands —
+but it prints and exits 0 whatever the numbers say, and it measures the WHOLE FRAME, which
+mixes the sky, the barriers and the car into a figure that is supposed to describe the
+road. The new probe keeps the metric so the tables can be read together and changes three
+things: the support is the asphalt only, masked by a second occlusion-correct render of
+the same frame with `ROAD_MESH_NAME` emissive-white and everything else black and then
+eroded by two pixels; the bands span the ROAD's own vertical extent, so band 0 is always
+the most distant asphalt on screen and band 5 the nearest whatever the circuit and camera;
+and it is shot at the resolution the scaler settled on. **11 circuits × day and night ×
+`low`/`medium`/`high` × cockpit and chase = 132 configurations, and it asserts.**
+
+**On the build the screenshot came from.** Bahrain, `low` — the tier every phone was
+pinned to before #29 — cockpit, road pixels only, far → near:
+
+| | band 0 | 1 | 2 | 3 | 4 | 5 | near−mid |
+|---|---|---|---|---|---|---|---|
+| night, before | 2.1 | 1.5 | 1.6 | 2.2 | **12.4** | **18.0** | **+16.4** |
+| night, after | 2.1 | 1.5 | 1.6 | 1.8 | 2.7 | 2.2 | **+0.6** |
+| day, before | 1.5 | 2.0 | 2.2 | 2.7 | **10.3** | **13.4** | **+11.2** |
+| day, after | 1.5 | 2.0 | 2.2 | 2.3 | 2.8 | 2.2 | **+0.0** |
+
+Flat, then a cliff — and the cliff is where the user drew the band. **Across all 132
+configurations: 26 red before, 0 after.** They are not evenly spread, and that is the
+"check every map" lesson again in reverse — the worst circuit on the calendar is not the
+one the screenshot came from. Suzuka `low` by night measured **24.2** in the near band
+against 1.3 in the middle distance, an excess of **22.9**; Bahrain's worst is 16.4 and
+Silverstone's 6.6. Verified on `main` merged into the branch (`7911adb`).
+
+**IT IS THE NORMAL MAP AND NOTHING ELSE, bisected rather than argued.** Setting
+`asphalt.normalStrength` to zero takes those two ratios from 11.32 and 6.04 to 0.88 and
+0.73 and flattens the whole profile; zeroing the aggregate bump instead moves them by 0.02.
+The issue's other three candidates are all clear: **anisotropy is already 16** on both
+detail maps and on the fence, kerb and marker textures, there is **no negative mip bias
+anywhere in `src/`**, and every procedural threshold is already widened by its own
+`fwidth`.
+
+**Why it could only ever have aliased, and why two earlier passes at it did not work.**
+The height field's finest octave has a four-texel period in a 256-texel tile and the
+asphalt tiles that map at 1.4 cycles per metre, so it is an **11mm bump**. A central
+difference is a high-pass filter and an octave's contribution to SLOPE goes as `amp/period`
+— so that band carried **59% of the map's gradient energy on 35% of its contrast**. Both
+earlier passes trimmed its AMPLITUDE, which moved the tint and left the derivative where it
+was. From a camera 0.77m above the road the along-view pixel footprint is `6.5e-4 · z²`
+metres — 2.8mm at 2m, 5.9mm at 3m, 23mm at 6m — so an 11mm feature is **under two pixels
+from three metres out and never more than four pixels anywhere the road is on screen**.
+Mip-mapping averages the normals, which is the wrong average, and the specular lobe does
+not follow. `detailResolve` was the guard and it did its job in the only direction it was
+pointed: it fades a band out with DISTANCE, so beyond ~4m the bump is gone — which is why
+the mid-distance measures 1.5 and reads as a flat plane — and inside ~2m it is at full
+strength. **The transition band is that smoothstep.**
+
+Two changes, both in the map rather than in a strength:
+
+- **The normal map is differentiated from a low-passed copy of the height field**
+  (separable, wrapping, σ = 3.4 texels). The R channel is untouched, so the tint, the
+  roughness break-up and the aggregate stretch are exactly as they were — a mip chain
+  filters colour correctly and colour was never the problem. **3.4 is the smallest σ that
+  leaves the 16-texel band dominant**, i.e. that makes the band the map claims to carry the
+  band it actually carries; at 2.6 the eight-texel residual still leads it.
+- **`detailResolve`'s ramp was `smoothstep(0.25, 0.85)` cycles per pixel. Nyquist is 0.5**,
+  so it drew a band at full strength down to four pixels per cycle and at HALF strength at
+  1.8 — past the point the pixel grid can represent it at all. Now `smoothstep(0.08, 0.25)`:
+  full only while a band spans twelve pixels, gone by four. With the coarser map this leaves
+  every surface's relief reaching as far as it did before (grass fades at 6.6m against 6.1m),
+  so it is a change of CONTENT, not of extent.
+
+**Rejected, and recorded because it is the obvious idea:** restoring the map's original RMS
+slope after the low pass, so the surface keeps its facet-angle distribution at a longer
+wavelength. Implemented and measured — the ratio only came down to **3.74** and the road
+photographs as gravel, because a 13° mean slope at 45mm is a rough surface where the same
+slope at 11mm is a fine one. Real asphalt is self-affine; its slope falls with wavelength
+and inventing it back is inventing a road. The gain stays at 2.4: mean slope **13.3° → 4.1°**,
+worst facet **40.7° → 12.1°**.
+
+**The probe's own bound had to change shape, and that is a finding too.** Written as a
+ratio at 1.60 it failed three of the 132 rows *on the fixed build*, all Suzuka by night —
+2.18 from bands of 1.23 and 2.68. Nothing there is boiling: Suzuka's mid-distance asphalt
+is the cleanest on the calendar (1.2, against Bahrain's 1.6 and Monza's 5.9) and a ratio
+with a tiny denominator reports the denominator. **Not a case for relaxing the bound; a
+case for the bound being the wrong shape.** The Laplacian is in display levels and "how
+much more speckle the near field carries" is a subtraction. Both rules are differences now:
+near−mid ≤ **4.0** levels (worst on the fixed build **2.42**, on the shipped bug **22.9**)
+and no two adjacent depth bands more than **5.0** apart (worst on the fixed build **3.48**,
+on the shipped bug **15.1**, on the rejected intermediate build **6.1**). The second rule
+exists because the first is two numbers and cannot see a defect that lifts the whole
+profile — an intermediate build that moved the aliasing from the bottom of the frame to the
+middle passes it with a *negative* excess.
+
+**Proved it goes red, three ways, and the third is why there are two rules.** Reverting the
+whole change gives back the shipped numbers on all eleven circuits (**26 of 132 rows red**).
+Keeping the corrected ramp but putting the fine octaves back into the map is **worse than
+the original** — Bahrain night `low` cockpit `2.1 1.5 1.6 5.3 19.9 20.7`, an excess of
+**19.1** — because a fade told the map carries 16 cycles per tile when it carries 64 holds
+an 11mm band at strength further out than the old fade did; that is the band limit and the
+fade being one mechanism rather than two. Keeping the band limit but restoring the
+past-Nyquist ramp gives `1.4 2.0 7.7 7.2 4.5 2.6`, whose near−mid is **−5.06 — a pass on
+the first rule** — and the step rule catches it at **5.64**.
+
+**And the instrument was checked for repeatability rather than assumed to have it**, because
+two one-off runs of the reverted build produced weaker numbers than the sweep did and that
+had to be resolved before any of the above could be quoted. Three independent runs of the
+same configuration, fresh browser each time, Bahrain night `low` cockpit: the fixed build
+gives an excess of **0.68, 0.64, 0.67** and the broken build **16.41, 16.52, 16.49**. The
+bands agree to a tenth. The two odd runs did not reproduce in six attempts and were not
+chased further; they are recorded here rather than deleted.
+
+**`probe:sharpness` did not move, and proving that needed care.** Sharpness and grain pull
+in opposite directions and §6 records the 5.4–11.3× that was hard-won, so the road being
+band-limited is exactly the kind of change that could quietly give it back. Measured with
+`measureSharpness.py` on the same eleven cockpit frames before and after — **but the shots
+are taken at whatever the resolution scaler settles on, and it did not settle on the same
+figure twice.** Where it landed within 0.02 (Bahrain 0.86, Interlagos 0.94, Monaco 0.86)
+the change is **hf −3.7%, grad +0.6%** — nothing. Where it drifted, the metric moves with
+it and not with the change: Spa 0.90 → 0.99 reads **hf +64.8%** and Red Bull Ring
+0.85 → 1.00 reads **+56.9%**, which is the resolution scale and is an accidental
+demonstration of exactly the trap §6 records. Only the scale-matched rows mean anything.
+
+**The photographed asphalt material does not fix this and would make it worse.** `main`
+now carries ambientCG **Asphalt033** (CC0, 2K, colour/normal/roughness/AO/displacement) and
+the obvious hypothesis is that a real material with a real mip chain behaves correctly at
+grazing angles by construction. Measured, on the file: its normal map carries an **RMS
+slope of 18.2°**, and **93% of that slope energy is at wavelengths under 4mm** — only
+**1.1%** survives above 16mm. It is a photograph of a surface whose relief is genuinely
+millimetre-scale, and millimetre-scale relief is precisely what #48 is about. Binding it
+unfiltered would reintroduce the reported artefact at greater amplitude; binding it through
+the same band limit keeps about a hundredth of it, which the procedural coarse bands
+already provide. The conclusion is robust to tiling: to get 90% of its slope into the band
+this road can draw you would have to stretch one tile over about **5.8m**, at which point
+it is not asphalt texture. **Its COLOUR and ROUGHNESS maps are a different story** — those
+mip-filter correctly and are pure gain — and binding them is a real job (a loader, an asset
+slot, 12MB of JPEG, a look review) that belongs with #36. Left as a follow-up, deliberately.
+See §7.
 
 ### The world juddering vertically — the half of the render pose #9 did not carry (issue #54)
 
@@ -1952,6 +2099,7 @@ against every threshold and so stops binding silently rather than throwing.
 | Pit stop | Crew, choreography, release light, the barrier/overshoot bug, crew quality as a career parameter |
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
+| Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
 | Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | A real vehicle leading the field; lap counter not advancing; the limiter fighting the player's steering |
@@ -2043,6 +2191,28 @@ accident, and `probe:qualiretire` stages one.
   cooled down — stays reduced for the rest of the page load. A thermal-recovery relax, on
   the model of the resolution scaler's `CEILING_RELAX_S`, is the obvious extension and is
   **not built**. Nobody has measured how often that case actually occurs.
+
+- **The photographed asphalt is bound to nothing, and its NORMAL map should stay that way.**
+  `public/assets/materials/asphalt/` holds ambientCG Asphalt033 (CC0, 2K, five maps) and
+  `grep -rn "assets/materials" src/` returns nothing: no loader exists yet. Measured while
+  working #48, the material's normal map carries an RMS slope of **18.2°** with **93% of
+  that energy below 4mm** and 1.1% above 16mm — it is the exact defect #48 is about, at
+  greater amplitude, and no mip chain fixes it because mip-mapping averages normals and the
+  specular lobe does not follow. **Its colour and roughness maps are worth having** and
+  would be pure gain: they mip-filter correctly, they are real aggregate rather than value
+  noise, and the road's albedo is the half of the surface that was never the problem. What
+  stops it being done here is scope — it needs the asset-slot loader (#36) so that deleting
+  the directory is still byte-identical, a decision about 12MB of JPEG on a page that
+  currently downloads nothing, and a look review of a road whose colour has been tuned by
+  hand for a year. **Nobody has bound it and nobody has looked at it in the engine.**
+- **The low pass in `SurfaceDetail.makeGrain` is shared by every surface, and only the road
+  was measured.** Grass, run-off, kerbs and walls read the same normal map, so their mean
+  facet slope fell 13.3° → 4.1° with the asphalt's. For grass and run-off that is very
+  probably right — both are seen at grazing angles constantly and `runoff`'s own comment
+  already records it sparkling — and grass at roughness 0.97 has almost no specular lobe to
+  alias, so it could afford more bump than the road can. **`probe:grain` masks to
+  `ROAD_MESH_NAME` and says nothing about any of them.** The verges were eyeballed in
+  `audit:circuits` and looked right; that is not a measurement and is not claimed as one.
 - **The post chain is what makes the picture, and it is also most of the frame.** Issue #29
   established the first half by measurement (§6). The second half is the reason `medium`
   exists and the reason it is not simply switched on for everyone. Paired A/B on an Apple
