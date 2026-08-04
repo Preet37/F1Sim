@@ -673,6 +673,7 @@
   font-family: var(--font-display);
   font-stretch: 116%;
   font-size: 26px;
+  overflow-wrap: anywhere;
   font-weight: 800;
   letter-spacing: 0.01em;
   text-transform: uppercase;
@@ -883,6 +884,45 @@
 .dm-rating { font-family: var(--font-data); font-size: 16px; font-weight: 700; text-align: right; }
 
 .dm-cut { height: 2px; background: var(--sig-red); }
+
+/* --------------------------------------------------------------------------
+   THE TABLE ON A PHONE
+
+   The five columns of `88.png` are a 1920-wide layout and they do not fit in
+   390. Laid into that width the fixed columns overran the row: the DRIVER and
+   TEAM headings were printed on top of each other and the name column measured
+   ZERO, so every driver on the board was a flag and nothing else. That is the
+   timing tower's own defect (#76, `.hud-tower.is-timed` laying the desktop
+   template into a 176px panel) in a second place, found the same way — by
+   photographing it.
+
+   So the phone drops the two columns that are not the point. TEAM goes because
+   the flash of team colour beside the name already carries it, and the ACCLAIM
+   BAR goes while its figure stays, because five 7px blocks are 45px this
+   layout does not have. Nothing is truncated and nothing overlaps.
+   -------------------------------------------------------------------------- */
+@media (max-width: 620px) {
+  /* FOUR CELLS, FOUR COLUMNS. Hiding TEAM from the row and the header leaves
+     Driver / Acclaim / Value / Rating — and a three-column track for four
+     cells wraps, which is what the second screenshot showed: the RATING
+     heading on its own line and every figure under its own row. */
+  .dm-head,
+  .dm-row {
+    grid-template-columns: minmax(0, 1fr) 26px 58px 38px;
+    gap: 7px;
+    padding: 8px 8px;
+  }
+  .dm-head .dm-col:nth-child(2),
+  .dm-row .dm-team { display: none; }
+  .dm-acclaim-bar { display: none; }
+  .dm-col { font-size: 10px; letter-spacing: 0.06em; }
+  .dm-head .dm-col:nth-child(3) { text-align: right; }
+  .dm-driver-name { font-size: 13px; }
+  .dm-value,
+  .dm-rating { font-size: 13px; }
+  .dm-table { max-height: min(52vh, 460px); }
+  .dm-card .dd-cmp-last { font-size: 21px; }
+}
 
 /* The detail card down the right. */
 .dm-card {
