@@ -25,6 +25,7 @@ import { Vec2 } from '../src/core/MathUtils';
 import {
   qualifyingBoardOrder, rankSegment, resolveSegment, resultGapCell,
 } from '../src/race/Classification';
+import { pitLaneGeometry } from '../src/track/PitGeometry';
 import type { CarEntry } from '../src/race/CarEntry';
 
 const failures: string[] = [];
@@ -249,10 +250,25 @@ for (const circuitId of ['bahrain', 'silverstone']) {
     `${circuitId} Q2: ${e2.participants.length} entered, expected ${Q1_ADVANCING}`);
 
   // 7. They never leave the garage, and set no time.
+  //
+  //    "In the garage" used to be spelled `inPitLane`, and that stopped being
+  //    the right question in #74: a car standing in a garage is not in the pit
+  //    lane, and while it claimed to be, the player counted twenty cars in a
+  //    fifteen-car lane. The engine's own record of whether the car went out is
+  //    `leftThePits`, which is what Art. B4.3.2 is actually about, and where it
+  //    is standing is a question for the lane's geometry. Both are asserted, so
+  //    this is stricter than the flag it replaces rather than looser.
   check(heroQ2.bestLapTime === 0,
     `${circuitId} Q2: a driver barred from the session set a lap time in it`);
-  check(heroQ2.inPitLane && heroQ2.lap === 0,
-    `${circuitId} Q2: a driver barred from the session left the pit lane`);
+  check(!heroQ2.leftThePits && heroQ2.lap === 0,
+    `${circuitId} Q2: a driver barred from the session left the pit lane ` +
+    `(leftThePits=${heroQ2.leftThePits}, lap=${heroQ2.lap})`);
+  {
+    const g = pitLaneGeometry(def, e2.track.length);
+    check(Math.abs(heroQ2.lateral) > g.garageFace,
+      `${circuitId} Q2: a driver barred from the session is standing in the pit lane, ` +
+      `${(Math.abs(heroQ2.lateral) - g.centre).toFixed(1)}m outboard of the fast lane`);
+  }
 
   // 7b. THE SEGMENT ACTUALLY RAN. Everyone else left the garage and set a lap.
   //
@@ -465,9 +481,23 @@ for (const circuitId of ['bahrain', 'silverstone', 'monaco', 'spa']) {
       `${circuitId} Q2: ${car.driver.code} takes no part in the segment but is standing ` +
       `on the racing surface at s=${car.s.toFixed(0)}m, ${Math.abs(car.lateral).toFixed(1)}m ` +
       `from the centreline of a ${halfWidth.toFixed(1)}m half-width`);
-    check(car.inPitLane && car.inPitBox,
-      `${circuitId} Q2: ${car.driver.code} is not parked in its garage ` +
-      `(inPitLane=${car.inPitLane}, inPitBox=${car.inPitBox})`);
+    // IN THE GARAGE, WHICH IS NOT THE PIT LANE. This used to assert
+    // `inPitLane && inPitBox` and print "all in their garages" underneath, and
+    // both halves were false: `parkSittingOut` placed the car on
+    // `pitLane.lateralOffsetM`, the fast lane's centreline, and the flags said
+    // it was in the lane because it was. Issues #74 and #75 are that sentence.
+    // Measured against the lane's own plan now — the garage frontage is
+    // `garageFace` and a car in a garage is behind it.
+    const g = pitLaneGeometry(def, e2.track.length);
+    const outboard = Math.abs(car.lateral) - g.centre;
+    check(Math.abs(car.lateral) > g.garageFace,
+      `${circuitId} Q2: ${car.driver.code} takes no part in the segment but is standing in ` +
+      `the pit lane, ${outboard.toFixed(1)}m outboard of the fast lane's centreline ` +
+      `(the garage frontage is ${(g.garageFace - g.centre).toFixed(1)}m out)`);
+    check(!car.inPitLane && !car.inPitBox,
+      `${circuitId} Q2: ${car.driver.code} is in its garage but still claims to be in the ` +
+      `pit lane (inPitLane=${car.inPitLane}, inPitBox=${car.inPitBox}) — every rule written ` +
+      `on that flag, and every count of cars in the lane, will believe it`);
     check(Math.hypot(car.physics.position.x, car.physics.position.y) > 1,
       `${circuitId} Q2: ${car.driver.code} is sitting at the world origin, which is where ` +
       `an unplaced CarEntry sits`);
@@ -536,12 +566,21 @@ for (const circuitId of ['bahrain', 'silverstone', 'monaco', 'spa']) {
     // this misses is not a pass that could have touched anything.
     if (i % 4 !== 0) continue;
     for (const car of e3.participants) {
-      // Runners ON THE CIRCUIT. A car driving down the pit lane passes within
-      // three metres of every garage on its way out, which is what a pit lane
-      // is; the engine keeps those apart with `inPitBox` and the pit-wall test.
-      // The question here is whether a car that is not in the session can be
-      // met on the road, and only a car on the road can answer it.
-      if (car.sittingOut || car.inPitLane) continue;
+      // EVERY runner, wherever it is, INCLUDING in the pit lane.
+      //
+      // This used to read `if (car.sittingOut || car.inPitLane) continue;` on
+      // the stated grounds that "a car driving down the pit lane passes within
+      // three metres of every garage on its way out ... the engine keeps those
+      // apart with `inPitBox` and the pit-wall test". Neither did. `inPitBox`
+      // takes the parked car OUT of `resolveContacts`, which is the opposite of
+      // keeping two cars apart, and the pit-wall test only separates a car in
+      // the lane from a car on the circuit — it does nothing for two cars both
+      // in the lane. So the one place in the session where a runner and a car
+      // that is not in it are ever near each other was the one place this
+      // probe deliberately did not look, and issues #74 and #75 were both
+      // living in it. Skipping the sitting-out cars themselves is kept: two
+      // parked cars have nothing to resolve.
+      if (car.sittingOut) continue;
       for (const g of sitting) {
         const d = Math.hypot(
           car.physics.position.x - g.physics.position.x,
@@ -570,8 +609,9 @@ for (const circuitId of ['bahrain', 'silverstone', 'monaco', 'spa']) {
       `${circuitId} Q2: ${car.driver.code} was taken out by contact before completing a lap`);
   }
 
-  console.log(`${circuitId.padEnd(12)} Q2  ${sitting.length} cars sitting out, all in their ` +
-    `garages, closest approach ${closest.toFixed(0)}m`);
+  console.log(`${circuitId.padEnd(12)} Q2  ${sitting.length} cars sitting out, ` +
+    `${sitting.filter((c) => !c.inPitLane).length} of them clear of the pit lane, ` +
+    `closest approach by a runner ${closest.toFixed(0)}m`);
 }
 
 // ===========================================================================
@@ -652,6 +692,101 @@ for (const circuitId of ['bahrain', 'monaco']) {
   console.log(`${circuitId.padEnd(12)} at the accident ${timedAtStop}/${engine.participants.length} ` +
     `had a lap; at the flag ${timed}/${others.length} of the others did, ` +
     `player classified P${finalOrder.indexOf(stopped) + 1}`);
+}
+
+// ===========================================================================
+// The number beside the player's name, in a segment they survived
+// ===========================================================================
+//
+//   "q2 it should've been 15 ... and the leaderboard showed me as 20th place"
+//
+// Issue #74, second half. A driver who came through Q1 cannot be twentieth in
+// Q2, because there are only fifteen cars in Q2. The number on the live tower
+// is `CarEntry.position`, written by `RaceEngine.updateStandings`, and
+// `standings` is EVERY entered car — twenty of them, always, in every session
+// type, because the same array is the race's classification. The only thing
+// that could tell it five of the twenty were not in this segment is
+// `classificationTier`, and until #74 it could not: an eliminated car is
+// neither retired nor disqualified.
+//
+// So this drives a real Q2 with the player at the LAST index of the entry list,
+// which is where a career rookie's entry sits — `Career.grid()` is in team
+// order and a rookie starts at the weakest team — and watches the number from
+// the first step, before anybody has set a lap. That is when the bug shows:
+// with every car on `bestLapTime === 0` the sort has nothing to separate them
+// and a stable sort leaves the field in construction order.
+//
+// It is asserted on the ENGINE's number rather than on the HUD's, deliberately.
+// `Hud.standingsCells` prints `String(car.position)` and nothing else, so the
+// engine's number IS the displayed one, and `src/ui/Hud.ts` belongs to the
+// timing-tower work (#17/#35/#76). If the tower ever draws a different number
+// from this, that is a display bug and it is theirs; this pins the simulation.
+
+console.log("\nTHE NUMBER BESIDE THE PLAYER'S NAME");
+
+for (const circuitId of ['bahrain', 'monaco']) {
+  const def = getCircuit(circuitId);
+
+  // Q1 first, so the knockout is real rather than declared.
+  const e1 = new RaceEngine(def, {
+    kind: 'qualifying', name: 'Q1', durationS: 600, laps: 0, playerIndex: 19,
+    standingStart: false, pitLaneStart: true, seed: 7401,
+    qualifyingPhase: 1, advancing: 15,
+  });
+  for (let i = 0; i < Math.round(600 / PHYSICS_DT) && !e1.over; i++) e1.step();
+
+  const q1 = rankSegment(e1.participants);
+  const player1 = e1.cars[19];
+  const survivors = q1.slice(0, 15);
+  // The probe is about a driver who GOT THROUGH. If the seed knocks them out,
+  // put them in the last surviving slot rather than quietly measuring nothing.
+  const through = survivors.includes(player1)
+    ? survivors
+    : [...survivors.slice(0, 14), player1];
+
+  const e2 = new RaceEngine(def, {
+    kind: 'qualifying', name: 'Q2', durationS: 480, laps: 0, playerIndex: 19,
+    standingStart: false, pitLaneStart: true, seed: 7402,
+    qualifyingPhase: 2, advancing: 10,
+    participants: through.map((c: CarEntry) => c.index),
+  });
+  const player = e2.cars[19];
+  const runners = e2.participants.filter((c) => !c.sittingOut).length;
+
+  let worstPos = 0;
+  let worstAtS = 0;
+  let outOfRange = 0;
+  let aheadOfARunner = 0;
+  const steps = Math.round(480 / PHYSICS_DT);
+  for (let i = 0; i < steps && !e2.over; i++) {
+    e2.step();
+    if (i % 60 !== 0) continue;
+    if (player.position > worstPos) {
+      worstPos = player.position;
+      worstAtS = i * PHYSICS_DT;
+    }
+    if (player.position > runners) outOfRange++;
+    // ...and the general rule the player's number is one case of: nobody who
+    // is out of the segment may be classified above somebody who is in it.
+    for (const car of e2.cars) {
+      if (!car.sittingOut) continue;
+      for (const other of e2.cars) {
+        if (other.sittingOut) continue;
+        if (car.position < other.position) aheadOfARunner++;
+      }
+    }
+  }
+
+  check(outOfRange === 0,
+    `${circuitId} Q2: the player was shown P${worstPos} of a ${runners}-car segment ` +
+    `(first at t=${worstAtS.toFixed(0)}s, on ${outOfRange} samples) — a driver who came ` +
+    `through Q1 cannot be classified below the size of the field they are in`);
+  check(aheadOfARunner === 0,
+    `${circuitId} Q2: a car that takes no part in the segment was classified above one ` +
+    `that does, on ${aheadOfARunner} car-samples`);
+
+  console.log(`${circuitId.padEnd(12)} Q2  ${runners} runners, player's worst position ` +
+    `P${worstPos}${worstPos > runners ? ' — OUTSIDE THE FIELD' : ''}`);
 }
 
 if (failures.length > 0) {

@@ -1787,6 +1787,221 @@ better than `main`.** The mirror failures stay at the pre-existing 2.
   `elevationAt(car.s)` and `s` was 0, putting them 4m under the asphalt.
   Same bug caused the Q2 pit-lane deadlock (none of 15 runners left the pit lane in twelve
   minutes) and "no car scored any time".
+
+### The invisible car came back, parked in the road — one bug, two issues (#74, #75)
+
+> *"q3 there are 20 cars, q2 it should've been 15 but in the pitlane there were 20 cars
+> and the leaderboard showed me as 20th place"* (#74)
+> *"you didn't fix the phasing cars issue in the pit"* (#75)
+
+**They were filed as two and they are one, and establishing that was the first result.**
+
+The fix for the invisible car above parks a car that takes no part in a segment rather
+than leaving it at the origin. Its comment says the car is put *"in its own box, under its
+own garage"* and *"behind the pit wall"*. **The lateral it actually used was
+`pitLane.lateralOffsetM` — the fast lane's centreline**, the line a car under the limiter
+drives down and the line `updatePitLane` steers every released car onto. So the five cars
+knocked out of Q1 stood in the middle of the road for the whole of Q2. That is the twenty
+cars the player counted in a fifteen-car pit lane, and — because `sittingOut` is exactly
+what keeps them out of `resolveContacts` — every runner released from a box further up the
+lane drove **straight through one** on the way out. One placement, both reports.
+
+**Measured before anything was changed.** New `probe:pitcrew` section, the real twenty-car
+`pitLaneStart` grid, every pair of cars in the lane every fourth step against the engine's
+own three-disc body:
+
+| circuit | segment | cars in the lane | runners | worst body gap | overlapping samples |
+|---|---|---|---|---|---|
+| Monaco | Q1 | 20 | 20 | 2.24m | 0 |
+| Monaco | Q2 | **20** | 15 | **0.00m** | **819** |
+| Bahrain | Q1 | 20 | 20 | 7.23m | 0 |
+| Bahrain | Q2 | **20** | 15 | **0.00m** | **675** |
+| Monza | Q1 | 20 | 20 | 7.17m | 0 |
+| Monza | Q2 | **20** | 15 | **0.00m** | **685** |
+
+**Q1 is the control and it is clean.** The same twenty cars, the same lane, the same
+releases — nobody parked — never come closer than 2.24m at Monaco, and a car body is 2.0m
+wide. **Runner against runner was never the problem.** Every overlapping sample pairs a
+`sittingOut=true` stopped car at 0.0m outboard with a moving runner at 0.0m outboard: both
+on the fast lane's centreline.
+
+**After: 15 in the lane, 15 runners, 0 overlaps, and the worst gap goes back to the Q1
+control value on all three circuits** — Monaco 2.24m, Bahrain 7.26m, Monza 7.17m.
+
+**The fix is that a garage is behind the frontage.** `parkSittingOut` places the car
+`PIT_GARAGE_PARK_INSET_M` = 4.5m beyond `garageFace`, inside the bay the paddock already
+builds there — `PIT_GARAGE_DEPTH_M` = 12.4m deep, with a floor, an opening and a back wall
+— and sets `inPitLane = false` and `inPitBox = false`, because it is not in the pit lane
+and it is not in a pit box. The depth moved from `Paddock.ts` into `PitGeometry.ts` so the
+engine and the buildings cannot disagree about how deep a garage is, which is the same rule
+`LANE_HALF_M` already states in that file. Nothing about collision changed: the honest
+reason the car cannot be hit is still `sittingOut`.
+
+**The second half of #74 is display-shaped and the fix is a regulation.** A driver who came
+through Q1 was shown **P20 in a fifteen-car Q2**. `Hud.standingsCells` prints
+`String(car.position)` and nothing else, and `car.position` is written by
+`RaceEngine.updateStandings` over `engine.standings` — every entered car, always twenty,
+because the same array is the race's classification. The only predicate that could tell it
+five of those twenty were not in the session is `classificationTier`, the module whose own
+comment says it is *"the whole of the 'sort to the back' rule, in one place, because it is
+a REGULATION and not a display detail"* — and it could not: an eliminated car is neither
+retired nor disqualified. It tied with every runner on tier, tied again on
+`bestLapTime === 0` in a segment nobody had set a lap in yet, and a stable sort left the
+field in **entry-list order**. A career rookie's entry is index 19 (`Career.grid()` is in
+team order and a rookie starts at the weakest team), so the number beside their name was
+20. `classificationTier` now demotes `sittingOut` below every car taking part, citing
+Art. B2.4.3. **Player's worst position through a whole Q2: P20 → P15, at Bahrain and
+Monaco.** `src/ui/Hud.ts` and `src/ui/TimingRow.ts` were not touched — they belong to
+#17/#35/#76, and the boundary is written on #76.
+
+**Why three green probes missed a bug this large, which is the §3.2 half.**
+
+- **`probe:qualiboard` had the exclusion written into it, with a reason.** Its Q2 sweep
+  reads `if (car.sittingOut || car.inPitLane) continue;`, above a comment saying *"the
+  engine keeps those apart with `inPitBox` and the pit-wall test"*. Neither does. `inPitBox`
+  takes the parked car **out** of `resolveContacts`, which is the opposite of keeping two
+  cars apart, and the pit-wall test (`a.inPitLane !== b.inPitLane`) only separates a car in
+  the lane from a car on the circuit. **The one place a runner and an absent car are ever
+  near each other was the one place the probe deliberately did not look.** It also asserted
+  `inPitLane && inPitBox` and printed *"all in their garages"* underneath — a claim about a
+  lateral it never measured.
+- **`probe:pitstop`, `probe:pitlimiter` and `probe:pitcrew` all measure an EMPTY pit lane.**
+  All three open with `for (const car of engine.cars) if (car !== player) car.eliminated =
+  true;`, and `audit:pitlane` photographs one serviced car. `probe:traffic` §1 does stage a
+  queue and it hand-places four cars with `pitLaneStart: false`. **Nothing anywhere had ever
+  run the twenty-car `pitLaneStart` grid every practice and qualifying session actually
+  begins with.**
+- **The knockout itself was never broken.** `probe:qualiboard` asserts 20/15/10 and
+  `validate:qualifying` prints it, and both were right the whole time. What the player
+  counted was fifteen runners plus five cars that should not have been there.
+
+**The staged knockout is why it reproduces on three circuits instead of one.**
+`probe:qualiboard`'s realistic path lets the seed decide who goes out, and `pitSlot` is the
+car index, so at Bahrain, Monaco and Spa the five slowest were the weakest teams, which are
+the last indices, which are the boxes furthest **up** the lane — and slot 0 is nearest the
+exit, so no runner ever drove past one. Only Silverstone, where an Art. B4.3.2 withdrawal
+landed on car index 4, produced a hit (55 samples inside touching distance, closest 0.0m).
+`probe:pitcrew` eliminates a **scattered** set instead and reproduces it everywhere. A
+seed-dependent bug that fires on one circuit in four is exactly the shape of thing this
+project keeps shipping.
+
+**Proved red three ways.**
+- (a) Restoring the original `parkSittingOut` in full: `probe:pitcrew` **6 failures**, the
+  675/685/819 overlapping samples and the 0.00m gaps back on all three circuits;
+  `probe:qualiboard` **47 failures**, including *"SAN takes no part in the segment but is
+  standing in the pit lane, 0.0m outboard of the fast lane's centreline"*, the Silverstone
+  *"55 samples inside touching distance"*, and both circuits reading
+  *"player's worst position P20 — OUTSIDE THE FIELD"*.
+- (b) **The fake fix**: leaving the car on the lane centre and clearing `inPitLane` alone.
+  This is the one the probe is designed against — pairs are chosen by asking the GROUND
+  whether a car is between the pit wall and the garage frontage, never by the flag, because
+  a fix that empties the pair set turns the probe green while the player still drives
+  through the car. `probe:pitcrew` goes to **9 failures, three more than the untouched
+  build**: the twenty-in-the-lane count and the 830/676/686 overlapping samples are still
+  there, and on top of them *"inPitLane disagreed with where a stopped car was standing
+  on 72000 samples"*. The pair set did not empty, because it was never chosen by the flag.
+- (c) Removing the `sittingOut` branch from `classificationTier`: **4 failures, all of them
+  in the position section and none anywhere else** — *"the player was shown P20 of a 15-car
+  segment (first at t=1s, on 959 samples)"* at Bahrain and Monaco, plus 4795 car-samples of
+  a car that takes no part being classified above one that does. Every pit-lane check stays
+  green, which is what makes the two halves separable.
+
+### A driver who does nothing stops the whole session (issue #83)
+
+> *"Monza, practice and qualifying: with the player sitting idle in the first garage, 0 of
+> 20 cars leave the pit lane after fifteen minutes."*
+
+Filed alongside #74 and #75 on the reasonable theory that all three were one placement
+fault. **They are not, and the measurement that separates them is that #83 reproduces in
+PRACTICE.** A practice session has no `participants` list, so nobody is `sittingOut` and
+there is nothing parked in the lane at all — the fault cannot be about where absentees are
+put. Confirmed directly: with the #74/#75 fix already in place and the lane holding exactly
+the right number of cars, the deadlock was still **0 of 19 on Monza, Monaco and Bahrain, in
+practice and in qualifying**. Two bugs, not three.
+
+**What it actually is: the AI holding station on a car doing 0 m/s, in a corridor it cannot
+steer out of.** `buildPerception` already refuses to make a stopped car the car in front —
+the comment on that guard describes this exact deadlock, because it was written for the
+Q1-casualty version of it. It could not reach this one, for two independent reasons:
+
+- its lateral clause asks whether the stopped car is **on the racing surface**, and a car in
+  the pit lane is 12–16m off the centreline; and
+- the `stuckTimer` it is built on **is pinned at zero for every car in the lane**.
+  `checkStranded` opens with `if (speedMs >= STRANDED_SPEED_MS || car.inPitLane ||
+  car.finished) { car.stuckTimer = 0; return; }` — right, because a car standing in the pit
+  lane is not a car to send the marshals to, and fatal to any predicate built on that timer.
+
+The first attempted fix added `other.inPitLane` to the existing clause and **changed
+nothing, because the timer never ran**. That is worth recording: it typechecked, it read
+correctly, and it was dead.
+
+And the guard that does exist is keyed on `sittingOut`, which is a car that has been
+**taken out of the session**. A player reading the setup screen is a full entrant who is
+simply not being driven. Measured on the build the issue was filed against: car 1 sat **3m
+from its box with the brake at 0.18 and the throttle shut for the whole session**, holding
+station on a car doing 0 m/s, with everybody behind it holding station on that.
+
+**Why it is a deadlock and not a delay: the pit lane is single file by construction.**
+`updatePitLane` applies the lateral as a *displacement every step*, so whatever a driver
+steers is undone on the next step — there is nothing down there to go round anything with.
+That is also why `blockCar`, the "steer round it" picture, deliberately does **not** take
+the new test.
+
+**The fix is two things and both are load-bearing.**
+
+- **A stopped car in the lane is not the car in front.** Read off the speed directly rather
+  than off `stuckTimer`. It also covers a car stationary in its box being serviced, which
+  was a candidate for `ahead` — `inPitBox` is only skipped from the *collision* picture —
+  and is stopped for two and a half seconds of every stop with a queue behind it. Being
+  dropped from `ahead` is not being ignored: the collision picture still carries it, with
+  the 2.7m corridor filter, so a car genuinely stopped in the fast lane is still braked for.
+- **A car that never pulls away is parked in its box.** `CarEntry.pulledAwayFromBox` latches
+  the first time a released car asks for throttle or gets moving, and until it does the car
+  is held on the working lane — where its paint and its crew are — instead of the fast lane.
+
+**Both halves were needed and the intermediate states say why.** Holding *every* stationary
+car in its box, rather than latching, moves the deadlock instead of fixing it: the car
+behind the idle one then sits in its own box with the idle car nine metres up the **same
+working lane**, unable to accelerate because of it and unable to pull out because it is not
+accelerating. That is why it is a latch.
+
+**And the placement at the start of a session was deliberately left alone**, having been
+changed and reverted. Putting all twenty cars in the working lane at t=0 is measurably
+worse: pit boxes are spaced 11m apart **along the centreline** while sitting 4m outboard of
+it, so on Monaco's curved lane the gap between two adjacent parked cars closes from
+**2.24m to 2.00m against a 2.0m car width** and two of them touch. Reverting the placement
+and keeping the two rules above fixes #83 with Monaco back at 2.24m and no overlaps. The
+box-spacing defect is real and is now in §7.
+
+**Measured, `probe:pitcrew`, fifteen minutes of session, three circuits × two session
+kinds: 0 of 19 → 19 of 19, with 0 cars left in the lane and the idle player alone in its
+box at 4.0m outboard.**
+
+**Proved red twice, one per half.** Removing the stopped-car test: **0 of 19 on all six
+rows**. Removing the park-in-its-box latch: **0 of 19 on all six rows**, with the player
+back at −0.0m outboard, i.e. on the fast lane's centreline.
+
+`probe:traffic` §1 is the check that could have been broken by the first half — an AI
+driving into a car stopped in the pit lane — and it is unchanged: **closest approach 2.59m
+at Silverstone, 5.48m at Monza and Spa, 6.20m at Monaco, no contact.**
+
+**On the merged tree `probe:pitcrew` goes 18 failures → 6, and every one of the 6 is
+already failing on `main`.** They are one pre-existing Monza group — three pit-entry
+approaches taking a speeding penalty at 80.6 km/h against an 80 limit, and `waylong` and
+`nobrake` never getting their stop on a later lap — and they arrived with the render/fuel
+work that landed on `main` while this branch was in flight, not with this branch. The
+twelve that go green are the six #83 rows and the six #74/#75 rows. Nothing on this branch
+fails that does not also fail on `main`.
+
+**One thing this got wrong first and it is worth keeping.** `pulledAwayFromBox` was
+originally declared `false` and that is the wrong default: a car that starts the session on
+track has never been in a box, so it was treated as sitting in one and driven down the
+WORKING lane — past every garage — on its way in for a stop. It defaults `true` now and
+only `placeGrid`'s pit-lane start clears it. The wrong default also happened to mask three
+of `main`'s six pre-existing Monza failures, which is the more useful half of the lesson: a
+change that makes a known failure disappear for no stated reason is a change to be
+suspicious of, not pleased about.
+
 - Out-lap track limits: deleting a lap that was never going to be timed.
 - **Stewards** built from the Driving Standards Guidelines (2026-02-26 v01) and ISC
   Appendix L: racing room (one car's width), corner priority at the apex (front axle
@@ -3048,7 +3263,47 @@ shared files and the run that matters passed. **Nobody is on this.**
   previously recorded as known-failing, so it went red without anybody noticing.
   **The count is 14, not 23** — re-measured the same way on 2026-08-03 from the
   `timing-tower-truth` branch and from a clean `main` export, same 14 lines in the same
-  order. Issue #44.
+  order. Issue #44. **Measured again on this branch: still all one species, and the count
+  moves with any change to how a race runs** — 14 on the base this branch was cut from, 14
+  with the #74/#75 fix in, and **13** with the #83 pit-lane perception fix in, twice over
+  and byte-identical both times. Nothing new appears; the set of cars that runs past the
+  flag shifts. Do not read the count as a score.
+- **`eliminatedInPhase` is wrong for everybody knocked out more than one segment ago.**
+  `RaceEngine` writes `car.eliminatedInPhase = (config.qualifyingPhase ?? 1) - 1` for every
+  non-participant, so in the **Q3** engine all ten already-out cars report `2` — including
+  the five knocked out of Q1. Two things follow: the Q3 results board tags the Q1 casualties
+  **"Q2"** (`main.ts` `'Q' + car.eliminatedInPhase`), and `qualifyingBoardOrder`'s
+  `alreadyOut` sort is `b.eliminatedInPhase - a.eliminatedInPhase`, which becomes a total
+  tie, so that block falls back to entry-list order while the caption above it claims
+  **"Already out — grid slots 11–20"**. Found while mapping #74 and **deliberately not
+  fixed there**: it is a results-board label, not the live number the player reported, and
+  the correct phase has to come from the app shell's own accumulated knockout record rather
+  than from the engine's guess. Noted on #76. **Nobody is on this.**
+- **Pit boxes are spaced 11m apart along the CENTRELINE, but the cars parked in them sit 4m
+  outboard of it, so on a curved pit lane the spacing compresses.** Found while fixing #83
+  by moving the pit-lane-start placement into the working lane, which is where the boxes
+  are: at Monaco the closest body-to-body approach between two adjacent parked cars went
+  from **2.24m to 2.00m against a 2.0m car width** and `probe:pitcrew` reported a touch.
+  `PitGeometry.boxS` returns a lap distance and is what the paint, the garages, the crews
+  and the race engine all lay out from, so correcting it means converting a spacing measured
+  at the garage frontage into centreline distance — which needs the local curvature, and
+  `pitLaneGeometry` is given only the `TrackDefinition` and the lap length, not the spline.
+  The placement change was reverted rather than shipped, so **nothing regressed and nothing
+  is fixed**; Monaco's margin between two parked cars is 0.24m on the lane centre today and
+  0.00m four metres outboard. Blast radius is `TrackMesh.ts` (held by #48), `Paddock.ts`,
+  `PitBoxMarker.ts`, `PitCrew.ts` and `RaceEngine`. **Nobody is on this.**
+- **A car pulls into its pit box from 34m out, crossing the working lane in front of up to
+  three other boxes** (`PIT_BOX_PULL_IN_M = 34`, `PIT_GARAGE_SPACING_M = 11`). A car
+  already stopped in one of those boxes is `inPitBox`, which `resolveContacts` skips
+  deliberately so a crew can work without cars shoving each other. So two cars CAN share
+  ground in the working lane during a stop, and the working lane is 4.0m wide against two
+  2.0m cars — it physically cannot hold two abreast. **Measured and it does not currently
+  happen:** `probe:pitcrew`'s new section runs full Q1 and Q2 segments on Monaco, Bahrain
+  and Monza and finds 0 overlapping samples with a worst gap of 2.24m at Monaco, so nothing
+  in a qualifying segment exercises it today. It is written down because it is a mechanism
+  the measurement does not disprove for a RACE, where twenty cars stop in twenty boxes, and
+  the probe that would catch it now exists and would need a race staged through it.
+  **Nobody is on this.**
 
 ### Landed with My Team but deliberately not built
 - **Sponsors are not a system.** `commercialIncomePerRound` is the team's baseline revenue

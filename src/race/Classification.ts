@@ -66,11 +66,34 @@ export interface ClassifiedCar {
  * lap time, the lap time has already been set, and the car being in the barrier
  * does not un-set it (Art. B2.4.3a). Passing `isRace` false is what stops the
  * fastest driver in Q1 being sorted to twentieth by their own accident.
+ *
+ * TAKING NO PART demotes below all of them, and it is the newest of the three.
+ * Issue #74:
+ *
+ *   "q2 it should've been 15 ... and the leaderboard showed me as 20th place"
+ *
+ * `RaceEngine.updateStandings` sorts and numbers EVERY entered car, not the
+ * segment's runners — deliberately, because the same array is the race's
+ * classification — and this predicate was the only thing that could tell it
+ * that five of those twenty were not in the session. It could not: a car
+ * knocked out of Q1 is neither retired nor disqualified, so it tied with every
+ * runner on tier, and then tied again on `bestLapTime === 0` in a segment
+ * nobody had set a lap in yet. The sort is stable, so the twenty stayed in
+ * construction order and the number beside a name was that car's place in the
+ * ENTRY LIST. A rookie's entry sorts last (`Career.grid()` is in team order and
+ * a rookie starts at the weakest team), so the player read P20 in a fifteen-car
+ * segment before anyone had set a time.
+ *
+ * A car that takes no part in a period is not classified in that period at all
+ * — Art. B2.4.3 classifies a driver on the lap time set in the period they ran
+ * — so it sorts behind every car that is in it, including a disqualified one.
+ * In a race nothing is `sittingOut` and this branch never fires.
  */
 export function classificationTier(
-  car: { retired: boolean; disqualified: boolean },
+  car: { retired: boolean; disqualified: boolean; sittingOut?: boolean },
   isRace: boolean,
 ): number {
+  if (car.sittingOut) return 3;
   if (car.disqualified) return 2;
   if (car.retired && isRace) return 1;
   return 0;
