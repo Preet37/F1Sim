@@ -2035,6 +2035,29 @@ measurement passes every version of it that is wrong.
 - **Over-parallelising.** Nine agents on one machine took load average to 36–218. Every
   headless sweep runs Chrome under software rendering; a 2-minute probe becomes 20+ minutes.
   Agents are not stuck, they are queuing. **Keep concurrency to about 4–5.**
+
+  **Re-learned the hard way on 2026-08-03, three times in one day, and the third time is
+  the one that matters.** With seven agents the load average reached **209**, and at that
+  point the failure is not slowness — it is that *measurement stops being possible*:
+  - `regress:exit` produced **issue #25's exact six failures at load 27.6 and 16/16 at load
+    6–9, on the same commit.** A whole issue existed because a probe was measuring the
+    machine. Two more of its runs died outright.
+  - The `probe:smoke` coverage work lost a 25-minute run and a second run to a 120s
+    navigation timeout, so its break test could never print its failure list.
+  - The asset-loader probe hit a 200 response with a valid PNG *and* an `onerror`, with a
+    manual load of the same URL succeeding seconds later.
+  - My own verification of a merge died with `TimeoutError` — on the merge that fixed the
+    harness defect causing exactly that.
+
+  **The distinction that costs the time: under load, probes do not fail, they TIME OUT**,
+  and a timeout reads like a failure. Any red result taken above load ~8 must be re-run
+  before it is believed, and any *green* one is equally suspect if it was a sweep that
+  should have taken minutes and returned instantly.
+
+  Also: the machine is not yours alone. On this box the user's own Chrome accounted for
+  **84 of 94 Chrome processes** — so agent count is the part you control, not the whole
+  of the load. Check `uptime` before quoting any number, and say plainly when a
+  measurement was skipped rather than quoting one taken under load.
 - **Trusting screenshots.** Repeatedly wrong.
 - **Verifying on one circuit.** Repeatedly wrong.
 - Truncating a search meant to prove absence (`grep | head -12`, importer on line 13).
