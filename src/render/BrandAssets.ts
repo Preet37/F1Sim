@@ -305,15 +305,16 @@ async function decode(url: string): Promise<BrandImage | null> {
   //
   // THAT LAST PROPERTY IS THE REASON IT IS FIRST, and the reason is a story
   // worth keeping. This loader's first two implementations both routed a PNG
-  // through `<img>`, and both were defeated by an `onerror` on a **200
-  // response carrying a valid PNG signature**, with a manual load of the same
-  // URL succeeding seconds later. PROJECT.md §8 now records that symptom as one
-  // of four collected on the same day at load average 209 — under that much
-  // contention probes do not fail, they time out, and a starved decode reads
-  // exactly like a corrupt file. **So the `<img>` path may never have been
-  // wrong.** This one is still the right implementation: an `<img>` pointed at
-  // a URL returns one bit for "no such file", "not an image", "the connection
-  // dropped" and "the decoder was starved", and one bit is not a diagnosis.
+  // through `<img>` and both were defeated by an `onerror` on a **200 response**
+  // — which was read as a corrupt file, then as a race, then as the load-average
+  // artefact PROJECT.md §8 records, and was none of them. The server was
+  // returning `index.html` for `badge.png`, because a dev server started with
+  // `watch: null` cannot see a file added to `public/` after it booted (see
+  // `vite.config.ts`). An `<img>` reports "no such file", "not an image", "the
+  // connection dropped" and "the decoder was starved" as the same single bit,
+  // and one bit is not a diagnosis. `createImageBitmap` rejected with
+  // `InvalidStateError` and the fallback below reported the blob's own
+  // `Content-Type` as `text/html`, and the bug was obvious in one run.
   if (typeof createImageBitmap === 'function' && !isSvg(blob, url)) {
     try {
       return await createImageBitmap(blob);
