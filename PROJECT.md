@@ -317,12 +317,14 @@ Run `npm run` to list. The important ones:
   that the rail reached zero was true of the tree it was measured on and is not true of
   this one; nobody re-measured it, which is the exact failure mode this file keeps warning
   about. **Run it before quoting it.** The #76 branch is byte-identical at 9 + 2.
-- `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
-  line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
-  is no faster on the dry line than off it. Confirmed identical on pristine `main`
-  (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
-  work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
-  says the grip difference driving that is currently zero.
+- ~~`probe:weather` — two failures, both the dry line~~ — **FIXED, #42. See §6.** The
+  "0.830 against 0.830" was one value used for both sides: `TrackSpline.solveWetLine`
+  took its direction from `lineCurvature`'s sign under a comment that had the sign
+  backwards, so the wet line was pushed INTO the apex and never left the rubber groove,
+  and `TrackSurface` read the on-line water and the on-line rubber for the off-line
+  sample. One sign. The probe is green, and it now carries **§5b — twenty-two new
+  assertions across all eleven circuits** that name the direction rather than the
+  symptom, because §5 could only ever have said "these two numbers are equal at Spa".
 - `probe:framing` — **113 failures, and this entry has been wrong twice.** It said 56; merged
   `main` measured **51** on 2026-08-03, so the count had already come down with some other
   merge and nobody re-ran it. It is now 113 and **+49 of the difference is a second
@@ -2494,6 +2496,100 @@ the flat ones, exactly as #54 found for the cars.
 - Found a pre-existing bug driving **track temperature to −178°C** (`tempTarget` defined
   relative to the value being updated).
 
+### The wet line was solved, drawn into the data, and pointed the wrong way (#42)
+
+**The headline above was carried on a number that was zero, for two months, and this file
+said so and nobody followed the sentence to its end.** §7 recorded `probe:weather`'s two
+failures — *"on a soaked track the rubbered line measures grip 0.830 against 0.830 beside
+it"* — as a known-failing pair. It is a suspiciously exact tie, and it was: **one value
+being used for both sides of the comparison.**
+
+**The mechanism, in one sentence.** `TrackSpline.solveWetLine` derives the wet line by
+shifting the dry line away from the apex, and it took the direction from
+`lineCurvature`'s sign under a comment asserting that `k > 0` is a left-hand turn —
+but `signedCurvature` is `v1 × v2` in the (x, z) basis whose normal points to the
+driver's LEFT, and in that pair a left-hander gives a NEGATIVE cross product, so
+`k > 0` is a RIGHT-hander and the shift drove the wet line **into** the apex, deeper
+into the rubber and straight into the corridor clamp.
+
+Everything downstream then followed correctly from a wet line that was in the wrong
+place. `TrackSurface.onLineFraction` measures how much of the rubbered groove a lateral
+offset is on, and it read **1.000 at the wet line at the tightest corner of ten of the
+eleven circuits** — so `waterAt` returned the ON-LINE water for the off-line sample and
+`surfaceGripAt` multiplied it by the ON-LINE rubber. Both sides of the comparison were
+the same point on the road.
+
+**Measured on all eleven circuits, before and after, at each circuit's tightest corner:**
+
+| | before | after |
+|---|---|---|
+| wet line moves | **toward the apex on all 11** | away from it on all 11 |
+| how far it gets | 0.04m (Monaco) – 1.74m (Monza) | **2.47 – 2.65m**, the full `WET_LINE_SHIFT_M` |
+| sitting exactly on the corridor clamp `±limit` | **9 of 11** | 0 of 11 |
+| `onLineFraction` at the wet line | **1.000 on 10 of 11** (Monza 0.527) | **0.000 on all 11** |
+| corner nodes where the wet line escapes the groove | 2–34% | 39–69% |
+| calendar mean `lineAvoidance` at 0.95 soak | **0.0714** | **0.1610** |
+
+And at Spa's tightest corner, which is what `probe:weather` §5 prints:
+
+| water | grip on line | grip off line, before | grip off line, after | avoidance, before → after |
+|---|---|---|---|---|
+| 0.2 | 0.9661 | 0.9661 | **1.0000** | 0.000 → 0.171 |
+| 0.6 | 0.8982 | 0.8982 | **1.0000** | 0.000 → 0.514 |
+| 1.0 | 0.8303 | 0.8303 | **1.0000** | 0.000 → 0.857 |
+
+Drying, seven minutes in: the off-line water was reported as **0.000** because it was
+the line's own water being read; it is **0.401** now, and a car on mediums measures
+**1.0000 on the line against 0.7787 beside it**, which is the second failing assertion
+and the claim that makes the crossover to slicks a commitment.
+
+**The fix is one sign** — `const dir = k > 0 ? -1 : k < 0 ? 1 : 0` in
+`TrackSpline.solveWetLine` — plus the comment that had been asserting the opposite.
+`TrackSpline` is not this branch's file (it is held for #37/#66/#86) and the diff is
+confined to that one function, because there is no way to fix this from `Weather.ts`:
+`TrackSurface` measures distance from `lineOffset` correctly and the water field is
+correct; only the destination was wrong.
+
+**Why this is bigger than a wet-weather cosmetic, and it is the link to #12.** The
+whole point of the feature is that the rubbered line is the WORST place to be in the
+rain. That half worked: `surfaceGripAt` was taking up to **17% of the surface grip away
+on the groove**, on every wet lap the game has ever run. What did not work was the
+escape. **The field was being penalised for being on the racing line and had nowhere to
+go**, because the only alternative line the AI can steer to was inside the same groove.
+And the sessions this matters in are not rare — measured on the two probes that judge
+racing behaviour, on their own default seeds:
+
+| | rain |
+|---|---|
+| `probe:stewards` calendar sweep, seed 20260729 | **9 of 11 circuits damp or worse for 99% of the session** |
+| `probe:racelog` full distance, Silverstone, seed 20260729 | peak line water **0.768**, **90% of the race** damp or worse |
+| `probe:racelog` full distance, Silverstone, seed 20268648 | peak line water **0.800**, **44% of the race** damp or worse |
+
+So the configuration issue #12 and #26 are both measured at — 52 laps, Silverstone, F3,
+P18, medium — is a **wet Grand Prix on both of its seeds**, and nothing in either issue
+said so.
+
+**Proved it goes red.** With the sign put back and nothing else changed, `probe:weather`
+returns to the two original failures **and** the twenty-two new assertions in §5b go red
+with the direction named: all eleven circuits print `APEX`, ten of them
+`onLine(wet) = 1.000`.
+
+**Two probe defects found on the way, both of the "a probe a broken feature passes" kind
+(§3.2), and both fixed by adding rather than by relaxing — no threshold in this probe was
+touched.**
+- **§5 measured the symptom at one circuit.** It said 0.830 against 0.830 and named
+  neither the direction nor the other ten circuits. **§5b is new**: it asserts, at every
+  circuit's tightest corner, that the wet line is on the far side of the dry line **from
+  the apex** — read off the dry line's own offset, so it does not depend on the curvature
+  sign convention that caused the bug — and that `onLineFraction` there is ~0.
+- **§6 passed a completely dead feature.** It measured `|lateral − dryLine|` and read
+  1.048m dry against 1.527m soaked, comfortably over its bar, on a build where
+  `wetLineOffset` was read by nothing that steered. A soaked car simply **tracks worse**,
+  and sliding off the line and aiming off the line are the same number once you have taken
+  an absolute value. §6 now also reports the **paired, per-node, signed** move — the same
+  corners in both arms, projected onto the direction the wet line lies in — which is zero
+  for a field that is only sliding.
+
 ### The pit wall and the pit request — one latch, two bugs (issue #32)
 `PitWall.boxRequested` is a **latch**: it stands from the driver's "yes" on the radio until
 the stop is served, and `RaceEngine.updatePitWall` mirrors it onto `car.pitRequested` every
@@ -3582,12 +3678,18 @@ shared files and the run that matters passed. **Nobody is on this.**
   without anybody noticing (the first was `probe:fieldsize`, #44). The Spa spread assertion
   that §7 warns about is NOT the one failing: it read +25.4s on `main` and +38.0s on the
   branch against a 70s bar. **Do not raise the 145% bar.**
-- **`probe:weather`: the dry line has no grip advantage.** Two failures — soaked track,
-  rubbered line 0.830 against 0.830 beside it; drying track, slicks no faster on the line
-  than off it. §6 says the fast line moving off the dry groove is the headline of the
-  weather work, and the number that would make a driver move is currently **zero**.
-  Verified pre-existing on pristine `main` while working issue #32 — the pit-wall fixes do
-  not touch it. **Nobody is on this.**
+- ~~**`probe:weather`: the dry line has no grip advantage.**~~ **FIXED — #42, see §6.**
+  One sign in `TrackSpline.solveWetLine` sent the wet line into the apex instead of out of
+  it, so it never left the rubber groove and `TrackSurface` returned the on-line water and
+  the on-line rubber for both sides of the comparison. Grip off the line at Spa's tightest
+  corner, soaked: **0.830 → 1.000** against 0.830 on it. Calendar mean `lineAvoidance` at
+  0.95 soak **0.0714 → 0.1610**.
+  **What is NOT closed by it, and it is a different subsystem.** The grip is there and the
+  wet line is in the right place; whether twenty AI drivers reach for it hard enough is a
+  question about `AIVehicleController.updateLineAvoidance`'s damping and its
+  `driver.wetSkill` willingness term, and `probe:weather` §6 now measures it as a paired,
+  signed, per-node move rather than as an absolute deviation that a dead feature could
+  pass. See §6. **Nobody is on the AI half.**
 - **The spoken radio is UNVERIFIED ON iOS SAFARI**, which is a stated target platform.
   WebKit requires user activation before `speechSynthesis.speak()` and every call in
   `TeamRadio` is from a `setTimeout`. `primeSpeech()` spends the Settings-toggle click on a

@@ -82,6 +82,15 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
 7. **Stop on the racing line and wait.** Race control should raise double yellows naming
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
+8. **Race in the rain, and watch where the cars put themselves through a corner.** Once
+   the track is properly wet the field should stop using the dark, rubbered-in groove and
+   run **wider — a later apex, roughly two and a half metres off the dry line at a tight
+   corner** — because rubber under water is slick and the clean asphalt beside it is not.
+   As the track dries the line comes back, because the groove dries first. **This is new
+   in #42 and until it landed it did not happen at all**: the alternative line the cars
+   steer to was being computed on the wrong side and never actually left the groove, so
+   the grip beside the line measured exactly the same as the grip on it. If the field
+   still runs the dry line in a downpour, say so — that means the fix did not reach you.
 
 ---
 
@@ -189,7 +198,7 @@ amber), not in the capability calculation. Nobody is on it ·
 `probe:framing` **113** — recorded as 56, measured **51** on merged `main`, then the probe was
 corrected to place its car where the renderer places it rather than 20mm low, which is +49 on
 `main` alone and belongs to the HUD's `MIRROR_PANES` rectangles (PROJECT.md §6/§7) ·
-`probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
+`probe:fieldsize` 14 (#44) · ~~`probe:weather` 2 (#42)~~ **fixed — passes** · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
 list read as the count; confirmed 9 on a `src/` checked out at `3f229b7`, so not a regression ·
 `probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
 `probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying

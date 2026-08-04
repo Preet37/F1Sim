@@ -546,6 +546,69 @@ console.log('\n=== 5. grip on the line vs beside it ===\n');
 }
 
 // ===========================================================================
+// 5b. The wet line moves AWAY from the rubber, on all eleven circuits
+// ===========================================================================
+//
+// ADDED BY ISSUE #42, AND SECTION 5 ABOVE COULD NOT HAVE CAUGHT THE CAUSE.
+//
+// Section 5 measures grip at Spa and asserts the two numbers differ. It went
+// red for two months saying "0.830 against 0.830" — which is the SYMPTOM, and
+// it names neither the direction the wet line went nor the ten other circuits
+// it went that way on. The cause was one sign in `TrackSpline.solveWetLine`:
+// `signedCurvature` is negative for a left-hand turn in the basis these offsets
+// are measured in, so `k > 0` is a RIGHT-hander, and subtracting the shift drove
+// the wet line INTO the apex instead of out of it. It then jammed against the
+// corridor clamp and never left the groove, so `TrackSurface` read the on-line
+// water and the on-line rubber for both sides of the comparison.
+//
+// This section asserts the geometry directly, at the tightest corner of every
+// circuit, and it is deliberately two claims rather than one:
+//
+//   DIRECTION  the wet line is on the OTHER SIDE of the dry line from the
+//              apex. The apex side is read off the dry line's own offset —
+//              at the tightest node of a circuit the racing line is on the
+//              inside by construction — so this test does not depend on the
+//              curvature sign convention that got it wrong in the first place.
+//   ESCAPE     `onLineFraction` at the wet line is ~0, i.e. the shift is big
+//              enough to leave the rubber. A wet line that moves the right way
+//              and stays on the groove buys a longer lap for nothing, which is
+//              exactly what `WET_LINE_SHIFT_M`'s own comment was sized against.
+
+console.log('\n=== 5b. the wet line leaves the rubber, on every circuit ===\n');
+
+{
+  console.log('  circuit        node   dry line   wet line   moved   toward   onLine(wet)');
+  for (const def of CIRCUITS) {
+    const track = new TrackSpline(def);
+    const surf = new TrackSurface(track);
+
+    let corner = 0;
+    for (let i = 0; i < track.count; i++) {
+      if (Math.abs(track.lineCurvature[i]) > Math.abs(track.lineCurvature[corner])) corner = i;
+    }
+    const dry = track.lineOffset[corner];
+    const wet = track.wetLineOffset[corner];
+    const apexSide = Math.sign(dry);
+    const away = apexSide === 0 || Math.sign(wet - dry) === -apexSide;
+    const onLine = surf.onLineFraction(corner, wet);
+
+    console.log(
+      `  ${def.id.padEnd(13)} ${String(corner).padStart(5)}   ${dry.toFixed(2).padStart(8)}m  ` +
+      `${wet.toFixed(2).padStart(8)}m  ${Math.abs(wet - dry).toFixed(2).padStart(5)}m   ` +
+      `${(away ? 'outside' : 'APEX').padStart(7)}   ${onLine.toFixed(3).padStart(11)}`,
+    );
+
+    check(away,
+      `${def.id}: at its tightest corner the wet line runs from ${dry.toFixed(2)}m to ` +
+      `${wet.toFixed(2)}m — that is TOWARD the apex, deeper into the rubber, not off it`);
+    check(onLine < 0.05,
+      `${def.id}: the wet line is still ${(onLine * 100).toFixed(0)}% inside the rubber groove ` +
+      `(moved ${Math.abs(wet - dry).toFixed(2)}m) — it is not a different surface, so the water ` +
+      'and rubber lookups return the same numbers on both sides of the comparison');
+  }
+}
+
+// ===========================================================================
 // 6. Twenty-two drivers actually move
 // ===========================================================================
 
@@ -554,14 +617,27 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
 {
   const def = CIRCUITS.find((c) => c.id === 'silverstone')!;
 
-  /** Mean |lateral - dryLine| over the field, once they are up to speed. */
-  const runFor = (wet: number): { dev: number; laps: number } => {
+  /**
+   * Mean |lateral - dryLine| over the field, once they are up to speed — plus,
+   * added by #42, WHERE each node's cars sat, so the two runs can be paired.
+   *
+   * `dev` and its assertion below are untouched. What is added is `perNode`,
+   * bucketed by track node so the comparison can be made over the same corners
+   * in both weathers: a soaked field is slower and reaches fewer of them in the
+   * same five minutes, so an unpaired signed average is an average over a
+   * different stretch of road in each arm, and it reads as a move that is
+   * really a change of sample.
+   */
+  const runFor = (wet: number): {
+    dev: number; laps: number; perNode: Map<number, { sum: number; n: number }>;
+  } => {
     const config: SessionConfig = {
       kind: 'race', name: 'GP', durationS: 0, laps: 10,
       playerIndex: -1, standingStart: false, pitLaneStart: false, seed: 33,
     };
     const engine = new RaceEngine(def, config);
     engine.weather.forceRain(wet, true);
+    const perNode = new Map<number, { sum: number; n: number }>();
     let sum = 0, n = 0;
     const steps = Math.round(300 / PHYSICS_DT);
     for (let i = 0; i < steps && !engine.over; i++) {
@@ -572,13 +648,17 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
         for (const car of engine.cars) {
           if (car.retired || car.inPitLane || car.physics.speedMs < 20) continue;
           const idx = engine.track.indexAt(car.s);
-          sum += Math.abs(car.lateral - engine.track.lineOffset[idx]);
+          const off = car.lateral - engine.track.lineOffset[idx];
+          sum += Math.abs(off);
           n++;
+          const b = perNode.get(idx) ?? { sum: 0, n: 0 };
+          b.sum += off; b.n++;
+          perNode.set(idx, b);
         }
       }
     }
     const laps = Math.max(...engine.cars.map((c) => c.lap));
-    return { dev: n > 0 ? sum / n : 0, laps };
+    return { dev: n > 0 ? sum / n : 0, laps, perNode };
   };
 
   const dry = runFor(0);
@@ -591,6 +671,44 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
     'the cars are not moving off the racing line in the wet');
   check(soaked.laps > 0,
     'nobody completed a lap on a soaked circuit — the wet model has made the game undriveable');
+
+  // --- ...and WHICH WAY. Added by #42. -------------------------------------
+  //
+  // THE DEVIATION TEST ABOVE PASSED A COMPLETELY DEAD FEATURE, which is why
+  // this is here rather than trusted to it. On the tree #42 was filed against
+  // the AI never once left the dry groove: `TrackSurface.lineAvoidance`
+  // returned 0 at every node of every circuit, so `TrackSpline.lineOffsetAt`
+  // took its early return and `wetLineOffset` was read by nothing at all. This
+  // section still measured 1.048m dry against 1.527m soaked and still passed,
+  // because a soaked car TRACKS WORSE — sliding off the line and aiming off the
+  // line are the same number to a test that takes an absolute value first.
+  //
+  // Sliding is symmetric about the line; aiming is not. So the paired
+  // difference between the two arms, projected onto the direction the wet line
+  // lies in, is near zero for a field that is only sliding and large for one
+  // that has moved, whatever either arm's magnitude is.
+  {
+    const track = new TrackSpline(def);
+    let toward = 0, nodes = 0;
+    for (const [idx, wetBucket] of soaked.perNode) {
+      const dryBucket = dry.perNode.get(idx);
+      if (!dryBucket) continue;
+      // Only where the wet line is somewhere else. On a straight the two
+      // coincide and there is no side to be on.
+      const toWet = track.wetLineOffset[idx] - track.lineOffset[idx];
+      if (Math.abs(toWet) < 0.5) continue;
+      toward += (wetBucket.sum / wetBucket.n - dryBucket.sum / dryBucket.n) * Math.sign(toWet);
+      nodes++;
+    }
+    toward /= Math.max(1, nodes);
+    console.log(`  and of that move, ${toward.toFixed(3)}m is toward the wet line ` +
+      `(paired over ${nodes} corner nodes both runs visited)`);
+    check(nodes >= 50,
+      `only ${nodes} corner nodes were visited in both runs — too few to pair on`);
+    check(toward > 0.25,
+      `soaked, the field moves ${toward.toFixed(2)}m toward the wet line — it is further off ` +
+      'the groove but not preferentially on the side the grip is, so it is sliding, not moving');
+  }
 }
 
 // ===========================================================================
