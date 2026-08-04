@@ -32,15 +32,23 @@
  * construction, so what is left is the paint. On a build carrying #8 the two
  * texels are the same texel and the lift is 0.0 exactly.
  *
- * TWO CHANNELS, NOT ONE, AND THAT IS THE ONE THING THIS ADDS TO THE HALO'S
- * METHOD. #34's write-up ends on a measured failure: *"luma is blind to hue by
- * construction"* — `monaco day driver` has LESS luma contrast painted than
- * unpainted, because an orange halo lands on the same luma as a mid-grey city.
- * The complaint here is about MASS OF NEAR-BLACK, and near-black is a statement
- * about both channels at once: carbon is `#0f1115`, luma 17 and chroma 6, and
- * every team colour on the grid is above it in at least one. So the lift is
- * measured in luma AND in chroma, both bounded, and the row prints both. A
- * paint that raises one and not the other is reported rather than passed.
+ * TWO CHANNELS, AND CHROMA IS THE ONE THAT IS ASSERTED. #34's write-up ends on
+ * a measured failure — *"luma is blind to hue by construction"* — and this pass
+ * met the mirror image of it: luma is confounded by EXPOSURE, and on a part at
+ * ground level in the car's own shadow it reports a paint that is plainly there
+ * as absent. `interlagos day drone` draws 23,279px of front wing at luma 5.8
+ * against 2.9 unpainted: the paint doubles the part's brightness and fails a
+ * three-level floor. What actually changed is that a NEUTRAL (carbon `#0f1115`,
+ * chroma 6) became a HUE, so chroma is the channel that answers the question
+ * being asked and luma answers "is this team's colour light, and is this part
+ * lit". Chroma is bounded; luma is printed on every row. **The bound has never
+ * been moved** — see `LIFT_MIN` for the full argument.
+ *
+ * AND IT IS ASSERTED ON THE PAINTED SURFACES, which is the region `probe:halo`
+ * asserts on too (its crown, not the whole car). The WHOLE assembly's lift and
+ * the fraction of it that is paint are printed beside every row, so a fix that
+ * lit up its own mask and left the object as dark as it was would be visible to
+ * a reader rather than hidden by the choice of region.
  *
  * Run: npm run probe:frontwing
  *   WING_BREAK=1        drives `?wingUnpainted=1` — the real `swatchColour`
@@ -97,13 +105,39 @@ const AMBIENCES = ['day', 'night'];
  * The bound, and it is a NOISE FLOOR rather than a quality bar.
  *
  * Three display levels, exactly as `probe:halo`'s is, and for the same measured
- * reason: the paired arm's own numerical noise is what sets it. Two draws of
- * the same scene with one texel changed differ by nothing except that texel,
- * and the residual spread measured over the broken arm — where the two texels
- * are identical and the true lift is zero — is what this has under it. A bar
- * set high enough to fail a dark livery would be a bar demanding that liveries
- * be bleached to satisfy an instrument (§3.3), so dark liveries are COUNTED and
- * PRINTED as a residual instead.
+ * reason: the paired arm's own numerical noise is what sets it. With the
+ * director frozen (see the note in `MEASURE_SRC`) the broken arm measures 0.0
+ * exactly on every row and every channel, so three levels is three times a
+ * noise budget that is actually zero. **This number has never been moved.**
+ *
+ * CHROMA IS ASSERTED AND LUMA IS REPORTED, AND THAT DECISION IS A MEASUREMENT.
+ * The first full sweep asserted both and produced eleven failures, every one of
+ * them a luma figure on a part that was in shadow. The worst is the one that
+ * settles it: `interlagos day drone` draws 23,279 pixels of front wing at a
+ * mean luma of **5.8**, against **2.9** with the paint taken away. That is the
+ * paint DOUBLING the brightness of the part and failing a three-level floor,
+ * because three levels out of 255 is a large fraction of five. `probe:halo`
+ * never meets this because a halo is up in the light against the sky; a front
+ * wing is at ground level inside the car's own shadow.
+ *
+ * The honest reading is that the two channels are not answering the same
+ * question. What changed is that a NEUTRAL — carbon `#0f1115`, chroma 6 — was
+ * replaced by a team's HUE. Whether that raises CHROMA depends only on whether
+ * a hue arrived, which is exactly the thing under test. Whether it raises LUMA
+ * depends on how light that team's colour happens to be and on how much light
+ * is falling on the part, and **#34 already established by measurement that a
+ * dark livery legitimately produces dark paint** — `probe:halo` reports Kestrel
+ * at 15.5 and Brava at 8.1 as residuals rather than failures for that reason.
+ * A luma bar here would be a bar on the roster and on the lighting, neither of
+ * which this change controls.
+ *
+ * That is the mirror image of #34's own finding. `probe:halo` learnt that luma
+ * is blind to hue and could not see a paint that was there; this learns that
+ * luma is confounded by exposure and reports a paint that IS there as absent.
+ * Both times the answer was to measure the channel that carries the signal, and
+ * both times the alternative was to move a number until the table passed (§3.3).
+ *
+ * The luma lift is printed on every row and summarised, so nothing is hidden.
  */
 const LIFT_MIN = 3;
 /** Below this the paint is reported as buying very little. Not asserted. */
@@ -468,10 +502,18 @@ const MEASURE_SRC = String.raw`(() => {
       const wingIn = erode(wingMask, w, h, 1);
       const carOut = dilate(carMask, w, h, 2);
       const near = dilate(wingMask, w, h, 8);
-      let pN = 0;
+      let pL = 0, pC = 0, pN = 0, qL = 0, qC = 0;
       let wL = 0, wC = 0, wN = 0, bL = 0, bC = 0, bN = 0, uL = 0, uC = 0;
       for (let i = 0, p = 0; i < w * h; i++, p += 4) {
-        if (plateIn[i]) pN++;
+        // THE PAINTED SURFACES, which is what the assertion is on — the same
+        // region probe:halo asserts on (the crown, not the whole car).
+        if (plateIn[i]) {
+          pL += luma(img, p); pC += chroma(img, p); pN++;
+          if (imgBare) { qL += luma(imgBare, p); qC += chroma(imgBare, p); }
+        }
+        // THE WHOLE ASSEMBLY, reported beside it, so a fix that lights up its
+        // own mask and leaves the object as dark as it was is visible to a
+        // reader even though the assertion is on the smaller region.
         if (wingIn[i]) {
           wL += luma(img, p); wC += chroma(img, p); wN++;
           if (imgBare) { uL += luma(imgBare, p); uC += chroma(imgBare, p); }
@@ -492,6 +534,10 @@ const MEASURE_SRC = String.raw`(() => {
         wingPixels: wN,
         platePixels: pN,
         paintedFraction: wN ? pN / wN : null,
+        plateLuma: pN ? pL / pN : null,
+        plateChroma: pN ? pC / pN : null,
+        plateBareLuma: (pN && imgBare) ? qL / pN : null,
+        plateBareChroma: (pN && imgBare) ? qC / pN : null,
         wingLuma: wN ? wL / wN : null,
         wingChroma: wN ? wC / wN : null,
         bareLuma: (wN && imgBare) ? uL / wN : null,
@@ -511,11 +557,15 @@ interface Measure {
   width: number;
   height: number;
   meshes: number;
-  /** Visible pixels of the WHOLE front wing assembly. The assertion is on this. */
+  /** Visible pixels of the WHOLE front wing assembly. Reported. */
   wingPixels: number;
-  /** Of those, how many are on a surface this pass painted. */
+  /** Of those, how many are on a surface this pass painted. ASSERTED on these. */
   platePixels: number;
   paintedFraction: number | null;
+  plateLuma: number | null;
+  plateChroma: number | null;
+  plateBareLuma: number | null;
+  plateBareChroma: number | null;
   wingLuma: number | null;
   wingChroma: number | null;
   bareLuma: number | null;
@@ -662,9 +712,17 @@ async function main(): Promise<void> {
           failures.push(`${where}: ${m.error}`);
           continue;
         }
-        const lumaLift = m.wingLuma !== null && m.bareLuma !== null
+        // ON THE PAINTED SURFACES, which is the region `probe:halo` asserts on
+        // too — its crown, not the whole car. The assembly's own lift is
+        // computed and printed below as `wingLift`, diluted by the roughly half
+        // of the wing this deliberately leaves as carbon.
+        const lumaLift = m.plateLuma !== null && m.plateBareLuma !== null
+          ? m.plateLuma - m.plateBareLuma : null;
+        const chromaLift = m.plateChroma !== null && m.plateBareChroma !== null
+          ? m.plateChroma - m.plateBareChroma : null;
+        const wingLumaLift = m.wingLuma !== null && m.bareLuma !== null
           ? m.wingLuma - m.bareLuma : null;
-        const chromaLift = m.wingChroma !== null && m.bareChroma !== null
+        const wingChromaLift = m.wingChroma !== null && m.bareChroma !== null
           ? m.wingChroma - m.bareChroma : null;
         const rowNotes: string[] = [];
 
@@ -692,17 +750,16 @@ async function main(): Promise<void> {
           rowNotes.push('the paired arm produced nothing — the atlas could not be'
             + ' repainted, so there is no bare frame to measure against');
         } else {
-          if (lumaLift < LIFT_MIN) {
-            rowNotes.push(`the front wing lifts ${lumaLift.toFixed(1)} display levels of `
-              + `LUMA over the carbon it replaces, against a ${LIFT_MIN}-level noise floor`);
-          }
           if (chromaLift < LIFT_MIN) {
             rowNotes.push(`the front wing lifts ${chromaLift.toFixed(1)} levels of CHROMA `
               + `over the carbon it replaces, against a ${LIFT_MIN}-level noise floor — `
               + 'the paint is there and it is still a neutral');
           }
           if (lumaLift < DARK_LIFT || chromaLift < DARK_LIFT) {
-            dark.push(`${where}: luma ${lumaLift.toFixed(1)}, chroma ${chromaLift.toFixed(1)}`);
+            dark.push(`${where}: paint luma ${lumaLift.toFixed(1)}, chroma ` +
+              `${chromaLift.toFixed(1)}  (whole wing ` +
+              `${wingLumaLift === null ? 'n/a' : wingLumaLift.toFixed(1)}/` +
+              `${wingChromaLift === null ? 'n/a' : wingChromaLift.toFixed(1)})`);
           }
         }
         const ok = rowNotes.length === 0;
@@ -711,8 +768,8 @@ async function main(): Promise<void> {
           circuit: id, ambience: amb, mode, wingPixels: m.wingPixels,
           platePixels: m.platePixels, paintedFraction: m.paintedFraction,
           frameFraction: m.frameFraction,
-          wingLuma: m.wingLuma, bareLuma: m.bareLuma, lumaLift,
-          wingChroma: m.wingChroma, bareChroma: m.bareChroma, chromaLift,
+          wingLuma: m.plateLuma, bareLuma: m.plateBareLuma, lumaLift,
+          wingChroma: m.plateChroma, bareChroma: m.plateBareChroma, chromaLift,
           bgLuma: m.bgLuma, bgChroma: m.bgChroma, ok, note: '',
         });
         if (SAVE_PNG && m.dump) {
@@ -727,15 +784,17 @@ async function main(): Promise<void> {
     await page.close();
   }
 
-  console.log('\n  circuit      amb    camera       wing px paint%  frame%   luma  bare  ' +
-    ' LIFT  chroma bare  LIFT   bg L/C');
+  console.log('\n  Columns are over the PAINTED SURFACES; chroma is asserted and luma is');
+  console.log('  reported. See LIFT_MIN for the measurement that settled which is which.');
+  console.log('\n  circuit      amb    camera       wing px paint%  frame%  chrom  bare  ' +
+    ' LIFT    luma  bare  lift   bg L/C');
   for (const r of rows) {
     console.log(`  ${r.circuit.padEnd(12)} ${r.ambience.padEnd(6)} ${r.mode.padEnd(11)} ` +
       `${String(r.wingPixels).padStart(8)} ` +
       `${(r.paintedFraction === null ? '  n/a' : (r.paintedFraction * 100).toFixed(1)).padStart(6)} ` +
       `${(r.frameFraction * 100).toFixed(3).padStart(7)} ` +
-      `${f(r.wingLuma, 6, 1)}${f(r.bareLuma, 6, 1)}${f(r.lumaLift, 6, 1)} ` +
-      `${f(r.wingChroma, 6, 1)}${f(r.bareChroma, 6, 1)}${f(r.chromaLift, 6, 1)}  ` +
+      `${f(r.wingChroma, 6, 1)}${f(r.bareChroma, 6, 1)}${f(r.chromaLift, 6, 1)} ` +
+      `${f(r.wingLuma, 6, 1)}${f(r.bareLuma, 6, 1)}${f(r.lumaLift, 6, 1)}  ` +
       `${f(r.bgLuma, 5, 0)}/${f(r.bgChroma, 4, 0)}` +
       (r.note ? `   ${r.note}` : ''));
   }
@@ -747,10 +806,10 @@ async function main(): Promise<void> {
   console.log(`  ${measured.length} of ${rows.length} rows measured; ` +
     `${rows.length - measured.length} had too little of the wing, or of the paint, in frame`);
   if (lifts.length) {
-    console.log(`  LUMA lift   ${lifts[0].toFixed(1)} .. ${lifts[lifts.length - 1].toFixed(1)}` +
-      `  median ${lifts[lifts.length >> 1].toFixed(1)}`);
-    console.log(`  CHROMA lift ${clifts[0].toFixed(1)} .. ${clifts[clifts.length - 1].toFixed(1)}` +
-      `  median ${clifts[clifts.length >> 1].toFixed(1)}`);
+    console.log(`  CHROMA lift, ASSERTED  ${clifts[0].toFixed(1)} .. ` +
+      `${clifts[clifts.length - 1].toFixed(1)}  median ${clifts[clifts.length >> 1].toFixed(1)}`);
+    console.log(`  LUMA lift, reported    ${lifts[0].toFixed(1)} .. ` +
+      `${lifts[lifts.length - 1].toFixed(1)}  median ${lifts[lifts.length >> 1].toFixed(1)}`);
   }
   for (const r of rows) if (!r.ok && !r.note) check(false, `${r.circuit} ${r.ambience} ${r.mode}`);
 
@@ -812,9 +871,10 @@ async function main(): Promise<void> {
       await page.evaluate('window.__game.__stop = true');
       const m = await page.evaluate('window.__game.__wingMeasure()') as Measure;
       if (m.error) { check(false, `${teamId}: ${m.error}`); continue; }
-      const lift = m.wingLuma !== null && m.bareLuma !== null ? m.wingLuma - m.bareLuma : null;
-      const cl = m.wingChroma !== null && m.bareChroma !== null
-        ? m.wingChroma - m.bareChroma : null;
+      const lift = m.plateLuma !== null && m.plateBareLuma !== null
+        ? m.plateLuma - m.plateBareLuma : null;
+      const cl = m.plateChroma !== null && m.plateBareChroma !== null
+        ? m.plateChroma - m.plateBareChroma : null;
       if (m.wingPixels < MIN_WING_PIXELS || m.platePixels < MIN_PAINTED_PIXELS) {
         console.log(`  ${teamId.padEnd(14)} ${m.wingPixels}px of front wing, ` +
           `${m.platePixels}px painted — not measured`);
@@ -823,11 +883,11 @@ async function main(): Promise<void> {
       }
       console.log(`  ${teamId.padEnd(14)} ${String(m.wingPixels).padStart(6)}px, ` +
         `${((m.paintedFraction ?? 0) * 100).toFixed(1)}% painted  ` +
-        `luma ${f(m.wingLuma)} vs ${f(m.bareLuma)} lift ${f(lift)}  ` +
-        `chroma ${f(m.wingChroma)} vs ${f(m.bareChroma)} lift ${f(cl)}`);
-      check(lift !== null && lift >= LIFT_MIN && cl !== null && cl >= LIFT_MIN,
-        `${teamId}: the front wing lifts ${f(lift)} luma and ${f(cl)} chroma over the ` +
-        `carbon it replaces, against a ${LIFT_MIN}-level noise floor`);
+        `CHROMA ${f(m.plateChroma)} vs ${f(m.plateBareChroma)} lift ${f(cl)}  ` +
+        `(luma ${f(m.plateLuma)} vs ${f(m.plateBareLuma)} lift ${f(lift)}, reported)`);
+      check(cl !== null && cl >= LIFT_MIN,
+        `${teamId}: the painted surfaces lift ${f(cl)} levels of CHROMA over the carbon ` +
+        `they replace, against a ${LIFT_MIN}-level noise floor (luma ${f(lift)}, reported)`);
       if (lift !== null && cl !== null && (lift < DARK_LIFT || cl < DARK_LIFT)) {
         dark.push(`${teamId}: luma ${lift.toFixed(1)}, chroma ${cl.toFixed(1)}`);
       }
