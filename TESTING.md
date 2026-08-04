@@ -39,6 +39,7 @@ code. If the picture ever looks worse than you remember, check this setting firs
 | **Sparks** | Fast, undulating circuits — Suzuka's esses, Zandvoort, COTA | Bursts as the floor strikes the road, over crests and kerbs and under the brakes. **They should never be a continuous flame.** The longest single shower on the calendar is now 3.4s at Suzuka, down from 10.4s. |
 | **Skid marks** | Lock a front under braking; then drive a normal lap | A lock-up leaves a black line. **An ordinary corner should leave nothing at all** — cars slide in every corner and none of that marks the road. |
 | **Rear lights** | Fit intermediates or wets, then brake hard | Three red lamps (one central, one in each rear-wing endplate pod). **Steady when merely on; they flash at 4Hz while you are braking**, because the MGU-K is recovering. On slicks in the dry they stay off however hard you brake — an F1 car has no brake light. |
+| **The halo** | Any onboard camera — `driver` or `cockpit`. Worth doing at night and in shadow, which is where it used to disappear | The **top of the hoop is painted in your team's colour**, the whole way round the arc, with the underside and the centre pillar black. That is what `reference/target/76.png` and `90.png` show and it is what makes the halo read as part of the car rather than as a black bar floating over the cockpit — which is what you were seeing when you asked *"the halo is also floating atp?"*. It was never actually detached: all 146 parts are measured as bolted, with no tolerance in the test. **A dark-liveried team gets a dark halo** — that is deliberate, and if it looks wrong on a particular car, say so; see §5. |
 
 **Known and not yet fixed:** at **280 km/h on a straight** the car still wanders 2.6–3.3m
 on a keyboard where a wheel holds 0.02–0.11m. Undiagnosed, tracked on #46.
@@ -112,10 +113,23 @@ transfer market, driver ratings. Tracked on #23 and #77.
   `onboard-t` are the roll-hoop pods. **Mirrors work**, including the sky in them, which
   was clipped out entirely until recently.
 - **Track judder** — most visible at **Spa, COTA, Zandvoort**. Bahrain and Monza are flat
-  and always looked fine, so they prove nothing either way.
+  and always looked fine, so they prove nothing either way. **Re-measured on merged `main`
+  and closed (#9).** All three things that used to step are now drawn smoothly: a car in
+  plan (drawn-step spread 200.0% → 0.0% at every steady rate), the world's height (125.1mm
+  → 12.0mm of per-frame second difference against a 20mm bound), and the safety car
+  (55.7mm → 3.8mm). If you still see the track lurching at Spa or COTA, that is a new
+  fault and worth a recording.
 
 **Known faults:** the radio writing pool is 41 exchanges — bigger than it was, not enough
-for a race distance (#61). The FIA banner does not yet match the reference (#15).
+for a race distance (#61). **The FIA banner does not yet match the reference (#15), and
+here is exactly how**, measured against `reference/target/77.png`: the reference's strip
+has a **red** mark block on the left carrying two devices, a **red** headline naming the
+flag state, white instruction lines under it one per line, and a **red block on the right
+with the message number in it**. Ours has a navy mark block, no right-hand block, the
+whole message in white, and it opens every bulletin with the words `RACE CONTROL:`, which
+the reference never does. A critical bulletin is also drawn identically to an
+informational one — `.hud-control.tone-urgent` has no styling at all. **Not fixed**:
+`src/ui/Hud.ts` is held by another piece of work.
 
 ---
 
@@ -136,7 +150,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
 | **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |
-| The halo is near-black and loses its outline against a dark background — it is *attached* (146/146 bolted, measured), but it is not painted the way the reference cars are | **#34** |
+| ~~The halo is near-black and loses its outline against a dark background~~ — **fixed**. The crown of the hoop is now painted in the team's own colour, as `76.png` and `90.png` both show; the pillar and the underside stay black, as `76.png` also shows. Measured on 11 circuits × day/night × two onboard cameras and behind ten teams' cars | **#34** |
+| **A dark-liveried car gets a dark halo, and on the darkest liveries the paint buys very little outline.** A purple, a navy and a dark red on the grid draw only 4.7–12.7 display levels brighter than the old black. That is what a dark car's halo really looks like — the Aston in `90.png` is a dark green halo on a dark green car — so it is reported rather than "fixed". **If it looks wrong to you on a particular team, say which, and the rule can push dark bodies onto their accent colour instead** (which is what the black Mercedes in `76.png` does with its teal) | **#34** |
 | Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
 | Career screens (ratings, market, accolades) not built | **#77** |
 | Podium/press bodies below the neck are unfinished | **#22** |
@@ -153,6 +168,15 @@ npm run validate      # tracks, physics, race, qualifying, integrity, world, fla
 npm run regress       # lap counting, classification, session exit, career flow
 npm run probe:smoke   # 35 front-end screens, 32 required routes
 ```
+
+**`npm run build` had been failing on `main`, and so had every probe that builds the site
+before driving it** — `probe:grain`, `probe:sharpness`, `probe:graphics`, `probe:autotier`
+and the rest. A comment in `src/ui/styles.css` contained a directory name ending in an
+asterisk and a slash, which closes a CSS comment; six lines of prose then parsed as CSS
+and the minifier rejected the file. `vite dev` does not minify and the browser skipped the
+garbage silently, so the game looked fine and only shipping it was broken. Fixed on this
+branch. **If `npm run build` ever fails again, read the first error rather than the last —
+the stack is thirty lines of bundler internals and the one useful line is at the top.**
 
 **Run these on a quiet machine.** Nearly every probe in this project drives headless
 Chrome, and under load they do not fail — they *time out*, which reads like a failure and
@@ -174,6 +198,7 @@ Useful individual probes:
 | `probe:handling` | the keyboard can hold a lane |
 | `probe:graphics` | the quality setting reaches the GL context |
 | `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
+| `probe:halo` | the halo is painted in the car's own colour rather than the shared near-black — the same frame drawn twice, one texel of the livery apart, on 11 circuits × day/night × two onboard cameras and behind ten teams' cars |
 | `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |
 | `probe:people` | 42 principals, all different, all reachable |
