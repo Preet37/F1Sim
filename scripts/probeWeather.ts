@@ -395,6 +395,63 @@ console.log('\n=== 3b. the crossover, driven ===\n');
 }
 
 // ===========================================================================
+// 3c. Does it ever rain at the rate the game steps at? REPORTED, NOT ASSERTED
+// ===========================================================================
+//
+// Every other section of this probe reaches the road through `forceRain`, which
+// assigns `rainRate` directly. That is deliberate and it is documented on
+// `forceRain` itself — a probe that waits for a seed that happens to rain at the
+// right moment is measuring the seed. The consequence, found while working #42,
+// is that the ONE path a player is ever on — the sky raining by itself, stepped
+// at `PHYSICS_DT` — is the one path nothing in this repository exercises.
+//
+// It does not work. `Weather.update` damps `rainRate` toward its target and then
+// snaps anything under 0.01 to zero; from a dry sky one 120Hz step moves it by
+// at most 0.00024, so the floor puts it back every time and the rain can never
+// start. See the block above that line in `Weather.ts`.
+//
+// REPORTED RATHER THAN ASSERTED, and that is a deliberate choice with precedent
+// in §1 of this same probe. The fix is not the floor on its own: with the floor
+// out of the way the schedule runs 78% of sessions wet, which is not a calendar,
+// and correcting both together re-baselines every seeded race in the repository.
+// Asserting it here would take `probe:weather` red for a defect this branch is
+// not fixing and would bury the two #42 assertions that are the point of it. It
+// prints, loudly, on every run instead. PROJECT.md §7 carries it.
+
+console.log('\n=== 3c. does it rain by itself, at the rate the game steps at? ===\n');
+
+{
+  const SEEDS = 12;
+  const SESSION_S = 5400;
+  console.log('  step        sessions reaching damp or worse      wettest');
+  for (const [label, dt] of [['1Hz', 1], ['PHYSICS_DT', PHYSICS_DT]] as [string, number][]) {
+    let rained = 0, total = 0, peakAll = 0;
+    for (const def of CIRCUITS) {
+      const track = new TrackSpline(def);
+      for (let s = 0; s < SEEDS; s++) {
+        const w = new Weather(def, 1000 + s * 7919, track);
+        let peak = 0;
+        for (let t = 0; t < SESSION_S; t += dt) {
+          w.setTraffic(20);
+          w.update(dt);
+          if (w.wetness > peak) peak = w.wetness;
+        }
+        total++;
+        if (peak > 0.05) rained++;
+        if (peak > peakAll) peakAll = peak;
+      }
+    }
+    console.log(`  ${label.padEnd(12)}${String(rained).padStart(5)} of ${total}` +
+      `  (${((rained / total) * 100).toFixed(1)}%)`.padEnd(24) + `${peakAll.toFixed(4)}`);
+  }
+  console.log('');
+  console.log('  NOT ASSERTED. `PHYSICS_DT` is the step `RaceEngine.step` passes, so the second');
+  console.log('  row is what the player gets: it has never rained in this game. The floor in');
+  console.log('  `Weather.update` is why; the schedule behind it is why fixing the floor alone');
+  console.log('  would be wrong. PROJECT.md §7, and see the comment on the line itself.');
+}
+
+// ===========================================================================
 // 4. The track dries, and it dries on the line first
 // ===========================================================================
 
@@ -546,6 +603,69 @@ console.log('\n=== 5. grip on the line vs beside it ===\n');
 }
 
 // ===========================================================================
+// 5b. The wet line moves AWAY from the rubber, on all eleven circuits
+// ===========================================================================
+//
+// ADDED BY ISSUE #42, AND SECTION 5 ABOVE COULD NOT HAVE CAUGHT THE CAUSE.
+//
+// Section 5 measures grip at Spa and asserts the two numbers differ. It went
+// red for two months saying "0.830 against 0.830" — which is the SYMPTOM, and
+// it names neither the direction the wet line went nor the ten other circuits
+// it went that way on. The cause was one sign in `TrackSpline.solveWetLine`:
+// `signedCurvature` is negative for a left-hand turn in the basis these offsets
+// are measured in, so `k > 0` is a RIGHT-hander, and subtracting the shift drove
+// the wet line INTO the apex instead of out of it. It then jammed against the
+// corridor clamp and never left the groove, so `TrackSurface` read the on-line
+// water and the on-line rubber for both sides of the comparison.
+//
+// This section asserts the geometry directly, at the tightest corner of every
+// circuit, and it is deliberately two claims rather than one:
+//
+//   DIRECTION  the wet line is on the OTHER SIDE of the dry line from the
+//              apex. The apex side is read off the dry line's own offset —
+//              at the tightest node of a circuit the racing line is on the
+//              inside by construction — so this test does not depend on the
+//              curvature sign convention that got it wrong in the first place.
+//   ESCAPE     `onLineFraction` at the wet line is ~0, i.e. the shift is big
+//              enough to leave the rubber. A wet line that moves the right way
+//              and stays on the groove buys a longer lap for nothing, which is
+//              exactly what `WET_LINE_SHIFT_M`'s own comment was sized against.
+
+console.log('\n=== 5b. the wet line leaves the rubber, on every circuit ===\n');
+
+{
+  console.log('  circuit        node   dry line   wet line   moved   toward   onLine(wet)');
+  for (const def of CIRCUITS) {
+    const track = new TrackSpline(def);
+    const surf = new TrackSurface(track);
+
+    let corner = 0;
+    for (let i = 0; i < track.count; i++) {
+      if (Math.abs(track.lineCurvature[i]) > Math.abs(track.lineCurvature[corner])) corner = i;
+    }
+    const dry = track.lineOffset[corner];
+    const wet = track.wetLineOffset[corner];
+    const apexSide = Math.sign(dry);
+    const away = apexSide === 0 || Math.sign(wet - dry) === -apexSide;
+    const onLine = surf.onLineFraction(corner, wet);
+
+    console.log(
+      `  ${def.id.padEnd(13)} ${String(corner).padStart(5)}   ${dry.toFixed(2).padStart(8)}m  ` +
+      `${wet.toFixed(2).padStart(8)}m  ${Math.abs(wet - dry).toFixed(2).padStart(5)}m   ` +
+      `${(away ? 'outside' : 'APEX').padStart(7)}   ${onLine.toFixed(3).padStart(11)}`,
+    );
+
+    check(away,
+      `${def.id}: at its tightest corner the wet line runs from ${dry.toFixed(2)}m to ` +
+      `${wet.toFixed(2)}m — that is TOWARD the apex, deeper into the rubber, not off it`);
+    check(onLine < 0.05,
+      `${def.id}: the wet line is still ${(onLine * 100).toFixed(0)}% inside the rubber groove ` +
+      `(moved ${Math.abs(wet - dry).toFixed(2)}m) — it is not a different surface, so the water ` +
+      'and rubber lookups return the same numbers on both sides of the comparison');
+  }
+}
+
+// ===========================================================================
 // 6. Twenty-two drivers actually move
 // ===========================================================================
 
@@ -554,7 +674,36 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
 {
   const def = CIRCUITS.find((c) => c.id === 'silverstone')!;
 
-  /** Mean |lateral - dryLine| over the field, once they are up to speed. */
+  /**
+   * Mean |lateral - dryLine| over the field, once they are up to speed.
+   *
+   * THIS TEST PASSED A COMPLETELY DEAD FEATURE and it is left exactly as it was,
+   * with a note rather than a replacement. On the tree #42 was filed against the
+   * AI never left the dry groove in any meaningful way — the calendar mean
+   * `lineAvoidance` at full soak was 0.0714 and the two grip numbers §5 compares
+   * were identical at the tightest corner of ten of the eleven circuits — and
+   * this section still read 1.048m dry against 1.527m soaked and passed
+   * comfortably. A soaked car simply TRACKS WORSE, and sliding off the line and
+   * aiming off the line are the same number once an absolute value has been
+   * taken.
+   *
+   * AN ATTEMPT TO SEPARATE THEM WAS BUILT HERE AND REMOVED, and the reason is
+   * worth more than the attempt. Bucketing the samples by track node and taking
+   * the PAIRED signed move — the same corners in both arms, projected onto the
+   * direction the wet line lies in — reads **+1.077m on the broken build and
+   * −0.660m on the fixed one**, i.e. exactly backwards. The confound is that a
+   * soaked field is much slower and a slow car takes a TIGHTER line than the dry
+   * racing line, which uses the whole corridor: the field sits about 0.7–1.1m
+   * nearer the apex when soaked whatever the wet line is doing, and that swamps
+   * the shift the avoidance model produces. A measurement that ranks a broken
+   * build above a working one is worse than no measurement, so it is not here.
+   *
+   * The guard that DOES discriminate is §5b, which asserts the geometry
+   * directly at every circuit's tightest corner and goes red in twenty-two
+   * places on the broken build. Whether twenty AI drivers reach hard enough for
+   * a line that is now genuinely faster is a question about
+   * `AIVehicleController.updateLineAvoidance`, and it is open — see PROJECT.md §7.
+   */
   const runFor = (wet: number): { dev: number; laps: number } => {
     const config: SessionConfig = {
       kind: 'race', name: 'GP', durationS: 0, laps: 10,
@@ -591,6 +740,8 @@ console.log('\n=== 6. does the field change its line when it rains? ===\n');
     'the cars are not moving off the racing line in the wet');
   check(soaked.laps > 0,
     'nobody completed a lap on a soaked circuit — the wet model has made the game undriveable');
+  console.log('  (this test cannot tell aiming from sliding, and it passed a dead feature.');
+  console.log('   The guard that can is §5b. See the note above `runFor`.)');
 }
 
 // ===========================================================================

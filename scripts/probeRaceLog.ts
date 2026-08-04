@@ -198,10 +198,16 @@ interface RaceLog {
    * lap distance rather than counting them.
    */
   contactWhere: Map<string, number>;
+  /** Times the race stopped being a race — VSC or safety car deployments. */
+  neutralisations: number;
+  /** Share of the running time spent under one, 0..1. */
+  neutralisedShare: number;
   /** The player's car. */
   playerRetired: string;
   playerContacts: number;
   playerPenalties: number;
+  /** Whether the player finishes carrying a badge on the tower. */
+  playerBadge: boolean;
   /** Position at the flag, 1-based. */
   playerPosition: number;
 }
@@ -256,9 +262,27 @@ function runRace(
   const seenRetired = new Set<number>();
   let retiredLap1 = 0;
 
+  // How disrupted the race was. THE THIRD THING A PLAYER NOTICES, and until
+  // #12 nothing here counted it: a race can produce two retirements and one
+  // penalty and still be the race the player complained about if a third of it
+  // was spent in a queue behind a safety car. Counted as deployments (how many
+  // times the race stopped being a race) and as the share of the running time
+  // spent under one, which are different complaints — six short VSCs and one
+  // twenty-lap safety car are the same share and nothing like each other.
+  let neutralisations = 0;
+  let neutralisedSteps = 0;
+  let steps = 0;
+  let wasNeutral = false;
+
   const maxSteps = Math.round((laps * def.referencePoleTimeS * 3.2 + 180) / PHYSICS_DT);
   for (let i = 0; i < maxSteps && !engine.over; i++) {
     engine.step();
+
+    steps++;
+    const neutral = engine.raceControl.neutralisation !== 'none';
+    if (neutral) neutralisedSteps++;
+    if (neutral && !wasNeutral) neutralisations++;
+    wasNeutral = neutral;
 
     for (const car of engine.cars) {
       if (!car.retired || seenRetired.has(car.index)) continue;
@@ -333,9 +357,12 @@ function runRace(
     strikes,
     carLaps,
     contactWhere,
+    neutralisations,
+    neutralisedShare: steps > 0 ? neutralisedSteps / steps : 0,
     playerRetired: player.retired ? player.retirementReason : '',
     playerContacts,
     playerPenalties: player.penalties.filter((p) => p.kind !== 'track-limits-warning').length,
+    playerBadge: wearsBadge(player),
     playerPosition: player.position,
   };
 }
@@ -402,6 +429,8 @@ interface Agg {
   penalties: number; carsWithPenalty: number;
   strikes: number; carLaps: number;
   playerOut: number; playerContacts: number; playerPenalties: number;
+  playerBadges: number;
+  neutralisations: number; neutralisedShare: number;
   bySource: Map<PenaltySource, number>;
   byReason: Map<string, number>;
   /** Verbatim penalty reasons, numbers stripped, so the shape of them shows. */
@@ -414,7 +443,8 @@ function emptyAgg(): Agg {
   return {
     races: 0, laps: 0, retired: 0, retiredLap1: 0, contacts: 0, contactsLap1: 0,
     penalties: 0, carsWithPenalty: 0, strikes: 0, carLaps: 0,
-    playerOut: 0, playerContacts: 0, playerPenalties: 0,
+    playerOut: 0, playerContacts: 0, playerPenalties: 0, playerBadges: 0,
+    neutralisations: 0, neutralisedShare: 0,
     bySource: new Map(), byReason: new Map(), byPenaltyReason: new Map(),
     contactWhere: new Map(), worstRetired: 0, worstPenalisedCars: 0,
   };
@@ -445,6 +475,9 @@ for (const distance of DISTANCES) {
       if (log.playerRetired) agg.playerOut++;
       agg.playerContacts += log.playerContacts;
       agg.playerPenalties += log.playerPenalties;
+      if (log.playerBadge) agg.playerBadges++;
+      agg.neutralisations += log.neutralisations;
+      agg.neutralisedShare += log.neutralisedShare;
       for (const [s, n] of log.penaltiesBySource) agg.bySource.set(s, (agg.bySource.get(s) ?? 0) + n);
       for (const [r, n] of log.penaltyReasons) {
         agg.byPenaltyReason.set(r, (agg.byPenaltyReason.get(r) ?? 0) + n);
@@ -463,6 +496,7 @@ for (const distance of DISTANCES) {
         `${(log.contacts + ' contacts').padStart(14)}` +
         `${(log.carsWithPenalty + '/20 penalised').padStart(17)}` +
         `${(log.strikes + ' off-track').padStart(14)}` +
+        `${(log.neutralisations + ' SC/VSC').padStart(11)}` +
         `   player P${log.playerPosition}` +
         (log.playerRetired ? ' OUT (' + log.playerRetired + ')' : '') +
         `, ${log.playerContacts} contact${log.playerContacts === 1 ? '' : 's'}` +
@@ -489,6 +523,40 @@ for (const [distance, a] of perDistance) {
     per(a.carsWithPenalty).padStart(15) +
     '   ' + (a.playerOut / a.races * 100).toFixed(0) + '% / ' +
     per(a.playerContacts) + ' / ' + per(a.playerPenalties),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// THE RACE AS FELT — issue #12
+// ---------------------------------------------------------------------------
+//
+// The three numbers above are the field's. The player does not experience the
+// field: they experience their own car and their own afternoon, and #12 is
+// written entirely in the first person — "there are too many accidents happened
+// and way too many penalties being given out". A race with twenty-one contacts
+// in it that the player was in none of is a different complaint from a race
+// with six that they were in four of, and the field total cannot tell them
+// apart.
+//
+// These three columns were already being computed and PRINTED IN THE PER-RACE
+// LINE, and nothing judged them. That is the shape of half the defects in this
+// project's history, so they are asserted now.
+console.log('');
+console.log('THE RACE AS FELT — the player\'s own afternoon (issue #12)');
+console.log('  ' + 'DISTANCE'.padEnd(10) + 'CONTACTS'.padStart(10) + 'PENALTIES'.padStart(11) +
+  'CARRIES A BADGE'.padStart(17) + 'RETIRES'.padStart(9) +
+  'SC/VSC A RACE'.padStart(15) + 'RACE NEUTRALISED'.padStart(18));
+for (const [distance, a] of perDistance) {
+  const per = (n: number) => (n / Math.max(1, a.races)).toFixed(2);
+  const pct = (n: number) => (n / Math.max(1, a.races) * 100).toFixed(0) + '%';
+  console.log(
+    '  ' + distance.padEnd(10) +
+    per(a.playerContacts).padStart(10) +
+    per(a.playerPenalties).padStart(11) +
+    pct(a.playerBadges).padStart(17) +
+    pct(a.playerOut).padStart(9) +
+    per(a.neutralisations).padStart(15) +
+    (a.neutralisedShare / Math.max(1, a.races) * 100).toFixed(1).padStart(17) + '%',
   );
 }
 
@@ -588,6 +656,27 @@ for (const [distance, a] of perDistance) {
   check(strikeRate <= MAX_STRIKES_PER_CAR_LAP,
     `${distance}: ${strikeRate.toFixed(3)} sanctionable excursions a car-lap ` +
     `(${(a.strikes / a.races).toFixed(1)} a race) — the field cannot stay on the road`);
+
+  // --- and the same two things as the player feels them (issue #12) --------
+  //
+  // BOTH BARS ARE DERIVED FROM THE FIELD BARS ABOVE, not chosen. That is the
+  // whole reason they are defensible: if the field is inside its bound and one
+  // car in it is not, the contacts and the badges are landing on one car, which
+  // is the thing the report was about and which no field average can show.
+  //
+  //   A contact has two cars in it, so `MAX_CONTACTS_PER_RACE` contacts spread
+  //   evenly over a twenty-car field is 2 x 12 / 20 = 1.2 a car.
+  //   `MAX_PENALISED_CARS_PER_RACE` of twenty carrying a badge is a 4/20 = 20%
+  //   chance that the car carrying one is yours.
+  const playerContacts = a.playerContacts / a.races;
+  const playerBadgeRate = a.playerBadges / a.races;
+  check(playerContacts <= MAX_CONTACTS_PER_RACE * 2 / 20,
+    `${distance}: the player is in ${playerContacts.toFixed(2)} contacts a race against a field ` +
+    `share of ${(MAX_CONTACTS_PER_RACE * 2 / 20).toFixed(2)} — "there are too many accidents happened"`);
+  check(playerBadgeRate <= MAX_PENALISED_CARS_PER_RACE / 20,
+    `${distance}: the player carries a penalty in ${(playerBadgeRate * 100).toFixed(0)}% of races ` +
+    `against a field share of ${(MAX_PENALISED_CARS_PER_RACE / 20 * 100).toFixed(0)}% — ` +
+    `"way too many penalties being given out"`);
 }
 
 // A field that never touches anybody is the other failure, and it is just as

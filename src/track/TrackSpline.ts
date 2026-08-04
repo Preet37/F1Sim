@@ -1294,11 +1294,34 @@ export class TrackSpline {
 
     for (let i = 0; i < count; i++) {
       const k = lineCurvature[i];
-      // Sign convention: `lineCurvature` positive is a LEFT turn, and
-      // `lineOffset` positive is to the driver's left, so the apex of a left
-      // hander sits at a large positive offset. Moving off the rubber means
-      // moving toward the outside, which is subtracting.
-      const dir = k > 0 ? 1 : k < 0 ? -1 : 0;
+      // SIGN CONVENTION, AND THE COMMENT THAT USED TO STAND HERE WAS WRONG BY
+      // EXACTLY ONE SIGN — issue #42, and it cost the whole feature.
+      //
+      // It read: "`lineCurvature` positive is a LEFT turn ... so the apex of a
+      // left hander sits at a large positive offset ... moving off the rubber
+      // means subtracting." The second half is right and the first half is not.
+      // `signedCurvature` is `v1 x v2` in the (x, z) basis, and the normal these
+      // offsets are measured along is `(dz, -dx)`, the driver's LEFT; in that
+      // pair a left-hand turn produces a NEGATIVE cross product. So `k > 0` is a
+      // RIGHT-hander, whose apex sits at a large NEGATIVE offset, and
+      // subtracting drove the wet line FURTHER INTO the apex — deeper into the
+      // rubber, and straight into the corridor clamp below, which is why it came
+      // out sitting exactly on `±limit[i]` at the tightest corner of nine of the
+      // eleven circuits.
+      //
+      // Measured on all eleven before the flip: the wet line moved toward the
+      // apex on 64-90% of corner nodes, and `TrackSurface.onLineFraction` read
+      // 1.000 at the wet line at the tightest corner on ten of eleven — the wet
+      // line never left the groove, so the water lookup and the rubber lookup
+      // both returned the ON-LINE values and `probeWeather` measured grip 0.830
+      // against 0.830. One value used for both sides, exactly as it looked.
+      //
+      // Do not re-derive this direction from `lineCurvature`'s sign without
+      // re-reading `signedCurvature`; section 5b of `probe:weather` now asserts
+      // the direction itself, on all eleven circuits, for that reason — and it
+      // reads the apex side off the dry line's own offset rather than off the
+      // curvature, so it cannot inherit this mistake.
+      const dir = k > 0 ? -1 : k < 0 ? 1 : 0;
       // How much shift is worth taking. On a straight the rubber band is wide
       // and shallow and there is nothing to gain from a specific line, so the
       // shift tapers off with curvature; through a corner the band is narrow

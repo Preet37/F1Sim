@@ -95,6 +95,19 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
 9. **Stop on the racing line and wait.** Race control should raise double yellows naming
    your car, and marshals should recover it (fixed, #28). The field should go past you —
    before the fix, **one stopped car froze the entire race**.
+8. **Race in the rain — and you have to ask for it: `http://localhost:5173/?wet=0.9`.**
+   **It does not rain by itself. Ever.** That is a real fault found while fixing the one
+   below, it is measured (0 of 440 circuit-and-seed sessions get even damp), and it is on
+   the list in §5 — so do not go hunting for a wet seed.
+   With `?wet=` set, watch where the cars put themselves through a corner. The field should
+   stop using the dark, rubbered-in groove and run **wider — a later apex, roughly two and a
+   half metres off the dry line at a tight corner** — because rubber under water is slick and
+   the clean asphalt beside it is not. As the track dries the line comes back, because the
+   groove dries first. **This is new in #42 and until it landed it did not happen at all**:
+   the alternative line the cars steer to was being computed on the wrong side of the corner
+   and never actually left the groove, so the grip beside the line measured exactly the same
+   as the grip on it. If the field still runs the dry line in a downpour, say so — that means
+   the fix did not reach you.
 
 ---
 
@@ -166,6 +179,9 @@ Do not spend time reporting these; they are on the list with measurements.
 | **An idle player in the first garage stops the whole field leaving the pit lane** — 0 of 20 out after 15 min at Monza | **#83** |
 | ~~Every car sits level on a road that is not level~~ — **fixed**. Was up to 409mm of tyre under the asphalt at Monaco, 396mm at Zandvoort, 341mm at Spa; now 80 / 34 / 27mm, and 10 of 11 circuits are within 5.3mm of what the road MESH itself allows | **#71** |
 | **The drawn road is up to 113mm away from the surface cars are placed on, between node rows.** A corner's road quad fans and is not planar, so its diagonal split lifts or drops the drawn triangles in between. Worst at Suzuka, Monaco, Zandvoort and COTA. This is what is left of #71 and it is a road-mesh job, not a car one | filed under **#71** |
+| **IT NEVER RAINS.** Not on any seed, at any circuit, in any session — measured 0 of 440 circuit×seed sessions reaching even "Damp". A rate limiter in the weather model snaps the rainfall back to zero faster than it can build at the rate the game steps at, so the sky is permanently dry. Every weather probe passes because they all force the rain on directly, which is the one thing the game itself never does. **Do not spend time trying to get a wet race** — you cannot, and the fix needs the how-often-does-it-rain schedule calibrated at the same time, or three races in four would be wet | **#97** |
+| The rain that *is* there works, and you can see all of it: **`?wet=0.9`** on the dev-server URL forces standing water before the lights go out, and everything downstream — spray, the wet line, the crossover, the pit wall's call — is live from there | |
+| **A full-distance race is interrupted seven times.** Measured at 52 laps, Silverstone, F3, P18, medium: **7 safety-car or VSC periods and 35% of the race neutralised.** Real F1 averages well under one a race. It is downstream of the cars retiring, so it closes when that does | **#26** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
 | AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
 | **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |
@@ -236,6 +252,7 @@ corrected to place its car where the renderer places it rather than 20mm low, wh
 `main` alone and belongs to the HUD's `MIRROR_PANES` rectangles (PROJECT.md §6/§7) ·
 ~~`probe:fieldsize` 14 (#44)~~ — **fixed, and it was 16 rather than 14 when it was measured
 rather than quoted** · `probe:weather` 2 (#42) · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
+`probe:fieldsize` 14 (#44) · ~~`probe:weather` 2 (#42)~~ **fixed — passes** · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
 list read as the count; confirmed 9 on a `src/` checked out at `3f229b7`, so not a regression ·
 `probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
 `probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
@@ -249,6 +266,15 @@ cars were already carrying a broken component *while still racing*, contacts pea
 distance and retirements a tenth or two later, and the field's worst part falls 0.94 → 0.59
 across the race. So the two failing bars are one problem, not two: the retirements are
 downstream of the contacts. `npm run diag:attrition` is the instrument ·
+that belong to #27 · `probe:racelog` **at `RACELOG_LAPS=full` only** **3** (#26 and #12) — the default
+quarter-distance run passes. Two are the field's (11.50 retirements, 22.50 contacts a race)
+and the third is new and is the player's own (in 1.50 contacts a race against a derived
+share of 1.20) ·
+`probe:stewards` **1 — and it is on `main` too, it had simply never been written down.**
+`even the optimistic end of the full-distance estimate is 9.7 penalties`, against a bar of
+8. It is the probe's own extrapolator, from 5 events over 44 race-laps, and the probe's
+comment already warns that that figure "can read 3.0 one week and 0.4 the next". The direct
+count at full distance disagrees with it — see the penalty row in §7 ·
 **`probe:crashrest` 1** — Monaco s=336, a 9.2m centreline radius on a 10m-wide road, where the
 road mesh's own quad is degenerate and a rigid 3.6m car cannot lie on it. 43.6mm over a bound
 the mesh's own error sets; the other ten circuits are inside 5.3mm.
