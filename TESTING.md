@@ -145,7 +145,29 @@ Useful individual probes:
 
 **Known-failing, expected:** `validate:flags` (safety-car form-up, #6) ·
 `probe:framing` 56 (54 belong to the HUD, 1 real Suzuka defect, 1 band question) ·
-`probe:fieldsize` 23 (#44) · `probe:weather` 2 (#42) · `shoot:panels` 2 rail + 2 mirror.
+`probe:fieldsize` 23 (#44) · `probe:weather` 2 (#42) · `shoot:panels` 2 rail + 2 mirror ·
+`probe:grade` 4 of 16 (see below).
+
+**`probe:grade` needs shots first**, and it takes a tag:
+
+```bash
+SHARP_TAG=after npm run probe:sharpness    # shoot into sharp-out/after
+npm run probe:grade                        # judge those against reference/target/
+```
+
+It compares median luma, RMS contrast, saturation and white balance against **your own
+reference frames**. Currently **12 ok / 4 failed**, and the four are honest residuals, not
+regressions:
+
+| | ours | reference | note |
+|---|---|---|---|
+| Zandvoort exposure | 123 | 81 | a grade cannot manufacture dynamic range — the reference holds median 81 *with* an RMS of 57.1, and every exposure this renderer can take trades one for the other |
+| Monza exposure | 139 | 89 | Monza is **50 code values brighter than Zandvoort under identical settings** while the two references differ by 8. **Undiagnosed** — reported rather than averaged away |
+| Monza saturation | 0.258 | 0.146 | same cause |
+| Monza balance | −28.9 | 1.1 | same cause |
+
+Note `reference/` is gitignored, so a fresh clone has no specification to measure against
+and this probe can only say so — it cannot pass.
 
 ---
 
