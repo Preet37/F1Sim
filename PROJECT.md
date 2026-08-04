@@ -300,6 +300,10 @@ Run `npm run` to list. The important ones:
   car lap **x1.65** a green lap (bar 1.45–2.20), green shown **100m from the Line**, 3 of 3
   lapped cars unlapped, 0 illegal passes, 0 delta penalties. Proved it can still fail — see
   §6. **Check a known-failing entry by running it before quoting it.**
+- `shoot:panels` — **9 rail + 2 mirror as of 2026-08-03, and the rail count below is
+  STALE.** See §7: the rail was zero after #17, is nine now, and was confirmed nine on a
+  `src/` checked out at `3f229b7`, so it is not a branch regression. The paragraph that
+  follows is kept because its mirror half is still exactly right.
 - `shoot:panels` — **2 rail + 2 mirror layout failures**, down from 5 + 2. The two radio-card
   failures are FIXED (see §6); what remains is `portrait/safety-car/driver:
   hud-neutral-cue clipped out of the band by 4px` and `phone/pit-choice/cockpit:
@@ -2699,6 +2703,41 @@ picture anywhere in this repository. `npm run shoot:safetycar` now exists and is
 deliberately small. **`audit:pitlane`'s five stations still do not frame the pit building's
 glazing band**, so the paddock correction was verified by arithmetic and on the garage
 monitors rather than on the windows themselves. Recorded rather than done.
+
+### `shoot:panels`: the rail is NINE, not zero, and this file said zero
+
+**Measured on merged `main` 2026-08-03: 9 rail + 2 mirror.** §4 and §6 both record the rail
+as **zero** since #17 — *"`rail: nothing overlaps anything, all viewports, all scenes` —
+zero, which is two better than `main`"*. It is not zero now. The two named are
+`phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px` and
+`phone/pit-choice: overlap .pitprompt x .hud-carstate by 138x12px`.
+
+**Confirmed pre-existing and not a branch regression**, by the only method that settles it:
+`git checkout 3f229b7 -- src/` on the `brand-override-repair` worktree and re-running gave
+**the same 9 + 2, the same two sentences**. So something merged into `main` after #17 put
+the rail back and nobody re-ran the harness — the same species of stale entry this file
+records for `validate:flags` and `probe:fieldsize`. The mirror count is unchanged at 2.
+**Nobody is on this.**
+
+### `audit:livery` had a BLACK FRAME in it on `main`, underneath the flake
+
+The entry below describes a `hero` shot that is not reproducible. That is real and is
+confirmed — three consecutive runs on the fixed tree gave three *different* `hero` hashes
+(`bcdf59e9`, `15aebc66`, `be1b1844`) — but it was hiding something worse.
+
+On merged `main` with `public/assets/` present, `audit:livery` reports **3 failures**, and
+`control--top` comes back as **`f4cb2a36a4c1`**. That is the blank-frame hash from the §6
+entry above: the captured sky's six overflowing texels turn the environment map to NaN part
+way through the run and the shot is **black**. An audit harness was writing black PNGs into
+`audit-out/` and reporting them as a livery difference.
+
+With the clamp: **3 failures → 1 or 2**, `control--top` stable at `bd0a466e`, and no black
+frame. What is left is the `hero` flake and one more thing the flake was covering:
+**`control--side` is stably mismatched at `6e0b172a50bd` against `audit:car`'s
+`47f6bbf0a014`** — the same pair on the fixed and the unfixed tree, four runs, so it is
+neither the flake nor the clamp. **A stable mismatch on one view is a real difference
+between the two harnesses and nobody has diagnosed it.** It is not a repaint: `top` is
+byte-identical. **Nobody is on this.**
 
 ### `audit:livery`'s control shot is not reliably reproducible, and the failure is silent
 
