@@ -250,8 +250,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | ~~Suzuka's crossover draws two roads 0.159m apart and neither leg is a bridge~~ — **fixed**. The two legs are 7.92m apart now, which is what the real overpass has. It did not move the lap-time solver at all | **#37** |
 | **A white line carries almost no surface relief** — 0.66° of facet slope against the asphalt's 1.86°, because #48's band limit is shared by every surface and paint's own strength is a quarter of the road's. Whether a white line should look like a smooth film or like painted aggregate is **your call**, and it needs looking at rather than measuring | **#86** |
 | No over-wheel winglet (deleted, not repaired — it could not attach at any radius) | **#67** |
-| AI pace off the solved reference lap. **Re-measured 2026-08-03: the sweep's mean is 1.313, not 1.43** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is 1.166. See §6 | **#1** |
-| **The racing line can still read GREEN while the car is past its grip**, on four circuits (Bahrain, Monaco, COTA, Interlagos). The largest cause is fixed — the display was promising 28.7% more grip than the car has — and a residual is left in the colouring rule | **#30** |
+| AI pace off the solved reference lap. **Re-measured 2026-08-04: the sweep's mean is 1.335 and 10 of 55 races fail** — and 7.5 points of it is a reference lap no driver in this car can reach, so the part that is really the AI is **1.176**. That last number went the WRONG WAY on purpose: the corner-exit defect it was chasing turned out to have been silently absorbed by the AI's throttle constant, and re-deriving that constant honestly costs solo pace and buys race stability. The full trade is in PROJECT.md §7 | **#1** |
+| ~~The racing line can still read GREEN while the car is past its grip, on four circuits~~ — **fixed, and it was never the display**. `probe:racingline`'s own colour classifier had a hole between green 0.35 and 0.45, right in the middle of the amber-to-red ramp, and resolved it as GREEN — so a road drawn a deep orange (1.00, 0.41) was scored as "you are fine". The probe's driver then acted on that and drove into the corner it went on to blame the overlay for. 4 failures → **0**, with a sweep proving **0 band edges moved**. **If the line ever looks green to YOU while the car is sliding, that is a new fault and worth a recording** | **#30** |
 | ~~The halo is near-black and loses its outline against a dark background~~ — **fixed**. The crown of the hoop is now painted in the team's own colour, as `76.png` and `90.png` both show; the pillar and the underside stay black, as `76.png` also shows. Measured on 11 circuits × day/night × two onboard cameras and behind ten teams' cars | **#34** |
 | **A dark-liveried car gets a dark halo, and on the darkest liveries the paint buys very little outline.** A purple, a navy and a dark red on the grid draw only 4.7–12.7 display levels brighter than the old black. That is what a dark car's halo really looks like — the Aston in `90.png` is a dark green halo on a dark green car — so it is reported rather than "fixed". **If it looks wrong to you on a particular team, say which, and the rule can push dark bodies onto their accent colour instead** (which is what the black Mercedes in `76.png` does with its teal) | **#34** |
 | Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
@@ -328,12 +328,27 @@ Useful individual probes:
 22.6; 2 Monaco horizon rows at 51% against 34–50, where 51 is the *correct* number for a car
 climbing Beau Rivage — band questions, neither loosened) ·
 `probe:crashrest` **1** (Monaco s=336, a 9.2m centreline radius on a 10m road) ·
-`probe:racingline` **4** (#46 — green still asks 103–107% of the car's grip; it was **28.7%**
-before #1's work, and what remains is the *colouring* rule) ·
-`probe:racesweep` **11 of 55** and `validate:race` **1**, both `monaco: fastest lap 150% of
-reference` (#1) · `probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
+~~`probe:racingline` **4**~~ **now 0** — the four were a hole in the probe's own colour
+classifier, not the display; see §5 ·
+`probe:racesweep` **10 of 55**, five of them `monaco: fastest lap ~149% of reference` and
+three of them Spa (#1) · `validate:race` **3** — Monaco 150%, Spa 154% and an 81.1s Spa
+spread, against **2** on clean `main` (Monaco 150%, COTA 145%): **Spa is a knowing cost of
+the throttle-share change, explained in PROJECT.md §7** ·
+`probe:racelog` **at `RACELOG_LAPS=full` only** (#26 — the quarter-distance
 run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (identical on clean
 `main`, never previously recorded) · `probe:grade` **4 of 16**.
+
+**Nothing above was loosened to get there** — `probe:racesweep`'s `ratio > 1.45`,
+`offTrack > 90` and `spread > 70` are untouched, and `probe:racingline`'s colour bands were
+proved not to have moved by a sweep of every colour the ramp can draw.
+
+**Two more that this list had never recorded, both confirmed identical on clean `main` by a
+controlled run on 2026-08-04** — so they are pre-existing and neither is a regression:
+`probe:drivability` **4 of 8** (turn-in 0.658s against a 0.35s bar, free-yaw decay 0.34
+against 0.40, one hands-still case diverging, and 0.27s of departure warning against 0.30 —
+all four are #46's *"the car is gliding"* and *"it randomly starts oversteering"* stated as
+numbers) · `probe:handling` **1**. **`validate:race` was recorded here as 1 and measures 2**,
+which is the same species of stale number §8 keeps a list of.
 
 **Green as of 2026-08-04, and worth knowing because several were red for a long time:**
 `shoot:panels` **0 rail + 0 mirror** · `probe:banking` PASS *including between the mesh rows* ·
@@ -342,19 +357,26 @@ run passes) · `probe:stewards` **1** at 9.7 penalties against a bar of 8 (ident
 `probe:hudstrip` **46/0** (new, #15) · `probe:frontwing` (new, #8) · `probe:assets` **37/0**
 with the byte-identity guarantee intact · `probe:carrig` **146 parts in 1 cluster**.
 
-**`probe:racesweep`, re-baselined on `main` 2026-08-03** — the numbers in issue #30 are
-stale and several of them are fixed:
+**`probe:racesweep`, re-baselined on `main` 2026-08-03 and AGAIN on `ae6c981` 2026-08-04** —
+the numbers in issue #30 are stale and several of them are fixed:
 
-| | issue #30 as filed | now |
-|---|---|---|
-| races failing | 13 / 55 | **11 / 55** |
-| mean lap/reference | 1.3662 | **1.3131** |
-| Monaco fastest | 151–175% | **148–150%** |
-| Monaco off-track | 107–123 | **under the 90 bar on every seed** |
-| Silverstone | failed 2 seeds | **passes all five** |
+| | issue #30 as filed | 2026-08-03 | `ae6c981`, 2026-08-04 | this branch |
+|---|---|---|---|---|
+| races failing | 13 / 55 | **11 / 55** | **11 / 55** | **10 / 55** |
+| mean lap/reference | 1.3662 | 1.3131 | 1.3284 | 1.3351 |
+| Monaco fastest | 151–175% | 148–150% | 148–150% | 149–150% |
+| Monaco off-track | 107–123 | under the 90 bar | under the bar | under the bar |
+| Silverstone | failed 2 seeds | passes all five | **1 of 5 fails, 160%** | passes all five |
+| mean spread | — | — | 30.98 | **26.40** |
+| mean retirements | — | 0.84 | 0.62 | 0.73 |
 
-Nothing in this branch made those move — #10 (fuel), #4 (centreline easing) and the
+Nothing in the 2026-08-03 branch made those move — #10 (fuel), #4 (centreline easing) and the
 `aeroBalanceFront` change did, and nobody had re-run the sweep afterwards.
+
+**The third column is the one worth learning from.** The failing COUNT is identical to the
+day before and three of the rows underneath it are not: the mean is 1.5 points worse,
+Silverstone is back on one seed, and three SPREAD failures appeared that the earlier run did
+not have. **A count that has not moved is not evidence that nothing has moved.**
 
 **`probe:grade` needs shots first**, and it takes a tag:
 

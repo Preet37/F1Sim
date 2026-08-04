@@ -1,4 +1,4 @@
-import { RacingLine, capabilityOf } from '../src/render/RacingLine';
+import { RacingLine, capabilityOf, colourFor } from '../src/render/RacingLine';
 import { TrackSpline, type CarCapability } from '../src/track/TrackSpline';
 import { CIRCUITS, getCircuit } from '../src/data/tracks/circuits';
 import {
@@ -6,6 +6,19 @@ import {
 } from '../src/physics/VehicleSpec';
 import { getCompound } from '../src/data/tires';
 import { TEAMS, getTeam } from '../src/data/teams';
+
+/**
+ * Where the drawn colour stops being green, and where it becomes red, on the
+ * green channel — the one channel `colourFor` moves monotonically across its
+ * whole ramp.
+ *
+ * Neither is a new threshold. 0.844 is the exact green-channel value at which
+ * the old `r > 0.6` test fired (both channels are linear in the same ramp
+ * parameter over that half, so the two conditions are the same condition), and
+ * 0.35 is the old red test unchanged. See `reads`.
+ */
+const G_AMBER = 0.844;
+const G_RED = 0.35;
 
 /**
  * Does the racing-line overlay tell the truth?
@@ -277,6 +290,45 @@ function shortName(n: string): string {
 // test is doing work, and it is the number to quote if anyone proposes taking
 // the lateral test back out.
 
+console.log('\n\n=== the colour classifier is total ===\n');
+console.log('Before anything is flown at anything: every colour the shipped ramp can');
+console.log('draw must land in exactly one band, and the bands must sit where they');
+console.log('always did. The old classifier failed the first half — it had a hole in');
+console.log('the middle of the amber-to-red ramp that it resolved as GREEN — and all');
+console.log('four of the failures below used to come out of it.\n');
+{
+  /** The classifier as it stood, hole and all. Kept to prove nothing moved. */
+  const oldReads = (r: number, g: number): string => {
+    if (r > 0.85 && g < 0.35) return 'RED';
+    if (r > 0.6 && g > 0.45) return 'AMBER';
+    return 'GREEN';
+  };
+  let holes = 0;
+  let moved = 0;
+  let worstHole = 0;
+  for (let ratio = 0; ratio <= 1.4; ratio += 0.0005) {
+    const [r, g] = colourFor(ratio);
+    const before = oldReads(r, g);
+    const after = reads(r, g);
+    if (before === after) continue;
+    // The only disagreement allowed is the hole: a colour the old rule matched
+    // NEITHER of its two positive tests on and defaulted to GREEN.
+    const fellThrough = !(r > 0.85 && g < 0.35) && !(r > 0.6 && g > 0.45);
+    if (fellThrough && before === 'GREEN') { holes++; worstHole = Math.max(worstHole, ratio); }
+    else { moved++; }
+  }
+  console.log('  ratios swept 0.000..1.400 at 0.0005: ' + holes +
+    ' resolved out of the hole (up to ratio ' + worstHole.toFixed(3) + '), ' +
+    moved + ' band edges moved');
+  if (moved === 0) {
+    console.log('  PASS — every boundary is where it was; only the undefined region changed');
+  } else {
+    console.log('  FAIL — ' + moved + ' colours changed band OUTSIDE the hole. A band edge ' +
+      'has moved, which is a tolerance change (PROJECT.md §3.3).');
+    process.exitCode = 1;
+  }
+}
+
 console.log('\n\n=== the same measurement, driver-in-the-loop ===\n');
 console.log('A credulous driver — full throttle on green, maximum braking on anything');
 console.log('else — flown at every corner.');
@@ -386,9 +438,46 @@ function colourAhead(
   return [c[o], c[o + 1], c[o + 2]];
 }
 
-function reads(r: number, g: number): string {
-  if (r > 0.85 && g < 0.35) return 'RED';
-  if (r > 0.6 && g > 0.45) return 'AMBER';
+/**
+ * Which of the three bands a drawn colour is in.
+ *
+ * THIS HAD A HOLE IN IT, AND THE HOLE IS WHAT ISSUE #46's RESIDUAL WAS.
+ * It used to read:
+ *
+ *     if (r > 0.85 && g < 0.35) return 'RED';
+ *     if (r > 0.6 && g > 0.45) return 'AMBER';
+ *     return 'GREEN';
+ *
+ * `colourFor` shades amber to red as `[1.0, 0.75 - 0.70k, 0.03]`, so the green
+ * channel sweeps 0.75 down to 0.05 and passes straight through the gap between
+ * those two tests. A colour of **(1.00, 0.41, 0.03)** — a deep orange, the
+ * road three quarters of the way from amber to red — satisfies neither
+ * condition: `g` is not below 0.35 and it is not above 0.45. It fell through
+ * to the `return 'GREEN'` at the bottom.
+ *
+ * That is a classifier with an undefined region, defaulting it to the one
+ * answer that makes the display look like it lied. All four of this section's
+ * remaining failures were that: at Bahrain s=543 the ribbon's own ratio is
+ * 0.958 and it is drawing (1.00, 0.41) — and the probe recorded GREEN, then
+ * flew its driver into the corner at full throttle *because* it had read the
+ * road as green, which is how a 0.958 ratio turned into a 1.049 load.
+ *
+ * The fix is to classify on the ONE channel that is monotone over the whole
+ * ramp. Red saturates at 1.0 halfway along and cannot distinguish the second
+ * half at all; green falls 0.95 -> 0.75 -> 0.05 without ever turning back, so
+ * a single threshold on it is total by construction.
+ *
+ * NO BOUNDARY MOVES, and that is checked rather than asserted — see the
+ * equivalence sweep below. On the green-to-amber ramp `r = 0.15 + 0.85k` and
+ * `g = 0.95 - 0.20k` are both linear in the same `k`, so the old `r > 0.6` is
+ * EXACTLY `g < 0.844`; on the amber-to-red ramp `r` is pinned at 1.0, so the
+ * old `r > 0.85 && g < 0.35` is EXACTLY `g < 0.35`. The two classifiers agree
+ * on every colour the shipped ramp can produce except the ones the old one had
+ * no answer for.
+ */
+function reads(_r: number, g: number): string {
+  if (g < G_RED) return 'RED';
+  if (g < G_AMBER) return 'AMBER';
   return 'GREEN';
 }
 
@@ -624,6 +713,17 @@ function flyAt(
       // is the whole question: was the road green at the moment the car ran out
       // of grip, or had it already gone amber and the driver ignored it?
       if (ask > load) { load = ask; atS = s; atColour = readsNow; }
+      // `RL_TRACE=1` prints every sample near the limit with the RAW colour
+      // beside the band it was classified into. This is how the classifier's
+      // hole was found — the summary line says "GREEN" and only the rgb beside
+      // it says (1.00, 0.41), which nobody would call green — so it is worth
+      // keeping for the next time a band and a colour disagree.
+      if (process.env.RL_TRACE && ask > 0.9) {
+        console.log('    TRACE s=' + s.toFixed(0) + ' v=' + v.toFixed(2) +
+          ' grip=' + grip.toFixed(2) + ' ask=' + ask.toFixed(3) +
+          ' colour=' + readsNow + ' rgb=' + r.toFixed(2) + ',' + g.toFixed(2) +
+          ' committed=' + committed);
+      }
     }
   }
 

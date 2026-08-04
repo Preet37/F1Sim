@@ -474,8 +474,36 @@ export const AI_TUNING = {
    * `tractionLimitFraction` is the pedal at which the rears begin to spin, so
    * sitting exactly on it leaves the tire at the edge of its friction circle
    * with nothing in reserve for the lateral force the corner still needs.
+   *
+   * THIS WAS 1.03, AND THE COMMENT ABOVE ARGUES FOR A VALUE BELOW 1. Both were
+   * right, because the number it multiplies was wrong. Until issue #1's work,
+   * `tractionLimitFraction`'s denominator credited the car with full
+   * `ersPowerW` whatever the deployment mode was actually doing, so the limit
+   * it returned was too small — and by a factor that MOVED WITH THE ENERGY
+   * STRATEGY: 1.212x too small in `harvest`, 1.084x in `balanced`, 1.025x in
+   * `push`, and correct only in `overtake` (measured, `probe:envelope` §2).
+   *
+   * So a nominal 1.03 was really a throttle discipline that wandered between
+   * 0.85 and 1.03 of the rear axle's true limit as a side effect of which ERS
+   * mode `chooseErsMode` had picked. Nobody chose that coupling and nothing
+   * recorded it.
+   *
+   * With the denominator corrected, 1.03 means what it says — the whole field
+   * genuinely 3% past its traction limit — and `probe:racesweep` says that
+   * costs races: 11/55 -> 14/55, retirements 0.62 -> 1.02, Spa over the
+   * off-track bar at 96 and 106. 0.95 is the value that keeps the discipline
+   * the field was really calibrated at (1.03/1.084 = 0.95 in `balanced`, which
+   * is `chooseErsMode`'s default) now that the limit is honest, and it is one
+   * of the four values in `scripts/tuneAI.ts`'s own throttle sweep rather than
+   * a number invented here.
+   *
+   * A single car cannot choose this and it is worth knowing why: `tuneAI.ts
+   * throttle` flies ONE car and reports 11/11 clean and ZERO excursions at
+   * every value from 0.85 to 1.10, monotonically faster the higher it goes.
+   * The cost only exists in traffic, which is #1 and #30 being different
+   * problems (PROJECT.md §7).
    */
-  throttleShare: 1.03,
+  throttleShare: 0.95,
   /** Share of the lock-up-limited brake pedal the AI will use. */
   brakeShare: 0.98,
 };

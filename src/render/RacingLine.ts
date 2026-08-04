@@ -456,7 +456,7 @@ export class RacingLine {
  * flicking between states — a step change reads as a glitch and gives no sense
  * of how much margin is left.
  */
-function colourFor(ratio: number): [number, number, number] {
+export function colourFor(ratio: number): [number, number, number] {
   // Everything below 0.78 is comfortably fine and stays fully green, so the
   // line is not permanently amber on a straight.
   //
