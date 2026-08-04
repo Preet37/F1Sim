@@ -159,15 +159,40 @@ const PANEL_SIZE: Record<PanelName, { lengthM: number; girthM: number }> = {
 
 const SWATCH_REGION: Rect = { u0: 0.0, v0: 0.0, u1: 1.0, v1: 0.18 };
 const SWATCH_COLS = 6;
-const SWATCH_ROWS = 2;
+/**
+ * THREE ROWS, NOT TWO, since the halo got its own paint (issue #34).
+ *
+ * Twelve names fitted a 6x2 grid exactly and the thirteenth does not, so the
+ * grid grew a row rather than the region growing downward: `SWATCH_REGION` ends
+ * at v = 0.18 and `PANEL.airbox` begins at 0.20, and taking that 0.02 would have
+ * moved the airbox's own parameterisation. A third row costs each cell a third
+ * of its height — 85 by 31 pixels at 512, 85 by 15 at 256 — and every cell is a
+ * flat fill sampled at its centre, so its size is not load-bearing. The five
+ * unused cells in the last row are never sampled by anything.
+ */
+const SWATCH_ROWS = 3;
 
 export type SwatchName =
-  | 'body' | 'accent' | 'carbon' | 'trim' | 'rim' | 'tyre'
+  | 'body' | 'accent' | 'carbon' | 'trim' | 'halo' | 'rim' | 'tyre'
   | 'glass' | 'light' | 'helmet' | 'suit' | 'glove' | 'dark';
 
+/**
+ * `halo` SITS IMMEDIATELY AFTER `trim`, AND THAT ADJACENCY IS LOAD-BEARING.
+ *
+ * The halo hoop is ONE tube carrying TWO swatches — the painted crown and the
+ * dark fairing under it (see `flatSplit` in `CarMesh`) — so the triangles that
+ * straddle the paint line have one vertex in each cell and the rasteriser
+ * interpolates the UV between the two cell centres. Neighbouring cells in the
+ * same row means that path crosses exactly one boundary between two flat fills:
+ * a hard paint line with a texel of bilinear softening on it. Put the two cells
+ * anywhere else on the sheet and the same interpolation sweeps through every
+ * swatch in between, and the paint line acquires a band of tyre black and rim
+ * silver in the middle of it.
+ */
 const SWATCH_ORDER: SwatchName[] = [
-  'body', 'accent', 'carbon', 'trim', 'rim', 'tyre',
-  'glass', 'light', 'helmet', 'suit', 'glove', 'dark',
+  'body', 'accent', 'carbon', 'trim', 'halo', 'rim',
+  'tyre', 'glass', 'light', 'helmet', 'suit', 'glove',
+  'dark',
 ];
 
 function swatchRect(name: SwatchName): Rect {
@@ -188,6 +213,62 @@ function swatchRect(name: SwatchName): Rect {
 export function swatchUV(name: SwatchName): [number, number] {
   const r = swatchRect(name);
   return [(r.u0 + r.u1) * 0.5, (r.v0 + r.v1) * 0.5];
+}
+
+/**
+ * The whole cell, in UV.
+ *
+ * Exported for `probe:halo`, which builds an emissive mask that lights up ONE
+ * swatch cell and nothing else, so that the crown of the halo can be found in a
+ * finished frame without the probe holding a second copy of where the halo is.
+ * It reads the real layout out of this file rather than restating it, which is
+ * the same rule `probe:framing` follows for `HALO_PATH`.
+ */
+export function swatchUVRect(name: SwatchName): Rect {
+  return swatchRect(name);
+}
+
+/**
+ * The same cell in CANVAS PIXELS, at a given atlas size.
+ *
+ * `Panel`'s own mapping, not a second copy of it: UV v runs from the bottom of
+ * the sheet and canvas y from the top, and getting that inversion wrong puts a
+ * mask two rows away from what it is supposed to be masking with no symptom
+ * except a number that is quietly measuring the wrong object. Exported for
+ * `probe:halo`, which paints one cell white on a black copy of the atlas and
+ * uses it as an emissive map to find the crown in a finished frame.
+ */
+export function swatchPixelRect(
+  name: SwatchName, size: number,
+): { x: number; y: number; w: number; h: number } {
+  const r = swatchRect(name);
+  return {
+    x: r.u0 * size,
+    y: (1 - r.v1) * size,
+    w: (r.u1 - r.u0) * size,
+    h: (r.v1 - r.v0) * size,
+  };
+}
+
+/**
+ * What colour a given team's halo comes out, and how bright that is.
+ *
+ * The rule is `haloColour` and the luminance is `luminance`; this is the two of
+ * them together so that `probe:halo` can print the whole grid without holding a
+ * copy of either. A probe that re-implements the rule it is checking measures
+ * its own copy — PROJECT.md §3.2 — which is exactly how `probe:activeaero`
+ * managed to report four wing solutions on a grid where every car ran one.
+ */
+export function haloPaintForTeam(colour: number, accent: number): {
+  colour: number; luminance: number; bodyLuminance: number;
+} {
+  const flash = contrastFlash(colour, accent);
+  const paint = haloColour(colour, flash);
+  return {
+    colour: paint,
+    luminance: luminance(paint),
+    bodyLuminance: luminance(colour),
+  };
 }
 
 // ===========================================================================
@@ -271,6 +352,83 @@ function contrastFlash(colour: number, accent: number): number {
   const dl = Math.abs(luminance(colour) - luminance(accent));
   if (dl > 0.16) return accent;
   return shade(accent, luminance(colour) > 0.4 ? -0.55 : 0.6);
+}
+
+/**
+ * The floor under the halo's paint, and where it comes from.
+ *
+ * NOT A TASTE JUDGEMENT AND NOT A TOLERANCE. The hardware black this paint
+ * replaces is `0x1e222a`, whose relative luminance is **0.132**. A "paint"
+ * darker than the bare part it is painted over is not a paint — it is the same
+ * near-black under a different name, and the whole defect in issue #34 is that
+ * near-black arc having no silhouette. So the floor is the hardware's own
+ * luminance with a small margin: below it, the team's colour cannot do the job
+ * the reference frames show it doing and the accent is used instead.
+ *
+ * On the real 2026 grid this moves exactly ONE car of eleven. Body luminance:
+ * Mercedes 0.776, Haas 0.732, Williams 0.706, McLaren 0.571, Racing Bulls
+ * 0.567, Alpine 0.518, Aston Martin 0.489, Red Bull 0.418, Ferrari 0.206, Audi
+ * 0.198 — all above. Cadillac's `0x1c1c28` is **0.113**, and it takes its own
+ * gold accent, which is what a black-and-gold car's halo is anyway.
+ */
+const HALO_LUMA_FLOOR = 0.15;
+
+/**
+ * The near-black every unpainted fitting on the car is, in one place.
+ *
+ * It was a literal in `case 'trim'` and it is now named because the halo's
+ * fairing, its pillar and its mounts all have to be exactly it — and because
+ * `?haloUnpainted=1` has to be able to give the crown the same value, which is
+ * the only way to measure the defect this file just fixed.
+ */
+const TRIM_HARDWARE = 0x1e222a;
+
+/**
+ * `?haloUnpainted=1` — re-introduces issue #34 on purpose.
+ *
+ * PROJECT.md §3.2: a probe a broken feature passes is worse than no probe, and
+ * the only honest way to know this one can go red is to put the defect back.
+ * With this set the `halo` swatch returns the hardware black the crown used to
+ * take from `trim`, in colour AND in surface (see `surfaceFor`), so the frame
+ * it draws is the frame `main` drew before this change — same geometry, same
+ * UVs, one texel of the atlas filled differently. `probe:halo` measures both
+ * arms and the separation between them is where its bound comes from.
+ *
+ * A query parameter rather than an env var because the thing being measured is
+ * a rendered frame in a real browser, and `main.ts` already reads five of these
+ * (`circuit`, `session`, `quality`, `wet`, `introslow`). Guarded for Node,
+ * where `probe:carrig` and `audit:car` import this module with no `location`.
+ */
+const UNPAINTED_HALO = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('haloUnpainted') === '1';
+
+/**
+ * The halo's paint — issue #34.
+ *
+ * **Both reference frames paint it in the team's own colour**, and this rule is
+ * read straight off them rather than invented. `reference/target/76.png` is the
+ * Zandvoort onboard the user called *"the best image"*: a Mercedes whose body
+ * is `0x27f4d2` teal in this roster, with the crown of the hoop that same teal
+ * the whole way round the arc. `reference/target/90.png` is the Bahrain night
+ * frame: an Aston Martin whose body is `0x229971` green, with the halo in that
+ * green. In both, the painted colour is the BODY colour — so that is what this
+ * returns, and the accent is a fallback for a car too dark to carry it.
+ *
+ * WHY THIS IS NOT THE `trim` SWATCH, which is where the halo used to be. That
+ * swatch is shared with the painted suspension, and the note on `case 'trim'`
+ * below records what happened when it was driven from the design's own trim
+ * colour: an ivory trim turned every wishbone into a white rod. The halo is one
+ * object of a known size in a known place, so it can carry a whole team colour
+ * where a scatter of 20mm rods across the front of the car cannot. Splitting it
+ * out is what lets the halo be painted WITHOUT the suspension being painted,
+ * and it is the reason #34 was left for a pass that owned this file.
+ */
+function haloColour(body: number, flash: number): number {
+  if (luminance(body) >= HALO_LUMA_FLOOR) return body;
+  if (luminance(flash) >= HALO_LUMA_FLOOR) return flash;
+  // Both dark. Lift the body rather than invent a third colour: a car with two
+  // near-black colours still has to have a hoop somebody can see.
+  return shade(body, 0.5);
 }
 
 // ===========================================================================
@@ -1334,18 +1492,41 @@ function swatchColour(
     /**
      * DELIBERATELY NOT THE DESIGN'S TRIM COLOUR.
      *
-     * This swatch is the painted suspension and the titanium halo, and the
-     * first version of this work did drive it from the trim colour — which,
-     * with an ivory trim, turned every wishbone and the halo into a white rod
-     * and made the front of the car read as a scatter of scaffolding. The trim
-     * colour is a hairline. Given a whole structure to colour it stops being
-     * one and starts being the loudest thing on the car.
+     * This swatch is the painted suspension, the mirror stalks, the brake-duct
+     * strut and — since issue #34 — everything about the halo EXCEPT the crown
+     * of its hoop. The first version of this work did drive it from the trim
+     * colour, which with an ivory trim turned every wishbone and the halo into
+     * a white rod and made the front of the car read as a scatter of
+     * scaffolding. The trim colour is a hairline. Given a whole structure to
+     * colour it stops being one and starts being the loudest thing on the car.
      *
      * So the trim reads where it is supposed to read: as the pinstripe along
      * the edge of a flash, which is exactly the mark that makes a livery look
      * designed. The hardware stays the near-black it has always been.
+     *
+     * THE HALO WAS THE ONE PART THAT COULD NOT AFFORD THAT, and it took until
+     * #34 to separate the two. A wishbone is a 20mm rod seen against the car; a
+     * halo is a 1.4m arc seen against the SKY from 600mm away, and near-black
+     * against a night sky or a shaded pit straight is no silhouette at all. See
+     * `case 'halo'`.
      */
-    case 'trim': return 0x1e222a;
+    case 'trim': return TRIM_HARDWARE;
+    /**
+     * The crown of the halo hoop, and NOTHING else on the car — issue #34.
+     *
+     * See `haloColour` for where the colour comes from and why the halo is not
+     * on `trim` any more. What takes this swatch is the up-facing part of the
+     * hoop's section only: the pillar, the pillar root, the two mounts and the
+     * hoop's own underside all stay `trim`, because that is what
+     * `reference/target/76.png` shows when it is enlarged — a solid painted
+     * band across the top of the arc, and black everywhere a driver is looking
+     * THROUGH the structure rather than at it. Painting the whole tube would
+     * have put a bright bar across the lower half of the onboard picture, which
+     * is the complaint §6 records four separate passes fighting.
+     */
+    case 'halo': return UNPAINTED_HALO
+      ? TRIM_HARDWARE
+      : haloColour(spec.colour, flash);
     case 'rim': return 0xb4bcc6;
     case 'tyre': return 0x101216;
     case 'glass': return 0x090c13;
@@ -1538,6 +1719,22 @@ function buildSurfaceMap(size: number, finish: LiveryFinish): THREE.Texture {
     // being drawn is paint over composite, and 0.02 is right for both users of
     // the swatch rather than a compromise between them.
     trim: [0.42, 0.02],
+    /**
+     * The painted crown of the halo — issue #34.
+     *
+     * The paragraph above `trim` already settled what material this is and it
+     * did so for the halo specifically: *"a regulation halo is titanium UNDER a
+     * bonded aerodynamic fairing, and on every car on the grid that fairing is
+     * painted in the team's colours — so the surface actually being drawn is
+     * paint over composite"*. So it takes the body's own paint roughness and
+     * the same 0.02 Fresnel floor, and a crown meeting the engine cover reads
+     * as the same finish rather than as a different one.
+     *
+     * Under `?haloUnpainted=1` it takes `trim`'s values instead, so the broken
+     * arm differs from the fixed one in colour ALONE and the measurement cannot
+     * be picking up a gloss change.
+     */
+    halo: UNPAINTED_HALO ? [0.42, 0.02] : [R.paint, 0.02],
     // The one honestly metallic swatch: machined and anodised hardware.
     rim: [0.26, 0.90],
     tyre: [0.88, 0.02],

@@ -750,6 +750,57 @@ export function setFlatUV(geo: THREE.BufferGeometry, u: number, v: number): THRE
 }
 
 /**
+ * Pins a part to TWO texels, chosen per vertex by which way its surface faces.
+ *
+ * A PAINT LINE ALONG A TUBE, which is what a halo has and what a single flat
+ * swatch cannot express. `setFlatUV` above collapses a part to one colour
+ * because most parts are one colour; the halo hoop is not. Every real car
+ * paints the crown of the hoop in the team's colours and leaves the underside
+ * black — `reference/target/76.png` enlarged shows exactly that — and the split
+ * is not a decal at a fixed place along the arc, it is "whichever surface faces
+ * the sky", which is a property of the NORMAL and follows the hoop round its
+ * own curve without anybody having to say where the crown is.
+ *
+ * Reading the normal rather than the section parameter matters. `TubeGeometry`
+ * lays its rings out on a Frenet frame whose phase depends on the curve, so
+ * "u = 0.25 round the section" is not reliably the top of anything; the y
+ * component of the outward normal is the top of everything, on a hoop that
+ * climbs 200mm and rolls through its whole length.
+ *
+ * THE TRIANGLES THAT STRADDLE THE LINE have one vertex in each cell and their
+ * UV is interpolated across the atlas between the two. That is why `Livery`
+ * puts the two cells side by side and says so: adjacent flat fills make the
+ * interpolation a hard edge with a texel of softening, which is what a paint
+ * line looks like. It is also why this takes swatch UVs rather than colours —
+ * the part stays in the one material and the one draw call the whole shell is.
+ *
+ * @param upper texel for vertices whose outward normal is at least `minNormalY`
+ * @param lower texel for everything else
+ * @param minNormalY y of the unit outward normal at the paint line
+ */
+export function setFlatUVSplit(
+  geo: THREE.BufferGeometry,
+  upper: readonly [number, number],
+  lower: readonly [number, number],
+  minNormalY: number,
+): THREE.BufferGeometry {
+  const nrm = geo.attributes.normal as THREE.BufferAttribute | undefined;
+  const count = geo.attributes.position.count;
+  const uvs = new Float32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    // No normals at all is not a case any caller has, but a part with none
+    // would silently come out entirely in the upper colour, which on a halo is
+    // a bright tube. Fall back to the lower — the colour it had before.
+    const up = nrm ? nrm.getY(i) >= minNormalY : false;
+    const [u, v] = up ? upper : lower;
+    uvs[i * 2] = u;
+    uvs[i * 2 + 1] = v;
+  }
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  return geo;
+}
+
+/**
  * Builds a wing element: a cambered aerofoil extruded across the car.
  *
  * Boxes are the single most obvious tell of a procedural car, and wings are the
