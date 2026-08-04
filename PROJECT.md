@@ -2530,6 +2530,19 @@ there four solutions", not "does any car run one". `probe:effects` §5 asks
 largest group 3**, and every archetype has at least one team. `FX_BREAK=teams` forces the
 old answer and takes the section red.
 
+**The regression set, run on this branch at load average 17–23** (several other agents'
+headless Chromes were on the machine throughout): `typecheck` both projects **clean**;
+`probe:effects` **77 ok / 0 failed**; `probe:carrig` **146 parts in 1 cluster**, all bolted,
+up from 141 because the three lenses and two pods are new parts it can see;
+`probe:activeaero` **exit 0**; `probe:debris` **exit 0**; `validate:world` **exit 0**;
+`probe:weather` **2 failures, the known #42 dry-line pair, confirmed identical and not
+added to**. `probe:grain` and `probe:graphics` were **still running when this was written**
+and are recorded as such rather than claimed — nothing in this work touches `SurfaceDetail`,
+the road, `QualityTiers`, `PostFX` or the GL context, but that is an argument and not a
+measurement. **`probe:renderperf` was skipped and the reason is the load average**, which
+PROJECT.md's own rule puts three times over the threshold at which its numbers mean
+anything.
+
 ---
 
 ---
