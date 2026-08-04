@@ -97,6 +97,13 @@ Start a **Quick Race** or a career weekend at any of the eleven circuits.
   should work — that path used to save your career **filed under nobody** (#23).
 - **Team principals** are 42 different people across F1/F2/F3. Every one used to be the
   literal string `"Pit wall"` on the real grid (#18).
+- **The people have bodies now (#22).** On the podium: both arms up, a trophy held in a
+  hand, champagne in the other, legs, race boots. At the press desk: hands on the desk,
+  race suits with a collar, a yoke, a belt and sponsor blocks. In the garage: the
+  principal standing whole in the foreground and three crew behind the bench. Until this
+  landed the podium arm was a single stick with the trophy stuck to the end and the
+  garage crew were torsos with no arms at all. **On a phone held sideways** the press
+  room now sits beside the question instead of pushing the answers off the bottom.
 
 **Known and not built:** sponsors as a system, publicist/marketer/PA/manager/agencies, a
 transfer market, driver ratings. Tracked on #23 and #77.
@@ -139,7 +146,8 @@ Do not spend time reporting these; they are on the list with measurements.
 | The halo is near-black and loses its outline against a dark background — it is *attached* (146/146 bolted, measured), but it is not painted the way the reference cars are | **#34** |
 | Sparks at Suzuka/Zandvoort still run 3.4s at a stretch (was 10.4s) | **#11** |
 | Career screens (ratings, market, accolades) not built | **#77** |
-| Podium/press bodies below the neck are unfinished | **#22** |
+| Podium/press bodies: **the head does not turn with the body**, so a panel of three all face the camera from the neck down; `applaud` reads as folded arms rather than clapping; nothing is animated. The three defects that were on this line — a stick arm, armless crew, hands hidden by the desk — are **fixed** | **#22** |
+| The **3D pit crew** in the pit lane is a different rendering path and #22 did not touch it | **#24** |
 
 ---
 
@@ -176,7 +184,7 @@ Useful individual probes:
 | `probe:carrig` | every car part attached, nothing interpenetrating (146 parts) |
 | `probe:effects` | sparks, skid marks and the rear lamps fire when they should **and not when they should not**; the four wing actuations reach the grid |
 | `probe:crashrest` | a wreck stops moving, and every car — running or wrecked — lies ON the road rather than through it, on all 11 circuits |
-| `probe:people` | 42 principals, all different, all reachable |
+| `probe:people` | 42 principals, all different, all reachable — **and every limb of every body, measured off the drawing**: 3,615 checks. `PEOPLE_LEGACY=1 npm run probe:people` runs it against the body as it shipped before #22 and fails 276 of 1,471 |
 | `probe:envelope` | the car does what the lap-time solver and the racing line say it will |
 | `probe:racesweep` | 55 races. **Slow — 20+ minutes, and an hour on a busy machine** |
 | `probe:qualiretire` | a crash in qualifying does not take the screen |

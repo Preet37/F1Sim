@@ -275,8 +275,8 @@ Run `npm run` to list. The important ones:
 | `probe:radio` | The team radio, in real Chrome: the link band by rendered-sample RMS, the two squelches, the dropout, the ONE MALE VOICE, the interrupt spacing, and that `speech` is emitted on the first `boundary` and never on `onstart` |
 | `probe:hudtext` | What the HUD says, including **every** authored radio variant off a fixed seed |
 | `probe:tower` | **The running order, after layout, in a real browser** — real `Hud`, real `RaceEngine`, the game's own stylesheet, `getBoundingClientRect`. §1 every rival's lap time in a cell with pixels in it (#35); §2 the row count against the room the panel has, and that positions increment by exactly one (#17, #76); §3 fields of 18/20/22/24; §4 the five things the reference's row is, per row, drawn; **§5 the COPY — where each column sits as a fraction of the panel, against numbers measured off `reference/target/68.png` itself, plus the face, the size relationships, the compound's own colour, the header's wording, centring and weights, and the badge's shape (#76).** Writes `hud-out/tower/*.png` |
-| `probe:people` | 42 principals: all named, all unique, none within a look distance |
-| `shoot:people` | Contact sheet of the cast, plus the presser/podium/garage scenes |
+| `probe:people` | **Two halves, and the second is not arithmetic.** §1–6: 42 principals, all named, all unique, none within a look distance. §Anatomy (#22): 40 figures × 5 poses, **measured off the drawn markup** — a hand overlaps its forearm, a forearm its upper arm, an upper arm the torso without being buried in it, a held object's grip is inside the hand, and every limb is a filled shape that measurably tapers. 3,615 checks. `PEOPLE_LEGACY=1` runs it against the body as it shipped at `5ac0a09` (**276 of 1,471 fail**); `PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five ways |
+| `shoot:people` | Contact sheet of the cast, the five poses (`SHOOT_PEOPLE=bodies`), the shipped body beside the rig at one scale (`compare`), plus the presser/podium/garage scenes |
 | `probe:smoke` | **The front end, in a real browser, as a player walks it.** A **required set** of routes — the main menu, all eight settings tabs, the driver rack, career create, My Team, team create, the paddock, session select, car setup, the briefing, the strategy screen, Continue, standings, Team HQ and its three rooms, **and since #13/#38 the opening titles, the podium, the press conference and the garage** — each of which must open *and land on the screen id it names*, then a free walk of everything else. Screens are de-duplicated by **what they are** (the shell's own `Screen` id + the headings it prints + its set of buttons), never by the button that led to them, which is what stops a livery swatch reading as a new screen. Rewritten for issue #62 — see §7 |
 
 **Known-failing, all pre-existing and documented:**
@@ -2990,6 +2990,95 @@ set of routes, so "you cannot get there" is a named failure rather than a note.
   journalists are invented people from invented name pools, deliberately so, because the
   press-conference system puts sentences in their mouths.
 
+### The body below the neck — issue #22, the half #18 did not do
+
+**What #18 shipped, photographed before anything was changed.** `npm run shoot:people` on
+`5ac0a09`:
+
+| shot | what the figure was made of |
+|---|---|
+| `desktop-podium.png` | a torso, and ONE round-capped stroke of constant width starting inside the chest. A hand ellipse and a trophy at two independent hard-coded offsets near its end. The other arm an upper arm with nothing below the elbow, painted BEHIND the torso. No legs — the drawing stopped at y=560 |
+| `desktop-garage.png` | four torsos with no arms. `standing` returned `{ behind: upper(-1) + upper(1), front: '' }`: two upper arms painted, then the torso painted over them in the same suit colour |
+| `desktop-presser.png` | no hands anywhere, on the screen whose specification (`reference/target/81.png`) has six of them on a desk in the middle of the frame |
+| `phone-presser.png` | 844×390, and the 21:9 room alone is 362 of the 390. The question and all three answers were below the fold |
+
+**The body is a RIG now.** `src/ui/people/Body.ts`: joints, bones with a width at each
+end, hands, feet, and a **grip frame per hand** that a held object is placed by. Pure
+geometry — no markup, no DOM, so a probe can build ten thousand of them in node.
+Proportion is the seven-and-a-half-head canon in multiples of *that person's own head
+height*, so a slight driver and a heavy principal are one body plan at two sizes. A pose
+is joint ANGLES; `seated` is **solved** against the desk height the scene is going to
+draw, which is the whole fix for the six hidden hands. `Figure.ts` paints the rig and
+paints nothing else: every shape below the neck is a bone, a hand, a foot or the torso
+outline, emitted as an explicit polygon. Five poses — seated, standing, raised, applaud,
+walking — cover the press room, the podium, the garage and the paddock, and `figureArt`
+returns a separate `overlay` layer for the parts that must be painted AFTER a scene's
+furniture.
+
+**`probe:people` is 537 → 3,615 checks**, and the 3,016 new ones are a different kind of
+assertion from the 537. Those were distance between records, which is arithmetic, and
+every one of them passed on the build described in the table above. A body is about
+**shapes sharing area**: a hand overlaps the forearm it is on, a forearm overlaps its
+upper arm, an upper arm overlaps the torso but is not buried in it, a held object's grip
+is inside the hand, and every limb is a filled shape that measurably narrows from one end
+to the other. All of it measured off the **markup** — `scripts/lib/figureGeom.ts` parses
+the drawn polygons back out — because a probe that asks a rig whether it agrees with
+itself is the probe this project keeps writing by accident.
+
+**Proved red on the shipped body, not on a hypothetical.** `scripts/lib/legacyFigure.ts`
+is `main`'s body verbatim at `5ac0a09`, tagged so the same instrument measures it.
+`PEOPLE_LEGACY=1 npm run probe:people`: **276 of 1,471 checks FAILED** — 112 `standing`,
+104 `raised`, 60 `seated`. The sentences are the §7 prose, as numbers:
+
+```
+arm-l-upper is a filled shape, not a stroke — fill="none" stroke-width="35.6"
+held-trophy is drawn AROUND the grip, not above it — its own extent is
+  y 44.4..102.7 against a grip at 111.4
+draws arm-l-fore — no element carries that data-part                    ×32
+draws hand-l / hand-r — no element carries that data-part               ×24
+arm-l-upper can be seen — painted BEFORE the torso and only 24.8% of it
+  is outside it (bar 30%)                                              ×40
+```
+
+`PEOPLE_BREAK=hands|detach|stick|bury|grip` damages the drawing five separate ways and
+each goes red on the assertion it targets.
+
+**And it caught one of its author's.** The first `walking` pose swung the near arm across
+the body: `arm-l-fore can be seen — only 1.1% of it is outside the torso`, on all eight
+builds. **The pose was fixed, not the bar** (§3.3).
+
+**The three scene fixes, each with its mechanism.**
+- *Press room.* The desk is painted between `markup` and `overlay`, and each panellist is
+  translated so **their own** `rig.deskY` lands on the room's `DESK_Y`. It used to be a
+  hard-coded `205 + 124 * 0.62` in the scene against a figure placing its hands off its
+  own head height: the two agreed for exactly one build.
+- *Podium.* Both arms up, legs, cut below the knee. `reference/target/82.png` is a
+  full-body shot and cutting at the waist made a skittle of them.
+- *Garage.* The crew and the principal stand on the floor by `rig.floorY` rather than by a
+  fixed 560-unit box, in three poses, cropped by the bench at the thigh.
+- *Landscape phone.* `people.css` puts the room and the conversation side by side under
+  `(orientation: landscape) and (max-height: 520px)`. The room takes 42% of the width;
+  the question and three answers fit in the other 58%.
+
+**Two things the new sheet is for.** `SHOOT_PEOPLE=bodies` is five poses, the extremes of
+build and height, and ten crew at the 62px the garage actually draws them at.
+`SHOOT_PEOPLE=compare` is the shipped body beside the rig at one scale, drawn from the
+same fixture the probe measures — so the picture and the 276 failures cannot drift apart.
+Both in `docs/people/`.
+
+**IP boundary, re-confirmed for the body.** Sponsor blocks on the suits are **blank
+rectangles**: the rhythm of light blocks on a coloured suit is what reads at these sizes,
+not the words in them, and `reference/target/81.png` is covered in real wordmarks that §3
+permits none of. `src/ui/people/` is **seven files, all `.ts` and `.css`, zero assets** —
+no image, no photograph, no traced outline. Grepping the twenty real 2026 surnames across
+`src/ui/people/`, `Podium.ts`, `PressConference.ts` and `GarageScene.ts` returns **exactly
+one hit and it is a doc comment**: `PressConference.ts:88`, `/** "Chassis morale", "Fan
+rating", "Rivalry with Norris". */`, three example labels for a `PressEffect`. There is no
+per-driver look override anywhere. Every face and every body comes out of a hash of an id,
+which is what lets a real driver's **name** sit beside a generated face without the face
+becoming an approximation of that person — and that separation is deliberate, because the
+press-conference system puts sentences in these people's mouths.
+
 ### My Team (issue #23, landed on merged `main` 2026-08-03)
 
 The mode the user asked for in their own words: *"You act as both the team owner and the
@@ -3228,7 +3317,7 @@ anything.
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
 | Crash & penalty rate | Measure it the way the player experiences it, then close whichever gap is real |
-| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**; the press room's answers still have no consequences. Bodies below the neck unfinished |
+| People graphics | Parametric characters and per-team principals **landed** (§6). Press conference and garage are **routed and held by `probe:smoke` — #38 closed**. **Bodies below the neck have landed too — issue #22, see §6**: a rig, five poses, hands, legs, held objects, and 3,016 new checks in `probe:people` that read the drawn polygons back. What is still missing is the press room's **consequences** — `onAnswer` and the `effects` lists are display-only and nothing in the career reads an answer back. That is the publicist/agencies layer and it is not built |
 | Career/story | Sponsors, rivalries, press conferences, the agencies — the rest of the world. **My Team, the facility, the livery editor and the newsroom have landed; see §6.** |
 
 ### `probe:smoke` had never opened the front end it claimed to cover — issue #62
@@ -4176,12 +4265,28 @@ reference. So #30's excursion count needs twenty cars and #1's pace gap does not
   them. See §6. **What #38 asked for and did NOT get: consequences.** The press room's
   `onAnswer` hook and its `effects` lists are display-only — nothing in the career reads an
   answer back. That is the publicist/agencies layer below, and it is still not built.
-- **The figures are flat-vector illustrated people, not blocky — but the bodies are
-  unfinished.** Heads read well and the eleven principals are plainly eleven people
-  (`hud-out/people/desktop-principals.png`), and they survive down to 40px on hair colour,
-  skin tone, glasses and beard. Below the neck: podium arms are stick rectangles with no
-  elbow and no hand, with the trophy attached to the end; the garage crew are **armless**
-  torsos. `phone-presser` (844×390) cuts the question and answer text off below the fold.
+- ~~**The figures are flat-vector illustrated people, not blocky — but the bodies are
+  unfinished.**~~ **Done — issue #22, see §6.** The three defects this entry named are
+  measured gone: the podium's stick arm is a two-bone chain with a hand on it and both
+  arms are up, the garage crew have arms, and the press desk has six hands on it. The
+  landscape phone lays the room and the conversation out side by side instead of pushing
+  the answers below the fold. `PEOPLE_LEGACY=1 npm run probe:people` still measures the
+  old body and still fails 276 of 1,471, which is what stops this coming back.
+  **What is honestly NOT done below the neck:**
+  - **The head does not turn with the body.** `PersonLook.turn` slides the features and
+    the body is drawn dead front-on in every pose, so a row of people all face the camera
+    from the neck down. On a three-person panel that reads as a line-up. The rig would
+    take a shoulder-line rotation to fix and it was not attempted.
+  - **`applaud` reads as folded arms rather than as applause.** The forearms cross in
+    front of the chest and the hands overlap; `reference/target/82.png` has second and
+    third clapping with their hands apart. It is a good pose and it is not the pose in
+    the reference. It is also, by accident, the crossed-arms pose `70.png` wants for
+    portraits, which is why it was kept.
+  - **Nothing is animated.** These are static SVGs. A podium that does not move is a
+    photograph of a podium.
+  - **The 3D pit crew (`src/render/CrewFigure.ts`, `PitCrew.ts`) is untouched by all of
+    this and is a different rendering path** — see the entry above. #22's work is 2D SVG
+    for UI screens and it does not reach the pit lane.
 
 ---
 
