@@ -111,6 +111,14 @@ transfer market, driver ratings. Tracked on #23 and #77.
 - **Cameras** — `C` cycles. `driver` is the view from behind the visor; `cockpit` and
   `onboard-t` are the roll-hoop pods. **Mirrors work**, including the sky in them, which
   was clipped out entirely until recently.
+- **The cockpit should not move when the road does.** Drive up Beau Rivage at Monaco, or over
+  Eau Rouge, in `driver` or `cockpit`. The **horizon** must rise and fall with the gradient —
+  that is the road — but the **steering wheel, the halo and the mirrors must not move at
+  all**, because they are bolted to the car you are sitting in. Until now they slid up and
+  down the frame by a fifth of its height on any real gradient: the camera was taking the
+  car's pitch and roll with the wrong sign, so on an 11° climb it was 22° out of line with the
+  car it is mounted on. If you ever see the wheel rim drift up the screen on a hill again,
+  that is the same fault back.
 - **Track judder** — most visible at **Spa, COTA, Zandvoort**. Bahrain and Monza are flat
   and always looked fine, so they prove nothing either way.
 
@@ -186,11 +194,14 @@ Useful individual probes:
 car's grip at Bahrain s=543m, Monaco s=346m, COTA s=3441m, Interlagos s=2696m. It was
 **28.7%** before the #1 work; what remains is in the *colouring* rule (when green turns
 amber), not in the capability calculation. Nobody is on it ·
-`probe:framing` **113** — recorded as 56, measured **51** on merged `main`, then the probe was
-corrected to place its car where the renderer places it rather than 20mm low, which is +49 on
-`main` alone and belongs to the HUD's `MIRROR_PANES` rectangles (PROJECT.md §6/§7) ·
-`probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · `shoot:panels` **9 rail + 2 mirror** — the "2 rail" that stood here was the de-duplicated
-list read as the count; confirmed 9 on a `src/` checked out at `3f229b7`, so not a regression ·
+`probe:framing` **5**, down from **113** — 108 of the 113 were one sign error in the onboard
+camera's orientation (it rode the mirror image of the car's own pitch and roll; PROJECT.md
+§6). What is left is 3 rows of `a mirror pane reads 22.2–22.4% of frame width` against a 22.0
+bound and 2 of `monaco cockpit: horizon at 51%` against a 34–50 band — the second is the
+correct number for a car climbing Beau Rivage. Neither bound was moved ·
+`probe:fieldsize` 14 (#44) · `probe:weather` 2 (#42) · ~~`shoot:panels`~~ **0 rail + 0
+mirror** — was 9 + 2, and this line said 2 + 2 because the harness prints a count and then a
+de-duplicated list and the list was read as the count ·
 `probe:grade` 4 of 16 (see below) · `probe:handling` 1 · `probe:drivability` 4 ·
 `probe:racingline` 4 (#30 — was 3, and it is the probe that got stricter: it had been flying
 a car that could brake 28% harder than a real one) · `probe:racesweep` 11 of 55 and

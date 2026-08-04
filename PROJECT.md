@@ -306,36 +306,38 @@ Run `npm run` to list. The important ones:
   car lap **x1.65** a green lap (bar 1.45–2.20), green shown **100m from the Line**, 3 of 3
   lapped cars unlapped, 0 illegal passes, 0 delta penalties. Proved it can still fail — see
   §6. **Check a known-failing entry by running it before quoting it.**
-- `shoot:panels` — **9 rail + 2 mirror layout failures. THIS ENTRY USED TO SAY 2 + 2 AND
-  THE RAIL NUMBER WAS FOUR AND A HALF TIMES WRONG.** Measured on 2026-08-03 on this branch's
-  own base, with the branch stashed, while working #76: **9 rail failures, deduplicated to
-  two sentences** — `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px` and
-  `phone/pit-choice: overlap .pitprompt x .hud-carstate by 138x12px`, each recurring across
-  the landscape-phone scenes. The harness prints a count and then a de-duplicated list, and
-  reading the list as the count is how "2" got written down. The mirror figure is right:
-  **2**, `phone/pit-choice/cockpit: .hud-notices over mirror[R1] by 26×72px`. §6's claim
-  that the rail reached zero was true of the tree it was measured on and is not true of
-  this one; nobody re-measured it, which is the exact failure mode this file keeps warning
-  about. **Run it before quoting it.** The #76 branch is byte-identical at 9 + 2.
+- ~~`shoot:panels`~~ — **0 rail + 0 mirror, exit 0, on the `framing-keepouts` tree.** It was
+  **9 rail + 2 mirror**, and this entry used to say 2 + 2 because the harness prints a count
+  and then a de-duplicated list and the list was read as the count. Both halves are fixed and
+  both were arithmetic in the failure message: the 9 rail deduplicate to
+  `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px`, where **138 is the tyre
+  panel's own width and 12 is 92 − 80** — the rail's foot on a landscape phone was written at
+  80 with a comment saying it reached the top of the tyre panel, and the panel's top edge is
+  92. The 2 mirror are `phone/pit-choice/cockpit: .hud-notices over mirror[R1] by 26x72px`,
+  where **26 is 220 − 194** — a 176px pit sheet plus a 44px slide put into a corridor that
+  had been 227 wide when the number was chosen and was 194 by the time it was measured. See
+  §6, "The onboard camera rode the MIRROR IMAGE of the car". **Run it before quoting it.**
 - `probe:weather` — **two failures, both the dry line**: on a soaked track the rubbered
   line measures grip 0.830 against 0.830 beside it, and on a drying track a car on slicks
   is no faster on the dry line than off it. Confirmed identical on pristine `main`
   (stash, run, pop) while working issue #32, so it is pre-existing and not the pit-wall
   work. **Real bug, unfixed** — §6 claims the fast line moves off the dry groove and this
   says the grip difference driving that is currently zero.
-- `probe:framing` — **113 failures, and this entry has been wrong twice.** It said 56; merged
-  `main` measured **51** on 2026-08-03, so the count had already come down with some other
-  merge and nobody re-ran it. It is now 113 and **+49 of the difference is a second
-  instrument correction, not a feature**: the probe placed its car at
-  `track.elevationAt(car.s)` while `CameraDirector` places every eye relative to
-  `bankedCarGroundY`, so it had been projecting the halo and the mirror panes onto a car
-  **20mm below the one the camera was looking at**, on every circuit, since that line was
-  written — and 20mm moves the halo three per cent of a frame height by the camera's own
-  note. `main` with the instrument corrected measures **100**. The remaining **+13 is
-  #71**, thirteen of its seventeen new rows at Monaco, whose onboard rig now pitches with an
-  11-degree road. The bulk of all three counts is the HUD's `MIRROR_PANES` keep-out, whose
-  rectangles were calibrated against the 20mm-low car. Full breakdown in §6 under #71.
-  **This is a probe that got stricter twice, not a feature that broke.**
+- `probe:framing` — **5 failures on the `framing-keepouts` tree, down from 113 on `main`, and
+  this entry had been wrong twice before that.** It said 56; merged `main` measured **51**;
+  two instrument corrections took it to 113 (the car placed 20mm below where the renderer
+  draws it, +49, and #71's surface attitude, +13). The 113 broke down as **99 `MIRROR_PANES`
+  keep-out escapes, 3 rails leaving through the SIDE of the frame, 10 Monaco
+  crown/wheel/horizon rows and 1 over-wide pane** — and **108 of them were one sign**: both
+  onboard rigs built their orientation as a single Euler with the `+ Math.PI` half turn
+  OUTERMOST, so the chassis pitch and roll were taken about axes that half turn had already
+  reversed and the camera rode the MIRROR IMAGE of the car, `2 x rigPitch` out. Invisible
+  while the attitude was the load lean alone; 22 degrees once #71 put the road into it. Full
+  write-up in §6, "The onboard camera rode the MIRROR IMAGE of the car" (#49/#50/#31).
+  **What is left is 3 rows of `wide driver: a mirror pane reads 22.2–22.4% of frame width`
+  against a 22.0 bound — already violated on `main` at 22.6 — and 2 of
+  `monaco cockpit: horizon at 51%` against a 34–50 band, which is the correct number for a
+  car on Beau Rivage's climb. Neither bound was moved. Nobody is on them.**
 - ~~`shoot:frontend`~~ — **was red on `main` and nobody had recorded it, and the cause was
   not the front end.** It exited 1 on every run with three identical lines, one per
   viewport: `console Failed to load resource: the server responded with a status of 404`.
@@ -1576,6 +1578,175 @@ are inside **5.3mm** of it. Monaco's s=336 is 43.6mm over, and that node is a **
 centreline radius on a 10m-wide road**, the tightest span on the calendar and the one this
 file already names as the fold margin's worst case. See §7 for the mesh defect itself, which
 is a real finding of this work and is **not** fixed here.
+
+### The onboard camera rode the MIRROR IMAGE of the car (issues #49, #50, #31)
+
+`probe:framing` was the biggest known-failing probe in the project at **113**, and this file
+records the count as having been wrong twice already (56 written down, 51 measured, then
++49 for the instrument correction and +13 for #71). It is now **5**, and the 108 that went
+away were **one sign**.
+
+**The 113, broken down by cause on merged `main` before anything was changed.** Parsed off
+the probe's own table rather than its de-duplicated summary, which is the mistake that made
+`shoot:panels` read as 2 for hours:
+
+| | rows | what |
+|---|---|---|
+| `MIRROR_PANES` keep-out escapes | **99** | 11 circuits x 2 frame shapes x 3 modes x 2 panes = 132 possible; 99 escaped. Issue #49, which was filed at **54** — before #71 moved the car |
+| a rail runs off the SIDE of the frame | **3** | `bahrain wide cockpit SIDE@x=0%,y=83%`, `cota wide cockpit SIDE@x=100%,y=88%`, `interlagos wide cockpit SIDE@x=100%,y=83%`. Issue #50 |
+| Monaco crown / wheel / horizon | **10** | crown 29 and 41 per cent, wheel rim 48 and 57, horizon 34 — four rows each of crown and wheel, two of horizon, all Monaco, both frame shapes |
+| a pane reads too wide | **1** | `cota wide driver: 22.6% of frame width` against a 22.0 bound |
+
+**#50 IS NOT AT SUZUKA ANY MORE, and the issue says Suzuka.** Filed as
+`suzuka wide cockpit: a rail runs off the SIDE of the frame (SIDE@x=0%,y=87%)`; on merged
+`main` today Suzuka's cockpit rail leaves through the corner at y=100% and passes, and the
+same defect is at Bahrain, COTA and Interlagos instead. #71's surface attitude moved which
+circuits show it. **The defect is real and was still there; the circuit list in the issue was
+stale.** Same species as everything else this file keeps warning about — run it before
+quoting it.
+
+**THE CAUSE, and it is one line.** Both onboard rigs built their orientation as a single
+Euler:
+
+```ts
+camera.rotation.set(rigPitch - EYE_PITCH, heading + headYaw + Math.PI, rigRoll, 'YXZ')
+```
+
+The `+ Math.PI` is there because a three.js camera looks along its own `-z` and the car's
+nose is `+z`. In `'YXZ'` the **yaw is the outermost rotation**, so the pitch and the roll
+that follow it are taken about axes that the half turn has already reversed — and a rotation
+of `+rigPitch` about a reversed x axis is a rotation of `-rigPitch` about the car's. The
+camera did not ride the chassis; it rode its mirror image, and the disagreement is
+**2 x rigPitch**, not zero.
+
+Measured on the composition alone, with three.js doing the arithmetic and nothing else
+loaded:
+
+| the car is at | the camera is off the car by |
+|---|---|
+| pitch 11.5°, roll 0 | **pitch −22.92°** |
+| pitch 0, roll 11.5° | **roll −22.92°** |
+
+and in the plainest form there is: at `rigPitch = 11.5°` the car's nose points at `y = −0.199`
+and the camera looks at `y = +0.199`. **Nose down, camera up.**
+
+**It was invisible for as long as the chassis attitude was the load lean alone** — 3.4° of
+roll and 2.9° of pitch, symmetric about zero, and a lean the wrong way still reads as a lean.
+**Issue #71 put the ROAD into `rigPitch`/`rigRoll`**, which took them to 11° at Monaco and 18
+of roll at Zandvoort. Twenty-two degrees of camera-to-chassis disagreement is the whole
+cockpit sliding around the frame, and it is what the probe was reporting as
+`monaco phone cockpit: crown at 41% of frame height` and `the wheel rim tops out at 57%`.
+**The steering wheel is bolted 0.44m in front of the driver's face and cannot move relative
+to it.** §6's #71 entry called those rows "the honest signature of an 11-degree road" and
+that reading was wrong: the horizon moving is the road, the *furniture* moving is a bug.
+
+**The fix is `CameraDirector.aimFromCar`**: the car's attitude first, exactly as
+`Renderer.syncCars` puts it on the car root, and then the neck — the half turn, the head's
+yaw about the driver's own spine, and the fixed nose-down bias about the camera's own
+horizontal — applied INSIDE it. With the car level the result is identical to the old
+expression, which is why nothing on a flat circuit moved. Verified directly: the camera's
+rotation relative to the car is now **−3.04° on every circuit**, which is `EYE_PITCH`, where
+it used to read −10.20 at Monaco, −3.16 at Spa and −1.60 at Red Bull Ring.
+
+**What it did to the panes, which is the whole of #49.** The cockpit's own left pane used to
+start anywhere between **63.3 and 84.9 per cent of frame height** depending on the gradient;
+it now starts between **78.5 and 81.5** on all eleven circuits. No rectangle can enclose a
+22-point vertical range without swallowing a third of the picture, which is why the keep-out
+had been re-measured twice and was wrong both times. What is left of the spread is the HEAD
+TURN — ±11.4° in the cockpit, ±13.9° in the driver's eye — which slides both panes the same
+way across the frame, and is why the new rectangles are wide rather than tall.
+
+**The probe's own "head straight" camera had the same composition mistake** and had to be
+corrected with it: `rest.rotation.y -= dir.headTurn` is the right inverse only while the head
+turn is the outermost rotation. It is now un-turned about the CAR's up axis. Left
+uncorrected it reported `a mirror lands at 167% of frame width`.
+
+**`MIRROR_PANES` re-derived a third time**, and this time from a table the probe prints
+rather than from a person reading escape messages out of a failing run. `probe:framing` now
+ends with a **MEASURED PANE ENVELOPE** — 11 circuits x 2 frame shapes, head at rest and
+turned — and the declared table is that envelope plus the one-point margin its own note
+states. It is still authored rather than generated, for the reason written on it: a table
+computed from the thing it checks agrees with it and checks nothing.
+
+| mode | before | after |
+|---|---|---|
+| driver left | `0, 69.5, 27.0, 90.5` | `0, 65.0, 37.0, 89.0` |
+| driver right | `69.0, 68.5, 100, 93.0` | `63.5, 65.0, 100, 89.5` |
+| cockpit left | `2.0, 77.5, 37.0, 94.0` | `0, 77.5, 44.5, 92.5` |
+| cockpit right | `60.0, 76.5, 93.5, 95.0` | `55.5, 77.0, 100, 93.0` |
+| onboard-t left | `22.0, 81.5, 36.5, 90.5` | `23.0, 77.0, 37.5, 87.5` |
+| onboard-t right | `64.0, 81.5, 78.5, 91.5` | `62.5, 76.5, 76.5, 87.5` |
+
+**The T-cam is the one that did not move vertically, and that is a finding rather than an
+omission.** `onboard-t` is not built from Euler angles at all — it is a `lookAt` at a point
+on the road twenty metres ahead, world-levelled by construction — so it never had the sign
+error and never will. Its 8-point spread is the CAR pitching under a stabilised camera,
+which is what a broadcast T-cam does.
+
+**PROVED RED THREE WAYS, and the probe carries two of them as switches** (`FRAMING_BREAK`,
+diagnosis only, nothing may be quoted from a run that sets it):
+
+| break | failures | what comes back |
+|---|---|---|
+| none | **5** | — |
+| `FRAMING_BREAK=narrowlens` — read the rig after 20 frames, mid-transition from the chase camera's 39° lens, which is the configuration issue #49 was filed against | **16** | 15 keep-out escapes, all `onboard-t` |
+| `FRAMING_BREAK=lowcar` — the car back at `track.elevationAt(car.s)`, 20mm below where the renderer draws it | **25** | 22 keep-out escapes; every pane drops 1.5–2.3 points down the frame |
+| `aimFromCar` reverted to the one-Euler form, by hand | **42** | 28 escapes, **all three of #50's rail rows at `main`'s exact numbers** (`bahrain 0%/83%`, `cota 100%/88%`, `interlagos 100%/83%`), all four Monaco crown rows at 29 and 41, all four wheel rows at 48 and 57, both horizon rows at 34 |
+
+That last row is the one that matters: every symptom of #50 and every Monaco band failure
+comes back with the sign restored, at the numbers merged `main` prints.
+
+**`shoot:panels` went from 9 rail + 2 mirror to ZERO AND ZERO**, and the four intermediate
+runs are the red proof for each half.
+
+- **#31, `phone/pit-choice/cockpit: .hud-notices over mirror[R1] by 26x72px`, and 26 is
+  arithmetic.** The pit sheet was moved sideways into the corridor between the panes at a
+  width of 176px on the reasoning that the cockpit's corridor was 227 wide and 227 less the
+  44 the cards slide in from is 183. #31's own first half — widening the keep-out for banking
+  — took that corridor to **194**, and `176 + 44 = 220` does not fit in 194. **220 − 194 =
+  26.** Nobody re-derived it. Re-deriving the table against a camera that rides the car takes
+  the corridor to **92**, where a pit sheet cannot go at any width worth reading, so the rail
+  goes back to the left edge lifted clear by `--floor` — the same place it is in every other
+  camera — and the running order stands down, which is the trade that block already states
+  and stopped one step short of.
+- **The 9 rail failures were an off-by-twelve, and the twelve is in the failure message.**
+  `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px`: 138 is the tyre panel's own
+  width and 12 is `92 − 80`. The tyre panel on a landscape phone is 86 tall and sits 6 up, so
+  its top edge is 92 — and the rail's foot was written at 80, with a comment saying it went
+  "down to the top of the tyre panel". It did not. 94 now, two pixels clear, and the running
+  order pays one row of twenty for it.
+- **The desktop right-hand column has a floor and the floor moved.** The driver's right pane
+  starts at 65.0 per cent of frame height rather than 68.5, which on a 900px screen is 585
+  rather than 616, and `shoot:panels` duly reported `.hud-damage over mirror[R1] by 84x30px`.
+  Narrowing the panel was tried first on the 1.7:1 arithmetic in its own note and **bought 24
+  pixels where the arithmetic predicted 34**, because the summary line reflows onto a second
+  line as the panel narrows and gives a third of it back — the harness said so, `by 64x6px`
+  where the sum said clear. Capping the drawing's height instead is exact.
+- **Portrait under a mirror camera lost 29 pixels of rail** (the driver's band went from 31.5
+  to 35 per cent of frame height, the T-cam's from 18.5 to 23.5) and clipped the
+  neutralisation cue out of it. The conditions strip stands down there now, which is the trade
+  the landscape phone already makes and for the same reason: it is the one panel whose fact is
+  also legible out of the windscreen.
+
+**`probe:tower` was disturbed and put back, which is worth recording because it was not
+supposed to be touched.** #76 landed it at 156 ok / 0 the same day. Moving two rail feet made
+it fail three assertions — `portrait phone/cockpit: 12 of 20 cars with 63px of unused rail
+beneath it`, the same at `driver`, and `landscape phone/chase: the tower leaves the rail 67px
+against a floor of 73px` — because `towerFit` derives the rail's foot from a list of the
+stylesheet's own numbers rather than measuring it, deliberately (see the note there: measuring
+it gives the same answer a frame late and cost 19 rail failures once). Two of those four
+numbers moved and the list is now five. **156 ok / 0 again**, and the probe caught the
+inconsistency the same day it was created, which is the only reason this paragraph is short.
+
+**What is left: five.** Three are `bahrain/cota/interlagos wide driver: a mirror pane reads
+22.2–22.4% of frame width across` against a **22.0** bound, and two are
+`monaco phone/wide cockpit: horizon at 51% of frame height` against a band of **34–50**.
+Neither was loosened. The pane-width bound was **already violated on `main`** at COTA (22.6)
+and the corrected camera moves the other two rows 0.4–0.6 points over it; the Monaco horizon
+was failing at **34** before and fails at **51** now, and 51 is the correct number — a car on
+Beau Rivage's climb pitches its camera up with it and the horizon genuinely lands just below
+centre. Both are band questions on targets this work did not own, and both are honest
+residuals rather than regressions. **Nobody is on them.**
 
 ### The in-race picture, measured against the reference frames (issue #78)
 
@@ -3223,7 +3394,7 @@ anything.
 | Front end | First-run, profiles, menu, settings, the whole visual language, making cinematics reachable. **It now has automated coverage for the first time — `probe:smoke`, issue #62. Everything merged before that was merged with a probe that had never opened any of it.** |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29); the one-way latch that made `auto` a ratchet **fixed and probed** (§6, issue #73). What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured; the demotion notice names the route to the Video tab in text rather than offering a button, because a button would have to reach into `main.ts`'s screen router — see below |
 | Graphics tiers | Three tiers, four switches, an adaptive `auto` and `probe:graphics` **landed** (§6, issue #29). The near-field road grain (#48) **landed** with it — `probe:grain`, 132 configurations, and the surface-detail normal map is band-limited by construction now. What remains: the menu's second GL context is still `high`-only (`Renderer.menuQuality`); what shadows actually cost is still unmeasured |
-| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6.** |
+| Radio/HUD | FIA banner, VSC/SC endings, post-session boards, tower row count, damage panel, tyre block to the right. **The retirement flow, the radio card and per-team principals have all landed — see §6. So has the mirror keep-out (#49/#50/#31): `MIRROR_PANES` re-derived against a camera that rides the car, `probe:framing` 113 → 5, `shoot:panels` 9+2 → 0+0.** |
 | Radio content | **The writing pool, issue #61.** #21 took 13 authored exchanges to 41 and built the rotation that stops them repeating, but the pool is still small for a race distance and only the *situations the game already models* have lines at all. *"make the radios legit and smart think of it like a genuine interaction"* is a content model, not a string count |
 | Safety car | **All of #10 has landed — see §6.** The vehicle exists and leads the field, `validate:flags` passes, the lap counter advances (`regress:laps` asserts it in both directions), `probe:neutralsteer` reads 0 reversals and 0 pedal jumps, and the safety car is now drawn from an interpolated pose. What the work found instead was the fuel model, and that is in §6 too |
 | Race authenticity | ~~Sparks/skid marks/brake lights/DRS flaps~~ **landed — #11, #34, #19, see §6.** Remaining divots. **Car jitter (#9) and the world juddering vertically (#54) have both landed — see §6** |
@@ -3368,20 +3539,24 @@ deliberately small. **`audit:pitlane`'s five stations still do not frame the pit
 glazing band**, so the paddock correction was verified by arithmetic and on the garage
 monitors rather than on the windows themselves. Recorded rather than done.
 
-### `shoot:panels`: the rail is NINE, not zero, and this file said zero
+### ~~`shoot:panels`: the rail is NINE, not zero, and this file said zero~~ — FIXED
 
-**Measured on merged `main` 2026-08-03: 9 rail + 2 mirror.** §4 and §6 both record the rail
-as **zero** since #17 — *"`rail: nothing overlaps anything, all viewports, all scenes` —
-zero, which is two better than `main`"*. It is not zero now. The two named are
-`phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px` and
-`phone/pit-choice: overlap .pitprompt x .hud-carstate by 138x12px`.
+**Was 9 rail + 2 mirror on merged `main`; 0 + 0 on the `framing-keepouts` tree.** Kept here
+rather than deleted because the count had been recorded as 2 + 2 for hours (the harness prints
+a count and then a de-duplicated list, and the list was read as the count) and because both
+halves turned out to be arithmetic that was already in the failure message:
 
-**Confirmed pre-existing and not a branch regression**, by the only method that settles it:
-`git checkout 3f229b7 -- src/` on the `brand-override-repair` worktree and re-running gave
-**the same 9 + 2, the same two sentences**. So something merged into `main` after #17 put
-the rail back and nobody re-ran the harness — the same species of stale entry this file
-records for `validate:flags` and `probe:fieldsize`. The mirror count is unchanged at 2.
-**Nobody is on this.**
+- the 9 rail deduplicate to `phone/clear: overlap .hud-pit-cue x .hud-carstate by 138x12px`.
+  **138 is the tyre panel's own width; 12 is 92 − 80.** The panel on a landscape phone is 86
+  tall and sits 6 up, so its top edge is 92, and the rail's foot was written at 80 under a
+  comment saying it reached "down to the top of the tyre panel". It reached twelve pixels
+  into it. Also confirmed pre-existing at the time by `git checkout 3f229b7 -- src/`, which
+  gave the same 9 + 2.
+- the 2 mirror are `phone/pit-choice/cockpit: .hud-notices over mirror[R1] by 26x72px`.
+  **26 is 220 − 194** — a 176px pit sheet plus a 44px slide, put into a corridor between the
+  panes that was 227 wide when 176 was chosen and 194 by the time it was measured.
+
+See §6, "The onboard camera rode the MIRROR IMAGE of the car".
 
 ### `audit:livery` had a BLACK FRAME in it on `main`, underneath the flake
 
